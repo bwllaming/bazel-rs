@@ -583,3 +583,77 @@ fn partly_sandboxed_builds_report_both_counts() {
         "{err}"
     );
 }
+
+/// `rule(analysis_test=True)` (bazel_skylib's `analysis_test`,
+/// `analysistest.make` without a transition): the returned
+/// AnalysisTestResultInfo becomes the test script `NAME.sh`
+/// (AnalysisTestActionBuilder, byte-identical to genuine's), the
+/// implementation may not register actions, and it must return the provider.
+#[test]
+fn analysis_test_rules_like_bazel() {
+    let ws = Workspace::new(&[
+        ("MODULE.bazel", "module(name = \"a\")\n"),
+        (
+            "defs.bzl",
+            "def _ok(ctx):\n    return [AnalysisTestResultInfo(success = True, message = \"all good\")]\nok_test = rule(_ok, analysis_test = True, attrs = {\"targets\": attr.label_list()})\ndef _bad(ctx):\n    return [AnalysisTestResultInfo(success = False, message = \"it's $broken\\nsecond line\")]\nbad_test = rule(_bad, analysis_test = True)\ndef _none(ctx):\n    return []\nnone_test = rule(_none, analysis_test = True)\ndef _act(ctx):\n    ctx.actions.write(ctx.actions.declare_file(\"x\"), \"x\")\n    return [AnalysisTestResultInfo(success = True, message = \"\")]\nact_test = rule(_act, analysis_test = True)\n",
+        ),
+        (
+            "BUILD.bazel",
+            "load(\":defs.bzl\", \"act_test\", \"bad_test\", \"none_test\", \"ok_test\")\nfilegroup(name = \"fg\")\nok_test(name = \"ok_test\", targets = [\":fg\"])\nbad_test(name = \"bad_test\")\nnone_test(name = \"none_test\")\nact_test(name = \"act_test\")\n",
+        ),
+    ]);
+    let script = |output: &Output, name: &str| {
+        let stdout = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            stderr(output)
+        );
+        let path = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("//:{name}\t")))
+            .unwrap_or_else(|| panic!("{stdout}"))
+            .to_owned();
+        fs::read_to_string(path).unwrap()
+    };
+    let all = |output: &Output| {
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            stderr(output)
+        )
+    };
+    let output = ws.run(&["test", "--test_output=all", "//:ok_test"]);
+    assert!(output.status.success(), "{}", all(&output));
+    assert!(all(&output).contains("Executed 1 out of 1 test: 1 test passes."));
+    // Genuine 9.3's bazel-bin/ok_test.sh and bad_test.sh, verbatim.
+    assert_eq!(
+        script(&output, "ok_test"),
+        "#!/bin/sh\necho \\a\\l\\l\\ \\g\\o\\o\\d\nexit 0"
+    );
+    let output = ws.run(&["test", "--test_output=all", "//:bad_test"]);
+    assert_eq!(output.status.code(), Some(3), "{}", all(&output));
+    assert!(
+        all(&output).contains("it's $broken\nsecond line\n"),
+        "{}",
+        all(&output)
+    );
+    assert_eq!(
+        script(&output, "bad_test"),
+        "#!/bin/sh\necho \\i\\t\\'\\s\\ \\$\\b\\r\\o\\k\\e\\n\necho \\s\\e\\c\\o\\n\\d\\ \\l\\i\\n\\e\nexit 1"
+    );
+    let output = ws.run(&["build", "//:none_test"]);
+    assert!(
+        stderr(&output).contains(&format!(
+            "{}/BUILD.bazel:5:10: in none_test rule //:none_test: rules with analysis_test=true must return an instance of AnalysisTestResultInfo",
+            ws.0.path().display()
+        )),
+        "{}",
+        stderr(&output)
+    );
+    let output = ws.run(&["build", "//:act_test"]);
+    assert!(
+        stderr(&output).contains("implementation function of a rule with analysis_test=true may not register actions. Analysis test rules may only return success/failure information via AnalysisTestResultInfo."),
+        "{}",
+        stderr(&output)
+    );
+}

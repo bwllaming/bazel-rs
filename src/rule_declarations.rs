@@ -34,6 +34,9 @@ use crate::repository_budget::HostBudget;
 pub(crate) const NOT_ANALYZED: &str =
     "accepted at load time but not analyzed by the native profile";
 
+/// Identity of the native `AnalysisTestResultInfo` provider key.
+pub(crate) const ANALYSIS_TEST_RESULT_INFO_ID: &str = "builtin:AnalysisTestResultInfo";
+
 /// Requirement identity of the native `OutputGroupInfo` provider key.
 pub(crate) const OUTPUT_GROUP_INFO_ID: &str = "builtin:OutputGroupInfo";
 
@@ -482,18 +485,54 @@ mod values {
         fn invoke(
             &self,
             _me: Value<'v>,
-            _args: &Arguments<'v, '_>,
-            _eval: &mut Evaluator<'v, '_, '_>,
+            args: &Arguments<'v, '_>,
+            eval: &mut Evaluator<'v, '_, '_>,
         ) -> starlark::Result<Value<'v>> {
-            Err(starlark::Error::new_other(
-                if self.name == "AnalysisTestResultInfo" {
-                    anyhow!(
-                        "AnalysisTestResultInfo construction is not implemented in the native profile (analysis-test results)"
-                    )
+            if self.name != "AnalysisTestResultInfo" {
+                // A BuiltinProvider without @StarlarkConstructor is not callable.
+                return Err(starlark::Error::new_other(anyhow!(
+                    "'Provider' object is not callable"
+                )));
+            }
+            // AnalysisTestResultInfoProviderApi.testResultInfo(Boolean success,
+            // String message): two parameters, positional or named.
+            let heap = eval.heap();
+            use crate::language_modules::param;
+            let bound = crate::language_modules::bind(
+                "AnalysisTestResultInfo",
+                &[
+                    param("success", true, true, true),
+                    param("message", true, true, true),
+                ],
+                args,
+                heap,
+            )?;
+            let (Some(success), Some(message)) = (bound[0], bound[1]) else {
+                return Err(starlark::Error::new_other(anyhow!(
+                    "AnalysisTestResultInfo() missing a required argument (success, message)"
+                )));
+            };
+            let check = |value: Value<'v>, name: &str, want: &str, ok: bool| {
+                if ok {
+                    Ok(())
                 } else {
-                    // A BuiltinProvider without @StarlarkConstructor is not callable.
-                    anyhow!("'Provider' object is not callable")
-                },
+                    Err(starlark::Error::new_other(anyhow!(
+                        "in call to AnalysisTestResultInfo(), parameter '{name}' got value of type '{}', want '{want}'",
+                        value.get_type()
+                    )))
+                }
+            };
+            check(success, "success", "bool", success.unpack_bool().is_some())?;
+            check(message, "message", "string", message.unpack_str().is_some())?;
+            Ok(crate::providers::alloc_instance(
+                heap,
+                ANALYSIS_TEST_RESULT_INFO_ID.to_owned(),
+                "AnalysisTestResultInfo".to_owned(),
+                vec![
+                    ("message".to_owned(), message),
+                    ("success".to_owned(), success),
+                ],
+                None,
             ))
         }
     }
@@ -1939,6 +1978,12 @@ pub(crate) fn is_output_group_info(value: Value<'_>) -> bool {
     OutputGroupInfoConstructor::from_value(value).is_some()
 }
 
+/// The provider key identity of `AnalysisTestResultInfo` /
+/// `AnalysisFailureInfo` (`builtin:NAME`).
+pub(crate) fn testing_provider_identity(value: Value<'_>) -> Option<String> {
+    TestingProvider::from_value(value).map(|provider| format!("builtin:{}", provider.name))
+}
+
 /// Construct `config.exec(exec_group)` (StarlarkConfig.java:68-73).
 pub(crate) fn config_exec<'v>(heap: Heap<'v>, exec_group: Option<&str>) -> Value<'v> {
     heap.alloc(ExecTransition {
@@ -3337,8 +3382,8 @@ ok_tuple(name = 't')\n",
                 "analysis_test_transition() missing 1 required named argument: settings",
             ),
             (
-                "AnalysisTestResultInfo(success = True, message = '')",
-                "AnalysisTestResultInfo construction is not implemented in the native profile",
+                "AnalysisTestResultInfo(success = 1, message = '')",
+                "in call to AnalysisTestResultInfo(), parameter 'success' got value of type 'int', want 'bool'",
             ),
             ("AnalysisFailureInfo()", "'Provider' object is not callable"),
         ] {
@@ -3351,6 +3396,8 @@ ok_tuple(name = 't')\n",
         .unwrap();
         let error = crate::analysis::analyze(target(&package, "check_test"), &Default::default())
             .unwrap_err();
-        assert!(error.contains("rule(analysis_test=True)"), "{error}");
+        // rule(analysis_test=True) is analyzed natively; its
+        // analysis_test_transition attribute is not.
+        assert!(error.contains("analysis_test_transition"), "{error}");
     }
 }

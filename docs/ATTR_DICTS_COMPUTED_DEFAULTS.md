@@ -188,12 +188,22 @@ positional argument`, `... missing 1 required named argument: settings`,
 
 `AnalysisTestResultInfo` and `AnalysisFailureInfo` exist as `.bzl` globals
 (`starlarkbuildapi/test/TestingBootstrap.java:46-52`; repr `<function NAME>`,
-`packages/BuiltinProvider.java:93-96`). Calling `AnalysisTestResultInfo` fails
-explicitly; `AnalysisFailureInfo` has no constructor.
+`packages/BuiltinProvider.java:93-96`). `AnalysisTestResultInfo(success,
+message)` constructs the provider (`AnalysisTestResultInfoApi.java:55-79`);
+`AnalysisFailureInfo` has no constructor.
 
-Analysis tests themselves stay an explicit analysis gap (`rule(analysis_test=True)`,
-attribute transitions), so genuine skylib `analysistest.make` rules load and
-instantiate, and fail analysis explicitly.
+`rule(analysis_test=True)` is analyzed natively (docs/BENCHMARKS.md, bazel-gazelle's
+`//tests/cli:valid_env_variables_test`): the implementation may not register
+actions (`StarlarkActionFactory.validateActionCreation`), must return an
+`AnalysisTestResultInfo` (`RuleConfiguredTargetBuilder.build`, :261-274), and
+that provider becomes the test's executable `NAME.sh`, written byte-identically
+to `AnalysisTestActionBuilder.writeAnalysisTestAction` (every message character
+but a newline backslash-escaped, one `echo` per line, `exit 0`/`exit 1`).
+Attribute `analysis_test_transition`s (skylib `analysistest.make` with
+`config_settings` or `expect_failure`, which sets
+`//command_line_option:allow_analysis_failures` and reads
+`AnalysisFailureInfo`) remain an explicit analysis gap, as do
+`ctx.created_actions()` of `_skylark_testable` rules and `target.actions`.
 
 ## Known remaining differences (genuine capture)
 

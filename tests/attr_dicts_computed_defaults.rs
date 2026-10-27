@@ -467,16 +467,19 @@ opt_test(name = "check", target_under_test = ":subject")
     // since N28d, so resolution reaches `@bazel_tools//tools/test`'s
     // `use_default_test_toolchain` config_setting; N30 models its
     // `use_target_platform_for_tests` option, so analysis reaches the
-    // analysis_test gap this test guards.
+    // analysis-test gap this test guards: rule(analysis_test=True) is
+    // analyzed natively (tests/bench_parity.rs), its attribute
+    // analysis_test_transition is not.
     let stderr = f.rejected(
         &f.run_builtin("build", &["//:check"]),
-        "analysis of //:check: declared rule features accepted at load time but not analyzed by the native profile: rule(analysis_test=True)",
+        "analysis of //:check: declared rule features accepted at load time but not analyzed by the native profile: attribute 'target_under_test' cfg=analysis_test_transition from @@bazel_skylib+//lib:unittest.bzl (configuration transition)",
     );
     assert!(
         !stderr.contains("use_target_platform_for_tests"),
         "{stderr}"
     );
-    assert!(!stderr.contains("unittest.bzl"), "{stderr}");
+    // An explicit gap before the implementation runs, not a Starlark error.
+    assert!(!stderr.contains("Traceback"), "{stderr}");
     // analysis_test_transition is restricted to analysis_test rules.
     f.file(
         "misuse.bzl",

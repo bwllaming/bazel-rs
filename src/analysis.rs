@@ -1046,6 +1046,37 @@ fn computed_args(
     Ok(tokens)
 }
 
+/// AnalysisTestActionBuilder.writeAnalysisTestAction
+/// (analysis/test/AnalysisTestActionBuilder.java:36-69) off Windows: every
+/// character of the message but a newline backslash-escaped
+/// (`replaceAll("(.)", "\\\\$1")`), one `echo` per line, then `exit 0` on
+/// success, else `exit 1`. `None` when `info` lacks the fields.
+fn analysis_test_script(info: Value<'_>) -> Option<String> {
+    let (_, _, fields, _) = crate::providers::instance_parts(info)?;
+    let field = |name: &str| {
+        fields
+            .iter()
+            .find(|(field, _)| field == name)
+            .map(|(_, value)| *value)
+    };
+    let success = field("success")?.unpack_bool()?;
+    let message = field("message")?.unpack_str()?;
+    let mut script = String::from("#!/bin/sh\n");
+    for line in message.split('\n') {
+        script.push_str("echo ");
+        for c in line.chars() {
+            // Java's `.` matches any character but line terminators.
+            if !matches!(c, '\r' | '\u{85}' | '\u{2028}' | '\u{2029}') {
+                script.push('\\');
+            }
+            script.push(c);
+        }
+        script.push('\n');
+    }
+    script.push_str(if success { "exit 0" } else { "exit 1" });
+    Some(script)
+}
+
 /// The implementation's return value shape
 /// (analysis/starlark/StarlarkRuleConfiguredTargetUtil.java:119-127, 245-275).
 fn check_return_shape(returned: Value<'_>) -> anyhow::Result<()> {
@@ -1991,6 +2022,7 @@ fn analyze_aspect_inner(
         // target's rule, crate::engine's aspect commit).
         propagated_tags: crate::engine::rule_execution_info(rule),
         retained_mappers: Default::default(),
+        analysis_test: false,
     };
     Module::with_temp_heap(|module| -> anyhow::Result<_> {
         let ctx = make_aspect_ctx(application, &context, module.heap(), aspect_surface.clone())?;
@@ -2670,6 +2702,7 @@ fn analyze_inner(
         },
         propagated_tags: crate::engine::rule_execution_info(rule),
         retained_mappers: Default::default(),
+        analysis_test: invocation.declaration.analysis_test,
     };
     for output in &rule.outs {
         context.declare(output)?;
@@ -2730,6 +2763,49 @@ fn analyze_inner(
             let returned_default = crate::starlark_types::returned_default_info(returned)?;
             let custom = crate::providers::returned_custom_providers(returned)?;
             let provider_keys = crate::providers::returned_provider_key_names(returned)?;
+            // RuleConfiguredTargetBuilder.build (:261-274) and
+            // StarlarkRuleConfiguredTargetUtil (:393-402): an analysis test's
+            // AnalysisTestResultInfo becomes its executable, `NAME.sh`.
+            let mut returned_default = returned_default;
+            if invocation.declaration.analysis_test {
+                let script = custom
+                    .get(crate::rule_declarations::ANALYSIS_TEST_RESULT_INFO_ID)
+                    .and_then(|info| analysis_test_script(*info))
+                    .ok_or_else(|| {
+                        anyhow::Error::new(crate::rule_errors::ReportedErrors(
+                            crate::rule_errors::located_events(
+                                rule.location.as_deref(),
+                                vec![format!(
+                                    "in {} rule {}: rules with analysis_test=true must return an instance of AnalysisTestResultInfo",
+                                    invocation.declaration.rule_class,
+                                    crate::rule_declarations::canonical_form(&rule.label)
+                                )],
+                            ),
+                        ))
+                    })?;
+                let file = context.declare(&format!("{}.sh", rule.label.name))?;
+                context.register_action_unchecked(crate::analysis_runtime::Registration {
+                    outputs: vec![file.clone()],
+                    inputs: Vec::new(),
+                    command: String::new(),
+                    write: Some(crate::action::WriteAction {
+                        content: crate::bazel_bytes::internal_bytes(&script).into_owned(),
+                        executable: true,
+                    }),
+                    program: None,
+                    arguments: Vec::new(),
+                    environment: BTreeMap::new(),
+                    extra: Default::default(),
+                    shell_pad: false,
+                    executable_file: false,
+                    deferred: None,
+                    exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
+                    runfiles_trees: Vec::new(),
+                    build_info: None,
+                    shareable: true,
+                })?;
+                returned_default.get_or_insert_default().executable = Some(file);
+            }
             // addProviders (analysis/starlark/StarlarkRuleConfiguredTargetUtil.java:285-299):
             // RunEnvironmentInfo of a non-executable, non-test target. The
             // regular constructor sets error_on_non_executable=true;
@@ -3673,6 +3749,7 @@ r = rule(implementation=impl, attrs={
             exec_groups: Default::default(),
             propagated_tags: Default::default(),
             retained_mappers: Default::default(),
+            analysis_test: false,
         }
     }
 

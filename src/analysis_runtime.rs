@@ -208,6 +208,9 @@ mod owned {
         /// [`Context::fill_retained_mappers`]), so the command line can call
         /// it at execution time like Bazel's retained StarlarkCallable.
         pub retained_mappers: RefCell<Vec<(String, Arc<OnceLock<OwnedFrozenValue>>)>>,
+        /// `rule(analysis_test=True)`: the implementation may not register
+        /// actions (StarlarkActionFactory.validateActionCreation, :533-548).
+        pub analysis_test: bool,
     }
 
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
@@ -383,6 +386,20 @@ impl Context {
     }
 
     pub(crate) fn register_action(&self, registration: Registration) -> anyhow::Result<()> {
+        if self.analysis_test {
+            bail!(
+                "implementation function of a rule with analysis_test=true may not register actions. Analysis test rules may only return success/failure information via AnalysisTestResultInfo."
+            );
+        }
+        self.register_action_unchecked(registration)
+    }
+
+    /// [`Self::register_action`] without the analysis-test check: the
+    /// framework's own analysis-test script (AnalysisTestActionBuilder).
+    pub(crate) fn register_action_unchecked(
+        &self,
+        registration: Registration,
+    ) -> anyhow::Result<()> {
         let Registration {
             outputs,
             inputs,
@@ -2317,6 +2334,7 @@ mod tests {
             exec_groups: Default::default(),
             propagated_tags: Default::default(),
             retained_mappers: Default::default(),
+            analysis_test: false,
         }
     }
 
@@ -2666,6 +2684,7 @@ r=rule(implementation=_rule,subrules=[S])
             exec_groups: Default::default(),
             propagated_tags: Default::default(),
             retained_mappers: Default::default(),
+            analysis_test: false,
         };
         let owner = make_context();
         let foreign = make_context();

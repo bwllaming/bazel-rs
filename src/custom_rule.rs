@@ -413,6 +413,8 @@ pub struct InvocationDeclaration {
     pub unanalyzed: Vec<String>,
     /// `rule(_skylark_testable=True)` (RuleClass.isStarlarkTestable).
     pub skylark_testable: bool,
+    /// `rule(analysis_test=True)` (Rule.isAnalysisTest).
+    pub analysis_test: bool,
     /// A rule `cfg` transition: it decides the configuration the target and
     /// its select() conditions are analyzed in, so it fails first.
     pub transition_gaps: Vec<String>,
@@ -1851,6 +1853,7 @@ mod values {
                     implicit_outputs,
                     unanalyzed,
                     skylark_testable: self.declaration.skylark_testable,
+                    analysis_test: self.declaration.analysis_test,
                     transition_gaps,
                     toolchain_gaps,
                     toolchain_types: self.declaration.toolchains.clone(),
@@ -1947,9 +1950,9 @@ impl RuleDeclaration {
         let mut transition = Vec::new();
         let toolchain = Vec::new();
         let mut features = Vec::new();
-        if self.analysis_test {
-            features.push("rule(analysis_test=True)".to_owned());
-        }
+        // rule(analysis_test=True) is analyzed natively: no actions, the
+        // returned AnalysisTestResultInfo becomes the test script
+        // (crate::analysis, AnalysisTestActionBuilder).
         // rule(test=True)/rule(executable=True) are analyzed natively: the
         // executable, DefaultInfo runfiles and FilesToRunProvider
         // (crate::runfiles, docs/RUNFILES.md). The implicit test-runner

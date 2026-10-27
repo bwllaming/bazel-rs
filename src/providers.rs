@@ -552,6 +552,9 @@ pub fn provider_identity(value: Value<'_>) -> Option<String> {
     if crate::rule_declarations::is_output_group_info(value) {
         return Some(crate::output_group_info::PROVIDER_ID.to_owned());
     }
+    if let Some(identity) = crate::rule_declarations::testing_provider_identity(value) {
+        return Some(identity);
+    }
     if crate::run_environment_info::is_constructor(value) {
         return Some(crate::run_environment_info::PROVIDER_ID.to_owned());
     }
