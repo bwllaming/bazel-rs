@@ -77,6 +77,94 @@ impl Shape {
     }
 }
 
+/// The Bazel attribute type (packages/Type.java, packages/BuildType.java)
+/// as far as the query output formatters distinguish it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AttrType {
+    Int,
+    String,
+    Label,
+    NodepLabel,
+    Output,
+    StringList,
+    LabelList,
+    NodepLabelList,
+    OutputList,
+    License,
+    StringDict,
+    LabelListDict,
+    StringListDict,
+    Bool,
+    TriState,
+    IntList,
+    LabelDictUnary,
+    LabelKeyedStringDict,
+}
+
+impl AttrType {
+    fn of_native(ty: NativeType) -> Self {
+        match ty {
+            NativeType::String => Self::String,
+            NativeType::StringList => Self::StringList,
+            NativeType::StringDict => Self::StringDict,
+            NativeType::Bool => Self::Bool,
+            NativeType::Int => Self::Int,
+            NativeType::TriState => Self::TriState,
+            NativeType::Label => Self::Label,
+            NativeType::NodepLabel => Self::NodepLabel,
+            NativeType::LabelList => Self::LabelList,
+            NativeType::NodepLabelList => Self::NodepLabelList,
+            NativeType::LabelKeyedStringDict => Self::LabelKeyedStringDict,
+            NativeType::LabelListDict => Self::LabelListDict,
+            NativeType::OutputList => Self::OutputList,
+            NativeType::License => Self::License,
+        }
+    }
+
+    fn of_starlark(kind: &AttrKind) -> Self {
+        match kind {
+            AttrKind::String => Self::String,
+            AttrKind::StringList => Self::StringList,
+            AttrKind::StringListDict => Self::StringListDict,
+            AttrKind::StringDict => Self::StringDict,
+            AttrKind::Int => Self::Int,
+            AttrKind::Bool => Self::Bool,
+            AttrKind::Label => Self::Label,
+            AttrKind::LabelList => Self::LabelList,
+            AttrKind::Output => Self::Output,
+            AttrKind::OutputList => Self::OutputList,
+            AttrKind::IntList => Self::IntList,
+            AttrKind::LabelKeyedStringDict => Self::LabelKeyedStringDict,
+            AttrKind::StringKeyedLabelDict => Self::LabelDictUnary,
+            AttrKind::LabelListDict => Self::LabelListDict,
+        }
+    }
+
+    /// A list type (Type.getListElementType() != null).
+    pub(crate) fn is_list(self) -> bool {
+        matches!(
+            self,
+            Self::StringList
+                | Self::LabelList
+                | Self::NodepLabelList
+                | Self::OutputList
+                | Self::IntList
+        )
+    }
+
+    /// A dict type (Type.DictType).
+    pub(crate) fn is_dict(self) -> bool {
+        matches!(
+            self,
+            Self::StringDict
+                | Self::LabelListDict
+                | Self::StringListDict
+                | Self::LabelDictUnary
+                | Self::LabelKeyedStringDict
+        )
+    }
+}
+
 /// One attribute of a rule instance.
 #[derive(Clone, Debug)]
 pub(crate) struct QueryAttribute {
@@ -85,6 +173,8 @@ pub(crate) struct QueryAttribute {
     /// Attribute.getPublicName (`_x` for private attributes).
     pub public_name: String,
     pub shape: Shape,
+    /// The attribute's type.
+    pub ty: AttrType,
     /// Rule.isAttributeValueExplicitlySpecified.
     pub explicit: bool,
     /// Attribute.isToolDependency: an exec-transition attribute.
@@ -183,10 +273,18 @@ fn private_public_name(name: &str) -> String {
 }
 
 fn implicit(name: &str, shape: Shape, tool: bool, value: Option<AttrValue>) -> QueryAttribute {
+    let ty = match shape {
+        Shape::Label => AttrType::Label,
+        Shape::LabelList => AttrType::LabelList,
+        Shape::Bool => AttrType::Bool,
+        Shape::Int => AttrType::Int,
+        _ => AttrType::String,
+    };
     QueryAttribute {
         name: name.to_owned(),
         public_name: private_public_name(name),
         shape,
+        ty,
         explicit: false,
         tool,
         value,
@@ -291,6 +389,7 @@ fn builtin_attribute(
             name: name.to_owned(),
             public_name: name.to_owned(),
             shape,
+            ty: AttrType::of_native(attribute.ty),
             explicit: true,
             tool: false,
             value: Some(AttrValue::String(value)),
@@ -316,6 +415,7 @@ fn builtin_attribute(
         name: name.to_owned(),
         public_name: name.to_owned(),
         shape,
+        ty: AttrType::of_native(attribute.ty),
         explicit,
         tool: false,
         value,
@@ -598,6 +698,7 @@ fn starlark_attributes(
             public_name: name.clone(),
             name: native_name,
             shape,
+            ty: AttrType::of_starlark(&spec.kind),
             explicit: declaration.explicit.contains(name),
             tool: matches!(spec.declaration.cfg, crate::rule_declarations::Cfg::Exec(_)),
             value,

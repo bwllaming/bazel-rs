@@ -25,8 +25,8 @@ All of `QueryEnvironment.DEFAULT_QUERY_FUNCTIONS`
 `tests`, `visible`; `set(...)`, `let x = e in e` with `$x`, and the binary
 operators `union`/`+`, `intersect`/`^`, `except`/`-` (equal precedence, left
 associative, runs of one operator in one node). `allrdeps` and `rbuildfiles`
-are SkyQuery functions and therefore `unknown function` errors, as in Bazel
-without `--universe_scope`. `|` and `&` are not operators in Bazel 9.3's lexer
+are SkyQuery functions (see SkyQuery below) and `unknown function` errors
+otherwise, as in Bazel. `|` and `&` are not operators in Bazel 9.3's lexer
 (they lex as words). `kind`/`filter`/`attr` regular expressions use
 `fancy-regex` (Java `Matcher.find` semantics; common syntax errors use
 Java's `PatternSyntaxException` text, other Java-only constructs differ). A
@@ -143,12 +143,86 @@ canonical `@@repo+//` forms for every external label.)
   instantiation call stack and the Starlark rule class's definition stack.
 * `--null`/`--line_terminator_null`, `--output_file`, `--query_file`.
 
-`xml`, `proto`, `streamed_jsonproto` and `streamed_proto` are recognized
-formatter names and fail explicitly (exit 1). `--universe_scope` (non-empty)
-and `--infer_universe_scope` (SkyQuery) fail explicitly.
 `--experimental_graphless_query=yes` with a non-streaming output is Bazel's
-exit-2 error. `--aspect_deps`, `--include_aspects`, xml/proto options are
-accepted (they only affect unimplemented formatters).
+exit-2 error. `--aspect_deps` (off, conservative, precise) is read by the
+xml/proto formatters; `--include_aspects` is a no-op.
+
+## Structured outputs (`xml`, `proto`, `streamed_proto`, `streamed_jsonproto`)
+
+`src/engine/query/formats.rs`: XmlOutputFormatter, ProtoOutputFormatter,
+StreamedProtoOutputFormatter, StreamedJSONProtoOutputFormatter and
+packages/AttributeFormatter.java. All four are streamed formatters (sorted
+by label under `--order_output=auto`). Each target becomes a
+`blaze_query.Target` (src/main/protobuf/build.proto): `proto` is one unframed
+QueryResult (field 1 per target), `streamed_proto` varint-delimited Targets,
+`streamed_jsonproto` one protobuf-java JsonFormat line per target (fields in
+number order, Gson HTML-safe escaping of `< > & = '`).
+
+* Rule: name, rule_class, location (`--[no]proto:locations`,
+  `--relative_locations`), every rule-class attribute (sorted by name, the
+  native attribute model of `src/engine/query_attrs.rs` plus the private
+  `:action_listener`, `:flag_alias_settings`, `$is_executable` and an empty
+  `$implicit_tests`) with its exact type discriminator, `explicitly_specified`
+  and `nodep`, then `$internal_attr_hash`
+  (`--proto:include_synthetic_attribute_hash`, SyntheticAttributeHashCalculator
+  over the unflattened attributes in rule-class order), then
+  `$rule_implementation_hash` (Starlark rules) and the aspect attributes
+  (`--aspect_deps`, `--proto:include_attribute_source_aspects`); rule_input
+  (aspect deps first, then Rule.getSortedLabels under the dependency filter),
+  rule_output, default_setting (package features), instantiation/definition
+  stacks (`--proto:instantiation_stack`, `--proto:definition_stack`,
+  repository-relative). `--[no]proto:default_values`,
+  `--proto:output_rule_attrs=a,b` (empty = none), `--[no]proto:rule_inputs_and_outputs`.
+* select(): flattened like getFlattenedAttributeValues (a `None` branch is the
+  type default; LABEL_LIST = reachable labels; other lists concatenate every
+  branch; dicts merge in java.util.HashMap order; several scalar values are
+  null), or `--noproto:flatten_selects` SELECTOR_LIST with every selector,
+  entry, `is_default_value`, `has_default_value` and `no_match_error`.
+* `$rule_implementation_hash` is Bazel's BzlLoadValue transitive digest:
+  SHA-256 over the `.bzl` SHA-256, the loads' digests in load order and the
+  `@_builtins` digest. Bundled builtins hash their *path*
+  (ConfiguredRuleClassProvider.BundledFileSystem), so the 9.3.0 builtins
+  digest is the pinned constant `BUILTINS_DIGEST`
+  (tests/fixtures/query_outputs/builtins_digest.py recomputes it from the
+  genuine server jar).
+* SourceFile (subinclude, feature and package_contains_errors for BUILD
+  files; package_group and visibility_label), GeneratedFile, PackageGroup
+  (PackageSpecification.packageStrings order), buildfiles()/loadfiles()
+  FakeLoadTargets (location = the loading package's BUILD file).
+* XML: the JDK Transformer's 4-space indentation, attributes sorted by name,
+  explicit attributes (or all with `--xml:default_values`) in rule-class
+  order via PossibleAttributeValues (`configurable="yes"` for several scalar
+  values), `--[no]xml:line_numbers`. Like Bazel, non-ASCII text is written
+  from Bazel's internal Latin-1-of-UTF-8 strings (`é` prints as `Ã©`).
+
+Not modelled: environment groups (`environment_group` is not a native
+loading function), `--proto:rule_classes` (Stardoc rule_class_info; an
+explicit exit-1 error), java.lang.Label hash order of merged label-keyed
+dicts (approximated by the canonical text), and the PreciseAspectResolver's
+provider check beyond AspectDefinition.satisfies.
+
+## SkyQuery (`--universe_scope`, `--infer_universe_scope`)
+
+QueryEnvironmentFactory.canUseSkyQuery: with a non-empty `--universe_scope`
+(comma-separated patterns) or `--infer_universe_scope` (the expression's own
+patterns) and a streamed result (`--order_output=no`, or `auto` with a
+streamed formatter), native evaluates like SkyQueryEnvironment; otherwise
+the universe is ignored (e.g. `--order_output=full`, `--output=graph`:
+`allrdeps` is an unknown function, as in Bazel).
+
+* The universe is the transitive closure of the universe patterns over every
+  dependency (unfiltered, like TransitiveTraversal); universe patterns that
+  fail contribute nothing.
+* A literal naming a package outside the universe fails when evaluated:
+  `no such package 'P': BUILD file not found on package path` (a subquery
+  error, or an error event with `--keep_going`); recursive patterns keep
+  the universe's packages.
+* `allrdeps(x [, depth])`: reverse dependencies within the universe under the
+  dependency filter; `rdeps(u, x)` is the ordinary within-`u` rdeps (Bazel's
+  RdepsToAllRdeps rewrite gives the same set); `rbuildfiles(path, ...)`: the
+  BUILD files of universe packages whose BUILD file or transitively loaded
+  main-repository `.bzl` file is one of the package-path-relative paths.
+* The parser lists `allrdeps` and `rbuildfiles` among the expected functions.
 
 ## Evidence
 
@@ -160,7 +234,13 @@ implemented formatter and ordering, the dependency-filter options, error and
 keep-going cases), receipt `tests/fixtures/query_language/reference_receipt.json`:
 83 EXACT, 5 EXACT_UNORDERED (Bazel hash-set orders: minrank/maxrank/graph
 under `--order_output=auto`, `--order_output=deps|no`), 1
-EXPECTED_NATIVE_UNSUPPORTED (`--output=xml`), no mismatches. The receipt also
+EXPECTED_NATIVE_UNSUPPORTED (`--output=xml`, implemented since), no mismatches.
+
+`tests/query_outputs.rs` replays the structured-output and SkyQuery capture
+(`tests/fixtures/query_outputs/capture.py` over `tests/fixtures/query_outputs/ws`,
+47 cases, receipt `reference_receipt.json`, outputs `genuine/*.out`): every
+proto/streamed_proto/jsonproto/xml output byte-exact (the workspace path
+normalized), exit codes and events exact, `--order_output=no` as a set. The receipt also
 records the first run (68 exact, 11 mismatches) and the fixes between runs.
 `deps(//app:bin_test)` reproduces Bazel's full 62-target test-runner closure
 through `@bazel_tools`, `rules_java`, `rules_shell`, `platforms` and the

@@ -1,0 +1,11 @@
+config_setting(
+    name = "fast",
+    define_values = {"speed": "fast"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "slow",
+    values = {"compilation_mode": "opt"},
+    visibility = ["//visibility:public"],
+)

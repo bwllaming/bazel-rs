@@ -1,0 +1,21 @@
+load("//rules:defs.bzl", "kitchen")
+
+kitchen(
+    name = "a",
+    lbls = [":b"],
+)
+
+kitchen(
+    name = "b",
+    lbl = "//other:thing",
+)
+
+kitchen(
+    name = "c",
+    lbls = [":a"],
+    tool = ":b",
+)
+
+kitchen(
+    name = "lonely",
+)

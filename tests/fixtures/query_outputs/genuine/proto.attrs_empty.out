@@ -1,0 +1,35 @@
+
+&"
+//pkg:alalias:feat_a:-feat_b
+ëå
+//pkg:all_typeskitchen"_
+$rule_implementation_hash*@aa3c67edb83323e91237483750a749c39d991c7c7dd83fa97a8a9b9cb7a9bb58:feat_a:-feat_b
+èä
+	//pkg:binkitchen_bin"_
+$rule_implementation_hash*@aa3c67edb83323e91237483750a749c39d991c7c7dd83fa97a8a9b9cb7a9bb58:feat_a:-feat_b
+)%
+	//pkg:gengenrule:feat_a:-feat_b
+73
+//pkg:implicit_suite
+test_suite:feat_a:-feat_b
+,(
+
+//pkg:pair	filegroup:feat_a:-feat_b
+éâ
+//pkg:pair_akitchen"_
+$rule_implementation_hash*@aa3c67edb83323e91237483750a749c39d991c7c7dd83fa97a8a9b9cb7a9bb58:feat_a:-feat_b
+çà
+//pkg:plainkitchen"_
+$rule_implementation_hash*@aa3c67edb83323e91237483750a749c39d991c7c7dd83fa97a8a9b9cb7a9bb58:feat_a:-feat_b
+èä
+//pkg:selectskitchen"_
+$rule_implementation_hash*@aa3c67edb83323e91237483750a749c39d991c7c7dd83fa97a8a9b9cb7a9bb58:feat_a:-feat_b
+.*
+//pkg:suite
+test_suite:feat_a:-feat_b
+,(
+
+//pkg:tool	filegroup:feat_a:-feat_b
+ñë
+//pkg:unit_testkitchen_test"_
+$rule_implementation_hash*@aa3c67edb83323e91237483750a749c39d991c7c7dd83fa97a8a9b9cb7a9bb58:feat_a:-feat_b

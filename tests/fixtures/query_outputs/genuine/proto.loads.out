@@ -1,0 +1,5 @@
+{"type":"SOURCE_FILE","sourceFile":{"name":"//pkg:BUILD.bazel","location":"pkg/BUILD.bazel:1:1","subinclude":["//rules:defs.bzl","//rules:common.bzl","//rules:macros.bzl"],"packageGroup":["//vis:friends"],"visibilityLabel":["//vis:friends"],"feature":["feat_a","-feat_b"],"packageContainsErrors":false}}
+{"type":"SOURCE_FILE","sourceFile":{"name":"//rules:BUILD.bazel","location":"pkg/BUILD.bazel"}}
+{"type":"SOURCE_FILE","sourceFile":{"name":"//rules:common.bzl","location":"pkg/BUILD.bazel"}}
+{"type":"SOURCE_FILE","sourceFile":{"name":"//rules:defs.bzl","location":"pkg/BUILD.bazel"}}
+{"type":"SOURCE_FILE","sourceFile":{"name":"//rules:macros.bzl","location":"pkg/BUILD.bazel"}}

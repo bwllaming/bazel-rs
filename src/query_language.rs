@@ -185,11 +185,14 @@ pub enum ArgumentType {
 
 /// The functions of `bazel query` (QueryEnvironment.DEFAULT_QUERY_FUNCTIONS,
 /// query2/engine/QueryEnvironment.java:741-758; Bazel registers no extra
-/// query functions). `allrdeps` and `rbuildfiles` are SkyQuery-only and
-/// therefore unknown functions here.
+/// query functions). `allrdeps` and `rbuildfiles` are SkyQuery-only
+/// (SkyQueryEnvironment.getFunctions): [`parse_sky`] knows them, [`parse`]
+/// reports them as unknown functions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Function {
     Config,
+    AllRdeps,
+    RBuildFiles,
     AllPaths,
     Attr,
     BuildFiles,
@@ -228,9 +231,15 @@ impl Function {
         Self::Visible,
     ];
 
+    /// SkyQueryEnvironment.getFunctions: the defaults plus AllRdepsFunction
+    /// and RBuildFilesFunction.
+    pub const SKY: [Function; 2] = [Self::AllRdeps, Self::RBuildFiles];
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Config => "config",
+            Self::AllRdeps => "allrdeps",
+            Self::RBuildFiles => "rbuildfiles",
             Self::AllPaths => "allpaths",
             Self::Attr => "attr",
             Self::BuildFiles => "buildfiles",
@@ -278,7 +287,9 @@ impl Function {
             Self::Config => &[E, W],
             Self::AllPaths | Self::SomePath | Self::Visible => &[E, E],
             Self::Attr => &[W, W, E],
-            Self::Deps | Self::Some => &[E, I],
+            Self::Deps | Self::Some | Self::AllRdeps => &[E, I],
+            // Iterables.cycle(WORD) (RBuildFilesFunction.java:56-58).
+            Self::RBuildFiles => &[W],
             Self::Rdeps => &[E, E, I],
             Self::Filter | Self::Kind | Self::Labels => &[W, E],
             Self::BuildFiles
@@ -508,6 +519,7 @@ struct Parser {
     tokens: Vec<Token>,
     index: usize,
     configured: bool,
+    sky: bool,
 }
 
 /// QueryParser.parse (QueryParser.java:68-80).
@@ -520,11 +532,21 @@ pub fn parse_cquery(query: &str) -> Result<Expr, SyntaxError> {
     parse_with_mode(query, true)
 }
 
+/// SkyQuery's language: the default functions plus `allrdeps` and `rbuildfiles`.
+pub fn parse_sky(query: &str) -> Result<Expr, SyntaxError> {
+    parse_in(query, false, true)
+}
+
 fn parse_with_mode(query: &str, configured: bool) -> Result<Expr, SyntaxError> {
+    parse_in(query, configured, false)
+}
+
+fn parse_in(query: &str, configured: bool, sky: bool) -> Result<Expr, SyntaxError> {
     let mut parser = Parser {
         tokens: scan(query)?,
         index: 0,
         configured,
+        sky,
     };
     let expr = parser.expression()?;
     if parser.kind() != TokenKind::Eof {
@@ -625,11 +647,20 @@ impl Parser {
                 }
                 let function = if self.configured && word == "config" {
                     Some(Function::Config)
+                } else if self.sky {
+                    Function::lookup(&word).or_else(|| {
+                        Function::SKY
+                            .into_iter()
+                            .find(|function| function.name() == word)
+                    })
                 } else {
                     Function::lookup(&word)
                 };
                 let Some(function) = function else {
                     let mut names = Function::ALL.map(Function::name).to_vec();
+                    if self.sky {
+                        names.extend(Function::SKY.map(Function::name));
+                    }
                     names.sort_unstable();
                     return Err(SyntaxError(format!(
                         "unknown function '{word}' at '{}'; expected one of ['{}']",
@@ -658,6 +689,11 @@ impl Parser {
                         ArgumentType::Integer => Argument::Integer(self.consume_int()?),
                     });
                     seen += 1;
+                }
+                // A cycled argument type list takes any number of words.
+                while function == Function::RBuildFiles && self.kind() == TokenKind::Comma {
+                    self.next();
+                    args.push(Argument::Word(self.consume_word()?));
                 }
                 if self.kind() == TokenKind::Comma && seen > 0 {
                     return Err(self.argument_count_error(function, "too many"));

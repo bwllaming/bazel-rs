@@ -1,0 +1,740 @@
+<?xml version="1.1" encoding="UTF-8" standalone="no"?>
+<query version="2">
+    <source-file location="conf/BUILD.bazel" name="//conf:BUILD.bazel" package_contains_errors="false">
+        <visibility-label name="//visibility:private"/>
+    </source-file>
+    <rule class="config_setting" location="conf/BUILD.bazel" name="//conf:fast">
+        <string name="name" value="fast"/>
+        <list name="visibility">
+            <label value="//visibility:public"/>
+        </list>
+        <list name="transitive_configs"/>
+        <string name="deprecation"/>
+        <list name="tags">
+            <string value="manual"/>
+        </list>
+        <string name="generator_name" value=""/>
+        <string name="generator_function" value=""/>
+        <string name="generator_location" value=""/>
+        <boolean name="testonly" value="false"/>
+        <list name="features"/>
+        <list name=":action_listener"/>
+        <list name="$config_dependencies"/>
+        <list name="package_metadata"/>
+        <list name="aspect_hints"/>
+        <license name="licenses">
+            <list name="exceptions"/>
+            <list name="license-types">
+                <string value="NONE"/>
+            </list>
+        </license>
+        <list name="distribs"/>
+        <dict name="values"/>
+        <dict name="define_values">
+            <pair>
+                <string value="speed"/>
+                <string value="fast"/>
+            </pair>
+        </dict>
+        <dict name="flag_values"/>
+        <list name=":flag_alias_settings"/>
+        <list name="constraint_values"/>
+    </rule>
+    <rule class="config_setting" location="conf/BUILD.bazel" name="//conf:slow">
+        <string name="name" value="slow"/>
+        <list name="visibility">
+            <label value="//visibility:public"/>
+        </list>
+        <list name="transitive_configs"/>
+        <string name="deprecation"/>
+        <list name="tags">
+            <string value="manual"/>
+        </list>
+        <string name="generator_name" value=""/>
+        <string name="generator_function" value=""/>
+        <string name="generator_location" value=""/>
+        <boolean name="testonly" value="false"/>
+        <list name="features"/>
+        <list name=":action_listener"/>
+        <list name="$config_dependencies"/>
+        <list name="package_metadata"/>
+        <list name="aspect_hints"/>
+        <license name="licenses">
+            <list name="exceptions"/>
+            <list name="license-types">
+                <string value="NONE"/>
+            </list>
+        </license>
+        <list name="distribs"/>
+        <dict name="values">
+            <pair>
+                <string value="compilation_mode"/>
+                <string value="opt"/>
+            </pair>
+        </dict>
+        <dict name="define_values"/>
+        <dict name="flag_values"/>
+        <list name=":flag_alias_settings"/>
+        <list name="constraint_values"/>
+    </rule>
+    <source-file location="other/BUILD.bazel" name="//other:BUILD.bazel" package_contains_errors="false">
+        <visibility-label name="//visibility:private"/>
+    </source-file>
+    <rule class="filegroup" location="other/BUILD.bazel" name="//other:thing">
+        <string name="name" value="thing"/>
+        <list name="visibility">
+            <label value="//visibility:public"/>
+        </list>
+        <list name="transitive_configs"/>
+        <string name="deprecation"/>
+        <list name="tags"/>
+        <string name="generator_name" value=""/>
+        <string name="generator_function" value=""/>
+        <string name="generator_location" value=""/>
+        <boolean name="testonly" value="false"/>
+        <list name="features"/>
+        <list name=":action_listener"/>
+        <list name="compatible_with"/>
+        <list name="restricted_to"/>
+        <list name="$config_dependencies"/>
+        <list name="package_metadata"/>
+        <list name="aspect_hints"/>
+        <license name="licenses">
+            <list name="exceptions"/>
+            <list name="license-types">
+                <string value="NONE"/>
+            </list>
+        </license>
+        <list name="distribs"/>
+        <list name="target_compatible_with"/>
+        <list name="srcs">
+            <label value="//other:thing.txt"/>
+        </list>
+        <string name="output_group" value=""/>
+        <list name="data"/>
+        <list name="output_licenses"/>
+        <rule-input name="//other:thing.txt"/>
+    </rule>
+    <source-file location="other/thing.txt" name="//other:thing.txt">
+        <visibility-label name="//visibility:private"/>
+    </source-file>
+    <source-file location="pkg/BUILD.bazel" name="//pkg:BUILD.bazel" package_contains_errors="false">
+        <load name="//rules:defs.bzl"/>
+        <load name="//rules:common.bzl"/>
+        <load name="//rules:macros.bzl"/>
+        <feature name="feat_a"/>
+        <feature name="-feat_b"/>
+        <package-group name="//vis:friends"/>
+        <visibility-label name="//vis:friends"/>
+    </source-file>
+    <rule class="alias" location="pkg/BUILD.bazel" name="//pkg:al">
+        <string name="name" value="al"/>
+        <list name="visibility">
+            <label value="//vis:friends"/>
+        </list>
+        <list name="transitive_configs"/>
+        <string name="deprecation"/>
+        <list name="tags"/>
+        <string name="generator_name" value=""/>
+        <string name="generator_function" value=""/>
+        <string name="generator_location" value=""/>
+        <boolean name="testonly" value="false"/>
+        <list name="features"/>
+        <list name="compatible_with"/>
+        <list name="restricted_to"/>
+        <list name="$config_dependencies"/>
+        <list name="package_metadata"/>
+        <list name="aspect_hints"/>
+        <list name="target_compatible_with"/>
+        <label name="actual" value="//pkg:gen"/>
+        <rule-input name="//pkg:gen"/>
+        <rule-default-setting name="feat_a"/>
+        <rule-default-setting name="-feat_b"/>
+    </rule>
+    <rule class="kitchen" location="pkg/BUILD.bazel" name="//pkg:all_types">
+        <string name="name" value="all_types"/>
+        <string name="expect_failure" value=""/>
+        <list name="visibility">
+            <label value="//vis:friends"/>
+        </list>
+        <list name="transitive_configs"/>
+        <string name="deprecation" value="old"/>
+        <list name="tags">
+            <string value="t1"/>
+        </list>
+        <string name="generator_name" value=""/>
+        <string name="generator_function" value=""/>
+        <string name="generator_location" value=""/>
+        <boolean name="testonly" value="true"/>
+        <list name="features"/>
+        <list name=":action_listener"/>
+        <list name="compatible_with"/>
+        <list name="restricted_to"/>
+        <list name="$config_dependencies"/>
+        <list name="package_metadata"/>
+        <list name="aspect_hints"/>
+        <list name="toolchains"/>
+        <dict name="exec_properties"/>
+        <list name="exec_compatible_with"/>
+        <dict name="exec_group_compatible_with"/>
+        <list name="target_compatible_with"/>
+        <string name="s" value="hello &lt;world&gt; &amp; &quot;q&quot; = 'x'&#10;&#9;tab Ã©"/>
+        <int name="i" value="-7"/>
+        <boolean name="b" value="true"/>
+        <label name="lbl" value="//pkg:data.txt"/>
+        <list name="lbls">
+            <label value="//pkg:data.txt"/>
+            <label value="//other:thing"/>
+        </list>
+        <label name="tool" value="//pkg:tool.sh"/>
+        <list name="strs">
+            <string value="a"/>
+            <string value="b"/>
+        </list>
+        <list name="ints">
+            <int value="1"/>
+            <int value="-2"/>
+            <int value="2147483647"/>
+        </list>
+        <dict name="sd">
+            <pair>
+                <string value="k1"/>
+                <string value="v1"/>
+            </pair>
+            <pair>
+                <string value="k2"/>
+                <string value="v2"/>
+            </pair>
+        </dict>
+        <dict name="sld">
+            <pair>
+                <string value="k"/>
+                <list>
+                    <string value="x"/>
+                    <string value="y"/>
+                </list>
+            </pair>
+        </dict>
+        <dict name="lksd">
+            <pair>
+                <label value="//pkg:data.txt"/>
+                <string value="d"/>
+            </pair>
+        </dict>
+        <dict name="skld">
+            <pair>
+                <string value="key"/>
+                <label value="//pkg:data.txt"/>
+            </pair>
+        </dict>
+        <output name="out" value="//pkg:single.out"/>
+        <list name="outs">
+            <output value="//pkg:multi1.out"/>
+            <output value="//pkg:multi2.out"/>
+        </list>
+        <label name="$private" value="//other:thing"/>
+        <rule-input name="//other:thing"/>
+        <rule-input name="//pkg:data.txt"/>
+        <rule-input name="//pkg:tool.sh"/>
+        <rule-output name="//pkg:single.out"/>
+        <rule-output name="//pkg:multi1.out"/>
+        <rule-output name="//pkg:multi2.out"/>
+        <rule-default-setting name="feat_a"/>
+        <rule-default-setting name="-feat_b"/>
+    </rule>
+    <rule class="kitchen_bin" location="pkg/BUILD.bazel" name="//pkg:bin">
+        <string name="name" value="bin"/>
+        <string name="expect_failure" value=""/>
+        <list name="visibility">
+            <label value="//vis:friends"/>
+        </list>
+        <list name="transitive_configs"/>
+        <string name="deprecation"/>
+        <list name="tags"/>
+        <string name="generator_name" value=""/>
+        <string name="generator_function" value=""/>
+        <string name="generator_location" value=""/>
+        <boolean name="testonly" value="false"/>
+        <list name="features"/>
+        <list name=":action_listener"/>
+        <list name="compatible_with"/>
+        <list name="restricted_to"/>
+        <list name="$config_dependencies"/>
+        <list name="package_metadata"/>
+        <list name="aspect_hints"/>
+        <list name="toolchains"/>
+        <dict name="exec_properties"/>
+        <list name="exec_compatible_with"/>
+        <dict name="exec_group_compatible_with"/>
+        <list name="target_compatible_with"/>
+        <list name="args"/>
+        <list name="output_licenses"/>
+        <boolean name="$is_executable" value="true"/>
+        <list name="srcs">
+            <label value="//pkg:tool.sh"/>
+        </list>
+        <rule-input name="//pkg:tool.sh"/>
+        <rule-default-setting name="feat_a"/>
+        <rule-default-setting name="-feat_b"/>
+    </rule>
+    <source-file location="pkg/data.txt" name="//pkg:data.txt">
+        <visibility-label name="//visibility:public"/>
+    </source-file>
+    <rule class="genrule" location="pkg/BUILD.bazel" name="//pkg:gen">
+        <string name="name" value="gen"/>
+        <list name="visibility">
+            <label value="//vis:friends"/>
+        </list>
+        <list name="transitive_configs"/>
+        <string name="deprecation"/>
+        <list name="tags"/>
+        <string name="generator_name" value=""/>
+        <string name="generator_function" value=""/>
+        <string name="generator_location" value=""/>
+        <boolean name="testonly" value="false"/>
+        <list name="features"/>
+        <list name=":action_listener"/>
+        <list name="compatible_with"/>
+        <list name="restricted_to"/>
+        <list name="$config_dependencies"/>
+        <list name="package_metadata"/>
+        <list name="aspect_hints"/>
+        <license name="licenses">
+            <list name="exceptions"/>
+            <list name="license-types">
+                <string value="NOTICE"/>
+            </list>
+        </license>
+        <list name="distribs"/>
+        <list name="target_compatible_with"/>
+        <dict name="exec_properties"/>
+        <list name="exec_compatible_with"/>
+        <dict name="exec_group_compatible_with"/>
+        <list name="toolchains"/>
+        <list name="srcs">
+            <label value="//pkg:data.txt"/>
+        </list>
+        <list name="tools">
+            <label value="//pkg:tool"/>
+        </list>
+        <list name="outs">
+            <output value="//pkg:gen.out"/>
+            <output value="//pkg:gen2.out"/>
+        </list>
+        <string name="cmd" value="cp $(location data.txt) $(location gen.out) &amp;&amp; echo &gt; $(location gen2.out)"/>
+        <string name="cmd_bash" value=""/>
+        <string name="cmd_bat" value=""/>
+        <string name="cmd_ps" value=""/>
+        <boolean name="output_to_bindir" value="false"/>
+        <boolean name="local" value="false"/>
+        <string name="message" value="generating"/>
+        <list name="output_licenses"/>
+        <boolean name="executable" value="false"/>
+        <boolean name="$is_executable" value="false"/>
+        <boolean name="heuristic_label_expansion" value="false"/>
+        <label name="$genrule_setup" value="@bazel_tools//tools/genrule:genrule-setup.sh"/>
+        <tristate name="stamp" value="YES"/>
+        <rule-input name="//pkg:data.txt"/>
+        <rule-input name="//pkg:tool"/>
+        <rule-input name="@bazel_tools//tools/genrule:genrule-setup.sh"/>
+        <rule-output name="//pkg:gen.out"/>
+        <rule-output name="//pkg:gen2.out"/>
+        <rule-default-setting name="feat_a"/>
+        <rule-default-setting name="-feat_b"/>
+    </rule>
+    <generated-file generating-rule="//pkg:gen" location="pkg/BUILD.bazel" name="//pkg:gen.out"/>
+    <generated-file generating-rule="//pkg:gen" location="pkg/BUILD.bazel" name="//pkg:gen2.out"/>
+    <rule class="test_suite" location="pkg/BUILD.bazel" name="//pkg:implicit_suite">
+        <string name="name" value="implicit_suite"/>
+        <list name="visibility">
+            <label value="//vis:friends"/>
+        </list>
+        <list name="transitive_configs"/>
+        <string name="deprecation"/>
+        <list name="tags"/>
+        <string name="generator_name" value=""/>
+        <string name="generator_function" value=""/>
+        <string name="generator_location" value=""/>
+        <boolean name="testonly" value="true"/>
+        <list name="features"/>
+        <list name=":action_listener"/>
+        <list name="compatible_with"/>
+        <list name="restricted_to"/>
+        <list name="$config_dependencies"/>
+        <list name="package_metadata"/>
+        <list name="aspect_hints"/>
+        <license name="licenses">
+            <list name="exceptions"/>
+            <list name="license-types">
+                <string value="NOTICE"/>
+            </list>
+        </license>
+        <list name="distribs"/>
+        <list name="target_compatible_with"/>
+        <list name="tests"/>
+        <list name="$implicit_tests">
+            <label value="//pkg:unit_test"/>
+        </list>
+        <rule-input name="//pkg:unit_test"/>
+        <rule-default-setting name="feat_a"/>
+        <rule-default-setting name="-feat_b"/>
+    </rule>
+    <generated-file generating-rule="//pkg:all_types" location="pkg/BUILD.bazel" name="//pkg:multi1.out"/>
+    <generated-file generating-rule="//pkg:all_types" location="pkg/BUILD.bazel" name="//pkg:multi2.out"/>
+    <rule class="filegroup" location="pkg/BUILD.bazel" name="//pkg:pair">
+        <string name="name" value="pair"/>
+        <list name="visibility">
+            <label value="//vis:friends"/>
+        </list>
+        <list name="transitive_configs"/>
+        <string name="deprecation"/>
+        <list name="tags"/>
+        <string name="generator_name" value="pair"/>
+        <string name="generator_function" value="legacy_pair"/>
+        <string name="generator_location" value="pkg/BUILD.bazel:142:12"/>
+        <boolean name="testonly" value="false"/>
+        <list name="features"/>
+        <list name=":action_listener"/>
+        <list name="compatible_with"/>
+        <list name="restricted_to"/>
+        <list name="$config_dependencies"/>
+        <list name="package_metadata"/>
+        <list name="aspect_hints"/>
+        <license name="licenses">
+            <list name="exceptions"/>
+            <list name="license-types">
+                <string value="NOTICE"/>
+            </list>
+        </license>
+        <list name="distribs"/>
+        <list name="target_compatible_with"/>
+        <list name="srcs">
+            <label value="//pkg:pair_a"/>
+        </list>
+        <string name="output_group" value=""/>
+        <list name="data"/>
+        <list name="output_licenses"/>
+        <rule-input name="//pkg:pair_a"/>
+        <rule-default-setting name="feat_a"/>
+        <rule-default-setting name="-feat_b"/>
+    </rule>
+    <rule class="kitchen" location="pkg/BUILD.bazel" name="//pkg:pair_a">
+        <string name="name" value="pair_a"/>
+        <string name="expect_failure" value=""/>
+        <list name="visibility">
+            <label value="//vis:friends"/>
+        </list>
+        <list name="transitive_configs"/>
+        <string name="deprecation"/>
+        <list name="tags"/>
+        <string name="generator_name" value="pair"/>
+        <string name="generator_function" value="legacy_pair"/>
+        <string name="generator_location" value="pkg/BUILD.bazel:142:12"/>
+        <boolean name="testonly" value="false"/>
+        <list name="features"/>
+        <list name=":action_listener"/>
+        <list name="compatible_with"/>
+        <list name="restricted_to"/>
+        <list name="$config_dependencies"/>
+        <list name="package_metadata"/>
+        <list name="aspect_hints"/>
+        <list name="toolchains"/>
+        <dict name="exec_properties"/>
+        <list name="exec_compatible_with"/>
+        <dict name="exec_group_compatible_with"/>
+        <list name="target_compatible_with"/>
+        <string name="s" value="a"/>
+        <int name="i" value="3"/>
+        <boolean name="b" value="false"/>
+        <label name="lbl"/>
+        <list name="lbls"/>
+        <label name="tool"/>
+        <list name="strs"/>
+        <list name="ints">
+            <int value="4"/>
+        </list>
+        <dict name="sd"/>
+        <dict name="sld"/>
+        <dict name="lksd"/>
+        <dict name="skld"/>
+        <output name="out"/>
+        <list name="outs"/>
+        <label name="$private" value="//other:thing"/>
+        <rule-input name="//other:thing"/>
+        <rule-default-setting name="feat_a"/>
+        <rule-default-setting name="-feat_b"/>
+    </rule>
+    <rule class="kitchen" location="pkg/BUILD.bazel" name="//pkg:plain">
+        <string name="name" value="plain"/>
+        <string name="expect_failure" value=""/>
+        <list name="visibility">
+            <label value="//visibility:private"/>
+        </list>
+        <list name="transitive_configs"/>
+        <string name="deprecation"/>
+        <list name="tags"/>
+        <string name="generator_name" value=""/>
+        <string name="generator_function" value=""/>
+        <string name="generator_location" value=""/>
+        <boolean name="testonly" value="false"/>
+        <list name="features"/>
+        <list name=":action_listener"/>
+        <list name="compatible_with"/>
+        <list name="restricted_to"/>
+        <list name="$config_dependencies"/>
+        <list name="package_metadata"/>
+        <list name="aspect_hints"/>
+        <list name="toolchains"/>
+        <dict name="exec_properties"/>
+        <list name="exec_compatible_with"/>
+        <dict name="exec_group_compatible_with"/>
+        <list name="target_compatible_with"/>
+        <string name="s" value="dflt"/>
+        <int name="i" value="3"/>
+        <boolean name="b" value="false"/>
+        <label name="lbl"/>
+        <list name="lbls"/>
+        <label name="tool"/>
+        <list name="strs"/>
+        <list name="ints">
+            <int value="4"/>
+        </list>
+        <dict name="sd"/>
+        <dict name="sld"/>
+        <dict name="lksd"/>
+        <dict name="skld"/>
+        <output name="out"/>
+        <list name="outs"/>
+        <label name="$private" value="//other:thing"/>
+        <rule-input name="//other:thing"/>
+        <rule-default-setting name="feat_a"/>
+        <rule-default-setting name="-feat_b"/>
+    </rule>
+    <rule class="kitchen" location="pkg/BUILD.bazel" name="//pkg:selects">
+        <string name="name" value="selects"/>
+        <string name="expect_failure" value=""/>
+        <list name="visibility">
+            <label value="//vis:friends"/>
+        </list>
+        <list name="transitive_configs"/>
+        <string name="deprecation"/>
+        <list name="tags"/>
+        <string name="generator_name" value=""/>
+        <string name="generator_function" value=""/>
+        <string name="generator_location" value=""/>
+        <boolean name="testonly" value="false"/>
+        <list name="features"/>
+        <list name=":action_listener"/>
+        <list name="compatible_with"/>
+        <list name="restricted_to"/>
+        <list name="$config_dependencies">
+            <label value="//conf:fast"/>
+            <label value="//conf:slow"/>
+        </list>
+        <list name="package_metadata"/>
+        <list name="aspect_hints"/>
+        <list name="toolchains"/>
+        <dict name="exec_properties"/>
+        <list name="exec_compatible_with"/>
+        <dict name="exec_group_compatible_with"/>
+        <list name="target_compatible_with"/>
+        <string configurable="yes" name="s"/>
+        <int configurable="yes" name="i"/>
+        <boolean name="b" value="true"/>
+        <label name="lbl" value="//pkg:data.txt"/>
+        <list name="lbls">
+            <label value="//pkg:data.txt"/>
+            <label value="//other:thing"/>
+            <label value="//pkg:tool.sh"/>
+        </list>
+        <label name="tool"/>
+        <list name="strs">
+            <string value="f"/>
+            <string value="s"/>
+        </list>
+        <list name="ints">
+            <int value="7"/>
+        </list>
+        <dict name="sd">
+            <pair>
+                <string value="a"/>
+                <string value="1"/>
+            </pair>
+            <pair>
+                <string value="b"/>
+                <string value="2"/>
+            </pair>
+        </dict>
+        <dict name="sld"/>
+        <dict name="lksd"/>
+        <dict name="skld"/>
+        <output name="out"/>
+        <list name="outs"/>
+        <label name="$private" value="//other:thing"/>
+        <rule-input name="//conf:fast"/>
+        <rule-input name="//conf:slow"/>
+        <rule-input name="//other:thing"/>
+        <rule-input name="//pkg:data.txt"/>
+        <rule-input name="//pkg:tool.sh"/>
+        <rule-default-setting name="feat_a"/>
+        <rule-default-setting name="-feat_b"/>
+    </rule>
+    <generated-file generating-rule="//pkg:all_types" location="pkg/BUILD.bazel" name="//pkg:single.out"/>
+    <rule class="test_suite" location="pkg/BUILD.bazel" name="//pkg:suite">
+        <string name="name" value="suite"/>
+        <list name="visibility">
+            <label value="//vis:friends"/>
+        </list>
+        <list name="transitive_configs"/>
+        <string name="deprecation"/>
+        <list name="tags"/>
+        <string name="generator_name" value=""/>
+        <string name="generator_function" value=""/>
+        <string name="generator_location" value=""/>
+        <boolean name="testonly" value="true"/>
+        <list name="features"/>
+        <list name=":action_listener"/>
+        <list name="compatible_with"/>
+        <list name="restricted_to"/>
+        <list name="$config_dependencies"/>
+        <list name="package_metadata"/>
+        <list name="aspect_hints"/>
+        <license name="licenses">
+            <list name="exceptions"/>
+            <list name="license-types">
+                <string value="NOTICE"/>
+            </list>
+        </license>
+        <list name="distribs"/>
+        <list name="target_compatible_with"/>
+        <list name="tests">
+            <label value="//pkg:unit_test"/>
+        </list>
+        <list name="$implicit_tests"/>
+        <rule-input name="//pkg:unit_test"/>
+        <rule-default-setting name="feat_a"/>
+        <rule-default-setting name="-feat_b"/>
+    </rule>
+    <rule class="filegroup" location="pkg/BUILD.bazel" name="//pkg:tool">
+        <string name="name" value="tool"/>
+        <list name="visibility">
+            <label value="//vis:friends"/>
+        </list>
+        <list name="transitive_configs"/>
+        <string name="deprecation"/>
+        <list name="tags"/>
+        <string name="generator_name" value=""/>
+        <string name="generator_function" value=""/>
+        <string name="generator_location" value=""/>
+        <boolean name="testonly" value="false"/>
+        <list name="features"/>
+        <list name=":action_listener"/>
+        <list name="compatible_with"/>
+        <list name="restricted_to"/>
+        <list name="$config_dependencies"/>
+        <list name="package_metadata"/>
+        <list name="aspect_hints"/>
+        <license name="licenses">
+            <list name="exceptions"/>
+            <list name="license-types">
+                <string value="NOTICE"/>
+            </list>
+        </license>
+        <list name="distribs"/>
+        <list name="target_compatible_with"/>
+        <list name="srcs">
+            <label value="//pkg:tool.sh"/>
+        </list>
+        <string name="output_group" value=""/>
+        <list name="data">
+            <label value="//pkg:data.txt"/>
+        </list>
+        <list name="output_licenses"/>
+        <rule-input name="//pkg:data.txt"/>
+        <rule-input name="//pkg:tool.sh"/>
+        <rule-default-setting name="feat_a"/>
+        <rule-default-setting name="-feat_b"/>
+    </rule>
+    <source-file location="pkg/tool.sh" name="//pkg:tool.sh">
+        <package-group name="//vis:friends"/>
+        <visibility-label name="//vis:friends"/>
+    </source-file>
+    <rule class="kitchen_test" location="pkg/BUILD.bazel" name="//pkg:unit_test">
+        <string name="name" value="unit_test"/>
+        <string name="expect_failure" value=""/>
+        <list name="visibility">
+            <label value="//vis:friends"/>
+        </list>
+        <list name="transitive_configs"/>
+        <string name="deprecation"/>
+        <list name="tags"/>
+        <string name="generator_name" value=""/>
+        <string name="generator_function" value=""/>
+        <string name="generator_location" value=""/>
+        <boolean name="testonly" value="true"/>
+        <list name="features"/>
+        <list name=":action_listener"/>
+        <list name="compatible_with"/>
+        <list name="restricted_to"/>
+        <list name="$config_dependencies"/>
+        <list name="package_metadata"/>
+        <list name="aspect_hints"/>
+        <list name="toolchains"/>
+        <dict name="exec_properties"/>
+        <list name="exec_compatible_with"/>
+        <dict name="exec_group_compatible_with"/>
+        <list name="target_compatible_with"/>
+        <string name="size" value="small"/>
+        <string name="timeout" value="short"/>
+        <boolean name="flaky" value="false"/>
+        <int name="shard_count" value="-1"/>
+        <boolean name="local" value="false"/>
+        <list name="args"/>
+        <label name="$test_wrapper" value="@bazel_tools//tools/test:test_wrapper"/>
+        <label name="$xml_writer" value="@bazel_tools//tools/test:xml_writer"/>
+        <list name="$test_runtime">
+            <label value="@bazel_tools//tools/test:runtime"/>
+        </list>
+        <label name="$test_setup_script" value="@bazel_tools//tools/test:test_setup"/>
+        <label name="$xml_generator_script" value="@bazel_tools//tools/test:test_xml_generator"/>
+        <label name="$collect_coverage_script" value="@bazel_tools//tools/test:collect_coverage"/>
+        <label name=":coverage_support" value="@bazel_tools//tools/test:coverage_support"/>
+        <label name=":coverage_report_generator" value="@bazel_tools//tools/test:coverage_report_generator"/>
+        <label name=":run_under_exec_config"/>
+        <label name=":run_under_target_config"/>
+        <boolean name="$is_executable" value="true"/>
+        <list name="srcs">
+            <label value="//pkg:data.txt"/>
+        </list>
+        <rule-input name="//pkg:data.txt"/>
+        <rule-input name="@bazel_tools//tools/test:collect_coverage"/>
+        <rule-input name="@bazel_tools//tools/test:coverage_report_generator"/>
+        <rule-input name="@bazel_tools//tools/test:coverage_support"/>
+        <rule-input name="@bazel_tools//tools/test:runtime"/>
+        <rule-input name="@bazel_tools//tools/test:test_setup"/>
+        <rule-input name="@bazel_tools//tools/test:test_wrapper"/>
+        <rule-input name="@bazel_tools//tools/test:test_xml_generator"/>
+        <rule-input name="@bazel_tools//tools/test:xml_writer"/>
+        <rule-default-setting name="feat_a"/>
+        <rule-default-setting name="-feat_b"/>
+    </rule>
+    <source-file location="vis/BUILD.bazel" name="//vis:BUILD.bazel" package_contains_errors="false">
+        <visibility-label name="//visibility:private"/>
+    </source-file>
+    <package-group location="vis/BUILD.bazel" name="//vis:friends">
+        <list name="includes">
+            <label value="//vis:more"/>
+        </list>
+        <list name="packages">
+            <string value="//other"/>
+            <string value="//pkg/..."/>
+            <string value="-//pkg/secret"/>
+        </list>
+    </package-group>
+    <package-group location="vis/BUILD.bazel" name="//vis:more">
+        <list name="includes"/>
+        <list name="packages">
+            <string value="public"/>
+        </list>
+    </package-group>
+</query>

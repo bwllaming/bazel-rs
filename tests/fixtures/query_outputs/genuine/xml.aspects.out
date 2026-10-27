@@ -1,0 +1,14 @@
+<?xml version="1.1" encoding="UTF-8" standalone="no"?>
+<query version="2">
+    <rule class="aspected" location="asp/BUILD.bazel:11:9" name="//asp:matched">
+        <string name="name" value="matched"/>
+        <list name="deps">
+            <label value="//asp:plain"/>
+            <label value="//asp:advertising"/>
+        </list>
+        <rule-input name="//asp:advertising"/>
+        <rule-input name="//asp:plain"/>
+        <rule-input name="//asp:needs_tool"/>
+        <rule-input name="//asp:open_tool"/>
+    </rule>
+</query>

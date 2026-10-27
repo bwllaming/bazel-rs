@@ -1,0 +1,7 @@
+filegroup rule //other:thing
+kitchen rule //sky:a
+kitchen rule //sky:b
+kitchen rule //sky:c
+kitchen rule //sky:lonely
+filegroup rule //sky/sub:p
+kitchen rule //sky/sub:p_a

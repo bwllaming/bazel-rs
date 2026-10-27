@@ -97,6 +97,65 @@ impl GroupContents {
             )
             .collect()
     }
+    /// PackageGroupContents.packageStrings(includeDoubleSlash=true)
+    /// (packages/PackageSpecification.java:610-634): single-package
+    /// positives, all-beneath positives, then the negatives the same way,
+    /// then `public`, `private` and `-public`; each kind in declaration
+    /// order, distinct.
+    pub(crate) fn package_strings(&self) -> Vec<String> {
+        let render = |repository: &str, package: &str, subtree: bool| {
+            let repo = if repository.is_empty() {
+                String::new()
+            } else {
+                format!("@@{repository}")
+            };
+            let suffix = match (subtree, package.is_empty()) {
+                (true, true) => "...",
+                (true, false) => "/...",
+                _ => "",
+            };
+            format!("{repo}//{package}{suffix}")
+        };
+        let mut out: Vec<String> = Vec::new();
+        let mut push = |text: String| {
+            if !out.contains(&text) {
+                out.push(text);
+            }
+        };
+        for (specs, prefix) in [(&self.positives, ""), (&self.negatives, "-")] {
+            for wanted in [false, true] {
+                for spec in specs.iter() {
+                    if let Specification::Package {
+                        repository,
+                        package,
+                        subtree,
+                    } = spec
+                        && *subtree == wanted
+                    {
+                        push(format!("{prefix}{}", render(repository, package, *subtree)));
+                    }
+                }
+            }
+        }
+        let has = |specs: &[Specification], public: bool| {
+            specs.iter().any(|spec| match spec {
+                Specification::Public => public,
+                Specification::Private => !public,
+                _ => false,
+            })
+        };
+        if has(&self.positives, true) {
+            push("public".to_owned());
+        }
+        if has(&self.positives, false) {
+            push("private".to_owned());
+        }
+        if has(&self.negatives, true) {
+            push("-public".to_owned());
+        }
+        out
+    }
+
     /// Reserve retained copies in the graph owner's cumulative allocation budget.
     pub(crate) fn charge(&self, budget: &mut HostBudget) -> Result<(), String> {
         budget.node()?;

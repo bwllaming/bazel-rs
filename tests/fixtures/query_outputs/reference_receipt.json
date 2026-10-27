@@ -1,0 +1,568 @@
+{
+ "bazel": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+ "bazel_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+ "captured": "2026-10-27T06:38:27.495872+00:00",
+ "cases": {
+  "jsonproto.noflatten": {
+   "args": [
+    "--output=streamed_jsonproto",
+    "--noproto:flatten_selects",
+    "--relative_locations",
+    "//pkg:selects"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 5924,
+   "stdout_sha256": "7cf61c209dc19b4a2e7f6267faeeb67204a59dd416a20e66345e50200ed3b840"
+  },
+  "proto.all": {
+   "args": [
+    "--output=proto",
+    "--relative_locations",
+    "//pkg:* + //vis:* + //conf:* + //other:*"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 14866,
+   "stdout_sha256": "336dc3c1732eced0b3ef453d0fcbe0a7130942ca43a4f99b8101a1dc142c7c8d"
+  },
+  "proto.aspects": {
+   "args": [
+    "--output=streamed_jsonproto",
+    "--relative_locations",
+    "//asp:unmatched + //asp:matched"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 5521,
+   "stdout_sha256": "7e329bff5438ce4da0f10b694fb3c0dd6780330e8a3ad91cb9de6b8d5b455c0c"
+  },
+  "proto.aspects_off": {
+   "args": [
+    "--output=streamed_jsonproto",
+    "--aspect_deps=off",
+    "--noproto:default_values",
+    "--relative_locations",
+    "//asp:matched"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 529,
+   "stdout_sha256": "37eb428fe80cebd0303b99a690b5bf0d4894b32c5be0cfa717bfe96c76a4b6f1"
+  },
+  "proto.aspects_source": {
+   "args": [
+    "--output=streamed_jsonproto",
+    "--proto:include_attribute_source_aspects",
+    "--noproto:default_values",
+    "--relative_locations",
+    "//asp:matched"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 937,
+   "stdout_sha256": "bb17229dd05cbd21a6c5443911618046778cc723761ea3a9ace1934484462c33"
+  },
+  "proto.attr_hash": {
+   "args": [
+    "--output=streamed_jsonproto",
+    "--proto:include_synthetic_attribute_hash",
+    "--relative_locations",
+    "//pkg:plain + //pkg:gen + //sky:a"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 11899,
+   "stdout_sha256": "188087ddc8fdd732c495527b5d15f914a1ff7ffe79bed3205c995caad2febd7d"
+  },
+  "proto.attrs": {
+   "args": [
+    "--output=proto",
+    "--proto:output_rule_attrs=s,lbls,tags",
+    "--relative_locations",
+    "//pkg:all"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 2615,
+   "stdout_sha256": "5af8fed5d76ddcb002ed559e63e3bf2f0b0086319dd3d26b5df68c0377b4203a"
+  },
+  "proto.attrs_empty": {
+   "args": [
+    "--output=proto",
+    "--proto:output_rule_attrs=",
+    "--noproto:rule_inputs_and_outputs",
+    "--noproto:locations",
+    "//pkg:all"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 1162,
+   "stdout_sha256": "33112780e563ca908ca294f7bf81b90e7dd00b360de3d89dbcbd55ab5c52b816"
+  },
+  "proto.deps_order_full": {
+   "args": [
+    "--output=streamed_jsonproto",
+    "--order_output=full",
+    "--noproto:default_values",
+    "--relative_locations",
+    "deps(//sky:c)"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 2174,
+   "stdout_sha256": "d5b7bc0e376e651865c9e318c4c83c28236a219825bd24958407685fee02b856"
+  },
+  "proto.empty": {
+   "args": [
+    "--output=proto",
+    "//pkg:all except //pkg:all"
+   ],
+   "events": [
+    "INFO: Empty results"
+   ],
+   "exit_code": 0,
+   "stdout_bytes": 0,
+   "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "proto.labels_consistent": {
+   "args": [
+    "--output=streamed_jsonproto",
+    "--consistent_labels",
+    "--noproto:default_values",
+    "--relative_locations",
+    "//pkg:gen"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 1158,
+   "stdout_sha256": "6742b25d683637bfdd6c929ac86d94de8c3634cbc14b34bec2e4ba7f99945670"
+  },
+  "proto.loads": {
+   "args": [
+    "--output=streamed_jsonproto",
+    "--relative_locations",
+    "buildfiles(//pkg:all)"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 683,
+   "stdout_sha256": "1412e08f5394709b2c1c7d7b8f49c411f6bac337f6976d49259ca3fbb6af2d35"
+  },
+  "proto.nodefaults": {
+   "args": [
+    "--output=proto",
+    "--noproto:default_values",
+    "--relative_locations",
+    "//pkg:all"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 4042,
+   "stdout_sha256": "8f9cec933e5033eb17aa611e6a7af8ce0bf3f38b8b45128e28e280655726d767"
+  },
+  "proto.noflatten": {
+   "args": [
+    "--output=proto",
+    "--noproto:flatten_selects",
+    "--relative_locations",
+    "//pkg:selects + //pkg:all_types"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 3055,
+   "stdout_sha256": "6b7abd8ecdbfeabf922614dc1d466c0a45d97e0b1f07e877c1540259f18bd8a3"
+  },
+  "proto.notool": {
+   "args": [
+    "--output=streamed_jsonproto",
+    "--notool_deps",
+    "--noimplicit_deps",
+    "--relative_locations",
+    "//pkg:gen + //sky:c + //pkg:unit_test"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 12456,
+   "stdout_sha256": "d2fab5761e507e2022e3d9b44704358d6a17287d38287109a9baff77e9b1a486"
+  },
+  "proto.stacks": {
+   "args": [
+    "--output=streamed_jsonproto",
+    "--proto:instantiation_stack",
+    "--proto:definition_stack",
+    "--relative_locations",
+    "//pkg:pair_a + //pkg:gen + //pkg:plain"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 11969,
+   "stdout_sha256": "8657b5c27db20de4543dc35be8b2eb0f962e088d83b2c0a3d592e7257ea59a76"
+  },
+  "sky.allrdeps": {
+   "args": [
+    "--universe_scope=//sky/...,//other/...",
+    "allrdeps(//other:thing)"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 77,
+   "stdout_sha256": "737a147dde01e2749a8c4b80eef41467fa3335630364cb3eb0d1e9a5961bed45"
+  },
+  "sky.allrdeps_depth": {
+   "args": [
+    "--universe_scope=//sky/...,//other/...",
+    "allrdeps(//other:thing, 1)"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 65,
+   "stdout_sha256": "23d869aa124ca3446c1d869e31fa15fac663f8673ea3d1451481fdae39a517d5"
+  },
+  "sky.allrdeps_no": {
+   "args": [
+    "--universe_scope=//sky/...,//other/...",
+    "--order_output=no",
+    "allrdeps(//sky:b)"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 24,
+   "stdout_sha256": "21b23bcce68a604b7da7e6a54a735cab34037cbf0c3c7409315f6c3dd743b64e"
+  },
+  "sky.bad_universe": {
+   "args": [
+    "--universe_scope=//nope/...",
+    "allrdeps(//sky:b)"
+   ],
+   "events": [
+    "ERROR: Evaluation of subquery \"//sky:b\" failed (did you want to use --keep_going?): no such package 'sky': BUILD file not found on package path"
+   ],
+   "exit_code": 7,
+   "stdout_bytes": 0,
+   "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "sky.deps": {
+   "args": [
+    "--universe_scope=//sky/...",
+    "deps(//sky:c)"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 56,
+   "stdout_sha256": "eaf954f63ab327e2caf605cc334c4c4e05de86b0159e94d06a1e29bb1783c907"
+  },
+  "sky.full_falls_back": {
+   "args": [
+    "--universe_scope=//sky/...",
+    "--order_output=full",
+    "allrdeps(//sky:b)"
+   ],
+   "events": [
+    "ERROR: Error while parsing 'allrdeps(//sky:b)': unknown function 'allrdeps' at 'allrdeps ( //sky:b'; expected one of ['allpaths', 'attr', 'buildfiles', 'deps', 'executables', 'filter', 'kind', 'labels', 'loadfiles', 'rdeps', 'same_pkg_direct_rdeps', 'siblings', 'some', 'somepath', 'tests', 'visible']"
+   ],
+   "exit_code": 2,
+   "stdout_bytes": 0,
+   "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "sky.graph_falls_back": {
+   "args": [
+    "--universe_scope=//sky/...",
+    "--output=graph",
+    "rdeps(//sky/..., //sky:b)"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 151,
+   "stdout_sha256": "7236d7a367c406dab5f87f0901e1566e1525ffce67984b71aeb46d9d6c6ddb75"
+  },
+  "sky.infer": {
+   "args": [
+    "--infer_universe_scope",
+    "rdeps(//sky/..., //other:thing)"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 77,
+   "stdout_sha256": "737a147dde01e2749a8c4b80eef41467fa3335630364cb3eb0d1e9a5961bed45"
+  },
+  "sky.infer_allrdeps": {
+   "args": [
+    "--infer_universe_scope",
+    "allrdeps(//sky:b) + //sky:lonely"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 21,
+   "stdout_sha256": "df2d76c201fb2456f009a6fc99303cb35dd3da4dea41bee1f0bdc0128bf8aeba"
+  },
+  "sky.keep_going_outside": {
+   "args": [
+    "--universe_scope=//other/...",
+    "--keep_going",
+    "//sky:c + //other:thing"
+   ],
+   "events": [
+    "ERROR: Evaluation of query \"//sky:c\" failed: no such package 'sky': BUILD file not found on package path",
+    "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+   ],
+   "exit_code": 3,
+   "stdout_bytes": 14,
+   "stdout_sha256": "a7e0c03fedbac6f5ca263e9752ec1af94a7a3416e910f61587b30c54421c84b1"
+  },
+  "sky.label_kind": {
+   "args": [
+    "--universe_scope=//sky/...",
+    "--output=label_kind",
+    "allrdeps(//other:thing)"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 172,
+   "stdout_sha256": "e32fbfca731ef43697dbf237d2224b6681e04e2b72418eb515684795ccad0615"
+  },
+  "sky.no_universe_allrdeps": {
+   "args": [
+    "allrdeps(//sky:b)"
+   ],
+   "events": [
+    "ERROR: Error while parsing 'allrdeps(//sky:b)': unknown function 'allrdeps' at 'allrdeps ( //sky:b'; expected one of ['allpaths', 'attr', 'buildfiles', 'deps', 'executables', 'filter', 'kind', 'labels', 'loadfiles', 'rdeps', 'same_pkg_direct_rdeps', 'siblings', 'some', 'somepath', 'tests', 'visible']"
+   ],
+   "exit_code": 2,
+   "stdout_bytes": 0,
+   "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "sky.no_universe_rbuildfiles": {
+   "args": [
+    "rbuildfiles(rules/common.bzl)"
+   ],
+   "events": [
+    "ERROR: Error while parsing 'rbuildfiles(rules/common.bzl)': unknown function 'rbuildfiles' at 'rbuildfiles ( rules/common.bzl'; expected one of ['allpaths', 'attr', 'buildfiles', 'deps', 'executables', 'filter', 'kind', 'labels', 'loadfiles', 'rdeps', 'same_pkg_direct_rdeps', 'siblings', 'some', 'somepath', 'tests', 'visible']"
+   ],
+   "exit_code": 2,
+   "stdout_bytes": 0,
+   "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "sky.outside": {
+   "args": [
+    "--universe_scope=//other/...",
+    "deps(//sky:c)"
+   ],
+   "events": [
+    "ERROR: Evaluation of subquery \"//sky:c\" failed (did you want to use --keep_going?): no such package 'sky': BUILD file not found on package path"
+   ],
+   "exit_code": 7,
+   "stdout_bytes": 0,
+   "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "sky.outside_allrdeps": {
+   "args": [
+    "--universe_scope=//other/...",
+    "allrdeps(//sky:c)"
+   ],
+   "events": [
+    "ERROR: Evaluation of subquery \"//sky:c\" failed (did you want to use --keep_going?): no such package 'sky': BUILD file not found on package path"
+   ],
+   "exit_code": 7,
+   "stdout_bytes": 0,
+   "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "sky.proto": {
+   "args": [
+    "--universe_scope=//sky/...",
+    "--output=streamed_jsonproto",
+    "--noproto:default_values",
+    "--relative_locations",
+    "allrdeps(//sky:b)"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 1540,
+   "stdout_sha256": "a26cbc3c0b7c77dd7f9cb41892ea986fdbe64e76e369865b4d346dc7e0810188"
+  },
+  "sky.rbuildfiles": {
+   "args": [
+    "--universe_scope=//sky/...,//other/...",
+    "rbuildfiles(rules/common.bzl)"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 40,
+   "stdout_sha256": "9f8649f5b49f1bb11a1ee0ee6d39f9be27036e24a72f09a6f646da72dea214c9"
+  },
+  "sky.rbuildfiles_macros": {
+   "args": [
+    "--universe_scope=//sky/...",
+    "rbuildfiles(rules/macros.bzl, other/BUILD.bazel)"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 42,
+   "stdout_sha256": "2c8941c443ecb1009f5abbf850440957bbc7a5bb08cbb0b6e7d786d30e5b016f"
+  },
+  "sky.rbuildfiles_none": {
+   "args": [
+    "--universe_scope=//sky/...",
+    "rbuildfiles(nope.bzl)"
+   ],
+   "events": [
+    "INFO: Empty results"
+   ],
+   "exit_code": 0,
+   "stdout_bytes": 0,
+   "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "sky.rdeps_notool": {
+   "args": [
+    "--universe_scope=//sky/...",
+    "--notool_deps",
+    "rdeps(//sky/..., //sky:b)"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 24,
+   "stdout_sha256": "0a6fc6dd81dddf935a7da474f8ca8fe20330480030f529e0db918298fb99a338"
+  },
+  "sky.rdeps_sub": {
+   "args": [
+    "--universe_scope=//sky/...",
+    "rdeps(//sky:c, //other:thing)"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 38,
+   "stdout_sha256": "05e2629a43afde1272e1e21ce72f782c263bf7cee56682580909369996d18a06"
+  },
+  "sky.rdeps_universe": {
+   "args": [
+    "--universe_scope=//sky/...",
+    "rdeps(//sky/..., //sky:b)"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 24,
+   "stdout_sha256": "0a6fc6dd81dddf935a7da474f8ca8fe20330480030f529e0db918298fb99a338"
+  },
+  "sky.siblings_buildfiles": {
+   "args": [
+    "--universe_scope=//sky/...",
+    "buildfiles(//sky:a) + siblings(//sky:a)"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 111,
+   "stdout_sha256": "a55d1ffe05a021e6a66eee92130442075ba3354ff4443ba979ab9598c7b1f632"
+  },
+  "sky.unknown_function": {
+   "args": [
+    "--universe_scope=//sky/...",
+    "foo(//sky:a)"
+   ],
+   "events": [
+    "ERROR: Error while parsing 'foo(//sky:a)': unknown function 'foo' at 'foo ( //sky:a'; expected one of ['allpaths', 'allrdeps', 'attr', 'buildfiles', 'deps', 'executables', 'filter', 'kind', 'labels', 'loadfiles', 'rbuildfiles', 'rdeps', 'same_pkg_direct_rdeps', 'siblings', 'some', 'somepath', 'tests', 'visible']"
+   ],
+   "exit_code": 2,
+   "stdout_bytes": 0,
+   "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "streamed_jsonproto.absolute": {
+   "args": [
+    "--output=streamed_jsonproto",
+    "//pkg:gen + //pkg:data.txt + //pkg:BUILD.bazel"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 4816,
+   "stdout_sha256": "7a2b3c7f808300c3c8797907415ddbd3fb0477c272591eef000310c83cb4adfd"
+  },
+  "streamed_jsonproto.all": {
+   "args": [
+    "--output=streamed_jsonproto",
+    "--relative_locations",
+    "//pkg:* + //vis:* + //conf:* + //other:*"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 47338,
+   "stdout_sha256": "2e69f7c2601b7c9f2db8c3d2013fb5f2c12766405548373c91dec4258a7ee6f3"
+  },
+  "streamed_proto.all": {
+   "args": [
+    "--output=streamed_proto",
+    "--relative_locations",
+    "//pkg:* + //vis:* + //conf:* + //other:*"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 14837,
+   "stdout_sha256": "2af94e333c9e76cfdc50959c10af9addc8f7fa450e4dacfe738118685ff77055"
+  },
+  "xml.all": {
+   "args": [
+    "--output=xml",
+    "//pkg:* + //vis:* + //conf:* + //other:*"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 13098,
+   "stdout_sha256": "c9fa5a1afd476e2fb2c6ac4e160b2d90394892b92d571c01c8f5a03f2e4ecad4"
+  },
+  "xml.aspects": {
+   "args": [
+    "--output=xml",
+    "--relative_locations",
+    "//asp:matched"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 533,
+   "stdout_sha256": "a59879d93af2fe00430973fcdac2b1fe40d784b983e006382b8867c32e705aca"
+  },
+  "xml.defaults_nolines": {
+   "args": [
+    "--output=xml",
+    "--xml:default_values",
+    "--noxml:line_numbers",
+    "--relative_locations",
+    "//pkg:* + //vis:* + //conf:* + //other:*"
+   ],
+   "events": [],
+   "exit_code": 0,
+   "stdout_bytes": 29441,
+   "stdout_sha256": "69fe21b598cf56d08364763a8c84645747d54ce9b0709c3cca7c008a235809cc"
+  },
+  "xml.empty": {
+   "args": [
+    "--output=xml",
+    "//pkg:all except //pkg:all"
+   ],
+   "events": [
+    "INFO: Empty results"
+   ],
+   "exit_code": 0,
+   "stdout_bytes": 76,
+   "stdout_sha256": "164bf0b8b7969dd7237eb7b3352916388594154c8304d19a779a1666407eff25"
+  }
+ },
+ "fixture_sha256": {
+  "BUILD.bazel": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "MODULE.bazel": "94ba65879cca9ce8c696d9e18af953e01c8d855e8bd0c6f8556554fef487e262",
+  "asp/BUILD.bazel": "d5cd9698288bf5a6d65c4d0c6f44becbceea850566cac0911bf6f39ad4447bd5",
+  "asp/aspects.bzl": "6884bf7a6064b5a420f018ff6876e043bd427bb1f0e8abd0383eff74a56da626",
+  "asp/data.txt": "6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f",
+  "conf/BUILD.bazel": "82cfb2b005a9747bcb507cc96d340eafbbb5695c01ff42c0a74eb9cf67bfc451",
+  "other/BUILD.bazel": "7520b8af6a973fe2934e95f4651141c3837d9718856a6dfbae5783dd91bdaad9",
+  "other/thing.txt": "a77e4c11a57f1d757fca5754a8f83b5d4ece49a2d28596889127c1a2f3f28832",
+  "pkg/BUILD.bazel": "54dace3e7fc0d0571ee2003979422e6b104b03d20f47d255152abde70310f6de",
+  "pkg/data.txt": "6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f",
+  "pkg/tool.sh": "a8076d3d28d21e02012b20eaf7dbf75409a6277134439025f282e368e3305abf",
+  "rules/BUILD.bazel": "a31c3b8e50329201b3d2fe54a8bf494b969216d0033bc9b1a3ab6e1edcd4e5a7",
+  "rules/common.bzl": "8281c4379d823456b1776687734c071e7df7f61527328f6f94e59280bcdea4ea",
+  "rules/defs.bzl": "36987a19f9c8551cd085b7f67f110ae280616f3fe7ad2751e6d2e5d4c4f684ab",
+  "rules/macros.bzl": "3880a6afcc39c8a3e0089194f25936327039c2b8088035584be9632804db11b7",
+  "sky/BUILD.bazel": "d9ceb1cb75a007a289f9ea231317a4c3e2b1c448b933a58f7bc28f9aeb247ff8",
+  "sky/sub/BUILD.bazel": "d5c8fdc0dbe100c0dad1f10be6b56dd776a3b6c69a8f3389f42c8bfe193cd96a",
+  "vis/BUILD.bazel": "9c9eaf11ed6801b0a50c0fae79ff67f7fc588a4e4259d460c09cf2bdf660f249"
+ },
+ "network": "public BCR (https://bcr.bazel.build) for the built-in module closure; no credentials"
+}

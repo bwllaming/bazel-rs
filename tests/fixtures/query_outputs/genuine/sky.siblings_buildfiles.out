@@ -1,0 +1,8 @@
+//rules:BUILD.bazel
+//rules:common.bzl
+//rules:defs.bzl
+//sky:BUILD.bazel
+//sky:a
+//sky:b
+//sky:c
+//sky:lonely

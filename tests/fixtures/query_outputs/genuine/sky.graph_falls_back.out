@@ -1,0 +1,9 @@
+digraph mygraph {
+  node [shape=box];
+  "//sky:c"
+  "//sky:c" -> "//sky:a"
+  "//sky:c" -> "//sky:b"
+  "//sky:a"
+  "//sky:a" -> "//sky:b"
+  "//sky:b"
+}

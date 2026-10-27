@@ -488,9 +488,9 @@ fn errors_exit_codes_and_keep_going() {
         stderr(&location),
         "ERROR: Query expressions involving 'buildfiles' or 'loadfiles' cannot be used with --output=location\n"
     );
-    let unsupported = ws.query(&["--output=xml", "//cyc:a"]);
+    let unsupported = ws.query(&["--output=proto", "--proto:rule_classes", "//cyc:a"]);
     assert_eq!(unsupported.status.code(), Some(1));
-    assert!(stderr(&unsupported).contains("unsupported --output=xml"));
+    assert!(stderr(&unsupported).contains("unsupported --proto:rule_classes"));
 }
 
 #[test]

@@ -1,0 +1,14 @@
+package_group(
+    name = "friends",
+    packages = [
+        "//pkg/...",
+        "-//pkg/secret",
+        "//other",
+    ],
+    includes = [":more"],
+)
+
+package_group(
+    name = "more",
+    packages = ["public"],
+)

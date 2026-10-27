@@ -1,0 +1,142 @@
+load("//rules:defs.bzl", "kitchen", "kitchen_bin", "kitchen_test")
+load("//rules:macros.bzl", "legacy_pair")
+
+package(
+    default_visibility = ["//vis:friends"],
+    features = ["feat_a", "-feat_b"],
+)
+
+licenses(["notice"])
+
+exports_files(
+    ["data.txt"],
+    visibility = ["//visibility:public"],
+)
+
+kitchen(
+    name = "all_types",
+    s = "hello <world> & \"q\" = 'x'\n\ttab é",
+    i = -7,
+    b = True,
+    lbl = ":data.txt",
+    lbls = [
+        ":data.txt",
+        "//other:thing",
+    ],
+    tool = ":tool.sh",
+    strs = [
+        "a",
+        "b",
+    ],
+    ints = [
+        1,
+        -2,
+        2147483647,
+    ],
+    sd = {
+        "k1": "v1",
+        "k2": "v2",
+    },
+    sld = {"k": [
+        "x",
+        "y",
+    ]},
+    lksd = {":data.txt": "d"},
+    skld = {"key": ":data.txt"},
+    out = "single.out",
+    outs = [
+        "multi1.out",
+        "multi2.out",
+    ],
+    tags = ["t1"],
+    testonly = True,
+    deprecation = "old",
+)
+
+kitchen(
+    name = "selects",
+    s = select({
+        "//conf:fast": "fast",
+        "//conditions:default": "slow",
+    }),
+    i = select({
+        "//conf:fast": 1,
+        "//conditions:default": 2,
+    }),
+    b = select({"//conf:fast": True}),
+    lbl = select({
+        "//conf:fast": ":data.txt",
+        "//conditions:default": None,
+    }),
+    lbls = [":data.txt"] + select({
+        "//conf:fast": ["//other:thing"],
+        "//conditions:default": [],
+    }) + select({
+        "//conf:slow": [":tool.sh"],
+        "//conditions:default": [":data.txt"],
+    }),
+    strs = select(
+        {
+            "//conf:fast": ["f"],
+            "//conf:slow": ["s"],
+        },
+        no_match_error = "pick one",
+    ),
+    sd = select({
+        "//conf:fast": {"a": "1"},
+        "//conditions:default": {"b": "2"},
+    }),
+    ints = select({
+        "//conf:fast": [7],
+        "//conditions:default": None,
+    }),
+)
+
+kitchen(
+    name = "plain",
+    visibility = ["//visibility:private"],
+)
+
+kitchen_bin(
+    name = "bin",
+    srcs = ["tool.sh"],
+)
+
+kitchen_test(
+    name = "unit_test",
+    size = "small",
+    srcs = ["data.txt"],
+)
+
+genrule(
+    name = "gen",
+    srcs = ["data.txt"],
+    outs = [
+        "gen.out",
+        "gen2.out",
+    ],
+    cmd = "cp $(location data.txt) $(location gen.out) && echo > $(location gen2.out)",
+    message = "generating",
+    stamp = 1,
+    tools = [":tool"],
+)
+
+filegroup(
+    name = "tool",
+    srcs = ["tool.sh"],
+    data = ["data.txt"],
+)
+
+alias(
+    name = "al",
+    actual = ":gen",
+)
+
+test_suite(
+    name = "suite",
+    tests = [":unit_test"],
+)
+
+test_suite(name = "implicit_suite")
+
+legacy_pair(name = "pair")

@@ -169,9 +169,8 @@ fn flags_test_command_and_rc_are_not_silently_ignored() {
         &["test", ":ok"][..],
         // N41 models an http(s) --remote_cache; the disk cache is not.
         &["build", "--disk_cache=/tmp/n41-unmodelled-cache", ":ok"],
-        // SkyQuery and the xml output formatter are not implemented.
-        &["query", "--universe_scope=//...", "deps(:ok)"],
-        &["query", "--output=xml", ":ok"],
+        // Stardoc rule_class_info (--proto:rule_classes) is not implemented.
+        &["query", "--output=proto", "--proto:rule_classes", ":ok"],
     ] {
         assert!(!ws.run(args).status.success());
     }

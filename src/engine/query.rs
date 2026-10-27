@@ -15,6 +15,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+mod formats;
+
+pub use formats::FormatOptions;
+
 use super::query_attrs::{self, QueryAttribute, Shape};
 use super::{Engine, Target};
 use crate::custom_rule::{AttrValue, ConfigurablePart};
@@ -61,6 +65,12 @@ pub struct QueryOptions {
     /// (crate::memory_limit::bound_auto_loading_threads); an explicit
     /// integer is kept exactly as given.
     pub loading_phase_threads: Option<usize>,
+    /// The xml/proto formatter options.
+    pub format: FormatOptions,
+    /// `--universe_scope` (a comma-separated pattern list).
+    pub universe_scope: Vec<String>,
+    /// `--infer_universe_scope`.
+    pub infer_universe_scope: bool,
 }
 
 impl Default for QueryOptions {
@@ -84,6 +94,9 @@ impl Default for QueryOptions {
             output_file: String::new(),
             graphless: None,
             loading_phase_threads: None,
+            format: FormatOptions::default(),
+            universe_scope: Vec::new(),
+            infer_universe_scope: false,
         }
     }
 }
@@ -114,6 +127,8 @@ fn is_streamed(output: &str) -> bool {
             | "build"
             | "package"
             | "location"
+            | "xml"
+            | "proto"
             | "streamed_jsonproto"
             | "streamed_proto"
     )
@@ -153,6 +168,7 @@ impl QueryOptions {
             "universe_scope",
             "experimental_graphless_query",
             "loading_phase_threads",
+            "proto:output_rule_attrs",
         ] {
             let Some((value, consumed)) = valued(name) else {
                 continue;
@@ -179,21 +195,29 @@ impl QueryOptions {
                 }
                 "query_file" => self.query_file = value,
                 "output_file" => self.output_file = value,
-                // Only read by the xml/proto formatters, which are not
-                // implemented (CommonQueryOptions.java aspect_deps).
+                // Read by the xml/proto formatters (CommonQueryOptions.java aspect_deps).
                 "aspect_deps" => {
                     if !matches!(value.as_str(), "off" | "conservative" | "precise") {
                         return Err(format!(
                             "While parsing option --aspect_deps={value}: Not a valid aspect resolution mode: '{value}' (should be off, conservative or precise)"
                         ));
                     }
+                    self.format.aspect_deps = value;
+                }
+                // CommaSeparatedOptionListConverter.
+                "proto:output_rule_attrs" => {
+                    self.format.proto_output_rule_attrs = if value.is_empty() {
+                        Vec::new()
+                    } else {
+                        value.split(',').map(str::to_owned).collect()
+                    };
                 }
                 "universe_scope" => {
-                    if !value.is_empty() {
-                        return Err(
-                            "unsupported option --universe_scope: SkyQuery (SkyQueryEnvironment) is not implemented in the native profile".to_owned(),
-                        );
-                    }
+                    self.universe_scope = if value.is_empty() {
+                        Vec::new()
+                    } else {
+                        value.split(',').map(str::to_owned).collect()
+                    };
                 }
                 "experimental_graphless_query" => {
                     self.graphless = match value.as_str() {
@@ -268,32 +292,23 @@ impl QueryOptions {
                 return Ok(Some(false));
             }
         }
+        if let Some(result) = self.format.parse_flag(arg) {
+            result?;
+            return Ok(Some(false));
+        }
         // Accepted no-op options for `query` (CommonQueryOptions.java:
-        // "query: no-op (aspects are always followed)"); xml/proto-only
-        // options are accepted because those formatters fail explicitly.
+        // "query: no-op (aspects are always followed)").
+        if let Some(value) = boolean(arg, "infer_universe_scope") {
+            self.infer_universe_scope = value?;
+            return Ok(Some(false));
+        }
         for name in [
             "include_aspects",
             "experimental_explicit_aspects",
-            "infer_universe_scope",
-            "xml:line_numbers",
-            "xml:default_values",
-            "proto:default_values",
-            "proto:flatten_selects",
-            "proto:locations",
-            "proto:rule_inputs_and_outputs",
-            "proto:include_synthetic_attribute_hash",
-            "proto:instantiation_stack",
-            "proto:definition_stack",
-            "proto:include_starlark_rule_env",
-            "proto:include_attribute_source_aspects",
-            "proto:rule_classes",
             "incompatible_package_group_includes_double_slash",
         ] {
             if let Some(value) = boolean(arg, name) {
-                let value = value?;
-                if name == "infer_universe_scope" && value {
-                    return Err("unsupported option --infer_universe_scope: SkyQuery (SkyQueryEnvironment) is not implemented in the native profile".to_owned());
-                }
+                value?;
                 return Ok(Some(false));
             }
         }
@@ -463,6 +478,21 @@ struct Env<'a> {
     unresolved: HashMap<Label, Vec<String>>,
     /// RepositorySet::main_mapping_order, for display-form labels.
     main_mapping_order: Vec<String>,
+    /// `.bzl` transitive digests ($rule_implementation_hash).
+    digests: HashMap<Label, [u8; 32]>,
+    /// SkyQueryEnvironment (QueryEnvironmentFactory.canUseSkyQuery: a
+    /// universe scope and streamed, unordered results).
+    sky: bool,
+    /// Edges ignore the dependency filter (building the SkyQuery universe:
+    /// TransitiveTraversal loads every dependency).
+    unfiltered: bool,
+    /// The SkyQuery universe: the transitive closure of the universe scope.
+    universe: Set,
+    universe_packages: HashSet<PackageId>,
+    /// Reverse edges within the universe (allrdeps).
+    universe_parents: Option<HashMap<Label, Vec<Label>>>,
+    /// SkyQuery pattern failures, raised when the literal is evaluated.
+    pattern_failures: HashMap<String, String>,
 }
 
 /// QueryOptionHelper.readQuery (runtime/commands/QueryOptionHelper.java:
@@ -523,14 +553,16 @@ impl Engine {
                 2,
             );
         }
-        if matches!(
-            options.output.as_str(),
-            "xml" | "proto" | "streamed_jsonproto" | "streamed_proto"
-        ) {
-            return Err(format!(
-                "unsupported --output={}: only label, label_kind, build, minrank, maxrank, package, location and graph are implemented in the native profile",
-                options.output
-            ));
+        if options.format.proto_rule_classes
+            && matches!(
+                options.output.as_str(),
+                "proto" | "streamed_jsonproto" | "streamed_proto"
+            )
+        {
+            return Err(
+                "unsupported --proto:rule_classes: Stardoc rule_class_info is not implemented in the native profile"
+                    .to_owned(),
+            );
         }
         let streamed = is_streamed(&options.output)
             && (options.order_output == OrderOutput::No
@@ -550,7 +582,13 @@ impl Engine {
                 2,
             );
         }
-        let expr = match language::parse(&query) {
+        let sky = streamed && (!options.universe_scope.is_empty() || options.infer_universe_scope);
+        let parsed = if sky {
+            language::parse_sky(&query)
+        } else {
+            language::parse(&query)
+        };
+        let expr = match parsed {
             Ok(expr) => expr,
             Err(error) => {
                 return fail(
@@ -589,6 +627,13 @@ impl Engine {
             package_errors: HashMap::new(),
             unresolved: HashMap::new(),
             main_mapping_order: Vec::new(),
+            digests: HashMap::new(),
+            sky,
+            unfiltered: false,
+            universe: Set::default(),
+            universe_packages: HashSet::new(),
+            universe_parents: None,
+            pattern_failures: HashMap::new(),
         };
         let result = env.evaluate_query(&expr);
         let mut events = std::mem::take(&mut env.events);
@@ -676,10 +721,26 @@ impl Env<'_> {
     fn evaluate_query(&mut self, expr: &Expr) -> Eval<Set> {
         let mut patterns = Vec::new();
         expr.collect_target_patterns(&mut patterns);
+        if self.sky {
+            self.build_universe(&patterns)?;
+        }
         for pattern in &patterns {
-            match self.resolve_pattern(pattern)? {
+            let resolved = self.resolve_pattern(pattern)?;
+            let resolved = if self.sky {
+                self.within_universe(pattern, resolved)
+            } else {
+                resolved
+            };
+            match resolved {
                 Ok(targets) => {
                     self.patterns.insert(pattern.clone(), targets);
+                }
+                Err(message) if self.sky => {
+                    // SkyQuery resolves a literal when it is evaluated
+                    // (TargetLiteral.eval): the literal is the failed
+                    // expression.
+                    self.pattern_failures.insert(pattern.clone(), message);
+                    self.patterns.insert(pattern.clone(), Vec::new());
                 }
                 Err(message) => {
                     if !self.options.keep_going {
@@ -855,6 +916,7 @@ impl Env<'_> {
             name: "name".to_owned(),
             public_name: "name".to_owned(),
             shape: Shape::Other,
+            ty: query_attrs::AttrType::String,
             explicit: true,
             tool: false,
             value: Some(AttrValue::String(label.name.clone())),
@@ -923,6 +985,7 @@ impl Env<'_> {
                     name: "visibility".to_owned(),
                     public_name: "visibility".to_owned(),
                     shape: Shape::Nodep,
+                    ty: query_attrs::AttrType::NodepLabelList,
                     explicit: rule.explicit_visibility,
                     tool: false,
                     value: None,
@@ -930,7 +993,7 @@ impl Env<'_> {
                     default: None,
                     aspects: Vec::new(),
                 };
-                if self.options.admits(&visibility) {
+                if self.unfiltered || self.options.admits(&visibility) {
                     let index = attributes.iter().position(|a| a.name == "visibility");
                     for group in rule.visibility.group_labels() {
                         push(&mut edges, group.clone(), index);
@@ -938,7 +1001,9 @@ impl Env<'_> {
                 }
                 let mut texts = Vec::new();
                 for (index, attribute) in attributes.iter().enumerate() {
-                    if !attribute.shape.is_dependency() || !self.options.admits(attribute) {
+                    if !attribute.shape.is_dependency()
+                        || !(self.unfiltered || self.options.admits(attribute))
+                    {
                         continue;
                     }
                     for text in attribute.labels() {
@@ -946,7 +1011,7 @@ impl Env<'_> {
                     }
                 }
                 // visitRuleToolchains (:110-118): the hidden implicit attribute.
-                if self.options.implicit_deps {
+                if self.unfiltered || self.options.implicit_deps {
                     for text in query_attrs::toolchain_types(rule) {
                         texts.push((text, None));
                     }
@@ -1205,7 +1270,7 @@ impl Env<'_> {
         let Some(attribute) = attributes.get(index) else {
             return Ok(Vec::new());
         };
-        if attribute.aspects.is_empty() || !self.options.implicit_deps {
+        if attribute.aspects.is_empty() || !(self.unfiltered || self.options.implicit_deps) {
             return Ok(Vec::new());
         }
         let target = self.rule(to);
@@ -1215,7 +1280,7 @@ impl Env<'_> {
                 continue;
             }
             for (text, tool) in query_attrs::aspect_labels(aspect) {
-                if tool && !self.options.tool_deps {
+                if tool && !(self.unfiltered || self.options.tool_deps) {
                     continue;
                 }
                 labels.push(self.parse_label(from, &text).map_err(Failure::Fatal)?);
@@ -1278,7 +1343,28 @@ impl Env<'_> {
             }
             Err(crate::engine::PatternError::Parsing(message)) => Ok(Err(message)),
             Err(crate::engine::PatternError::Loading(message)) => match classify(message) {
-                Lookup::Missing(message) => Ok(Err(message)),
+                // The BUILD file is a target of its package
+                // (Package.Builder.createBuildFile), which the build's
+                // pattern expansion does not offer.
+                Lookup::Missing(message) => {
+                    if let crate::target_pattern::Kind::SingleTarget { target } = &parsed.kind
+                        && parsed.repo.is_none()
+                    {
+                        let label = Label {
+                            repository: String::new(),
+                            package: parsed.package.clone(),
+                            name: target.clone(),
+                        };
+                        if self.build_file_name(&label.package_id()).as_deref()
+                            == Some(label.name.as_str())
+                            && self.lookup(&label)?.is_ok()
+                        {
+                            self.pattern_edges(std::slice::from_ref(&label))?;
+                            return Ok(Ok(vec![label]));
+                        }
+                    }
+                    Ok(Err(message))
+                }
                 Lookup::Fatal(message) => Err(Failure::Fatal(message)),
             },
         }
@@ -1407,6 +1493,21 @@ impl Env<'_> {
                 })),
             };
         }
+        if let Some(message) = self.pattern_failures.get(pattern).cloned() {
+            if self.options.keep_going {
+                if let Some(owner) = owner {
+                    self.handle_error(owner, message)?;
+                } else {
+                    self.error_event(message);
+                }
+                return Ok(Set::default());
+            }
+            return Err(Failure::Query(QueryError {
+                expression: Some(owner.map_or(std::ptr::null(), |e| e as *const Expr)),
+                expression_text: Expr::Target(pattern.to_owned()).truncated(),
+                message,
+            }));
+        }
         Ok(Set::from_labels(
             self.patterns.get(pattern).cloned().unwrap_or_default(),
         ))
@@ -1442,6 +1543,38 @@ impl Env<'_> {
     ) -> Eval<Set> {
         match function {
             Function::Config => unreachable!("config is only parsed for cquery"),
+            // AllRdepsFunction over the SkyQuery universe graph.
+            Function::AllRdeps => {
+                let from = self.eval(Self::expression_arg(args, 0), context)?;
+                let depth = Self::int_arg(args, 1);
+                let parents = self.universe_parents()?;
+                let mut result = Set::default();
+                let mut at = from.items.clone();
+                let mut level = 0;
+                while should_visit(depth, level) && !at.is_empty() {
+                    let mut next = Vec::new();
+                    for target in at {
+                        if result.insert(target.clone())
+                            && let Some(parents) = parents.get(&target)
+                        {
+                            next.extend(parents.iter().cloned());
+                        }
+                    }
+                    at = next;
+                    level += 1;
+                }
+                Ok(result)
+            }
+            Function::RBuildFiles => {
+                let words = args
+                    .iter()
+                    .filter_map(|arg| match arg {
+                        Argument::Word(word) => Some(word.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                self.rbuildfiles(&words)
+            }
             // DepsFunction / GraphlessBlazeQueryEnvironment.deps (:250-300).
             Function::Deps => {
                 let from = self.eval(Self::expression_arg(args, 0), context)?;
@@ -1702,6 +1835,142 @@ impl Env<'_> {
                 self.load_files(input, function == Function::BuildFiles)
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // SkyQuery (query2/SkyQueryEnvironment.java).
+
+    /// SkyQueryEnvironment.beforeEvaluateQuery: the universe is the
+    /// transitive closure (every dependency, unfiltered) of the
+    /// `--universe_scope` patterns, or of the expression's own patterns
+    /// with `--infer_universe_scope` (UniverseScope.InferredUniverseScope).
+    /// Universe patterns that fail to resolve contribute nothing
+    /// (PrepareDepsOfPatterns keeps going).
+    fn build_universe(&mut self, expression_patterns: &[String]) -> Eval<()> {
+        let patterns = if self.options.universe_scope.is_empty() {
+            expression_patterns.to_vec()
+        } else {
+            self.options.universe_scope.clone()
+        };
+        let mut roots = Set::default();
+        for pattern in &patterns {
+            if let Ok(targets) = self.resolve_pattern(pattern)? {
+                roots.extend(targets);
+            }
+        }
+        self.unfiltered = true;
+        let visited = self.visit(&roots, None);
+        self.unfiltered = false;
+        self.edges.clear();
+        let (visited, _) = visited?;
+        self.universe_packages = visited.items.iter().map(Label::package_id).collect();
+        self.universe = visited;
+        Ok(())
+    }
+
+    /// GraphBackedRecursivePackageProvider: only universe packages exist.
+    fn within_universe(
+        &self,
+        pattern: &str,
+        resolved: Result<Vec<Label>, String>,
+    ) -> Result<Vec<Label>, String> {
+        let targets = resolved?;
+        let recursive =
+            crate::target_pattern::parse(pattern, &self.relative_directory).is_ok_and(|parsed| {
+                matches!(
+                    parsed.kind,
+                    crate::target_pattern::Kind::TargetsBelowDirectory { .. }
+                )
+            });
+        if recursive {
+            return Ok(targets
+                .into_iter()
+                .filter(|target| self.universe_packages.contains(&target.package_id()))
+                .collect());
+        }
+        if let Some(outside) = targets
+            .iter()
+            .find(|target| !self.universe_packages.contains(&target.package_id()))
+        {
+            let package = if outside.repository.is_empty() {
+                outside.package.clone()
+            } else {
+                format!("@@{}//{}", outside.repository, outside.package)
+            };
+            return Err(format!(
+                "no such package '{package}': BUILD file not found on package path"
+            ));
+        }
+        Ok(targets)
+    }
+
+    fn universe_parents(&mut self) -> Eval<HashMap<Label, Vec<Label>>> {
+        if let Some(parents) = &self.universe_parents {
+            return Ok(parents.clone());
+        }
+        let universe = self.universe.clone();
+        let parents = self.parents_within(&universe)?;
+        self.universe_parents = Some(parents.clone());
+        Ok(parents)
+    }
+
+    /// RBuildFilesFunction / ParallelSkyQueryUtils.getRBuildFilesParallel:
+    /// the BUILD files of universe packages whose BUILD file or transitively
+    /// loaded `.bzl` files are one of `paths` (package-path relative, so main
+    /// repository files only).
+    fn rbuildfiles(&mut self, paths: &[String]) -> Eval<Set> {
+        let mut packages = Vec::new();
+        let mut seen = HashSet::new();
+        for label in &self.universe.items {
+            let id = label.package_id();
+            if seen.insert(id.clone()) {
+                packages.push(id);
+            }
+        }
+        let relative = |package: &str, name: &str| {
+            if package.is_empty() {
+                name.to_owned()
+            } else {
+                format!("{package}/{name}")
+            }
+        };
+        let mut result = Set::default();
+        for id in packages {
+            let Some(package) = self.engine.packages.get(&id) else {
+                continue;
+            };
+            let Some(build) = self.build_file_name(&id) else {
+                continue;
+            };
+            let mut matched =
+                id.repository.is_empty() && paths.contains(&relative(&id.package, &build));
+            let mut stack = package.direct_loads.clone();
+            let mut visited = HashSet::new();
+            while !matched && let Some(load) = stack.pop() {
+                if !visited.insert(load.clone()) {
+                    continue;
+                }
+                if load.repository.is_empty()
+                    && paths.contains(&relative(&load.package, &load.name))
+                {
+                    matched = true;
+                }
+                if let Some(loads) = package.load_graph.get(&load) {
+                    stack.extend(loads.iter().cloned());
+                }
+            }
+            if matched {
+                let label = Label {
+                    repository: id.repository.clone(),
+                    package: id.package.clone(),
+                    name: build,
+                };
+                if self.lookup(&label)?.is_ok() {
+                    result.insert(label);
+                }
+            }
+        }
+        Ok(result)
     }
 
     /// Reverse edges among `closure` (PathLabelVisitor ALLPATHS parent map).
@@ -2042,6 +2311,12 @@ impl Env<'_> {
                 _ => topological_order(&graph),
             }
         };
+        if matches!(
+            output.as_str(),
+            "xml" | "proto" | "streamed_proto" | "streamed_jsonproto"
+        ) {
+            return self.structured_output(&ordered);
+        }
         let mut out = String::new();
         match output.as_str() {
             "label" => {
@@ -3029,6 +3304,7 @@ mod tests {
             name: "deps".into(),
             public_name: "deps".into(),
             shape: Shape::LabelList,
+            ty: query_attrs::AttrType::LabelList,
             explicit: true,
             tool: false,
             value: None,
@@ -3074,7 +3350,18 @@ mod tests {
         assert_eq!(options.parse("--order_output=FULL", None), Ok(Some(false)));
         assert_eq!(options.order_output, OrderOutput::Full);
         assert!(options.parse("--order_output=sorted", None).is_err());
-        assert!(options.parse("--universe_scope=//...", None).is_err());
+        assert_eq!(
+            options.parse("--universe_scope=//a/...,//b", None),
+            Ok(Some(false))
+        );
+        assert_eq!(options.universe_scope, ["//a/...", "//b"]);
+        assert_eq!(
+            options.parse("--proto:output_rule_attrs=", None),
+            Ok(Some(false))
+        );
+        assert!(options.format.proto_output_rule_attrs.is_empty());
+        assert_eq!(options.parse("--noxml:line_numbers", None), Ok(Some(false)));
+        assert!(!options.format.xml_line_numbers);
         assert_eq!(options.parse("//foo", None), Ok(None));
     }
 
