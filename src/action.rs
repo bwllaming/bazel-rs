@@ -116,9 +116,12 @@ use std::time::{Duration, SystemTime};
 // files, execution requirements, transforms) are framed in an extra block.
 // Hardlink staging (N36) changes no key. Manifests (symlink outputs since
 // N36) moved to v8 with the key, so v7 entries rebuilt once.
-const FORMAT: &str = "native-action-v8";
+// `native-action-v10` (snapshot-keys, SURVEY3 S1): the action's id (its
+// owner) is no longer keyed, its mnemonic is (as in SpawnAction.computeKey);
+// every key changed, so v8 entries rebuild once (the manifests stay v9).
+const FORMAT: &str = "native-action-v10";
 /// The format of the published entries' manifests: `native-action-v9`
-/// (fix-digest-memo; the key stays `native-action-v8`, FORMAT). Binaries
+/// (fix-digest-memo; the key was `native-action-v8` then, FORMAT). Binaries
 /// that wrote v8 manifests could publish another action's output — their
 /// per-process digest memo answered for a new file with the digest of a
 /// deleted one (docs/DIGEST_MEMO.md, "Upgrade note") — and such an entry is
@@ -330,8 +333,9 @@ pub struct ActionExtra {
     /// (GenRuleAction.java:35), "TestRunner" for test spawns
     /// (TestRunnerAction.java:112), the Starlark `mnemonic` parameter or
     /// "Action" for ctx.actions spawns (StarlarkActionFactory.java:811).
-    /// Execution metadata, never part of the action key: --strategy matches
-    /// it (SpawnStrategyRegistry.getStrategies:142-143) exactly as Bazel's
+    /// Keyed like SpawnAction.computeKey's `fp.addString(mnemonic)` (in
+    /// place of the action's id since `native-action-v10`); --strategy
+    /// matches it (SpawnStrategyRegistry.getStrategies:142-143), and that
     /// strategy selection never changes an action cache key.
     pub mnemonic: String,
     /// A native, process-free transform of one input into the only output.
@@ -3657,7 +3661,15 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
     // Bazel's rewriteLocalEnv, which runs after the action key. The
     // historical spelling is kept so existing cache entries stay valid.
     frame(&mut hash, b"TMPDIR=fresh-absolute-work-tmp");
-    frame(&mut hash, action.id.as_bytes());
+    // Not the action's id (its owner and index, SURVEY3 S1): Bazel's action
+    // key has no owner (ActionKeyComputer.getKey over computeKey, e.g.
+    // SpawnAction.computeKey :396-417 — the command lines, the mnemonic, the
+    // environment and the execution info), so a shared action whose owner
+    // depends on the requested targets (crate::shared_actions; rules_js's
+    // node_modules links) keeps its entry. Its outputs (keyed below) name
+    // it: two owners registering one output path share one action or are
+    // rejected at analysis (crate::engine register_output).
+    frame(&mut hash, action.extra.mnemonic.as_bytes());
     match (&action.write, &action.program, &action.extra.transform) {
         (Some(write), _, _) => {
             frame(&mut hash, b"write");
@@ -8316,7 +8328,11 @@ mod tests {
         assert!(!mode_changed.cache_hit);
         assert_ne!(executable.outputs, mode_changed.outputs);
         assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+        // SURVEY3 S1: the id (the owner) is not keyed, the mnemonic is
+        // (SpawnAction.computeKey).
         action.id += "-new";
+        assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+        action.extra.mnemonic = "Other".into();
         assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
     }
 
@@ -9606,6 +9622,8 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         let consumer = |id: &str| {
             let mut consumer = fixture.action();
             consumer.id = id.into();
+            // Keyed apart (the id is not keyed, SURVEY3 S1).
+            consumer.extra.mnemonic = id.into();
             consumer.inputs = vec![(tree.clone().into(), "in/tree".into())];
             consumer.extra.tree_inputs = BTreeSet::from([PathBuf::from("in/tree")]);
             consumer.command =
@@ -10879,6 +10897,8 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
     ) -> Result<ActionResult, String> {
         let mut action = fixture.action();
         action.id = id.into();
+        // Keyed apart (the id is not keyed, SURVEY3 S1).
+        action.extra.mnemonic = id.into();
         action.command.clear();
         action.program = Some(program.into());
         action.executable_file = true;

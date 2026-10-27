@@ -409,6 +409,32 @@ fn a_shared_action_is_planned_once_by_its_first_owner() {
     }
 }
 
+/// SURVEY3 S1: the local action cache key has no owner (Bazel's action key
+/// has none), so a shared action whose owner depends on the requested
+/// targets keeps its cache entry: after `//pkg:a //pkg:b` (owner `//pkg:a`)
+/// a build of `//pkg:b` alone (owner `//pkg:b`) executes nothing.
+#[test]
+fn a_shared_action_hits_whichever_target_owns_it() {
+    let ws = Workspace::new();
+    let run = |targets: &[&str]| {
+        let mut argv = vec!["build".to_owned()];
+        argv.extend(targets.iter().map(|target| (*target).to_owned()));
+        let output = ws.run(&argv, &[("BAZEL_RS_SNAPSHOT", "off")]);
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "{stderr}");
+        stderr
+    };
+    let first = run(&["//pkg:a", "//pkg:b"]);
+    assert!(!first.contains(" 0 actions executed"), "{first}");
+    for targets in [&["//pkg:b"][..], &["//pkg:b", "//pkg:a"], &["//pkg:a"]] {
+        let again = run(targets);
+        assert!(
+            again.contains(" 0 actions executed, "),
+            "{targets:?}: {again}"
+        );
+    }
+}
+
 /// The aspect commit path and a tree artifact: the second application's
 /// (or target's) equal action plans no node, its outputs are produced by
 /// the first owner's action, and the consumer of both Files depends on

@@ -111,7 +111,8 @@ and the exec configuration's `--host_action_env` are reflected
 
 ## Cache keys
 
-The key (format `native-action-v8` since the N41 merge; N42 introduced the
+The key (format `native-action-v10` since snapshot-keys, `native-action-v8`
+since the N41 merge; N42 introduced the
 environment framing as `native-action-v6`) frames the fixed map and the inherited
 names (`ActionEnvironment.addTo`, `:124-127`, used by `SpawnAction.computeKey`
 `:396-409`) and the resolved client values of the inherited names (Bazel's
@@ -181,3 +182,20 @@ script only). Observed:
 (the shell is `/bin/bash`), Windows, the test action environment (no test
 command), `select()` on the environment options; `--repo_env` reaches
 repositories only (N40).
+
+## Owner-free keys (`native-action-v10`, SURVEY3 S1)
+
+The key no longer frames the action's id (its owning target and index); it
+frames the spawn mnemonic in its place, as `SpawnAction.computeKey` does
+(`fp.addString(mnemonic)`, `analysis/actions/SpawnAction.java:396-417`;
+Bazel's `ActionKeyComputer.getKey` has no owner). A shared action
+(docs/SHAREABLE_ARTIFACTS.md) whose first owner depends on the requested
+targets — rules_js's `node_modules` link actions — therefore keeps its cache
+entry between `build //src/...` and a build of one tree. The outputs (keyed)
+name the action: two owners registering one output path either share one
+action or are rejected at analysis (crate::engine `register_output`), so no
+two different actions can meet under one key. **Upgrade:** every local key
+changed, so each action executes once more after the upgrade (manifests stay
+`native-action-v9`); remote cache keys (REAPI Action digests) are unchanged.
+Re-pinned: `tests/configured_target_keys.rs`, `tests/depset_identity_keys.rs`;
+pinned by `tests/shared_actions.rs` `a_shared_action_hits_whichever_target_owns_it`.

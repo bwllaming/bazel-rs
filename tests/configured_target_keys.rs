@@ -200,7 +200,9 @@ consume(name = "c", deps = [":gen", ":u"])
 // genrules run Bazel's argv (`source .../genrule-setup.sh; CMD`, the setup
 // script a keyed input), run_shell pads `$0` only with arguments, and every
 // spawn's environment is N42's (fixed map, inherited names, resolved
-// client values), executed exactly as keyed (plus TMPDIR).
+// client values), executed exactly as keyed (plus TMPDIR). Re-pinned for
+// native-action-v10 (snapshot-keys, SURVEY3 S1): the action id (owner) is no
+// longer keyed, the mnemonic is; every key changed.
 #[test]
 fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
     let ws = Workspace::new(FIXTURE);
@@ -216,20 +218,20 @@ fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
     assert_eq!(
         ws.keys("default-cache"),
         [
-            "081333d3a04df20bd5e97d2ad171bcbfdedda07b2ca6cf58c0e941e3f3b674b6",
-            "80276d639eafdc42187255bf2817ac38ed6be835a96e5677d515efbcda79945a",
-            "a59b787dd6adf44d47f4256e85703f469a30382f36768f044ec3f318b3610add",
-            "ac86cfdc1c87e32b3be3a0e6ca0fe125e294fc58a13988ac2125f831a91f0d0c",
-            "c0487c445714832edaa008badf63f01313458beb0bfc32a2e3c8f63ed0b03cc1",
-            "cde8b6368c40107ba1efba8c2fe924f9e54c1248d6fc26cdb523a787b55246cc",
+            "3b45fbfbdf9b9f9c136fd74f4d6d245aa3af5b331f0c29e885dca58bd5166c5d",
+            "4b6f5f9c319b62409764d640d236c62e655921ffb88579b381677e31d7d617cb",
+            "59dfae33e47e08c9b96851b4b5dc2f5a70bdb1b55245af05cbe3329cb91bfcbd",
+            "8f3a2f14c8deed65f13de8a89ecde13eb46f3a2a10b01c99c20eb28fd0f6efcc",
+            "9ce440264a90b08e52ea2a7c13fa3dbc9550869acc4ffcaadf4c2d96b30571be",
+            "ca7c781fac35b77885d738c96d3c5de5f1cc5ba039d678add11cf58494514a54",
         ]
     );
     assert_eq!(
         ws.outputs("default-cache", &cold),
         [
-            "//g:c\tACTIONS/cde8b6368c40107ba1efba8c2fe924f9e54c1248d6fc26cdb523a787b55246cc/outputs/bazel-out/k8-fastbuild/bin/g/c.txt",
-            "//g:final\tACTIONS/80276d639eafdc42187255bf2817ac38ed6be835a96e5677d515efbcda79945a/outputs/bazel-out/k8-fastbuild/bin/g/final.txt",
-            "//g:u\tACTIONS/c0487c445714832edaa008badf63f01313458beb0bfc32a2e3c8f63ed0b03cc1/outputs/bazel-out/k8-fastbuild/bin/g/u.txt",
+            "//g:c\tACTIONS/9ce440264a90b08e52ea2a7c13fa3dbc9550869acc4ffcaadf4c2d96b30571be/outputs/bazel-out/k8-fastbuild/bin/g/c.txt",
+            "//g:final\tACTIONS/3b45fbfbdf9b9f9c136fd74f4d6d245aa3af5b331f0c29e885dca58bd5166c5d/outputs/bazel-out/k8-fastbuild/bin/g/final.txt",
+            "//g:u\tACTIONS/ca7c781fac35b77885d738c96d3c5de5f1cc5ba039d678add11cf58494514a54/outputs/bazel-out/k8-fastbuild/bin/g/u.txt",
         ]
     );
     assert!(summary(&cold).contains("6 actions executed, 0 cache hits"));
@@ -238,7 +240,7 @@ fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .find(|path| {
-                path.ends_with("80276d639eafdc42187255bf2817ac38ed6be835a96e5677d515efbcda79945a")
+                path.ends_with("3b45fbfbdf9b9f9c136fd74f4d6d245aa3af5b331f0c29e885dca58bd5166c5d")
             })
             .unwrap()
             .join("outputs/bazel-out/k8-fastbuild/bin/g/final.txt"),
@@ -263,19 +265,19 @@ fn action_keys_and_output_roots_match_the_pre_n18a_binary() {
     assert_eq!(
         ws.keys("dbg-cache"),
         [
-            "2261a84d8c11a08dffce7e217eb73c99ef89d93866e09d6385abce3460379ddc",
-            "34e68fe10d1e6cd03bcb66428a936fe54a614605433b91336d8c75dbcdef0bb8",
-            "6995ea95bd12d702570e9ec056067d52cccde454d1c35e4a0414afedb7cff48a",
-            "9689167d0d64a7c138e94c00b099c9fed9d4088ed2ae183f93b7f6edc2524776",
-            "c3348a31c0d656311deee3a3e9ae8c7d73ebf350ac2024189f37fb45c9dc5bb3",
-            "e54b1319ee442d963c8c6c307f44552e0f4cc308e4bc00a3c120e97cef439357",
+            "15cc5525bb0a90f0ef77a22f8059a1ca0a54ad6cdc8800b466fc4f45aafe2cd6",
+            "420c3a64dc638b1b034870ccee4ea676bdb22eafeb0825e844168b089519600d",
+            "a3ff5ceee97bffb65057fbed8b04174e9d283db2546e488c0a4ce03ee093e42c",
+            "a5b572d3b796ee870f5c1b78ce3f5124c93d57eb25e031da1920dd45997e4fd4",
+            "c33cdef5a03752819dd4b21ffff1b912eb33ad32ab60f0029573f90b2a43da61",
+            "f63c0f8a06bc60bda6cc35c578ecb538453851b9759d6db9dcfbfb61b46d593e",
         ]
     );
     assert_eq!(
         ws.outputs("dbg-cache", &dbg),
         [
-            "//g:c\tACTIONS/c3348a31c0d656311deee3a3e9ae8c7d73ebf350ac2024189f37fb45c9dc5bb3/outputs/bazel-out/k8-dbg/bin/g/c.txt",
-            "//g:final\tACTIONS/6995ea95bd12d702570e9ec056067d52cccde454d1c35e4a0414afedb7cff48a/outputs/bazel-out/k8-dbg/bin/g/final.txt",
+            "//g:c\tACTIONS/f63c0f8a06bc60bda6cc35c578ecb538453851b9759d6db9dcfbfb61b46d593e/outputs/bazel-out/k8-dbg/bin/g/c.txt",
+            "//g:final\tACTIONS/420c3a64dc638b1b034870ccee4ea676bdb22eafeb0825e844168b089519600d/outputs/bazel-out/k8-dbg/bin/g/final.txt",
         ]
     );
 }
@@ -299,8 +301,8 @@ fn existing_genrule_fixture_keys_are_pinned() {
     assert_eq!(
         ws.keys("cache"),
         [
-            "0966e42b771a732a54937cf7e805869a4a77f70ada64f475a97c7a633c43a6e6",
-            "1a94ed1182cac118df6e7c6c3c0bf201eb1fef61dc8cff613d512760a5070e30",
+            "07eda685d962aa7e4d3be401db58ab86cb17586713783057f0b655d652c87158",
+            "8c1541fa858e39df90af684a0457103c98fd1df859e98baf253b18de290a1cbe",
         ]
     );
     assert!(summary(&output).contains("2 actions executed, 0 cache hits"));

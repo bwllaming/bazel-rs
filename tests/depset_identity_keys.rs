@@ -137,6 +137,7 @@ use = rule(_use_impl, attrs = {"dep": attr.label()})
     ),
 ];
 
+// Re-pinned for native-action-v10 (SURVEY3 S1: the owner-free key).
 #[test]
 fn shortcut_shapes_keep_their_action_keys() {
     let ws = Workspace::new(FIXTURE);
@@ -144,9 +145,9 @@ fn shortcut_shapes_keep_their_action_keys() {
     assert_eq!(
         ws.keys("cache"),
         [
-            "a670b84b00002fdcb6d4faa97b34dc4207687cd6170fd30483e2b5c45c877a62",
-            "c9a46e55953656672fdbfe0144fb054ccf9680a2755ed62ec99aa62d52179b5b",
-            "ff149b80f0f803f80652ae8b72e8bcebe980226cb4f12278820b7d28845713cc",
+            "01f7960c6ba0c5ca4d84afb179215cdae039fc9569dbea510e1f16695957686a",
+            "59bbe688cc66e10e8b8b397f657d2f296a778e4ba06fb582e7d7b69bcafd30bb",
+            "f2531dd891ee0d96445ce18a8b2776b1acc2893a46d303fbf2c42a1cc60fb420",
         ]
     );
     let stdout = String::from_utf8_lossy(&output.stdout);

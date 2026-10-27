@@ -189,7 +189,9 @@ the spawns (the paired capture confirms every point):
   `native-action-v8` (keys and manifests; docs/ACTION_ENV.md records the
   rekey; the keyed tests were re-pinned once). Since fix-digest-memo the
   local manifests are `native-action-v9`; remote keys are unaffected
-  (docs/DIGEST_MEMO.md, "Upgrade note").
+  (docs/DIGEST_MEMO.md, "Upgrade note"). Since snapshot-keys the local key is
+  `native-action-v10` (owner-free, docs/ACTION_ENV.md "Owner-free keys"); the
+  remote keys are again unchanged.
 * Parameter files (`args.use_param_file`) are files of the input root at
   their `<output>-N.params` execution paths (Bazel's ParamFileActionInput);
   tree artifact inputs contribute their files (no empty subdirectories), and
