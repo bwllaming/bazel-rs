@@ -2667,6 +2667,36 @@ impl RepositorySet {
         }
     }
 
+    /// A load unit the sequential engine commits was blocked on `sentinel`
+    /// (the no-demand sentinel): execute the direct or extension-generated
+    /// repository it names ahead of its demand ([`Self::speculate`]), or
+    /// warm the registry module root it names (crate::module_root_warm).
+    pub(crate) fn fetch_blocked_ahead(&self, sentinel: &str) {
+        if !crate::repository_demand::is_needs_repository(sentinel) {
+            return;
+        }
+        self.speculate(sentinel);
+        let Some(start) = sentinel.find(crate::repository_demand::NEEDS_REPOSITORY) else {
+            return;
+        };
+        let repository = sentinel[start + crate::repository_demand::NEEDS_REPOSITORY.len()..]
+            .strip_prefix(": repository @@")
+            .and_then(|rest| rest.split_once(" is unfetched"))
+            .map(|(name, _)| name);
+        if let Some(repository) = repository
+            && self.state.root_warmer.enabled()
+        {
+            self.state.root_warmer.request(
+                self,
+                ["BUILD.bazel", "BUILD"].map(|name| Label {
+                    repository: repository.to_owned(),
+                    package: String::new(),
+                    name: name.to_owned(),
+                }),
+            );
+        }
+    }
+
     /// Queue again the speculations blocked on a demand that is satisfied
     /// now ([`Self::sentinel_ready`]).
     pub(crate) fn retry_speculations(&self) {

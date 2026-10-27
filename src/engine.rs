@@ -2851,6 +2851,11 @@ impl Engine {
                             let unit = package::evaluate_load_unit(repositories.clone(), id);
                             drop(reuse);
                             drop(guard);
+                            // The coordinator loads this package next to
+                            // the others: what blocked it is fetched ahead.
+                            if let Err(error) = &unit.result {
+                                repositories.fetch_blocked_ahead(error);
+                            }
                             *slots[index].lock().unwrap() = Some(unit);
                         }
                     });
