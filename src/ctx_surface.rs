@@ -206,6 +206,10 @@ impl FeatureSet {
 #[derive(Debug, Default)]
 pub struct RuleSurface {
     pub config: Arc<CtxSurface>,
+    /// The rule's existing shared schema, used by native attribute expanders
+    /// to distinguish an empty string list from an empty list of another type.
+    pub schema: crate::custom_rule::SharedSchema,
+    pub builtin_kind: crate::native_rules::StarlarkRuleKind,
     /// RuleContext.getRuleClassNameForLogging: the rule class name.
     pub rule_class: String,
     pub label: Label,
@@ -1944,6 +1948,20 @@ pub(crate) fn expand_args(
     values: &[String],
     data: &[(String, Vec<crate::starlark_types::File>)],
 ) -> anyhow::Result<Vec<String>> {
+    expand_options(rule, attribute, values, data, false, true)
+}
+
+/// RuleContext's Expander list/tokenized operations. JavaStarlarkCommon uses
+/// withDataLocations by default, or withExecLocations (without data) when
+/// exec_paths is true. Callers supply the matching additional location map.
+pub(crate) fn expand_options(
+    rule: &RuleSurface,
+    attribute: &str,
+    values: &[String],
+    data: &[(String, Vec<crate::starlark_types::File>)],
+    exec_paths: bool,
+    tokenize: bool,
+) -> anyhow::Result<Vec<String>> {
     let parse = |arg: &str| {
         Label::parse_in(
             arg,
@@ -1954,10 +1972,15 @@ pub(crate) fn expand_args(
     };
     let lookup = |name: &str| lookup_variable(&rule.config, &[], name);
     let function = |name: &str, param: &str| -> anyhow::Result<Result<String, String>> {
-        Ok(
-            crate::location_expander::apply_with(name, param, false, &parse, &rule.locations, data)
-                .unwrap_or_else(|| Err(format!("$({name}) not defined"))),
+        Ok(crate::location_expander::apply_with(
+            name,
+            param,
+            exec_paths,
+            &parse,
+            &rule.locations,
+            data,
         )
+        .unwrap_or_else(|| Err(format!("$({name}) not defined"))))
     };
     let mut tokens = Vec::new();
     for value in values {
@@ -1968,8 +1991,12 @@ pub(crate) fn expand_args(
                 value.clone()
             }
         };
-        if let Err(message) = tokenize_into(&mut tokens, &expanded) {
-            rule.attribute_error(attribute, &message);
+        if tokenize {
+            if let Err(message) = tokenize_into(&mut tokens, &expanded) {
+                rule.attribute_error(attribute, &message);
+            }
+        } else {
+            tokens.push(expanded);
         }
     }
     Ok(tokens)

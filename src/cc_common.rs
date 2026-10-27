@@ -2,12 +2,12 @@
 //! object (builtins_bzl/common/cc/cc_common_bazel.bzl,
 //! builtins_bzl/common/java/java_common.bzl, CcStarlarkInternal.java).
 //!
-//! Only `.bzl`-initialization behaviour is implemented: the private-API
+//! Implements `.bzl`-initialization behaviour: the private-API
 //! allowlist check of `internal_DO_NOT_USE()` (BuiltinRestriction.java), the
 //! `cc_internal` attribute surface, and the no-artifact
 //! `cc_internal.create_header_info()` used by rules_cc's empty CcInfo
-//! constants. C++/Java analysis, actions and toolchains are unsupported and
-//! fail explicitly.
+//! constants, plus the explicitly modeled analysis helpers (including Java
+//! attribute option expansion). Other compilation APIs fail explicitly.
 
 use crate::label::Label;
 use crate::language_modules::{
@@ -100,7 +100,7 @@ const JAVA_INTERNAL_METHODS: [(&str, &str, Behavior); 11] = [
     (
         "expand_java_opts",
         "expand_java_opts",
-        Behavior::Unimplemented(Domain::Java),
+        Behavior::JavaExpandOpts,
     ),
     (
         "get_runtime_classpath_for_archive",
@@ -130,6 +130,69 @@ const JAVA_INTERNAL_METHODS: [(&str, &str, Behavior); 11] = [
 ];
 
 static NEXT_HEADER_INFO: AtomicU64 = AtomicU64::new(1);
+
+/// JavaCommonApi.expandJavaOpts / JavaStarlarkCommon.expandJavaOpts (Bazel 9.3).
+/// This expands a configured string-list attribute, not a passed list or the
+/// Java fragment's options. The immutable result is usable by ordinary rules.
+pub(crate) fn java_expand_opts<'v>(
+    args: &Arguments<'v, '_>,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> starlark::Result<Value<'v>> {
+    const FUNCTION: &str = "expand_java_opts";
+    let heap = eval.heap();
+    let bound = bind(
+        FUNCTION,
+        &[
+            param("ctx", true, false, true),
+            param("attr", true, false, true),
+            param("tokenize", false, true, true),
+            param("exec_paths", false, true, false),
+        ],
+        args,
+        heap,
+    )?;
+    let ctx = bound[0].expect("required parameter");
+    if ctx.get_type() != "ctx" {
+        return Err(type_error(FUNCTION, "ctx", ctx, "ctx"));
+    }
+    let attr = bound[1].expect("required parameter");
+    let Some(attribute) = attr.unpack_str() else {
+        return Err(type_error(FUNCTION, "attr", attr, "string"));
+    };
+    let boolean = |index: usize, name| {
+        let value = bound[index].unwrap_or_else(|| Value::new_bool(false));
+        value
+            .unpack_bool()
+            .ok_or_else(|| type_error(FUNCTION, name, value, "bool"))
+    };
+    let tokenize = boolean(2, "tokenize")?;
+    let exec_paths = boolean(3, "exec_paths")?;
+    let rule = crate::analysis_ctx::current_surface(ctx).map_err(starlark::Error::new_other)?;
+    let values = crate::analysis_ctx::string_list_attribute(ctx, attribute, heap)
+        .map_err(starlark::Error::new_other)?;
+    let expanded = crate::ctx_surface::expand_options(
+        rule,
+        attribute,
+        &values,
+        if exec_paths {
+            &[]
+        } else {
+            &rule.data_locations
+        },
+        exec_paths,
+        tokenize,
+    )
+    .map_err(starlark::Error::new_other)?;
+    Ok(crate::depset_items::alloc_frozen_container(
+        heap,
+        &crate::starlark_types::Item::List(
+            expanded
+                .into_iter()
+                .map(crate::starlark_types::Item::String)
+                .collect(),
+        ),
+    ))
+}
 
 #[allow(unsafe_code)]
 mod owned {
@@ -1179,7 +1242,7 @@ j = java_common.internal_DO_NOT_USE()
         fails(
             "@@rules_java+//java:x.bzl",
             "java_common.internal_DO_NOT_USE().expand_java_opts(None, 'a', True, False)",
-            "java_common.expand_java_opts is not implemented in the native profile (analysis-time Java API)",
+            "positional argument",
         );
     }
 }

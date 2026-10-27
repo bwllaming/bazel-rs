@@ -536,6 +536,61 @@ pub(crate) fn current_surface<'v>(value: Value<'v>) -> anyhow::Result<&'v Arc<Ru
     Ok(&ctx.surface)
 }
 
+/// RuleContext.attributes().get(name, Types.STRING_LIST), not a duck-typed
+/// ctx.attr list. The underlying rule attributes also apply in aspects.
+pub(crate) fn string_list_attribute<'v>(
+    value: Value<'v>,
+    name: &str,
+    heap: Heap<'v>,
+) -> anyhow::Result<Vec<String>> {
+    let ctx = rule_ctx(value)?;
+    ctx.scope.check_current()?;
+    let ty = ctx
+        .surface
+        .schema
+        .get(name)
+        .map(|spec| spec.kind.type_name())
+        .or_else(|| {
+            crate::native_rules::starlark_builtins(ctx.surface.builtin_kind)
+                .attribute(name)
+                .map(|attribute| attribute.ty.name())
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "No such attribute {name} in {}",
+                ctx.surface.target_description
+            )
+        })?;
+    if ty != "list(string)" {
+        bail!(
+            "Attribute {name} is of type {ty} and not of type list(string) in {}",
+            ctx.surface.target_description
+        );
+    }
+    let backing = if value.downcast_ref::<AspectCtx>().is_some() {
+        ctx.backing
+            .get_attr_error("rule", heap)
+            .map_err(|error| anyhow!(error.to_string()))?
+    } else {
+        ctx.backing
+    };
+    let attrs = backing
+        .get_attr_error("attr", heap)
+        .map_err(|error| anyhow!(error.to_string()))?;
+    let attribute = attrs
+        .get_attr_error(name, heap)
+        .map_err(|error| anyhow!(error.to_string()))?;
+    attribute
+        .iterate(heap)
+        .map_err(|error| anyhow!(error.to_string()))?
+        .map(|item| {
+            item.unpack_str()
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow!("expected string in attribute {name}"))
+        })
+        .collect()
+}
+
 pub(crate) fn split_attributes<'v>(value: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
     let ctx = rule_ctx(value)?;
     ctx.scope.check_current()?;

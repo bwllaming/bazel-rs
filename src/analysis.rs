@@ -1099,6 +1099,8 @@ fn rule_surface(
     let label = crate::rule_declarations::canonical_form(&rule.label);
     crate::ctx_surface::RuleSurface {
         config: Arc::new(with_attribute_template_variables(invocation, dependencies)),
+        schema: invocation.schema.clone(),
+        builtin_kind: invocation.declaration.builtin.kind,
         rule_class: invocation.declaration.rule_class.clone(),
         label: rule.label.clone(),
         declared_fragments: invocation.declaration.fragments.clone(),

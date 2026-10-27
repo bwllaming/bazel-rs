@@ -1,0 +1,2 @@
+module(name = "java_expand_opts")
+register_toolchains("//:tc")

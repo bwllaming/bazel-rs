@@ -1,0 +1,38 @@
+{
+  "reference": "Bazel 9.3.0",
+  "binary_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "capture": "2026-10-27; batch, private HOME/TMPDIR/output root, ignore_all_rc_files, file registry, local module overrides, repository_disable_download; actual write and shell actions",
+  "defines": ["CUSTOM=custom words", "CHOICE=define"],
+  "outputs": {
+    "builtin_tags.json": ["fastbuild", "a", "b"],
+    "tokens.json": ["-A", "two words", "plain", "", "$HOME", "fastbuild", "custom", "words", "tool", "value", "define", "a\nb", "a b", "a\\qb"],
+    "raw.json": ["-A 'two words' plain", "", "''", "$HOME", "fastbuild", "custom words", "tool value", "define", "a\nb", "a\\ b", "\"a\\qb\""],
+    "locations.json": ["./source.txt", "./source.txt", "./data.txt", "./source.txt", "./source.txt", "_main/source.txt"],
+    "exec_locations.json": ["./source.txt", "./source.txt"],
+    "default_paths.json": ["./data.txt"],
+    "resolved.json": ["tool", "value", "fastbuild", "bazel-out/k8-fastbuild/bin", "bazel-out/k8-fastbuild/bin"],
+    "generated_runfiles.json": ["./generated-a.txt", "./generated-b.txt", "bazel-out/k8-fastbuild/bin/generated-a.txt", "bazel-out/k8-fastbuild/bin/generated-b.txt", "./generated-a.txt", "./generated-b.txt", "_main/generated-a.txt", "_main/generated-b.txt"],
+    "generated_exec.json": ["bazel-out/k8-fastbuild/bin/generated-a.txt", "bazel-out/k8-fastbuild/bin/generated-b.txt"]
+  },
+  "consumed.args": "<-A>\n<two words>\n<plain>\n<>\n<$HOME>\n<fastbuild>\n<custom>\n<words>\n<tool>\n<value>\n<define>\n<a\nb>\n<a b>\n<a\\qb>\n",
+  "errors": {
+    "exec_data": "in misc attribute of probe rule //:exec_data: label '//:data.txt' in $(location) expression is not a declared prerequisite of this rule",
+    "unknown": "in misc attribute of probe rule //:unknown: $(UNKNOWN) not defined",
+    "function": "in misc attribute of probe rule //:function: $(unknown) not defined",
+    "quote": "in misc attribute of probe rule //:quote: unterminated quotation",
+    "missing_tokenize": "expand_java_opts() missing 1 required named argument: tokenize",
+    "positional_tokenize": "expand_java_opts() accepts no more than 2 positional arguments but got 3",
+    "named_ctx": "expand_java_opts() got named argument for positional-only parameter 'ctx'",
+    "bad_ctx": "in call to expand_java_opts(), parameter 'ctx' got value of type 'NoneType', want 'ctx'",
+    "bad_attr": "in call to expand_java_opts(), parameter 'attr' got value of type 'int', want 'string'",
+    "bad_tokenize": "in call to expand_java_opts(), parameter 'tokenize' got value of type 'int', want 'bool'",
+    "bad_exec": "in call to expand_java_opts(), parameter 'exec_paths' got value of type 'string', want 'bool'",
+    "mutate": "trying to mutate a frozen list value"
+  },
+  "genuine_crashes_native_errors": {
+    "missing_attr": "No such attribute absent in probe rule //:missing_attr",
+    "wrong_attr": "Attribute case is of type string and not of type list(string) in probe rule //:wrong_attr",
+    "empty_wrong_attr": "Attribute ints is of type list(int) and not of type list(string) in probe rule //:empty_wrong_attr"
+  },
+  "escaped_context": "Genuine exits 37: NullPointerException because StarlarkRuleContext.getRuleContext() is null. Native rejects unsupported provider payload type ctx before use; live native calls also require current scope. Neither returns options from an escaped context."
+}
