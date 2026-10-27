@@ -182,7 +182,17 @@ mod owned {
         HeaderInfo,
     }
 
-    #[derive(Debug, Allocative, StarlarkPagable)]
+    /// The scalar child of Java's canonical NestedSet, without rewriting our
+    /// identity-bearing DAG. A transitive singleton points straight to a node
+    /// whose first direct element is that scalar (never to another shortcut).
+    #[derive(Debug, Allocative)]
+    pub(super) enum Singleton {
+        No,
+        Direct,
+        Transitive(Arc<DepsetNode>),
+    }
+
+    #[derive(Debug, Allocative)]
     pub(crate) struct DepsetNode {
         pub direct: Vec<Item>,
         pub children: Vec<Arc<DepsetNode>>,
@@ -190,6 +200,7 @@ mod owned {
         pub element_type: Option<ItemType>,
         pub depth: usize,
         pub empty: bool,
+        pub(super) singleton: Singleton,
     }
 
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagable)]
@@ -260,7 +271,7 @@ mod owned {
 }
 pub(crate) use owned::Target;
 pub(crate) use owned::TargetValue;
-use owned::{DefaultInfoConstructor, DefaultInfoValue, FileRoot, LabelValue};
+use owned::{DefaultInfoConstructor, DefaultInfoValue, FileRoot, LabelValue, Singleton};
 pub(crate) use owned::{Depset, DepsetNode, Item, ItemType, Order};
 pub use owned::{File, FileData, SymlinkEntry};
 
@@ -1331,6 +1342,7 @@ impl Depset {
         Ok(Self {
             node: Arc::new(DepsetNode {
                 empty: direct.is_empty() && children.is_empty(),
+                singleton: Singleton::compose(&direct, &children),
                 direct,
                 children,
                 order,
@@ -1427,26 +1439,82 @@ impl Depset {
 }
 
 impl DepsetNode {
-    /// The element of a set with exactly one distinct element, stopping at
-    /// the second distinct one.
+    /// O(1), with no traversal or allocation, including noncanonical native
+    /// singleton chains. See NestedSet.java:210-265,374-378.
     pub(crate) fn single_item(&self) -> Option<&Item> {
-        let mut stack = vec![self];
-        let mut seen = HashSet::new();
-        let mut found: Option<&Item> = None;
-        while let Some(node) = stack.pop() {
-            if !seen.insert(node as *const DepsetNode) {
-                continue;
-            }
-            for item in &node.direct {
-                match found {
-                    None => found = Some(item),
-                    Some(first) if first == item => {}
-                    Some(_) => return None,
-                }
-            }
-            stack.extend(node.children.iter().map(|child| &**child));
+        match &self.singleton {
+            Singleton::No => None,
+            Singleton::Direct => self.direct.first(),
+            Singleton::Transitive(leaf) => leaf.direct.first(),
         }
-        found
+    }
+}
+
+// Keep the original paged representation. Singleton is derived metadata,
+// recomputed from the immediate children on read, not a new persisted field.
+impl starlark::pagable::StarlarkSerialize for DepsetNode {
+    fn starlark_serialize(
+        &self,
+        ctx: &mut dyn starlark::pagable::StarlarkSerializeContext,
+    ) -> starlark::Result<()> {
+        self.direct.starlark_serialize(ctx)?;
+        self.children.starlark_serialize(ctx)?;
+        self.order.starlark_serialize(ctx)?;
+        self.element_type.starlark_serialize(ctx)?;
+        self.depth.starlark_serialize(ctx)?;
+        self.empty.starlark_serialize(ctx)
+    }
+}
+
+impl starlark::pagable::StarlarkDeserialize for DepsetNode {
+    fn starlark_deserialize(
+        ctx: &mut dyn starlark::pagable::StarlarkDeserializeContext<'_>,
+    ) -> starlark::Result<Self> {
+        let direct = Vec::<Item>::starlark_deserialize(ctx)?;
+        let children = Vec::<Arc<DepsetNode>>::starlark_deserialize(ctx)?;
+        Ok(Self {
+            singleton: Singleton::compose(&direct, &children),
+            direct,
+            children,
+            order: Order::starlark_deserialize(ctx)?,
+            element_type: Option::<ItemType>::starlark_deserialize(ctx)?,
+            depth: usize::starlark_deserialize(ctx)?,
+            empty: bool::starlark_deserialize(ctx)?,
+        })
+    }
+}
+
+impl Singleton {
+    /// Direct members have already been deduplicated and empty children
+    /// removed. Java hoists each scalar transitive child and deduplicates it
+    /// against the direct/scalar children; any array child makes the result
+    /// nonsingleton even if it is the only child (unwrapping keeps the array).
+    /// Order changes placement, not this classification. No descendant walk,
+    /// item cloning, flattened list, or hash set is needed here.
+    fn compose(direct: &[Item], children: &[Arc<DepsetNode>]) -> Self {
+        if direct.len() > 1 {
+            return Self::No;
+        }
+        let first = direct.first().or_else(|| children.first()?.single_item());
+        let Some(first) = first else {
+            return Self::No;
+        };
+        if !children
+            .iter()
+            .all(|child| child.single_item() == Some(first))
+        {
+            return Self::No;
+        }
+        if !direct.is_empty() {
+            Self::Direct
+        } else {
+            let child = &children[0];
+            match &child.singleton {
+                Self::Direct => Self::Transitive(Arc::clone(child)),
+                Self::Transitive(leaf) => Self::Transitive(Arc::clone(leaf)),
+                Self::No => unreachable!("checked singleton above"),
+            }
+        }
     }
 }
 
@@ -2412,6 +2480,130 @@ mod tests {
     use super::*;
     use starlark::environment::{Globals, Module};
     use starlark::syntax::{AstModule, Dialect};
+
+    #[test]
+    fn singleton_metadata_keeps_cross_order_chain_one_hop() {
+        let base = Depset::compose(vec![Item::Int(1)], vec![], Order::Default, None).unwrap();
+        let mut chain = vec![base];
+        for i in 0..MAX_DEPTH - 1 {
+            let order = if i % 2 == 0 {
+                Order::Postorder
+            } else {
+                Order::Default
+            };
+            let next = Depset::compose(
+                vec![],
+                vec![chain.last().unwrap().node.clone()],
+                order,
+                None,
+            )
+            .unwrap();
+            let Singleton::Transitive(leaf) = &next.node.singleton else {
+                panic!("not a shortcut")
+            };
+            assert!(Arc::ptr_eq(leaf, &chain[0].node));
+            assert!(next.node.single_item().is_some());
+            chain.push(next);
+        }
+        while chain.pop().is_some() {}
+    }
+
+    #[test]
+    fn singleton_metadata_is_bounded_on_large_shared_dags() {
+        // Exact pre-cache walker from main 001d321, retained only here for
+        // a bounded before/after measurement, not as a second implementation.
+        fn old_single_item(root: &DepsetNode) -> Option<&Item> {
+            let mut stack = vec![root];
+            let mut seen = HashSet::new();
+            let mut found: Option<&Item> = None;
+            while let Some(node) = stack.pop() {
+                if !seen.insert(node as *const DepsetNode) {
+                    continue;
+                }
+                for item in &node.direct {
+                    match found {
+                        None => found = Some(item),
+                        Some(first) if first == item => {}
+                        Some(_) => return None,
+                    }
+                }
+                stack.extend(node.children.iter().map(|child| &**child));
+            }
+            found
+        }
+
+        // Both 32K-leaf graphs have shared diamonds and non-reused singleton
+        // wrappers. Flattening even once per call would be prohibitive.
+        let start = std::time::Instant::now();
+        let mut levels = vec![
+            (0..32_768)
+                .map(|i| {
+                    [
+                        Depset::compose(vec![Item::Int(1)], vec![], Order::Default, None).unwrap(),
+                        Depset::compose(vec![Item::Int(i)], vec![], Order::Default, None).unwrap(),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        ];
+        while levels.last().unwrap().len() > 1 {
+            let next = levels
+                .last()
+                .unwrap()
+                .chunks(2)
+                .map(|pair| {
+                    std::array::from_fn(|side| {
+                        Depset::compose(
+                            vec![],
+                            vec![
+                                pair[0][side].node.clone(),
+                                pair[1][side].node.clone(),
+                                pair[0][side].node.clone(),
+                            ],
+                            Order::Default,
+                            None,
+                        )
+                        .unwrap()
+                    })
+                })
+                .collect();
+            levels.push(next);
+        }
+        let [one, many] = &levels.last().unwrap()[0];
+        assert!(one.node.single_item().is_some());
+        assert!(many.node.single_item().is_none());
+        // The shortcut is exactly one hop, not a chain of singleton nodes.
+        let Singleton::Transitive(leaf) = &one.node.singleton else {
+            panic!("not transitive")
+        };
+        assert!(matches!(leaf.singleton, Singleton::Direct));
+        assert_eq!(one.node.single_item(), Some(&Item::Int(1)));
+        let refs = Arc::strong_count(leaf);
+        let construction = start.elapsed();
+        let start = std::time::Instant::now();
+        for _ in 0..1_000_000 {
+            assert!(std::hint::black_box(&one.node).single_item().is_some());
+            assert!(std::hint::black_box(&many.node).single_item().is_none());
+        }
+        eprintln!(
+            "singleton DAG: 131070 nodes, construction={construction:?}, 2000000 calls={:?}, metadata_bytes/node={}",
+            start.elapsed(),
+            std::mem::size_of::<Singleton>()
+        );
+        assert_eq!(Arc::strong_count(leaf), refs);
+        let start = std::time::Instant::now();
+        for _ in 0..64 {
+            assert_eq!(
+                old_single_item(std::hint::black_box(&one.node)),
+                one.node.single_item()
+            );
+        }
+        eprintln!(
+            "singleton DAG: pre-cache walker, 64 singleton calls={:?}",
+            start.elapsed()
+        );
+        // Drop parents before leaves; do not make this a recursive-drop test.
+        while levels.pop().is_some() {}
+    }
 
     fn file(path: &str) -> File {
         File::new(FileData {

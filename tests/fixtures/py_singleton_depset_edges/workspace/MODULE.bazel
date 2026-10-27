@@ -1,0 +1,5 @@
+module(name = "py_singleton_depset")
+bazel_dep(name = "platforms", version = "1.0.0")
+local_path_override(module_name = "platforms", path = "platforms")
+singleton_repo = use_repo_rule("//tools/build_defs/python:defs.bzl", "singleton_repo")
+singleton_repo(name = "singleton")

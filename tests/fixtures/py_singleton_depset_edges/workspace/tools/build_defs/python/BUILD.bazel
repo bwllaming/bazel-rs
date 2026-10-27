@@ -1,0 +1,4 @@
+load(":defs.bzl", "f", "leaf", "probe")
+f(depset(["BUILD"])) or fail("imported BUILD helper")
+leaf(name = "leaf", srcs = ["input.txt"])
+probe(name = "probe", dep = ":leaf", repo = "@singleton//:result.txt")

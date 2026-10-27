@@ -1,0 +1,287 @@
+{
+  "elf": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+  "elf_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "cases": {
+    "probe": {
+      "rc": 0,
+      "note": "Successful second capture, recovered generated output without repeating Bazel. Python capture failed on repository canonical-name glob before saving stdout/stderr.",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--output_user_root=/home/coder/opencodetmp/py-singleton-depset/genuine/state/output",
+        "build",
+        "//tools/build_defs/python:probe",
+        "--lockfile_mode=off",
+        "--repository_disable_download",
+        "--repository_cache=/home/coder/opencodetmp/py-singleton-depset/genuine/state/cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress",
+        "--remote_cache=",
+        "--remote_executor=",
+        "--noremote_upload_local_results"
+      ]
+    },
+    "missing": {
+      "expression": "f()",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--output_user_root=/home/coder/opencodetmp/py-singleton-depset/genuine/state/output",
+        "query",
+        "//bad_missing:all",
+        "--lockfile_mode=off",
+        "--repository_disable_download",
+        "--repository_cache=/home/coder/opencodetmp/py-singleton-depset/genuine/state/cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "rc": 37,
+      "seconds": 7.459099818952382,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nFATAL: bazel crashed due to an internal error. Printing stack trace:\njava.lang.RuntimeException: Unrecoverable error while evaluating node 'bad_missing' (requested by nodes )\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:552)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\nCaused by: net.starlark.java.eval.Starlark$UncheckedEvalException: IllegalArgumentException thrown during Starlark evaluation\n\tat <starlark>.is_singleton_depset(<builtin>:0)\n\tat <starlark>._is_singleton_depset(/virtual_builtins_bzl/common/python/py_internal.bzl:71)\n\tat <starlark>.<toplevel>(<WS>/bad_missing/BUILD.bazel:2)\nCaused by: java.lang.IllegalArgumentException: IllegalArgumentException (argument type mismatch) in Starlark call of public boolean com.google.devtools.build.lib.rules.python.PyBuiltins.isSingletonDepset(com.google.devtools.build.lib.collect.nestedset.Depset), obj=<unknown object com.google.devtools.build.lib.bazel.rules.python.BazelPyBuiltins> (py_builtins), args=[<unbound> (unbound)]\n\tat net.starlark.java.eval.MethodDescriptor.call(MethodDescriptor.java:280)\n\tat net.starlark.java.eval.BuiltinFunction$ArgumentProcessor.call(BuiltinFunction.java:446)\n\tat net.starlark.java.eval.Starlark.callViaArgumentProcessor(Starlark.java:844)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:765)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execReturn(Eval.java:282)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:321)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Eval.evalPositionalOnlyCall(Eval.java:790)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:707)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execReturn(Eval.java:282)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:321)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Starlark.execFileProgram(Starlark.java:1164)\n\tat com.google.devtools.build.lib.packages.PackageFactory.executeBuildFileImpl(PackageFactory.java:543)\n\tat com.google.devtools.build.lib.packages.PackageFactory.executeBuildFile(PackageFactory.java:505)\n\tat com.google.devtools.build.lib.skyframe.PackageFunction.loadPackage(PackageFunction.java:1214)\n\tat com.google.devtools.build.lib.skyframe.PackageFunction.compute(PackageFunction.java:523)\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:471)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\n"
+    },
+    "keyword": {
+      "expression": "f(value = depset())",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--output_user_root=/home/coder/opencodetmp/py-singleton-depset/genuine/state/output",
+        "query",
+        "//bad_keyword:all",
+        "--lockfile_mode=off",
+        "--repository_disable_download",
+        "--repository_cache=/home/coder/opencodetmp/py-singleton-depset/genuine/state/cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "rc": 7,
+      "seconds": 7.684520296752453,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/bad_keyword/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(value = depset())\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: is_singleton_depset() got named argument for positional-only parameter 'value'\nERROR: package contains errors: bad_keyword: Traceback (most recent call last):\n\tFile \"<WS>/bad_keyword/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(value = depset())\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: is_singleton_depset() got named argument for positional-only parameter 'value'\nERROR: Evaluation of query \"//bad_keyword:all\" failed\n"
+    },
+    "unknown": {
+      "expression": "f(foo = depset())",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--output_user_root=/home/coder/opencodetmp/py-singleton-depset/genuine/state/output",
+        "query",
+        "//bad_unknown:all",
+        "--lockfile_mode=off",
+        "--repository_disable_download",
+        "--repository_cache=/home/coder/opencodetmp/py-singleton-depset/genuine/state/cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "rc": 7,
+      "seconds": 7.463652406819165,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/bad_unknown/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(foo = depset())\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: is_singleton_depset() got unexpected keyword argument 'foo'\nERROR: package contains errors: bad_unknown: Traceback (most recent call last):\n\tFile \"<WS>/bad_unknown/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(foo = depset())\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: is_singleton_depset() got unexpected keyword argument 'foo'\nERROR: Evaluation of query \"//bad_unknown:all\" failed\n"
+    },
+    "typo": {
+      "expression": "f(vaule = depset())",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--output_user_root=/home/coder/opencodetmp/py-singleton-depset/genuine/state/output",
+        "query",
+        "//bad_typo:all",
+        "--lockfile_mode=off",
+        "--repository_disable_download",
+        "--repository_cache=/home/coder/opencodetmp/py-singleton-depset/genuine/state/cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "rc": 7,
+      "seconds": 7.551760293543339,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/bad_typo/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(vaule = depset())\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: is_singleton_depset() got unexpected keyword argument 'vaule' (did you mean 'value'?)\nERROR: package contains errors: bad_typo: Traceback (most recent call last):\n\tFile \"<WS>/bad_typo/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(vaule = depset())\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: is_singleton_depset() got unexpected keyword argument 'vaule' (did you mean 'value'?)\nERROR: Evaluation of query \"//bad_typo:all\" failed\n"
+    },
+    "none": {
+      "expression": "f(None)",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--output_user_root=/home/coder/opencodetmp/py-singleton-depset/genuine/state/output",
+        "query",
+        "//bad_none:all",
+        "--lockfile_mode=off",
+        "--repository_disable_download",
+        "--repository_cache=/home/coder/opencodetmp/py-singleton-depset/genuine/state/cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "rc": 7,
+      "seconds": 7.609235119074583,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/bad_none/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(None)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: in call to is_singleton_depset(), parameter 'value' got value of type 'NoneType', want 'depset'\nERROR: package contains errors: bad_none: Traceback (most recent call last):\n\tFile \"<WS>/bad_none/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(None)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: in call to is_singleton_depset(), parameter 'value' got value of type 'NoneType', want 'depset'\nERROR: Evaluation of query \"//bad_none:all\" failed\n"
+    },
+    "list": {
+      "expression": "f([])",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--output_user_root=/home/coder/opencodetmp/py-singleton-depset/genuine/state/output",
+        "query",
+        "//bad_list:all",
+        "--lockfile_mode=off",
+        "--repository_disable_download",
+        "--repository_cache=/home/coder/opencodetmp/py-singleton-depset/genuine/state/cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "rc": 7,
+      "seconds": 7.473249272443354,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/bad_list/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf([])\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: in call to is_singleton_depset(), parameter 'value' got value of type 'list', want 'depset'\nERROR: package contains errors: bad_list: Traceback (most recent call last):\n\tFile \"<WS>/bad_list/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf([])\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: in call to is_singleton_depset(), parameter 'value' got value of type 'list', want 'depset'\nERROR: Evaluation of query \"//bad_list:all\" failed\n"
+    },
+    "int": {
+      "expression": "f(1)",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--output_user_root=/home/coder/opencodetmp/py-singleton-depset/genuine/state/output",
+        "query",
+        "//bad_int:all",
+        "--lockfile_mode=off",
+        "--repository_disable_download",
+        "--repository_cache=/home/coder/opencodetmp/py-singleton-depset/genuine/state/cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "rc": 7,
+      "seconds": 8.591290647163987,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/bad_int/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(1)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: in call to is_singleton_depset(), parameter 'value' got value of type 'int', want 'depset'\nERROR: package contains errors: bad_int: Traceback (most recent call last):\n\tFile \"<WS>/bad_int/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(1)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: in call to is_singleton_depset(), parameter 'value' got value of type 'int', want 'depset'\nERROR: Evaluation of query \"//bad_int:all\" failed\n"
+    },
+    "extra": {
+      "expression": "f(depset(), depset())",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--output_user_root=/home/coder/opencodetmp/py-singleton-depset/genuine/state/output",
+        "query",
+        "//bad_extra:all",
+        "--lockfile_mode=off",
+        "--repository_disable_download",
+        "--repository_cache=/home/coder/opencodetmp/py-singleton-depset/genuine/state/cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "rc": 7,
+      "seconds": 8.135493790730834,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/bad_extra/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(depset(), depset())\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: is_singleton_depset() accepts no more than 1 positional argument but got 2\nERROR: package contains errors: bad_extra: Traceback (most recent call last):\n\tFile \"<WS>/bad_extra/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(depset(), depset())\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: is_singleton_depset() accepts no more than 1 positional argument but got 2\nERROR: Evaluation of query \"//bad_extra:all\" failed\n"
+    },
+    "duplicate": {
+      "expression": "f(depset(), value = depset())",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--output_user_root=/home/coder/opencodetmp/py-singleton-depset/genuine/state/output",
+        "query",
+        "//bad_duplicate:all",
+        "--lockfile_mode=off",
+        "--repository_disable_download",
+        "--repository_cache=/home/coder/opencodetmp/py-singleton-depset/genuine/state/cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "rc": 7,
+      "seconds": 7.607356213033199,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/bad_duplicate/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(depset(), value = depset())\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: is_singleton_depset() got named argument for positional-only parameter 'value'\nERROR: package contains errors: bad_duplicate: Traceback (most recent call last):\n\tFile \"<WS>/bad_duplicate/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(depset(), value = depset())\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: is_singleton_depset() got named argument for positional-only parameter 'value'\nERROR: Evaluation of query \"//bad_duplicate:all\" failed\n"
+    },
+    "type_before_keyword": {
+      "expression": "f(None, foo = 1)",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--output_user_root=/home/coder/opencodetmp/py-singleton-depset/genuine/state/output",
+        "query",
+        "//bad_type_before_keyword:all",
+        "--lockfile_mode=off",
+        "--repository_disable_download",
+        "--repository_cache=/home/coder/opencodetmp/py-singleton-depset/genuine/state/cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "rc": 7,
+      "seconds": 7.755986507050693,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/bad_type_before_keyword/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(None, foo = 1)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: in call to is_singleton_depset(), parameter 'value' got value of type 'NoneType', want 'depset'\nERROR: package contains errors: bad_type_before_keyword: Traceback (most recent call last):\n\tFile \"<WS>/bad_type_before_keyword/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(None, foo = 1)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: in call to is_singleton_depset(), parameter 'value' got value of type 'NoneType', want 'depset'\nERROR: Evaluation of query \"//bad_type_before_keyword:all\" failed\n"
+    },
+    "type_before_extra": {
+      "expression": "f(None, depset())",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--output_user_root=/home/coder/opencodetmp/py-singleton-depset/genuine/state/output",
+        "query",
+        "//bad_type_before_extra:all",
+        "--lockfile_mode=off",
+        "--repository_disable_download",
+        "--repository_cache=/home/coder/opencodetmp/py-singleton-depset/genuine/state/cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "rc": 7,
+      "seconds": 8.167064827866852,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/bad_type_before_extra/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(None, depset())\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: in call to is_singleton_depset(), parameter 'value' got value of type 'NoneType', want 'depset'\nERROR: package contains errors: bad_type_before_extra: Traceback (most recent call last):\n\tFile \"<WS>/bad_type_before_extra/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(None, depset())\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: in call to is_singleton_depset(), parameter 'value' got value of type 'NoneType', want 'depset'\nERROR: Evaluation of query \"//bad_type_before_extra:all\" failed\n"
+    },
+    "keyword_before_extra": {
+      "expression": "f(depset(), depset(), value = None)",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--output_user_root=/home/coder/opencodetmp/py-singleton-depset/genuine/state/output",
+        "query",
+        "//bad_keyword_before_extra:all",
+        "--lockfile_mode=off",
+        "--repository_disable_download",
+        "--repository_cache=/home/coder/opencodetmp/py-singleton-depset/genuine/state/cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "rc": 7,
+      "seconds": 7.903432808816433,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"<WS>/bad_keyword_before_extra/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(depset(), depset(), value = None)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: is_singleton_depset() got named argument for positional-only parameter 'value'\nERROR: package contains errors: bad_keyword_before_extra: Traceback (most recent call last):\n\tFile \"<WS>/bad_keyword_before_extra/BUILD.bazel\", line 2, column 2, in <toplevel>\n\t\tf(depset(), depset(), value = None)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 71, column 44, in _is_singleton_depset\nError in is_singleton_depset: is_singleton_depset() got named argument for positional-only parameter 'value'\nERROR: Evaluation of query \"//bad_keyword_before_extra:all\" failed\n"
+    }
+  },
+  "fixture_files_sha256": {
+    "MODULE.bazel": "3aa344297305ead1dacfb76e2c10e1edc45785e9566fff19aba09cf5b72f40ed",
+    "tools/build_defs/python/BUILD.bazel": "ad752f951711d977c0a9250000dc736f84272ba3198af33518f6180bc8d343ff",
+    "tools/build_defs/python/defs.bzl": "3613b6d87e3c7fc8f459478b48f57c4d9321840dcedd900c182c68ea58be175c",
+    "tools/build_defs/python/input.txt": "620990fbc00218a25fc8b2160cdbc7057433be5ab88a86ca181936924eb6896c"
+  },
+  "build_output": "default/empty=False/0\ndefault/single=True/1\ndefault/multiple=False/2\ndefault/direct_duplicates=True/1\ndefault/empty_children=False/0\ndefault/chain=True/1\ndefault/reused=True/1\ndefault/equal_subsets=True/1\ndefault/direct_hoisted=True/1\ndefault/direct_other=False/2\ndefault/two_subsets=False/2\ndefault/reused_multiple=False/2\ndefault/direct_in_multiple=False/2\ndefault/default_child=True/1\ndefault/default_parent=True/1\ndefault/diamond=False/2\npostorder/empty=False/0\npostorder/single=True/1\npostorder/multiple=False/2\npostorder/direct_duplicates=True/1\npostorder/empty_children=False/0\npostorder/chain=True/1\npostorder/reused=True/1\npostorder/equal_subsets=True/1\npostorder/direct_hoisted=True/1\npostorder/direct_other=False/2\npostorder/two_subsets=False/2\npostorder/reused_multiple=False/2\npostorder/direct_in_multiple=False/2\npostorder/default_child=True/1\npostorder/default_parent=True/1\npostorder/diamond=False/2\npreorder/empty=False/0\npreorder/single=True/1\npreorder/multiple=False/2\npreorder/direct_duplicates=True/1\npreorder/empty_children=False/0\npreorder/chain=True/1\npreorder/reused=True/1\npreorder/equal_subsets=True/1\npreorder/direct_hoisted=True/1\npreorder/direct_other=False/2\npreorder/two_subsets=False/2\npreorder/reused_multiple=False/2\npreorder/direct_in_multiple=False/2\npreorder/default_child=True/1\npreorder/default_parent=True/1\npreorder/diamond=False/2\ntopological/empty=False/0\ntopological/single=True/1\ntopological/multiple=False/2\ntopological/direct_duplicates=True/1\ntopological/empty_children=False/0\ntopological/chain=True/1\ntopological/reused=True/1\ntopological/equal_subsets=True/1\ntopological/direct_hoisted=True/1\ntopological/direct_other=False/2\ntopological/two_subsets=False/2\ntopological/reused_multiple=False/2\ntopological/direct_in_multiple=False/2\ntopological/default_child=True/1\ntopological/default_parent=True/1\ntopological/diamond=False/2\nints=True/1\nints/transitive=True/1\nbools=True/1\nbools/transitive=True/1\nnone=True/1\nnone/transitive=True/1\nlabels=True/1\nlabels/transitive=True/1\ntuple_mixed=True/1\ntuple_mixed/transitive=True/1\nstruct_equal=True/1\nstruct_equal/transitive=True/1\nstruct_distinct=False/2\nstruct_distinct/transitive=False/2\nprovider_equal=True/1\nprovider_equal/transitive=True/1\nmixed_providers=False/2\nmixed_providers/transitive=False/2\nmixed_struct_provider=False/2\nmixed_struct_provider/transitive=False/2\nnested_depsets=False/2\nnested_depsets/transitive=False/2\ndefault/empty=False/0\ndefault/single=True/1\ndefault/multiple=False/2\ndefault/direct_duplicates=True/1\ndefault/empty_children=False/0\ndefault/chain=True/1\ndefault/reused=True/1\ndefault/equal_subsets=True/1\ndefault/direct_hoisted=True/1\ndefault/direct_other=False/2\ndefault/two_subsets=False/2\ndefault/reused_multiple=False/2\ndefault/direct_in_multiple=False/2\ndefault/default_child=True/1\ndefault/default_parent=True/1\ndefault/diamond=False/2\npostorder/empty=False/0\npostorder/single=True/1\npostorder/multiple=False/2\npostorder/direct_duplicates=True/1\npostorder/empty_children=False/0\npostorder/chain=True/1\npostorder/reused=True/1\npostorder/equal_subsets=True/1\npostorder/direct_hoisted=True/1\npostorder/direct_other=False/2\npostorder/two_subsets=False/2\npostorder/reused_multiple=False/2\npostorder/direct_in_multiple=False/2\npostorder/default_child=True/1\npostorder/default_parent=True/1\npostorder/diamond=False/2\npreorder/empty=False/0\npreorder/single=True/1\npreorder/multiple=False/2\npreorder/direct_duplicates=True/1\npreorder/empty_children=False/0\npreorder/chain=True/1\npreorder/reused=True/1\npreorder/equal_subsets=True/1\npreorder/direct_hoisted=True/1\npreorder/direct_other=False/2\npreorder/two_subsets=False/2\npreorder/reused_multiple=False/2\npreorder/direct_in_multiple=False/2\npreorder/default_child=True/1\npreorder/default_parent=True/1\npreorder/diamond=False/2\ntopological/empty=False/0\ntopological/single=True/1\ntopological/multiple=False/2\ntopological/direct_duplicates=True/1\ntopological/empty_children=False/0\ntopological/chain=True/1\ntopological/reused=True/1\ntopological/equal_subsets=True/1\ntopological/direct_hoisted=True/1\ntopological/direct_other=False/2\ntopological/two_subsets=False/2\ntopological/reused_multiple=False/2\ntopological/direct_in_multiple=False/2\ntopological/default_child=True/1\ntopological/default_parent=True/1\ntopological/diamond=False/2\nints=True/1\nints/transitive=True/1\nbools=True/1\nbools/transitive=True/1\nnone=True/1\nnone/transitive=True/1\nlabels=True/1\nlabels/transitive=True/1\ntuple_mixed=True/1\ntuple_mixed/transitive=True/1\nstruct_equal=True/1\nstruct_equal/transitive=True/1\nstruct_distinct=False/2\nstruct_distinct/transitive=False/2\nprovider_equal=True/1\nprovider_equal/transitive=True/1\nmixed_providers=False/2\nmixed_providers/transitive=False/2\nmixed_struct_provider=False/2\nmixed_struct_provider/transitive=False/2\nnested_depsets=False/2\nnested_depsets/transitive=False/2\nfiles=True/1\nfiles_duplicate=True/1\nprovider_bool=True\n",
+  "repo_output": "repository=True\ndefault/empty=False/0\ndefault/single=True/1\ndefault/multiple=False/2\ndefault/direct_duplicates=True/1\ndefault/empty_children=False/0\ndefault/chain=True/1\ndefault/reused=True/1\ndefault/equal_subsets=True/1\ndefault/direct_hoisted=True/1\ndefault/direct_other=False/2\ndefault/two_subsets=False/2\ndefault/reused_multiple=False/2\ndefault/direct_in_multiple=False/2\ndefault/default_child=True/1\ndefault/default_parent=True/1\ndefault/diamond=False/2\npostorder/empty=False/0\npostorder/single=True/1\npostorder/multiple=False/2\npostorder/direct_duplicates=True/1\npostorder/empty_children=False/0\npostorder/chain=True/1\npostorder/reused=True/1\npostorder/equal_subsets=True/1\npostorder/direct_hoisted=True/1\npostorder/direct_other=False/2\npostorder/two_subsets=False/2\npostorder/reused_multiple=False/2\npostorder/direct_in_multiple=False/2\npostorder/default_child=True/1\npostorder/default_parent=True/1\npostorder/diamond=False/2\npreorder/empty=False/0\npreorder/single=True/1\npreorder/multiple=False/2\npreorder/direct_duplicates=True/1\npreorder/empty_children=False/0\npreorder/chain=True/1\npreorder/reused=True/1\npreorder/equal_subsets=True/1\npreorder/direct_hoisted=True/1\npreorder/direct_other=False/2\npreorder/two_subsets=False/2\npreorder/reused_multiple=False/2\npreorder/direct_in_multiple=False/2\npreorder/default_child=True/1\npreorder/default_parent=True/1\npreorder/diamond=False/2\ntopological/empty=False/0\ntopological/single=True/1\ntopological/multiple=False/2\ntopological/direct_duplicates=True/1\ntopological/empty_children=False/0\ntopological/chain=True/1\ntopological/reused=True/1\ntopological/equal_subsets=True/1\ntopological/direct_hoisted=True/1\ntopological/direct_other=False/2\ntopological/two_subsets=False/2\ntopological/reused_multiple=False/2\ntopological/direct_in_multiple=False/2\ntopological/default_child=True/1\ntopological/default_parent=True/1\ntopological/diamond=False/2\nints=True/1\nints/transitive=True/1\nbools=True/1\nbools/transitive=True/1\nnone=True/1\nnone/transitive=True/1\nlabels=True/1\nlabels/transitive=True/1\ntuple_mixed=True/1\ntuple_mixed/transitive=True/1\nstruct_equal=True/1\nstruct_equal/transitive=True/1\nstruct_distinct=False/2\nstruct_distinct/transitive=False/2\nprovider_equal=True/1\nprovider_equal/transitive=True/1\nmixed_providers=False/2\nmixed_providers/transitive=False/2\nmixed_struct_provider=False/2\nmixed_struct_provider/transitive=False/2\nnested_depsets=False/2\nnested_depsets/transitive=False/2\n"
+}

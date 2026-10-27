@@ -2141,6 +2141,63 @@ pub(crate) mod tests {
     const FILE: &str = "@@some_rules+//pkg:defs.bzl";
 
     #[test]
+    fn py_singleton_genuine_binding_errors_and_pure_contexts() {
+        let file = "//tools/build_defs/python:singleton.bzl";
+        let receipt: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/py_singleton_depset_edges/reference_receipt.json"
+        ))
+        .unwrap();
+        for (name, case) in receipt["cases"].as_object().unwrap() {
+            let Some(expr) = case["expression"].as_str() else {
+                continue;
+            };
+            let expected = if name == "missing" {
+                assert_eq!(case["rc"], 37);
+                assert!(
+                    case["stderr"]
+                        .as_str()
+                        .unwrap()
+                        .contains("IllegalArgumentException")
+                );
+                "genuine Bazel 9.3 crashes on a missing argument"
+            } else {
+                case["stderr"]
+                    .as_str()
+                    .unwrap()
+                    .split("Error in is_singleton_depset: ")
+                    .nth(1)
+                    .unwrap()
+                    .lines()
+                    .next()
+                    .unwrap()
+            };
+            fails(
+                file,
+                &format!("f = py_internal.is_singleton_depset\nx = {expr}\n"),
+                expected,
+            );
+        }
+        for globals in [
+            crate::package::bzl_globals(),
+            crate::package::module_bzl_globals(),
+        ] {
+            run_with(
+                &globals,
+                file,
+                r#"
+f = py_internal.is_singleton_depset
+(type(f(depset([1]))) == "bool") or fail("bool")
+f(depset([1])) or fail("singleton")
+not f(depset()) or fail("empty")
+not f(depset([1, 2])) or fail("multiple")
+"#,
+                false,
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
     fn every_language_global_is_in_both_bzl_phases() {
         let source = r#"
 names = [cc_common, java_common, apple_common, py_internal, proto_common_do_not_use,
