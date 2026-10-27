@@ -50,6 +50,9 @@ impl Workspace {
             .args(["--kill-after=5s", "120s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", &format!("--cache-dir={cache}")])
             .args(args)
+            // Verify that the fixture's seeded closure suffices even on a
+            // cold materialization, with no fallback archive downloads.
+            .arg("--repository_disable_download")
             .current_dir(self.path())
             .output()
             .unwrap();
@@ -87,7 +90,9 @@ fn distinct_artifacts_with_one_content_are_distinct_inodes() {
         fs::copy(fixture.join("workspace").join(name), ws.path().join(name)).unwrap();
     }
     for (index, strategy) in ["standalone", "sandboxed"].into_iter().enumerate() {
-        seed_module_archives(&ws.path().join(strategy), &["platforms@1.0.0"]);
+        // Test-action toolchain discovery visits the whole builtin closure
+        // (including rules_shell), not only the platform definitions.
+        seed_module_archives(&ws.path().join(strategy), TOOLCHAIN_CLOSURE_ARCHIVES);
         let registry = builtin_registry_flag();
         let output = ws.run(
             strategy,

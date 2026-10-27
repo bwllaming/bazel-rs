@@ -11,6 +11,15 @@ file against the `integrity` of the module's `source.json` in that registry
 (the pinned genuine capture) before seeding it, so a changed byte fails the
 test instead of reaching the cache.
 
+The helper also seeds the registry's local patches and overlays, verifying
+each against its own `source.json` integrity. This matters when fixture
+commands use `--repository_disable_download`: a missing patch blob cannot be
+copied even from a `file://` registry under that policy. `console_text` and
+`distinct_inodes` seed `TOOLCHAIN_CLOSURE_ARCHIVES` and disable downloads during
+their build/test commands, covering cold materialization (including genuine
+registry patches) without a per-run network fallback. Their captured outputs
+and module source/provenance files remain unchanged.
+
 | module | file | source.json URL | sha256 | bytes |
 |---|---|---|---|---|
 | platforms 1.0.0 | `platforms-1.0.0.tar.gz` | https://github.com/bazelbuild/platforms/releases/download/1.0.0/platforms-1.0.0.tar.gz | `3384eb1c30762704fbe38e440204e114154086c8fc8a8c2e3e28441028c019a8` | 7,879 |

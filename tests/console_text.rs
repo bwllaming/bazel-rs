@@ -11,25 +11,29 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
+include!("support/module_archives.rs");
+include!("support/temp_root.rs");
+
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/console_text");
 
 struct Workspace(tempfile::TempDir);
 
 impl Workspace {
     fn new() -> Self {
-        let base = std::env::var_os("TMPDIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("console-text-")
-                .tempdir_in(base)
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         for entry in fs::read_dir(Path::new(FIXTURE).join("workspace")).unwrap() {
             let entry = entry.unwrap();
             fs::copy(entry.path(), ws.path().join(entry.file_name())).unwrap();
         }
+        // Discovery visits the builtin registered toolchains, not just
+        // platforms. Reuse the genuine, checksum-verified archive helper
+        // rather than letting fresh fixtures fetch releases in every run.
+        seed_module_archives(&ws.path().join("cache"), TOOLCHAIN_CLOSURE_ARCHIVES);
         ws
     }
 
@@ -42,6 +46,10 @@ impl Workspace {
             .arg("--ignore_all_rc_files")
             .arg("--cache-dir=cache")
             .args(arguments)
+            .arg(builtin_registry_flag())
+            // The seeded cache plus local registry must suffice; a missing
+            // archive fails locally, never becomes a network-dependent pass.
+            .arg("--repository_disable_download")
             .args(["--curses=no", "--color=no"])
             .current_dir(self.path())
             .env("BAZEL_RS_MAX_MEMORY_MB", "4096")
@@ -127,11 +135,17 @@ fn prints_and_build_summary_match_bazel() {
     let observed = ws.observed(&build);
     let (prints, rest) = split_prints(&observed);
     let (genuine_prints, genuine_rest) = split_prints(&genuine("genuine_build.txt"));
-    assert_eq!(prints, genuine_prints, "{observed:#?}");
+    assert_eq!(
+        prints,
+        genuine_prints,
+        "{observed:#?}\nfull stderr:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
     assert_eq!(
         normalized(&rest),
         normalized(&genuine_rest),
-        "{observed:#?}"
+        "{observed:#?}\nfull stderr:\n{}",
+        String::from_utf8_lossy(&build.stderr)
     );
 
     // An analysis snapshot hit replays the analysis report (the prints
@@ -149,11 +163,21 @@ fn prints_and_build_summary_match_bazel() {
             .cloned()
             .collect()
     };
-    assert_eq!(analyzed(&replayed), analyzed(&observed));
+    assert_eq!(
+        analyzed(&replayed),
+        analyzed(&observed),
+        "snapshot-hit stderr:\n{}",
+        String::from_utf8_lossy(&hit.stderr)
+    );
 
     // --quiet drops every DEBUG and INFO line.
     let quiet = ws.run(&["--quiet", "build", "//:top", "//:m"]);
-    assert_eq!(ws.observed(&quiet), ["rc=0"]);
+    assert_eq!(
+        ws.observed(&quiet),
+        ["rc=0"],
+        "quiet stderr:\n{}",
+        String::from_utf8_lossy(&quiet.stderr)
+    );
 }
 
 #[test]

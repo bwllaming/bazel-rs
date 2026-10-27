@@ -11,6 +11,8 @@
 // (src/materializer.rs `cached_download`). The archives are the genuine
 // release files (tests/fixtures/module_archives/README.md); each is checked
 // against the registry's pinned integrity before it is seeded.
+// Registry patches/overlays are verified and seeded too: disabling repository
+// downloads also disallows copying a missing blob from a file:// registry.
 
 /// The offline genuine registry (tests/fixtures/builtin_modules), as a
 /// `--registry` flag.
@@ -82,13 +84,24 @@ fn seed_module_archives(cache_dir: &std::path::Path, modules: &[&str]) {
     std::fs::create_dir_all(&downloads).unwrap();
     for module in modules {
         let (name, version) = module.split_once('@').unwrap();
-        let source = fixtures
+        let module_dir = fixtures
             .join("builtin_modules/registry/modules")
             .join(name)
-            .join(version)
-            .join("source.json");
+            .join(version);
         let source: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&source).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(module_dir.join("source.json")).unwrap())
+                .unwrap();
+        for kind in ["patches", "overlay"] {
+            if let Some(files) = source.get(kind).and_then(serde_json::Value::as_object) {
+                for (relative, integrity) in files {
+                    seed_verified_module_file(
+                        &downloads,
+                        &module_dir.join(kind).join(relative),
+                        integrity.as_str().unwrap(),
+                    );
+                }
+            }
+        }
         let url = source["url"].as_str().unwrap();
         let integrity = source["integrity"]
             .as_str()
@@ -132,6 +145,35 @@ fn seed_module_archives(cache_dir: &std::path::Path, modules: &[&str]) {
             std::io::Write::write_all(&mut staged, &bytes).unwrap();
             staged.persist(&blob).unwrap();
         }
+    }
+}
+
+/// A local registry patch/overlay, verified against its captured source.json
+/// pin before publishing it just like a downloaded content-addressed blob.
+#[allow(dead_code)]
+fn seed_verified_module_file(
+    downloads: &std::path::Path,
+    input: &std::path::Path,
+    integrity: &str,
+) {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let digest = base64::engine::general_purpose::STANDARD
+        .decode(integrity.strip_prefix("sha256-").unwrap())
+        .unwrap();
+    let bytes = std::fs::read(input).unwrap_or_else(|error| panic!("{}: {error}", input.display()));
+    assert_eq!(
+        sha2::Sha256::digest(&bytes).as_slice(),
+        digest.as_slice(),
+        "{} does not match its source.json integrity",
+        input.display()
+    );
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    let blob = downloads.join(hex);
+    if !blob.exists() {
+        let mut staged = tempfile::NamedTempFile::new_in(downloads).unwrap();
+        std::io::Write::write_all(&mut staged, &bytes).unwrap();
+        staged.persist(&blob).unwrap();
     }
 }
 
