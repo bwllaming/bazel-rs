@@ -82,20 +82,26 @@ impl Fixture {
                 .display()
         );
         let mut all = Vec::new();
+        let module_path = self.0.path().join("MODULE.bazel");
+        let restore_module = (!builtin).then(|| fs::read(&module_path).unwrap());
         if builtin {
             // Offline: execution platform resolution materializes @platforms.
             seed_module_archives(&self.0.path().join("cache"), &["platforms@1.0.0"]);
             all.extend(["--experimental-builtin-modules", registry.as_str()]);
         } else {
-            // Without the built-in modules the stub overrides name modules
-            // outside the graph; keep the lazy native profile instead of the
-            // eager resolution a lockfile with the default remote registry
-            // implies (N37, docs/REGISTRY_LOCKFILE.md), never touching
-            // https://bcr.bazel.build/.
+            // This explicit-module case intentionally has no built-in
+            // closure. Remove its otherwise-nonexistent overrides, not module
+            // validation: Bazel 9.3 rejects overrides outside the selected
+            // graph, which analysis now resolves to discover MODULE aliases.
+            fs::write(
+                &module_path,
+                "module(name = 'main')\nregister_toolchains('//tcs:all')\n",
+            )
+            .unwrap();
             all.push("--lockfile_mode=off");
         }
         all.extend_from_slice(args);
-        Command::new("timeout")
+        let output = Command::new("timeout")
             .args([
                 "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),
@@ -107,7 +113,11 @@ impl Fixture {
             .current_dir(self.0.path())
             .explicit_modules()
             .output()
-            .unwrap()
+            .unwrap();
+        if let Some(module) = restore_module {
+            fs::write(module_path, module).unwrap();
+        }
+        output
     }
 
     fn build(&self, args: &[&str]) -> Output {
