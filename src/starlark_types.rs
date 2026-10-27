@@ -1387,7 +1387,7 @@ impl Depset {
         }
         let mut stack = vec![Visit::Node(&self.node)];
         let mut seen_nodes = HashSet::new();
-        let mut seen_items = BTreeSet::new();
+        let mut seen_items = ItemSet::default();
         let mut result = Vec::new();
         while let Some(visit) = stack.pop() {
             match visit {
@@ -1495,13 +1495,71 @@ impl<'v> StarlarkValue<'v> for Depset {
 }
 
 // See Depset::flatten: struct locations are not part of the ordering.
-#[allow(clippy::mutable_key_type)]
 fn dedup(items: impl IntoIterator<Item = Item>) -> Vec<Item> {
-    let mut seen = BTreeSet::new();
+    let items: Vec<Item> = items.into_iter().collect();
+    let mut seen = ItemSet::default();
+    let keep: Vec<bool> = items.iter().map(|item| seen.insert(item)).collect();
     items
         .into_iter()
-        .filter(|item| seen.insert(item.clone()))
+        .zip(keep)
+        .filter_map(|(item, keep)| keep.then_some(item))
         .collect()
+}
+
+/// The distinct items seen so far, by `Item` equality: the plain values
+/// (files, strings, labels, ints, bools, `None`) — nearly every depset
+/// element — in a hash set, every other kind ordered (their `Ord` is the
+/// one equality they have). Items of different kinds are never equal. A
+/// `BTreeSet` of files compared three path strings per tree level, ~2 s of
+/// `//src/beyondwork.ai/...`'s analysis in `to_list()` and friends.
+#[derive(Default)]
+pub(crate) struct ItemSet<'a> {
+    plain: HashSet<PlainItem<'a>, crate::fast_hash::FxBuildHasher>,
+    // A struct item's creation location takes no part in its ordering.
+    #[allow(clippy::mutable_key_type)]
+    other: BTreeSet<&'a Item>,
+}
+
+impl<'a> ItemSet<'a> {
+    /// Whether `item` was new.
+    #[allow(clippy::mutable_key_type)]
+    pub(crate) fn insert(&mut self, item: &'a Item) -> bool {
+        match item {
+            Item::File(_)
+            | Item::String(_)
+            | Item::Label(_)
+            | Item::Int(_)
+            | Item::Bool(_)
+            | Item::None => self.plain.insert(PlainItem(item)),
+            _ => self.other.insert(item),
+        }
+    }
+}
+
+/// A plain item ([`ItemSet`]), hashed by kind and value, equal like `Item`.
+struct PlainItem<'a>(&'a Item);
+
+impl PartialEq for PlainItem<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for PlainItem<'_> {}
+
+impl Hash for PlainItem<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self.0).hash(state);
+        match self.0 {
+            Item::File(file) => file.hash(state),
+            Item::String(string) => string.hash(state),
+            Item::Label(label) => label.hash(state),
+            Item::Int(int) => int.hash(state),
+            Item::Bool(bool) => bool.hash(state),
+            // Only plain items are hashed (ItemSet::insert).
+            _ => {}
+        }
+    }
 }
 
 impl Depset {

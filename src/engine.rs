@@ -1227,7 +1227,11 @@ fn describe_with_aliases(chain: &[Label], target: &Label, kind: &str) -> String 
     text
 }
 
-type ConfiguredNodes = BTreeMap<ConfiguredTargetKey, ConfiguredNode>;
+/// The configured targets of one plan, by key. Only looked up (never
+/// iterated into output), so hashed: a `BTreeMap` compared three label
+/// strings per tree level on ~663k lookups of `//src/beyondwork.ai/...`.
+type ConfiguredNodes =
+    HashMap<ConfiguredTargetKey, ConfiguredNode, crate::fast_hash::FxBuildHasher>;
 
 /// The transition of a dependency edge.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14116,7 +14120,7 @@ impl Engine {
         // generated files live under their own configuration's output root.
         let top = self.configurations.top();
         let mut plan = Plan::new();
-        let mut configured = ConfiguredNodes::new();
+        let mut configured = ConfiguredNodes::default();
         self.module_execution_platforms = None;
         self.registered_toolchains.clear();
         self.toolchain_cycle_reports.clear();
@@ -17685,7 +17689,7 @@ mod tests {
     }
 
     fn analyze_roots(engine: &mut Engine, roots: &[&str]) -> Result<Vec<Rule>, String> {
-        let mut done = ConfiguredNodes::new();
+        let mut done = ConfiguredNodes::default();
         let mut plan = Plan::new();
         let top = engine.configurations.top();
         for root in roots {
@@ -18557,7 +18561,7 @@ m = macro(implementation=emit)
                 &test_label(label),
                 top,
                 &mut Vec::new(),
-                &mut ConfiguredNodes::new(),
+                &mut ConfiguredNodes::default(),
                 &mut Plan::new(),
             )
         };
