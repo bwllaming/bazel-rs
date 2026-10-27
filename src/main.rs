@@ -276,7 +276,7 @@ fn run() -> Result<(), String> {
     let mod_options;
     let rc_options;
     let rest: Vec<String> = {
-        let first_options = first_pass_flag_alias_options(&options, &command)?;
+        let first_options = first_pass_flag_alias_options(&options, &command);
         // Errors in Bazel's parse order (rc options, the command line, then
         // each --config expansion), values in priority order (an expansion
         // takes the place of its --config).
@@ -295,18 +295,25 @@ fn run() -> Result<(), String> {
                     unit,
                 ),
             };
-            match result {
-                Err(error) if second_round && alias_candidate_error(&error) => {
+            if let Err(error) = result {
+                let unit = match step {
+                    bazelrc::Step::Unit(unit) => Some(unit),
+                    _ => None,
+                };
+                let defer = second_round
+                    && alias_candidate_error(&error, unit)
+                        .map_err(|error| early_exit(&options, &error, *position))?;
+                if defer {
                     deferred.get_or_insert((error, *position));
+                } else {
+                    return Err(early_exit(&options, &error, *position));
                 }
-                Err(error) => return Err(early_exit(&options, &error, *position)),
-                Ok(()) => {}
             }
         }
         let mut native = NativeOptions::new(option_command);
         for unit in &first_options.priority {
             if let Err(error) = parse_command_option(&mut native, &mut fetch, &command, unit)
-                && !(second_round && alias_candidate_error(&error))
+                && !(second_round && alias_candidate_error(&error, Some(unit))?)
             {
                 return Err(error);
             }
@@ -4414,42 +4421,57 @@ fn parse_command_option(
     native.parse(command, unit)
 }
 
-fn alias_candidate_error(error: &str) -> bool {
+fn alias_candidate_error(error: &str, unit: Option<&bazelrc::Unit>) -> Result<bool, String> {
     // Only unrecognized/unmodelled *names* can be supplied by an alias.
     // Never defer an implemented option's rejected value/profile: execution
     // options may be absent from snapshot keys and a hit must not hide errors.
-    error.contains(" :: Unrecognized option: ")
-        || error.starts_with("unsupported option \"")
-            && error.contains("options are never silently ignored")
+    if error.contains(" :: Unrecognized option: ") {
+        return Ok(true);
+    }
+    if error.starts_with("unsupported option \"")
+        && error.contains("options are never silently ignored")
+        && let Some(unit) = unit
+    {
+        return bazel_rs::flag_alias::defer_unmodelled_option(&unit.option.text);
+    }
+    Ok(false)
 }
 
 /// Explicit --flag_alias already affects the first parsing round. In
 /// particular, --flag_alias=compilation_mode=//:text --compilation_mode=arbitrary
 /// must not feed "arbitrary" to the native compilation-mode converter.
-fn first_pass_flag_alias_options(
-    options: &bazelrc::Expanded,
-    command: &str,
-) -> Result<bazelrc::Expanded, String> {
+fn first_pass_flag_alias_options(options: &bazelrc::Expanded, command: &str) -> bazelrc::Expanded {
     use bazel_rs::flag_alias;
     let mut result = options.clone();
     if !analyzes(command) {
-        return Ok(result);
+        return result;
     }
     let mut aliases = flag_alias::Aliases::new();
     let mut mapped = Vec::new();
     for (step, _) in &mut result.steps {
         if let bazelrc::Step::Unit(unit) = step {
             let original = unit.clone();
-            if let Some(value) = flag_alias::definition_value(unit) {
-                let (name, label) = flag_alias::definition(
-                    value,
-                    &bazel_rs::configuration::parse_canonical_option_label,
-                )
-                .map_err(|error| format!("While parsing option --flag_alias={value}: {error}"))?;
-                aliases.insert(name, label);
-            } else if let Some(text) = flag_alias::rewrite(&unit.option.text, &aliases) {
-                check_alias_option_surface(command, unit)?;
-                unit.option.text = text;
+            let rewrite = (|| -> Result<(), String> {
+                if let Some(value) = flag_alias::definition_value(unit) {
+                    let (name, label) = flag_alias::definition(
+                        value,
+                        &bazel_rs::configuration::parse_canonical_option_label,
+                    )
+                    .map_err(|error| {
+                        format!("While parsing option --flag_alias={value}: {error}")
+                    })?;
+                    aliases.insert(name, label);
+                } else if let Some(text) = flag_alias::rewrite(&unit.option.text, &aliases) {
+                    check_alias_option_surface(command, unit)?;
+                    unit.option.text = text;
+                }
+                Ok(())
+            })();
+            if let Err(error) = rewrite {
+                // Do not report this error ahead of an earlier native parse
+                // failure. Keep it in the same step stream as every option.
+                *step = bazelrc::Step::Fail(error);
+                break;
             }
             mapped.push((original, unit.clone()));
         }
@@ -4459,7 +4481,7 @@ fn first_pass_flag_alias_options(
             *unit = mapped.remove(index).1;
         }
     }
-    Ok(result)
+    result
 }
 
 fn check_alias_option_surface(command: &str, unit: &bazelrc::Unit) -> Result<(), String> {

@@ -51,11 +51,21 @@ usage identities retain their existing representation.
 
 ## Explicit native boundaries
 
-* Aliasing bootstrap/execution options is not implemented. Used collisions fail
-  instead of retaining the first pass's native side effects. Names excluded from
+* Aliasing bootstrap/execution options is not implemented. Known
+  non-configuration aliases (including unmodelled `disk_cache` and
+  `compile_one_dependency`) fail even when unused instead of changing when
+  unsupported command options are rejected. Names excluded from
   snapshot keys (for example `jobs`), plus rc/parser controls `config`,
   `enable_platform_specific_config`, and `flag_alias`, fail even when unused,
   preventing a warm snapshot from hiding an unsupported use.
+  Genuine 9.3 **does** allow those collisions; this is an explicit native-profile
+  limitation, not a claimed Bazel restriction.
+* Unmodelled native configuration names wait for MODULE aliases only when their
+  first-pass converter is supported (`Boolean`, `TriState`, `String`). Other
+  native converters fail closed. Invalid native values still fail before MODULE
+  resolution. An explicit CLI alias preceding the value bypasses the native
+  converter like Bazel; later alias-definition errors never overtake earlier
+  native conversion errors.
 * Split values of aliased native options (`--compilation_mode opt`) fail explicitly;
   use `--compilation_mode=opt`. Starlark flags require equals syntax for values.
 * CLI `--flag_alias` on non-analyzing commands is still unsupported, not accepted
@@ -74,6 +84,12 @@ ownership, selected versions/overrides, warm changed destinations, cquery,
 `select()` and transitions, declaration errors and fail-closed surfaces.
 `tests/fixtures/module_flag_alias/reference.tsv` is a compact independent genuine
 9.3 ELF capture; no genuine Bazel runs in these tests or on user repositories.
+`followup_reference.tsv` pins additional first-pass ordering and collision cases.
+Canonical-root tests assert actual snapshot save/hit/strict-verify behavior both
+with and without aliases, and a MODULE destination change must miss then hit with
+the changed output. A separate exact-main/candidate scratch comparison reproduced
+the symlinked-cache cold key change on both binaries; no snapshot-key or path-
+safety change was made for it here.
 
 Pinned source: `ModuleFileGlobals.java:1187-1212,486-520`,
 `ModuleBase.getFlagAliases`, `InterimModule.toModule`,

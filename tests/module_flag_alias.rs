@@ -15,7 +15,10 @@ const FIXTURE: &str = concat!(
 struct Fixture(tempfile::TempDir);
 impl Fixture {
     fn new() -> Self {
-        let f = Self(tempfile::tempdir().unwrap());
+        let base = fs::canonicalize(std::env::temp_dir()).unwrap();
+        let f = Self(tempfile::tempdir_in(base).unwrap());
+        fs::create_dir(f.path().join("home")).unwrap();
+        fs::create_dir(f.path().join("tmp")).unwrap();
         for name in ["MODULE.bazel", "BUILD.bazel", "defs.bzl"] {
             f.write(
                 name,
@@ -70,6 +73,9 @@ impl Fixture {
         self.write(&format!("{path}/BUILD.bazel"), "load(\":defs.bzl\", \"string_flag\")\nstring_flag(name=\"text\", build_setting_default=\"dep\", visibility=[\"//visibility:public\"])\nstring_flag(name=\"other\", build_setting_default=\"second\", visibility=[\"//visibility:public\"])\n");
     }
     fn run(&self, command: &str, args: &[&str]) -> Output {
+        self.run_env(command, args, &[])
+    }
+    fn run_env(&self, command: &str, args: &[&str], env: &[(&str, &str)]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .args([
                 "--nosystem_rc",
@@ -90,7 +96,12 @@ impl Fixture {
             })
             .args(args)
             .current_dir(self.path())
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", self.path().join("home"))
+            .env("TMPDIR", self.path().join("tmp"))
             .env("BAZEL_RS_CACHE_GC", "off")
+            .envs(env.iter().copied())
             .output()
             .unwrap()
     }
@@ -123,6 +134,191 @@ impl Fixture {
             stderr.contains(expected),
             "{args:?}: wanted {expected}: {stderr}"
         );
+    }
+}
+
+#[test]
+fn unsupported_command_options_fail_before_bootstrap_and_later_parse_errors() {
+    let f = Fixture::new();
+    let module = fs::read_to_string(f.path().join("MODULE.bazel")).unwrap();
+    f.write("MODULE.bazel", &(module + "\nprint('MODULE_SEEN')\n"));
+    for args in [
+        vec!["--compile_one_dependency", "//:read"],
+        vec![
+            "--disk_cache=private",
+            "--sandbox_add_mount_pair=/a::/b",
+            "//:read",
+        ],
+    ] {
+        let out = f.run("build", &args);
+        let error = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success());
+        assert!(
+            error.contains(&format!("unsupported option {:?}", args[0])),
+            "{error}"
+        );
+        assert!(
+            !error.contains("memory limit defaulted") && !error.contains("MODULE_SEEN"),
+            "{error}"
+        );
+    }
+    f.write(
+        ".bazelrc",
+        "build --disk_cache=private\nbuild:cross --sandbox_add_mount_pair=/a::/b\n",
+    );
+    let out = f.run("build", &["--config=cross", "//:read"]);
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(
+        error.contains("--disk_cache=private") && error.contains(".bazelrc:1"),
+        "{error}"
+    );
+    assert!(
+        !error.contains("While parsing option --sandbox") && !error.contains("MODULE_SEEN"),
+        "{error}"
+    );
+}
+
+#[test]
+fn first_pass_alias_and_native_failures_keep_parse_order_and_native_types() {
+    let f = Fixture::new();
+    for (args, expected, absent) in [
+        (
+            vec![
+                "--compilation_mode=arbitrary",
+                "--flag_alias=bad-name=//:text",
+            ],
+            "Not a valid compilation mode",
+            "word characters",
+        ),
+        (
+            vec![
+                "--flag_alias=bad-name=//:text",
+                "--compilation_mode=arbitrary",
+            ],
+            "word characters",
+            "Not a valid compilation mode",
+        ),
+        (
+            vec![
+                "--compilation_mode=arbitrary",
+                "--flag_alias=compilation_mode=//:text",
+            ],
+            "Not a valid compilation mode",
+            "word characters",
+        ),
+        (
+            vec![
+                "--build_python_zip=invalid",
+                "--flag_alias=build_python_zip=//:text",
+            ],
+            "not a boolean",
+            "memory limit defaulted",
+        ),
+        (
+            vec!["--newalias=x", "--sandbox_add_mount_pair=/a::/b"],
+            "contains one or more empty paths",
+            "Unrecognized option",
+        ),
+    ] {
+        let mut args = args;
+        args.push("//:read");
+        let out = f.run("build", &args);
+        let error = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success() && error.contains(expected) && !error.contains(absent),
+            "{args:?}: {error}"
+        );
+    }
+    // A removed/unmodelled configuration option may still be a MODULE alias,
+    // but its native first-pass converter cannot be silently bypassed.
+    let module = fs::read_to_string(f.path().join("MODULE.bazel")).unwrap();
+    f.write(
+        "MODULE.bazel",
+        &(module + "\nflag_alias(name='build_python_zip',starlark_flag='//:enabled')\n"),
+    );
+    assert_eq!(
+        f.built(&["--build_python_zip"]),
+        "root|other|True|1|dep|no|fastbuild"
+    );
+    f.rejects(&["--build_python_zip=invalid"], "not a boolean");
+}
+
+#[test]
+fn canonical_snapshots_hit_and_verify_with_and_without_module_aliases() {
+    for mode in ["on", "verify"] {
+        for aliased in [false, true] {
+            let f = Fixture::new();
+            let mut module = "module(name='snapshot_probe')\n".to_owned();
+            if aliased {
+                module.push_str("flag_alias(name='flavor',starlark_flag='//:text')\n");
+            }
+            f.write("MODULE.bazel", &module);
+            let defs = fs::read_to_string(Path::new(FIXTURE).join("defs.bzl")).unwrap();
+            f.write(
+                "defs.bzl",
+                &defs.replace(
+                    "load(\"@dep//:info.bzl\", \"Info\")",
+                    "Info = provider(fields=['value'])",
+                ),
+            );
+            f.write("BUILD.bazel", "load(':defs.bzl','string_flag','reader')\nplatform(name='platform')\nstring_flag(name='text',build_setting_default='root')\nstring_flag(name='other',build_setting_default='other')\nreader(name='read',flags=[':text',':other'])\n");
+            let arg = if aliased {
+                "--flavor=chosen"
+            } else {
+                "--//:text=chosen"
+            };
+            let env = [
+                ("BAZEL_RS_SNAPSHOT", mode),
+                ("BAZEL_RS_SNAPSHOT_EXPLAIN", "1"),
+                ("BAZEL_RS_SNAPSHOT_VERIFY_STRICT", "1"),
+            ];
+            let run = || {
+                let out = f.run_env("build", &[arg, "//:read"], &env);
+                assert!(
+                    out.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let path = stdout
+                    .lines()
+                    .find_map(|line| line.split_once('\t').map(|(_, p)| p))
+                    .unwrap();
+                (
+                    fs::read_to_string(path).unwrap(),
+                    String::from_utf8(out.stderr).unwrap(),
+                )
+            };
+            let (contents, first) = run();
+            assert_eq!(contents, "chosen|other||fastbuild");
+            assert!(first.contains("bazel-rs-snapshot: saved "), "{first}");
+            let (contents, warm) = run();
+            assert_eq!(contents, "chosen|other||fastbuild");
+            assert!(warm.contains("bazel-rs-snapshot: hit "), "{warm}");
+            if mode == "verify" {
+                assert!(warm.contains("bazel-rs-snapshot: verified "), "{warm}");
+            }
+            if aliased {
+                f.write(
+                    "MODULE.bazel",
+                    &module.replace("starlark_flag='//:text'", "starlark_flag='//:other'"),
+                );
+                let (contents, changed) = run();
+                assert_eq!(contents, "root|chosen||fastbuild");
+                assert!(
+                    changed.contains("bazel-rs-snapshot: miss ")
+                        && changed.contains("bazel-rs-snapshot: saved "),
+                    "{changed}"
+                );
+                let (contents, warm) = run();
+                assert_eq!(contents, "root|chosen||fastbuild");
+                assert!(warm.contains("bazel-rs-snapshot: hit "), "{warm}");
+                if mode == "verify" {
+                    assert!(warm.contains("bazel-rs-snapshot: verified "), "{warm}");
+                }
+            }
+        }
     }
 }
 

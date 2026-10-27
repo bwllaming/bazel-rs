@@ -77,16 +77,72 @@ fn validate_name(name: &str) -> Result<(), String> {
     // consumers can be reparsed, an unused alias must also fail: a later use
     // could otherwise hit a snapshot before diagnosing the unsupported shadow.
     if crate::snapshot::key::excluded(&format!("--{name}"))
+        || known_non_configuration_option(name)
         || matches!(
             name,
             "config" | "enable_platform_specific_config" | "flag_alias"
         )
     {
         return Err(format!(
-            "flag alias --{name} shadows a non-configuration option excluded from snapshot keys; this alias is not implemented in the native profile"
+            "flag alias --{name} shadows a non-configuration or parser-control option; this alias is not implemented in the native profile"
         ));
     }
     Ok(())
+}
+
+fn configuration_option(name: &str) -> bool {
+    configuration::fragment_option(configuration::canonical_name(name)).is_some()
+        // A few native configuration consumers (e.g. strict_action_env) live
+        // outside FragmentOptions. Their real parser defines their scope.
+        || !matches!(configuration::CommandLineOptions::default().parse(&format!("--{name}"), None),
+            Ok(configuration::Parsed::NotModelled))
+}
+
+fn known_non_configuration_option(name: &str) -> bool {
+    crate::command_options::COMMAND_OPTIONS
+        .iter()
+        .any(|row| row.0 == name || !row.1.is_empty() && row.1 == name)
+        && !configuration_option(name)
+}
+
+/// Only unmodelled configuration names with a first-pass converter we can
+/// validate may wait for MODULE aliases. Unsupported command/execution options
+/// must retain their original parse-order failure (before bootstrap/snapshots).
+/// Explicit CLI aliases already replaced the argument before this function.
+pub fn defer_unmodelled_option(arg: &str) -> Result<bool, String> {
+    let Some(rest) = arg.strip_prefix("--") else {
+        return Ok(false);
+    };
+    let (name, value) = rest
+        .split_once('=')
+        .map_or((rest, None), |(name, value)| (name, Some(value)));
+    if !configuration_option(name) {
+        return Ok(false);
+    }
+    let name = configuration::canonical_name(name);
+    let Some(option) = crate::option_metadata::OPTIONS
+        .iter()
+        .find(|option| option.name == name)
+    else {
+        return Ok(false);
+    };
+    match option.converter {
+        "Boolean" | "TriState" => {
+            if option.converter == "TriState"
+                && value.is_some_and(|v| v.eq_ignore_ascii_case("auto"))
+            {
+                return Ok(true);
+            }
+            // Use the original (possibly old) spelling for diagnostics.
+            let raw_name = rest.split('=').next().unwrap_or(rest);
+            configuration::boolean_option(arg, raw_name).transpose()?;
+            Ok(true)
+        }
+        "String" => Ok(true),
+        // Do not bypass an unknown native converter just because the alias's
+        // eventual Starlark converter might accept its input.
+        _ => Ok(false),
+    }
 }
 
 pub fn definition(
@@ -172,6 +228,40 @@ mod tests {
             "config=//:flag",
         ] {
             assert!(definition(value, &labels).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn only_configuration_names_with_valid_first_pass_values_are_deferred() {
+        for arg in [
+            "--disk_cache=cache",
+            "--compile_one_dependency",
+            "-x",
+            "--unknown=value",
+        ] {
+            assert!(!defer_unmodelled_option(arg).unwrap(), "{arg}");
+        }
+        for arg in [
+            "--build_python_zip",
+            "--build_python_zip=true",
+            "--build_python_zip=auto",
+        ] {
+            assert!(defer_unmodelled_option(arg).unwrap(), "{arg}");
+        }
+        assert!(
+            defer_unmodelled_option("--build_python_zip=invalid")
+                .unwrap_err()
+                .contains("not a boolean")
+        );
+        for name in ["compile_one_dependency", "disk_cache"] {
+            assert!(
+                definition(
+                    &format!("{name}=//:flag"),
+                    &configuration::parse_canonical_option_label
+                )
+                .unwrap_err()
+                .contains("non-configuration")
+            );
         }
     }
 

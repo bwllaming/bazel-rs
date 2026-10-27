@@ -1,0 +1,17 @@
+# Genuine Bazel 9.3.0, 2026-10-27, ELF SHA256 d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8
+# Independent root has text(default="default") and boolean(default=False), reader output text|boolean.
+# MODULE alias set: compilation_mode->text, compile_one_dependency->boolean, disk_cache->text.
+# case<TAB>MODULE aliases?<TAB>build options (target //:read)<TAB>exit<TAB>output or first error substring
+module_native_valid	yes	--compilation_mode=opt	0	opt|False
+module_native_invalid	yes	--compilation_mode=arbitrary	2	Not a valid compilation mode: 'arbitrary'
+cli_native_invalid_aliased	no	--flag_alias=compilation_mode=//:text --compilation_mode=arbitrary	0	arbitrary|False
+cli_native_invalid_before_alias	no	--compilation_mode=arbitrary --flag_alias=compilation_mode=//:text	2	Not a valid compilation mode: 'arbitrary'
+early_native_error_late_alias_error	no	--compilation_mode=arbitrary --flag_alias=bad-name=//:text	2	Not a valid compilation mode: 'arbitrary'
+early_alias_error_late_native_error	no	--flag_alias=bad-name=//:text --compilation_mode=arbitrary	2	bad-name should only consist of word characters to be a valid alias name.
+module_loading_option_alias	yes	--compile_one_dependency	0	default|True
+module_execution_option_alias	yes	--disk_cache=changed	0	changed|False
+cli_loading_option_alias	no	--flag_alias=compile_one_dependency=//:boolean --compile_one_dependency	0	default|True
+first_native_conversion_wins	no	--compilation_mode=bad --sandbox_add_mount_pair=/a::/b	2	Not a valid compilation mode: 'bad'
+unknown_deferred_native_error_wins	no	--newalias=x --sandbox_add_mount_pair=/a::/b	2	Input /a::/b contains one or more empty paths.
+known_native_invalid_cannot_be_alias	no	--build_python_zip=invalid --flag_alias=build_python_zip=//:text	2	'invalid' is not a boolean
+invalid_override	local_path_override(not_in_graph)	(no options)	48	the root module specifies overrides on nonexistent module(s): not_in_graph
