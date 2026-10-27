@@ -59,6 +59,7 @@ pub mod extension_ctx;
 mod extension_download;
 mod extension_io;
 pub mod extension_metadata;
+pub(crate) mod fast_hash;
 pub mod feature_flags;
 pub mod flag_alias;
 pub mod git_process;

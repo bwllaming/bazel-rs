@@ -94,6 +94,30 @@ pub fn open_directory(parent: Option<&fs::File>, path: &Path) -> std::io::Result
     Ok(fs::File::from(fd))
 }
 
+/// The stamp of the real directory `name` (one component) below the open
+/// directory `parent`, by `statx` without following a link at `name`
+/// (`None` for anything else). The same fields as [`DirectoryStamp::of`]
+/// takes from the metadata std builds from `statx` (its device number by
+/// glibc's `makedev`, like rustix's).
+fn stat_directory(parent: &fs::File, name: &Path) -> Option<DirectoryStamp> {
+    use rustix::fs::{AtFlags, FileType, StatxFlags, makedev, statx};
+    let stat = statx(
+        parent,
+        name,
+        AtFlags::SYMLINK_NOFOLLOW,
+        StatxFlags::BASIC_STATS,
+    )
+    .ok()?;
+    let mode = u32::from(stat.stx_mode);
+    (FileType::from_raw_mode(mode) == FileType::Directory).then(|| DirectoryStamp {
+        device: makedev(stat.stx_dev_major, stat.stx_dev_minor),
+        inode: stat.stx_ino,
+        mode,
+        mtime: (stat.stx_mtime.tv_sec, i64::from(stat.stx_mtime.tv_nsec)),
+        ctime: (stat.stx_ctime.tv_sec, i64::from(stat.stx_ctime.tv_nsec)),
+    })
+}
+
 /// Visit the directories `names` (relative, normal components) below the
 /// directory open as `root` in component order (each after its parent),
 /// with the stamp each shows now (`None`: missing, no real directory, or
@@ -110,7 +134,7 @@ pub fn walk(
     // The open ancestors of the current directory (`None`: it could not be
     // opened, and nothing below it can).
     let mut open: Vec<(&Path, Option<fs::File>)> = vec![(Path::new(""), Some(root))];
-    for index in order {
+    for (position, &index) in order.iter().enumerate() {
         let name = names[index].as_path();
         let (Some(parent), Some(leaf)) = (name.parent(), name.file_name()) else {
             if !visit(index, None) {
@@ -120,6 +144,25 @@ pub fn walk(
         };
         while open.last().is_some_and(|(open, _)| *open != parent) {
             open.pop();
+        }
+        // A name no later name lies below (in component order every
+        // descendant follows its ancestor directly) needs no descriptor:
+        // one `statx` relative to its parent's, never following a link at
+        // the name, shows exactly what the open (`O_DIRECTORY |
+        // O_NOFOLLOW`) and its `fstat` would — a real directory's stamp, or
+        // nothing — in one system call instead of three.
+        let below = order
+            .get(position + 1)
+            .is_some_and(|&next| names[next].starts_with(name));
+        if !below {
+            let stamp = match open.last() {
+                Some((_, Some(parent))) => stat_directory(parent, Path::new(leaf)),
+                _ => None,
+            };
+            if !visit(index, stamp) {
+                return;
+            }
+            continue;
         }
         let file = match open.last() {
             Some((_, Some(parent))) => open_directory(Some(parent), Path::new(leaf)).ok(),

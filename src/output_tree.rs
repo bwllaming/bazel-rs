@@ -38,10 +38,10 @@ use crate::action::ActionResult;
 use crate::dir_stamps::DirectoryStamp;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::ErrorKind;
-use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
@@ -133,7 +133,6 @@ pub fn publish(
         }
     }
     let record_path = record_path(&root);
-    let mut record = Record::read(&record_path);
     let mut changed = false;
     // Every directory that holds a wanted entry, with its ancestors below
     // the root, and the stamps they show now.
@@ -146,6 +145,15 @@ pub fn publish(
         }
     }
     let directories: Vec<&Path> = directories.into_iter().collect();
+    // Only these directories (and the root) are looked up or changed below:
+    // the record keeps every other one as it is.
+    let mut record = Record::read_selected(
+        &record_path,
+        std::iter::once(Path::new(""))
+            .chain(directories.iter().copied())
+            .map(|directory| directory.as_os_str().as_bytes())
+            .collect(),
+    );
     let root_state = crate::dir_stamps::open_directory(None, &root)
         .ok()
         .and_then(|file| file.metadata().ok())
@@ -374,78 +382,111 @@ struct RecordedDirectory {
 
 /// The record: stamped directories (relative to the execution root; the
 /// root itself is the empty path) and their entries.
+///
+/// A build reads only the directories it looks at ([`Record::read_selected`]:
+/// the record of every earlier build's outputs is megabytes, decoded without
+/// copying, and only the selected directories are materialized); the
+/// others stay in `kept`, the record's verified body, and are written back
+/// exactly as they were.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Record {
     directories: HashMap<PathBuf, RecordedDirectory>,
+    /// The verified body the record was read from (`None`: read whole, or
+    /// no record) and the directories taken from it into `directories`.
+    kept: Option<(Vec<u8>, HashSet<Vec<u8>>)>,
 }
 
 /// The record's encoding: paths and names as bytes (not necessarily UTF-8).
+/// Written and read as [`BorrowedRecordFile`], the same bytes.
+#[cfg(test)]
 #[derive(Serialize, Deserialize)]
 struct RecordFile {
     directories: Vec<EncodedDirectory>,
 }
 
 /// A directory's path, stamp and entries (name, entry).
+#[cfg(test)]
 type EncodedDirectory = (Vec<u8>, DirectoryStamp, Vec<(Vec<u8>, Entry)>);
 
+/// [`RecordFile`] decoded without copying names (postcard spells a byte
+/// vector and a byte slice alike: a length, then the bytes).
+#[derive(Serialize, Deserialize)]
+struct BorrowedRecordFile<'a> {
+    #[serde(borrow)]
+    directories: Vec<BorrowedDirectory<'a>>,
+}
+
+type BorrowedDirectory<'a> = (&'a [u8], DirectoryStamp, Vec<(&'a [u8], Entry)>);
+
 impl Record {
-    /// The record at `path`; empty when it is missing, foreign or corrupt.
-    fn read(path: &Path) -> Self {
-        let Ok(bytes) = fs::read(path) else {
-            return Self::default();
-        };
-        let Some((header, body)) = bytes.split_at_checked(RECORD_HEADER) else {
-            return Self::default();
-        };
+    /// The verified body of the record at `path`; `None` when it is
+    /// missing, foreign or corrupt (no record).
+    fn body(path: &Path) -> Option<Vec<u8>> {
+        let mut bytes = fs::read(path).ok()?;
+        let (header, body) = bytes.split_at_checked(RECORD_HEADER)?;
         if &header[..8] != RECORD_MAGIC
             || header[8..12] != RECORD_VERSION.to_le_bytes()
             || header[12..20] != blake3::hash(body).as_bytes()[..8]
         {
-            return Self::default();
+            return None;
         }
-        let Ok(file) = postcard::from_bytes::<RecordFile>(body) else {
+        bytes.drain(..RECORD_HEADER);
+        Some(bytes)
+    }
+
+    /// The record at `path` with only the `selected` directories (by their
+    /// bytes) in [`Record::directories`]; the others are kept to be written
+    /// back unchanged. Empty when the record is missing, foreign or corrupt.
+    fn read_selected(path: &Path, selected: HashSet<&[u8]>) -> Self {
+        let Some(body) = Self::body(path) else {
             return Self::default();
         };
+        let Ok(file) = postcard::from_bytes::<BorrowedRecordFile<'_>>(&body) else {
+            return Self::default();
+        };
+        let directories: HashMap<PathBuf, RecordedDirectory> = file
+            .directories
+            .into_iter()
+            .filter(|(directory, _, _)| selected.contains(directory))
+            .map(materialize)
+            .collect();
+        let selected = selected.into_iter().map(<[u8]>::to_vec).collect();
         Self {
-            directories: file
-                .directories
-                .into_iter()
-                .map(|(directory, stamp, entries)| {
-                    (
-                        PathBuf::from(OsString::from_vec(directory)),
-                        RecordedDirectory {
-                            stamp,
-                            entries: entries
-                                .into_iter()
-                                .map(|(name, entry)| (OsString::from_vec(name), entry))
-                                .collect(),
-                        },
-                    )
-                })
-                .collect(),
+            directories,
+            kept: Some((body, selected)),
         }
     }
 
     /// Replace the record at `path` atomically.
     fn write(&self, path: &Path) -> std::io::Result<()> {
-        let mut directories: Vec<_> = self
+        let kept = match &self.kept {
+            Some((body, selected)) => postcard::from_bytes::<BorrowedRecordFile<'_>>(body)
+                .map_err(std::io::Error::other)?
+                .directories
+                .into_iter()
+                .filter(|(directory, _, _)| !selected.contains(*directory))
+                .collect(),
+            None => Vec::new(),
+        };
+        let mut directories: Vec<BorrowedDirectory<'_>> = self
             .directories
             .iter()
             .map(|(directory, recorded)| {
                 (
-                    directory.as_os_str().as_bytes().to_vec(),
+                    directory.as_os_str().as_bytes(),
                     recorded.stamp.clone(),
                     recorded
                         .entries
                         .iter()
-                        .map(|(name, entry)| (name.as_bytes().to_vec(), entry.clone()))
+                        .map(|(name, entry)| (name.as_bytes(), entry.clone()))
                         .collect(),
                 )
             })
+            .chain(kept)
             .collect();
-        directories.sort_by(|a, b| a.0.cmp(&b.0));
-        let body =
-            postcard::to_stdvec(&RecordFile { directories }).map_err(std::io::Error::other)?;
+        directories.sort_by(|a, b| a.0.cmp(b.0));
+        let body = postcard::to_stdvec(&BorrowedRecordFile { directories })
+            .map_err(std::io::Error::other)?;
         let mut bytes = Vec::with_capacity(RECORD_HEADER + body.len());
         bytes.extend_from_slice(RECORD_MAGIC);
         bytes.extend_from_slice(&RECORD_VERSION.to_le_bytes());
@@ -458,6 +499,20 @@ impl Record {
         }
         written
     }
+}
+
+/// A decoded directory of the record.
+fn materialize((directory, stamp, entries): BorrowedDirectory<'_>) -> (PathBuf, RecordedDirectory) {
+    (
+        PathBuf::from(OsStr::from_bytes(directory)),
+        RecordedDirectory {
+            stamp,
+            entries: entries
+                .into_iter()
+                .map(|(name, entry)| (OsStr::from_bytes(name).to_owned(), entry))
+                .collect(),
+        },
+    )
 }
 
 /// Link one published directory at its exec path `exec` (below
@@ -669,6 +724,107 @@ mod tests {
     fn write(path: &Path, text: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, text).unwrap();
+    }
+
+    fn stamp(inode: u64) -> DirectoryStamp {
+        DirectoryStamp {
+            device: 1,
+            inode,
+            mode: 0o40755,
+            mtime: (1, 2),
+            ctime: (3, 4),
+        }
+    }
+
+    /// The borrowed encoding is the owned one byte for byte, and a record
+    /// read for some directories writes every other one back unchanged.
+    #[test]
+    fn selected_records_keep_the_other_directories_byte_for_byte() {
+        let entry = |source: u8, kind: EntryKind| Entry {
+            source: [source; 16],
+            kind,
+        };
+        let owned = RecordFile {
+            directories: vec![
+                (
+                    Vec::new(),
+                    stamp(1),
+                    vec![(b"bazel-out".to_vec(), entry(1, EntryKind::Link))],
+                ),
+                (
+                    b"bazel-out/a".to_vec(),
+                    stamp(2),
+                    vec![
+                        (
+                            b"f".to_vec(),
+                            entry(
+                                2,
+                                EntryKind::File {
+                                    device: 1,
+                                    inode: 9,
+                                },
+                            ),
+                        ),
+                        (b"g\xff".to_vec(), entry(3, EntryKind::Link)),
+                    ],
+                ),
+                (b"bazel-out/b".to_vec(), stamp(3), Vec::new()),
+            ],
+        };
+        let body = postcard::to_stdvec(&owned).unwrap();
+        let borrowed = postcard::from_bytes::<BorrowedRecordFile<'_>>(&body).unwrap();
+        assert_eq!(postcard::to_stdvec(&borrowed).unwrap(), body);
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(RECORD_NAME);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(RECORD_MAGIC);
+        bytes.extend_from_slice(&RECORD_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&blake3::hash(&body).as_bytes()[..8]);
+        bytes.extend_from_slice(&body);
+        fs::write(&path, &bytes).unwrap();
+
+        let selected: HashSet<&[u8]> = [&b"bazel-out/a"[..], b"bazel-out/new"].into();
+        let mut record = Record::read_selected(&path, selected);
+        assert_eq!(
+            record.directories.keys().collect::<Vec<_>>(),
+            [&PathBuf::from("bazel-out/a")]
+        );
+        // Unchanged: the same file again.
+        record.write(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        // A selected directory removed, another added: the rest is kept.
+        record.directories.remove(Path::new("bazel-out/a"));
+        record.directories.insert(
+            PathBuf::from("bazel-out/new"),
+            RecordedDirectory {
+                stamp: stamp(4),
+                entries: BTreeMap::new(),
+            },
+        );
+        record.write(&path).unwrap();
+        let reread = Record::read_selected(
+            &path,
+            [&b""[..], b"bazel-out/a", b"bazel-out/b", b"bazel-out/new"].into(),
+        );
+        let mut names: Vec<_> = reread.directories.keys().cloned().collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                PathBuf::from(""),
+                PathBuf::from("bazel-out/b"),
+                PathBuf::from("bazel-out/new")
+            ]
+        );
+        assert_eq!(reread.directories[Path::new("")].entries.len(), 1);
+        // A corrupt record reads as none.
+        fs::write(&path, b"garbage").unwrap();
+        assert!(
+            Record::read_selected(&path, HashSet::new())
+                .directories
+                .is_empty()
+        );
     }
 
     #[test]

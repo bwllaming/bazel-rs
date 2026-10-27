@@ -89,6 +89,7 @@
 //! of as many threads as cores), reporting the error a sequential read
 //! reports.
 
+use crate::fast_hash::{FxHashMap, FxHashSet};
 use crate::shared_path::SharedPath;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -830,15 +831,16 @@ fn frame_count(hash: &mut Sha256, count: usize) {
 }
 
 pub(crate) fn validate_relative(path: &Path) -> Result<(), String> {
+    // Byte-wise: no empty component (no leading, trailing or repeated
+    // separator), no `.` or `..` and no NUL is exactly a relative path whose
+    // components are all normal and which `Path::components` spells back byte
+    // for byte (so byte equality is path equality for admitted paths).
     let bytes = path.as_os_str().as_bytes();
     if bytes.is_empty()
         || bytes.contains(&0)
         || bytes
             .split(|&b| b == b'/')
             .any(|c| c.is_empty() || c == b"." || c == b"..")
-        || path
-            .components()
-            .any(|c| !matches!(c, Component::Normal(_)))
     {
         return Err(format!(
             "unsafe mapped path '{}' (expected relative normal components)",
@@ -921,8 +923,8 @@ fn checked_path(
 /// arbitrary code: `modextwd/`, the repository directories `external/`) are
 /// never remembered.
 /// Other writers racing these checks are outside the module's trust model.
-fn verified_directories() -> &'static Shards<HashSet<PathBuf>> {
-    static MEMO: OnceLock<Shards<HashSet<PathBuf>>> = OnceLock::new();
+fn verified_directories() -> &'static Shards<FxHashSet<PathBuf>> {
+    static MEMO: OnceLock<Shards<FxHashSet<PathBuf>>> = OnceLock::new();
     MEMO.get_or_init(Shards::new)
 }
 
@@ -1136,9 +1138,9 @@ fn owned_no_linked_ancestor(
 /// ancestors each). A directory replaced by a symlink while the command
 /// runs, after this first look, is not re-detected by the command; inputs
 /// are still read (and staged) by their own lstat and digest.
-fn source_directories() -> &'static RwLock<HashSet<PathBuf>> {
-    static MEMO: OnceLock<RwLock<HashSet<PathBuf>>> = OnceLock::new();
-    MEMO.get_or_init(|| RwLock::new(HashSet::new()))
+fn source_directories() -> &'static RwLock<FxHashSet<PathBuf>> {
+    static MEMO: OnceLock<RwLock<FxHashSet<PathBuf>>> = OnceLock::new();
+    MEMO.get_or_init(|| RwLock::new(FxHashSet::default()))
 }
 
 /// The memoized [`no_linked_ancestor`] of a [`plain`] path outside the cache
@@ -1702,8 +1704,8 @@ fn resolve_published(
 /// first reader in this process read them, by path: later consumers stage
 /// the same content identity without inspecting the file again, like Bazel's
 /// per-build file metadata.
-fn file_memo() -> &'static Shards<HashMap<PathBuf, StoreFile>> {
-    static MEMO: OnceLock<Shards<HashMap<PathBuf, StoreFile>>> = OnceLock::new();
+fn file_memo() -> &'static Shards<FxHashMap<PathBuf, StoreFile>> {
+    static MEMO: OnceLock<Shards<FxHashMap<PathBuf, StoreFile>>> = OnceLock::new();
     MEMO.get_or_init(Shards::new)
 }
 
@@ -2559,7 +2561,7 @@ pub fn published_kind(path: &Path) -> Option<PublishedKind> {
 /// published output is read-only and replaced only by its producer's
 /// republication, which drops it first ([`forget_outputs`]).
 struct OutputMemo {
-    values: Shards<HashMap<PathBuf, PublishedValue>>,
+    values: Shards<FxHashMap<PathBuf, PublishedValue>>,
     /// The memoized paths that depend on each action entry
     /// (`actions/<key>`): its own outputs, and the published symlinks of
     /// other entries that resolve into it; and how many values there are.
@@ -3038,7 +3040,9 @@ fn read_source_directory(root: &Path, cache: Option<&Path>) -> Result<SourceDire
 struct PreparedAction {
     inputs: BTreeMap<PathBuf, Staged>,
     /// Absolute input paths by destination (the first mapping of a
-    /// duplicated destination): symlink outputs point at them.
+    /// duplicated destination): symlink outputs point at them. Only
+    /// transforms ([`run_transform`] and their keys) read them: empty for
+    /// a process action whose sources are all absolute ([`prepare`]).
     origins: BTreeMap<PathBuf, PathBuf>,
     outputs: Vec<PathBuf>,
     key: String,
@@ -3072,37 +3076,51 @@ fn check_one_output(action: &Action, kind: &str) -> Result<(), String> {
 /// parameter files) are equal or one contains the other: one hashed lookup
 /// per path and proper ancestor (component-wise, like `Path::starts_with`),
 /// linear in the large input sets of toolchains, SDKs and node_modules trees.
+///
+/// Precondition: every path passed [`validate_relative`].
 fn namespace_may_overlap(action: &Action) -> bool {
-    let mut paths: HashSet<&Path> = action
+    // Every path passed validate_relative: relative, normal components,
+    // single separators, never empty. Such paths are equal exactly when
+    // their bytes are, and their proper ancestors are the prefixes that end
+    // before a separator, so the lookups need neither component parsing nor
+    // `Path` hashing.
+    let count = action.inputs.len() + action.embedded_inputs.len();
+    let mut paths: crate::fast_hash::FxHashSet<&[u8]> =
+        crate::fast_hash::set_with_capacity(count + action.outputs.len());
+    for destination in action
         .inputs
         .iter()
-        .map(|(_, destination)| destination.as_path())
+        .map(|(_, destination)| destination.as_os_str().as_bytes())
         .chain(
             action
                 .embedded_inputs
                 .iter()
-                .map(|(destination, _)| destination.as_path()),
+                .map(|(destination, _)| destination.as_os_str().as_bytes()),
         )
-        .collect();
-    let others = action.outputs.iter().map(PathBuf::as_path).chain(
-        action
-            .extra
-            .param_files
-            .iter()
-            .map(|(path, _)| path.as_path()),
-    );
+    {
+        paths.insert(destination);
+    }
+    let others = action
+        .outputs
+        .iter()
+        .map(|path| path.as_os_str().as_bytes())
+        .chain(
+            action
+                .extra
+                .param_files
+                .iter()
+                .map(|(path, _)| path.as_os_str().as_bytes()),
+        );
     for path in others {
         if !paths.insert(path) {
             return true;
         }
     }
-    // The empty path is a prefix of every path, absolute ones included.
-    (paths.len() > 1 && paths.contains(Path::new("")))
-        || paths.iter().any(|path| {
-            path.ancestors()
-                .skip(1)
-                .any(|ancestor| paths.contains(ancestor))
-        })
+    paths.iter().any(|path| {
+        path.iter()
+            .enumerate()
+            .any(|(at, byte)| *byte == b'/' && paths.contains(&path[..at]))
+    })
 }
 
 pub fn validate_structure(action: &Action) -> Result<(), String> {
@@ -3214,7 +3232,8 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
     // One hashed lookup per declared tree/directory/symlink input (an
     // action with thousands of node_modules links and package directories
     // is checked in linear time, not against every input).
-    let input_names: std::cell::OnceCell<HashSet<&Path>> = std::cell::OnceCell::new();
+    let input_names: std::cell::OnceCell<crate::fast_hash::FxHashSet<&Path>> =
+        std::cell::OnceCell::new();
     let is_input = |path: &Path| {
         input_names
             .get_or_init(|| {
@@ -3561,14 +3580,28 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
     // paths), in input order, so that failures surface exactly where they
     // did; the ordered maps are then built from sorted runs instead of one
     // component-wise search per input (6,000-input actions).
+    //
+    // Only transforms read the origins (their keys and run_transform); a
+    // process action keeps none. Resolving an absolute source cannot fail
+    // (std::path::absolute needs the working directory only for a
+    // relative one), so skipping it for such an action changes no result;
+    // any relative source takes the resolving loop as before.
+    let keep_origins = action.extra.transform.is_some()
+        || action
+            .inputs
+            .iter()
+            .any(|(source, _)| source.as_os_str().as_bytes().first() != Some(&b'/'));
     let mut staged = staged.into_iter();
-    let mut first_origins: HashSet<&[u8]> = HashSet::with_capacity(action.inputs.len());
-    let mut origin_entries: Vec<(&Path, PathBuf)> = Vec::with_capacity(action.inputs.len());
-    let mut input_slots: HashMap<&[u8], usize> = HashMap::with_capacity(reads.len());
+    let mut first_origins: FxHashSet<&[u8]> =
+        crate::fast_hash::set_with_capacity(if keep_origins { action.inputs.len() } else { 0 });
+    let mut origin_entries: Vec<(&Path, PathBuf)> =
+        Vec::with_capacity(if keep_origins { action.inputs.len() } else { 0 });
+    let mut input_slots: FxHashMap<&[u8], usize> =
+        HashMap::with_capacity_and_hasher(reads.len(), Default::default());
     let mut input_entries: Vec<(&Path, Staged)> = Vec::with_capacity(reads.len());
     for (source, destination) in &action.inputs {
         let name = destination.as_os_str().as_bytes();
-        if first_origins.insert(name) {
+        if keep_origins && first_origins.insert(name) {
             origin_entries.push((
                 destination.as_path(),
                 absolute_input(source).map_err(|e| io_error("cannot resolve input", source, e))?,
@@ -7815,6 +7848,15 @@ mod tests {
                 ..Action::default()
             };
             action.extra.param_files = params.iter().map(|p| (p.clone(), Vec::new())).collect();
+            // The precondition (validate_structure checks every path first).
+            if !inputs
+                .iter()
+                .chain(&outputs)
+                .chain(&params)
+                .all(|path| validate_relative(path).is_ok())
+            {
+                continue;
+            }
             let mut distinct: Vec<&Path> = Vec::new();
             for input in &inputs {
                 if !distinct.contains(&input.as_path()) {
