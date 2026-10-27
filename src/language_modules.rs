@@ -80,6 +80,7 @@ pub(crate) enum Behavior {
     Unimplemented(Domain),
     CcInternalExports,
     JavaInternalExports,
+    JavaCheckProviderInstances,
     /// The Starlark-semantics getters of JavaStarlarkCommon
     /// (rules/java/JavaStarlarkCommon.java:383-402).
     JavaSemanticsFlag(JavaFlag),
@@ -1141,6 +1142,9 @@ fn call<'v>(
         Behavior::JavaSemanticsFlag(flag) => {
             bind_styled(style, name, &[], args, heap)?;
             crate::cc_common::java_semantics_flag(eval, flag)
+        }
+        Behavior::JavaCheckProviderInstances => {
+            crate::cc_common::java_check_provider_instances(args, eval)
         }
         Behavior::CheckPrivateApi => crate::cc_common::check_private_api_call(args, eval),
         Behavior::CreateHeaderInfo => crate::cc_common::create_header_info(args, eval),

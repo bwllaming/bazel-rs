@@ -1,0 +1,27 @@
+{
+  "bazel": "9.3.0",
+  "elf_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "source_commit": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+  "rules_java": "9.1.0",
+  "rules_java_archive_sha256": "4e1a28a25c2efa53500c928d22ceffbc505dd95b335a2d025836a293b592212f",
+  "capture": "/home/coder/opencodetmp/java-plugins-alias/genuine-offline",
+  "fixture_policy": "Independent workspace; private HOME/TMPDIR/output cache; batch ELF only; file registry; repository downloads disabled. Unchanged release .bzl files. MODULE registrations suppressed; unused BUILD files emptied; cc symbols.bzl is the exact generated 9.x template.",
+  "cases": {
+    "empty": {"exit": 0, "classes": [], "outputs": 0, "files": [], "default_runfiles": [], "data_runfiles": []},
+    "direct": {"exit": 0, "outputs": 1, "files": ["one.jar", "one.data"]},
+    "one": {"exit": 0, "classes": ["One", "Common"], "jars": ["one.jar"], "data": ["one.data", "input.txt"], "api_classes": ["One", "Common"], "outputs": 0},
+    "merge": {"exit": 0, "flags": ["//:two,//:one", "//:two"], "classes": ["Two", "Common", "One"], "jars": ["two.jar", "one.jar"], "data": ["two.data", "input.txt", "one.data"], "api_classes": ["One", "Common"], "outputs": 0, "exec_probe_classes": []},
+    "wrong": {"exit": 1, "error": "'//:wrong' does not have mandatory providers: 'JavaPluginInfo' or 'JavaPluginInfo'"},
+    "constructor-error": {"exit": 1, "error": "at index 0 of deps, got element of type struct, want JavaInfo"},
+    "source": {"exit": 0, "nothing_to_build": true},
+    "testonly": {"exit": 1, "error": "non-test target '//tools/jdk:java_plugins_flag_alias' depends on testonly target '//:testonly' and doesn't have testonly attribute set"},
+    "empty_graph": {"exit": 0, "plugin_edges": []},
+    "merge_graph": {"exit": 0, "late_bound_attribute": [], "configured_plugin_inputs": ["//:two", "//:one"], "plugin_configuration_is_tool": true},
+    "transition-change": {"exit": 0, "classes": ["Two", "Common"], "api_classes": [], "reported_output": "bazel-out/k8-fastbuild-ST-3f54ab89d39d/bin/probe.json"},
+    "transition-clear": {"exit": 0, "classes": [], "reported_output": "bazel-out/k8-fastbuild-ST-b567ad9a53c5/bin/probe.json"},
+    "main-fallback": {"exit": 0, "classes": ["Main", "Common"], "jars": ["main.jar"]},
+    "main-identity": {"exit": 0, "classes": ["Main", "Common"]},
+    "mixed-precedence": {"exit": 0, "flags": ["//:main,//:two"], "classes": ["Two", "Common"], "api_classes": []}
+  },
+  "transition_receipt_note": "Initial external receipt.json observation used stale bazel-bin/probe.json for transitions. Correct observations above were read from the exact bazel-out/ST path printed by each captured command; stderr and those outputs retained. Capture script now follows reported paths. No transition recapture was needed."
+}

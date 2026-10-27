@@ -4182,6 +4182,7 @@ impl Engine {
             for dep_config in dep_configs.ids() {
                 let src = &edge.label;
                 let late_bound = late_bound_rule
+                    || edge.attribute == ":java_plugins"
                     || analysis_dependent.contains(src)
                     || RUN_UNDER_ATTRIBUTES.contains(&edge.attribute.as_str());
                 let dependency = self.resolve_rule_src(&rule, src)?;
@@ -9326,6 +9327,7 @@ impl Engine {
                 native.platforms.clone()
             },
             host_platform: native.host_platform.clone(),
+            java_plugins: native.plugins.clone(),
             short_id: configuration.id.to_string()[..7].to_owned(),
             cpp: crate::custom_rule::CppConfigurationView::of(native),
             target_platform,
@@ -10142,6 +10144,26 @@ impl Engine {
     /// (RuleContext.getTransitivePackagesForRunfileRepoMappingManifest; N23g).
     fn rule_edges(&self, rule: &Rule, config: ConfigId) -> Vec<Edge> {
         let mut edges = dependency_edges(rule);
+        // JavaPluginsFlagAliasRule's late-bound :java_plugins: only the
+        // selected configuration's plugins, never the universe of flag values.
+        // Keeping these in the ordinary edge path also records their packages,
+        // source/bzl inputs and configured cquery/snapshot dependencies.
+        if matches!(rule.kind, RuleKind::Native("java_plugins_flag_alias")) {
+            let mut seen = BTreeSet::new();
+            edges.extend(
+                self.configurations
+                    .get(config)
+                    .native
+                    .plugins
+                    .iter()
+                    .filter(|label| seen.insert(*label))
+                    .map(|label| Edge {
+                        label: label.to_string(),
+                        attribute: ":java_plugins".to_owned(),
+                        cfg: EdgeCfg::Exec(None),
+                    }),
+            );
+        }
         // FilegroupRule (rules/filegroup/FilegroupRule.java:36-80): `data`
         // (after `srcs`), target-configuration prerequisites that only
         // contribute runfiles (Filegroup.java:80-104).
@@ -13460,6 +13482,53 @@ impl Engine {
             }
             // An alias-like target forwards its actual's files (above) and
             // providers.
+            if matches!(rule.kind, RuleKind::Native("java_plugins_flag_alias")) {
+                let mut plugins = Vec::new();
+                for edge in self.rule_edges(rule, config) {
+                    if edge.attribute != ":java_plugins" {
+                        continue;
+                    }
+                    let label = self.resolve_rule_src(rule, &edge.label)?;
+                    let view = self.plan_dependency_view(
+                        configured,
+                        dry,
+                        custom_providers,
+                        provider_keys,
+                        runfiles_info,
+                        artifact_index,
+                        declared,
+                        native_output_groups,
+                        validation,
+                        target_identities,
+                        views,
+                        &label,
+                        exec_config,
+                    )?;
+                    let providers = &view.providers;
+                    if view.is_rule
+                        && !crate::java_plugins::PROVIDER_IDS
+                            .iter()
+                            .any(|id| providers.contains_key(*id))
+                    {
+                        return Err(located(
+                            rule.location.as_deref(),
+                            format!(
+                                "in :java_plugins attribute of java_plugins_flag_alias rule {}: '{}' does not have mandatory providers: 'JavaPluginInfo' or 'JavaPluginInfo'",
+                                crate::rule_declarations::canonical_form(&rule.label),
+                                view.label,
+                            ),
+                        ));
+                    }
+                    plugins.push(providers.clone());
+                }
+                let providers = crate::java_plugins::merge(&plugins).map_err(|error| {
+                    located(rule.location.as_deref(), format!("{}: {error}", rule.label))
+                })?;
+                custom_providers.insert(key.clone(), providers);
+                // RuleConfiguredTargetBuilder's default files and the explicit
+                // RunfilesProvider.EMPTY: do not forward plugin artifacts.
+                inputs.clear();
+            }
             if forwards(rule) {
                 let actual = dependency_key(self.resolve_rule_src(rule, &rule.srcs[0])?);
                 if let Some(providers) = custom_providers.get(&actual).cloned() {
@@ -16817,6 +16886,7 @@ fn native_analysis_gate(rule: &Rule) -> Result<(), String> {
                 | "toolchain"
                 | "config_feature_flag"
                 | "test_suite"
+                | "java_plugins_flag_alias"
         )
     {
         return Err(format!(
@@ -16908,6 +16978,7 @@ fn resolved_value_gate(rule: &Rule) -> Result<(), String> {
                 | "toolchain"
                 | "config_feature_flag"
                 | "test_suite"
+                | "java_plugins_flag_alias"
         )
     {
         let gaps = crate::native_rules::analysis_gaps(native);

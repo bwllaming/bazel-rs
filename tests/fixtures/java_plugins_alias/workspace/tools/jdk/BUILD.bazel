@@ -1,0 +1,1 @@
+java_plugins_flag_alias(name = "java_plugins_flag_alias", visibility = ["//visibility:public"])

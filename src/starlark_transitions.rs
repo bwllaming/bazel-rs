@@ -51,6 +51,7 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "strip",
     "force_pic",
     "platforms",
+    "plugin",
     "host_platform",
     "extra_toolchains",
     "extra_execution_platforms",
@@ -784,6 +785,13 @@ fn native_input<'v>(
         "platforms" => heap.alloc(
             native
                 .platforms
+                .iter()
+                .map(label)
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        ),
+        "plugin" => heap.alloc(
+            native
+                .plugins
                 .iter()
                 .map(label)
                 .collect::<anyhow::Result<Vec<_>>>()?,
@@ -1677,6 +1685,21 @@ fn convert_native(
                         .collect::<Vec<_>>()
                         .join(","),
                 )?,
+                RawKind::String(text) => labels(text)?,
+                _ => return Err(invalid()),
+            };
+        }
+        "plugin" => {
+            // allowMultiple LabelListConverter: concatenate each converted
+            // list; an empty list clears it. Unlike platforms, no normalization.
+            native.plugins = match &raw.kind {
+                RawKind::List(items) => {
+                    let mut result = Vec::new();
+                    for item in items {
+                        result.extend(labels(&item.element_text(true))?);
+                    }
+                    result
+                }
                 RawKind::String(text) => labels(text)?,
                 _ => return Err(invalid()),
             };

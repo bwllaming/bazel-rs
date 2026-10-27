@@ -54,6 +54,8 @@ pub struct CtxSurface {
     /// PlatformOptions.platforms (normalized, never empty) and host_platform.
     pub platforms: Vec<Label>,
     pub host_platform: Label,
+    /// JavaConfiguration.getPlugins: labels, in option order.
+    pub java_plugins: Vec<Label>,
     /// BuildOptions.shortId: the first 7 hex digits of the native
     /// configuration identity (a different hash than Bazel's checksum).
     pub short_id: String,
@@ -112,6 +114,7 @@ impl Default for CtxSurface {
             coverage_enabled: false,
             platforms: vec![host.clone()],
             host_platform: host,
+            java_plugins: Vec::new(),
             short_id: String::new(),
             cpp: CppConfigurationView::default(),
             target_platform: TargetPlatform::Absent,
@@ -1174,6 +1177,16 @@ fn javac_flags_depset<'v>(_: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Valu
     crate::starlark_types::empty_preorder_string_depset(heap)
 }
 
+fn java_plugins<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    Ok(heap.alloc(
+        surface
+            .java_plugins
+            .iter()
+            .map(|label| crate::starlark_types::alloc_label(heap, &label.to_string()))
+            .collect::<anyhow::Result<Vec<_>>>()?,
+    ))
+}
+
 /// AndroidConfiguration (rules/android/AndroidConfiguration.java) members:
 /// not modelled.
 const ANDROID_MEMBERS: [&str; 37] = [
@@ -1320,7 +1333,7 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
                 "one_version_enforcement_on_java_tests",
                 Field(V::Bool(true)),
             ),
-            ("plugins", Field(V::Strs(&[]))),
+            ("plugins", Field(V::Dyn(java_plugins))),
             (
                 "reduce_java_classpath",
                 Method {

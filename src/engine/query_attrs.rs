@@ -555,6 +555,12 @@ pub(crate) fn rule_attributes(rule: &Rule, package: &Package) -> Vec<QueryAttrib
             };
             attributes.push(implicit(":alias", Shape::Label, false, Some(default)));
         }
+        "java_plugins_flag_alias" => attributes.push(implicit(
+            ":java_plugins",
+            Shape::LabelList,
+            true,
+            Some(AttrValue::Labels(Vec::new())),
+        )),
         _ => {}
     }
     let config = config_dependencies(&attributes);

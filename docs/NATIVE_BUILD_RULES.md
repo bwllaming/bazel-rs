@@ -40,7 +40,7 @@ is `<built-in rule NAME>` (`packages/RuleFactory.java:342-344`), `type()` is
 | `genquery` | `rules/genquery/GenQueryRule.java:37-85` | `scope` (mandatory), `strict`, `expression` (mandatory), `opts`, `compressed_output` |
 | `starlark_doc_extract` | `rules/starlarkdocextract/StarlarkDocExtractRule.java:33-139` | `src` (mandatory), `deps`, `symbol_names`, `render_main_repo_name`, `allow_unused_doc_comments`; implicit outputs `NAME.binaryproto`, `NAME.textproto` (`StarlarkDocExtract.java:77-78`) |
 | `test_suite` | `rules/test/TestSuiteRule.java:30-120` | `tests` (*nc*, no files); `$implicit_tests` (the package's non-manual tests matching `tags` when `tests` is empty); `testonly` defaults to True |
-| `java_plugins_flag_alias` | `rules/java/JavaPluginsFlagAliasRule.java:47-69` (`bazel/rules/JavaRules.java:58`) | none |
+| `java_plugins_flag_alias` | `rules/java/JavaPluginsFlagAliasRule.java:47-69` (`bazel/rules/JavaRules.java:58`) | late-bound `--plugin` bridge; [analysis contract](JAVA_PLUGINS_FLAG_ALIAS.md) |
 | `cc_libc_top_alias` | `rules/cpp/CcLibcTopAlias.java`, `rules/LateBoundAlias.java:93-145` (`bazel/rules/CcRules.java:59`) | none; no `licenses`/`distribs` |
 | `filegroup` | `rules/filegroup/FilegroupRule.java:36-80` | `srcs`, `output_group`, `data`, `output_licenses` |
 | `genrule` | `rules/genrule/GenRuleBaseRule.java:66-348`, `bazel/rules/genrule/BazelGenRuleRule.java:40-56` | `srcs`, `tools`, `outs` (output list, mandatory, *nc*), `cmd`, `cmd_bash`, `cmd_bat`, `cmd_ps`, `output_to_bindir` (*nc*), `local`, `message`, `output_licenses`, `executable` (*nc*), `heuristic_label_expansion`, `toolchains` (*nc*), `stamp` (tristate), plus `exec_properties`, `exec_compatible_with` (*nc*), `exec_group_compatible_with` (*nc*) |

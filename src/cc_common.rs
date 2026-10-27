@@ -68,9 +68,9 @@ cc_functions!(
 );
 
 /// java_common.bzl `_internal_exports()` struct (java_common.bzl:26-38):
-/// (field, Java method name, behaviour). Only the three semantics-flag
-/// getters are implemented (JavaStarlarkCommon.java:383-402, flags at their
-/// defaults); the analysis-time methods fail explicitly.
+/// (field, Java method name, behaviour). The three semantics-flag getters and
+/// constructor-time check_provider_instances are implemented; compilation
+/// APIs still fail explicitly.
 const JAVA_INTERNAL_METHODS: [(&str, &str, Behavior); 11] = [
     (
         "check_java_toolchain_is_declared_on_rule",
@@ -80,7 +80,7 @@ const JAVA_INTERNAL_METHODS: [(&str, &str, Behavior); 11] = [
     (
         "check_provider_instances",
         "check_provider_instances",
-        Behavior::Unimplemented(Domain::Java),
+        Behavior::JavaCheckProviderInstances,
     ),
     (
         "collect_native_deps_dirs",
@@ -420,6 +420,52 @@ pub(crate) fn java_semantics_flag<'v>(
         JavaFlag::MergeRuntimeModuleFlags => semantics.java_info_merge_runtime_module_flags,
         JavaFlag::DisableNonExecutableJavaBinary => semantics.disable_non_executable_java_binary,
     }))
+}
+
+/// JavaStarlarkCommon.checkProviderInstances (:354-387, 427-437). This
+/// constructor-time validation needs no Java compilation/toolchain machinery.
+pub(crate) fn java_check_provider_instances<'v>(
+    args: &Arguments<'v, '_>,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> starlark::Result<Value<'v>> {
+    const F: &str = "check_provider_instances";
+    let bound = bind(
+        F,
+        &[
+            param("providers", true, false, true),
+            param("what", true, false, true),
+            param("provider_type", true, false, true),
+        ],
+        args,
+        eval.heap(),
+    )?;
+    let providers = sequence(F, "providers", bound[0].expect("required"))?;
+    let what = bound[1].expect("required");
+    let what = what
+        .unpack_str()
+        .ok_or_else(|| type_error(F, "what", what, "string"))?;
+    let provider = bound[2].expect("required");
+    let requirement = crate::providers::requirement_info(provider)
+        .map_err(|_| type_error(F, "provider_type", provider, "Provider"))?;
+    check_private_api(
+        eval,
+        0,
+        &owned_allowlist(&crate::subrule_fragments::INTERNAL_STARLARK_API_ALLOWLIST),
+    )?;
+    for (index, value) in providers.into_iter().enumerate() {
+        let id = crate::providers::instance_identity(value);
+        if id.as_deref() != Some(&requirement.id) {
+            let name = id
+                .as_deref()
+                .and_then(|id| id.rsplit_once('%').map(|(_, name)| name))
+                .unwrap_or(value.get_type());
+            return Err(failure(format!(
+                "at index {index} of {what}, got element of type {name}, want {}",
+                requirement.display_name
+            )));
+        }
+    }
+    Ok(Value::new_none())
 }
 
 /// `cc_internal.check_private_api(allowlist=[(repo, prefix), ...], depth=1)`.

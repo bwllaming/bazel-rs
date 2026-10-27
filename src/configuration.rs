@@ -214,6 +214,17 @@ pub const OPTIONS: &[OptionDef] = &[
     // rules_java's toolchain config_settings select on. Not CoreOptions, so
     // `query` does not accept them (QueryCommand.java:59-67).
     OptionDef {
+        name: "plugin",
+        old_name: None,
+        abbrev: None,
+        kind: OptionKind::LabelList,
+        default: "null",
+        allow_multiple: true,
+        non_configurable: false,
+        source: "build/lib/rules/java/JavaOptions.java:354-362",
+        deprecation: None,
+    },
+    OptionDef {
         name: "java_runtime_version",
         old_name: None,
         abbrev: None,
@@ -1006,6 +1017,14 @@ pub struct NativeOptions {
     /// (target and exec) are unchanged.
     #[serde(skip)]
     pub java: JavaVersions,
+    /// JavaOptions.pluginList: repeated comma-separated label lists, in input
+    /// order (duplicates retained in the options). Not propagated to exec.
+    /// Omitting the empty default preserves every existing configuration ID.
+    #[serde(
+        skip_serializing_if = "Vec::is_empty",
+        serialize_with = "serialize_labels"
+    )]
+    pub plugins: Vec<Label>,
     /// The no-config configuration of NoConfigTransition
     /// (analysis/config/transitions/NoConfigTransition.java:52-55):
     /// CommonOptions.EMPTY_OPTIONS (analysis/config/CommonOptions.java:32-42),
@@ -1201,6 +1220,7 @@ impl Default for NativeOptions {
             is_exec: false,
             platform_suffix: None,
             java: JavaVersions::default(),
+            plugins: Vec::new(),
             no_config: false,
             cpu: None,
             host_cpu: None,
@@ -1249,6 +1269,7 @@ impl NativeOptions {
             "strip" => OptionValue::Enum(self.strip),
             "force_pic" => OptionValue::Bool(self.force_pic),
             "platforms" => OptionValue::Labels(self.platforms.clone()),
+            "plugin" => OptionValue::Labels(self.plugins.clone()),
             "host_platform" => OptionValue::Label(self.host_platform.clone()),
             "use_target_platform_for_tests" => {
                 OptionValue::Bool(self.use_target_platform_for_tests)
@@ -1710,6 +1731,7 @@ impl CommandLineOptions {
                     "extra_toolchains",
                     "extra_execution_platforms",
                     "crosstool_top",
+                    "plugin",
                 ]
                 .contains(&name)
                     || JAVA_VERSIONS.contains(&name)
@@ -1892,12 +1914,14 @@ impl CommandLineOptions {
             // `--crosstool_top` keeps an unresolvable repository too: the
             // NO_OP option is never resolved (paired capture
             // pre_platforms_flags/crosstool_flag_unknown_repo succeeds).
-            let parser: &LabelParser<'_> =
-                if matches!(option.name, "platforms" | "host_platform" | "crosstool_top") {
-                    &platform_labels
-                } else {
-                    labels
-                };
+            let parser: &LabelParser<'_> = if matches!(
+                option.name,
+                "platforms" | "host_platform" | "crosstool_top" | "plugin"
+            ) {
+                &platform_labels
+            } else {
+                labels
+            };
             let converted = convert(option, value, parser)
                 .map_err(|error| format!("While parsing option {form}: {error}"))?;
             match (option.name, converted) {
@@ -1910,6 +1934,7 @@ impl CommandLineOptions {
                 ("force_pic", OptionValue::Bool(value)) => native.force_pic = value,
                 ("define", OptionValue::Assignments(entries)) => defines.extend(entries),
                 ("platforms", OptionValue::Labels(labels)) => platforms = labels,
+                ("plugin", OptionValue::Labels(labels)) => native.plugins.extend(labels),
                 ("host_platform", OptionValue::Label(label)) => native.host_platform = label,
                 ("use_target_platform_for_tests", OptionValue::Bool(value)) => {
                     native.use_target_platform_for_tests = value
@@ -2568,6 +2593,39 @@ mod tests {
         assert_ne!(
             Configuration::new(no_config, BTreeMap::new()).id,
             default.id
+        );
+    }
+
+    #[test]
+    fn plugin_lists_accumulate_in_order_without_rekeying_default_configurations() {
+        let default = Configuration::default();
+        assert_eq!(default.id, parsed(&["--plugin="]).unwrap().id);
+        let a = parsed(&["--plugin=//p:a,//p:b", "--plugin", "//p:a", "--plugin="]).unwrap();
+        assert_eq!(
+            a.native
+                .plugins
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["//p:a", "//p:b", "//p:a"]
+        );
+        assert_ne!(a.id, default.id);
+        assert_ne!(a.id, parsed(&["--plugin=//p:a,//p:b"]).unwrap().id);
+        assert_ne!(a.id, parsed(&["--plugin=//p:b,//p:a,//p:a"]).unwrap().id);
+        assert_eq!(
+            a.id,
+            parsed(&["--plugin=//p:a", "--plugin=//p:b,//p:a"])
+                .unwrap()
+                .id
+        );
+        assert_eq!(
+            a.native.value("plugin"),
+            Some(OptionValue::Labels(a.native.plugins.clone()))
+        );
+        assert!(
+            CommandLineOptions::for_query()
+                .parse("--plugin=//p:a", None)
+                .is_err()
         );
     }
 

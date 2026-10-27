@@ -1615,6 +1615,19 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
     // `testonly` only drives the prerequisite check, which crate::engine runs
     // (CommonPrerequisiteValidator.java:730-776).
     let neutral: &[&str] = match target.rule_class.as_str() {
+        // JavaPluginsFlagAlias has no public plugin attribute: :java_plugins
+        // is late-bound from JavaOptions. Standard metadata remains neutral.
+        "java_plugins_flag_alias" => &[
+            "tags",
+            "deprecation",
+            "testonly",
+            "features",
+            "licenses",
+            "distribs",
+            "generator_name",
+            "generator_function",
+            "generator_location",
+        ],
         // `data` is runfiles (Filegroup.java:80-104; crate::engine), never
         // files to build; `output_group` selects the files to build from the
         // `srcs` prerequisites' output groups (Filegroup.java:52-62,

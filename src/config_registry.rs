@@ -459,6 +459,9 @@ pub fn exec_transition(
             tool_java_runtime_version: from.native.java.tool_java_runtime_version.clone(),
             tool_java_language_version: from.native.java.tool_java_language_version.clone(),
         },
+        // JavaOptions.java:351-353: plugins are built in exec configuration;
+        // propagating the flag would introduce cycles.
+        plugins: Vec::new(),
         // An exec edge of a no-config target has no execution platform and
         // never reaches here (ExecutionTransitionFactory.java:192-197).
         no_config: false,
@@ -1118,6 +1121,17 @@ mod tests {
                 .unwrap()
                 .starts_with("k8-fastbuild-ST-")
         );
+    }
+
+    #[test]
+    fn exec_transition_clears_plugins_and_converges_with_default() {
+        let default = parsed(&[]);
+        let plugins = parsed(&["--plugin=//p:a,//p:b"]);
+        let platform = default.native.target_platform().clone();
+        let default = exec_transition(&default, platform.clone(), &BTreeSet::new());
+        let plugins = exec_transition(&plugins, platform, &BTreeSet::new());
+        assert!(plugins.native.plugins.is_empty());
+        assert_eq!(default.id, plugins.id);
     }
 
     /// N28c: the no-config configuration (CommonOptions.EMPTY_OPTIONS) and
