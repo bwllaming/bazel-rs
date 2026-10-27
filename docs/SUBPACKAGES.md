@@ -129,3 +129,15 @@ deterministic error ordering apply (see `GLOB_SYMLINKS.md`).
 
 native.glob's argument defaults, pattern grammar, exclusion matching, ignored
 directory semantics, caching and result projection are unchanged.
+
+## Application follow-up
+
+Combined with MODULE aliases and the tab lexer correction, a bounded native-only
+`query 'deps(//...)'` on the isolated code PR checkout passed the subpackages
+loading failure. It then failed while extracting an ansible-core wheel at
+`py_internal.regex_match(name, "(?U)\\w+")`, a separate unimplemented API.
+That probe took 874.69 s at 4,031.5 MiB peak child RSS, below the unchanged
+900-second/8-GiB bounds. It exited 1 with no output; it did not time out.
+Checkout HEAD, MODULE lockfile and `.bazelignore` hashes were unchanged.
+Configured query and whole-repository target-determinator were not attempted
+after this loading failure, so no complete application-success claim is made.
