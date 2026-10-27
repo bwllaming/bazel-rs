@@ -25,7 +25,7 @@ use starlark::values::structs::AllocStruct;
 use starlark::values::tuple::TupleRef;
 use starlark::values::{
     FrozenHeap, FrozenValue, Heap, NoSerialize, ProvidesStaticType, StarlarkPagablePanic,
-    StarlarkValue, Value, starlark_value,
+    StarlarkValue, Value, ValueLike, starlark_value,
 };
 use std::fmt;
 use std::hash::Hash;
@@ -118,6 +118,9 @@ pub(crate) enum Behavior {
     /// `_is_tool_configuration(ctx)` (builtins_bzl/common/python/py_internal.bzl:73-74):
     /// `ctx.configuration.is_tool_configuration()`.
     PyIsToolConfiguration,
+    /// `_stamp_binaries(ctx)` (py_internal.bzl:95-96):
+    /// `ctx.configuration.stamp_binaries()`.
+    PyStampBinaries,
     /// `_get_legacy_external_runfiles(*args, **kwargs)` (py_internal.bzl:58-59):
     /// `False`.
     PyLegacyExternalRunfiles,
@@ -1089,6 +1092,25 @@ fn call<'v>(
             let method = configuration.get_attr_error("is_tool_configuration", heap)?;
             eval.eval_function(method, &[], &[])
         }
+        Behavior::PyStampBinaries => {
+            // `_stamp_binaries(ctx)` = `ctx.configuration.stamp_binaries()`
+            // (py_internal.bzl:95-96): CoreOptions.stampBinaries
+            // (BuildConfigurationValue.java:672-682). The Java method's
+            // BuiltinRestriction.failIfCalledOutsideDefaultAllowlist passes in
+            // genuine Bazel — the innermost Starlark frame is py_internal.bzl
+            // in @_builtins — so the value is read directly here; a direct
+            // `ctx.configuration.stamp_binaries()` from a user file keeps the
+            // method's own restriction (crate::ctx_surface).
+            let bound = bind_styled(style, name, &[param("ctx", true, true, true)], args, heap)?;
+            let ctx = bound[0].expect("required parameter");
+            let configuration = ctx.get_attr_error("configuration", heap)?;
+            let Some(configuration) =
+                configuration.downcast_ref::<crate::ctx_surface::Configuration>()
+            else {
+                return Err(type_error(name, "ctx", ctx, "ctx"));
+            };
+            Ok(Value::new_bool(configuration.surface.stamp))
+        }
         Behavior::PyLegacyExternalRunfiles => {
             // `*args, **kwargs`: any arguments (their unpacking still fails
             // at the call, like any call's).
@@ -1855,6 +1877,7 @@ fn py_internal(heap: &FrozenHeap) -> FrozenValue {
                 "regex_match" => Behavior::PyRegexMatch,
                 "is_singleton_depset" => Behavior::PyIsSingletonDepset,
                 "is_tool_configuration" => Behavior::PyIsToolConfiguration,
+                "stamp_binaries" => Behavior::PyStampBinaries,
                 "get_legacy_external_runfiles" => Behavior::PyLegacyExternalRunfiles,
                 "is_bzlmod_enabled" => Behavior::PyIsBzlmodEnabled,
                 "make_runfiles_respect_legacy_external_runfiles" => {
