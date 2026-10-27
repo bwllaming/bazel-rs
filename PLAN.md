@@ -125,6 +125,12 @@ Done since the last increment recorded under "History", one line each:
 - [ ] Revalidate the latest-code configured query with runfiles transitions and
       the singleton helper together. Whole-repository target-determinator
       revision comparison remains unperformed.
+- [x] `java_common.expand_java_opts` expands configured string-list attributes,
+      Make/location/toolchain variables and optional tokenization; the Java 11
+      toolchain query now passes.
+- [ ] Latest PR-clone full cquery is blocked fetching the pinned Upbound CLI:
+      `https://cli.upbound.io/stable/v0.39.1/bin/linux_amd64/up` returned HTTP 403.
+      No download retry, unverified substitute or whole-query success claim.
 
 ### Commands that are rejected today
 
