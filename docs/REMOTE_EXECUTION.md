@@ -82,7 +82,9 @@ change remote resolution (they are the server's business, as in Bazel).
 
 ## The flow (`RemoteSpawnRunner.exec`, `remote_spawn`)
 
-1. The capability check of each endpoint once (execution: `exec_enabled`,
+1. The capability check of each endpoint once (started in the background
+   when the endpoints are set up, like RemoteModule; the spawn waits for
+   it) (execution: `exec_enabled`,
    `Remote execution is not supported by the remote server, or the current
    account is not authorized to use remote execution.`, the execution digest
    functions, singular or repeated; cache: as before). A failure fails the
@@ -136,6 +138,9 @@ change remote resolution (they are the server's business, as in Bazel).
   ResourceInfo/Help, else `Unrecognized error detail: …`) plus `\n` and
   the response's `message`; for call failures `CODE: description`
   (`UNAVAILABLE: io exception`, credential helper causes appended).
+  The command then exits with code 34 (ExitCode.REMOTE_ERROR), as it does
+  after a capability failure; a non-zero exit or a timeout exits 1 like a
+  local action failure.
 * With `--remote_local_fallback` every failure but an execution timeout
   runs the spawn with the standalone strategy and uploads the result like
   `execLocallyAndUpload` (remotely cacheable spawns, with the native upload
@@ -228,9 +233,6 @@ remotely, local spawns …)`).
 
 * Outputs are always downloaded (`--remote_download_outputs=all`); no
   build without the bytes.
-* The capability check is lazy (the first spawn needing it), not at
-  startup; a build whose actions all hit the native action cache contacts
-  no endpoint.
 * gRPC `grpc-status-details-bin` trailers are not parsed: call failures
   carry no details (ExecuteRetrier never retries them); details inside
   Operations and ExecuteResponses are used.
@@ -245,5 +247,3 @@ remotely, local spawns …)`).
   `--remote_grpc_log`, `--remote_proxy`, scrubbing, persistent-worker keys
   for remote workers (`--experimental_remote_mark_tool_inputs`) and
   compression stay unmodelled options.
-* Exit codes: action failures exit like other native failures (genuine
-  uses 34 for remote errors).

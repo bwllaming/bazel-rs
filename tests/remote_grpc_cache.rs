@@ -358,7 +358,8 @@ fn capability_failures_fail_actions_and_warnings_print() {
             "//pkg:gen",
         ],
     );
-    assert!(!failed.status.success());
+    // CAPABILITIES_QUERY_FAILURE: exit code 34 (ExitCode.REMOTE_ERROR).
+    assert_eq!(failed.status.code(), Some(34), "{}", stderr(&failed));
     assert!(
         stderr(&failed).contains(&format!(
             "Failed to query remote execution capabilities: finishConnect(..) failed: Connection refused: /127.0.0.1:{port}"

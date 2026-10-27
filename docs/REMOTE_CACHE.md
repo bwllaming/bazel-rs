@@ -297,9 +297,14 @@ transport error (`finishConnect(..) failed: Connection refused:
 /127.0.0.1:PORT`, as grpc-java prints it), the credential helper error, or
 `CODE: description`. The highest common API version selects the key:
 `Command.output_paths` from 2.1 on, REAPI 2.0's `output_files` before
-(`RemoteExecutionService.initUseOutputPaths`). Genuine Bazel starts this
-check in the background at startup; the native profile runs it lazily, so
-a build whose actions all hit the native action cache makes no request.
+(`RemoteExecutionService.initUseOutputPaths`). Like Bazel
+(`RemoteModule.createChannel`: `channel.withChannelFuture` submitted at
+setup) the check starts in the background when the cache is set up, for
+every command that sets one up: its warnings print when the server
+answers, the first spawn that needs the endpoint waits for it, and the
+command never waits for it otherwise. A spawn failing because of it exits
+the command with code 34 (ExitCode.REMOTE_ERROR,
+`CAPABILITIES_QUERY_FAILURE`).
 
 **Calls** (`GrpcCacheClient`, `ByteStreamUploader`): lookups are
 `ActionCache.GetActionResult` (`digest_function` SHA256, no inlining;
@@ -383,8 +388,6 @@ both roots. Tracked receipts of earlier captures keep their `rust-*` paths.
   compressed messages), `user-agent: bazel-rs/<version> grpc-h2` and a
   millisecond `grpc-timeout`; RequestMetadata names the tool `bazel-rs` and
   carries no mnemonic, target or configuration id.
-* The gRPC capability check is lazy (above), and a failed action exits like
-  other native action failures (genuine: exit code 34).
 * Request headers: the native `User-Agent` is `bazel-rs/<version>`, and
   `Accept-Encoding` is `gzip,deflate` (decoded natively; Bazel also offers
   snappy and zstd). Header names are lowercase on the wire (HTTP/1.1 header

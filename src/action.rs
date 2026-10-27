@@ -6266,6 +6266,7 @@ pub fn remote_spawn(
             remote.count_execution();
             return Ok(RemoteSpawn::Timeout);
         }
+        crate::remote_cache::note_remote_failure();
         Ok(RemoteSpawn::Failed(format!(
             "(Exit 34): {}",
             error.message()

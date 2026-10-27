@@ -822,9 +822,54 @@ fn upload_opt_in() -> bool {
 
 static ACTIVE: OnceLock<RemoteCache> = OnceLock::new();
 
-/// Installs the invocation's cache (once, from main).
+/// Installs the invocation's cache (once, from main) and starts the gRPC
+/// endpoints' capability checks in the background, like RemoteModule's
+/// eager `channel.withChannelFuture` (RemoteModule.java:1011-1017): the
+/// warnings print when the server answers, and a failure is reported by
+/// the first spawn that needs the endpoint (`Failed to query remote
+/// execution capabilities: …`).
 pub fn install(cache: RemoteCache) {
     let _ = ACTIVE.set(cache);
+    let Some(cache) = active() else {
+        return;
+    };
+    let mut endpoints: Vec<&'static crate::remote_grpc::GrpcCache> = Vec::new();
+    if let Backend::Grpc(grpc) = &cache.backend {
+        endpoints.push(grpc);
+    }
+    if let Some(executor) = &cache.executor
+        && !endpoints
+            .iter()
+            .any(|endpoint| std::ptr::eq(*endpoint, &**executor))
+    {
+        endpoints.push(executor);
+    }
+    for endpoint in endpoints {
+        let _ = std::thread::Builder::new()
+            .name("bazel-rs-capabilities".into())
+            .spawn(move || {
+                let _ = endpoint.capabilities();
+            });
+    }
+}
+
+/// Set when a spawn failed for a remote reason (ExitCode.REMOTE_ERROR: a
+/// `(Exit 34)` remote execution failure, a capability check failure, a
+/// lost remote input or a failed top-level output download): the command
+/// then exits with 34 instead of 1, like Bazel's DetailedExitCode of
+/// RemoteExecution codes (failure_details.proto: CAPABILITIES_QUERY_FAILURE,
+/// TOPLEVEL_OUTPUTS_DOWNLOAD_FAILURE, …). A typed flag, never the error
+/// text.
+static REMOTE_FAILURE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Records a remote failure of a spawn (see [`remote_failure_occurred`]).
+pub fn note_remote_failure() {
+    REMOTE_FAILURE.store(true, Ordering::Relaxed);
+}
+
+/// Whether a spawn failed for a remote reason in this invocation.
+pub fn remote_failure_occurred() -> bool {
+    REMOTE_FAILURE.load(Ordering::Relaxed)
 }
 
 /// The invocation's cache, if one is configured.
@@ -1137,6 +1182,13 @@ impl HttpCache {
     }
 }
 
+/// A failed capability check fails the spawn that needed it with exit
+/// code 34 (CAPABILITIES_QUERY_FAILURE).
+fn capability_failure(error: String) -> CacheError {
+    note_remote_failure();
+    CacheError::Capabilities(error)
+}
+
 impl RemoteCache {
     pub fn hits(&self) -> usize {
         self.hits.load(Ordering::Relaxed)
@@ -1149,12 +1201,12 @@ impl RemoteCache {
     /// (RemoteExecutionService.initUseOutputPaths).
     pub fn output_paths(&self) -> Result<bool, CacheError> {
         let executor = match &self.executor {
-            Some(executor) => executor.capabilities().map_err(CacheError::Capabilities)?,
+            Some(executor) => executor.capabilities().map_err(capability_failure)?,
             None => true,
         };
         let cache = match &self.backend {
             Backend::Http(_) => true,
-            Backend::Grpc(grpc) => grpc.capabilities().map_err(CacheError::Capabilities)?,
+            Backend::Grpc(grpc) => grpc.capabilities().map_err(capability_failure)?,
         };
         Ok(executor && cache)
     }
@@ -1163,7 +1215,7 @@ impl RemoteCache {
         match &self.backend {
             Backend::Http(http) => http.get(false, &key.hash),
             Backend::Grpc(grpc) => {
-                grpc.capabilities().map_err(CacheError::Capabilities)?;
+                grpc.capabilities().map_err(capability_failure)?;
                 Ok(grpc.get_action_result(key)?.map(|bytes| bytes.to_vec()))
             }
         }

@@ -501,7 +501,8 @@ fn streams_reconnect_retry_and_report_failures() {
             "//pkg:run",
         ],
     );
-    assert!(!failed.status.success());
+    // ExitCode.REMOTE_ERROR.
+    assert_eq!(failed.status.code(), Some(34), "{}", stderr(&failed));
     assert!(
         stderr(&failed).contains(
             "failed: (Exit 34): Remote Execution Failure:\nUnavailable: workers are gone\n"
@@ -556,7 +557,8 @@ fn capabilities_strategies_and_options() {
     let cache_only = Server::new();
     let flag = format!("--remote_executor={}", cache_only.url());
     let failed = ws.run("c1", &["build", &flag, "//pkg:gen"]);
-    assert!(!failed.status.success());
+    // CAPABILITIES_QUERY_FAILURE: exit code 34.
+    assert_eq!(failed.status.code(), Some(34), "{}", stderr(&failed));
     assert!(
         stderr(&failed).contains(
             "Failed to query remote execution capabilities: Remote execution is not supported by the remote server, or the current account is not authorized to use remote execution."

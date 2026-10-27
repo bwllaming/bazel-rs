@@ -1599,11 +1599,7 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
         // An environmental failure of a strategy (a sandbox setup failure,
         // a worker spawn's IOException) is exit code 36 under --keep_going
         // too.
-        exit(if bazel_rs::sandbox::setup_failure_occurred() {
-            36
-        } else {
-            1
-        });
+        exit(failure_exit_code());
     }
     snapshot.finish();
     // BuildView.createAnalysisFailureDetail (analysis/BuildView.java:760-776):
@@ -2173,7 +2169,7 @@ fn run_tail(
         eprintln!("ERROR: Build failed. Not running target");
         write_lockfile();
         bazel_rs::digest_memo::finish();
-        exit(1);
+        exit(remote_or(1));
     }
     let target = targets.remove(label);
     let test_info = match planned_command {
@@ -2922,7 +2918,7 @@ fn test_build_failure(
     write_lockfile();
     bazel_rs::loading::module_timings::report();
     bazel_rs::digest_memo::finish();
-    exit(1);
+    exit(remote_or(1));
 }
 
 struct RunTest<'a> {
@@ -4917,17 +4913,38 @@ fn main() {
         // strategy (Bazel's EnvironmentalExecException class): exit code 36.
         // The typed flag, never the error text: an action's own output could
         // contain the phrase.
-        let code = if bazel_rs::sandbox::setup_failure_occurred() {
-            36
-        } else {
-            1
-        };
+        let code = failure_exit_code();
         finish_reports(code, Some(&error));
         exit(code);
     }
     bazel_rs::progress::finish(0);
     finish_reports(0, None);
     finish_cache();
+}
+
+/// The exit code of a failed build: 34 after a remote failure of a spawn
+/// (ExitCode.REMOTE_ERROR, crate::remote_cache::remote_failure_occurred),
+/// 36 after an environmental failure of a local strategy (a sandbox setup
+/// failure, Bazel's EnvironmentalExecException class), else 1. Typed
+/// flags, never the error text: an action's own output could contain the
+/// phrases.
+/// 34 after a remote failure of a spawn, else `code`.
+fn remote_or(code: i32) -> i32 {
+    if bazel_rs::remote_cache::remote_failure_occurred() {
+        34
+    } else {
+        code
+    }
+}
+
+fn failure_exit_code() -> i32 {
+    if bazel_rs::remote_cache::remote_failure_occurred() {
+        34
+    } else if bazel_rs::sandbox::setup_failure_occurred() {
+        36
+    } else {
+        1
+    }
 }
 
 /// Exit with `code`, ending the progress display first (its summary, and
