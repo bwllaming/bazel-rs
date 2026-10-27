@@ -122,6 +122,12 @@ Done since the last increment recorded under "History", one line each:
       (docs/RUNFILES_TRANSITIONS.md).
 - [x] `py_internal.is_singleton_depset` landed with coverage support; retain its
       independent edge-case/performance checks rather than adding a duplicate.
+- [x] Singleton checks now use cached structural metadata instead of repeated
+      DAG walks (16 bytes/node; identity/order and persisted representation
+      unchanged; docs/PY_SINGLETON_DEPSET.md).
+- [x] Invocation-owned module-root warmers stop/cancel/join before normal exit;
+      a deterministic test covers cleanup of an unpublished extraction stage.
+      Cooperative filesystem/CPU and abrupt-termination limits remain documented.
 - [ ] Revalidate the latest-code configured query with runfiles transitions and
       the singleton helper together. Whole-repository target-determinator
       revision comparison remains unperformed.
