@@ -122,12 +122,26 @@ fn mod_subcommands_match_genuine_bazel() {
             .filter_map(Value::as_str)
             .filter(|event| event.starts_with("ERROR: "))
             .collect();
+        // The direct-dependency check's WARNING events
+        // (BazelModuleResolutionFunction.verifyRootModuleDirectDepsAreAccurate).
+        let direct_dep = |line: &&str| line.starts_with("WARNING: For repository '");
+        let warnings: Vec<&str> = stderr.lines().filter(direct_dep).collect();
+        let expected_warnings: Vec<&str> = case["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(direct_dep)
+            .collect();
         let code = output.status.code().unwrap_or(-1);
         let expected_code = case["exit_code"].as_i64().unwrap() as i32;
         let expected_stdout = case["stdout"].as_str().unwrap();
         let ok = match comparison(name) {
             "exact" => {
-                code == expected_code && stdout == expected_stdout && errors == expected_errors
+                code == expected_code
+                    && stdout == expected_stdout
+                    && errors == expected_errors
+                    && warnings == expected_warnings
             }
             "builtin_path" => {
                 let prefix = "## @bazel_tools:\nBuiltin or overridden repo located at: ";
@@ -141,7 +155,7 @@ fn mod_subcommands_match_genuine_bazel() {
         };
         if !ok {
             failures.push(format!(
-                "{name} {args:?}: exit {code} (genuine {expected_code})\n--- native stdout\n{stdout}--- genuine stdout\n{expected_stdout}--- native errors {errors:?}\n--- genuine errors {expected_errors:?}\n--- stderr\n{stderr}"
+                "{name} {args:?}: exit {code} (genuine {expected_code})\n--- native stdout\n{stdout}--- genuine stdout\n{expected_stdout}--- native errors {errors:?} {warnings:?}\n--- genuine errors {expected_errors:?} {expected_warnings:?}\n--- stderr\n{stderr}"
             ));
         }
     }

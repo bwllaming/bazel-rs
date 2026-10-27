@@ -1551,6 +1551,12 @@ impl RepositorySet {
         Ok(found)
     }
 
+    /// Whether module resolution already ran and succeeded in this
+    /// invocation (without starting it).
+    pub fn graph_resolved(&self) -> bool {
+        self.state.resolved.get().is_some_and(Result::is_ok)
+    }
+
     pub fn resolve_graph(&self) -> Result<&ResolvedGraph, String> {
         if self.pinned_tables().is_some() {
             return Err(format!("the module graph is {NOT_PINNED}"));

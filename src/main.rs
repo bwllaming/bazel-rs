@@ -973,7 +973,9 @@ fn run() -> Result<(), String> {
             ignore_dev_dependencies,
             &mut stdout,
         );
-        if repositories.resolve_graph().is_ok() {
+        // Only a resolution that ran: a subcommand rejected before
+        // resolving never resolves (genuine prints no resolution events).
+        if repositories.graph_resolved() {
             lockfile_gate.open();
         }
         {
@@ -3547,6 +3549,16 @@ impl NativeOptions {
                 "unsupported option --override_repository{}; MODULE overrides do not replace the built-in repository filesystem",
                 unit.option.origin_suffix()
             ));
+        } else if let Some(parsed) =
+            bazel_rs::rc_options::value_option(arg, next, "check_direct_dependencies")
+        {
+            // RepositoryOptions.checkDirectDependencies (:305-319), an
+            // option of every command.
+            let (form, value, used) = parsed?;
+            self.resolver.check_direct_dependencies =
+                bazel_rs::module_graph::CheckDirectDeps::parse(value)
+                    .map_err(|error| format!("While parsing option {form}: {error}"))?;
+            used
         } else if arg == "--registry" {
             let value = next.ok_or("--registry requires a URL")?;
             self.resolver

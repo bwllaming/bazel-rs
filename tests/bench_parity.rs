@@ -85,3 +85,72 @@ fn unparenthesized_tuples_parse_like_bazel() {
     );
     assert!(err.lines().any(|line| line == debug), "{err}");
 }
+
+/// `--check_direct_dependencies` (bazel-gazelle's .bazelrc sets `off`) over
+/// the mod_command fixture registry: the root requests mc_b@1.0 and
+/// mc_leaf@1.0, selection picks 2.0 and 1.1. Genuine 9.3: WARNING events by
+/// default, ERROR events and `ERROR: Direct dependency check failed.` (exit
+/// 37 for `mod graph`) under `error`, nothing under `off`, and the
+/// EnumConverter error for a bad value.
+#[test]
+fn check_direct_dependencies_modes_match_bazel() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let ws = Workspace::new(&[
+        (
+            "MODULE.bazel",
+            "module(name = \"cdd_root\", version = \"0.1\")\n\
+             bazel_dep(name = \"mc_a\", version = \"1.0\")\n\
+             bazel_dep(name = \"mc_b\", version = \"1.0\", repo_name = \"bee\")\n\
+             bazel_dep(name = \"mc_leaf\", version = \"1.0\")\n",
+        ),
+        ("BUILD.bazel", "filegroup(name = \"x\")\n"),
+    ]);
+    let registries = [
+        format!(
+            "--registry=file://{}",
+            fixture.join("mod_command/registry").display()
+        ),
+        format!(
+            "--registry=file://{}",
+            fixture.join("builtin_modules/registry").display()
+        ),
+    ];
+    let run = |mode: &str| {
+        let mut args = vec!["mod", "graph", "--lockfile_mode=off"];
+        args.extend(registries.iter().map(String::as_str));
+        let flag = format!("--check_direct_dependencies={mode}");
+        args.push(&flag);
+        let output = ws.run(&args);
+        let events: Vec<String> = stderr(&output)
+            .lines()
+            .filter(|line| line.starts_with("ERROR: ") || line.starts_with("WARNING: "))
+            .map(str::to_owned)
+            .collect();
+        (output.status.code(), events)
+    };
+    let mismatch = |kind: &str| {
+        vec![
+            format!(
+                "{kind}: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+            ),
+            format!(
+                "{kind}: For repository 'mc_leaf', the root module requires module version mc_leaf@1.0, but got mc_leaf@1.1 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+            ),
+        ]
+    };
+    assert_eq!(run("warning"), (Some(0), mismatch("WARNING")));
+    let mut errors = mismatch("ERROR");
+    errors.push("ERROR: Direct dependency check failed.".to_owned());
+    assert_eq!(run("error"), (Some(37), errors));
+    assert_eq!(run("off"), (Some(0), vec![]));
+    let (code, _) = run("bogus");
+    assert_ne!(code, Some(0));
+    let mut args = vec!["build", "--check_direct_dependencies=bogus", "//:x"];
+    args.extend(registries.iter().map(String::as_str));
+    let output = ws.run(&args);
+    assert!(
+        stderr(&output).contains("While parsing option --check_direct_dependencies=bogus: Not a valid direct deps check mode: 'bogus' (should be off, warning or error)"),
+        "{}",
+        stderr(&output)
+    );
+}

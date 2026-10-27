@@ -80,6 +80,33 @@ pub struct ResolverOptions {
     /// false): enables `use_extension(isolate = ...)` in every MODULE.bazel
     /// (bazel/bzlmod/ModuleFileGlobals.java:436-449).
     pub isolated_extension_usages: bool,
+    /// `--check_direct_dependencies` (RepositoryOptions.java:305-319,
+    /// default `warning`): whether the root module's direct dependencies
+    /// must resolve to the versions it requests.
+    pub check_direct_dependencies: CheckDirectDeps,
+}
+
+/// RepositoryOptions.CheckDirectDepsMode (:388-399).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CheckDirectDeps {
+    Off,
+    #[default]
+    Warning,
+    Error,
+}
+
+impl CheckDirectDeps {
+    /// The EnumConverter (case-insensitive) of `--check_direct_dependencies`.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.to_ascii_lowercase().as_str() {
+            "off" => Ok(Self::Off),
+            "warning" => Ok(Self::Warning),
+            "error" => Ok(Self::Error),
+            _ => Err(format!(
+                "Not a valid direct deps check mode: '{value}' (should be off, warning or error)"
+            )),
+        }
+    }
 }
 
 /// [`ResolverOptions::java_semantics`].
@@ -505,6 +532,7 @@ pub(crate) fn resolve_from_root_snapshot(
         }
     }
     let selected = select_versions(&nodes, overrides)?;
+    verify_root_direct_deps(&nodes, &selected, options.check_direct_dependencies)?;
     // Selection.java:322-335: nodep-only nodes can invalidate selection, even
     // though those nodes must not appear in the final repository graph.
     selected_reachable(&nodes, &selected, false)?;
@@ -1384,6 +1412,49 @@ fn inspection(
         });
     }
     Ok(modules)
+}
+
+/// BazelModuleResolutionFunction.verifyRootModuleDirectDepsAreAccurate
+/// (:261-292): every direct dependency of the root, as requested after the
+/// overrides (Discovery.applyOverrides), against its selected version, in
+/// declaration order. A mismatch is a WARNING event, or under `error` an
+/// ERROR event each and then the resolution failure.
+fn verify_root_direct_deps(
+    nodes: &BTreeMap<Key, Node>,
+    selected: &Selection,
+    mode: CheckDirectDeps,
+) -> Result<(), String> {
+    if mode == CheckDirectDeps::Off {
+        return Ok(());
+    }
+    // ModuleKey.toString (:63-68).
+    let display = |key: &Key| match key {
+        Key::Root => "<root>".to_owned(),
+        Key::Module { name, version } if version.normalized.is_empty() => format!("{name}@_"),
+        Key::Module { name, version } => format!("{name}@{}", version.normalized),
+    };
+    let mut failure = false;
+    for (repo, requested) in &nodes[&Key::Root].ordered_dependencies {
+        let resolved = selected_key(requested, selected)?;
+        if resolved == requested {
+            continue;
+        }
+        let message = format!(
+            "For repository '{repo}', the root module requires module version {}, but got {} in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
+            display(requested),
+            display(resolved)
+        );
+        if mode == CheckDirectDeps::Warning {
+            crate::note!("WARNING: {message}");
+        } else {
+            eprintln!("ERROR: {message}");
+            failure = true;
+        }
+    }
+    if failure {
+        return Err("Direct dependency check failed.".to_owned());
+    }
+    Ok(())
 }
 
 fn selected_key<'a>(key: &Key, selected: &'a Selection) -> Result<&'a Key, String> {
