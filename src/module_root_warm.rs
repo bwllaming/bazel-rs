@@ -488,14 +488,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
     fn shutdown_cancels_even_an_unlimited_credential_helper() {
         use std::os::unix::fs::PermissionsExt;
         use std::time::{Duration, Instant};
         // Credentials are invocation-global. Isolate the installed helper
         // and verify that cancellation adds no warning to command stderr.
         if std::env::var_os("BAZEL_RS_UNIT_WARM_HELPER_CHILD").is_none() {
-            let output = std::process::Command::new("timeout")
+            let output = crate::spawn_lock::output(std::process::Command::new("timeout")
                 .args(["--kill-after=2s", "10s"])
                 .arg(std::env::current_exe().unwrap())
                 .args([
@@ -503,8 +502,7 @@ pub(crate) mod tests {
                     "module_root_warm::tests::shutdown_cancels_even_an_unlimited_credential_helper",
                     "--nocapture",
                 ])
-                .env("BAZEL_RS_UNIT_WARM_HELPER_CHILD", "1")
-                .output()
+                .env("BAZEL_RS_UNIT_WARM_HELPER_CHILD", "1"))
                 .unwrap();
             assert!(
                 output.status.success(),
@@ -719,21 +717,21 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
     fn failed_invocation_cleans_active_warm_stage() {
         let root = tempfile::tempdir().unwrap();
-        let output = std::process::Command::new("timeout")
-            .args(["--kill-after=2s", "15s"])
-            .arg(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "module_root_warm::tests::failed_invocation_stage_child",
-                "--nocapture",
-            ])
-            .env("BAZEL_RS_UNIT_WARM_STAGE_CHILD", root.path())
-            .env_remove("BAZEL_RS_DEBUG_NO_ROOT_WARM")
-            .output()
-            .unwrap();
+        let output = crate::spawn_lock::output(
+            std::process::Command::new("timeout")
+                .args(["--kill-after=2s", "15s"])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "module_root_warm::tests::failed_invocation_stage_child",
+                    "--nocapture",
+                ])
+                .env("BAZEL_RS_UNIT_WARM_STAGE_CHILD", root.path())
+                .env_remove("BAZEL_RS_DEBUG_NO_ROOT_WARM"),
+        )
+        .unwrap();
         assert!(
             output.status.success(),
             "{}",
