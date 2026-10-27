@@ -2601,66 +2601,6 @@ impl Engine {
         Ok(self.aspects.get(identity))
     }
 
-    /// The JavaPluginInfo of `java_plugins_flag_alias`
-    /// (rules/java/JavaPluginsFlagAliasRule.java:62-82): with no `--plugin`
-    /// it is `JavaPluginInfo.mergeWithoutJavaOutputs([])`, the empty
-    /// provider keyed by rules_java's `@@rules_java+//java/private:java_info.bzl`
-    /// (JavaPluginInfo.PROVIDER, JavaSemantics.RULES_JAVA_PROVIDER_LABELS_PREFIX):
-    /// natively that module's raw constructor `_new_javaplugininfo` over its
-    /// `_EMPTY_PLUGIN_DATA` (rules_java's own empty value). The provider
-    /// keyed by a main-repository `//java/private:java_info.bzl` (only
-    /// visible when the main repository is rules_java) is not created.
-    fn java_plugins_flag_alias_info(
-        &mut self,
-    ) -> Result<(String, starlark::values::OwnedFrozenValue), String> {
-        let label = Label::parse_canonical("@@rules_java+//java/private:java_info.bzl")?;
-        let globals = self.repositories.build_phase_globals().1;
-        let mut load = |symbol: &str| {
-            let prints = crate::loading::LoadPrints::default();
-            let loaded = crate::loading::load_shared_definition_any_in(
-                self.repositories.clone(),
-                &label,
-                symbol,
-                &globals,
-                false,
-                &prints,
-            );
-            self.emit_load_prints(prints.take());
-            loaded.map(|loaded| loaded.value).map_err(|error| {
-                format!("java_plugins_flag_alias: JavaPluginInfo of rules_java: {error}")
-            })
-        };
-        let constructor = load("_new_javaplugininfo")?;
-        let empty = load("_EMPTY_PLUGIN_DATA")?;
-        starlark::environment::Module::with_temp_heap(|module| {
-            let mut eval = starlark::eval::Evaluator::new(&module);
-            let heap = module.heap();
-            let empty = heap.access_owned_frozen_value(&empty);
-            let list = heap.alloc(starlark::values::list::AllocList::EMPTY);
-            let value = eval
-                .eval_function(
-                    heap.access_owned_frozen_value(&constructor),
-                    &[],
-                    &[
-                        ("java_outputs", list),
-                        ("plugins", empty),
-                        ("api_generating_plugins", empty),
-                    ],
-                )
-                .map_err(|error| format!("java_plugins_flag_alias: {error}"))?;
-            let id = crate::providers::instance_identity(value).ok_or_else(|| {
-                "java_plugins_flag_alias: rules_java's JavaPluginInfo is not a provider instance"
-                    .to_owned()
-            })?;
-            drop(eval);
-            module.set("__info", value);
-            let frozen = module
-                .freeze()
-                .map_err(|error| format!("cannot freeze JavaPluginInfo: {error:?}"))?;
-            Ok((id, frozen.get("__info").map_err(|error| error.to_string())?))
-        })
-    }
-
     /// Analyze builds in `configuration` (default: the default configuration).
     /// `--loading_phase_threads` (LoadingPhaseThreadsOption.java: "auto"
     /// expands to the available processors; P2 of the parallel-analysis
@@ -13576,13 +13516,6 @@ impl Engine {
                         BTreeMap::from([(crate::feature_flags::PROVIDER_ID.to_owned(), value)]),
                     );
                 }
-            }
-            // JavaPluginsFlagAlias.create: the plugins of `--plugin` (never
-            // set natively: the option is not modelled) merged into an
-            // empty JavaPluginInfo.
-            if matches!(rule.kind, RuleKind::Native("java_plugins_flag_alias")) {
-                let (id, value) = self.java_plugins_flag_alias_info()?;
-                custom_providers.insert(key.clone(), BTreeMap::from([(id, value)]));
             }
             // An alias-like target forwards its actual's files (above) and
             // providers.
