@@ -216,3 +216,209 @@ fn deleted_packages_like_bazel() {
         "//:all\n//sub:s\n//sub/inner:i\n"
     );
 }
+
+/// `--subcommands` / `-s` print each executed spawn as a SUBCOMMAND event in
+/// Bazel's copy-pastable form (CommandFailureUtils.describeCommand
+/// COMPLETE); `pretty_print` puts one argument per line. The native header
+/// differs where actions carry no ActionOwner (docs/BENCHMARKS.md).
+#[test]
+fn subcommands_print_spawns_like_bazel() {
+    let ws = Workspace::new(&[
+        ("MODULE.bazel", "module(name = \"s\")\n"),
+        (
+            "BUILD.bazel",
+            "genrule(name = \"g\", outs = [\"g.txt\"], cmd = \"echo 'hi there' > $@\")\n\
+             genrule(name = \"p\", outs = [\"p.txt\"], cmd = \"echo 'hi there' > $@\")\n",
+        ),
+    ]);
+    let output = ws.run(&["build", "-s", "//:g"]);
+    let err = stderr(&output);
+    assert!(output.status.success(), "{err}");
+    let lines: Vec<&str> = err.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| {
+            line.starts_with("SUBCOMMAND: # //:g [action 'Executing genrule //:g', configuration: ")
+        })
+        .unwrap_or_else(|| panic!("{err}"));
+    assert!(lines[start + 1].starts_with("(cd /"), "{err}");
+    assert!(lines[start + 1].ends_with(" && \\"), "{err}");
+    // Genuine 9.3, verbatim.
+    assert_eq!(
+        lines[start + 2..start + 5],
+        [
+            "  exec env - \\",
+            "    PATH=/bin:/usr/bin:/usr/local/bin \\",
+            "  /bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo '\\''hi there'\\'' > bazel-out/k8-fastbuild/bin/g.txt')",
+        ],
+        "{err}"
+    );
+    assert!(lines[start + 5].starts_with("# Configuration: "), "{err}");
+    assert!(lines[start + 6].starts_with("# Runner: "), "{err}");
+    let output = ws.run(&["build", "--subcommands=pretty_print", "//:p"]);
+    let err = stderr(&output);
+    let lines: Vec<&str> = err.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.starts_with("SUBCOMMAND: # //:p "))
+        .unwrap_or_else(|| panic!("{err}"));
+    assert_eq!(
+        lines[start + 4..start + 7],
+        [
+            "  /bin/bash \\",
+            "    -c \\",
+            "    'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo '\\''hi there'\\'' > bazel-out/k8-fastbuild/bin/p.txt')",
+        ],
+        "{err}"
+    );
+    // A cached action reaches no runner: nothing is printed.
+    let output = ws.run(&["build", "-s", "//:g"]);
+    assert!(
+        !stderr(&output).contains("SUBCOMMAND"),
+        "{}",
+        stderr(&output)
+    );
+    let output = ws.run(&["build", "--subcommands=bogus", "//:g"]);
+    assert!(
+        stderr(&output).contains("While parsing option --subcommands=bogus: Not a valid subcommand option: 'bogus' (should be true, pretty_print or false)"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+/// `--build_tag_filters` (TargetPatternPhaseFunction.mergeAll's
+/// TargetUtils.tagFilter): a test rule's tags include its size and
+/// `noflaky`; `test` still runs the tests it determines.
+#[test]
+fn build_tag_filters_select_targets_like_bazel() {
+    let ws = Workspace::new(&[
+        ("MODULE.bazel", "module(name = \"b\")\n"),
+        (
+            "defs.bzl",
+            "def _t(ctx):\n    out = ctx.actions.declare_file(ctx.label.name + \".sh\")\n    ctx.actions.write(out, \"#!/bin/sh\\nexit 0\\n\", is_executable = True)\n    return [DefaultInfo(executable = out)]\n\nmy_test = rule(implementation = _t, test = True)\n",
+        ),
+        (
+            "BUILD.bazel",
+            "load(\":defs.bzl\", \"my_test\")\n\
+             genrule(name = \"a\", outs = [\"a.txt\"], cmd = \"touch $@\", tags = [\"foo\"])\n\
+             genrule(name = \"b\", outs = [\"b.txt\"], cmd = \"touch $@\", tags = [\"bar\"])\n\
+             genrule(name = \"c\", outs = [\"c.txt\"], cmd = \"touch $@\")\n\
+             my_test(name = \"t\", tags = [\"foo\"], size = \"small\")\n",
+        ),
+    ]);
+    let built = |args: &[&str]| {
+        let output = ws.run(args);
+        let err = stderr(&output);
+        assert!(output.status.success(), "{err}");
+        let found = err
+            .lines()
+            .find(|line| line.starts_with("INFO: Found "))
+            .unwrap_or_default()
+            .to_owned();
+        let labels: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.split('\t').next())
+            .map(str::to_owned)
+            .collect();
+        (found, labels)
+    };
+    // Genuine 9.3: the `INFO: Found` lines of the same commands.
+    let cases: [(&str, &str, &[&str]); 5] = [
+        (
+            "--build_tag_filters=foo",
+            "INFO: Found 2 targets...",
+            &["//:a", "//:t"],
+        ),
+        (
+            "--build_tag_filters=-foo",
+            "INFO: Found 2 targets...",
+            &["//:b", "//:c"],
+        ),
+        (
+            "--build_tag_filters=small",
+            "INFO: Found 1 target...",
+            &["//:t"],
+        ),
+        (
+            "--build_tag_filters=foo,-bar",
+            "INFO: Found 2 targets...",
+            &["//:a", "//:t"],
+        ),
+        (
+            "--build_tag_filters=noflaky",
+            "INFO: Found 1 target...",
+            &["//:t"],
+        ),
+    ];
+    for (flag, found, labels) in cases {
+        assert_eq!(
+            built(&["build", flag, "//..."]),
+            (
+                found.to_owned(),
+                labels.iter().map(|l| (*l).to_owned()).collect::<Vec<_>>()
+            ),
+            "{flag}"
+        );
+    }
+    let output = ws.run(&["test", "--build_tag_filters=bar", "//..."]);
+    let err = stderr(&output);
+    assert!(output.status.success(), "{err}");
+    assert!(
+        err.contains("INFO: Found 1 target and 1 test target..."),
+        "{err}"
+    );
+}
+
+/// Options Bazel 9.3 declares as no-ops or whose effect is on its server
+/// state are accepted (genuine: each builds); a command that does not
+/// register one rejects it like Bazel, and the boolean converter still
+/// checks values.
+#[test]
+fn no_effect_options_are_accepted_like_bazel() {
+    let ws = Workspace::new(&[
+        ("MODULE.bazel", "module(name = \"n\")\n"),
+        ("BUILD.bazel", "filegroup(name = \"a\")\n"),
+    ]);
+    let output = ws.run(&[
+        "build",
+        "--nobuild",
+        "--discard_analysis_cache",
+        "--notrack_incremental_state",
+        "--nokeep_state_after_build",
+        "--heap_dump_on_oom",
+        "--watchfs",
+        "--incompatible_python_disallow_native_rules",
+        "--incompatible_enable_cc_toolchain_resolution",
+        "//:a",
+    ]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let output = ws.run(&[
+        "query",
+        "--enable_bzlmod",
+        "--noenable_workspace",
+        "--nolegacy_external_runfiles",
+        "--incompatible_disallow_empty_glob",
+        "--fetch",
+        "//:a",
+    ]);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "//:a\n",
+        "{}",
+        stderr(&output)
+    );
+    let output = ws.run(&["query", "--discard_analysis_cache", "//:a"]);
+    assert!(
+        stderr(&output)
+            .contains("--discard_analysis_cache :: Unrecognized option: --discard_analysis_cache"),
+        "{}",
+        stderr(&output)
+    );
+    let output = ws.run(&["build", "--nobuild", "--enable_bzlmod=maybe", "//:a"]);
+    assert!(
+        stderr(&output)
+            .contains("While parsing option --enable_bzlmod=maybe: 'maybe' is not a boolean"),
+        "{}",
+        stderr(&output)
+    );
+}

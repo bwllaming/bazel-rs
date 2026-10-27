@@ -532,6 +532,27 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         exec: ExecValue::Propagate,
         exec_source: "builtin_exec_platforms.bzl:237",
     },
+    // PythonOptions.disallowNativeRules
+    // (`--incompatible_python_disallow_native_rules`, rules_python examples'
+    // .bazelrc): it only makes the builtin py_* rules fail, and Bazel 9.3 has
+    // none (they live in rules_python), so its value is configuration data
+    // only. Propagated to exec configurations.
+    ValueOption {
+        option: OptionDef {
+            name: "incompatible_python_disallow_native_rules",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "false",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/python/PythonOptions.java:71-81",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:445",
+    },
     // CoreOptions.collectCodeCoverage: held by the typed field
     // NativeOptions::collect_code_coverage, which only a Starlark
     // transition sets (N47); the command line (and `bazel coverage`) stays
@@ -2842,6 +2863,7 @@ mod tests {
                 "strict_proto_deps",
                 "strict_public_imports",
                 "enable_runfiles",
+                "incompatible_python_disallow_native_rules",
                 "collect_code_coverage",
                 "apple_platform_type"
             ]

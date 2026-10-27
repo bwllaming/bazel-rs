@@ -1798,6 +1798,8 @@ pub struct TargetPatternPhaseOptions<'a> {
     /// The command-line TestFilter (`--test_tag_filters`,
     /// `--test_size_filters`, ...; crate::test_command::TestOptions::accepts).
     pub test_filter: &'a dyn Fn(&crate::test_command::TestRuleInfo) -> bool,
+    /// `--build_tag_filters` (LoadingOptions.buildTagFilterList).
+    pub build_tag_filters: &'a [String],
 }
 
 /// The TargetPatternPhaseValue of `build`/`test`.
@@ -10286,6 +10288,39 @@ impl Engine {
             self.select_keep_going(patterns, relative_directory, &mut failures)
         } else {
             self.select_filtered(patterns, relative_directory, true)?
+        };
+        // mergeAll's TargetUtils.tagFilter(--build_tag_filters)
+        // (TargetPatternPhaseFunction.java:372-373, TargetUtils.java:366-386):
+        // a rule passes on its rule tags, any other target only without
+        // required tags. Tests determined below are not filtered.
+        let selected = if options.build_tag_filters.is_empty() {
+            selected
+        } else {
+            let (required, excluded) =
+                crate::test_command::sort_tags_by_sense(options.build_tag_filters);
+            let mut kept = Vec::new();
+            for label in selected {
+                if required.is_empty() && excluded.is_empty() {
+                    kept.push(label);
+                    continue;
+                }
+                let tags = match self.target(&label)? {
+                    Target::Rule(rule) => match self.test_filter_info(&label)? {
+                        Some(info) => info.rule_tags(),
+                        None => rule.tags().iter().cloned().collect(),
+                    },
+                    _ => {
+                        if required.is_empty() {
+                            kept.push(label);
+                        }
+                        continue;
+                    }
+                };
+                if crate::test_command::matches_filters(&tags, &required, &excluded, false) {
+                    kept.push(label);
+                }
+            }
+            kept
         };
         let mut expansions = TestExpansions::default();
         let mut tests = None;

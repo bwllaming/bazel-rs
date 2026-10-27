@@ -230,6 +230,10 @@ pub struct TestOptions {
     pub runs_per_test: Vec<PerLabelOption>,
     pub sharding: ShardingStrategy,
     pub tag_filters: Vec<String>,
+    /// `--build_tag_filters` (LoadingOptions.buildTagFilterList): the
+    /// target pattern phase keeps the targets whose rule tags pass
+    /// (TargetPatternPhaseFunction.mergeAll, TargetUtils.tagFilter).
+    pub build_tag_filters: Vec<String>,
     pub size_filters: Option<BTreeSet<TestSize>>,
     pub timeout_filters: Option<BTreeSet<TestTimeout>>,
     pub lang_filters: Vec<String>,
@@ -291,6 +295,7 @@ impl Default for TestOptions {
             runs_per_test: Vec::new(),
             sharding: ShardingStrategy::Explicit,
             tag_filters: Vec::new(),
+            build_tag_filters: Vec::new(),
             size_filters: None,
             timeout_filters: None,
             lang_filters: Vec::new(),
@@ -540,7 +545,7 @@ impl TestOptions {
         // `--test_env` is a configuration option (N42, TestConfiguration;
         // crate::configuration) and reaches the test through the
         // configuration's test ActionEnvironment (EnvInputs::test_env).
-        const VALUED: [&str; 19] = [
+        const VALUED: [&str; 20] = [
             "test_result_expiration",
             "experimental_cancel_concurrent_tests",
             "test_output",
@@ -553,6 +558,7 @@ impl TestOptions {
             "runs_per_test",
             "test_sharding_strategy",
             "test_tag_filters",
+            "build_tag_filters",
             "test_size_filters",
             "test_timeout_filters",
             "test_lang_filters",
@@ -682,6 +688,7 @@ impl TestOptions {
                 };
             }
             "test_tag_filters" => self.tag_filters = comma_list(value),
+            "build_tag_filters" => self.build_tag_filters = comma_list(value),
             "test_size_filters" => {
                 self.size_filters = enum_filter(flag, value, "test size", &SIZES)?;
             }

@@ -252,6 +252,97 @@ pub fn arguments(action: &Action) -> Vec<String> {
     argv
 }
 
+/// `--subcommands` (ExecutionOptions.showSubcommands, ShowSubcommands
+/// FALSE/TRUE/PRETTY_PRINT): 0, 1 or 2.
+static SUBCOMMANDS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// `--subcommands` / `-s` (BoolOrEnumConverter of ShowSubcommands,
+/// ExecutionOptions.java:642-647): `Some(Ok(mode))` when `arg` is one
+/// (0 false, 1 true, 2 pretty_print).
+pub fn parse_subcommands(arg: &str) -> Option<Result<u8, String>> {
+    match arg {
+        "-s" => return Some(Ok(1)),
+        "-s-" => return Some(Ok(0)),
+        _ => {}
+    }
+    let rest = arg.strip_prefix("--")?;
+    if let Some(value) = rest.strip_prefix("subcommands=") {
+        return Some(match value.to_ascii_lowercase().as_str() {
+            "pretty_print" => Ok(2),
+            "true" | "1" | "yes" | "t" | "y" => Ok(1),
+            "false" | "0" | "no" | "f" | "n" => Ok(0),
+            _ => Err(format!(
+                "While parsing option {arg}: Not a valid subcommand option: '{value}' (should be true, pretty_print or false)"
+            )),
+        });
+    }
+    crate::configuration::boolean_option(arg, "subcommands").map(|value| value.map(u8::from))
+}
+
+/// Install this command's `--subcommands` mode.
+pub fn set_subcommands(mode: u8) {
+    SUBCOMMANDS.store(mode, Ordering::Relaxed);
+}
+
+/// ActionExecutionContext.maybeReportSubcommand (:459-499) with
+/// CommandFailureUtils.describeCommand's COMPLETE form (:76-170) and the
+/// Linux ScriptUtil emitter: a SUBCOMMAND event before a spawn reaches its
+/// runner. Native actions carry no ActionOwner, progress message or
+/// configuration checksum: the owner is the action's label, the progress
+/// text `MNEMONIC primary-output` (Bazel's for genrules, `Executing genrule
+/// L`), the configuration the output directory name, and no execution
+/// platform is printed; `cwd` is the spawn's own execution root.
+fn report_subcommand(action: &Action, execroot: &Path, runner: &str) {
+    let mode = SUBCOMMANDS.load(Ordering::Relaxed);
+    if mode == 0 {
+        return;
+    }
+    let label = action.id.split('#').next().unwrap_or(&action.id);
+    let mnemonic = action.extra.mnemonic.as_str();
+    let primary = action
+        .outputs
+        .first()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let progress = if mnemonic == "Genrule" {
+        format!("Executing genrule {label}")
+    } else {
+        format!("{mnemonic} {primary}")
+    };
+    let configuration = primary
+        .strip_prefix("bazel-out/")
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or("");
+    let escape = crate::args::shell_escape;
+    let mut message = format!(
+        "# {label} [action '{progress}', configuration: {configuration}, mnemonic: {mnemonic}]\n"
+    );
+    message.push_str(&format!(
+        "(cd {} && \\\n  exec env - \\\n  ",
+        escape(&execroot.display().to_string())
+    ));
+    for (name, value) in resolved_environment(action) {
+        message.push_str(&format!(
+            "  {}={} \\\n  ",
+            escape(&name),
+            escape(&value.to_string_lossy())
+        ));
+    }
+    let separator = if mode == 2 { " \\\n    " } else { " " };
+    let argv = arguments(action);
+    message.push_str(
+        &argv
+            .iter()
+            .map(|argument| escape(argument))
+            .collect::<Vec<_>>()
+            .join(separator),
+    );
+    message.push(')');
+    message.push_str(&format!("\n# Configuration: {configuration}"));
+    message.push_str(&format!("\n# Runner: {runner}"));
+    crate::note!("SUBCOMMAND: {message}");
+}
+
 /// Spawns.mayBeCachedRemotely and mayBeExecutedRemotely
 /// (actions/Spawns.java:34-56) over the rule tags and the action's
 /// execution requirements.
@@ -7101,6 +7192,7 @@ pub fn execute_with_remote(
         // flag files expanded into a WorkRequest, the response's output is
         // the spawn's stderr (`response.getOutputBytes().writeTo(outErr
         // .getErrorStream())`), its exit code the spawn's.
+        report_subcommand(action, &execroot, "worker");
         crate::progress::spawn_started(crate::progress::Strategy::Worker);
         runner = Some("worker");
         let request_inputs = worker_request_inputs(inputs, &action.extra.param_files);
@@ -7143,6 +7235,7 @@ pub fn execute_with_remote(
             .expect("a process spawn resolved its strategy");
         sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
         runner = Some(strategy.runner_name());
+        report_subcommand(action, &execroot, strategy.runner_name());
         crate::progress::spawn_started(match strategy {
             crate::sandbox::Strategy::Sandboxed => crate::progress::Strategy::LinuxSandbox,
             crate::sandbox::Strategy::ProcessWrapper => {

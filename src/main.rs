@@ -1210,6 +1210,7 @@ fn run() -> Result<(), String> {
             build_tests_only: test_options.build_tests_only,
             expand_test_suites: test_options.expand_test_suites,
             test_filter: &accepts,
+            build_tag_filters: &test_options.build_tag_filters,
         },
     );
     bazel_rs::perf_mark("select.end");
@@ -2495,6 +2496,7 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
             build_tests_only: options.build_tests_only,
             expand_test_suites: options.expand_test_suites,
             test_filter: &accepts,
+            build_tag_filters: &options.build_tag_filters,
         },
     );
     for warning in engine.take_warnings() {
@@ -3486,6 +3488,7 @@ impl NativeOptions {
         let reports = builds(command);
         // Cquery inherits TestCommand options, but only the explicit
         // analysis dispatch above decides whether anything executes.
+        let registered_command = command;
         let command = if command == "cquery" { "test" } else { command };
         let used_next = if let Some(used) = query {
             used
@@ -3780,6 +3783,12 @@ impl NativeOptions {
         {
             consumed
         } else if builds(command)
+            && let Some(mode) = bazel_rs::action::parse_subcommands(arg)
+        {
+            // ExecutionOptions.showSubcommands (`--subcommands`, `-s`).
+            bazel_rs::action::set_subcommands(mode?);
+            false
+        } else if builds(command)
             && let Some(value) = bazel_rs::configuration::boolean_option(arg, "sandbox_debug")
         {
             // SandboxOptions.java:87-97.
@@ -3962,6 +3971,12 @@ impl NativeOptions {
             self.configuration.parse(arg, next)?
         {
             used
+        } else if let Some(used) = bazel_rs::rc_options::no_effect_option(
+            registered_command,
+            arg,
+            &unit.option.origin_suffix(),
+        ) {
+            used?
         } else {
             return Err(unmodelled_option(&unit.option));
         };

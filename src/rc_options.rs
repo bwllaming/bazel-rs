@@ -166,6 +166,199 @@ impl RcOptions {
     }
 }
 
+/// Boolean options Bazel 9.3 itself declares as no-ops (`help = "No-op"` or
+/// the `NO_OP` effect tag; generated from the pinned sources, paths below
+/// `src/main/java/com/google/devtools/build/lib/`): every value is accepted
+/// and has no effect, as in Bazel. Only the converter is checked.
+#[rustfmt::skip]
+const BAZEL_NO_OP_BOOLEANS: &[(&str, &str)] = &[
+    ("action_cache_store_output_metadata", "bazel/rules/BazelRulesModule.java"),
+    ("announce", "bazel/rules/BazelRulesModule.java"),
+    ("bes_best_effort", "bazel/rules/BazelRulesModule.java"),
+    ("check_fileset_dependencies_recursively", "bazel/rules/BazelRulesModule.java"),
+    ("collapse_duplicate_defines", "bazel/rules/BazelRulesModule.java"),
+    ("defer_param_files", "bazel/rules/BazelRulesModule.java"),
+    ("disallow_strict_deps_for_jpl", "bazel/rules/BazelRulesModule.java"),
+    ("discard_actions_after_execution", "bazel/rules/BazelRulesModule.java"),
+    ("enable_bzlmod", "bazel/rules/BazelRulesModule.java"),
+    ("enable_fdo_profile_absolute_path", "bazel/rules/BazelRulesModule.java"),
+    ("enable_workspace", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_action_resource_set", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_allow_android_library_deps_without_srcs", "rules/android/AndroidConfiguration.java"),
+    ("experimental_allow_runtime_deps_on_neverlink", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_announce_profile_path", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_build_transitive_python_runfiles", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_cc_static_library", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_collect_local_action_metrics", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_collect_local_sandbox_action_metrics", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_disallow_legacy_java_toolchain_flags", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_enable_starlark_doc_extract", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_java_header_compilation_direct_deps", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_java_header_input_pruning", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_java_proto_add_allowed_public_imports", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_limit_android_lint_to_android_constrained_java", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_objc_provider_from_linked", "rules/apple/AppleCommandLineOptions.java"),
+    ("experimental_parallel_aquery_output", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_parse_headers_skipped_if_corresponding_srcs_found", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_platform_cc_test", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_post_profile_started_event", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_profile_action_counts", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_proto_extra_actions", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_remote_execution_keepalive", "remote/options/RemoteOptions.java"),
+    ("experimental_require_availability_info", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_sandboxfs_map_symlink_targets", "sandbox/SandboxOptions.java"),
+    ("experimental_show_artifacts", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_skip_ttvs_for_genquery", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_skyframe_error_handling_refactor", "buildtool/BuildRequestOptions.java"),
+    ("experimental_skyframe_native_filesets", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_skyframe_prepare_analysis", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_starlark_cc_import", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_starlark_types", "packages/semantics/BuildLanguageOptions.java"),
+    ("experimental_use_event_based_build_completion_status", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_use_new_worker_pool", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_use_semaphore_for_jobs", "bazel/rules/BazelRulesModule.java"),
+    ("experimental_worker_as_resource", "bazel/rules/BazelRulesModule.java"),
+    ("fat_apk_hwasan", "rules/android/AndroidConfiguration.java"),
+    ("force_ignore_dash_static", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_allow_python_version_transitions", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_auto_configure_host_platform", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_depset_for_java_output_source_jars", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_depset_for_libraries_to_link_getter", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_disable_legacy_cc_provider", "rules/cpp/CppOptions.java"),
+    ("incompatible_disable_legacy_flags_cc_toolchain_api", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_disable_native_apple_binary_rule", "rules/objc/ObjcCommandLineOptions.java"),
+    ("incompatible_disable_native_repo_rules", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_disable_target_provider_fields", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_disallow_legacy_py_provider", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_disallow_struct_provider_syntax", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_dont_collect_native_libraries_in_data", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_dont_use_javasourceinfoprovider", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_enable_android_toolchain_resolution", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_enable_cc_toolchain_resolution", "rules/cpp/CppOptions.java"),
+    ("incompatible_enable_cgo_toolchain_resolution", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_enable_profile_by_default", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_existing_rules_immutable_view", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_legacy_local_fallback", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_load_java_rules_from_bzl", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_load_proto_rules_from_bzl", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_load_python_rules_from_bzl", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_macos_set_install_name", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_make_thinlto_command_lines_standalone", "rules/cpp/CppOptions.java"),
+    ("incompatible_new_actions_api", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_no_package_distribs", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_override_toolchain_transition", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_py2_outputs_are_suffixed", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_py3_is_default", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_python_disable_py2", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_remove_binary_profile", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_remove_old_python_version_api", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_require_ctx_in_configure_features", "rules/cpp/CppOptions.java"),
+    ("incompatible_require_javaplugininfo_in_javacommon", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_require_linker_input_cc_api", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_top_level_aspects_require_providers", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_use_plus_in_repo_names", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_use_python_toolchains", "bazel/rules/BazelRulesModule.java"),
+    ("incompatible_use_toolchain_resolution_for_java_rules", "analysis/PlatformOptions.java"),
+    ("incompatible_validate_top_level_header_inclusions", "rules/cpp/CppOptions.java"),
+    ("incompatible_visibility_private_attributes_at_definition", "bazel/rules/BazelRulesModule.java"),
+    ("j2objc_dead_code_removal", "bazel/rules/BazelRulesModule.java"),
+    ("jplPropagateCcLinkParamsStore", "bazel/rules/BazelRulesModule.java"),
+    ("legacy_bazel_java_test", "bazel/rules/BazelRulesModule.java"),
+    ("legacy_external_runfiles", "bazel/rules/BazelRulesModule.java"),
+    ("separate_aspect_deps", "bazel/rules/BazelRulesModule.java"),
+    ("strict_deps_java_protos", "bazel/rules/BazelRulesModule.java"),
+    ("use_top_level_targets_for_symlinks", "bazel/rules/BazelRulesModule.java"),
+    ("verbose_explanations", "bazel/rules/BazelRulesModule.java"),
+];
+
+/// Boolean options whose effect is on Bazel's server state, JVM or
+/// file-system watching, none of which a native command has (no server,
+/// no Skyframe graph kept between commands): accepted with every value.
+const SERVER_STATE_BOOLEANS: &[(&str, &str)] = &[
+    (
+        "discard_analysis_cache",
+        "analysis/AnalysisOptions.java:31-38",
+    ),
+    (
+        "track_incremental_state",
+        "runtime/CommonCommandOptions.java:582-593",
+    ),
+    (
+        "keep_state_after_build",
+        "runtime/CommonCommandOptions.java:594-602",
+    ),
+    (
+        "heap_dump_on_oom",
+        "runtime/CommonCommandOptions.java:472-480",
+    ),
+    ("watchfs", "skyframe/LocalDiffAwareness.java:50-60"),
+    (
+        "experimental_repository_cache_hardlinks",
+        "bazel/repository/RepositoryOptions.java:154-163",
+    ),
+];
+
+/// Boolean options accepted at their Bazel 9.3 default only (the other
+/// value changes behaviour the native profile does not model): `fetch`
+/// (PackageOptions.java:169-178; `--nofetch` forbids fetching) and
+/// `incompatible_disallow_empty_glob` (BuildLanguageOptions.java:436-449;
+/// the native glob always rejects an empty result without `allow_empty`).
+const DEFAULT_ONLY_BOOLEANS: &[(&str, bool)] =
+    &[("fetch", true), ("incompatible_disallow_empty_glob", true)];
+
+/// Whether genuine Bazel registers option `name` for `command`
+/// (crate::option_metadata, `help flags-as-proto`).
+fn registered_for(name: &str, command: &str) -> bool {
+    let Some(bit) = crate::option_metadata::COMMANDS
+        .iter()
+        .position(|candidate| *candidate == command)
+    else {
+        return false;
+    };
+    crate::option_metadata::OPTIONS
+        .iter()
+        .any(|option| option.name == name && option.commands & (1 << bit) != 0)
+}
+
+/// An option this profile accepts because Bazel 9.3 gives it no effect in
+/// what a native command runs ([`BAZEL_NO_OP_BOOLEANS`],
+/// [`SERVER_STATE_BOOLEANS`], [`DEFAULT_ONLY_BOOLEANS`]): `Some(Ok(false))`
+/// when `arg` is one `command` takes, Bazel's `Unrecognized option` when
+/// `command` does not register it, the converter's error for a bad value,
+/// and an explicit unsupported-option error for a non-default value of a
+/// default-only option.
+pub fn no_effect_option(command: &str, arg: &str, origin: &str) -> Option<Result<bool, String>> {
+    let names = BAZEL_NO_OP_BOOLEANS
+        .iter()
+        .chain(SERVER_STATE_BOOLEANS)
+        .map(|(name, _)| (*name, None))
+        .chain(
+            DEFAULT_ONLY_BOOLEANS
+                .iter()
+                .map(|(name, default)| (*name, Some(*default))),
+        );
+    for (name, default) in names {
+        let Some(value) = crate::configuration::boolean_option(arg, name) else {
+            continue;
+        };
+        if !registered_for(name, command) {
+            return Some(Err(invalid_argument(
+                arg,
+                format!("Unrecognized option: {arg}"),
+            )));
+        }
+        return Some(match (value, default) {
+            (Err(error), _) => Err(error),
+            (Ok(value), Some(default)) if value != default => Err(format!(
+                "unsupported option {arg}{origin}: only the Bazel 9.3 default --{}{name} is modelled",
+                if default { "" } else { "no" }
+            )),
+            (Ok(_), _) => Ok(false),
+        });
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
