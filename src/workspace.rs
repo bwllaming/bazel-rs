@@ -89,7 +89,11 @@ pub fn discover_packages_skipping(
     let mut pending = vec![(directory, package.to_owned())];
     let mut packages = Vec::new();
     while let Some((directory, package)) = pending.pop() {
-        if find_build_file(&root, &directory)?.is_some() {
+        // A --deleted_packages package is none, but its subdirectories are
+        // still traversed (PackageLookupValue.DELETED_PACKAGE_VALUE).
+        if find_build_file(&root, &directory)?.is_some()
+            && !crate::ignored::is_deleted_directory(&directory)
+        {
             packages.push(package.clone());
         }
         // excludedPaths.filterForDirectory: only entries that can match below.
@@ -267,7 +271,9 @@ pub(crate) fn is_package(root: &Path, package: &str) -> Result<bool, String> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(format!("cannot inspect {}: {error}", directory.display())),
     }
-    if find_build_file(&canonical, &directory)?.is_none() {
+    if find_build_file(&canonical, &directory)?.is_none()
+        || crate::ignored::is_deleted_directory(&directory)
+    {
         return Ok(false);
     }
     package_build_file(root, package).map(|_| true)

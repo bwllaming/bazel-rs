@@ -1687,6 +1687,7 @@ impl Context {
             .map_err(anyhow::Error::msg)?
             .matching_entry(package)
             .is_some()
+            || crate::ignored::is_deleted_package(repository, package)
         {
             bail!(
                 "Unable to load package for {label}: {}",

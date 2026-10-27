@@ -434,6 +434,105 @@ fn not_readable(path: &Path, error: &io::Error) -> String {
 /// `PackageLookupValue.DELETED_PACKAGE_VALUE.getErrorMsg()`.
 pub const DELETED_PACKAGE_MESSAGE: &str = "Package is considered deleted due to --deleted_packages";
 
+/// `--deleted_packages` (pkgcache/PackageOptions.java, PackageLookupFunction
+/// .java:98-99): packages Bazel treats as nonexistent. Their BUILD files are
+/// no package boundary (globs of the parent package cross into them,
+/// recursive patterns skip them but still descend), and loading one fails
+/// with [`DELETED_PACKAGE_MESSAGE`]. Set once per command, before loading.
+#[derive(Debug, Default)]
+struct DeletedPackages {
+    /// (canonical repository name as given, package path).
+    ids: HashSet<(String, String)>,
+    /// The main repository's deleted package directories (below the
+    /// canonical workspace root): the filesystem-level boundary checks.
+    main_directories: HashSet<std::path::PathBuf>,
+}
+
+static DELETED: std::sync::RwLock<Option<DeletedPackages>> = std::sync::RwLock::new(None);
+
+/// `CommaSeparatedPackageNameListConverter` (PackageOptions.java:219-244):
+/// each element is `PackageIdentifier.parse` (cmdline/PackageIdentifier.java
+/// :145-153), so `pkg`, `//pkg` and `@repo//pkg` (the repository name taken
+/// as is) name a package. Returns (repository, package) pairs.
+pub fn parse_deleted_packages(input: &str) -> Result<Vec<(String, String)>, String> {
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut found = Vec::new();
+    for element in input.split(',') {
+        if element.contains(':') {
+            return Err(format!(
+                "invalid package identifier '{element}': contains ':'"
+            ));
+        }
+        // LabelParser.Parts.parse of `element + ":dummy_target"`.
+        let (repository, package) = if let Some(rest) = element.strip_prefix('@') {
+            let rest = rest.strip_prefix('@').unwrap_or(rest);
+            match rest.split_once("//") {
+                Some((repository, package)) => (repository, package),
+                None => (rest, ""),
+            }
+        } else {
+            ("", element.strip_prefix("//").unwrap_or(element))
+        };
+        let package = package
+            .strip_suffix("/...")
+            .or_else(|| package.strip_suffix("..."))
+            .unwrap_or(package);
+        if let Some(error) = crate::bazel_label::validate_package_name(package) {
+            return Err(format!("invalid package name '{package}': {error}"));
+        }
+        found.push((repository.to_owned(), package.to_owned()));
+    }
+    Ok(found)
+}
+
+/// Install this command's `--deleted_packages` (`main_root`: the workspace).
+pub fn set_deleted_packages(main_root: &Path, packages: &[(String, String)]) {
+    let canonical =
+        observed_fs::canonicalize(main_root).unwrap_or_else(|_| main_root.to_path_buf());
+    let roots = [canonical, main_root.to_path_buf()];
+    let deleted = DeletedPackages {
+        ids: packages.iter().cloned().collect(),
+        main_directories: packages
+            .iter()
+            .filter(|(repository, _)| repository.is_empty())
+            .flat_map(|(_, package)| {
+                roots.iter().map(move |root| {
+                    let mut directory = root.clone();
+                    directory.extend(package.split('/').filter(|part| !part.is_empty()));
+                    directory
+                })
+            })
+            .collect(),
+    };
+    *DELETED.write().unwrap_or_else(|e| e.into_inner()) =
+        (!deleted.ids.is_empty()).then_some(deleted);
+}
+
+/// Whether `package` of `repository` is a `--deleted_packages` package.
+pub fn is_deleted_package(repository: &str, package: &str) -> bool {
+    DELETED
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|deleted| {
+            deleted
+                .ids
+                .contains(&(repository.to_owned(), package.to_owned()))
+        })
+}
+
+/// Whether `directory` (below the canonical main workspace root) is a
+/// deleted main-repository package: its BUILD file is no boundary.
+pub fn is_deleted_directory(directory: &Path) -> bool {
+    DELETED
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|deleted| deleted.main_directories.contains(directory))
+}
+
 /// `NoSuchPackageException.getMessage` for a package inside an ignored
 /// directory (`PackageLookupFunction` returns `DELETED_PACKAGE_VALUE`).
 pub fn deleted_package_error(repository: &str, package: &str) -> String {

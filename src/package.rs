@@ -2240,7 +2240,9 @@ fn evaluate_in_with_prints(
     // PackageLookupFunction: a package inside an ignored directory is
     // DELETED_PACKAGE_VALUE, before any BUILD file is looked up.
     let ignored = repositories.ignored_subdirectories(&package.repository)?;
-    if ignored.matching_entry(&package.package).is_some() {
+    if ignored.matching_entry(&package.package).is_some()
+        || crate::ignored::is_deleted_package(&package.repository, &package.package)
+    {
         return Err(crate::ignored::deleted_package_error(
             &package.repository,
             &package.package,

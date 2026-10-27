@@ -348,6 +348,7 @@ fn run() -> Result<(), String> {
         lockfile_target = native.lockfile_target;
         action_dump = native.action_dump;
         allowed_yanked_flags = native.allowed_yanked_flags;
+        bazel_rs::ignored::set_deleted_packages(&root, &native.deleted_packages);
         raw_registries = native.raw_registries;
         jobs = native.jobs.unwrap_or(jobs);
         // `auto` in the native parser is the LOADING_AUTO marker: not
@@ -3397,6 +3398,9 @@ struct NativeOptions {
     /// `--target_pattern_file` (BuildRequestOptions.targetPatternFile; the
     /// last one wins, empty is unset): crate::target_pattern_file.
     target_pattern_file: Option<String>,
+    /// `--deleted_packages` (PackageOptions.deletedPackages, allowMultiple):
+    /// crate::ignored::set_deleted_packages.
+    deleted_packages: Vec<(String, String)>,
 }
 
 impl NativeOptions {
@@ -3453,6 +3457,7 @@ impl NativeOptions {
             lockfile_target: bazel_rs::registry_session::LockfileTarget::Workspace,
             action_dump: None,
             allowed_yanked_flags: Vec::new(),
+            deleted_packages: Vec::new(),
             raw_registries: Vec::new(),
         }
     }
@@ -3549,6 +3554,16 @@ impl NativeOptions {
                 "unsupported option --override_repository{}; MODULE overrides do not replace the built-in repository filesystem",
                 unit.option.origin_suffix()
             ));
+        } else if let Some(parsed) =
+            bazel_rs::rc_options::value_option(arg, next, "deleted_packages")
+        {
+            // PackageOptions.deletedPackages: every loading command.
+            let (form, value, used) = parsed?;
+            self.deleted_packages.extend(
+                bazel_rs::ignored::parse_deleted_packages(value)
+                    .map_err(|error| format!("While parsing option {form}: {error}"))?,
+            );
+            used
         } else if let Some(parsed) =
             bazel_rs::rc_options::value_option(arg, next, "check_direct_dependencies")
         {

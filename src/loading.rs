@@ -2123,7 +2123,9 @@ impl<'a> Loader<'a> {
                 // REPO.bazel and WORKSPACE files are no boundaries
                 // (LocalRepositoryLookupFunction.java:27-35).
                 // An ignored directory with a BUILD file is no subpackage.
-                let names: &[&str] = if ignored.matching_entry(&relative).is_some() {
+                let names: &[&str] = if ignored.matching_entry(&relative).is_some()
+                    || crate::ignored::is_deleted_directory(&path)
+                {
                     &[]
                 } else {
                     &["BUILD.bazel", "BUILD"]

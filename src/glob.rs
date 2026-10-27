@@ -865,7 +865,10 @@ impl Walker<'_> {
                     // boundary too (paired capture tests/fixtures/label_syntax).
                     // FILES globs never ask for a directory that is only a
                     // result (GlobCache.java:362-372).
+                    // A --deleted_packages package is no boundary
+                    // (PackageLookupValue.DELETED_PACKAGE_VALUE.packageExists()).
                     if (descend || !self.exclude_directories)
+                        && !crate::ignored::is_deleted_directory(&logical)
                         && is_subpackage(&logical, listing.as_deref(), deferred)
                     {
                         // GlobCache.GlobUnixPathDiscriminator: SUBPACKAGES

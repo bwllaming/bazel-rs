@@ -3024,6 +3024,7 @@ impl Engine {
             // (ContainingPackageLookupFunction).
             // So is an invalid package name (PackageLookupFunction.java:91-96).
             let subpackage = ignored.matching_entry(&relative).is_none()
+                && !crate::ignored::is_deleted_directory(&directory)
                 && crate::label::is_valid_package_name(&relative)
                 && (crate::observed_fs::is_file(directory.join("BUILD.bazel"))
                     || crate::observed_fs::is_file(directory.join("BUILD")));
@@ -3189,6 +3190,7 @@ impl Engine {
             // .java:91-96), so no boundary either.
             if i + 1 < parts.len()
                 && ignored.matching_entry(&relative).is_none()
+                && !crate::ignored::is_deleted_directory(&path)
                 && crate::label::is_valid_package_name(&relative)
                 && (crate::observed_fs::is_file(path.join("BUILD.bazel"))
                     || crate::observed_fs::is_file(path.join("BUILD")))

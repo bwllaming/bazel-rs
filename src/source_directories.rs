@@ -187,6 +187,7 @@ pub fn traversal_error(
             if let Some(boundaries) = boundaries {
                 let package = logical(&child);
                 if boundaries.ignored.matching_entry(&package).is_none()
+                    && !crate::ignored::is_deleted_directory(&path)
                     && crate::label::is_valid_package_name(&package)
                     && (observed_fs::is_file(path.join("BUILD.bazel"))
                         || observed_fs::is_file(path.join("BUILD")))

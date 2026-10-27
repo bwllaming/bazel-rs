@@ -154,3 +154,65 @@ fn check_direct_dependencies_modes_match_bazel() {
         stderr(&output)
     );
 }
+
+/// `--deleted_packages` (bazel-gazelle's .bazelrc): the deleted package's
+/// BUILD file is no boundary (the parent's glob crosses into it), `//...`
+/// skips it but still finds the packages below it, and loading it fails.
+#[test]
+fn deleted_packages_like_bazel() {
+    let ws = Workspace::new(&[
+        ("MODULE.bazel", "module(name = \"d\")\n"),
+        (
+            "BUILD.bazel",
+            "filegroup(name = \"all\", srcs = glob([\"sub/**\"], allow_empty = True))\n",
+        ),
+        ("sub/BUILD.bazel", "filegroup(name = \"s\")\n"),
+        ("sub/f.txt", ""),
+        ("sub/inner/BUILD.bazel", "filegroup(name = \"i\")\n"),
+    ]);
+    let query = |expression: &str, deleted: &str| {
+        let flag = format!("--deleted_packages={deleted}");
+        let output = ws.run(&["query", &flag, expression]);
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr(&output),
+        )
+    };
+    let (code, stdout, _) = query("//...", "sub");
+    assert_eq!(
+        (code, stdout.as_str()),
+        (Some(0), "//:all\n//sub/inner:i\n")
+    );
+    let (code, stdout, _) = query("labels(srcs, //:all)", "//sub");
+    assert_eq!(
+        (code, stdout.as_str()),
+        (Some(0), "//:sub/BUILD.bazel\n//:sub/f.txt\n")
+    );
+    let (code, stdout, _) = query("//sub/...", "sub");
+    assert_eq!((code, stdout.as_str()), (Some(0), "//sub/inner:i\n"));
+    for target in ["//sub:s", "//sub:f.txt"] {
+        let (code, _, err) = query(target, "sub");
+        assert_eq!(code, Some(7), "{err}");
+        assert!(
+            err.contains(
+                "ERROR: no such package 'sub': Package is considered deleted due to --deleted_packages"
+            ),
+            "{err}"
+        );
+    }
+    let (code, _, err) = query("//...", "a:b");
+    assert_ne!(code, Some(0));
+    assert!(
+        err.contains(
+            "While parsing option --deleted_packages=a:b: invalid package identifier 'a:b': contains ':'"
+        ),
+        "{err}"
+    );
+    // Without the option `sub` is a package again.
+    let output = ws.run(&["query", "//..."]);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "//:all\n//sub:s\n//sub/inner:i\n"
+    );
+}
