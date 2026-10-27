@@ -30,12 +30,26 @@ targets) the static builds need zig as their C compiler: run
 
 The static x86_64 binary is the portable one: it runs on any x86_64 Linux
 (no glibc version requirement; Rust's minimum kernel 3.2). It is the same code
-as the glibc binary with two musl-only differences (`Cargo.toml`, `build.rs`):
-jemalloc also takes over the unprefixed `malloc` family, so musl's allocator
-serves nothing, and `src/musl_string.c` replaces musl's byte-loop
-`memcmp`/`bcmp` and `rep movsq` `memcpy`/`memmove` (linked as a whole archive
-ahead of `libc.a`; `tests/libc_string.rs` checks them). Without the latter the
-musl binary was ~25 % slower on analysis. Measured on `~/code`,
+as the glibc binary with three musl-only differences (`Cargo.toml`,
+`build.rs`): jemalloc also takes over the unprefixed `malloc` family, so
+musl's allocator serves nothing; `src/musl_string.c` replaces musl's
+byte-loop `memcmp`/`bcmp` and `rep movsq` `memcpy`/`memmove` (without it the
+musl binary was ~25 % slower on analysis); and it provides `strerror_r` with
+glibc's texts, because Bazel's messages embed them (`(Too many levels of
+symbolic links)`, where musl says `Symbolic link loop`). The file is linked as
+a whole archive ahead of `libc.a`; `tests/libc_string.rs` checks it. Other
+libc differences that remain: user lookups read `/etc/passwd` only (no NSS
+modules such as LDAP/sssd; bazel-rs uses `$HOME`), and host names resolve
+through musl's stub resolver (`/etc/hosts`, `/etc/resolv.conf`; no
+`nsswitch.conf`).
+
+Tests against the musl build: `cargo test --target x86_64-unknown-linux-musl`
+(with the `CC_`/`AR_`/`RANLIB_` variables release.py sets) builds the test
+programs static against musl. Run once for 0.2.0: the library unit tests plus
+82 integration programs (the CI subset and the execution, sandbox, process
+cleanup, remote cache, clean/fetch and `bazel test` programs), 2249 tests, all
+passing; the whole suite did not fit the build machine's memory at once (every
+musl test program is a static ~100 MB link). Measured on `~/code`,
 `build //src/beyondwork.ai/tools/oauth2token/...` with private caches,
 alternating runs on a shared 64-core machine (seconds wall, peak RSS):
 

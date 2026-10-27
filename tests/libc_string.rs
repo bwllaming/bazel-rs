@@ -1,6 +1,11 @@
 //! memcmp/bcmp/memcpy/memmove through Rust's slice operations, checked against
-//! byte loops. On musl targets these are bazel-rs's own src/musl_string.c
-//! (build.rs); elsewhere the system libc's, which must agree all the same.
+//! byte loops, and the OS error texts. On musl targets these are bazel-rs's
+//! own src/musl_string.c (build.rs); elsewhere glibc's, which must agree all
+//! the same.
+
+// Links the bazel_rs rlib (and with it build.rs's native library) although
+// nothing of it is called: without a use, rustc leaves it out of the link.
+extern crate bazel_rs;
 
 use std::cmp::Ordering;
 use std::hint::black_box;
@@ -97,4 +102,26 @@ fn copies_match_byte_loops() {
             "memcpy src={src} to={to} n={n}"
         );
     }
+}
+
+/// Bazel's messages embed glibc's strerror texts (e.g. a glob's symlink loop:
+/// "[unix_jni.cc:382] <path> (Too many levels of symbolic links)"); the static
+/// musl build must print the same, not musl's wording.
+#[test]
+fn os_error_texts_are_glibcs() {
+    let text = |code: i32| std::io::Error::from_raw_os_error(code).to_string();
+    for (code, want) in [
+        (libc::ENOENT, "No such file or directory"),
+        (libc::ELOOP, "Too many levels of symbolic links"),
+        (libc::ENAMETOOLONG, "File name too long"),
+        (libc::EXDEV, "Invalid cross-device link"),
+        (libc::EBUSY, "Device or resource busy"),
+        (libc::EMFILE, "Too many open files"),
+        (libc::ETIMEDOUT, "Connection timed out"),
+        (libc::ENOTEMPTY, "Directory not empty"),
+    ] {
+        assert_eq!(text(code), format!("{want} (os error {code})"));
+    }
+    assert_eq!(text(41), "Unknown error 41 (os error 41)");
+    assert_eq!(text(4242), "Unknown error 4242 (os error 4242)");
 }

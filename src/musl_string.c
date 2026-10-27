@@ -15,7 +15,8 @@
  * bcmp's zero / non-zero, memcpy for non-overlapping and memmove for
  * overlapping buffers. Every copy below 33 bytes loads all source bytes
  * before it stores any, so it is overlap-safe. tests/libc_string.rs checks
- * them against byte loops through Rust's slice operations. Compiled with
+ * them against byte loops through Rust's slice operations. strerror_r (end
+ * of the file) gives glibc's error texts for Bazel-parity messages. Compiled with
  * -ffreestanding -fno-builtin and the no_builtin attribute so the compiler
  * never turns a loop back into a call to the function being defined.
  */
@@ -171,4 +172,191 @@ NO_BUILTIN void *memmove(void *vd, const void *vs, size_t n) {
     }
     st16(d, h0); st16(d + 16, h1);
     return vd;
+}
+
+/*
+ * strerror_r with glibc's messages. Rust's io::Error text comes from
+ * strerror_r, and bazel-rs repeats Bazel's error texts, which embed glibc's
+ * strerror (Bazel's JNI, e.g. "[unix_jni.cc:382] <path> (Too many levels of
+ * symbolic links)"); musl words several differently ("Symbolic link loop",
+ * "Filename too long", "Resource busy", ...). The table is glibc 2.39's
+ * (Linux errno numbers, identical on x86_64 and aarch64); other numbers read
+ * "Unknown error N" as in glibc. musl's strerror_r object also defines
+ * __xpg_strerror_r, so both are defined here to keep it out of the link.
+ */
+static const char *const glibc_errors[] = {
+    [0] = "Success", /* 0 */
+    [1] = "Operation not permitted", /* EPERM */
+    [2] = "No such file or directory", /* ENOENT */
+    [3] = "No such process", /* ESRCH */
+    [4] = "Interrupted system call", /* EINTR */
+    [5] = "Input/output error", /* EIO */
+    [6] = "No such device or address", /* ENXIO */
+    [7] = "Argument list too long", /* E2BIG */
+    [8] = "Exec format error", /* ENOEXEC */
+    [9] = "Bad file descriptor", /* EBADF */
+    [10] = "No child processes", /* ECHILD */
+    [11] = "Resource temporarily unavailable", /* EAGAIN */
+    [12] = "Cannot allocate memory", /* ENOMEM */
+    [13] = "Permission denied", /* EACCES */
+    [14] = "Bad address", /* EFAULT */
+    [15] = "Block device required", /* ENOTBLK */
+    [16] = "Device or resource busy", /* EBUSY */
+    [17] = "File exists", /* EEXIST */
+    [18] = "Invalid cross-device link", /* EXDEV */
+    [19] = "No such device", /* ENODEV */
+    [20] = "Not a directory", /* ENOTDIR */
+    [21] = "Is a directory", /* EISDIR */
+    [22] = "Invalid argument", /* EINVAL */
+    [23] = "Too many open files in system", /* ENFILE */
+    [24] = "Too many open files", /* EMFILE */
+    [25] = "Inappropriate ioctl for device", /* ENOTTY */
+    [26] = "Text file busy", /* ETXTBSY */
+    [27] = "File too large", /* EFBIG */
+    [28] = "No space left on device", /* ENOSPC */
+    [29] = "Illegal seek", /* ESPIPE */
+    [30] = "Read-only file system", /* EROFS */
+    [31] = "Too many links", /* EMLINK */
+    [32] = "Broken pipe", /* EPIPE */
+    [33] = "Numerical argument out of domain", /* EDOM */
+    [34] = "Numerical result out of range", /* ERANGE */
+    [35] = "Resource deadlock avoided", /* EDEADLOCK */
+    [36] = "File name too long", /* ENAMETOOLONG */
+    [37] = "No locks available", /* ENOLCK */
+    [38] = "Function not implemented", /* ENOSYS */
+    [39] = "Directory not empty", /* ENOTEMPTY */
+    [40] = "Too many levels of symbolic links", /* ELOOP */
+    [42] = "No message of desired type", /* ENOMSG */
+    [43] = "Identifier removed", /* EIDRM */
+    [44] = "Channel number out of range", /* ECHRNG */
+    [45] = "Level 2 not synchronized", /* EL2NSYNC */
+    [46] = "Level 3 halted", /* EL3HLT */
+    [47] = "Level 3 reset", /* EL3RST */
+    [48] = "Link number out of range", /* ELNRNG */
+    [49] = "Protocol driver not attached", /* EUNATCH */
+    [50] = "No CSI structure available", /* ENOCSI */
+    [51] = "Level 2 halted", /* EL2HLT */
+    [52] = "Invalid exchange", /* EBADE */
+    [53] = "Invalid request descriptor", /* EBADR */
+    [54] = "Exchange full", /* EXFULL */
+    [55] = "No anode", /* ENOANO */
+    [56] = "Invalid request code", /* EBADRQC */
+    [57] = "Invalid slot", /* EBADSLT */
+    [59] = "Bad font file format", /* EBFONT */
+    [60] = "Device not a stream", /* ENOSTR */
+    [61] = "No data available", /* ENODATA */
+    [62] = "Timer expired", /* ETIME */
+    [63] = "Out of streams resources", /* ENOSR */
+    [64] = "Machine is not on the network", /* ENONET */
+    [65] = "Package not installed", /* ENOPKG */
+    [66] = "Object is remote", /* EREMOTE */
+    [67] = "Link has been severed", /* ENOLINK */
+    [68] = "Advertise error", /* EADV */
+    [69] = "Srmount error", /* ESRMNT */
+    [70] = "Communication error on send", /* ECOMM */
+    [71] = "Protocol error", /* EPROTO */
+    [72] = "Multihop attempted", /* EMULTIHOP */
+    [73] = "RFS specific error", /* EDOTDOT */
+    [74] = "Bad message", /* EBADMSG */
+    [75] = "Value too large for defined data type", /* EOVERFLOW */
+    [76] = "Name not unique on network", /* ENOTUNIQ */
+    [77] = "File descriptor in bad state", /* EBADFD */
+    [78] = "Remote address changed", /* EREMCHG */
+    [79] = "Can not access a needed shared library", /* ELIBACC */
+    [80] = "Accessing a corrupted shared library", /* ELIBBAD */
+    [81] = ".lib section in a.out corrupted", /* ELIBSCN */
+    [82] = "Attempting to link in too many shared libraries", /* ELIBMAX */
+    [83] = "Cannot exec a shared library directly", /* ELIBEXEC */
+    [84] = "Invalid or incomplete multibyte or wide character", /* EILSEQ */
+    [85] = "Interrupted system call should be restarted", /* ERESTART */
+    [86] = "Streams pipe error", /* ESTRPIPE */
+    [87] = "Too many users", /* EUSERS */
+    [88] = "Socket operation on non-socket", /* ENOTSOCK */
+    [89] = "Destination address required", /* EDESTADDRREQ */
+    [90] = "Message too long", /* EMSGSIZE */
+    [91] = "Protocol wrong type for socket", /* EPROTOTYPE */
+    [92] = "Protocol not available", /* ENOPROTOOPT */
+    [93] = "Protocol not supported", /* EPROTONOSUPPORT */
+    [94] = "Socket type not supported", /* ESOCKTNOSUPPORT */
+    [95] = "Operation not supported", /* ENOTSUP */
+    [96] = "Protocol family not supported", /* EPFNOSUPPORT */
+    [97] = "Address family not supported by protocol", /* EAFNOSUPPORT */
+    [98] = "Address already in use", /* EADDRINUSE */
+    [99] = "Cannot assign requested address", /* EADDRNOTAVAIL */
+    [100] = "Network is down", /* ENETDOWN */
+    [101] = "Network is unreachable", /* ENETUNREACH */
+    [102] = "Network dropped connection on reset", /* ENETRESET */
+    [103] = "Software caused connection abort", /* ECONNABORTED */
+    [104] = "Connection reset by peer", /* ECONNRESET */
+    [105] = "No buffer space available", /* ENOBUFS */
+    [106] = "Transport endpoint is already connected", /* EISCONN */
+    [107] = "Transport endpoint is not connected", /* ENOTCONN */
+    [108] = "Cannot send after transport endpoint shutdown", /* ESHUTDOWN */
+    [109] = "Too many references: cannot splice", /* ETOOMANYREFS */
+    [110] = "Connection timed out", /* ETIMEDOUT */
+    [111] = "Connection refused", /* ECONNREFUSED */
+    [112] = "Host is down", /* EHOSTDOWN */
+    [113] = "No route to host", /* EHOSTUNREACH */
+    [114] = "Operation already in progress", /* EALREADY */
+    [115] = "Operation now in progress", /* EINPROGRESS */
+    [116] = "Stale file handle", /* ESTALE */
+    [117] = "Structure needs cleaning", /* EUCLEAN */
+    [118] = "Not a XENIX named type file", /* ENOTNAM */
+    [119] = "No XENIX semaphores available", /* ENAVAIL */
+    [120] = "Is a named type file", /* EISNAM */
+    [121] = "Remote I/O error", /* EREMOTEIO */
+    [122] = "Disk quota exceeded", /* EDQUOT */
+    [123] = "No medium found", /* ENOMEDIUM */
+    [124] = "Wrong medium type", /* EMEDIUMTYPE */
+    [125] = "Operation canceled", /* ECANCELED */
+    [126] = "Required key not available", /* ENOKEY */
+    [127] = "Key has expired", /* EKEYEXPIRED */
+    [128] = "Key has been revoked", /* EKEYREVOKED */
+    [129] = "Key was rejected by service", /* EKEYREJECTED */
+    [130] = "Owner died", /* EOWNERDEAD */
+    [131] = "State not recoverable", /* ENOTRECOVERABLE */
+    [132] = "Operation not possible due to RF-kill", /* ERFKILL */
+    [133] = "Memory page has hardware error", /* EHWPOISON */
+};
+
+static size_t text_length(const char *s) {
+    size_t n = 0;
+    while (s[n]) n++;
+    return n;
+}
+
+NO_BUILTIN int strerror_r(int errnum, char *buf, size_t buflen) {
+    char unknown[32];
+    const char *msg = 0;
+    if (errnum >= 0 && (size_t)errnum < sizeof glibc_errors / sizeof glibc_errors[0]) msg = glibc_errors[errnum];
+    if (!msg) {
+        /* "Unknown error %d" without stdio. */
+        static const char prefix[] = "Unknown error ";
+        char digits[12];
+        size_t nd = 0, at = 0;
+        unsigned int v = errnum < 0 ? 0u - (unsigned int)errnum : (unsigned int)errnum;
+        do {
+            digits[nd++] = (char)('0' + v % 10);
+            v /= 10;
+        } while (v);
+        for (size_t i = 0; prefix[i]; i++) unknown[at++] = prefix[i];
+        if (errnum < 0) unknown[at++] = '-';
+        while (nd) unknown[at++] = digits[--nd];
+        unknown[at] = 0;
+        msg = unknown;
+    }
+    size_t len = text_length(msg);
+    if (len >= buflen) {
+        if (buflen) {
+            memcpy(buf, msg, buflen - 1);
+            buf[buflen - 1] = 0;
+        }
+        return 34; /* ERANGE */
+    }
+    memcpy(buf, msg, len + 1);
+    return 0;
+}
+
+NO_BUILTIN int __xpg_strerror_r(int errnum, char *buf, size_t buflen) {
+    return strerror_r(errnum, buf, buflen);
 }

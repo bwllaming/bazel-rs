@@ -1,6 +1,7 @@
 //! Static musl builds only (docs/RELEASING.md): compile src/musl_string.c,
-//! faster memcmp/bcmp/memcpy/memmove than musl's, and link it as a whole
-//! archive ahead of libc.a. Other targets build nothing here.
+//! faster memcmp/bcmp/memcpy/memmove than musl's and a strerror_r with
+//! glibc's texts, and link it as a whole archive ahead of libc.a. Other
+//! targets build nothing here.
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
