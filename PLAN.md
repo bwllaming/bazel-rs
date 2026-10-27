@@ -113,8 +113,13 @@ Done since the last increment recorded under "History", one line each:
 - [x] Pure `py_internal.regex_match` supports the bounded documented Java-regex
       subset, including ASCII-default classes and `(?U)` Unicode classes, in
       loading/repository/analysis contexts (docs/PY_REGEX_MATCH.md).
-- [ ] Revalidate latest-code default query/cquery after the regex helper fix.
-      Whole-repository target-determinator revision comparison remains unperformed.
+- [x] The isolated latest-code PR checkout's default loading query succeeds
+      after aliases, tabs, subpackages and the Python regex helper fixes.
+- [x] `java_plugins_flag_alias` has real JavaPluginInfo merges and selected
+      exec-configured `--plugin` dependencies (docs/JAVA_PLUGINS_FLAG_ALIAS.md).
+- [ ] Latest-code configured query now stops at the `build_runfile_links`
+      Starlark transition on the built-in ProGuard allowlister. Whole-repository
+      target-determinator revision comparison remains unperformed.
 
 ### Commands that are rejected today
 
