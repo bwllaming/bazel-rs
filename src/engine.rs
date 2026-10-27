@@ -2607,6 +2607,8 @@ impl Engine {
     /// review). Must be positive.
     pub fn set_loading_phase_threads(&mut self, threads: usize) {
         self.loading_phase_threads = threads.max(1);
+        self.repositories
+            .enable_root_warming(self.loading_phase_threads);
     }
 
     pub fn set_configuration(&mut self, configuration: Configuration) {
@@ -2645,6 +2647,9 @@ impl Engine {
             return Err(message);
         }
         if !self.packages.contains_key(package) {
+            let _span = crate::timeline::span("package", || {
+                format!("@@{}//{}", package.repository, package.package)
+            });
             // Phase-1 prefetch (crate::prefetch): a unit a background
             // worker loaded is committed here, at the sequential demand
             // point, exactly like an inline load; a sentinel unit re-runs
@@ -8137,6 +8142,7 @@ impl Engine {
         {
             patterns.extend(labels.into_iter().map(|label| (repository.clone(), label)));
         }
+        self.repositories.warm_registrations(&patterns);
         self.prefetch_toolchain_patterns(&patterns);
         let labels = self.expand_toolchain_patterns(&patterns)?;
         // configureRegisteredToolchains (:174-215).

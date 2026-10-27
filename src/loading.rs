@@ -704,6 +704,7 @@ fn load_build_file_modules(
     if labels.is_empty() {
         return Ok(LoadedModules::default());
     }
+    warm_load_roots(&repositories, &labels);
     let mut loader = Loader::shared_build_phase(repositories, globals, prints);
     loader.shared = shared;
     for label in labels.iter().cloned() {
@@ -728,6 +729,17 @@ fn load_build_file_modules(
         direct_loads: labels,
         load_graph: loader.load_graph,
     })
+}
+
+/// Bazel requests the loads of a file as one Skyframe batch, fetching
+/// their repositories in parallel: warm the module roots of `labels`
+/// before the loader demands them one at a time (crate::module_root_warm;
+/// only where the sequential engine loads: a thread that must not fetch
+/// may be loading a package the build never commits).
+fn warm_load_roots(repositories: &RepositorySet, labels: &[Label]) {
+    if !crate::repository_demand::no_demand_active() {
+        repositories.warm_loads(labels);
+    }
 }
 
 fn dependencies(
@@ -1830,6 +1842,7 @@ impl<'a> Loader<'a> {
         crate::guarded_globals::check(label, &ast)?;
         crate::guarded_globals::check_universe(&ast)?;
         let dependencies = dependencies(&self.repositories, &label.package_id(), &ast)?;
+        warm_load_roots(&self.repositories, &dependencies);
         if self.provenance_capture {
             // Label.parseWithPackageContext with the load's recorder
             // (BzlLoadFunction.getLoadLabels, :808-820).

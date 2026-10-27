@@ -259,6 +259,8 @@ struct RepositoryState {
     /// Repository rules executing ahead of their sequential demand
     /// (parallel fetching, crate::repository_speculation).
     speculation: crate::repository_speculation::Speculations,
+    /// Module roots warmed ahead of their demand (crate::module_root_warm).
+    root_warmer: crate::module_root_warm::RootWarmer,
     /// `mod tidy`: extensions are evaluated for their eval-only value
     /// (no `use_repo` fixup warning).
     eval_only: std::sync::atomic::AtomicBool,
@@ -874,6 +876,7 @@ impl RepositorySet {
                 replay: crate::snapshot::replay::global(),
                 verified_trees: Arc::default(),
                 speculation: Default::default(),
+                root_warmer: Default::default(),
                 eval_only: Default::default(),
             }),
         }
@@ -2442,6 +2445,166 @@ impl RepositorySet {
             listener,
             jitter_millis,
         );
+    }
+
+    /// Warm the registry module roots ahead of their demand with at most
+    /// `width` workers (crate::module_root_warm; `width` <= 1: off). Never
+    /// for a pinned set.
+    pub(crate) fn enable_root_warming(&self, width: usize) {
+        let width = if self.state.pinned.is_some() {
+            0
+        } else {
+            width
+        };
+        self.state.root_warmer.enable(width);
+    }
+
+    /// The files `labels` name are about to be loaded (the `load()`
+    /// statements of a file the sequential engine entered): warm their
+    /// module roots and, transitively, those of their loads
+    /// (crate::module_root_warm). Never demands or records anything.
+    pub(crate) fn warm_loads(&self, labels: &[Label]) {
+        if labels.is_empty() || !self.state.root_warmer.enabled() {
+            return;
+        }
+        self.state.root_warmer.request(self, labels.iter().cloned());
+    }
+
+    /// The registered toolchain (or execution platform) patterns are
+    /// about to be expanded together (RegisteredToolchainsFunction):
+    /// warm the module roots their packages and the module extensions
+    /// generating their repositories load from.
+    pub(crate) fn warm_registrations(&self, patterns: &[(String, String)]) {
+        if !self.state.root_warmer.enabled() {
+            return;
+        }
+        let Some(Ok(runtime)) = self.state.direct.get() else {
+            return;
+        };
+        let files = crate::observed_fs::discard(|| {
+            let _guard = crate::repository_demand::no_demand();
+            let mut files = Vec::new();
+            for (repository, pattern) in patterns {
+                let text = pattern.trim_start_matches('-');
+                let base = text
+                    .rsplit_once(':')
+                    .map_or(text, |(base, _)| base)
+                    .trim_end_matches("/...")
+                    .trim_end_matches("...");
+                let Ok(label) = self.parse(&format!("{base}:BUILD"), repository, "") else {
+                    continue;
+                };
+                if let Some((prefix, _)) = label.repository.rsplit_once('+')
+                    && let Some(group) = runtime
+                        .catalog
+                        .ordinary_routes
+                        .get(prefix)
+                        .and_then(|id| runtime.catalog.ordinary_groups.get(id))
+                {
+                    files.push(group.label.clone());
+                    continue;
+                }
+                for name in ["BUILD.bazel", "BUILD"] {
+                    files.push(Label {
+                        name: name.to_owned(),
+                        ..label.clone()
+                    });
+                }
+            }
+            files
+        });
+        self.state.root_warmer.request(self, files);
+    }
+
+    /// Whether [`Self::warm_root`] can know `repository`'s root: the main
+    /// repository, a local_path module, or a registry module (not the
+    /// built-in `@bazel_tools`).
+    pub(crate) fn warmable_root(&self, repository: &str) -> bool {
+        if repository.is_empty() {
+            return true;
+        }
+        let Some(Ok(graph)) = self.state.resolved.get() else {
+            return false;
+        };
+        repository != "bazel_tools"
+            && graph.modules.get(repository).is_some_and(|module| {
+                matches!(
+                    module.source,
+                    ModuleSource::LocalPath(_) | ModuleSource::Registry { .. }
+                )
+            })
+    }
+
+    /// `repository`'s root for a warm-up worker: the main repository's or
+    /// a local_path module's, a materialized registry module's, or a
+    /// registry module's tree published into the store now (never filling
+    /// its demand slot, never recording; crate::module_root_warm).
+    pub(crate) fn warm_root(&self, repository: &str) -> Option<PathBuf> {
+        if repository.is_empty() {
+            return Some(self.state.root.clone());
+        }
+        let graph = self.state.resolved.get()?.as_ref().ok()?;
+        let module = graph.modules.get(repository)?;
+        if let Some(Some(Ok(root))) = self
+            .state
+            .registry_roots
+            .get()
+            .and_then(|roots| roots.get(repository))
+            .map(OnceLock::get)
+        {
+            return Some(root.clone());
+        }
+        match &module.source {
+            ModuleSource::LocalPath(root) => Some(root.clone()),
+            ModuleSource::Registry {
+                registry,
+                name,
+                version,
+                module_file,
+                local_patches,
+                ..
+            } if repository != "bazel_tools" => {
+                let cache = self.state.absolute_source_cache.get()?.as_ref().ok()?;
+                crate::observed_fs::discard(|| {
+                    warm_registry_source_root(
+                        &self.state.options.registry_session,
+                        registry,
+                        name,
+                        version,
+                        module_file,
+                        cache,
+                        local_patches,
+                        self.repository_downloads_enabled(),
+                    )
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// The labels the file `package`/`name` of `repository` (at `root`)
+    /// loads, resolved with the repository's base mapping
+    /// (crate::module_root_warm).
+    pub(crate) fn crawl_loads(
+        &self,
+        repository: &str,
+        root: &Path,
+        package: &str,
+        name: &str,
+    ) -> Vec<Label> {
+        let Some(Ok(graph)) = self.state.resolved.get() else {
+            return Vec::new();
+        };
+        let mapping = if repository.is_empty() {
+            &graph.root_mapping
+        } else {
+            match graph.modules.get(repository) {
+                Some(module) => &module.mapping,
+                None => return Vec::new(),
+            }
+        };
+        let path = root.join(package).join(name);
+        crate::module_root_warm::file_loads(&path, repository, package, mapping)
     }
 
     /// Stop parallel fetching: speculations in flight are cancelled (and
@@ -4305,6 +4468,40 @@ impl RepositorySet {
     }
 }
 
+/// [`registry_source_root`] ahead of the demand (crate::module_root_warm):
+/// archive sources only, the registry files peeked (never recorded).
+#[allow(clippy::too_many_arguments)]
+fn warm_registry_source_root(
+    access: &crate::registry_session::SessionHandle,
+    registry: &Registry,
+    name: &str,
+    version: &str,
+    module_file: &[u8],
+    cache: &Path,
+    local_patches: &LocalPatchPlan,
+    downloads_enabled: bool,
+) -> Option<PathBuf> {
+    let source = access.peek_object(registry, &format!("modules/{name}/{version}/source.json"))?;
+    match source.get("type") {
+        None => {}
+        Some(serde_json::Value::String(kind)) if kind == "archive" => {}
+        Some(_) => return None,
+    }
+    let config = access.peek_object(registry, "bazel_registry.json");
+    crate::materializer::warm_with_registry_config(
+        registry,
+        name,
+        version,
+        module_file,
+        &source,
+        cache,
+        local_patches,
+        downloads_enabled,
+        config,
+    )
+    .ok()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn registry_source_root(
     access: &crate::registry_session::SessionHandle,
@@ -4974,10 +5171,13 @@ fn guarded_root_slot<'a>(
             crate::repository_demand::NEEDS_REPOSITORY
         ));
     }
-    slot.get_or_init(init)
-        .as_ref()
-        .map(PathBuf::as_path)
-        .map_err(Clone::clone)
+    slot.get_or_init(|| {
+        let _span = crate::timeline::span("module-root", || repository.to_owned());
+        init()
+    })
+    .as_ref()
+    .map(PathBuf::as_path)
+    .map_err(Clone::clone)
 }
 
 /// Registration patterns with the repository each is parsed in (module

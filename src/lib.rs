@@ -92,6 +92,7 @@ pub mod mod_command;
 pub mod module_cli;
 pub mod module_extension;
 pub mod module_graph;
+mod module_root_warm;
 pub mod native_rules;
 pub mod observed_fs;
 mod option_metadata;

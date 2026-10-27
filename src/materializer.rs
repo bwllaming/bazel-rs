@@ -196,6 +196,76 @@ pub fn materialize_with_registry_config(
     downloads_enabled: bool,
     config: Option<Map<String, Value>>,
 ) -> Result<PathBuf, String> {
+    materialize_registry(
+        registry,
+        name,
+        version,
+        module_file,
+        source,
+        cache,
+        local_patches,
+        downloads_enabled,
+        config,
+        false,
+    )
+}
+
+/// Trees this process published ahead of their sequential demand
+/// (crate::module_root_warm), with what that cold materialization observed
+/// for the analysis snapshot (the download, the taint): the demand finds
+/// the tree its own materialization would have published and replays those
+/// observations instead of the reuse check — so what it records does not
+/// depend on whether a warm-up got there first. One entry per published
+/// tree, consumed by the demand (under the tree's lock).
+#[allow(clippy::type_complexity)]
+static WARMED: std::sync::Mutex<
+    BTreeMap<PathBuf, Option<std::sync::Arc<crate::observed_fs::Captured>>>,
+> = std::sync::Mutex::new(BTreeMap::new());
+
+/// [`materialize_with_registry_config`] ahead of the sequential demand
+/// (crate::module_root_warm): publishes the tree into the store when it is
+/// missing and remembers that this process did ([`WARMED`]); reuses a
+/// valid tree like the demand would. Observes nothing for the analysis
+/// snapshot (the caller discards it).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn warm_with_registry_config(
+    registry: &Registry,
+    name: &str,
+    version: &str,
+    module_file: &[u8],
+    source: &Map<String, Value>,
+    cache: &Path,
+    local_patches: &LocalPatchPlan,
+    downloads_enabled: bool,
+    config: Option<Map<String, Value>>,
+) -> Result<PathBuf, String> {
+    materialize_registry(
+        registry,
+        name,
+        version,
+        module_file,
+        source,
+        cache,
+        local_patches,
+        downloads_enabled,
+        config,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn materialize_registry(
+    registry: &Registry,
+    name: &str,
+    version: &str,
+    module_file: &[u8],
+    source: &Map<String, Value>,
+    cache: &Path,
+    local_patches: &LocalPatchPlan,
+    downloads_enabled: bool,
+    config: Option<Map<String, Value>>,
+    warming: bool,
+) -> Result<PathBuf, String> {
     local_patches.validate_materialization()?;
     for key in source.keys() {
         if !matches!(
@@ -324,43 +394,59 @@ pub fn materialize_with_registry_config(
     let manifest_path = trees.join(format!("{key}.json"));
     reject_symlink(&destination)?;
     reject_symlink(&manifest_path)?;
-    if destination.is_dir()
-        && let Ok(bytes) = fs::read(&manifest_path)
-        && let Ok(manifest) = serde_json::from_slice::<Manifest>(&bytes)
-        && manifest.format == FORMAT
-        && tree_matches(&destination, &manifest.files)
-    {
-        // REPO + INTEGRITY records of the analysis snapshot.
-        crate::observed_fs::repository_tree(
-            "registry",
-            &format!("{name}@{version}"),
-            &destination,
-            Some(&manifest_path),
-        );
-        return Ok(destination);
+    if !warming {
+        let warmed = WARMED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&destination);
+        if let Some(captured) = warmed
+            && destination.is_dir()
+        {
+            // Published by this process's warm-up (under this lock): what
+            // that cold materialization observed is what the demand's own
+            // would have.
+            crate::observed_fs::replay_some(captured.as_ref());
+            return Ok(destination);
+        }
     }
-    crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryMaterialized, || {
-        format!("registry archive {name}@{version}")
-    });
-    let blob = cached_download(&cache, &urls, &integrity, downloads_enabled)?;
-    let staging = tempfile::Builder::new()
-        .prefix(".stage-")
-        .tempdir_in(&trees)
-        .map(crate::repository_store::Scratch::new)
-        .map_err(|e| format!("cannot stage repository: {e}"))?;
-    // Bazel names the archive by its downloaded file, the URL's last path
-    // segment (e.g. in the zip link-escape error).
-    let archive_name = reqwest::Url::parse(url)
-        .ok()
-        .and_then(|parsed| {
-            parsed
-                .path_segments()
-                .and_then(|mut segments| segments.next_back().map(str::to_owned))
-        })
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| url.to_owned());
-    crate::archive::extract_file(&blob, &archive_type, prefix, staging.path(), &archive_name)
-        .map_err(|failure| match failure {
+    let materialize = || -> Result<(PathBuf, bool), String> {
+        if destination.is_dir()
+            && let Ok(bytes) = fs::read(&manifest_path)
+            && let Ok(manifest) = serde_json::from_slice::<Manifest>(&bytes)
+            && manifest.format == FORMAT
+            && tree_matches(&destination, &manifest.files)
+        {
+            // REPO + INTEGRITY records of the analysis snapshot.
+            crate::observed_fs::repository_tree(
+                "registry",
+                &format!("{name}@{version}"),
+                &destination,
+                Some(&manifest_path),
+            );
+            return Ok((destination.clone(), false));
+        }
+        crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryMaterialized, || {
+            format!("registry archive {name}@{version}")
+        });
+        let blob = cached_download(&cache, &urls, &integrity, downloads_enabled)?;
+        let staging = tempfile::Builder::new()
+            .prefix(".stage-")
+            .tempdir_in(&trees)
+            .map(crate::repository_store::Scratch::new)
+            .map_err(|e| format!("cannot stage repository: {e}"))?;
+        // Bazel names the archive by its downloaded file, the URL's last path
+        // segment (e.g. in the zip link-escape error).
+        let archive_name = reqwest::Url::parse(url)
+            .ok()
+            .and_then(|parsed| {
+                parsed
+                    .path_segments()
+                    .and_then(|mut segments| segments.next_back().map(str::to_owned))
+            })
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| url.to_owned());
+        crate::archive::extract_file(&blob, &archive_type, prefix, staging.path(), &archive_name)
+            .map_err(|failure| match failure {
             crate::archive::Failure::PrefixNotFound(_) => {
                 format!("archive strip_prefix {prefix:?} did not match")
             }
@@ -368,52 +454,65 @@ pub fn materialize_with_registry_config(
                 message
             }
         })?;
-    for (path, value) in &overlays {
-        let relative = relative_path(path)?;
-        let integrity = Integrity::parse(value.as_str().expect("validated overlay integrity"))?;
-        let location =
-            registry.download_location(&format!("modules/{name}/{version}/overlay/{path}"))?;
-        let blob = cached_download(&cache, &[location], &integrity, downloads_enabled)?;
-        copy_source_file(staging.path(), &relative, &blob, true)?;
-    }
-    // Preserve descriptor insertion order, not lexical patch-name order.
-    for (path, value) in &patches {
-        let integrity = Integrity::parse(value.as_str().expect("validated patch integrity"))?;
-        let location =
-            registry.download_location(&format!("modules/{name}/{version}/patches/{path}"))?;
-        let blob = cached_download(&cache, &[location], &integrity, downloads_enabled)?;
-        // PatchUtil reads the patch text into memory; that is inherent.
-        let bytes = fs::read(&blob).map_err(|e| format!("cannot read registry patch: {e}"))?;
-        crate::patching::parse(&bytes, patch_strip)
-            .and_then(|patch| patch.apply_tree(staging.path()))
-            .map_err(|e| format!("cannot apply registry patch {path:?}: {e}"))?;
-    }
-    // Remote patches see archive/overlay MODULE; replace it with original
-    // registry bytes before local overrides, so MODULE changes apply only once.
-    write_source_file(
-        staging.path(),
-        Path::new("MODULE.bazel"),
-        module_file,
-        false,
-    )?;
-    local_patches.apply_tree(staging.path())?;
-    let manifest = Manifest {
-        format: FORMAT.into(),
-        files: snapshot(staging.path())?,
+        for (path, value) in &overlays {
+            let relative = relative_path(path)?;
+            let integrity = Integrity::parse(value.as_str().expect("validated overlay integrity"))?;
+            let location =
+                registry.download_location(&format!("modules/{name}/{version}/overlay/{path}"))?;
+            let blob = cached_download(&cache, &[location], &integrity, downloads_enabled)?;
+            copy_source_file(staging.path(), &relative, &blob, true)?;
+        }
+        // Preserve descriptor insertion order, not lexical patch-name order.
+        for (path, value) in &patches {
+            let integrity = Integrity::parse(value.as_str().expect("validated patch integrity"))?;
+            let location =
+                registry.download_location(&format!("modules/{name}/{version}/patches/{path}"))?;
+            let blob = cached_download(&cache, &[location], &integrity, downloads_enabled)?;
+            // PatchUtil reads the patch text into memory; that is inherent.
+            let bytes = fs::read(&blob).map_err(|e| format!("cannot read registry patch: {e}"))?;
+            crate::patching::parse(&bytes, patch_strip)
+                .and_then(|patch| patch.apply_tree(staging.path()))
+                .map_err(|e| format!("cannot apply registry patch {path:?}: {e}"))?;
+        }
+        // Remote patches see archive/overlay MODULE; replace it with original
+        // registry bytes before local overrides, so MODULE changes apply only once.
+        write_source_file(
+            staging.path(),
+            Path::new("MODULE.bazel"),
+            module_file,
+            false,
+        )?;
+        local_patches.apply_tree(staging.path())?;
+        let manifest = Manifest {
+            format: FORMAT.into(),
+            files: snapshot(staging.path())?,
+        };
+        let encoded = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
+        if destination.exists() {
+            // Directories may have been made read-only (tampering): they are
+            // made writable first, and symlinks are never followed.
+            crate::repository_ctx::remove_tree(&destination)
+                .map_err(|e| format!("cannot remove corrupt repository cache: {e}"))?;
+        }
+        // Lock serializes publishers. A crash between these two publications leaves
+        // no valid tree+manifest pair and is repaired on the next invocation.
+        fs::rename(staging.path(), &destination)
+            .map_err(|e| format!("cannot publish repository: {e}"))?;
+        atomic_write(&manifest_path, &encoded)?;
+        Ok((destination.clone(), true))
     };
-    let encoded = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
-    if destination.exists() {
-        // Directories may have been made read-only (tampering): they are
-        // made writable first, and symlinks are never followed.
-        crate::repository_ctx::remove_tree(&destination)
-            .map_err(|e| format!("cannot remove corrupt repository cache: {e}"))?;
+    if !warming {
+        return materialize().map(|(root, _)| root);
     }
-    // Lock serializes publishers. A crash between these two publications leaves
-    // no valid tree+manifest pair and is repaired on the next invocation.
-    fs::rename(staging.path(), &destination)
-        .map_err(|e| format!("cannot publish repository: {e}"))?;
-    atomic_write(&manifest_path, &encoded)?;
-    Ok(destination)
+    let (result, captured) = crate::observed_fs::capture_detached(materialize);
+    let (root, published) = result?;
+    if published {
+        WARMED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(root.clone(), captured);
+    }
+    Ok(root)
 }
 
 fn archive_type(source: &Map<String, Value>, url: &str) -> Result<String, String> {

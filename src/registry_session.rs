@@ -392,6 +392,54 @@ impl RegistrySession {
         Ok(Fetch::Found(Arc::new(fetched)))
     }
 
+    /// A registry file's bytes for a module-root warm-up
+    /// (crate::module_root_warm), without recording or memoizing anything:
+    /// a file the sequential engine reads later is fetched, checked and
+    /// recorded by that read exactly as without the warm-up (from the
+    /// content-addressed cache this fills, when the lockfile knows its
+    /// hash). `None` when the bytes cannot be obtained so (not found,
+    /// a failure, a checksum the lockfile does not know in error mode):
+    /// the warm-up gives up and the sequential read reports it.
+    fn peek(&self, registry: &Registry, relative: &str) -> Option<Arc<Vec<u8>>> {
+        let url = registry.download_location(relative).ok()?;
+        if let Some(slot) = self.memo.lock().expect("registry memo").get(&url)
+            && let Some(result) = slot.get()
+        {
+            return match result {
+                Ok(Fetch::Found(bytes)) => Some(bytes.clone()),
+                _ => None,
+            };
+        }
+        if relative.ends_with("/metadata.json") {
+            return None;
+        }
+        let mode = self.hashes_mode(registry);
+        let known = if mode == HashesMode::Ignore {
+            None
+        } else {
+            self.lockfile.registry_file_hashes.get(&url)
+        };
+        let checksum = match known {
+            Some(Some(hash)) => Some(hash.as_str()),
+            None if mode != HashesMode::Enforce => None,
+            _ => return None,
+        };
+        if let Some(hash) = checksum
+            && let Some(bytes) = self.cas_get(hash)
+        {
+            return Some(Arc::new(bytes));
+        }
+        let fetched = registry.read(relative).ok()??;
+        let actual = sha256_hex(&fetched);
+        if checksum.is_some_and(|wanted| wanted != actual) {
+            return None;
+        }
+        if self.mode != LockfileMode::Off {
+            self.cas_put(&actual, &fetched);
+        }
+        Some(Arc::new(fetched))
+    }
+
     fn record(&self, url: &str, hash: Option<String>) {
         if self.mode != LockfileMode::Off {
             self.recorded
@@ -789,6 +837,26 @@ impl SessionHandle {
     pub fn prefetch_fallbacks(&self, items: Vec<(Vec<Registry>, String)>) {
         if let Some(session) = &self.0 {
             session.prefetch_fallbacks(items);
+        }
+    }
+
+    /// [`RegistrySession::peek`] parsed like [`Self::read_object`]: `None`
+    /// for anything but a JSON object.
+    pub(crate) fn peek_object(
+        &self,
+        registry: &Registry,
+        relative: &str,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let bytes = match &self.0 {
+            Some(session) => session.peek(registry, relative)?,
+            None => match direct(registry, relative).ok()? {
+                Fetch::Found(bytes) => bytes,
+                Fetch::NotFound(_) => return None,
+            },
+        };
+        match serde_json::from_slice(&bytes).ok()? {
+            serde_json::Value::Object(object) => Some(object),
+            _ => None,
         }
     }
 
