@@ -155,6 +155,61 @@ fn read(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
+/// Integration regression: coverage must look up the resolved configuration,
+/// including when a top-level library changes runfiles policy on its incoming edge.
+#[test]
+fn coverage_keeps_top_level_baselines_after_incoming_runfiles_transition() {
+    let ws = Workspace::new();
+    let definitions = fs::read_to_string(ws.path().join("defs.bzl")).unwrap();
+    let definitions = definitions
+        .replace(
+            "    implementation = _library,",
+            "    implementation = _library,\n    cfg = no_links,",
+        )
+        .replace(
+            "        \"srcs\": attr.label_list(allow_files = True),",
+            "        \"srcs\": attr.label_list(allow_files = True),\n        \"_allowlist_function_transition\": attr.label(default = \"//tools/allowlists/function_transition_allowlist:function_transition_allowlist\"),",
+        );
+    fs::write(
+        ws.path().join("defs.bzl"),
+        format!(
+            "def _no_links(settings, attr):\n    return {{\"//command_line_option:build_runfile_links\": False}}\nno_links = transition(implementation = _no_links, inputs = [], outputs = [\"//command_line_option:build_runfile_links\"])\n{definitions}"
+        ),
+    )
+    .unwrap();
+    let allowlist = ws
+        .path()
+        .join("tools/allowlists/function_transition_allowlist");
+    fs::create_dir_all(&allowlist).unwrap();
+    fs::write(
+        allowlist.join("BUILD.bazel"),
+        "package_group(name = 'function_transition_allowlist', packages = ['public'])\n",
+    )
+    .unwrap();
+    let extra = ws.path().join("extra");
+    fs::create_dir(&extra).unwrap();
+    fs::write(extra.join("extra.txt"), "a\nb\n").unwrap();
+    fs::write(
+        extra.join("BUILD.bazel"),
+        "load('//:defs.bzl', 'cov_library')\ncov_library(name = 'extra', srcs = ['extra.txt'])\n",
+    )
+    .unwrap();
+    // extra is not a test dependency: its baseline must come from its own
+    // post-transition top-level provider, not the untransitioned request key.
+    let output = ws.run(&[
+        "coverage",
+        "--instrumentation_filter=//",
+        "//lib/tests:t_test",
+        "//extra:extra",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let baseline = read(
+        &ws.execution_root()
+            .join("bazel-out/_coverage/_baseline_report.dat"),
+    );
+    assert!(baseline.contains("SF:extra/extra.txt\n"), "{baseline}");
+}
+
 /// `coverage //...` and an explicit filter without the combined report,
 /// byte for byte against the paired capture.
 #[test]
