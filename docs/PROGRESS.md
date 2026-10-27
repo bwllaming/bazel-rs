@@ -81,15 +81,17 @@ tests/console_text.rs):
   cache hits …` line stays.
 * `print()` everywhere but MODULE.bazel files (crate::bzlmod's own) goes
   through crate::debug_print: `DEBUG: FILE:LINE:COL: TEXT` at the call's
-  left parenthesis, FILE a BUILD file's path or a main-repository `.bzl`
-  file's path (another repository's `.bzl` file is named by its label).
-  Covered: BUILD files, `.bzl` top levels and macros, rule, aspect and
-  transition implementations, repository rules, module extensions. A
-  `print` evaluated under the interpreter's default handler (e.g. an
-  `Args.map_each` callback during execution) prints the bare text.
+  left parenthesis, FILE a BUILD file's path or a `.bzl` file's path:
+  the main repository's below the workspace, another repository's where
+  its tree is (Bazel: `<output_base>/external/<repo>/…`; bazel-rs has no
+  `external/` directory). Covered: BUILD files, `.bzl` top levels and
+  macros, rule, aspect and transition implementations, repository rules,
+  module extensions. A `map_each` callback of `Args` or a TemplateDict
+  prints nothing (StarlarkCustomCommandLine.applyMapEach drops the text;
+  genuine capture tests/fixtures/print_locations).
 
 Interactive-only: `INFO: Analysis snapshot hit: loading and analysis
-skipped.` on a hit. There is no critical path.
+skipped.` on a hit.
 
 ## When it runs
 

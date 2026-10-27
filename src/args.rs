@@ -422,9 +422,11 @@ fn map_one<'v>(
                 .alloc(crate::command_line::DirectoryExpander { listings: None }),
         );
     }
-    let mapped = eval
-        .with_new_recursion_scope(|eval| eval.eval_function(map_each, &arguments, &[]))
-        .map_err(|e| anyhow!("map_each failed: {e}"))?;
+    // Its `print`s show nothing (crate::debug_print::silenced).
+    let mapped = crate::debug_print::silenced(|| {
+        eval.with_new_recursion_scope(|eval| eval.eval_function(map_each, &arguments, &[]))
+    })
+    .map_err(|e| anyhow!("map_each failed: {e}"))?;
     crate::command_line::mapped_strings(mapped).map_err(anyhow::Error::msg)
 }
 

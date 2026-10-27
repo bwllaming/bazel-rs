@@ -1,0 +1,3 @@
+rc=0
+DEBUG: <OUTPUT_BASE>/external/ext+/e.bzl:1:6: ext top
+DEBUG: <OUTPUT_BASE>/external/ext+/e.bzl:8:10: ext rule //:x

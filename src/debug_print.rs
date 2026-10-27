@@ -29,6 +29,19 @@ thread_local! {
     /// The location of the `print` call whose text the print handler is
     /// about to receive.
     static LOCATION: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// `print` prints nothing ([`silenced`]).
+    static SILENCED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with `print` printing nothing: an `Args.map_each` callback
+/// (StarlarkCustomCommandLine.applyMapEach, :1140, gives its thread a print
+/// handler that drops the text) and a TemplateDict `map_each` (its thread's
+/// default handler writes to the server's own stderr, never the client's).
+pub(crate) fn silenced<T>(f: impl FnOnce() -> T) -> T {
+    let previous = SILENCED.with(|silenced| silenced.replace(true));
+    let result = f();
+    SILENCED.with(|silenced| silenced.set(previous));
+    result
 }
 
 /// The main repository's directory: its `.bzl` files (whose evaluations
@@ -40,11 +53,40 @@ pub fn set_workspace(root: &Path) {
     let _ = WORKSPACE.set(root.to_path_buf());
 }
 
+/// Another repository's loaded `.bzl` files: label -> the file's path.
+static SOURCES: LazyLock<std::sync::Mutex<std::collections::HashMap<String, PathBuf>>> =
+    LazyLock::new(Default::default);
+
+/// Record where another repository's `.bzl` file `label` (its module's
+/// name) was read from: its prints name that path, as Bazel names
+/// `<output_base>/external/<repository>/<file>` (bazel-rs has no
+/// `external/` directory: the repository's own directory stands for it).
+pub(crate) fn record_source(label: &str, path: &Path) {
+    if ["@@//", "@//", "//"]
+        .iter()
+        .any(|prefix| label.starts_with(prefix))
+    {
+        return;
+    }
+    SOURCES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(label.to_owned(), path.to_path_buf());
+}
+
 /// A source file as a location names it: a main-repository label
 /// (`//pkg:defs.bzl`, the name of a loaded `.bzl` module) as its path once
-/// the workspace is known; anything else (a BUILD file's path, another
-/// repository's label) as it is.
+/// the workspace is known, another repository's `.bzl` file as the path it
+/// was read from ([`record_source`]); anything else (a BUILD file's path)
+/// as it is.
 fn location_file(name: &str) -> String {
+    if let Some(path) = SOURCES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(name)
+    {
+        return path.display().to_string();
+    }
     let relative = ["@@//", "@//", "//"]
         .iter()
         .find_map(|prefix| name.strip_prefix(prefix));
@@ -110,6 +152,9 @@ fn located_print(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = " ")] sep: &str,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneType> {
+        if SILENCED.with(std::cell::Cell::get) {
+            return Ok(NoneType);
+        }
         let location = caller_location(eval);
         LOCATION.with(|slot| *slot.borrow_mut() = (!location.is_empty()).then_some(location));
         let sep = eval.heap().alloc_str(sep).to_value();

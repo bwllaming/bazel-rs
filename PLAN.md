@@ -221,8 +221,8 @@ Done since the last increment recorded under "History", one line each:
       command-line errors (options, rc files, `--config`, Starlark flags, `run`
       targets) exit 2, Ctrl-C exits 8; the native profile's own
       `unsupported …` rejections stay 1.
-- [ ] Console: `print()` inside execution-time callbacks (Args.map_each) has
-      no `DEBUG:` prefix.
+- [x] Console: `print()` in `map_each` callbacks prints nothing (like 9.3);
+      another repository's `.bzl` prints name the file's path.
 - [ ] `mod`: extensions are evaluated only when their output is printed (genuine
       evaluates all); `show_repo` proto outputs.
 - [ ] Older bazel-rs binaries sharing a cache are only partly protected from GC.

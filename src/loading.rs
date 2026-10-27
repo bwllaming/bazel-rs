@@ -1819,6 +1819,7 @@ impl<'a> Loader<'a> {
         };
         let ast = AstModule::parse(&label.to_string(), source, &dialect)
             .map_err(|e| format!("cannot parse {label}: {e}"))?;
+        crate::debug_print::record_source(&label.to_string(), &path);
         // Bazel's lexer rejects invalid escapes in every .bzl
         // (Lexer.java:389-403), whether or not the code runs.
         crate::repository_text::validate_source(&ast)?;

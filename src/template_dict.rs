@@ -157,9 +157,11 @@ fn template_dict_methods(builder: &mut MethodsBuilder) {
             // Bazel calls map_each while expanding the template, in its own
             // Starlark thread (TemplateDict.java:125), not within the rule
             // implementation.
-            let mapped = eval
-                .with_new_recursion_scope(|eval| eval.eval_function(map_each, &[item], &[]))
-                .map_err(|e| anyhow!("{e}"))?;
+            // Its `print`s reach no client (crate::debug_print::silenced).
+            let mapped = crate::debug_print::silenced(|| {
+                eval.with_new_recursion_scope(|eval| eval.eval_function(map_each, &[item], &[]))
+            })
+            .map_err(|e| anyhow!("{e}"))?;
             if let Some(text) = mapped.unpack_str() {
                 parts.push(text.to_owned());
             } else if let Some(list) = ListRef::from_value(mapped) {

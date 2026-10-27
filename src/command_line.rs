@@ -372,8 +372,8 @@ fn call_mapper(
                 listings: Some(Arc::clone(listings)),
             }));
         }
-        let mapped = eval
-            .eval_function(function, &arguments, &[])
+        // Its `print`s show nothing (crate::debug_print::silenced).
+        let mapped = crate::debug_print::silenced(|| eval.eval_function(function, &arguments, &[]))
             .map_err(|e| format!("map_each failed: {e}"))?;
         mapped_strings(mapped)
     })

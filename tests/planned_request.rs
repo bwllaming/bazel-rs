@@ -350,6 +350,11 @@ fn round_tripped_requests_execute_byte_identically() {
                 );
             }
             "test" if arguments.contains(&"//:all") => assert_eq!(*code, Some(3), "{stderr}"),
+            // `run --nobuild`: No targets found to run (exit 2, a
+            // command-line error); `test --nobuild`: exit 1.
+            _ if arguments.contains(&"--nobuild") && arguments[0] == "run" => {
+                assert_eq!(*code, Some(2), "{stderr}")
+            }
             _ if arguments.contains(&"--nobuild") && arguments[0] != "build" => {
                 assert_eq!(*code, Some(1), "{stderr}")
             }

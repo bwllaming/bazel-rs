@@ -1,0 +1,3 @@
+module(name = "p")
+bazel_dep(name = "ext", version = "1.0")
+local_path_override(module_name = "ext", path = "ext")
