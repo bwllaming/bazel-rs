@@ -436,6 +436,9 @@ pub fn exec_transition(
 ) -> Configuration {
     let defaults = NativeOptions::default();
     let native = NativeOptions {
+        // Not propagated by builtin_exec_platforms.bzl CoreOptions. The
+        // Starlark settings themselves follow their declared exec scope.
+        flag_aliases: defaults.flag_aliases.clone(),
         compilation_mode: from.native.host_compilation_mode,
         stamp: false,
         define: from.native.define.clone(),
@@ -531,6 +534,18 @@ pub(crate) fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static
         }
     }
     let list = |items: &[String]| format!("=[{}]", items.join(", "));
+    if !native.flag_aliases.is_empty() {
+        options.insert(
+            "flag_alias",
+            list(
+                &native
+                    .flag_aliases
+                    .iter()
+                    .map(|(name, label)| format!("{name}={label}"))
+                    .collect::<Vec<_>>(),
+            ),
+        );
+    }
     options.insert("extra_toolchains", list(&native.extra_toolchains));
     options.insert(
         "extra_execution_platforms",

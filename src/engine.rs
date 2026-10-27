@@ -5502,8 +5502,10 @@ impl Engine {
             }
             return Ok(Arc::clone(id));
         }
-        let details = self.transition_details(def).map_err(failure)?;
         let configuration = self.configurations.get(from).clone();
+        let mapped = def.with_flag_aliases(&configuration.native.flag_aliases);
+        let def = &mapped;
+        let details = self.transition_details(def).map_err(failure)?;
         let applied = crate::starlark_transitions::apply(
             def,
             &crate::starlark_transitions::Application {
@@ -6405,10 +6407,62 @@ impl Engine {
         let (RuleKind::Native("config_setting"), Some(native)) = (&rule.kind, &rule.native) else {
             return Ok((Vec::new(), Vec::new()));
         };
-        let entries = match native.attrs.get("flag_values") {
+        let mut entries = match native.attrs.get("flag_values") {
             Some(crate::custom_rule::AttrValue::LabelKeyedStringDict(entries)) => entries.clone(),
             _ => Vec::new(),
         };
+        let explicit_flag_labels = entries
+            .iter()
+            .map(|(key, _)| self.resolve_rule_src(rule, key))
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        // ConfigSetting.getSettings: values whose keys are flag aliases are
+        // Starlark expectations, including aliases of removed native flags.
+        let aliases = &self.configurations.get(config).native.flag_aliases;
+        let mut aliased = Vec::new();
+        if let Some(crate::custom_rule::AttrValue::StringDict(values)) = native.attrs.get("values")
+        {
+            aliased.extend(values.iter().filter_map(|(name, value)| {
+                aliases
+                    .get(name)
+                    .map(|label| (name.clone(), label.clone(), value.clone()))
+            }));
+        }
+        if let Some(crate::custom_rule::AttrValue::StringDict(defines)) =
+            native.attrs.get("define_values")
+            && let Some(label) = aliases.get("define")
+        {
+            aliased.extend(defines.iter().map(|(name, value)| {
+                (
+                    "define".to_owned(),
+                    label.clone(),
+                    format!("{name}={value}"),
+                )
+            }));
+        }
+        let alias_labels = aliased
+            .iter()
+            .map(|(_, label, _)| label.clone())
+            .collect::<BTreeSet<_>>();
+        for (name, label, value) in aliased {
+            let mut found = false;
+            for (key, existing) in &entries {
+                if self.resolve_rule_src(rule, key)? == label {
+                    if existing != &value {
+                        return Err(format!(
+                            "Conflicting flag value expectations: {}: --{name} is a flag alias for --{label}, but values and flag_values match different values ({value:?} and {existing:?})",
+                            rule.label
+                        ));
+                    }
+                    found = true;
+                }
+            }
+            if !found {
+                entries.push((
+                    format!("@@{}//{}:{}", label.repository, label.package, label.name),
+                    value,
+                ));
+            }
+        }
         let mut keys = Vec::new();
         for (key, value) in entries {
             let dependency = self.resolve_rule_src(rule, &key)?;
@@ -6444,14 +6498,26 @@ impl Engine {
         let mut constraints = Vec::new();
         for (attribute, dependency, value) in keys {
             if self.cquery_capture.is_some() {
-                self.capture_cquery_edge(
-                    &ConfiguredTargetKey::new(rule.label.clone(), config),
-                    dependency.clone(),
-                    config,
-                    attribute,
-                    false,
-                    false,
-                );
+                if attribute != "flag_values" || explicit_flag_labels.contains(&dependency) {
+                    self.capture_cquery_edge(
+                        &ConfiguredTargetKey::new(rule.label.clone(), config),
+                        dependency.clone(),
+                        config,
+                        attribute,
+                        false,
+                        false,
+                    );
+                }
+                if attribute == "flag_values" && alias_labels.contains(&dependency) {
+                    self.capture_cquery_edge(
+                        &ConfiguredTargetKey::new(rule.label.clone(), config),
+                        dependency.clone(),
+                        config,
+                        ":flag_alias_settings",
+                        true,
+                        false,
+                    );
+                }
             }
             let (chain, actual) = self.alias_chain(configured, config, &dependency);
             let is_source = matches!(self.target(&actual)?, Target::Source(_));

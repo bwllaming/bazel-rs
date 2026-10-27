@@ -887,6 +887,10 @@ fn join_english_list(values: &[&str]) -> String {
 /// Values of the modelled native options.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct NativeOptions {
+    /// CoreOptions.commandLineFlagAliases, normalized last-definition-wins.
+    /// Empty maps preserve the pre-alias configuration identity.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub flag_aliases: crate::flag_alias::Aliases,
     pub compilation_mode: &'static str,
     pub stamp: bool,
     /// Last value per key wins, sorted by key (CoreOptions.getNormalized,
@@ -1184,6 +1188,7 @@ impl Default for NativeOptions {
         let host_platform = default_host_platform();
         Self {
             compilation_mode: "fastbuild",
+            flag_aliases: BTreeMap::new(),
             stamp: false,
             define: Vec::new(),
             strip: "sometimes",

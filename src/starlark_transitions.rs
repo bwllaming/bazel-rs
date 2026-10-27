@@ -123,6 +123,25 @@ fn sort_key(key: &SettingKey) -> Label {
 }
 
 impl TransitionDef {
+    /// FunctionTransitionUtil's input/output alias mapping. Keep the given
+    /// names for the implementation dictionary, resolve only storage keys.
+    pub(crate) fn with_flag_aliases(
+        &self,
+        aliases: &crate::flag_alias::Aliases,
+    ) -> std::borrow::Cow<'_, Self> {
+        if aliases.is_empty() {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut mapped = self.clone();
+        for setting in mapped.inputs.iter_mut().chain(&mut mapped.outputs) {
+            if let SettingKey::Native(name) = &setting.key
+                && let Some(label) = aliases.get(name)
+            {
+                setting.key = SettingKey::Starlark(label.clone());
+            }
+        }
+        std::borrow::Cow::Owned(mapped)
+    }
     /// The definition of a retained `transition()` value.
     pub(crate) fn of(value: &OwnedFrozenValue) -> Result<Self, String> {
         let transition = crate::rule_declarations::Transition::from_value(value.value().to_value())
@@ -1219,6 +1238,21 @@ fn apply_changes(
         ));
     }
     keyed.sort_by_key(|(key, _)| sort_key(key));
+    // FunctionTransitionUtil.applyStarlarkFlagsAliases rejects disagreeing
+    // writes through the native-form alias and the explicit Starlark label.
+    for pair in keyed.windows(2) {
+        if pair[0].0 == pair[1].0
+            && (pair[0].1.type_name != pair[1].1.type_name || pair[0].1.repr != pair[1].1.repr)
+        {
+            return Err(Failure::event(
+                location,
+                format!(
+                    "Starlark flag and its alias have different values: {} and {}",
+                    pair[0].1.repr, pair[1].1.repr
+                ),
+            ));
+        }
+    }
     let parse = |text: &str| package_label(def, application.repositories, text);
     let mut options: BTreeMap<Label, OptionSlot> = from
         .starlark

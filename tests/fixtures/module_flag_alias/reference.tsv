@@ -1,0 +1,30 @@
+# Genuine Bazel 9.3.0 scratch capture, 2026-10-27; ELF SHA256 d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8
+# case<TAB>command/options or mutation<TAB>exit<TAB>actual output contents or diagnostic substring
+default	build //:read	0	root|other|False|1|dep|no|fastbuild
+typed	build --flavor=yes --enabled --count=0x2 --depflag=custom --compilation_mode=opt //:read	0	yes|opt|True|2|custom|match|fastbuild
+query	query //:read	0	//:read
+query_alias	query --flavor=yes //:read	2	Unrecognized option: --flavor=yes
+cquery	cquery --flavor=yes //:read	0	//:read (configuration present)
+cli_override	build --flag_alias=flavor=//:other --flavor=yes //:read	0	root|yes|False|1|dep|match|fastbuild
+cli_order	build --flavor=yes --flag_alias=flavor=//:other --flavor=late //:read	0	yes|late|False|1|dep|no|fastbuild
+no_alias	build --noenabled //:read	2	Unrecognized option: --noenabled
+bad_type	build --count=oops //:read	2	'oops' is not a int
+private	build --flag_alias=p=//:private --p=x //:read	2	Unrecognized option: //:private=x
+bad_name	build --flag_alias=bad-name=//:text //:read	2	bad-name should only consist of word characters to be a valid alias name.
+assignment	build --flag_alias=x=//:text=value //:read	2	--flag_alias does not support flag value assignment.
+late_definition	build --unknown=x --flag_alias=unknown=//:text //:read	0	x|other|False|1|dep|no|fastbuild
+transition	build --flavor=yes //:transitioned	0	transition-yes|other|False|1|dep|no|fastbuild
+transition_override	build --flag_alias=flavor=//:other --flavor=yes //:transitioned	0	root|transition-yes|False|1|dep|no|fastbuild
+rc_config	build --config=yes //:read; rc build --flavor=rc; build:yes --flavor=yes	0	yes|other|False|1|dep|match|fastbuild
+rc_cli	build --config=yes --flavor=cli //:read; same rc	0	cli|other|False|1|dep|no|fastbuild
+rc_alias	build --flavor=yes //:read; rc build --flag_alias=flavor=//:other --flavor=rc	0	root|yes|False|1|dep|match|fastbuild
+changed_destination	MODULE flavor destination :text -> //:other; build --flavor=yes //:read	0	root|yes|False|1|dep|match|fastbuild
+dependency_wins	dep MODULE adds flavor -> //:text; build --flavor=yes //:read	0	root|other|False|1|yes|match|fastbuild
+duplicate	root MODULE declares flavor twice; query //:read	37	Multiple entries with same key: flavor=@self//:other and flavor=@self//:text
+module_type	flag_alias(name=123,starlark_flag='//:text'); query //:read	48	error executing MODULE.bazel file for <root>
+bad_module_name_query	root MODULE adds name='bad-name'; query //:read	0	//:read
+bad_module_name_build	MODULE name='bad-name'; build //:read	37	bad-name should only consist of word characters to be a valid alias name.
+transitive	root -> bridge -> dep; build --depflag=transitive @bridge//:read	0	transitive||fastbuild
+selected_version	single_version_override dep=2 (depflag -> other, flavor -> text); build --depflag=custom --flavor=yes //:read	0	root|other|False|1|yes|match|fastbuild
+local_override	local_path_override dep to same version-2 source; build --flavor=yes //:read	0	root|other|False|1|yes|match|fastbuild
+select_conflict	values={'flavor':'a'},flag_values={':text':'b'}; build select consumer	1	Conflicting flag value expectations

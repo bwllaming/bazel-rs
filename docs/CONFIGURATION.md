@@ -1364,24 +1364,31 @@ documented divergences:
 * A custom action consuming a missing input reports its action id where Bazel
   prints the action's progress message (genrules match exactly).
 
-## Explicitly unsupported (unchanged boundaries)
+## MODULE and command-line flag aliases
+
+See [MODULE_FLAG_ALIAS.md](MODULE_FLAG_ALIAS.md). Selected modules' `flag_alias`
+declarations now supply real configuration aliases for build/run/test/cquery:
+typed Starlark options, `config_setting(values=...)`, and Starlark transition
+inputs/outputs. Query records declarations without applying MODULE aliases.
+
+## Explicitly unsupported (remaining boundaries)
 
 * Platform
   `flags`, `required_settings`/select() in a target platform's tree,
   incompatible target skipping (a compatible `target_compatible_with` is
   analyzed), `--experimental_platforms_api` (docs/PLATFORMS.md).
-* `config_feature_flag`, `--flag_alias`, `allow_multiple` string settings,
+* `config_feature_flag`, `allow_multiple` string settings,
   Starlark int values outside 64 bits, `scope = "project"` and
   `--incompatible_exclude_starlark_flags_from_exec_config`. Option names are loaded with the native target-pattern subset
   (`//pkg:all`, `//pkg/...` must then match exactly one rule: `user-defined
   flags must reference exactly one target`).
 * `config.none()` and
-  `analysis_test_transition`, `transition.and_then`, `--flag_alias`, Starlark
+  `analysis_test_transition`, `transition.and_then`, Starlark
   transitions on native options outside the modelled ones (writing
   `copt` or any other unmodelled option, also `host_cpu`, `crosstool_top` and
   the value options other than `collect_code_coverage`;
   `--copt` on the command line; `select()` on `copt`),
-  `--flag_alias`,
+  flag alias forms outside [the supported configuration profile](MODULE_FLAG_ALIAS.md),
   `--debug_select_always_succeed`, `--incompatible_disable_select_on`,
    platform mappings and every other build option. The configured-query subset
    and configuration dump are documented separately in [CQUERY.md](CQUERY.md).

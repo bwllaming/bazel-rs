@@ -1,0 +1,2 @@
+module(name = "dep", version = "1", repo_name = "own")
+flag_alias(name = "depflag", starlark_flag = "//:text")

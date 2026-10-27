@@ -59,6 +59,7 @@ mod extension_download;
 mod extension_io;
 pub mod extension_metadata;
 pub mod feature_flags;
+pub mod flag_alias;
 pub mod git_process;
 pub mod git_source;
 pub mod glob;

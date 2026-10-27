@@ -37,6 +37,9 @@ pub struct ModuleFile {
     pub overrides: BTreeMap<String, ModuleOverride>,
     pub extension_usages: Vec<ExtensionUsage>,
     pub registrations: Vec<Registration>,
+    /// MODULE-declared command-line aliases, in the declaring module's
+    /// apparent label namespace (ModuleFileGlobals.normalizeLabelString).
+    pub flag_aliases: BTreeMap<String, String>,
     /// Captured before evaluation, but enforced only when executing a direct
     /// repository declaration. Metadata-only evaluation remains unchanged.
     pub source_profile_error: Option<String>,
@@ -794,7 +797,7 @@ fn invoke<'v>(
             "include() is unsupported until the resolver supplies include filesystem semantics"
         ),
         "Label" => bail!("Label() is unsupported in MODULE evaluation; use label strings"),
-        "inject_repo" | "override_repo" | "flag_alias" => {
+        "inject_repo" | "override_repo" => {
             bail!("{name}() is unsupported in MODULE evaluation")
         }
         _ => {}
@@ -978,6 +981,30 @@ fn invoke<'v>(
     args.no_positional_args(eval.heap())
         .map_err(|e| anyhow!("{e}"))?;
     match name {
+        "flag_alias" => {
+            let name = kwargs.string("name", None)?;
+            let raw = kwargs.string("starlark_flag", None)?;
+            kwargs.finish()?;
+            let own = state
+                .file
+                .module
+                .as_ref()
+                .map_or("", ModuleInfo::effective_repo_name);
+            let label = crate::flag_alias::normalize_module_label(
+                &raw,
+                own,
+                collector.evaluation_context.role == ModuleRole::Root,
+            )
+            .map_err(|e| anyhow!("invalid label {raw:?}: {e}"))?;
+            if state
+                .file
+                .flag_aliases
+                .insert(name.clone(), label)
+                .is_some()
+            {
+                bail!("Multiple entries with same key: {name}");
+            }
+        }
         "module" => {
             let name = kwargs.string("name", Some(""))?;
             if !name.is_empty() {

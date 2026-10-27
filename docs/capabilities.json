@@ -154,7 +154,7 @@
     "full repository-rule APIs and byte-string semantics",
     "coverage (bazel coverage, --collect_code_coverage), --run_under for tests and --run_under labels, remote test execution and --test_strategy values beyond standalone/local/exclusive (test actions themselves run sandboxed; see sandboxed_execution), --notest_keep_going, convenience symlinks (bazel-testlogs) and relative pretty paths",
     "toolchain resolution corner cases (one toolchain on two execution platforms in one configuration), platform flags, platform_mappings, target_compatible_with incompatible-target skipping, --experimental_platforms_api",
-    "build options beyond the modelled configuration, config_feature_flag, --flag_alias, string_set and legacy allow_multiple",
+    "build options beyond the modelled configuration, config_feature_flag, flag aliases of bootstrap/execution/rc-control options and CLI aliases on non-analyzing commands (docs/MODULE_FLAG_ALIAS.md), string_set and legacy allow_multiple",
     "implicit template-variable Make expansion and ctx.var",
     "config.none() and analysis-test transitions",
     "test",

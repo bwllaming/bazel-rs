@@ -98,13 +98,16 @@ pub fn analyze(
     let shown = crate::rule_declarations::canonical_form(label);
     // getSettings (ConfigSetting.java:169-258): values entries, then
     // define_values as ("define", "K=V"), grouped by key in first-seen key
-    // order (MultimapBuilder.linkedHashKeys().arrayListValues()). No
-    // --flag_alias is modelled, so no entry is an alias.
+    // order (MultimapBuilder.linkedHashKeys().arrayListValues()). Aliased
+    // entries were loaded as Starlark prerequisites by the engine.
     let mut grouped: Vec<(String, Vec<String>)> = Vec::new();
     let defines = dict(target, "define_values")
         .into_iter()
         .map(|(key, value)| ("define".to_owned(), format!("{key}={value}")));
     for (key, value) in dict(target, "values").into_iter().chain(defines) {
+        if configuration.native.flag_aliases.contains_key(&key) {
+            continue;
+        }
         match grouped.iter_mut().find(|(seen, _)| *seen == key) {
             Some((_, values)) => values.push(value),
             None => grouped.push((key, vec![value])),

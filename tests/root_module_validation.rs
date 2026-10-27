@@ -129,7 +129,7 @@ impl Workspace {
         self.untouched();
     }
 
-    fn local_success(&self) {
+    fn local_query_success(&self) {
         let query = self.run(&["query", "//app:check"]);
         success(&query);
         assert_eq!(query.stdout, b"//app:check\n");
@@ -138,6 +138,10 @@ impl Workspace {
         assert!(!stderr(&query).contains("G_ANALYSIS_RAN"));
         assert!(!stderr(&query).contains("G_POISON_LOADED"));
         self.untouched();
+    }
+
+    fn local_success(&self) {
+        self.local_query_success();
         let build = self.run(&["build", "//app:check"]);
         assert_eq!(content(&build), [b"g-ok\n".to_vec()]);
         assert!(stderr(&build).contains("G_ANALYSIS_RAN"));
@@ -283,12 +287,14 @@ fn root_module_snapshot_reused_for_external_alias_and_build_load_each_command() 
 }
 
 #[test]
-fn root_module_unused_dependency_recording_does_not_resolve_a_registry() {
-    // NATIVE_BOUNDARY: Bazel may eagerly resolve its module graph here.
+fn root_module_loading_stays_lazy_but_analysis_resolves_dependency_aliases() {
+    // MODULE flag_alias is configuration metadata from *every* selected
+    // module. Analyzing commands must now resolve even otherwise unused deps.
     let ws =
         Workspace::new("module(name='root_fixture')\nbazel_dep(name='unused',version='9.9.9')\n");
-    ws.local_success();
+    ws.local_query_success();
     assert!(!ws.path().join("private-cache/repositories").exists());
+    rejected(&ws.run(&["build", "//app:check"]), "registry");
 }
 
 #[test]
@@ -323,12 +329,12 @@ fn root_module_deferred_unicode_source_profile_error_is_not_a_recording_error() 
 }
 
 #[test]
-fn root_module_unused_missing_local_override_fails_only_on_external_demand() {
-    // NATIVE_BOUNDARY: an unavailable override is metadata until graph demand.
+fn root_module_missing_local_override_fails_on_analysis_alias_resolution() {
     let ws = Workspace::new(
         "module(name='root_fixture')\nbazel_dep(name='dep',version='1',repo_name='alias')\nlocal_path_override(module_name='dep',path='nonexistent')\n",
     );
-    ws.local_success();
+    ws.local_query_success();
+    rejected(&ws.run(&["build", "//app:check"]), "nonexistent");
     let demanded = ws.run(&["query", "@alias//:data"]);
     rejected(&demanded, "nonexistent");
 }

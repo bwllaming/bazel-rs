@@ -1,0 +1,6 @@
+module(name = "root", repo_name = "self")
+bazel_dep(name = "dep", version = "1")
+flag_alias(name = "flavor", starlark_flag = ":text")
+flag_alias(name = "enabled", starlark_flag = "//:enabled")
+flag_alias(name = "count", starlark_flag = "@self//:count")
+flag_alias(name = "compilation_mode", starlark_flag = "//:other")

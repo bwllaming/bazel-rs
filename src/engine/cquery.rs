@@ -1050,9 +1050,21 @@ impl Engine {
                         ));
                     }
                     if matches!(rule.kind, RuleKind::Native("config_setting")) {
+                        let aliases = &self.configurations.get(config).native.flag_aliases;
+                        let flags = rule
+                            .native
+                            .as_ref()
+                            .and_then(|native| native.attrs.get("values"));
+                        let referenced = match flags {
+                            Some(crate::custom_rule::AttrValue::StringDict(values)) => values
+                                .iter()
+                                .filter_map(|(name, _)| aliases.get(name).map(ToString::to_string))
+                                .collect(),
+                            _ => Vec::new(),
+                        };
                         attributes.push(wire::Attribute::new(
                             ":flag_alias_settings",
-                            wire::AttributeValue::LabelList(Vec::new()),
+                            wire::AttributeValue::LabelList(referenced),
                             false,
                         ));
                     }
