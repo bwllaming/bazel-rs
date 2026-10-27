@@ -117,9 +117,12 @@ Done since the last increment recorded under "History", one line each:
       after aliases, tabs, subpackages and the Python regex helper fixes.
 - [x] `java_plugins_flag_alias` has real JavaPluginInfo merges and selected
       exec-configured `--plugin` dependencies (docs/JAVA_PLUGINS_FLAG_ALIAS.md).
-- [ ] Latest-code configured query now stops at the `build_runfile_links`
-      Starlark transition on the built-in ProGuard allowlister. Whole-repository
-      target-determinator revision comparison remains unperformed.
+- [x] Runfiles link/manifest policy is per configuration, including typed
+      transitions, provider identities and run/test replay
+      (docs/RUNFILES_TRANSITIONS.md).
+- [ ] Latest-code configured query now stops at `py_internal.is_singleton_depset`
+      in rules_python's `py3_runtime`. Whole-repository target-determinator
+      revision comparison remains unperformed.
 
 ### Commands that are rejected today
 
