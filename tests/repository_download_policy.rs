@@ -642,11 +642,18 @@ fn missing_and_corrupt_overlay_or_patch_are_blocked_but_all_verified_blobs_work(
             }
             rejected(&fixture.run("build", &[DISABLED], "cache"), DISABLED);
             assert_eq!(fixture.server.acquisitions(), 0);
+            let remaining = fs::read_dir(fixture.cache().join("trees"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<Vec<_>>();
             assert!(
-                fs::read_dir(fixture.cache().join("trees"))
-                    .unwrap()
-                    .next()
-                    .is_none()
+                remaining.is_empty(),
+                "missing={} corrupt={corrupt}: repository entries remain after rejection: {remaining:?}",
+                if missing == OVERLAY {
+                    "overlay"
+                } else {
+                    "patch"
+                },
             );
             if corrupt {
                 assert_eq!(
