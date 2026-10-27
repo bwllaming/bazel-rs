@@ -1,6 +1,7 @@
 //! Configured graph identity, semantic-only analysis and persistent reuse.
 #![allow(clippy::disallowed_methods)]
 use std::fs;
+include!("support/temp_root.rs");
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -22,7 +23,7 @@ bad(name = "bad")
 
 impl Workspace {
     fn new() -> Self {
-        let ws = Self(tempfile::tempdir().unwrap());
+        let ws = Self(tempfile::tempdir_in(crate::test_temp::root()).unwrap());
         ws.write("MODULE.bazel", "module(name='cquery_fixture')\n");
         ws.write("BUILD.bazel", BUILD);
         ws.write("leaf.bzl", "VALUE = 'one'\n");

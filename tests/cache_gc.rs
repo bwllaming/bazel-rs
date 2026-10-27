@@ -11,6 +11,7 @@
 include!("support/verify_env.rs");
 
 use std::fs;
+include!("support/temp_root.rs");
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -43,7 +44,7 @@ impl Fixture {
     fn new() -> Self {
         let base = tempfile::Builder::new()
             .prefix("cache-gc-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         let fixture = Self { base };
         fs::create_dir_all(fixture.home()).unwrap();

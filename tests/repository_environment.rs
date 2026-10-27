@@ -33,7 +33,7 @@ impl Fixture {
         let f = Self(
             tempfile::Builder::new()
                 .prefix("repository-environment-cli-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
             route,
         );

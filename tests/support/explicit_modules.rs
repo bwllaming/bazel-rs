@@ -20,6 +20,8 @@
 // so harnesses that run with one insert the switch right after the command
 // word of their arguments instead: `with_explicit_modules(args)`.
 
+include!("temp_root.rs");
+
 /// The native-only switch selecting the explicit-module profile.
 #[allow(dead_code)]
 const EXPLICIT_MODULES: &str = "--experimental-builtin-modules=false";

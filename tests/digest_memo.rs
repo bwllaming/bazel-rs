@@ -102,7 +102,7 @@ impl Workspace {
         let workspace = Self(
             tempfile::Builder::new()
                 .prefix("digest-memo-cli-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         workspace.write("MODULE.bazel", "module(name = 'digest_memo_fixture')\n");

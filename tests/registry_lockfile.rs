@@ -107,7 +107,7 @@ impl Fixture {
     fn new() -> Self {
         let temp = tempfile::Builder::new()
             .prefix("native-registry-lockfile-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         let fixture = Path::new(FIXTURE);
         copy_dir(&fixture.join("registry_overlay"), &temp.path().join("r1"));

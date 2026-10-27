@@ -553,7 +553,7 @@ mod tests {
             fn new() -> Self {
                 static NEXT: AtomicUsize = AtomicUsize::new(0);
                 for _ in 0..100 {
-                    let path = PathBuf::from("/tmp/opencode").join(format!(
+                    let path = crate::test_temp::root().join(format!(
                         "repository-links-test-{}-{}",
                         std::process::id(),
                         NEXT.fetch_add(1, Ordering::Relaxed)

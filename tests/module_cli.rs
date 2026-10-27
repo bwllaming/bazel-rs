@@ -18,7 +18,7 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 struct Fixture(PathBuf);
 impl Fixture {
     fn new(module: &str) -> Self {
-        let root = PathBuf::from("/tmp/opencode").join(format!(
+        let root = crate::test_temp::root().join(format!(
             "native-module-cli-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)

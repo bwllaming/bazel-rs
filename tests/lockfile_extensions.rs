@@ -41,7 +41,7 @@ impl Fixture {
     fn new() -> Self {
         let dir = tempfile::Builder::new()
             .prefix("lockfile-extensions-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         copy_tree(
             &Path::new(FIXTURE).join("workspace"),

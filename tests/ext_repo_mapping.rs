@@ -84,7 +84,7 @@ impl Fixture {
         let f = Self(
             tempfile::Builder::new()
                 .prefix("ext-repo-mapping-")
-                .tempdir()
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         for directory in ["home", "tmp"] {

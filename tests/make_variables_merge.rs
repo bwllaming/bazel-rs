@@ -11,7 +11,7 @@ include!("support/explicit_modules.rs");
 fn action_env_is_not_a_make_variable_source() {
     let dir = tempfile::Builder::new()
         .prefix("make-vars-merge-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     let ws = dir.path().join("ws");
     fs::create_dir_all(&ws).unwrap();
@@ -61,7 +61,7 @@ fn action_env_is_not_a_make_variable_source() {
 fn provider_payload_files_are_inputs_but_not_location_targets() {
     let dir = tempfile::Builder::new()
         .prefix("payload-location-merge-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     let ws = dir.path().join("ws");
     fs::create_dir_all(ws.join("p")).unwrap();

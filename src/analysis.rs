@@ -2770,7 +2770,7 @@ mod tests {
     fn string_dict_analysis_nonempty_freeze_unicode_and_action_environment() {
         let root = tempfile::Builder::new()
             .prefix("string-dict-analysis-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         std::fs::write(
             root.path().join("defs.bzl"),
@@ -2834,7 +2834,7 @@ r(name="mutate", d={"z":"v"}, mutate=True)
     fn run_environment_direct_return_rejected_after_callback_before_action_handoff() {
         let root = tempfile::Builder::new()
             .prefix("run-environment-analysis-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         std::fs::write(
             root.path().join("defs.bzl"),
@@ -2942,7 +2942,7 @@ r = rule(implementation=impl, attrs={"mode": attr.string(), "out": attr.output()
     fn run_environment_nested_consumer_and_actual_provider_requirement_gate() {
         let root = tempfile::Builder::new()
             .prefix("run-environment-consumer-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         std::fs::write(root.path().join("defs.bzl"), r#"
 P = provider()
@@ -3367,7 +3367,7 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
     fn provider_checks_precede_callback_and_check_each_attribute_and_list_item() {
         let root = tempfile::Builder::new()
             .prefix("provider-analysis-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         std::fs::write(
             root.path().join("defs.bzl"),

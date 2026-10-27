@@ -11,7 +11,7 @@ impl Fixture {
         let f = Self(
             tempfile::Builder::new()
                 .prefix("local-repo-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         f.file("MODULE.bazel", "module(name='main')\n");

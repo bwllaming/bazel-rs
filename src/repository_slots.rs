@@ -904,7 +904,7 @@ mod tests {
     fn temp() -> tempfile::TempDir {
         tempfile::Builder::new()
             .prefix("repository-slots-test-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap()
     }
 

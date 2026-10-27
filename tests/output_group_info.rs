@@ -20,7 +20,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("output-group-info-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         ws.file("MODULE.bazel", "module(name='ogi_fixture')\n");

@@ -158,7 +158,7 @@ class RecordedRegressionTests(unittest.TestCase):
 
     def test_cquery_source_links_resolve_only_the_selected_reference_tree(self):
         for prefix in ('', 'nested/pkg'):
-            with self.subTest(prefix=prefix), tempfile.TemporaryDirectory(dir='/tmp/opencode') as temporary:
+            with self.subTest(prefix=prefix), tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as temporary:
                 scratch = Path(temporary)
                 output_base = scratch / 'git-output-base'
                 logical = output_base / 'execroot/_main/external/opencode_gitcheck_dep+'
@@ -194,7 +194,7 @@ class RecordedRegressionTests(unittest.TestCase):
                     gitcheck.tree_manifest(resolved, expected)
 
     def test_reference_links_reject_escape_wrong_identity_and_mixed_roots(self):
-        with tempfile.TemporaryDirectory(dir='/tmp/opencode') as temporary:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as temporary:
             scratch = Path(temporary)
             output_base = scratch / 'git-output-base'
             logical = output_base / 'execroot/_main/external/opencode_gitcheck_dep+'

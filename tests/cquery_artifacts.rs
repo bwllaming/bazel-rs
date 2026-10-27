@@ -1,5 +1,6 @@
 //! Cquery collects semantic File identities, not execution-path input maps.
 #![allow(clippy::disallowed_methods)]
+include!("support/temp_root.rs");
 use std::{
     collections::BTreeMap,
     fs,
@@ -26,7 +27,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("cquery-artifacts-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         copy(

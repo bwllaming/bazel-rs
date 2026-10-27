@@ -2,6 +2,7 @@
 #![allow(clippy::disallowed_methods)] // isolated subprocess harness
 
 use std::fs;
+include!("support/temp_root.rs");
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -16,7 +17,7 @@ impl Workspace {
     fn new() -> Self {
         let temp = tempfile::Builder::new()
             .prefix("td-support-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         let top = temp.path();
         let root = top.join("ws");

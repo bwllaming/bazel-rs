@@ -419,7 +419,7 @@ class EvidenceTests(unittest.TestCase):
 
     def test_reference_tree_is_from_reference_cquery_not_native_and_leaf_not_resolved_away(self):
         for prefix in ('', 'nested/pkg'):
-            with self.subTest(prefix=prefix), tempfile.TemporaryDirectory(dir='/tmp/opencode') as temporary:
+            with self.subTest(prefix=prefix), tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as temporary:
                 scratch = Path(temporary)
                 base = scratch / 'git-links-output-base'
                 logical = base / 'execroot/_main/external' / (links.shared.DEP + '+')

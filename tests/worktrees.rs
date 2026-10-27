@@ -35,7 +35,7 @@ impl Repo {
     fn new(files: &[(&str, &str)]) -> Self {
         let base = tempfile::Builder::new()
             .prefix("worktrees-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         let repo = Self { base };
         fs::create_dir_all(repo.home()).unwrap();

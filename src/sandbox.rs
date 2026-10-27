@@ -1125,7 +1125,7 @@ mod tests {
 
     #[test]
     fn sibling_grants_cover_everything_but_the_blocked_branch() {
-        let root = std::env::temp_dir().join(format!("n59-grants-{}", std::process::id()));
+        let root = crate::test_temp::root().join(format!("n59-grants-{}", std::process::id()));
         fs::create_dir_all(root.join("blocked/inner")).unwrap();
         fs::create_dir_all(root.join("open")).unwrap();
         fs::write(root.join("loose.txt"), b"x").unwrap();

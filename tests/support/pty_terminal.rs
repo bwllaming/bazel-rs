@@ -51,7 +51,7 @@ struct PtyRun {
 /// from it) on a pseudo-terminal `columns` wide.
 #[allow(dead_code)]
 fn on_pty(command: &std::process::Command, columns: u16, interrupt_after: Option<&str>) -> PtyRun {
-    let scratch = tempfile::tempdir().unwrap();
+    let scratch = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
     let helper = scratch.path().join("pty_helper.py");
     let out = scratch.path().join("out.bin");
     std::fs::write(&helper, PTY_HELPER).unwrap();

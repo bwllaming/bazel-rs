@@ -10,7 +10,7 @@ include!("support/explicit_modules.rs");
 fn genrule_outputs_are_executable_on_cold_and_warm_builds() {
     let root = tempfile::Builder::new()
         .prefix("output-mode-cli-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     fs::write(
         root.path().join("MODULE.bazel"),
@@ -66,7 +66,7 @@ fn genrule_outputs_are_executable_on_cold_and_warm_builds() {
 fn writes_and_shell_outputs_normalize_only_after_execution() {
     let root = tempfile::Builder::new()
         .prefix("all-output-modes-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     fs::write(
         root.path().join("MODULE.bazel"),

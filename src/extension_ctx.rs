@@ -1331,7 +1331,7 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let root = tempfile::tempdir_in("/tmp/opencode").unwrap();
+            let root = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
             fs::write(root.path().join("BUILD"), "fail('BUILD must not run')").unwrap();
             fs::write(root.path().join("MODULE.bazel"), "module(name='root')").unwrap();
             let repositories = Arc::new(
@@ -2526,7 +2526,7 @@ ctx.read('cached') == ctx.read('tool') or fail('cached bytes')
     fn module_download_over_verified_tls_reads_real_json() {
         let server = crate::extension_io::tests::TlsServer::new();
         let fixture = Fixture::new();
-        let working = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let working = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let context = Context {
             repositories: fixture.repositories.clone(),
             public_label: label(),

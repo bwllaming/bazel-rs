@@ -22,11 +22,11 @@ impl Fixture {
         let f = Self {
             workspace: tempfile::Builder::new()
                 .prefix("glob-links-ws-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
             host: tempfile::Builder::new()
                 .prefix("glob-links-host-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         };
         f.file("MODULE.bazel", "module(name='main')\n");

@@ -11,7 +11,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("package-specification-cli-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         ws.file("MODULE.bazel", "module(name='package_fixture')\n");

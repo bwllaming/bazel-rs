@@ -32,7 +32,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("aspects-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))

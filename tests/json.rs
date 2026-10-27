@@ -17,7 +17,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("json-cli-")
-                .tempdir()
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         ws.file("MODULE.bazel", "module(name='json_fixture')\n");

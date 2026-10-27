@@ -918,7 +918,7 @@ mod tests {
     fn direct_starts_keep_the_group_discipline() {
         // The library's tests never call enable(): starts are direct.
         assert!(!enabled());
-        let temp = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let temp = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let marker = temp.path().join("grandchild");
         let mut launch = Launch::new(
             "/bin/sh",

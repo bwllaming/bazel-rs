@@ -9,6 +9,7 @@ include!("support/racy_window.rs");
 include!("support/module_archives.rs");
 
 use std::fs;
+include!("support/temp_root.rs");
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::UNIX_EPOCH;
@@ -19,7 +20,7 @@ impl Fixture {
         let f = Self(
             tempfile::Builder::new()
                 .prefix("repo-warm-reuse-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         f.file(

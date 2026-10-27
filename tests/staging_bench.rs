@@ -11,6 +11,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use bazel_rs::action::{Action, ActionExtra};
+include!("support/temp_root.rs");
 use bazel_rs::scheduler::{self, PlannedAction};
 use std::collections::BTreeMap;
 use std::fs;
@@ -76,7 +77,7 @@ fn staging_benchmark() {
     let jobs = setting("STAGING_BENCH_JOBS", 8);
     let scratch = tempfile::Builder::new()
         .prefix("staging-bench-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     let sources = scratch.path().join("sources");
     let mut seed = 0x9e37_79b9_7f4a_7c15_u64;

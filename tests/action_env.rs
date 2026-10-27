@@ -53,7 +53,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("action-env-cli-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         for (name, text) in [

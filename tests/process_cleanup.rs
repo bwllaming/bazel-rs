@@ -66,7 +66,7 @@ impl Workspace {
         let ws = Self {
             temp: tempfile::Builder::new()
                 .prefix("process-cleanup-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         };
         fs::create_dir_all(ws.pids()).unwrap();

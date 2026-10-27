@@ -1,6 +1,7 @@
 //! Complete extraction of an unchanged genuine Git-generated release archive.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use bazel_rs::archive::extract;
+include!("support/temp_root.rs");
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,7 +24,7 @@ fn genuine_archive_preserves_every_member_without_a_metadata_pseudo_file() {
     .unwrap();
     let root = tempfile::Builder::new()
         .prefix("genuine-pax-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     extract(
         bytes,

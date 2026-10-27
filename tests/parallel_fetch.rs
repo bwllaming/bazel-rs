@@ -144,7 +144,7 @@ impl Workspace {
         Self(
             tempfile::Builder::new()
                 .prefix("bazel-rs-parallel-fetch-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         )
     }

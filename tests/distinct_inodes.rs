@@ -22,6 +22,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
+include!("support/temp_root.rs");
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -73,7 +74,7 @@ fn distinct_artifacts_with_one_content_are_distinct_inodes() {
     let ws = Workspace(
         tempfile::Builder::new()
             .prefix("distinct-inodes-cli-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap(),
     );
     for name in [

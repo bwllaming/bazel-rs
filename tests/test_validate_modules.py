@@ -77,7 +77,7 @@ class FixtureTests(unittest.TestCase):
 
     def test_private_local_path_registry_sources_and_metadata(self):
         original = validation.FIXTURES.read_bytes()
-        with tempfile.TemporaryDirectory(dir="/tmp/opencode") as temporary:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as temporary:
             scratch = Path(temporary)
             workspace, registry, override = validation.materialize(scratch, self.fixture)
             entries = list(registry.glob("modules/*/*/source.json"))

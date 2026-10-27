@@ -448,7 +448,7 @@ mod tests {
     #[test]
     fn leaked_write_descriptors_make_exec_busy_but_never_for_written_scripts() {
         use std::os::unix::fs::PermissionsExt;
-        let cwd = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let cwd = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let script = cwd.path().join("tool");
         let mut leaked = std::fs::File::create(&script).unwrap();
         leaked.write_all(b"#!/bin/sh\necho stale\n").unwrap();
@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn exit_codes_streams_signals_and_spawn_failures_match_bazel_results() {
-        let cwd = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let cwd = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let path = Some(b"/usr/bin:/bin".as_slice());
         assert_eq!(
             run(&request(
@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn empty_command_and_permission_denied_follow_process_wrapper() {
-        let cwd = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let cwd = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let (code, stdout, stderr) = run_completed(&request(&[], cwd.path(), None));
         assert_eq!((code, stdout.len()), (1, 0));
         let stderr = String::from_utf8(stderr).unwrap();
@@ -587,7 +587,7 @@ mod tests {
         // glibc __execvpe: ETXTBSY is not a "continue" errno, so the search
         // stops there and reports it even after an earlier EACCES candidate.
         use std::os::unix::fs::PermissionsExt;
-        let cwd = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let cwd = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let denied = cwd.path().join("denied");
         let busy = cwd.path().join("busy");
         let later = cwd.path().join("later");
@@ -621,7 +621,7 @@ mod tests {
 
     #[test]
     fn relative_argv0_is_working_directory_relative_and_scripts_without_shebang_run_with_sh() {
-        let cwd = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let cwd = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let script = cwd.path().join("tool");
         write_executable_script(&script, "printf \"$0:$1:$PWD\"\n", 0o755);
         let (code, stdout, _) = run_completed(&request(&["./tool", "x"], cwd.path(), None));
@@ -635,7 +635,7 @@ mod tests {
 
     #[test]
     fn environment_is_exact_and_stdin_is_empty() {
-        let cwd = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let cwd = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let mut value = request(&["/bin/sh", "-c", "env | sort; cat"], cwd.path(), None);
         value.environment = vec![(b"ONLY".to_vec(), b"\xff value".to_vec())];
         let Outcome::Completed(code, stdout, _) = run(&value).unwrap() else {
@@ -651,7 +651,7 @@ mod tests {
 
     #[test]
     fn timeout_kills_group_and_reports_bazel_timeout_result() {
-        let cwd = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let cwd = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let mut value = request(&["/bin/sh", "-c", "sleep 30 & sleep 30"], cwd.path(), None);
         value.timeout = Duration::from_millis(200);
         let start = Instant::now();
@@ -667,7 +667,7 @@ mod tests {
     #[test]
     fn large_output_is_captured_whole_without_a_native_cap() {
         // Above the former 16 MiB native capture limit; Bazel buffers it all.
-        let cwd = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let cwd = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let value = request(
             &["/bin/sh", "-c", "head -c 17000000 /dev/zero"],
             cwd.path(),

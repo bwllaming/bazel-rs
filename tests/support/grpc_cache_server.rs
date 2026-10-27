@@ -811,7 +811,7 @@ mod grpc_cache_server {
         let lost = matches!(step, ExecStep::Lost);
         drop(guard);
         // Materialize the input root.
-        let root = PathBuf::from("/tmp/opencode").join(format!(
+        let root = crate::test_temp::root().join(format!(
             "native-reapi-exec-{}-{}",
             std::process::id(),
             NEXT_EXECUTION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)

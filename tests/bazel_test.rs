@@ -211,7 +211,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("bazel-test-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         for (name, text) in [
@@ -225,6 +225,10 @@ impl Workspace {
         ] {
             ws.file(name, text);
         }
+        // Flaky attempts need a shared host marker, outside each attempt's
+        // execroot. Grant only this fixture's scratch directory via the
+        // supported client TMPDIR, not the workspace or its /home parent.
+        fs::create_dir(ws.path().join("tmp")).unwrap();
         ws
     }
 
@@ -249,8 +253,9 @@ impl Workspace {
             .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.path())
+            .env("TMPDIR", self.path().join("tmp"))
             .env("INHERIT_ME", "inherited")
-            .env("FLAKY_MARKER", self.path().join("flaky-marker"))
+            .env("FLAKY_MARKER", self.path().join("tmp/flaky-marker"))
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");

@@ -548,7 +548,7 @@ mod tests {
     /// change.
     #[test]
     fn probes_of_a_newer_version_are_never_trusted() {
-        let workspace = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let workspace = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         std::fs::write(workspace.path().join("ws.txt"), "workspace file\n").unwrap();
         let repositories = RepositorySet::new(workspace.path().to_path_buf());
         let tree = workspace.path().join("tree");

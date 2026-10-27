@@ -35,7 +35,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("repo-cache-friendly-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         let source = manifest_dir().join("tests/fixtures/repo_cache_friendly_paths/workspace");
@@ -456,7 +456,7 @@ fn version_1_store_probes_are_never_trusted() {
 fn outside_cache() -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix("repo-cache-friendly-cache-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap()
 }
 

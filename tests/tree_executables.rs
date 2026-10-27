@@ -21,6 +21,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
+include!("support/temp_root.rs");
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -135,7 +136,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("tree-executables-cli-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         for (name, text) in [
@@ -243,7 +244,7 @@ fn runfiles_and_inputs_of_repository_files_link_into_their_repository() {
     let ws = Workspace(
         tempfile::Builder::new()
             .prefix("runfiles-repo-links-cli-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap(),
     );
     for name in ["MODULE.bazel", "BUILD.bazel", "defs.bzl", "repo.bzl"] {

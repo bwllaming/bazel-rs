@@ -793,7 +793,7 @@ mod tests {
 
     impl Temp {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
+            let path = crate::test_temp::root().join(format!(
                 "bazel-rs-glob-{}-{}-{}",
                 std::process::id(),
                 std::time::SystemTime::now()

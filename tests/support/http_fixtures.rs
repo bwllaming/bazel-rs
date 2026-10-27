@@ -95,7 +95,7 @@ impl TlsServer {
         use std::process::{Command, Stdio};
         let private = tempfile::Builder::new()
             .prefix("n3-private-tls-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         let openssl = |args: &[&str]| {
             let status = Command::new("/usr/bin/openssl")

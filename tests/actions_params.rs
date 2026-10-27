@@ -18,7 +18,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("actions-params-cli-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         ws.file("MODULE.bazel", "module(name='actions_params_fixture')\n");

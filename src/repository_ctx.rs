@@ -4930,7 +4930,7 @@ mod tests {
     fn recorded_file_digests_are_memoized_only_when_settled() {
         use std::sync::atomic::Ordering::SeqCst;
         use std::time::SystemTime;
-        let dir = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let dir = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let file = dir.path().join("tool");
         fs::write(&file, b"aaaa").unwrap();
         let memo = FileDigestMemo::default();
@@ -5019,7 +5019,7 @@ mod tests {
     fn a_digest_of_a_file_changed_while_hashed_is_never_remembered() {
         use std::sync::atomic::Ordering::SeqCst;
         use std::time::{Instant, SystemTime};
-        let dir = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let dir = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let fifo = dir.path().join("fifo");
         let made =
             crate::spawn_lock::output(std::process::Command::new("mkfifo").arg(&fifo)).unwrap();
@@ -5089,7 +5089,7 @@ mod tests {
     fn the_file_digest_memo_starts_over_at_its_limit() {
         use std::sync::atomic::Ordering::SeqCst;
         use std::time::SystemTime;
-        let dir = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let dir = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let (a, b) = (dir.path().join("a"), dir.path().join("b"));
         fs::write(&a, b"aaaa").unwrap();
         fs::write(&b, b"bbbb").unwrap();
@@ -5148,8 +5148,8 @@ mod tests {
         use crate::digest_memo::{Key, Saved, Table};
         use std::sync::atomic::Ordering::SeqCst;
         use std::time::SystemTime;
-        let cache = tempfile::tempdir_in("/tmp/opencode").unwrap();
-        let outside = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let cache = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
+        let outside = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let file = outside.path().join("tool");
         fs::write(&file, b"aaaa").unwrap();
         let settled = SystemTime::now() + Duration::from_secs(3600);
@@ -5215,8 +5215,8 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let root = tempfile::tempdir_in("/tmp/opencode").unwrap();
-            let stage = tempfile::tempdir_in("/tmp/opencode").unwrap();
+            let root = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
+            let stage = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
             fs::write(root.path().join("BUILD"), "fail('never evaluate BUILD')\n").unwrap();
             fs::write(root.path().join("MODULE.bazel"), "module(name='root')\n").unwrap();
             let repositories = Arc::new(
@@ -5319,7 +5319,7 @@ mod tests {
                 .with_replay_capture(Arc::default()),
         );
         let run = |repositories: &Arc<RepositorySet>, live: bool| {
-            let stage = tempfile::tempdir_in("/tmp/opencode").unwrap();
+            let stage = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
             let run = if live { execute } else { execute_captured };
             run(
                 repositories.clone(),
@@ -6337,7 +6337,7 @@ ctx.file("a/c", "x")
         let fixture = Fixture::new();
         fixture.file("pkg/BUILD", "");
         fixture.file("pkg/data.json", "{\"k\": 1}");
-        let outside = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let outside = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let host = fs::canonicalize(outside.path()).unwrap();
         fs::write(host.join("host.txt"), b"host \xff").unwrap();
         fs::create_dir(host.join("dir")).unwrap();
@@ -6412,7 +6412,7 @@ ctx.watch("{host}/absent")
 
     #[test]
     fn which_searches_absolute_client_path_entries_for_owner_executables() {
-        let bin = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let bin = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let bin_text = fs::canonicalize(bin.path()).unwrap();
         let bin_text = bin_text.to_str().unwrap();
         executable(&bin.path().join("fake-cc"), "#!/bin/sh\n");
@@ -6494,7 +6494,7 @@ ctx.execute(["ln", "-s", str(ctx.path("in")), "absolute-link"])"#
 
     #[test]
     fn cc_configure_shaped_rule_uses_environ_which_execute_template_label_and_symlink() {
-        let bin = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let bin = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let bin_text = fs::canonicalize(bin.path())
             .unwrap()
             .to_str()
@@ -6614,7 +6614,7 @@ for name, tool in lock.items():
     fn delete_rename_and_symlink_follow_bazel_output_rules() {
         let fixture = Fixture::new();
         let root = fixture.root_text();
-        let outside = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let outside = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let outside_text = fs::canonicalize(outside.path())
             .unwrap()
             .to_str()
@@ -7612,7 +7612,7 @@ ctx.read("sub/old.txt") == "b\n" or fail("directory")"#
     /// ones (warm reuse compares them with what execution recorded).
     #[test]
     fn observed_recorded_states_match_execution_states() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let root = temp.path();
         fs::create_dir_all(root.join("tree/sub")).unwrap();
         fs::write(root.join("tree/a.txt"), b"alpha").unwrap();

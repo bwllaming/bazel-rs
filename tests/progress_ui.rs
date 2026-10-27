@@ -12,6 +12,7 @@ use std::path::Path;
 use std::process::Command;
 
 include!("support/pty_terminal.rs");
+include!("support/temp_root.rs");
 include!("support/console.rs");
 
 const DEFS: &str = r#"

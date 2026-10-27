@@ -83,7 +83,7 @@ impl Workspace {
     fn new() -> Self {
         let keep = tempfile::Builder::new()
             .prefix("cc-compile-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         let root = keep.path().to_path_buf();
         copy_tree(&fixture().join("workspace"), &root);

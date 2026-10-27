@@ -32,7 +32,7 @@ fn copy_tree(from: &Path, to: &Path) {
 
 impl Workspace {
     fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         copy_tree(&Path::new(FIXTURE).join("workspace"), dir.path());
         for sub in ["home", "tmp"] {
             fs::create_dir_all(dir.path().join(sub)).unwrap();

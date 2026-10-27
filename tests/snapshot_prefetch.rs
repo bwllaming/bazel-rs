@@ -37,8 +37,8 @@ impl Workspace {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
-        let root = std::env::temp_dir().join(&unique);
-        let scratch = std::env::temp_dir().join(format!("{unique}-scratch"));
+        let root = crate::test_temp::root().join(&unique);
+        let scratch = crate::test_temp::root().join(format!("{unique}-scratch"));
         fs::create_dir(&root).unwrap();
         fs::create_dir(&scratch).unwrap();
         let ws = Self { root, scratch };

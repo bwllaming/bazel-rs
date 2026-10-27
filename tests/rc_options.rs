@@ -19,7 +19,7 @@ impl Fixture {
         let f = Self(
             tempfile::Builder::new()
                 .prefix("rc-options-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         fs::create_dir_all(f.0.path().join("home")).unwrap();

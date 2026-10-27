@@ -12,7 +12,7 @@ const ERROR: &str =
 fn override_forms_never_echo_values() {
     let workspace = tempfile::Builder::new()
         .prefix("repo-env-options-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     // Variable names are not secret (`--repo_env=NAME` inherits NAME); values
     // never appear in any diagnostic, whatever the outcome.
@@ -97,7 +97,7 @@ fn non_utf8_arguments_cannot_bypass_override_redaction_or_panic() {
 
     let workspace = tempfile::Builder::new()
         .prefix("repo-env-byte-options-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     let mut bad_bytes = SECRET.as_bytes().to_vec();
     bad_bytes.push(0xff);

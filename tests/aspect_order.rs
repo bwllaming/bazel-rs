@@ -1,6 +1,7 @@
 //! Aspect dependency discovery must use the same configured declarations as
 //! implementation planning, including when config_setting flushes phase 2 early.
 #![allow(clippy::disallowed_methods)]
+include!("support/temp_root.rs");
 use std::{
     collections::BTreeMap,
     fs,
@@ -27,7 +28,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("aspect-order-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         copy(

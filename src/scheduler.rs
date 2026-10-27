@@ -1211,7 +1211,7 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             loop {
-                let path = std::env::temp_dir().join(format!(
+                let path = crate::test_temp::root().join(format!(
                     "native-scheduler-test-{}-{}",
                     std::process::id(),
                     NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)

@@ -91,7 +91,7 @@ impl Fixture {
     fn new() -> Self {
         let temp = tempfile::Builder::new()
             .prefix("native-eager-mapping-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         let fixture = Path::new(FIXTURE);
         copy_dir(&fixture.join("registry"), &temp.path().join("registry"));

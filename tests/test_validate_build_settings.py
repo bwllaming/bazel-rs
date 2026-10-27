@@ -338,7 +338,7 @@ class ArtifactTests(unittest.TestCase):
                 settings.output_paths(record(), settings.specification(settings.CASES[0], 'cold'), 'native', ref, scratch)
 
     def test_native_output_labels_containment_and_duplicates_are_not_normalized(self):
-        with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
             scratch = Path(directory)
             path = scratch / 'result.txt'
             path.write_bytes(settings.NINE_BYTES)
@@ -365,7 +365,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(sorted(settings.SUPERSEDED), [('native.unsupported', p) for p in
                                                        ('bool-option', 'negative-bool-option', 'string-option')])
         self.assertIn('superseded by N16b', settings.SUPERSEDED_REASON)
-        with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
             report = synthetic_report(Path(directory))
             self.assertTrue(settings.report_passes(report))
             boundary = report['checks'][-1]
@@ -391,7 +391,7 @@ class ReportTests(unittest.TestCase):
                     self.assertFalse(settings.report_passes(changed))
 
     def test_complete_synthetic_evidence_replays_and_tampering_fails(self):
-        with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
             report = synthetic_report(Path(directory))
             self.assertTrue(settings.report_passes(report))
             for mutation in ('missing-family', 'reordered-family', 'missing-phase', 'duplicate-run', 'argv', 'stdout',

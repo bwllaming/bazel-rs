@@ -9,6 +9,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use serde_json::Value;
+include!("support/temp_root.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -39,7 +40,7 @@ impl Workspace {
     fn new() -> Self {
         let directory = tempfile::Builder::new()
             .prefix("mod-command-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         let root = fs::canonicalize(directory.path()).unwrap();
         for part in ["registry", "sources", "ws"] {
@@ -173,7 +174,7 @@ fn mod_tidy_matches_genuine_bazel() {
     .unwrap();
     let directory = tempfile::Builder::new()
         .prefix("mod-tidy-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     let workspace = fs::canonicalize(directory.path()).unwrap().join("ws");
     copy_tree(&fixture().join("tidy_ws"), &workspace);

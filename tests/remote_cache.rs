@@ -159,7 +159,7 @@ struct Workspace(PathBuf);
 
 impl Workspace {
     fn new() -> Self {
-        let root = PathBuf::from("/tmp/opencode").join(format!(
+        let root = crate::test_temp::root().join(format!(
             "native-remote-cache-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)

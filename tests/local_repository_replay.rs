@@ -20,7 +20,7 @@ impl Fixture {
         Self(
             tempfile::Builder::new()
                 .prefix("local-replay-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         )
     }
@@ -492,7 +492,7 @@ fn per_tree_validation_sees_host_files_added_behind_tree_symlinks() {
     let f = Fixture::new();
     let host = tempfile::Builder::new()
         .prefix("host-dirs-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     let host = fs::canonicalize(host.path()).unwrap();
     for dir in ["x/sub", "y/sub"] {
@@ -623,7 +623,7 @@ fn record_mode_observes_the_same_inputs_in_every_loading_order() {
     let f = Fixture::new();
     let host = tempfile::Builder::new()
         .prefix("host-dirs-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     let host = fs::canonicalize(host.path()).unwrap();
     fs::create_dir_all(host.join("sub")).unwrap();
@@ -708,7 +708,7 @@ k = repository_rule(_linker)
     // Outside the workspace: creating it must not change what is observed.
     let dumps = tempfile::Builder::new()
         .prefix("dumps-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     let dump = dumps.path().join("dump.txt");
     let dump_text = dump.display().to_string();

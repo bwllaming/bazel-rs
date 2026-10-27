@@ -19,7 +19,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("memory-limit-cli-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         ws.file("MODULE.bazel", "module(name='memory_limit_fixture')\n");

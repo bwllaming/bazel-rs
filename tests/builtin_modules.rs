@@ -1,6 +1,7 @@
 //! Genuine embedded resources and captured public-registry closure, offline.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use bazel_rs::module_graph::{self, BuiltinProfile, ModuleSource, ResolverOptions};
+include!("support/temp_root.rs");
 use bazel_rs::repository::RepositorySet;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -23,7 +24,7 @@ fn options() -> ResolverOptions {
 fn workspace(module: &str) -> tempfile::TempDir {
     let directory = tempfile::Builder::new()
         .prefix("builtin-cli-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     fs::write(directory.path().join("MODULE.bazel"), module).unwrap();
     fs::write(

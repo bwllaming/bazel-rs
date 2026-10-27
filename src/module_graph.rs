@@ -1677,7 +1677,7 @@ mod tests {
     }
     impl Fixture {
         fn new(root_source: &str) -> Self {
-            let base = std::env::temp_dir().join(format!(
+            let base = crate::test_temp::root().join(format!(
                 "bazel-rs-module-graph-{}-{}",
                 std::process::id(),
                 NEXT_FIXTURE.fetch_add(1, AtomicOrdering::Relaxed)

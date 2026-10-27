@@ -37,7 +37,7 @@ fn stderr(output: &Output) -> String {
 fn label_keyed_dict_keys_defer_unknown_repositories_and_reject_output_templates() {
     let dir = tempfile::Builder::new()
         .prefix("lksd-merge-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     let root = dir.path();
     write(root, "ws/MODULE.bazel", "module(name = \"lk\")\n");

@@ -5267,7 +5267,7 @@ z = attr.string_dict()
     fn build_fixture(definition: &str, call: &str) -> Result<crate::package::Package, String> {
         let root = tempfile::Builder::new()
             .prefix("attribute-budget-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         std::fs::write(
             root.path().join("defs.bzl"),
@@ -5385,7 +5385,7 @@ z = attr.string_dict()
     fn descriptor_normalization_charges_mapped_labels_cumulatively() {
         let root = tempfile::Builder::new()
             .prefix("descriptor-mapping-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         let symbol = "e".repeat(65_536);
         std::fs::write(root.path().join("MODULE.bazel"), format!(

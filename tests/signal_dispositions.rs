@@ -84,7 +84,7 @@ fn spawns_start_with_the_signal_dispositions_genuine_gives_them() {
     assert_eq!(rows.len(), 8);
     let scratch = tempfile::Builder::new()
         .prefix("signal-dispositions-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     let ws = scratch.path().join("ws");
     for name in [

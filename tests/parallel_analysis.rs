@@ -21,7 +21,7 @@ struct Workspace(PathBuf);
 
 impl Workspace {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
+        let path = crate::test_temp::root().join(format!(
             "bazel-rs-parallel-analysis-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)

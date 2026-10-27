@@ -3240,7 +3240,7 @@ mod tests {
     fn temp() -> tempfile::TempDir {
         tempfile::Builder::new()
             .prefix("repository-store-test-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap()
     }
 

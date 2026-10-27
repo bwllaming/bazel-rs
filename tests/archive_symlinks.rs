@@ -82,7 +82,7 @@ impl Fixture {
     fn new() -> Self {
         let temp = tempfile::Builder::new()
             .prefix("archive-links-")
-            .tempdir()
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         let fixture = Self(temp);
         let archive = archive();

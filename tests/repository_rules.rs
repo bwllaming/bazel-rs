@@ -12,7 +12,7 @@ impl Fixture {
         let f = Self(
             tempfile::Builder::new()
                 .prefix("direct-repo-cli-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         f.file("MODULE.bazel", "module(name='main')\nmake = use_repo_rule('//:defs.bzl','make')\nmake(name='made', text='Ada')\n");

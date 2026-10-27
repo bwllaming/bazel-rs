@@ -1,5 +1,6 @@
 //! Direct configured edge ownership, not merely transitive node equality.
 #![allow(clippy::disallowed_methods)]
+include!("support/temp_root.rs");
 use bazel_rs::{
     configuration::{Configuration, NativeOptions},
     cquery_proto::{Target, Transitions},
@@ -42,7 +43,7 @@ const FILTERS: &[&[&str]] = &[
 struct Workspace(tempfile::TempDir);
 impl Workspace {
     fn new() -> Self {
-        let ws = Self(tempfile::tempdir().unwrap());
+        let ws = Self(tempfile::tempdir_in(crate::test_temp::root()).unwrap());
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/cquery_aspect_edges/workspace");
         for entry in fs::read_dir(fixture).unwrap() {

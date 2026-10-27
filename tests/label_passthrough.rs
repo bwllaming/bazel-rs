@@ -22,7 +22,7 @@ impl Fixture {
         let fixture = Self(
             tempfile::Builder::new()
                 .prefix("label-passthrough-")
-                .tempdir()
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         for directory in ["home", "tmp"] {

@@ -1,6 +1,8 @@
 //! Experimental native Bazel-compatible primitives. Not a Bazel replacement yet.
 // Test modules may start processes directly (clippy.toml).
 #![cfg_attr(test, allow(clippy::disallowed_methods))]
+#[cfg(test)]
+include!("../tests/support/temp_root.rs");
 /// Semantics targeted by the native implementation, not a full-parity claim.
 pub const COMPATIBILITY_VERSION: &str = "9.3.0";
 

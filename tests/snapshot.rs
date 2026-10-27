@@ -97,7 +97,7 @@ impl Twin {
     fn new(files: &[(&str, &str)]) -> Self {
         let base = tempfile::Builder::new()
             .prefix("snapshot-w5-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         let twin = Self {
             base,

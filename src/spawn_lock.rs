@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn no_process_starts_while_an_executable_is_open_for_writing() {
-        let temp = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let temp = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let path = temp.path().join("tool");
         let (entered, inside) = mpsc::channel();
         let writer = std::thread::spawn(move || {
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn seal_recreates_the_file_with_the_same_bytes_and_mode() {
-        let temp = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let temp = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let path = temp.path().join("tool");
         fs::write(&path, b"#!/bin/sh\necho sealed\n").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o751)).unwrap();

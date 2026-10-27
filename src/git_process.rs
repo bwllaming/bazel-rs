@@ -463,7 +463,7 @@ mod tests {
     impl Temp {
         fn new() -> Self {
             loop {
-                let root = std::env::temp_dir().join(format!(
+                let root = crate::test_temp::root().join(format!(
                     "git-process-test-{}-{}",
                     std::process::id(),
                     NEXT.fetch_add(1, Ordering::Relaxed)

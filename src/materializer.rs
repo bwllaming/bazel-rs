@@ -902,7 +902,7 @@ mod tests {
 
     #[test]
     fn disabled_download_policy_reuses_genuine_tree_and_blob_with_exact_legacy_identity() {
-        let temp = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let temp = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let registry = Registry::LocalPath(temp.path().join("registry"));
         fs::create_dir(registry.local_path().unwrap()).unwrap();
         let archive = include_bytes!("../tests/fixtures/build_settings/bazel-skylib-1.8.2.tar.gz");
@@ -1107,7 +1107,7 @@ mod tests {
             check_published_tree, published_tree, verify_as_reused, verify_published_tree,
         };
         use std::os::unix::fs::{PermissionsExt, symlink};
-        let temp = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let temp = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let registry = root_registry(temp.path());
         let mut archive = tar::Builder::new(Vec::new());
         for (name, kind, link, bytes) in [
@@ -1240,7 +1240,7 @@ mod tests {
     fn documentary_source_metadata_is_inert_but_retained_in_tree_identity() {
         let temp = tempfile::Builder::new()
             .prefix("archive-docs-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         let (registry, mut source) = fixture(temp.path());
         let cache = temp.path().join("cache");
@@ -1284,7 +1284,7 @@ mod tests {
     fn documentary_metadata_does_not_admit_other_source_fields_or_skip_integrity() {
         let temp = tempfile::Builder::new()
             .prefix("archive-docs-errors-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         let (registry, mut source) = fixture(temp.path());
         let cache = temp.path().join("cache");

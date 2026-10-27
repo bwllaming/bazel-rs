@@ -6,6 +6,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use serde_json::Value;
+include!("support/temp_root.rs");
 use std::path::Path;
 use std::process::Command;
 
@@ -39,7 +40,7 @@ fn strings(value: &Value) -> Vec<&str> {
 fn help_topics_match_genuine_bazel() {
     let receipt = receipt("help");
     let lines = strings(&receipt["lines"]);
-    let directory = tempfile::tempdir_in("/tmp/opencode").unwrap();
+    let directory = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
     let mut failures = Vec::new();
     for case in receipt["cases"].as_array().unwrap() {
         let args = strings(&case["args"]);
@@ -100,7 +101,7 @@ fn help_topics_match_genuine_bazel() {
 #[test]
 fn canonicalize_flags_matches_genuine_bazel() {
     let receipt = receipt("canonicalize");
-    let directory = tempfile::tempdir_in("/tmp/opencode").unwrap();
+    let directory = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
     std::fs::write(directory.path().join("MODULE.bazel"), "").unwrap();
     for case in receipt["cases"].as_array().unwrap() {
         let mut command = vec!["canonicalize-flags", "--lockfile_mode=off"];

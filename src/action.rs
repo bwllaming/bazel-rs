@@ -7317,7 +7317,7 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let root = std::env::temp_dir();
+            let root = crate::test_temp::root();
             loop {
                 let path = root.join(format!(
                     "native-action-test-{}-{}",

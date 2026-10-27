@@ -99,7 +99,7 @@ impl Fixture {
         let f = Self(
             tempfile::Builder::new()
                 .prefix("n26-cli-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         fs::create_dir(f.0.path().join("home")).unwrap();
@@ -431,7 +431,7 @@ fn generated_bzl_symlinks_load_inside_and_into_materialized_repositories() {
     let f = Fixture::new();
     let outside = tempfile::Builder::new()
         .prefix("n26-outside-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     fs::write(outside.path().join("config.bzl"), "VALUE = 'outside'\n").unwrap();
     f.file(

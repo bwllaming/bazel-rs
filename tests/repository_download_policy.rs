@@ -156,7 +156,7 @@ impl Fixture {
     fn new(file_source: bool, transforms: bool) -> Self {
         let temp = tempfile::Builder::new()
             .prefix("repository-download-policy-")
-            .tempdir()
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         let served = temp.path().join("served");
         fs::create_dir(&served).unwrap();

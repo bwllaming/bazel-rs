@@ -11,7 +11,7 @@ impl Fixture {
         let f = Self(
             tempfile::Builder::new()
                 .prefix("module-extension-cli-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         f.file("MODULE.bazel", "module(name='main',version='1.0')\ne=use_extension('//:ext.bzl','files')\ne.make(name='made',text='Ada')\nuse_repo(e,chosen='made')\n");

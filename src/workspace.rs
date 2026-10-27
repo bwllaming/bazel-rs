@@ -314,7 +314,7 @@ mod tests {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_nanos();
-                let path = std::env::temp_dir().join(format!(
+                let path = crate::test_temp::root().join(format!(
                     "bazel-rs-workspace-{}-{nonce}-{}",
                     std::process::id(),
                     NEXT_TEMP.fetch_add(1, Ordering::Relaxed)

@@ -1,5 +1,6 @@
 //! Real split configuration analysis, provider views, actions and graph reuse.
 #![allow(clippy::disallowed_methods)]
+include!("support/temp_root.rs");
 use std::{
     fs,
     path::Path,
@@ -21,7 +22,7 @@ fn copy(from: &Path, to: &Path) {
 }
 impl Workspace {
     fn new() -> Self {
-        let ws = Self(tempfile::tempdir().unwrap());
+        let ws = Self(tempfile::tempdir_in(crate::test_temp::root()).unwrap());
         copy(
             &Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fixtures/split_transitions/workspace"),

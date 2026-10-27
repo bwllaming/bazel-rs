@@ -101,7 +101,7 @@ class FixtureTests(unittest.TestCase):
 
     def test_private_registry_uses_exact_case_modules_and_real_rule_definition(self):
         chosen = next(c for c in direct.CASES if c["name"] == "ignored.dependency")
-        with tempfile.TemporaryDirectory(dir="/tmp/opencode") as temporary:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as temporary:
             root = Path(temporary)
             registry, files = direct.materialize(root / "case", root / "workspace", chosen)
             entry = registry / "modules/decldep/1.0"

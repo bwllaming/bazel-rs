@@ -18,7 +18,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("no-recursion-cli-")
-                .tempdir_in(std::env::temp_dir())
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         for (name, text) in [("MODULE.bazel", "module(name = 'no_recursion')\n")]

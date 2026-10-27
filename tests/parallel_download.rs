@@ -178,7 +178,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("bazel-rs-parallel-download-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         let names = [

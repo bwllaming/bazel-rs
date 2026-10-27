@@ -14,7 +14,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("repr-cli-")
-                .tempdir_in(std::env::temp_dir())
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         for (name, text) in files {

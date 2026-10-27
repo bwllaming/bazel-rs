@@ -15,6 +15,7 @@
 include!("support/verify_env.rs");
 
 use std::fs;
+include!("support/temp_root.rs");
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
@@ -215,7 +216,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("startup-quiet-")
-                .tempdir_in(std::env::temp_dir())
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         let repo = REPO.replace("PORT", &port.to_string());

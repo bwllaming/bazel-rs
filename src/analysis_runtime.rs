@@ -2575,7 +2575,7 @@ a.write(a.declare_file('empty.out'), a.args())
     fn actual_subrule_returned_args_are_consumed_by_parent_write() {
         let root = tempfile::Builder::new()
             .prefix("write-returned-args-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         // Preserve the genuine returned-Args fixture's write, not a run_shell
         // substitute. This asserts native registration; CLI owner tests execution.

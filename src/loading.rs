@@ -2335,7 +2335,7 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let root = PathBuf::from("/tmp/opencode").join(format!(
+            let root = crate::test_temp::root().join(format!(
                 "bazel-loading-{}-{nonce}-{}",
                 std::process::id(),
                 NEXT_TEMP.fetch_add(1, Ordering::Relaxed)

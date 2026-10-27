@@ -18342,7 +18342,7 @@ m = macro(implementation=emit)
         fn new() -> Self {
             use std::sync::atomic::{AtomicU64, Ordering};
             static NEXT: AtomicU64 = AtomicU64::new(0);
-            let root = PathBuf::from("/tmp/opencode").join(format!(
+            let root = crate::test_temp::root().join(format!(
                 "engine-repositories-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)

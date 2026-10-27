@@ -25,7 +25,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("artifact-identity-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -161,7 +161,7 @@ impl Workspace {
         let ws = Self {
             temp: tempfile::Builder::new()
                 .prefix("sandbox-cli-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
             outside: OutsideBase::share(),
         };

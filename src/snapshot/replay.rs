@@ -722,8 +722,8 @@ mod tests {
 
     impl Workspace {
         fn new() -> Self {
-            let root = tempfile::tempdir_in("/tmp/opencode").unwrap();
-            let bins = tempfile::tempdir_in("/tmp/opencode").unwrap();
+            let root = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
+            let bins = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
             for (directory, text) in [("one", "one"), ("two", "two")] {
                 fs::create_dir(bins.path().join(directory)).unwrap();
                 write_executable_script(

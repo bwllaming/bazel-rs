@@ -771,7 +771,7 @@ mod tests {
     fn fixture(defs: &str, build: &str) -> Result<crate::package::Package, String> {
         let root = tempfile::Builder::new()
             .prefix("subrule-owned-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         std::fs::write(root.path().join("defs.bzl"), defs).unwrap();
         std::fs::write(root.path().join("BUILD.bazel"), build).unwrap();

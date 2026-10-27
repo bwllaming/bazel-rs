@@ -339,7 +339,7 @@ class EvidenceTests(unittest.TestCase):
                 self.assertFalse(rules.valid_evidence(dict(first, **change)))
 
     def test_publication_selection_traces_actual_output_among_multiple_trees(self):
-        with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
             cache = Path(directory) / 'cache'
             roots = [rules.trees_directory(cache) / (letter * 64) for letter in ('a', 'b')]
             for root in roots:

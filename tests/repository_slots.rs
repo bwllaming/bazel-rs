@@ -21,7 +21,7 @@ impl Fixture {
     fn new() -> Self {
         let root = tempfile::Builder::new()
             .prefix("repository-slots-")
-            .tempdir_in("/tmp/opencode")
+            .tempdir_in(crate::test_temp::root())
             .unwrap();
         let source = manifest().join("tests/fixtures/repository_slots/workspace");
         for entry in fs::read_dir(&source).unwrap() {
@@ -460,7 +460,7 @@ fn assert_trees_clean(store: &Path) {
 fn a_re_execution_of_a_self_referencing_repository_waits_for_its_writers() {
     let base = tempfile::Builder::new()
         .prefix("repository-slots-gopath-")
-        .tempdir_in("/tmp/opencode")
+        .tempdir_in(crate::test_temp::root())
         .unwrap();
     let cache = base.path().join("cache");
     let a = GoWorkspace::new(base.path(), "a", &cache);

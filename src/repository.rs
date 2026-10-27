@@ -4957,7 +4957,7 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             static NEXT: AtomicU64 = AtomicU64::new(0);
-            let root = std::env::temp_dir().join(format!(
+            let root = crate::test_temp::root().join(format!(
                 "bazel-rs-repository-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
@@ -6007,7 +6007,7 @@ mod tests {
 
     #[test]
     fn versioned_host_envelope_intentionally_migrates_old_constant_repository_identity() {
-        let cache = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let cache = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let inputs = crate::repository_ctx::ExecutionInputs::default();
         let legacy = serde_json::to_vec(&inputs).unwrap();
         assert_eq!(legacy, br#"{"templates":[]}"#);
@@ -6595,7 +6595,7 @@ mod tests {
         // recorded only as a name), so one line after a warm demand proves
         // pure publication reuse.
         for ordinary in [false, true] {
-            let counter = tempfile::tempdir_in("/tmp/opencode").unwrap();
+            let counter = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
             std::fs::write(counter.path().join("executions"), b"").unwrap();
             let script = format!(
                 "ctx.execute(['sh', '-c', 'echo run >> {}'])\n    ctx.file('value', 'constant')",
@@ -7452,7 +7452,7 @@ mod tests {
 
     #[test]
     fn link_blocked_prefixes_cover_the_store_and_the_cli_cache_root() {
-        let temp = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let temp = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
         let root = std::fs::canonicalize(temp.path()).unwrap();
         let cli =
             RepositorySet::new(root.clone()).with_source_cache(root.join("cache/repositories"));

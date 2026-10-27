@@ -11,6 +11,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use serde_json::Value;
+include!("support/temp_root.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -61,7 +62,7 @@ impl Workspace {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("test-args-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
         copy_tree(

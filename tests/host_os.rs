@@ -41,7 +41,7 @@ impl Fixture {
         let f = Self {
             temp: tempfile::Builder::new()
                 .prefix("host-os-cli-")
-                .tempdir_in("/tmp/opencode")
+                .tempdir_in(crate::test_temp::root())
                 .unwrap(),
             route,
             symbol: "ext",
