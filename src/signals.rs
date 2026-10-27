@@ -124,6 +124,39 @@ pub fn reset_in_child(command: &mut Command, defaults: Defaults) {
     }
 }
 
+/// Bazel's exit code of an interrupted command (ExitCode.INTERRUPTED).
+pub const INTERRUPTED_EXIT_CODE: i32 = 8;
+
+extern "C" fn exit_interrupted(_: libc::c_int) {
+    // SAFETY: _exit(2) is async-signal-safe; nothing is flushed or dropped,
+    // exactly as when the signal's default action ended the process.
+    unsafe { libc::_exit(INTERRUPTED_EXIT_CODE) }
+}
+
+/// SIGINT (Ctrl-C) ends this process at once with exit code 8, Bazel's
+/// INTERRUPTED (the client's Ctrl-C cancels the command, which then exits
+/// 8), instead of by the signal. Only when SIGINT is at its default action:
+/// an inherited ignored SIGINT (a background job) stays ignored. A handled
+/// signal is back at its default action in every process this one starts
+/// (exec(2)), and the spawns' supervisors see this process end as before.
+/// The progress display's handler (crate::progress::terminal::signals)
+/// erases its area, then exits the same way.
+pub fn exit_on_interrupt() {
+    // SAFETY: a zeroed sigaction is valid; the handler only calls _exit.
+    unsafe {
+        let mut current: libc::sigaction = std::mem::zeroed();
+        if libc::sigaction(libc::SIGINT, std::ptr::null(), &mut current) != 0
+            || current.sa_sigaction != libc::SIG_DFL
+        {
+            return;
+        }
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = exit_interrupted as *const () as libc::sighandler_t;
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(libc::SIGINT, &action, std::ptr::null_mut());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

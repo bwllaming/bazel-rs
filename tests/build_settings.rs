@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 include!("support/explicit_modules.rs");
+include!("support/exit_codes.rs");
 
 struct Fixture(tempfile::TempDir);
 impl Fixture {
@@ -66,9 +67,10 @@ fn success(output: &Output) {
     );
 }
 fn reject(output: &Output, message: &str) {
+    // Exit 2 for an option error (crate::exit_code), 1 otherwise.
     assert_eq!(
         output.status.code(),
-        Some(1),
+        Some(rejection_code(&String::from_utf8_lossy(&output.stderr))),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );

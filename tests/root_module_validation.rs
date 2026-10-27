@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 include!("support/explicit_modules.rs");
+include!("support/exit_codes.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -183,7 +184,13 @@ fn success(output: &Output) {
 }
 
 fn rejected(output: &Output, diagnostic: &str) {
-    assert_eq!(output.status.code(), Some(1), "{}", stderr(output));
+    // Exit 2 for an option error (crate::exit_code), 1 otherwise.
+    assert_eq!(
+        output.status.code(),
+        Some(rejection_code(&stderr(output))),
+        "{}",
+        stderr(output)
+    );
     assert!(
         output.stdout.is_empty(),
         "partial stdout: {:?}",

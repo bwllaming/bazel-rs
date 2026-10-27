@@ -691,7 +691,8 @@ fn summaries_filters_suites_and_exit_codes() {
         ),
     ] {
         let output = ws.run(&["test", option, "//pkg:pass_test"]);
-        assert_eq!(output.status.code(), Some(1));
+        // A command-line error: exit 2 (crate::exit_code).
+        assert_eq!(output.status.code(), Some(2));
         assert!(stderr(&output).contains(message), "{}", stderr(&output));
     }
 }

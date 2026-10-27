@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 include!("support/explicit_modules.rs");
+include!("support/exit_codes.rs");
 
 struct Fixture(tempfile::TempDir);
 
@@ -97,9 +98,10 @@ impl Fixture {
     /// The diagnostic of a failed build (exit 1, no output).
     fn rejected(&self, args: &[&str]) -> String {
         let output = self.run("build", args);
+        // Exit 2 for an option error (crate::exit_code), 1 otherwise.
         assert_eq!(
             output.status.code(),
-            Some(1),
+            Some(rejection_code(&errors(&output))),
             "{args:?}: {}",
             errors(&output)
         );

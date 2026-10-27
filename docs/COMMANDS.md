@@ -242,3 +242,19 @@ applied (a single-valued option once, at its last occurrence), booleans
 their expansion; `Unrecognized option: ...`, `Unrecognized arguments: ...`
 and an unknown `--for_command` fail with exit 2. Starlark options and
 `--invocation_policy` are explicit errors. Captured: tests/fixtures/canonicalize.
+
+## Exit codes
+
+Like Bazel 9.3 (util/ExitCode.java through the failures' FailureDetail
+metadata; crate::exit_code; genuine matrix tests/fixtures/exit_codes): 0
+success (also `build` without targets), 1 a build, analysis or loading
+failure, 2 a command-line error (an unrecognized option, a value that does
+not parse, an rc file, import or `--config` error, a Starlark flag error, a
+`run` with no, several or a non-executable target, an unknown command, a
+query syntax error), 3 failed tests, 4 no test targets, 7 a query evaluation
+error, 8 interrupted (SIGINT ends the command at once with 8, also under the
+progress display; an inherited ignored SIGINT stays ignored), 33 out of
+memory, 34 a remote failure, 36 a sandbox setup failure, 37 `mod`'s invalid
+subcommand. The native profile's own rejection of an option Bazel accepts
+(`unsupported option …`, `… not implemented in the native profile`) exits 1:
+Bazel has no error to match.

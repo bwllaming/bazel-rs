@@ -250,15 +250,15 @@ fn the_status_area_shows_on_a_terminal_and_nowhere_else() {
 }
 
 #[test]
-fn an_interrupt_clears_the_status_area_and_still_ends_by_the_signal() {
+fn an_interrupt_clears_the_status_area_and_exits_8() {
     let ws = Workspace::new();
     let run = on_pty(
         &ws.command("cache", &["build", "//:endless"]),
         100,
         Some("Genrule endless.txt"),
     );
-    // Ended by SIGINT, as without the display.
-    assert_eq!(run.status, -2, "{}", text(&run.bytes));
+    // Exit code 8 (Bazel's INTERRUPTED), as without the display.
+    assert_eq!(run.status, 8, "{}", text(&run.bytes));
     let screen = Screen::render(&run.bytes);
     assert!(
         !screen.iter().any(|line| line.starts_with('[')),

@@ -421,7 +421,8 @@ dev = rule(implementation = _impl, toolchains = [config_common.toolchain_type("/
     // --extra_toolchains is not a query option; --toolchain_resolution_debug
     // stays unsupported.
     let output = ws.run(&["query", "--extra_toolchains=//tc:all", "//u:all"]);
-    assert_eq!(output.status.code(), Some(1));
+    // A command-line error: exit 2 (crate::exit_code).
+    assert_eq!(output.status.code(), Some(2));
     assert!(
         errors(&output).contains(
             "--extra_toolchains=//tc:all :: Unrecognized option: --extra_toolchains=//tc:all"

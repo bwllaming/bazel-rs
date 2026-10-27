@@ -305,8 +305,10 @@ fn interrupting_bazel_rs_kills_its_running_test_and_daemons() {
         .status()
         .unwrap();
     assert!(interrupted.success());
-    // SIGINT still ends bazel-rs at once, by the signal.
-    assert_eq!(bazel.wait().unwrap().signal(), Some(2));
+    // SIGINT still ends bazel-rs at once, with Bazel's INTERRUPTED exit
+    // code 8.
+    let status = bazel.wait().unwrap();
+    assert_eq!((status.code(), status.signal()), (Some(8), None));
     // Its supervisors saw it go: the test and every daemon it started are
     // killed (shortly after, not 60 s later when the test would end).
     let deadline = Instant::now() + Duration::from_secs(20);

@@ -181,15 +181,19 @@ pub(crate) fn analysis_report(labels: &[crate::label::Label], tests: Option<usiz
         [label] => format!("target {}", crate::test_runner::label_print(label)),
         _ => format!("{} targets", labels.len()),
     };
-    crate::note!(
-        "INFO: {}",
-        render::analyzed(
-            &what,
-            COUNTERS.packages.load(Ordering::Relaxed),
-            COUNTERS.configured.load(Ordering::Relaxed),
-            COUNTERS.aspects.load(Ordering::Relaxed),
-        )
-    );
+    // No targets: nothing analyzed to report (genuine `build` without
+    // targets prints only `Found 0 targets...`).
+    if !labels.is_empty() {
+        crate::note!(
+            "INFO: {}",
+            render::analyzed(
+                &what,
+                COUNTERS.packages.load(Ordering::Relaxed),
+                COUNTERS.configured.load(Ordering::Relaxed),
+                COUNTERS.aspects.load(Ordering::Relaxed),
+            )
+        );
+    }
     crate::note!("INFO: {}", render::found(labels.len(), tests));
     SUMMARY.store(true, Ordering::Relaxed);
 }

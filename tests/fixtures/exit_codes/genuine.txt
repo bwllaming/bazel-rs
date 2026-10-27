@@ -1,0 +1,38 @@
+build --nosuchflag //:a => 2
+build --jobs=abc //:a => 2
+build --show_result=x //:a => 2
+nosuchcommand => 2
+build //:a:b => 1
+build //nope:a => 1
+build //:nope => 1
+build //:fail => 1
+build -k //:fail //:a => 1
+test //:a => 4
+test //:tf => 3
+test //:t //:tf --test_output=errors => 3
+run //:a => 2
+run //:tool --nosuchflag => 2
+query 'deps(//:a' => 2
+query //nope:x => 7
+query 'deps(//:nope)' => 7
+query //:a --output=nosuch => 2
+info nosuchkey => 2
+build --remote_executor=grpc://127.0.0.1:1 //:b => 34
+build --remote_cache=grpc://127.0.0.1:1 //:b => 34
+mod nosuchsubcommand => 37
+mod graph --nosuchflag => 2
+help nosuchtopic => 2
+build --config=nosuch //:a => 2
+fetch //nope:x => 2
+info --nosuchflag => 2
+clean --nosuchflag => 2
+query --nosuchflag //:a => 2
+cquery --nosuchflag //:a => 2
+test --nosuchflag //:t => 2
+build => 0
+run //:a //:tool => 2
+run => 2
+build --nobuild //:a => 0
+build --aspects=//:nosuch.bzl%x //:a => 1
+build //:a --define=x => 2
+query //:a --order_output=bogus => 2

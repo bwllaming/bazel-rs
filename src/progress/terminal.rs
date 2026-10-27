@@ -506,8 +506,9 @@ fn run(mut painter: Painter, data: io::PipeReader, mut control: io::PipeReader, 
     }
 }
 
-/// SIGINT, SIGTERM and SIGHUP erase the status area, then end the process by
-/// the same signal (its default action), as they did before.
+/// SIGINT, SIGTERM and SIGHUP erase the status area, then end the process:
+/// SIGINT with exit code 8 (crate::signals::exit_on_interrupt), the others
+/// by the same signal (its default action).
 #[allow(unsafe_code)]
 mod signals {
     use super::{DRAWN, TERMINAL_FD};
@@ -559,6 +560,11 @@ mod signals {
             unsafe {
                 libc::write(fd, bytes.as_ptr().cast(), at);
             }
+        }
+        // An interrupt exits 8 (crate::signals::exit_on_interrupt).
+        if signal == libc::SIGINT {
+            // SAFETY: _exit(2) is async-signal-safe.
+            unsafe { libc::_exit(crate::signals::INTERRUPTED_EXIT_CODE) }
         }
         // SAFETY: SA_RESETHAND restored the default action on entry; the
         // re-raised signal is delivered when the handler returns.

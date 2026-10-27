@@ -217,8 +217,12 @@ Done since the last increment recorded under "History", one line each:
       (tests/fixtures/module_archives/README.md).
 - [ ] Sandbox is Landlock-only (no private `/tmp`, no namespaces);
       `--sandbox_add_mount_pair` with a real remount fails (genuine ignores it here).
-- [ ] Console/exit codes: option errors exit 1 (genuine 2); `print()` inside
-      execution-time callbacks (Args.map_each) has no `DEBUG:` prefix.
+- [x] Exit codes like 9.3 (crate::exit_code, tests/fixtures/exit_codes):
+      command-line errors (options, rc files, `--config`, Starlark flags, `run`
+      targets) exit 2, Ctrl-C exits 8; the native profile's own
+      `unsupported …` rejections stay 1.
+- [ ] Console: `print()` inside execution-time callbacks (Args.map_each) has
+      no `DEBUG:` prefix.
 - [ ] `mod`: extensions are evaluated only when their output is printed (genuine
       evaluates all); `show_repo` proto outputs.
 - [ ] Older bazel-rs binaries sharing a cache are only partly protected from GC.

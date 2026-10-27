@@ -12,6 +12,7 @@ use std::process::{Command, Output};
 
 use base64::Engine as _;
 include!("support/explicit_modules.rs");
+include!("support/exit_codes.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -80,9 +81,10 @@ impl Workspace {
         let mut command = vec!["build"];
         command.extend_from_slice(args);
         let output = self.run(&command);
+        // Exit 2 for an option error (crate::exit_code), 1 otherwise.
         assert_eq!(
             output.status.code(),
-            Some(1),
+            Some(rejection_code(&errors(&output))),
             "{args:?}: {}",
             errors(&output)
         );

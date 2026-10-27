@@ -212,7 +212,9 @@ fn run() -> Result<(), String> {
     } else {
         command.as_str()
     };
-    let options = evaluate_rc(&line, rc_command, &cwd, &root, &path_to_binary)?;
+    // An rc file's or `--config`'s error is a command-line error (exit 2).
+    let options = evaluate_rc(&line, rc_command, &cwd, &root, &path_to_binary)
+        .map_err(bazel_rs::exit_code::command_line)?;
     if command == "config" {
         return config_command(&line, &options, &cwd, &root);
     }
@@ -315,7 +317,7 @@ fn run() -> Result<(), String> {
             if let Err(error) = parse_command_option(&mut native, &mut fetch, &command, unit)
                 && !(second_round && alias_candidate_error(&error, Some(unit))?)
             {
-                return Err(error);
+                return Err(bazel_rs::exit_code::command_line(error));
             }
         }
         if native.resolver.registries.is_empty() {
@@ -575,7 +577,7 @@ fn run() -> Result<(), String> {
         for warning in &options.warnings[..position.warnings.min(options.warnings.len())] {
             warn(warning);
         }
-        return Err(error);
+        return Err(bazel_rs::exit_code::command_line(error));
     }
     // Credential helpers and the remote cache (N41) for every command.
     let remote_enabled = setup_credentials_and_remote(&root, &credential_options, &remote_options);
@@ -653,7 +655,10 @@ fn run() -> Result<(), String> {
     }
     // RunCommand.exec (runtime/commands/RunCommand.java:254-262).
     if command == "run" && rest.is_empty() {
-        return Err("Must specify a target to run".into());
+        // NO_TARGET_SPECIFIED: exit 2.
+        return Err(bazel_rs::exit_code::command_line(
+            "Must specify a target to run".into(),
+        ));
     }
     // The command's arguments, for the Starlark options' `Did you mean` hint
     // (runtime/BlazeOptionHandler.java:428-440).
@@ -1074,7 +1079,8 @@ fn run() -> Result<(), String> {
         for warning in engine.take_warnings() {
             warn(&warning);
         }
-        let starlark = starlark?;
+        // StarlarkOptionsParser's OptionsParsingException: exit 2.
+        let starlark = starlark.map_err(bazel_rs::exit_code::command_line)?;
         let top = bazel_rs::configuration::Configuration::new(native.native, starlark);
         // A `--cpu` that is not a valid output directory component is
         // Bazel's InvalidMnemonicException for the top-level configuration.
@@ -2069,6 +2075,9 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
         rejected = Some(format!("Cannot run target {}: Not executable", labels[0]));
     }
     if let Some(error) = rejected {
+        // RunCommand's NO_TARGET_SPECIFIED, TOO_MANY_TARGETS_SPECIFIED and
+        // TARGET_NOT_EXECUTABLE: exit 2 (also after a --keep_going build).
+        bazel_rs::exit_code::record(bazel_rs::exit_code::COMMAND_LINE_ERROR);
         if !tail.test.keep_going {
             return Err(error);
         }
@@ -2277,16 +2286,22 @@ fn run_tail(
         // --nobuild: analysis succeeded and 0 actions executed, but no
         // target was built to run (RunCommand.getBuiltTargets finds no
         // successful targets; genuine 9.3 scratch capture
-        // `run --nobuild //pkg:tool` exits 2 with this message; native
-        // reports the same text through its exit-1 channel).
-        return Err("No targets found to run".into());
+        // `run --nobuild //pkg:tool` exits 2 with this message).
+        return Err(bazel_rs::exit_code::command_line(
+            "No targets found to run".into(),
+        ));
     }
     // getBuiltTargets/fullyValidateTarget (RunCommand.java:435-568, 1136-1185).
     let Some(target) = target else {
-        return Err(format!("Cannot run target {label}: Not executable"));
+        return Err(bazel_rs::exit_code::command_line(format!(
+            "Cannot run target {label}: Not executable"
+        )));
     };
     if !runfiles.build_runfile_manifests {
-        return Err("--nobuild_runfile_manifests is incompatible with the \"run\" command".into());
+        // RUN_PREREQ_UNMET: exit 2.
+        return Err(bazel_rs::exit_code::command_line(
+            "--nobuild_runfile_manifests is incompatible with the \"run\" command".into(),
+        ));
     }
     if target.settings.test {
         return run_test(RunTest {
@@ -2994,7 +3009,8 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
     // TestProvider.getTestStatusArtifacts must be a single action.
     let shards = test.sharding.shards(spec.info.shard_count).max(0) as u32;
     if shards > 1 || test.runs(&spec.label) > 1 {
-        return Err("Run command does not support tests with more than one shard or run (--runs_per_test and shard_count must be 1)".into());
+        // TOO_MANY_TEST_SHARDS_OR_RUNS: exit 2.
+        return Err(bazel_rs::exit_code::command_line("Run command does not support tests with more than one shard or run (--runs_per_test and shard_count must be 1)".into()));
     }
     // RunCommand.getTestCommandLine: TestStrategy.getArgs, the run_under
     // prefix included (a LabelRunUnder's executable by its runfiles path:
@@ -4322,7 +4338,14 @@ fn evaluate_rc(
 /// An option error: the rc notes containing the invalid argument and the
 /// stored warnings, then the error (BlazeCommandDispatcher.replayEarlyExitEvents,
 /// runtime/BlazeCommandDispatcher.java:923-948).
+/// An option error (a command-line error: exit 2, crate::exit_code) with
+/// what Bazel prints before it.
 fn early_exit(options: &bazelrc::Expanded, error: &str, position: bazelrc::Position) -> String {
+    // An option Bazel accepts but the native profile does not model stays a
+    // native failure (exit 1): genuine has no error to match.
+    if !bazel_rs::exit_code::native_limitation(error) {
+        bazel_rs::exit_code::record(bazel_rs::exit_code::COMMAND_LINE_ERROR);
+    }
     for note in options.early_exit_notes(error, position) {
         bazel_rs::note!("INFO: {note}");
     }
@@ -4611,7 +4634,7 @@ fn resolve_flag_alias_options(
     for (step, _) in &options.steps {
         let bazelrc::Step::Unit(unit) = step else {
             if let bazelrc::Step::Fail(error) = step {
-                return Err(error.clone());
+                return Err(bazel_rs::exit_code::command_line(error.clone()));
             }
             continue;
         };
@@ -4629,12 +4652,14 @@ fn resolve_flag_alias_options(
             check_alias_option_surface(command, unit)?;
             mapped.option.text = text;
         }
+        // The second parsing round's option errors (exit 2).
         parse_command_option(
             &mut NativeOptions::new(command),
             &mut FetchOptions::default(),
             command,
             &mapped,
-        )?;
+        )
+        .map_err(bazel_rs::exit_code::command_line)?;
         rewritten.push((unit.clone(), mapped));
     }
     let mut result = CommandLineOptions::default();
@@ -4652,10 +4677,12 @@ fn resolve_flag_alias_options(
                 )
             })?;
         let (_, mapped) = rewritten.remove(index);
-        result.parse(
-            &mapped.option.text,
-            mapped.value.as_ref().map(|v| v.text.as_str()),
-        )?;
+        result
+            .parse(
+                &mapped.option.text,
+                mapped.value.as_ref().map(|v| v.text.as_str()),
+            )
+            .map_err(bazel_rs::exit_code::command_line)?;
     }
     Ok((result, aliases))
 }
@@ -4948,6 +4975,8 @@ fn main() {
         std::process::exit(bazel_rs::process_wrapper::main(&raw.collect::<Vec<_>>()));
     }
     bazel_rs::progress::process_start();
+    // Ctrl-C exits 8 like Bazel's interrupted command (crate::signals).
+    bazel_rs::signals::exit_on_interrupt();
     // This process is the CLI binary: spawns run under its re-executed
     // process-wrapper.
     bazel_rs::process_wrapper::enable();
@@ -5039,7 +5068,11 @@ fn remote_or(code: i32) -> i32 {
 
 fn failure_exit_code() -> i32 {
     retry_after_lost_inputs();
-    if bazel_rs::remote_cache::remote_failure_occurred() {
+    // A failure of another class recorded its code (crate::exit_code: a
+    // command-line error).
+    if let Some(code) = bazel_rs::exit_code::recorded() {
+        code
+    } else if bazel_rs::remote_cache::remote_failure_occurred() {
         34
     } else if bazel_rs::sandbox::setup_failure_occurred() {
         36
