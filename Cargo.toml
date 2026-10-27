@@ -92,6 +92,8 @@ lzma-rust2 = { version = "=0.22.0", default-features = false, features = ["std",
 
 [patch.crates-io]
 starlark = { path = "vendor/starlark-0.14.2" }
+# Same pinned parser; tab whitespace parity only (docs/STARLARK_VENDOR.md).
+starlark_syntax = { path = "vendor/starlark_syntax-0.14.2" }
 
 [profile.release]
 lto = "thin"

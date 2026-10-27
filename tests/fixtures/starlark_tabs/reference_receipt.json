@@ -1,0 +1,488 @@
+{
+  "bazel_version": "9.3.0",
+  "binary_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "command": [
+    "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+    "--batch",
+    "--ignore_all_rc_files",
+    "--output_user_root=/home/coder/opencodetmp/starlark-tabs/genuine/output",
+    "query",
+    "--registry=file:///home/coder/opencodetmp/w/bazel-starlark-tabs/tests/fixtures/builtin_modules/registry",
+    "--repository_cache=/home/coder/opencodetmp/starlark-tabs/genuine/cache",
+    "--lockfile_mode=off",
+    "--noshow_progress",
+    "--color=no",
+    "--curses=no",
+    "--keep_going",
+    "--output=build",
+    "//..."
+  ],
+  "capture_note": "Each source is loaded from its own package; a suffix prints json.encode(V), except the EOF probe. Values are executed strings, not source decoding. query --keep_going returns 3 for the intentionally invalid packages. Tabs count as one source column. No network registry/proxies or application workspace used.",
+  "probes": [
+    {
+      "name": "call_continuation",
+      "source": "V = str(\n\t123,\n)\n",
+      "source_sha256": "9a8ecf6ae8cf6cf3bebbfe4fdd50049eb5e2410bdd44817546e51723033b9de0",
+      "accepted": true,
+      "value": "123",
+      "diagnostics": []
+    },
+    {
+      "name": "mixed_continuation",
+      "source": "V = str(\n \t \t123,\n\t )\n",
+      "source_sha256": "85c1f45c5d31f88dc1d78203eec299c690b3048bda14513128a92121ceb794f0",
+      "accepted": true,
+      "value": "123",
+      "diagnostics": []
+    },
+    {
+      "name": "list_dict_continuation",
+      "source": "V = str([\n\t{\n\t \"x\": 1,\n\t},\n])\n",
+      "source_sha256": "7f0f5ad9c0c54555140eb406214529226b172892d0d66a4c23269080ef7594d1",
+      "accepted": true,
+      "value": "[{\"x\": 1}]",
+      "diagnostics": []
+    },
+    {
+      "name": "between_tokens",
+      "source": "V\t=\tstr\t(\t123\t)\t\n",
+      "source_sha256": "5a415fc748481b667bfc0411ca5ae2952cd7f280547e6baee062e27d50c91067",
+      "accepted": true,
+      "value": "123",
+      "diagnostics": []
+    },
+    {
+      "name": "after_semicolon",
+      "source": "A = 1;\tV = str(A)\n",
+      "source_sha256": "3f89f50123ad1e33a48c048cd16a04586b241eebf8f738269285d238aecb5052",
+      "accepted": true,
+      "value": "1",
+      "diagnostics": []
+    },
+    {
+      "name": "def_continuation",
+      "source": "def f():\n    return str(\n\t123,\n\t)\nV = f()\n",
+      "source_sha256": "2652bf6cd3b75c1f1ba8ce42f55c3076e744e1eaf1567177240abb016152220c",
+      "accepted": true,
+      "value": "123",
+      "diagnostics": []
+    },
+    {
+      "name": "def_inline_suite",
+      "source": "def f():\treturn \"ok\"\nV = f()\n",
+      "source_sha256": "9eec3cc493714b423169ef47b230ff185c6383d520ce6fe42c52d010727a7dec",
+      "accepted": true,
+      "value": "ok",
+      "diagnostics": []
+    },
+    {
+      "name": "explicit_continuation",
+      "source": "V = str(1 + \\\n\t2)\n",
+      "source_sha256": "c69ec97b594955f71a00e3366536b387e550431f88acf7f32c940d35f3bfce49",
+      "accepted": true,
+      "value": "3",
+      "diagnostics": []
+    },
+    {
+      "name": "explicit_continuation_no_parens",
+      "source": "V = \"a\" + \\\n\t\"b\"\n",
+      "source_sha256": "7f7176a5399fedbf1ba4740e7e880e8f384bebd775ad2eec94e7ef330f661a56",
+      "accepted": true,
+      "value": "ab",
+      "diagnostics": []
+    },
+    {
+      "name": "top_indent",
+      "source": "\tV = \"bad\"\n",
+      "source_sha256": "819c3aae887597430450c61ec98c4676c712e7732d1e696ed7856e90db50c472",
+      "accepted": false,
+      "value": null,
+      "diagnostics": [
+        {
+          "line": 1,
+          "column": 2,
+          "message": "Tab characters are not allowed for indentation. Use spaces instead."
+        },
+        {
+          "line": 1,
+          "column": 1,
+          "message": "indentation error"
+        },
+        {
+          "line": 1,
+          "column": 1,
+          "message": "contains syntax errors"
+        },
+        {
+          "line": 3,
+          "column": 43,
+          "message": "name 'V' is not defined"
+        }
+      ]
+    },
+    {
+      "name": "later_top_indent",
+      "source": "A = 1\n\tV = \"bad\"\n",
+      "source_sha256": "80101ed29f4d34b88f30aaa53ae5a6d516694f63f6024fd9f7aa06f9886f7352",
+      "accepted": false,
+      "value": null,
+      "diagnostics": [
+        {
+          "line": 2,
+          "column": 2,
+          "message": "Tab characters are not allowed for indentation. Use spaces instead."
+        },
+        {
+          "line": 2,
+          "column": 1,
+          "message": "indentation error"
+        },
+        {
+          "line": 2,
+          "column": 1,
+          "message": "contains syntax errors"
+        },
+        {
+          "line": 4,
+          "column": 49,
+          "message": "name 'V' is not defined"
+        }
+      ]
+    },
+    {
+      "name": "def_tab_indent",
+      "source": "def f():\n\treturn \"bad\"\nV = f()\n",
+      "source_sha256": "967ab6746ea6f48c98eb8493cae062f51167fc4679e6c9b999b3cb5cdf4b7e48",
+      "accepted": false,
+      "value": null,
+      "diagnostics": [
+        {
+          "line": 2,
+          "column": 2,
+          "message": "Tab characters are not allowed for indentation. Use spaces instead."
+        }
+      ]
+    },
+    {
+      "name": "def_mixed_indent",
+      "source": "def f():\n  \t  return \"bad\"\nV = f()\n",
+      "source_sha256": "c48050407c8f845f5a8c89a6f606f627fffc3a79a49845e45567c724e74ec7c7",
+      "accepted": false,
+      "value": null,
+      "diagnostics": [
+        {
+          "line": 2,
+          "column": 4,
+          "message": "Tab characters are not allowed for indentation. Use spaces instead."
+        }
+      ]
+    },
+    {
+      "name": "def_space_then_tab",
+      "source": "def f():\n    a = 1\n\treturn str(a)\nV = f()\n",
+      "source_sha256": "06d2b6e23be5e09ab1479b29f8e5e604dd09495831f4603c934a34df4d497494",
+      "accepted": false,
+      "value": null,
+      "diagnostics": [
+        {
+          "line": 3,
+          "column": 2,
+          "message": "Tab characters are not allowed for indentation. Use spaces instead."
+        },
+        {
+          "line": 3,
+          "column": 1,
+          "message": "indentation error"
+        },
+        {
+          "line": 3,
+          "column": 2,
+          "message": "return statements must be inside a function"
+        },
+        {
+          "line": 3,
+          "column": 13,
+          "message": "name 'a' is not defined"
+        }
+      ]
+    },
+    {
+      "name": "def_bad_space_dedent",
+      "source": "def f():\n    a = 1\n  return str(a)\nV = f()\n",
+      "source_sha256": "d79bb96bc9099592f8dc61098ebe8e1b3be01c888c3cc5a07ee5b43ebece74dc",
+      "accepted": false,
+      "value": null,
+      "diagnostics": [
+        {
+          "line": 3,
+          "column": 2,
+          "message": "indentation error"
+        },
+        {
+          "line": 3,
+          "column": 3,
+          "message": "return statements must be inside a function"
+        },
+        {
+          "line": 3,
+          "column": 14,
+          "message": "name 'a' is not defined"
+        }
+      ]
+    },
+    {
+      "name": "blank_tab",
+      "source": "\t\nV = \"ok\"\n",
+      "source_sha256": "6bcbfb9a0925ade2ba6331af4b5e85ce0d3672d0308d5e508540cd586229bc79",
+      "accepted": false,
+      "value": null,
+      "diagnostics": [
+        {
+          "line": 1,
+          "column": 2,
+          "message": "Tab characters are not allowed for indentation. Use spaces instead."
+        }
+      ]
+    },
+    {
+      "name": "blank_mixed",
+      "source": "A = 1\n \t \nV = \"ok\"\n",
+      "source_sha256": "8d269cc1b68cc738cf6db642ea241acd598f05c6668a015b1787d080e394abff",
+      "accepted": false,
+      "value": null,
+      "diagnostics": [
+        {
+          "line": 2,
+          "column": 3,
+          "message": "Tab characters are not allowed for indentation. Use spaces instead."
+        }
+      ]
+    },
+    {
+      "name": "comment_indent_tab",
+      "source": "\t# comment\nV = \"ok\"\n",
+      "source_sha256": "a7fcf55f95327a8f645de907083bcd4467b7dbfe08e514382abdf42fc913ff69",
+      "accepted": false,
+      "value": null,
+      "diagnostics": [
+        {
+          "line": 1,
+          "column": 2,
+          "message": "Tab characters are not allowed for indentation. Use spaces instead."
+        }
+      ]
+    },
+    {
+      "name": "comment_content_tab",
+      "source": "#\tcomment\nV = \"ok\"\n",
+      "source_sha256": "011c5850ba24ac304b34b267049d79bbb0dacdd3441de1b9082d302b50f50b12",
+      "accepted": true,
+      "value": "ok",
+      "diagnostics": []
+    },
+    {
+      "name": "trailing_comment_tab",
+      "source": "V = \"ok\"\t#\tcomment\n",
+      "source_sha256": "6bed57d15e4ac6d75e18d09c737c122b5e037addbc25edcc092d7ef190cd9ae0",
+      "accepted": true,
+      "value": "ok",
+      "diagnostics": []
+    },
+    {
+      "name": "continuation_comment_blank",
+      "source": "V = str(\n\t# comment\n\t\n\t123\n)\n",
+      "source_sha256": "db0464ee591976544fcdbc8d9811e672e30481c64b0b0313dc09c198a59528a4",
+      "accepted": true,
+      "value": "123",
+      "diagnostics": []
+    },
+    {
+      "name": "def_comment_indent",
+      "source": "def f():\n\t# comment\n    return \"ok\"\nV = f()\n",
+      "source_sha256": "b058d384cfeb6897ae2acec9279874a6c2a1f3212d563a1d4038c7be1895e1bc",
+      "accepted": false,
+      "value": null,
+      "diagnostics": [
+        {
+          "line": 2,
+          "column": 2,
+          "message": "Tab characters are not allowed for indentation. Use spaces instead."
+        }
+      ]
+    },
+    {
+      "name": "trailing_tab_line",
+      "source": "V = \"ok\"\n\t",
+      "source_sha256": "ad8a70ce18aa942954cd09707485f475d22fd60779c73df27fbcb5f06bb4cbc4",
+      "accepted": false,
+      "value": null,
+      "diagnostics": [
+        {
+          "line": 2,
+          "column": 2,
+          "message": "Tab characters are not allowed for indentation. Use spaces instead."
+        }
+      ]
+    },
+    {
+      "name": "literal_tab",
+      "source": "V = \"a\tb\"\n",
+      "source_sha256": "b0e23e353af8a220a4eef0f4401fa8a146662dbb5f140be0605ef4defd5dd7c9",
+      "accepted": true,
+      "value": "a\tb",
+      "diagnostics": []
+    },
+    {
+      "name": "triple_literal_tab",
+      "source": "V = \"\"\"a\n\tb\"\"\"\n",
+      "source_sha256": "00aaca6bb2f26d765a88ca8b0bd451c93d6d735e8322305499975abab6103980",
+      "accepted": true,
+      "value": "a\n\tb",
+      "diagnostics": []
+    },
+    {
+      "name": "raw_literal_tab",
+      "source": "V = r\"a\tb\"\n",
+      "source_sha256": "18f4d017f83977d0b30a1f3e95c27a4b839c74c7b6d1484358febb1933d4f4f3",
+      "accepted": true,
+      "value": "a\tb",
+      "diagnostics": []
+    },
+    {
+      "name": "raw_triple_literal_tab",
+      "source": "V = r\"\"\"a\n\tb\"\"\"\n",
+      "source_sha256": "08cf0652b2b9c9b8463b3560c00595285be4eca6ecad7cf05a35e1ffcc9e7a8e",
+      "accepted": true,
+      "value": "a\n\tb",
+      "diagnostics": []
+    },
+    {
+      "name": "escaped_t",
+      "source": "V = \"a\\tb\"\n",
+      "source_sha256": "27a8a97041e60e584d3ec2ace13b3950ab33124064b4353d714ec08288f87730",
+      "accepted": true,
+      "value": "a\tb",
+      "diagnostics": []
+    },
+    {
+      "name": "raw_escaped_t",
+      "source": "V = r\"a\\tb\"\n",
+      "source_sha256": "b2aba7c93da34b309f1053d2553aea0c48dcf4b1bceddc032844c129968379e0",
+      "accepted": true,
+      "value": "a\\tb",
+      "diagnostics": []
+    },
+    {
+      "name": "escaped_backslash_t",
+      "source": "V = \"a\\\\tb\"\n",
+      "source_sha256": "2c75f84ba3659c41f0e4ca19e7e9e412bed80aa90cf2580162825ec9c8a97fec",
+      "accepted": true,
+      "value": "a\\tb",
+      "diagnostics": []
+    },
+    {
+      "name": "backslash_literal_tab",
+      "source": "V = \"a\\\tb\"\n",
+      "source_sha256": "91f8b643f285789be8a73f48a8b1acab018c013de5657e26d3ac8b9477155b76",
+      "accepted": false,
+      "value": null,
+      "diagnostics": [
+        {
+          "line": 1,
+          "column": 8,
+          "message": "invalid escape sequence: \\\t. Use '\\\\' to insert '\\'."
+        }
+      ]
+    },
+    {
+      "name": "raw_backslash_literal_tab",
+      "source": "V = r\"a\\\tb\"\n",
+      "source_sha256": "5c760fd59318ae773a9877f7cc5d1eeaea0f974af2fd2f1673ca66a3d31726b1",
+      "accepted": true,
+      "value": "a\\\tb",
+      "diagnostics": []
+    },
+    {
+      "name": "crlf_continuation",
+      "source": "V = str(\r\n\t123,\r\n)\r\n",
+      "source_sha256": "ea95e5294cb8d2a4a4c39cd16ccbe0c69303740cacf59cc18f574485f074666e",
+      "accepted": true,
+      "value": "123",
+      "diagnostics": []
+    },
+    {
+      "name": "crlf_indent",
+      "source": "def f():\r\n\treturn \"bad\"\r\nV = f()\r\n",
+      "source_sha256": "a3c341d85244fdd0d030196335df3ed06855955f55fc6c8ccc8d5af0ab9ce622",
+      "accepted": false,
+      "value": null,
+      "diagnostics": [
+        {
+          "line": 2,
+          "column": 2,
+          "message": "Tab characters are not allowed for indentation. Use spaces instead."
+        }
+      ]
+    },
+    {
+      "name": "crlf_triple_tab",
+      "source": "V = \"\"\"a\r\n\tb\"\"\"\r\n",
+      "source_sha256": "49b2fec902f05cf69ed35e09024346ab786764bdc85aa21879b0e10ba8b7288b",
+      "accepted": true,
+      "value": "a\r\n\tb",
+      "diagnostics": []
+    },
+    {
+      "name": "error_after_tab",
+      "source": "V = str(\n\t123 + )\n",
+      "source_sha256": "78ff359f845c12ccdf62c91ea4f909681ba05f29a3d9cce83d29fd87268a7107",
+      "accepted": false,
+      "value": null,
+      "diagnostics": [
+        {
+          "line": 2,
+          "column": 8,
+          "message": "syntax error at ')': expected expression"
+        },
+        {
+          "line": 2,
+          "column": 8,
+          "message": "contains syntax errors"
+        }
+      ]
+    },
+    {
+      "name": "error_between_tabs",
+      "source": "V\t=\t)\n",
+      "source_sha256": "c4c827da8d55d71a5830bf6e47428d25e700581013440981d027d1b36b88f81f",
+      "accepted": false,
+      "value": null,
+      "diagnostics": [
+        {
+          "line": 1,
+          "column": 5,
+          "message": "indentation error"
+        },
+        {
+          "line": 1,
+          "column": 5,
+          "message": "syntax error at ')': expected expression"
+        },
+        {
+          "line": 1,
+          "column": 5,
+          "message": "contains syntax errors"
+        }
+      ]
+    }
+  ],
+  "build_call": {
+    "source": "filegroup(\n\tname = \"org_openapitools_openapi_generator_cli\",\n\ttags = [\"a\tb\"],\n)\n",
+    "accepted": true,
+    "tags": [
+      "a\tb"
+    ]
+  },
+  "stdout": "# <WS>/after_semicolon/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"1\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/after_semicolon/BUILD:2:10 in <toplevel>\n\n# <WS>/between_tokens/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"123\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/between_tokens/BUILD:2:10 in <toplevel>\n\n# <WS>/build_call/BUILD:1:10\nfilegroup(\n  name = \"org_openapitools_openapi_generator_cli\",\n  tags = [\"a\\tb\"],\n)\n# Rule org_openapitools_openapi_generator_cli instantiated at (most recent call last):\n#   <WS>/build_call/BUILD:1:10 in <toplevel>\n\n# <WS>/call_continuation/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"123\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/call_continuation/BUILD:2:10 in <toplevel>\n\n# <WS>/comment_content_tab/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"ok\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/comment_content_tab/BUILD:2:10 in <toplevel>\n\n# <WS>/continuation_comment_blank/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"123\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/continuation_comment_blank/BUILD:2:10 in <toplevel>\n\n# <WS>/crlf_continuation/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"123\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/crlf_continuation/BUILD:2:10 in <toplevel>\n\n# <WS>/crlf_triple_tab/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"a\\r\\n\\tb\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/crlf_triple_tab/BUILD:2:10 in <toplevel>\n\n# <WS>/def_continuation/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"123\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/def_continuation/BUILD:2:10 in <toplevel>\n\n# <WS>/def_inline_suite/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"ok\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/def_inline_suite/BUILD:2:10 in <toplevel>\n\n# <WS>/escaped_backslash_t/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"a\\\\tb\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/escaped_backslash_t/BUILD:2:10 in <toplevel>\n\n# <WS>/escaped_t/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"a\\tb\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/escaped_t/BUILD:2:10 in <toplevel>\n\n# <WS>/explicit_continuation/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"3\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/explicit_continuation/BUILD:2:10 in <toplevel>\n\n# <WS>/explicit_continuation_no_parens/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"ab\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/explicit_continuation_no_parens/BUILD:2:10 in <toplevel>\n\n# <WS>/list_dict_continuation/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"[{\\\"x\\\": 1}]\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/list_dict_continuation/BUILD:2:10 in <toplevel>\n\n# <WS>/literal_tab/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"a\\tb\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/literal_tab/BUILD:2:10 in <toplevel>\n\n# <WS>/mixed_continuation/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"123\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/mixed_continuation/BUILD:2:10 in <toplevel>\n\n# <WS>/raw_backslash_literal_tab/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"a\\\\\\tb\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/raw_backslash_literal_tab/BUILD:2:10 in <toplevel>\n\n# <WS>/raw_escaped_t/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"a\\\\tb\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/raw_escaped_t/BUILD:2:10 in <toplevel>\n\n# <WS>/raw_literal_tab/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"a\\tb\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/raw_literal_tab/BUILD:2:10 in <toplevel>\n\n# <WS>/raw_triple_literal_tab/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"a\\n\\tb\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/raw_triple_literal_tab/BUILD:2:10 in <toplevel>\n\n# <WS>/trailing_comment_tab/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"ok\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/trailing_comment_tab/BUILD:2:10 in <toplevel>\n\n# <WS>/triple_literal_tab/BUILD:2:10\nfilegroup(\n  name = \"probe\",\n  tags = [\"a\\n\\tb\"],\n)\n# Rule probe instantiated at (most recent call last):\n#   <WS>/triple_literal_tab/BUILD:2:10 in <toplevel>\n\n",
+  "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: <WS>/crlf_continuation/defs.bzl:5:6: TAB_VALUE crlf_continuation \"123\"\nDEBUG: <WS>/crlf_triple_tab/defs.bzl:4:6: TAB_VALUE crlf_triple_tab \"a\\r\\n\\tb\"\nDEBUG: <WS>/continuation_comment_blank/defs.bzl:7:6: TAB_VALUE continuation_comment_blank \"123\"\nDEBUG: <WS>/mixed_continuation/defs.bzl:5:6: TAB_VALUE mixed_continuation \"123\"\nDEBUG: <WS>/raw_literal_tab/defs.bzl:3:6: TAB_VALUE raw_literal_tab \"a\\tb\"\nDEBUG: <WS>/comment_content_tab/defs.bzl:4:6: TAB_VALUE comment_content_tab \"ok\"\nDEBUG: <WS>/def_inline_suite/defs.bzl:4:6: TAB_VALUE def_inline_suite \"ok\"\nDEBUG: <WS>/explicit_continuation_no_parens/defs.bzl:4:6: TAB_VALUE explicit_continuation_no_parens \"ab\"\nDEBUG: <WS>/triple_literal_tab/defs.bzl:4:6: TAB_VALUE triple_literal_tab \"a\\n\\tb\"\nDEBUG: <WS>/literal_tab/defs.bzl:3:6: TAB_VALUE literal_tab \"a\\tb\"\nDEBUG: <WS>/after_semicolon/defs.bzl:3:6: TAB_VALUE after_semicolon \"1\"\nDEBUG: <WS>/raw_backslash_literal_tab/defs.bzl:3:6: TAB_VALUE raw_backslash_literal_tab \"a\\\\\\tb\"\nDEBUG: <WS>/list_dict_continuation/defs.bzl:7:6: TAB_VALUE list_dict_continuation \"[{\\\"x\\\": 1}]\"\nDEBUG: <WS>/escaped_t/defs.bzl:3:6: TAB_VALUE escaped_t \"a\\tb\"\nDEBUG: <WS>/explicit_continuation/defs.bzl:4:6: TAB_VALUE explicit_continuation \"3\"\nDEBUG: <WS>/raw_escaped_t/defs.bzl:3:6: TAB_VALUE raw_escaped_t \"a\\\\tb\"\nDEBUG: <WS>/escaped_backslash_t/defs.bzl:3:6: TAB_VALUE escaped_backslash_t \"a\\\\tb\"\nDEBUG: <WS>/raw_triple_literal_tab/defs.bzl:4:6: TAB_VALUE raw_triple_literal_tab \"a\\n\\tb\"\nDEBUG: <WS>/call_continuation/defs.bzl:5:6: TAB_VALUE call_continuation \"123\"\nDEBUG: <WS>/trailing_comment_tab/defs.bzl:3:6: TAB_VALUE trailing_comment_tab \"ok\"\nDEBUG: <WS>/between_tokens/defs.bzl:3:6: TAB_VALUE between_tokens \"123\"\nERROR: <WS>/later_top_indent/defs.bzl:2:2: Tab characters are not allowed for indentation. Use spaces instead.\nERROR: <WS>/def_bad_space_dedent/defs.bzl:3:2: indentation error\nERROR: <WS>/def_bad_space_dedent/defs.bzl:3:3: return statements must be inside a function\nERROR: <WS>/def_bad_space_dedent/defs.bzl:3:14: name 'a' is not defined\nERROR: <WS>/def_mixed_indent/defs.bzl:2:4: Tab characters are not allowed for indentation. Use spaces instead.\nERROR: <WS>/crlf_indent/defs.bzl:2:2: Tab characters are not allowed for indentation. Use spaces instead.\nERROR: <WS>/later_top_indent/defs.bzl:2:1: indentation error\nERROR: <WS>/later_top_indent/defs.bzl:2:1: contains syntax errors\nERROR: <WS>/later_top_indent/defs.bzl:4:49: name 'V' is not defined\nERROR: <WS>/blank_tab/defs.bzl:1:2: Tab characters are not allowed for indentation. Use spaces instead.\nDEBUG: <WS>/def_continuation/defs.bzl:7:6: TAB_VALUE def_continuation \"123\"\nERROR: <WS>/trailing_tab_line/defs.bzl:2:2: Tab characters are not allowed for indentation. Use spaces instead.\nERROR: <WS>/def_comment_indent/defs.bzl:2:2: Tab characters are not allowed for indentation. Use spaces instead.\nERROR: <WS>/error_between_tabs/defs.bzl:1:5: indentation error\nERROR: <WS>/error_between_tabs/defs.bzl:1:5: syntax error at ')': expected expression\nERROR: <WS>/error_between_tabs/defs.bzl:1:5: contains syntax errors\nERROR: <WS>/def_space_then_tab/defs.bzl:3:2: Tab characters are not allowed for indentation. Use spaces instead.\nERROR: <WS>/def_space_then_tab/defs.bzl:3:1: indentation error\nERROR: <WS>/def_space_then_tab/defs.bzl:3:2: return statements must be inside a function\nERROR: <WS>/def_space_then_tab/defs.bzl:3:13: name 'a' is not defined\nERROR: <WS>/backslash_literal_tab/defs.bzl:1:8: invalid escape sequence: \\\t. Use '\\\\' to insert '\\'.\nERROR: <WS>/error_after_tab/defs.bzl:2:8: syntax error at ')': expected expression\nERROR: <WS>/error_after_tab/defs.bzl:2:8: contains syntax errors\nERROR: <WS>/def_tab_indent/defs.bzl:2:2: Tab characters are not allowed for indentation. Use spaces instead.\nERROR: <WS>/blank_mixed/defs.bzl:2:3: Tab characters are not allowed for indentation. Use spaces instead.\nERROR: <WS>/top_indent/defs.bzl:1:2: Tab characters are not allowed for indentation. Use spaces instead.\nERROR: <WS>/top_indent/defs.bzl:1:1: indentation error\nERROR: <WS>/top_indent/defs.bzl:1:1: contains syntax errors\nERROR: <WS>/top_indent/defs.bzl:3:43: name 'V' is not defined\nERROR: <WS>/comment_indent_tab/defs.bzl:1:2: Tab characters are not allowed for indentation. Use spaces instead.\nERROR: error loading package 'top_indent': compilation of module 'top_indent/defs.bzl' failed\nERROR: error loading package 'later_top_indent': compilation of module 'later_top_indent/defs.bzl' failed\nERROR: error loading package 'blank_mixed': compilation of module 'blank_mixed/defs.bzl' failed\nERROR: error loading package 'backslash_literal_tab': compilation of module 'backslash_literal_tab/defs.bzl' failed\nERROR: error loading package 'def_comment_indent': compilation of module 'def_comment_indent/defs.bzl' failed\nERROR: error loading package 'trailing_tab_line': compilation of module 'trailing_tab_line/defs.bzl' failed\nERROR: error loading package 'error_between_tabs': compilation of module 'error_between_tabs/defs.bzl' failed\nERROR: error loading package 'comment_indent_tab': compilation of module 'comment_indent_tab/defs.bzl' failed\nERROR: error loading package 'def_space_then_tab': compilation of module 'def_space_then_tab/defs.bzl' failed\nERROR: error loading package 'error_after_tab': compilation of module 'error_after_tab/defs.bzl' failed\nERROR: error loading package 'def_bad_space_dedent': compilation of module 'def_bad_space_dedent/defs.bzl' failed\nERROR: error loading package 'blank_tab': compilation of module 'blank_tab/defs.bzl' failed\nERROR: error loading package 'crlf_indent': compilation of module 'crlf_indent/defs.bzl' failed\nERROR: error loading package 'def_tab_indent': compilation of module 'def_tab_indent/defs.bzl' failed\nERROR: error loading package 'def_mixed_indent': compilation of module 'def_mixed_indent/defs.bzl' failed\nWARNING: --keep_going specified, ignoring errors. Results may be inaccurate\n"
+}

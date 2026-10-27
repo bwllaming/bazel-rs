@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "crate": "starlark_syntax",
+  "version": "0.14.2",
+  "archive": {
+    "url": "https://crates.io/api/v1/crates/starlark_syntax/0.14.2/download",
+    "sha256": "7492c571c531e68099c911cfd909d32659f1cc0910cf3adee9fce66e39d21f14",
+    "root": "starlark_syntax-0.14.2",
+    "regular_members": 274,
+    "uncompressed_regular_file_bytes": 1227338,
+    "omitted_members": [],
+    "archive_member_inventory": {
+      "path_base": "vendor/starlark_syntax-0.14.2",
+      "canonical_json_sha256": "9cbcc0463ce01e3ef2ceb763125588786d38777c0785d71c7556203d8bebedd1",
+      "canonicalization": "UTF-8 json.dumps(archive_members, sort_keys=True, separators=(',', ':')) without trailing newline; sorted relative POSIX paths; fields path, size, sha256"
+    }
+  },
+  "upstream": {
+    "repository": "https://github.com/facebook/starlark-rust",
+    "commit": "0c8d107ab963362ba47ee3ab9e0173bc39bd101d",
+    "commit_receipt": "vendor/starlark_syntax-0.14.2/.cargo_vcs_info.json"
+  },
+  "declared_source_patches": [
+    {
+      "path": "src/lexer.rs",
+      "original": {
+        "size": 61923,
+        "sha256": "8066b3edc4b0cc9924ecdbb8fc8413324df7f69c7b54c1cac1fb230f344ab7a2"
+      },
+      "current": {
+        "size": 62478,
+        "sha256": "320aa892a81f278f77c2b4eb56d5e5dda37f7123d6634a2d1fec4a9639458539"
+      }
+    }
+  ],
+  "license": {
+    "path": "LICENSE",
+    "source": "https://raw.githubusercontent.com/facebook/starlark-rust/0c8d107ab963362ba47ee3ab9e0173bc39bd101d/LICENSE",
+    "acquisition": "Byte-identical copy of the existing starlark-0.14.2/LICENSE from the same pinned upstream commit; archive contains no license file. No fabricated NOTICE.",
+    "content": {
+      "size": 11324,
+      "sha256": "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a"
+    }
+  },
+  "scope": "Only tab whitespace lexing and backslash-literal-tab rejection change. No general string/Unicode/byte semantics, dialect, AST, source rewriting, dependency version or feature change. All published archive files preserved; LICENSE is the sole addition."
+}

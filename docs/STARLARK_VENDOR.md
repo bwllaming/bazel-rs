@@ -1,5 +1,59 @@
 # Pinned Starlark vendor provenance
 
+## Tab whitespace parser parity (Bazel 9.3)
+
+The lexer lives in the separate, already-resolved `starlark_syntax = 0.14.2`
+package, not in `starlark`. The root patch table now also selects
+`vendor/starlark_syntax-0.14.2`. Its lock entry loses only its registry source
+and checksum; there are no new dependency packages, versions, features, or
+dialect changes. Shared Cargo/rustup source directories are not patched.
+
+The published archive is
+<https://crates.io/api/v1/crates/starlark_syntax/0.14.2/download>, SHA-256
+`7492c571c531e68099c911cfd909d32659f1cc0910cf3adee9fce66e39d21f14`
+(the prior lock checksum). Its VCS metadata names the same upstream commit
+`0c8d107ab963362ba47ee3ab9e0173bc39bd101d`. All 274 published regular files
+(1,227,338 bytes) are preserved. `LICENSE` is the sole additional file, copied
+byte-for-byte from the existing vendor's authentic license at that same commit.
+`vendor/starlark_syntax-0.14.2.provenance.json` anchors the original inventory,
+license, and the single patched member, `src/lexer.rs`, which carries a local
+modification notice. `tests/starlark_tabs.rs` reconstructs and verifies that
+inventory without a registry, network, or untracked artifact.
+
+Bazel's `src/main/java/net/starlark/java/syntax/Lexer.java`
+(`computeIndentation`, `newlineInsideExpression`, `tokenize`, `escapedStringLiteral`)
+and the genuine 9.3 ELF capture in
+`tests/fixtures/starlark_tabs/reference_receipt.json` establish the boundary:
+
+* Tabs between tokens, after semicolons/inline-suite colons, and in implicit
+  (`()`, `[]`, `{}`) or explicit backslash continuations are whitespace.
+* Tabs while computing indentation are errors, including mixed spaces/tabs,
+  blank lines, comment-only lines, and trailing whitespace at EOF. The tab
+  error points immediately after the first tab, as genuine Bazel does, and
+  reads `Tab characters are not allowed for indentation. Use spaces instead.`
+* Literal tabs in ordinary/raw/triple strings and `\t` escapes keep their
+  values. Only backslash + **literal tab** in a non-raw string is newly rejected
+  as an invalid escape; unrelated escape/Unicode/byte-string behavior is not
+  changed. CRLF continuations work. **Known baseline divergence:** genuine
+  preserves triple-string CRLF values; native drops CR with or without tabs.
+  An isolated evaluator using the unpatched registry parser reproduces this
+  (`a\r\n\tb` -> bytes `[97, 10, 9, 98]`; without tab -> `[97, 10, 98]`).
+  This is explicitly pinned as unchanged, not reported as value parity.
+
+The lexer consumes whitespace directly; it never replaces source characters,
+rewrites files, changes a codemap, or expands columns to tab stops. Other
+indent/dedent validation and error spans are unchanged. The 37 `.bzl` probes
+pin 22 accepted cases (21 matching executed strings and the CRLF baseline
+divergence) and 15 rejected cases, including ordinary
+syntax errors after accepted tab separators. A generated-style BUILD probe
+also succeeds with the original tab-containing attribute. Native CLI tests
+cover MODULE, `.bzl` loads/macros, BUILD, `use_repo_rule`, and repository-generated
+BUILD loading, and verify that source bytes remain unchanged. General parser
+diagnostic wording (e.g. invalid escapes and non-tab dedents) is not made identical
+to Bazel here; the tab diagnostic and post-tab token positions are pinned.
+
+## Interpreter vendor
+
 The root `[patch.crates-io]` selects `vendor/starlark-0.14.2`. The dependency
 remains exactly `starlark = "=0.14.2"`; H0 changed its lock entry only by removing
 that package's registry source and checksum. The original H0 baseline changed no
