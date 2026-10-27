@@ -563,7 +563,10 @@ fn run() -> Result<(), String> {
         return Err(error);
     }
     // Credential helpers and the remote cache (N41) for every command.
-    let remote_enabled = setup_credentials_and_remote(&root, &credential_options, &remote_options)?;
+    let remote_enabled = setup_credentials_and_remote(&root, &credential_options, &remote_options);
+    // The Build Event Service upload asks the credential helpers too.
+    bazel_rs::bep::bes::credentials_ready();
+    let remote_enabled = remote_enabled?;
     // RemoteModule registers the `remote` strategy with any remote cache or
     // executor; only an executor makes it usable and the default.
     spawn_options.remote_registered = remote_enabled;
@@ -2362,7 +2365,8 @@ fn run_tail(
             .map(|(name, value)| (name.into(), value.into()))
             .collect(),
     });
-    finish_reports(0, None);
+    // The client executes the request either way.
+    let _ = finish_reports(0, None);
     write_lockfile();
     bazel_rs::digest_memo::finish();
     // The target runs in this process's place: the last uses are recorded,
@@ -3114,7 +3118,8 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
             .map(|(name, value)| (name.into(), value.into()))
             .collect(),
     });
-    finish_reports(0, None);
+    // The client executes the request either way.
+    let _ = finish_reports(0, None);
     write_lockfile();
     bazel_rs::digest_memo::finish();
     // The target runs in this process's place: the last uses are recorded,
@@ -4914,12 +4919,15 @@ fn main() {
         // The typed flag, never the error text: an action's own output could
         // contain the phrase.
         let code = failure_exit_code();
-        finish_reports(code, Some(&error));
+        let code = finish_reports(code, Some(&error));
         exit(code);
     }
     bazel_rs::progress::finish(0);
-    finish_reports(0, None);
+    let code = finish_reports(0, None);
     finish_cache();
+    if code != 0 {
+        std::process::exit(code);
+    }
 }
 
 /// The exit code of a failed build: 34 after a remote failure of a spawn
@@ -4952,17 +4960,19 @@ fn failure_exit_code() -> i32 {
 fn exit(code: i32) -> ! {
     bazel_rs::worker::shutdown();
     bazel_rs::progress::finish(code);
-    finish_reports(code, None);
+    let code = finish_reports(code, None);
     finish_cache();
     std::process::exit(code)
 }
 
 /// Write the build event files, the profile and the execution log (each a
-/// no-op unless requested) as the command ends with `code`.
-fn finish_reports(code: i32, failure: Option<&str>) {
+/// no-op unless requested) as the command ends with `code`, and end the
+/// Build Event Service upload; the command's exit code (a failed upload's
+/// replaces `code`, crate::bep::finish).
+fn finish_reports(code: i32, failure: Option<&str>) -> i32 {
     bazel_rs::exec_log::finish();
     bazel_rs::profile::finish();
-    bazel_rs::bep::finish(code, failure);
+    bazel_rs::bep::finish(code, failure).unwrap_or(code)
 }
 
 /// What the build event files' command line events read.
@@ -5042,8 +5052,8 @@ fn install_reports(
         execution_root: bazel_rs::output_tree::execution_root(context.cache),
         profile: profile_file,
     };
-    if let Err(error) = bazel_rs::bep::install(bep, header) {
-        fail_with(2, &error);
+    if let Err((code, error)) = bazel_rs::bep::install(bep, header) {
+        fail_with(code, &error);
     }
 }
 

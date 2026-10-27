@@ -70,7 +70,7 @@ pub const FORMAT: u32 = 3;
 /// * the build event files, the profile and the execution log
 ///   (crate::bep, crate::profile, crate::exec_log): written after or beside
 ///   planning from the planned request (which always carries the build
-///   event plan); `bes_backend` is rejected before the check point.
+///   event plan); the Build Event Service upload (`bes_*`) streams the same events.
 /// * the UI options (crate::progress: `curses`, `color`, `show_progress`,
 ///   `show_progress_rate_limit`, `progress_in_terminal_title`,
 ///   `ui_actions_shown` and its old name): read by the progress display
@@ -175,6 +175,23 @@ pub const EXCLUDED: &[&str] = &[
     "build_event_publish_all_actions",
     "build_metadata",
     "bes_backend",
+    "bes_timeout",
+    "bes_header",
+    "bes_lifecycle_events",
+    "bes_instance_name",
+    "project_id",
+    "bes_keywords",
+    "bes_system_keywords",
+    "bes_outerr_buffer_size",
+    "bes_outerr_chunk_size",
+    "bes_results_url",
+    "bes_upload_mode",
+    "bes_proxy",
+    "bes_check_preceding_lifecycle_events",
+    "bes_oom_finish_upload_timeout",
+    "build_event_upload_max_retries",
+    "experimental_build_event_upload_max_retries",
+    "experimental_build_event_upload_retry_minimum_delay",
     "profile",
     "generate_json_trace_profile",
     "experimental_generate_json_trace_profile",

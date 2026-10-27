@@ -1,0 +1,223 @@
+{
+  "genuine": {
+    "lifecycle": [
+      [
+        53,
+        1,
+        1,
+        false,
+        true,
+        [
+          1,
+          2,
+          4,
+          4,
+          4,
+          6
+        ],
+        null
+      ],
+      [
+        51,
+        1,
+        1,
+        true,
+        true,
+        [
+          1,
+          2,
+          4,
+          4,
+          4,
+          6
+        ],
+        null
+      ],
+      [
+        52,
+        2,
+        1,
+        true,
+        false,
+        [
+          1,
+          2,
+          6
+        ],
+        1
+      ],
+      [
+        55,
+        2,
+        1,
+        false,
+        true,
+        [
+          1,
+          2,
+          4,
+          4,
+          4,
+          6
+        ],
+        1
+      ]
+    ],
+    "keywords": [
+      "protocol_name=BEP",
+      "command_name=build",
+      "user_keyword=k1"
+    ],
+    "first_fields": [
+      4,
+      5,
+      5,
+      5,
+      6
+    ],
+    "sequences_contiguous": true,
+    "components": [
+      3
+    ],
+    "type_urls": [
+      "type.googleapis.com/build_event_stream.BuildEvent"
+    ],
+    "last_kind": 59,
+    "event_kinds": {
+      "2": 7,
+      "3": 1,
+      "4": 1,
+      "5": 1,
+      "9": 1,
+      "11": 1,
+      "12": 1,
+      "13": 1,
+      "14": 1,
+      "15": 2,
+      "16": 1,
+      "17": 1,
+      "18": 3,
+      "20": 1,
+      "22": 1,
+      "23": 1,
+      "24": 1,
+      "25": 1
+    },
+    "streams": 1
+  },
+  "native": {
+    "lifecycle": [
+      [
+        53,
+        1,
+        1,
+        false,
+        true,
+        [
+          1,
+          2,
+          4,
+          4,
+          4,
+          6
+        ],
+        null
+      ],
+      [
+        51,
+        1,
+        1,
+        true,
+        true,
+        [
+          1,
+          2,
+          4,
+          4,
+          4,
+          6
+        ],
+        null
+      ],
+      [
+        52,
+        2,
+        1,
+        true,
+        false,
+        [
+          1,
+          2,
+          6
+        ],
+        1
+      ],
+      [
+        55,
+        2,
+        1,
+        false,
+        true,
+        [
+          1,
+          2,
+          4,
+          4,
+          4,
+          6
+        ],
+        1
+      ]
+    ],
+    "keywords": [
+      "protocol_name=BEP",
+      "command_name=build",
+      "user_keyword=k1"
+    ],
+    "first_fields": [
+      4,
+      5,
+      5,
+      5,
+      6
+    ],
+    "sequences_contiguous": true,
+    "components": [
+      3
+    ],
+    "type_urls": [
+      "type.googleapis.com/build_event_stream.BuildEvent"
+    ],
+    "last_kind": 59,
+    "event_kinds": {
+      "2": 6,
+      "3": 1,
+      "4": 1,
+      "5": 1,
+      "9": 1,
+      "11": 1,
+      "12": 1,
+      "13": 1,
+      "14": 1,
+      "15": 2,
+      "16": 1,
+      "18": 3,
+      "20": 1,
+      "22": 1,
+      "23": 1,
+      "24": 1,
+      "25": 1
+    },
+    "streams": 1
+  },
+  "genuine_url_lines": 2,
+  "native_url_lines": 2,
+  "genuine_failed": [
+    45,
+    "ERROR: The Build Event Protocol upload failed: Not retrying publishBuildEvents: status='Status{code=INVALID_ARGUMENT, description=bad, cause=null}' INVALID_ARGUMENT: INVALID_ARGUMENT: bad INVALID_ARGUMENT: INVALID_ARGUMENT: bad"
+  ],
+  "native_failed": [
+    45,
+    "ERROR: The Build Event Protocol upload failed: Not retrying publishBuildEvents: status='Status{code=INVALID_ARGUMENT, description=bad, cause=null}' INVALID_ARGUMENT: INVALID_ARGUMENT: bad INVALID_ARGUMENT: INVALID_ARGUMENT: bad"
+  ]
+}

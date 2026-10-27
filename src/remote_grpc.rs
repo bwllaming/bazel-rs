@@ -556,8 +556,10 @@ impl GrpcCache {
             channel,
             options,
             capabilities: OnceLock::new(),
-            build_request_id: random_uuid(),
-            command_id: random_uuid(),
+            // CommandEnvironment's ids, shared with the build event
+            // stream (BuildStarted.uuid) and the BES stream ids.
+            build_request_id: crate::bep::build_request_id().to_owned(),
+            command_id: crate::bep::invocation_id().to_owned(),
             query_write_status: AtomicBool::new(true),
         })
     }

@@ -939,16 +939,23 @@ fn walk(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// The explicit errors: a Build Event Service upload, two execution logs.
+/// The explicit errors: a Build Event Service proxy, two execution logs.
 #[test]
 fn unsupported_and_conflicting_options_fail() {
     let ws = Workspace::new();
     let output = ws.run(
-        &["build", "--bes_backend=grpc://localhost:1", "//pkg:a"],
+        &[
+            "build",
+            "--bes_backend=grpc://localhost:1",
+            "--bes_proxy=unix:/x",
+            "//pkg:a",
+        ],
         &[],
     );
     assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("--bes_backend=grpc://localhost:1: uploading build events to a Build Event Service (gRPC) is not implemented"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains(
+        "--bes_proxy=unix:/x: connecting to the Build Event Service through a proxy is not implemented"
+    ));
     let output = ws.run(
         &[
             "build",

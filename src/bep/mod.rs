@@ -21,6 +21,7 @@
 //! snapshot hit streams what its full analysis did), everything else when
 //! the command ends ([`finish`]).
 
+pub mod bes;
 pub mod plan;
 pub mod proto;
 
@@ -47,9 +48,9 @@ pub struct Options {
     pub publish_all_actions: bool,
     /// `--build_metadata=KEY=VALUE` (BuildMetadata event), in order.
     pub build_metadata: Vec<(String, String)>,
-    /// `--bes_backend`: a non-empty value is an explicit error (no gRPC
-    /// upload).
-    pub bes_backend: String,
+    /// The Build Event Service upload (`--bes_backend` and its options,
+    /// crate::bep::bes).
+    pub bes: bes::BesOptions,
 }
 
 /// The string-valued options this module parses (name, old name).
@@ -62,7 +63,6 @@ const STRING_OPTIONS: &[&str] = &[
     "build_event_text_file_upload_mode",
     "build_event_max_named_set_of_file_entries",
     "build_metadata",
-    "bes_backend",
 ];
 
 /// Boolean options accepted as no-ops: the path conversion of the file
@@ -82,6 +82,9 @@ impl Options {
     /// One option of build/test/run: `Some(Ok(used_next))` when it is one
     /// of the BEP options.
     pub fn parse(&mut self, arg: &str, next: Option<&str>) -> Option<Result<bool, String>> {
+        if let Some(result) = self.bes.parse(arg, next) {
+            return Some(result);
+        }
         if let Some(value) =
             crate::configuration::boolean_option(arg, "build_event_publish_all_actions")
         {
@@ -146,26 +149,24 @@ impl Options {
                 self.build_metadata
                     .push((key.to_owned(), assigned.to_owned()));
             }
-            "bes_backend" => self.bes_backend = value.to_owned(),
             _ => {}
         }
         Ok(())
     }
 
     /// Whether a file transport is requested.
-    pub fn enabled(&self) -> bool {
+    pub fn files(&self) -> bool {
         self.json_file.is_some() || self.binary_file.is_some() || self.text_file.is_some()
+    }
+
+    /// Whether a transport (a file or the Build Event Service) is requested.
+    pub fn enabled(&self) -> bool {
+        self.files() || self.bes.enabled()
     }
 
     /// The explicit errors of options this profile does not implement.
     pub fn validate(&self) -> Result<(), String> {
-        if !self.bes_backend.is_empty() {
-            return Err(format!(
-                "--bes_backend={}: uploading build events to a Build Event Service (gRPC) is not implemented in the native profile; use --build_event_json_file, --build_event_binary_file or --build_event_text_file",
-                self.bes_backend
-            ));
-        }
-        Ok(())
+        self.bes.validate()
     }
 }
 
@@ -351,11 +352,12 @@ impl Event {
     }
 }
 
-/// One file transport.
+/// One transport: a file, or the Build Event Service upload.
 enum Transport {
     Json(std::io::BufWriter<std::fs::File>),
     Binary(std::io::BufWriter<std::fs::File>),
     Text(std::io::BufWriter<std::fs::File>),
+    Bes(std::sync::Arc<bes::Uploader>),
 }
 
 impl Transport {
@@ -370,12 +372,18 @@ impl Transport {
             Transport::Text(out) => {
                 out.write_all(format!("event {{\n{}}}\n\n", event.to_text()).as_bytes())
             }
+            // BuildEventServiceTransport.sendBuildEvent.
+            Transport::Bes(uploader) => {
+                uploader.enqueue(event.encode());
+                Ok(())
+            }
         }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
             Transport::Json(out) | Transport::Binary(out) | Transport::Text(out) => out.flush(),
+            Transport::Bes(_) => Ok(()),
         }
     }
 }
@@ -529,6 +537,10 @@ struct State {
     /// The computed workspace status (key, value), sorted.
     status: Vec<(String, String)>,
     finished: bool,
+    /// The Build Event Service upload, if any.
+    bes: Option<std::sync::Arc<bes::Uploader>>,
+    /// Whether a file transport was requested.
+    files: bool,
 }
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -549,7 +561,19 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
 /// `build_id`: a random version 4 UUID, made once per process.
 pub fn invocation_id() -> &'static str {
     static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    ID.get_or_init(|| {
+    ID.get_or_init(random_uuid)
+}
+
+/// The build request id (CommandEnvironment.getBuildRequestId: the BES
+/// StreamId.build_id and RequestMetadata.correlated_invocations_id), a
+/// random version 4 UUID made once per process.
+pub fn build_request_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(random_uuid)
+}
+
+fn random_uuid() -> String {
+    {
         let mut bytes = [0u8; 16];
         // snapshot-unrecorded: randomness for the invocation id.
         if let Ok(mut file) = std::fs::File::open("/dev/urandom") {
@@ -574,7 +598,7 @@ pub fn invocation_id() -> &'static str {
             &hex[16..20],
             &hex[20..32]
         )
-    })
+    }
 }
 
 fn millis(time: SystemTime) -> i64 {
@@ -608,21 +632,25 @@ fn user_name() -> String {
         .unwrap_or_default()
 }
 
-/// Open the requested files and stream the command's first events
-/// (BuildStarted and the command line events). A file that cannot be
-/// created is an error of the command.
-pub fn install(options: &Options, header: Header) -> Result<(), String> {
+/// Open the requested files (and start the Build Event Service upload) and
+/// stream the command's first events (BuildStarted and the command line
+/// events). A file that cannot be created is an error of the command (exit
+/// 2), a BES client that cannot be created too (exit 36).
+pub fn install(options: &Options, header: Header) -> Result<(), (i32, String)> {
     if !options.enabled() {
         return Ok(());
     }
     let mut transports = Vec::new();
-    let open = |path: &str| -> Result<(PathBuf, std::io::BufWriter<std::fs::File>), String> {
+    let open = |path: &str| -> Result<(PathBuf, std::io::BufWriter<std::fs::File>), (i32, String)> {
         let path = header.working_directory.join(path);
         // snapshot-unrecorded: a build event file (a write).
         let file = std::fs::File::create(&path).map_err(|error| {
-            format!(
-                "Unable to write the build event file {}: {error}",
-                path.display()
+            (
+                2,
+                format!(
+                    "Unable to write the build event file {}: {error}",
+                    path.display()
+                ),
             )
         })?;
         Ok((path, std::io::BufWriter::new(file)))
@@ -639,6 +667,27 @@ pub fn install(options: &Options, header: Header) -> Result<(), String> {
         let (path, out) = open(path)?;
         transports.push((path, Transport::Json(out)));
     }
+    // createBesTransport (after the file transports); a client that cannot
+    // be created is BES_INITIALIZATION_ERROR (exit 36).
+    let bes = match options.bes.enabled() {
+        true => {
+            let uploader =
+                bes::Uploader::start(&options.bes, &header.command).map_err(|error| (36, error))?;
+            transports.push((
+                PathBuf::from(&options.bes.backend),
+                Transport::Bes(std::sync::Arc::clone(&uploader)),
+            ));
+            // constructAndMaybeReportInvocationIdUrl.
+            if let Some(prefix) = options.bes.results_prefix() {
+                crate::note!(
+                    "INFO: Streaming build results to: {prefix}{}",
+                    invocation_id()
+                );
+            }
+            Some(uploader)
+        }
+        false => None,
+    };
     let (clock, start) = crate::process_clock();
     let mut state = State {
         streamer: Streamer {
@@ -662,6 +711,8 @@ pub fn install(options: &Options, header: Header) -> Result<(), String> {
         exec_request: None,
         status: Vec::new(),
         finished: false,
+        bes,
+        files: options.files(),
     };
     post_header(&mut state, &options.build_metadata);
     state.streamer.flush();
@@ -1244,27 +1295,57 @@ fn action_label(id: &str) -> String {
 /// The command ends with `exit_code` (`failure`: the error it reports):
 /// stream the execution's events, BuildFinished, the final progress
 /// event, Aborted events for what never posted, BuildToolLogs and
-/// BuildMetrics; close the files. Idempotent.
-pub fn finish(exit_code: i32, failure: Option<&str>) {
+/// BuildMetrics; close the files and end the Build Event Service upload.
+/// Returns the exit code a failed (or timed out) upload imposes instead of
+/// `exit_code` (BlazeRuntime.afterCommand: a module's AbruptExitException
+/// replaces a command result that is not an infrastructure failure).
+/// Idempotent.
+pub fn finish(exit_code: i32, failure: Option<&str>) -> Option<i32> {
+    // A command ending before main installed the credential helpers.
+    bes::credentials_ready();
     if !active() {
-        return;
+        return None;
     }
     let mut guard = STATE.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(state) = guard.as_mut() else {
-        return;
-    };
+    let state = guard.as_mut()?;
     if state.finished {
-        return;
+        return None;
+    }
+    if let Some(bes) = &state.bes {
+        bes.set_exit_code(exit_code);
     }
     post_execution(state, exit_code);
     post_final(state, exit_code, failure);
     state.streamer.flush();
     state.finished = true;
     ACTIVE.store(false, Ordering::Relaxed);
-    match &state.streamer.error {
-        Some(error) => crate::note!("WARNING: Build Event Protocol upload failed: {error}"),
-        None => crate::note!("INFO: Build Event Protocol files produced successfully."),
+    let bes = state.bes.clone();
+    let files = state.files;
+    let error = state.streamer.error.clone();
+    drop(guard);
+    if let Some(error) = error {
+        crate::note!("WARNING: Build Event Protocol upload failed: {error}");
     }
+    // closeBepTransports, then the results URL (a BES backend) or the files'
+    // message.
+    let Some(bes) = bes else {
+        if files {
+            crate::note!("INFO: Build Event Protocol files produced successfully.");
+        }
+        return None;
+    };
+    let imposed = bes.finish();
+    if imposed.is_none()
+        && let Some(prefix) = bes.options.results_prefix()
+    {
+        crate::note!(
+            "INFO: Streaming build results to: {prefix}{}",
+            invocation_id()
+        );
+    }
+    // Infrastructure failures (ExitCode.isInfrastructureFailure) keep
+    // their code.
+    imposed.filter(|_| !matches!(exit_code, 32..=34 | 36..=39))
 }
 
 /// The targets' completion, the failed (or, publishing all actions, every
@@ -2105,6 +2186,8 @@ mod tests {
         );
         assert!(options.validate().is_ok());
         options.parse("--bes_backend=grpc://x", None);
+        assert!(options.validate().is_ok() && options.bes.enabled());
+        options.parse("--bes_proxy=unix:/s", None);
         assert!(options.validate().unwrap_err().contains("not implemented"));
         assert!(
             options

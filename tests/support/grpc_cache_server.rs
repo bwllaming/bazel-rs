@@ -68,6 +68,9 @@ mod grpc_cache_server {
         /// CacheCapabilities.supported_compressors (1: ZSTD); with ZSTD the
         /// ByteStream serves `compressed-blobs/zstd/` resources.
         pub compressors: Vec<u64>,
+        /// PublishBuildToolEventStream attempts that fail: acknowledge this
+        /// many requests, then end the call with this status.
+        pub bes_stream_failures: VecDeque<(usize, u32, String)>,
     }
 
     /// How the server answers one Execute or WaitExecution call.
@@ -126,6 +129,7 @@ mod grpc_cache_server {
                 exec_digest_functions: vec![1],
                 exec_script: VecDeque::new(),
                 compressors: Vec::new(),
+                bes_stream_failures: VecDeque::new(),
             }
         }
     }
@@ -149,6 +153,10 @@ mod grpc_cache_server {
         /// Operations waiting for WaitExecution: name -> request.
         pub pending: BTreeMap<String, Vec<u8>>,
         pub next_operation: usize,
+        /// PublishLifecycleEvent requests in arrival order.
+        pub bes_lifecycle: Vec<Vec<u8>>,
+        /// The requests of each PublishBuildToolEventStream call.
+        pub bes_streams: Vec<Vec<Vec<u8>>>,
     }
 
     pub struct Tls {
@@ -289,6 +297,10 @@ mod grpc_cache_server {
                 requests.len()
             ),
             "google.bytestream.ByteStream/QueryWriteStatus" => string_field(&request, 1),
+            "google.devtools.build.v1.PublishBuildEvent/PublishLifecycleEvent" => String::new(),
+            "google.devtools.build.v1.PublishBuildEvent/PublishBuildToolEventStream" => {
+                format!("requests={}", requests.len())
+            }
             "build.bazel.remote.execution.v2.ContentAddressableStorage/FindMissingBlobs" => {
                 format!(
                     "instance={} digests={}",
@@ -559,6 +571,32 @@ mod grpc_cache_server {
                 reapi::varint_field(&mut response, 1, committed as u64);
                 reapi::varint_field(&mut response, 2, u64::from(complete));
                 (vec![response], ok())
+            }
+            "google.devtools.build.v1.PublishBuildEvent/PublishLifecycleEvent" => {
+                state.bes_lifecycle.push(request);
+                // google.protobuf.Empty.
+                (vec![Vec::new()], ok())
+            }
+            "google.devtools.build.v1.PublishBuildEvent/PublishBuildToolEventStream" => {
+                state.bes_streams.push(requests.clone());
+                let failure = state.config.bes_stream_failures.pop_front();
+                let acks = failure
+                    .as_ref()
+                    .map_or(requests.len(), |(acks, _, _)| *acks);
+                let mut out = Vec::new();
+                for request in requests.iter().take(acks) {
+                    let ordered = message_field(request, 4).pop().unwrap_or_default();
+                    let mut response = Vec::new();
+                    if let Some(stream_id) = message_field(&ordered, 1).pop() {
+                        reapi::message(&mut response, 1, &stream_id);
+                    }
+                    reapi::varint_field(&mut response, 2, varint(&ordered, 2));
+                    out.push(response);
+                }
+                match failure {
+                    Some((_, code, message)) => (out, (code, message)),
+                    None => (out, ok()),
+                }
             }
             _ => (Vec::new(), status(12, "unknown method")),
         }
@@ -1326,6 +1364,13 @@ mod grpc_cache_server {
         /// The Execute requests so far.
         pub fn executed(&self) -> Vec<Executed> {
             self.state.lock().unwrap().executed.clone()
+        }
+
+        /// The PublishLifecycleEvent requests and the requests of each
+        /// PublishBuildToolEventStream call so far.
+        pub fn bes(&self) -> (Vec<Vec<u8>>, Vec<Vec<Vec<u8>>>) {
+            let state = self.state.lock().unwrap();
+            (state.bes_lifecycle.clone(), state.bes_streams.clone())
         }
 
         pub fn configure(&self, change: impl FnOnce(&mut Config)) {

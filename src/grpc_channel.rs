@@ -349,6 +349,16 @@ pub struct Call<'a> {
     pub timeout: Option<Duration>,
 }
 
+/// The client side of a bidirectional streaming call
+/// ([`Channel::bidi_streaming`]).
+pub trait BidiPeer {
+    /// The next request (`Ready(None)` half-closes the call); `Pending`
+    /// registers the waker like any poll.
+    fn poll_request(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Option<Vec<u8>>>;
+    /// One response; an error ends the call with that status.
+    fn on_message(&mut self, message: Bytes) -> Result<(), Status>;
+}
+
 /// A gRPC channel: a pool of HTTP/2 connections to one target.
 pub struct Channel {
     runtime: tokio::runtime::Runtime,
@@ -856,6 +866,155 @@ impl Channel {
     ) -> Result<(), Status> {
         self.run(call, &mut std::iter::once(request), on_message)
             .map(|_| ())
+    }
+
+    /// A bidirectional streaming call (PublishBuildToolEventStream): the
+    /// requests come from `peer` as they are produced (sent as send
+    /// capacity allows, `None` half-closes) while the responses are handed
+    /// to it as they arrive; the call's final status. No deadline. Runs on
+    /// the calling thread (which `peer` may block only through its polls).
+    pub fn bidi_streaming(&self, call: &Call<'_>, peer: &mut dyn BidiPeer) -> Result<(), Status> {
+        self.runtime.block_on(self.bidi_exchange(call, peer))
+    }
+
+    async fn bidi_exchange(&self, call: &Call<'_>, peer: &mut dyn BidiPeer) -> Result<(), Status> {
+        let request = self.request(call)?;
+        let (send, in_flight) = self.acquire().await?;
+        let retire = |error: h2::Error| {
+            in_flight.retire();
+            h2_status(error)
+        };
+        let mut send = send.ready().await.map_err(retire)?;
+        let (response, mut stream) = send.send_request(request, false).map_err(retire)?;
+        let mut response = std::pin::pin!(response);
+        let mut body: Option<h2::RecvStream> = None;
+        let mut pending: Option<Bytes> = None;
+        let mut half_closed = false;
+        let mut buffer = BytesMut::new();
+        enum Step {
+            Headers(Result<http::Response<h2::RecvStream>, h2::Error>),
+            Data(Option<Result<Bytes, h2::Error>>),
+            Request(Option<Vec<u8>>),
+            Sendable,
+            Failed(h2::Error),
+        }
+        loop {
+            let step = poll_fn(|cx| {
+                if body.is_none()
+                    && let Poll::Ready(result) = response.as_mut().poll(cx)
+                {
+                    return Poll::Ready(Step::Headers(result));
+                }
+                if let Some(body) = body.as_mut()
+                    && let Poll::Ready(data) = body.poll_data(cx)
+                {
+                    return Poll::Ready(Step::Data(data));
+                }
+                if half_closed {
+                    return Poll::Pending;
+                }
+                if pending.is_some() {
+                    if stream.capacity() > 0 {
+                        return Poll::Ready(Step::Sendable);
+                    }
+                    loop {
+                        match stream.poll_capacity(cx) {
+                            Poll::Ready(Some(Ok(0))) => continue,
+                            Poll::Ready(Some(Ok(_))) => return Poll::Ready(Step::Sendable),
+                            Poll::Ready(Some(Err(error))) => {
+                                return Poll::Ready(Step::Failed(error));
+                            }
+                            // The stream closed: its response explains why.
+                            Poll::Ready(None) | Poll::Pending => return Poll::Pending,
+                        }
+                    }
+                }
+                peer.poll_request(cx).map(Step::Request)
+            })
+            .await;
+            match step {
+                Step::Request(Some(message)) => {
+                    pending = Some(frame(&message));
+                    stream.reserve_capacity(1);
+                }
+                Step::Request(None) => {
+                    half_closed = true;
+                    if let Err(error) = stream.send_data(Bytes::new(), true)
+                        && !(error.is_reset() || error.is_remote() || error.is_go_away())
+                    {
+                        return Err(h2_status(error));
+                    }
+                }
+                Step::Sendable => {
+                    let message = pending.take().expect("a pending message");
+                    if let Err(error) = stream.send_data(message, false) {
+                        if error.is_reset() || error.is_remote() || error.is_go_away() {
+                            // The server ended the call; its status follows.
+                            half_closed = true;
+                            continue;
+                        }
+                        return Err(h2_status(error));
+                    }
+                    if pending.is_none() {
+                        stream.reserve_capacity(1);
+                    }
+                }
+                Step::Failed(error) => return Err(h2_status(error)),
+                Step::Headers(result) => {
+                    let (parts, received) = result.map_err(h2_status)?.into_parts();
+                    if parts.status != http::StatusCode::OK {
+                        if let Some(status) = trailer_status(&parts.headers)
+                            && status.code != Code::Ok
+                        {
+                            return Err(status);
+                        }
+                        return Err(http_status(parts.status));
+                    }
+                    if let Some(status) = trailer_status(&parts.headers) {
+                        // Trailers-only.
+                        stream.send_reset(h2::Reason::CANCEL);
+                        return if status.code == Code::Ok {
+                            Ok(())
+                        } else {
+                            Err(status)
+                        };
+                    }
+                    body = Some(received);
+                }
+                Step::Data(Some(chunk)) => {
+                    let chunk = chunk.map_err(h2_status)?;
+                    let received = body.as_mut().expect("a response body");
+                    let _ = received.flow_control().release_capacity(chunk.len());
+                    buffer.extend_from_slice(&chunk);
+                    while let Some(message) = take_message(&mut buffer)? {
+                        if let Err(status) = peer.on_message(message) {
+                            stream.send_reset(h2::Reason::CANCEL);
+                            return Err(status);
+                        }
+                    }
+                }
+                Step::Data(None) => {
+                    let mut received = body.take().expect("a response body");
+                    let trailers = received.trailers().await.map_err(h2_status)?;
+                    if !half_closed {
+                        stream.send_reset(h2::Reason::CANCEL);
+                    }
+                    let status = trailers
+                        .as_ref()
+                        .and_then(trailer_status)
+                        .unwrap_or_else(|| {
+                            Status::new(Code::Internal, "missing grpc-status trailer")
+                        });
+                    if status.code != Code::Ok {
+                        return Err(status);
+                    }
+                    if !buffer.is_empty() {
+                        return Err(Status::new(Code::Internal, "truncated gRPC message"));
+                    }
+                    return Ok(());
+                }
+            }
+        }
     }
 
     /// A client-streaming call (ByteStream.Write): the response, if the
