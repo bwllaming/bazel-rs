@@ -1,0 +1,32 @@
+load("//:defs.bzl", "lib", "my_toolchain")
+
+package(default_visibility = ["//visibility:public"])
+
+toolchain_type(name = "t")
+
+toolchain_type(name = "u")
+
+lib(name = "tc_dep")
+
+my_toolchain(
+    name = "t_impl",
+    tc_name = "first",
+    deps = [":tc_dep"],
+)
+
+toolchain(
+    name = "t_tc",
+    toolchain = ":t_impl",
+    toolchain_type = ":t",
+)
+
+my_toolchain(
+    name = "u_impl",
+    tc_name = "second",
+)
+
+toolchain(
+    name = "u_tc",
+    toolchain = ":u_impl",
+    toolchain_type = ":u",
+)

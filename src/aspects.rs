@@ -59,6 +59,10 @@ pub(crate) struct AspectDefinition {
     /// AspectResolutionHelpers.computeAttributeAspects): the attribute
     /// names it propagates along there. `None` for a fixed list.
     pub computed_attr_aspects: Option<Arc<[String]>>,
+    /// A function `toolchains_aspects` evaluated over that target
+    /// (computeToolchainsAspects): the toolchain type labels it propagates
+    /// to. `None` for a fixed list.
+    pub computed_toolchains_aspects: Option<Arc<[String]>>,
 }
 
 /// Whether `name`/`spec` is one of the aspect's parameter attributes: a
@@ -455,6 +459,39 @@ pub(crate) fn propagating_over_aspect_attribute(
             continue;
         }
         if propagates_along(aspect, attribute) || kept.iter().any(|other| other.requires(aspect)) {
+            kept.push(aspect.clone());
+        }
+    }
+    kept.reverse();
+    kept
+}
+
+/// The aspects of a target's path (`path`, bottom up) that propagate to
+/// the target's resolved toolchain of a type requested as any of
+/// `type_labels` (the type label and every requested alias of it;
+/// AspectResolutionHelpers.computePropagatingAspectsToToolchainDep:
+/// `toolchains_aspects` names one of them or is `'*'`, or an already-kept
+/// aspect requires the aspect), top-down then reversed.
+pub(crate) fn propagating_to_toolchain(
+    path: &[Arc<AspectDefinition>],
+    type_labels: &[crate::label::Label],
+) -> Vec<Arc<AspectDefinition>> {
+    let names_type = |name: &str| {
+        name == "*"
+            || crate::label::Label::parse_canonical(name)
+                .is_ok_and(|label| type_labels.contains(&label))
+    };
+    let mut kept: Vec<Arc<AspectDefinition>> = Vec::new();
+    for aspect in path.iter().rev() {
+        let propagates = match (
+            &aspect.computed_toolchains_aspects,
+            &aspect.declaration.toolchains_aspects,
+        ) {
+            (Some(names), _) => names.iter().any(|name| names_type(name)),
+            (None, Some(names)) => names.iter().any(|name| names_type(name)),
+            (None, None) => false,
+        };
+        if propagates || kept.iter().any(|other| other.requires(aspect)) {
             kept.push(aspect.clone());
         }
     }

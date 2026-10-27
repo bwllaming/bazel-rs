@@ -100,6 +100,8 @@ mod values {
         /// Rule.getRuleClassName, e.g. `lib`.
         #[trace(static)]
         pub kind: String,
+        /// `ctx.rule.toolchains` (StarlarkAttributesCollection.toolchains).
+        pub toolchains: Value<'v>,
     }
 
     #[starlark_value(type = "StarlarkAttributesCollection")]
@@ -111,14 +113,18 @@ mod values {
                 "file" => Some(self.file),
                 "files" => Some(self.files),
                 "kind" => Some(heap.alloc(self.kind.as_str())),
+                "toolchains" => Some(self.toolchains),
                 _ => None,
             }
         }
         fn has_attr(&self, name: &str, _heap: Heap<'v>) -> bool {
-            matches!(name, "attr" | "executable" | "file" | "files" | "kind")
+            matches!(
+                name,
+                "attr" | "executable" | "file" | "files" | "kind" | "toolchains"
+            )
         }
         fn dir_attr(&self) -> Vec<String> {
-            ["attr", "executable", "file", "files", "kind"]
+            ["attr", "executable", "file", "files", "kind", "toolchains"]
                 .map(str::to_owned)
                 .to_vec()
         }
@@ -126,7 +132,7 @@ mod values {
             Some(crate::ctx_surface::no_field_message(
                 "ctx.rule",
                 name,
-                &["attr", "executable", "file", "files", "kind"].map(str::to_owned),
+                &["attr", "executable", "file", "files", "kind", "toolchains"].map(str::to_owned),
             ))
         }
     }

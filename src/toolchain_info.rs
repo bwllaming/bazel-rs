@@ -42,6 +42,19 @@ mod values {
         pub fields: Vec<(String, V)>,
     }
 
+    /// An entry of an aspect's `ctx.rule.toolchains`
+    /// (AspectBaseTargetResolvedToolchainContext.ToolchainAspectsProviders):
+    /// the providers the aspects propagated to the base target's toolchain
+    /// returned (none when no aspect applied there) and the toolchain
+    /// target's label.
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub(crate) struct ToolchainAspectsProviders {
+        #[allocative(skip)]
+        pub providers: BTreeMap<String, OwnedFrozenValue>,
+        #[allocative(skip)]
+        pub label: Label,
+    }
+
     /// `ctx.toolchains` (analysis/starlark/StarlarkToolchainContext.java):
     /// `None` is TOOLCHAINS_NOT_VALID (:42-61), for rules without toolchain
     /// resolution.
@@ -51,11 +64,79 @@ mod values {
         pub data: Option<Arc<ToolchainContextData>>,
     }
 }
-pub(crate) use values::ToolchainContext;
 use values::ToolchainInfoGen;
+pub(crate) use values::{ToolchainAspectsProviders, ToolchainContext};
 
 starlark_complex_value!(pub(crate) ToolchainInfo);
 starlark_simple_value!(ToolchainContext);
+starlark_simple_value!(ToolchainAspectsProviders);
+
+impl fmt::Display for ToolchainAspectsProviders {
+    /// ToolchainAspectsProviders.repr.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "<ToolchainAspectsProviders for toolchain target: {}>",
+            shown(&self.label)
+        )
+    }
+}
+
+impl ToolchainAspectsProviders {
+    /// selectExportedProvider: an exported provider constructor's identity.
+    fn provider(&self, key: Value<'_>, operation: &str) -> anyhow::Result<String> {
+        crate::providers::provider_identity(key).ok_or_else(|| {
+            anyhow!(
+                "This type only supports {operation}ing by object constructors, got {} instead",
+                key.get_type()
+            )
+        })
+    }
+
+    /// The entry as an owned frozen value (a `ctx.rule.toolchains` value).
+    pub(crate) fn owned(self) -> anyhow::Result<OwnedFrozenValue> {
+        starlark::environment::Module::with_temp_heap(|module| {
+            module.set("entry", module.heap().alloc(self));
+            module
+                .freeze()
+                .map_err(|error| anyhow!("cannot freeze a toolchain entry: {error:?}"))?
+                .get("entry")
+        })
+    }
+}
+
+#[starlark_value(type = "ToolchainAspectsProviders")]
+impl<'v> StarlarkValue<'v> for ToolchainAspectsProviders {
+    fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+        (name == "label")
+            .then(|| crate::starlark_types::alloc_label(heap, &self.label.to_string()).ok())
+            .flatten()
+    }
+
+    fn dir_attr(&self) -> Vec<String> {
+        vec!["label".to_owned()]
+    }
+
+    fn at(&self, index: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
+        let identity = self
+            .provider(index, "index")
+            .map_err(starlark::Error::new_other)?;
+        match self.providers.get(&identity) {
+            Some(provider) => Ok(heap.access_owned_frozen_value(provider)),
+            None => Err(starlark::Error::new_other(anyhow!(
+                "{self} doesn't contain declared provider '{}'",
+                identity.rsplit('%').next().unwrap_or(&identity)
+            ))),
+        }
+    }
+
+    fn is_in(&self, other: Value<'v>) -> starlark::Result<bool> {
+        let identity = self
+            .provider(other, "query")
+            .map_err(starlark::Error::new_other)?;
+        Ok(self.providers.contains_key(&identity))
+    }
+}
 
 /// ToolchainInfoApi.Provider.toolchainInfo (keyword arguments only).
 pub(crate) fn construct<'v>(

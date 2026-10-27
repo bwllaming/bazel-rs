@@ -1842,6 +1842,9 @@ pub(crate) struct AspectApplication {
     /// The attributes of the base aspects of the path that `ctx.rule.attr`
     /// holds (crate::aspects::base_aspect_attributes), in path order.
     pub base_aspect_attributes: Vec<BaseAspectAttributes>,
+    /// `ctx.rule.toolchains`: the base target's toolchains with the
+    /// providers of the aspects propagated to them (`toolchains_aspects`).
+    pub rule_toolchains: Arc<crate::toolchain_info::ToolchainContextData>,
     /// The aspect's own ToolchainCollection (crate::engine).
     pub toolchains: AspectToolchains,
     pub repositories: Arc<RepositorySet>,
@@ -1916,22 +1919,10 @@ fn analyze_aspect_inner(
     let declaration = &aspect.declaration;
     let has_subrules = crate::rule_declarations::Aspect::from_value(aspect.value.value())
         .is_some_and(|value| !value.subrules.is_empty());
-    let toolchains_aspects = declaration
-        .toolchains_aspects
-        .as_ref()
-        .is_none_or(|aspects| !aspects.is_empty());
-    if toolchains_aspects || has_subrules {
-        let mut gaps = Vec::new();
-        if toolchains_aspects {
-            gaps.push("toolchains_aspects".to_owned());
-        }
-        if has_subrules {
-            gaps.push("subrules".to_owned());
-        }
+    if has_subrules {
         bail!(
-            "aspect {} declares {}: not analyzed by the native profile",
-            aspect.identity,
-            gaps.join(", ")
+            "aspect {} declares subrules: not analyzed by the native profile",
+            aspect.identity
         );
     }
     let invocation = rule
@@ -2360,6 +2351,10 @@ fn make_aspect_ctx<'v>(
         file: base_file,
         files: base_files,
         kind: invocation.declaration.rule_class.clone(),
+        toolchains: crate::toolchain_info::alloc_context(
+            heap,
+            Some(application.rule_toolchains.clone()),
+        ),
     });
     let label = alloc_target(heap, &rule.label.to_string(), Vec::new())
         .get_attr_error("label", heap)

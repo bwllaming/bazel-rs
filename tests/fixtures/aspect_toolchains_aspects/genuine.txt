@@ -1,0 +1,30 @@
+# Genuine Bazel 9.3.0, a fresh server per command (`--noshow_progress --curses=no --color=no`):
+# the sorted, deduplicated `print()` texts (DEBUG lines without their `DEBUG: <WS>/defs.bzl:L:C: `
+# lead) or, for a failing command, `ERROR <genuine error text>`.
+### build --aspects=//:defs.bzl%ta //:base
+TA lib //:leaf <toolchain_context.resolved_labels: >
+TA lib //tc:tc_dep <toolchain_context.resolved_labels: >
+TA my_toolchain //tc:t_impl <toolchain_context.resolved_labels: >
+TA uses_tc //:base <toolchain_context.resolved_labels: //tc:t, //tc:u> //tc:t: <ToolchainAspectsProviders for toolchain target: //tc:t_impl> label=@@//tc:t_impl a=@@//tc:t_impl //tc:u: <ToolchainAspectsProviders for toolchain target: //tc:u_impl> label=@@//tc:u_impl a=-
+### build --aspects=//:defs.bzl%tfa //:base
+TA lib //:leaf <toolchain_context.resolved_labels: >
+TA my_toolchain //tc:u_impl <toolchain_context.resolved_labels: >
+TA uses_tc //:base <toolchain_context.resolved_labels: //tc:t, //tc:u> //tc:t: <ToolchainAspectsProviders for toolchain target: //tc:t_impl> label=@@//tc:t_impl a=- //tc:u: <ToolchainAspectsProviders for toolchain target: //tc:u_impl> label=@@//tc:u_impl a=@@//tc:u_impl
+TF //:base u
+TF //:leaf u
+TF //tc:u_impl u
+### build --aspects=//:defs.bzl%tfa --aspects_parameters=which=t //:base
+TA lib //:leaf <toolchain_context.resolved_labels: >
+TA lib //tc:tc_dep <toolchain_context.resolved_labels: >
+TA my_toolchain //tc:t_impl <toolchain_context.resolved_labels: >
+TA uses_tc //:base <toolchain_context.resolved_labels: //tc:t, //tc:u> //tc:t: <ToolchainAspectsProviders for toolchain target: //tc:t_impl> label=@@//tc:t_impl a=@@//tc:t_impl //tc:u: <ToolchainAspectsProviders for toolchain target: //tc:u_impl> label=@@//tc:u_impl a=-
+TF //:base t
+TF //:leaf t
+TF //tc:t_impl t
+TF //tc:tc_dep t
+### build --aspects=//:defs.bzl%tall //:base
+TA my_toolchain //tc:t_impl <toolchain_context.resolved_labels: >
+TA my_toolchain //tc:u_impl <toolchain_context.resolved_labels: >
+TA uses_tc //:base <toolchain_context.resolved_labels: //tc:t, //tc:u> //tc:t: <ToolchainAspectsProviders for toolchain target: //tc:t_impl> label=@@//tc:t_impl a=@@//tc:t_impl //tc:u: <ToolchainAspectsProviders for toolchain target: //tc:u_impl> label=@@//tc:u_impl a=@@//tc:u_impl
+### build --aspects=//:defs.bzl%plain //:base //:leaf
+ERROR In aspect //:defs.bzl%plain applied to uses_tc rule //:base, toolchain type //tc:missing was requested but only types [//tc:t, //tc:u] are configured

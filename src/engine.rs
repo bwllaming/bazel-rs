@@ -2002,10 +2002,13 @@ pub struct Engine {
         BTreeMap<(ConfiguredTargetKey, String), Arc<BTreeMap<String, TransitionConfigurations>>>,
     /// The `propagation_predicate` result per (target label, aspect
     /// descriptor) (it reads the label, rule class and tags only) and the
-    /// function `attr_aspects` list per (configured target, descriptor):
+    /// function `attr_aspects`/`toolchains_aspects` lists per (configured
+    /// target, descriptor):
     /// evaluated once, print()ing once (crate::aspect_propagation).
     aspect_predicates: BTreeMap<(Label, String), bool>,
-    aspect_attr_aspects: BTreeMap<(ConfiguredTargetKey, String), Arc<[String]>>,
+    #[allow(clippy::type_complexity)]
+    aspect_attr_aspects:
+        BTreeMap<(ConfiguredTargetKey, String), (Option<Arc<[String]>>, Option<Arc<[String]>>)>,
     /// The aspect's own toolchain contexts per (configuration, aspect
     /// identity) (Self::aspect_toolchain_contexts), resolved by phase 1
     /// and read by the application's planning.
@@ -2475,6 +2478,7 @@ impl Engine {
                 top_level: false,
                 descriptor: identity.to_owned(),
                 computed_attr_aspects: None,
+                computed_toolchains_aspects: None,
             });
             return Ok(self.aspects.get(identity));
         }
@@ -2520,6 +2524,7 @@ impl Engine {
             top_level: false,
             descriptor: identity.to_owned(),
             computed_attr_aspects: None,
+            computed_toolchains_aspects: None,
         };
         self.aspects.insert(definition);
         Ok(self.aspects.get(identity))
@@ -4742,7 +4747,63 @@ impl Engine {
                 }
             }
         }
+        // The applications propagated to the base target's resolved
+        // toolchains (`toolchains_aspects`, BaseTargetToolchainDependencyKind;
+        // AspectResolutionHelpers.computePropagatingAspectsToToolchainDep),
+        // in the base configuration like the toolchain dependencies.
+        for (implementation, type_labels) in self.base_target_toolchains(&base_key) {
+            let propagating = crate::aspects::propagating_to_toolchain(&incoming, &type_labels);
+            if propagating.is_empty() {
+                continue;
+            }
+            self.analyze_aspect_applications(
+                &implementation,
+                config,
+                propagating,
+                active,
+                configured,
+                plan,
+                seen,
+            )?;
+        }
         Ok(applications)
+    }
+
+    /// The base target's resolved toolchains an aspect may propagate to
+    /// (AspectFunction.getBaseTargetToolchainContexts over the default
+    /// context and the exec groups' contexts): each resolved
+    /// implementation once per type, with the type label and its requested
+    /// aliases.
+    fn base_target_toolchains(&self, key: &ConfiguredTargetKey) -> Vec<(Label, Vec<Label>)> {
+        let mut result: Vec<(Label, Vec<Label>)> = Vec::new();
+        let contexts = self.toolchain_contexts.get(key).into_iter().chain(
+            self.exec_group_contexts
+                .get(key)
+                .into_iter()
+                .flat_map(|groups| {
+                    groups
+                        .groups
+                        .iter()
+                        .filter_map(|group| group.context.as_ref())
+                }),
+        );
+        for context in contexts {
+            for (info, implementation) in &context.resolved {
+                let mut labels = vec![info.type_label.clone()];
+                for (requested, requested_info) in &context.requested {
+                    if requested_info.type_label == info.type_label && !labels.contains(requested) {
+                        labels.push(requested.clone());
+                    }
+                }
+                if !result
+                    .iter()
+                    .any(|(seen, seen_labels)| seen == implementation && *seen_labels == labels)
+                {
+                    result.push((implementation.clone(), labels));
+                }
+            }
+        }
+        result
     }
 
     /// Phase 1 of the label attributes of `owner` (the applied aspect
@@ -4865,26 +4926,31 @@ impl Engine {
         rule: &Rule,
     ) -> Result<crate::aspects::AspectCollection, String> {
         for (aspect, _) in &mut collection.used {
-            if aspect.declaration.attr_aspects.is_some() {
+            if aspect.declaration.attr_aspects.is_some()
+                && aspect.declaration.toolchains_aspects.is_some()
+            {
                 continue;
             }
             let memo = (key.clone(), aspect.descriptor.clone());
-            let names = match self.aspect_attr_aspects.get(&memo) {
-                Some(names) => names.clone(),
+            let (attr_aspects, toolchains_aspects) = match self.aspect_attr_aspects.get(&memo) {
+                Some(computed) => computed.clone(),
                 None => {
-                    let Some(names) =
+                    let attr_aspects =
                         crate::aspect_propagation::computed_attr_aspects(aspect, rule)
                             .map_err(|error| located(rule.location.as_deref(), error))?
-                    else {
-                        continue;
-                    };
-                    let names: Arc<[String]> = Arc::from(names);
-                    self.aspect_attr_aspects.insert(memo, names.clone());
-                    names
+                            .map(Arc::from);
+                    let toolchains_aspects =
+                        crate::aspect_propagation::computed_toolchains_aspects(aspect, rule)
+                            .map_err(|error| located(rule.location.as_deref(), error))?
+                            .map(Arc::from);
+                    let computed = (attr_aspects, toolchains_aspects);
+                    self.aspect_attr_aspects.insert(memo, computed.clone());
+                    computed
                 }
             };
             let mut definition = aspect.as_ref().clone();
-            definition.computed_attr_aspects = Some(names);
+            definition.computed_attr_aspects = attr_aspects;
+            definition.computed_toolchains_aspects = toolchains_aspects;
             *aspect = std::sync::Arc::new(definition);
         }
         Ok(collection)
@@ -11146,6 +11212,60 @@ impl Engine {
                 dependencies.insert(map_key, view);
             }
         }
+        // `ctx.rule.toolchains` (AspectFunction.getBaseTargetToolchainContexts,
+        // AspectBaseTargetResolvedToolchainContext.load): per resolved type
+        // of the base target, the providers of the aspects propagated to
+        // its toolchain (`toolchains_aspects`, as phase 1 applied them)
+        // and the toolchain's label; described like the aspect's own
+        // contexts.
+        let rule_toolchains = {
+            let mut entries = BTreeMap::new();
+            for (implementation, type_labels) in self.base_target_toolchains(base_key) {
+                let propagating = crate::aspects::propagating_to_toolchain(&incoming, &type_labels);
+                let mut providers = BTreeMap::new();
+                if !propagating.is_empty() {
+                    let (_, applications) = self.plan_aspect_dependency(
+                        state,
+                        configured,
+                        &implementation,
+                        base_key.config,
+                        propagating,
+                    )?;
+                    providers =
+                        crate::aspects::merge_providers(&BTreeMap::new(), &[], &applications)?
+                            .with_groups();
+                }
+                let entry = crate::toolchain_info::ToolchainAspectsProviders {
+                    providers,
+                    label: implementation.clone(),
+                }
+                .owned()
+                .map_err(|error| error.to_string())?;
+                entries.entry(type_labels[0].clone()).or_insert(entry);
+            }
+            let requested = self
+                .toolchain_contexts
+                .get(base_key)
+                .map(|context| {
+                    context
+                        .requested
+                        .iter()
+                        .map(|(label, info)| (label.clone(), info.type_label.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Arc::new(crate::toolchain_info::ToolchainContextData {
+                target_description: format!(
+                    "aspect {} applied to {} rule {}",
+                    aspect.description(),
+                    base_rule.rule_class_name(),
+                    crate::rule_declarations::canonical_form(&base_rule.label)
+                ),
+                requested,
+                toolchains: entries,
+                repositories: self.repositories.clone(),
+            })
+        };
         // Run the implementation.
         let output_root = self.configurations.output_root(base_key.config);
         let action_env = Arc::new(
@@ -11345,6 +11465,7 @@ impl Engine {
             dependencies: dependencies.clone(),
             aspect_dependencies,
             base_aspect_attributes,
+            rule_toolchains,
             toolchains: aspect_toolchains,
             repositories: self.repositories.clone(),
         };

@@ -1,0 +1,5 @@
+load(":defs.bzl", "lib", "uses_tc")
+
+lib(name = "leaf")
+
+uses_tc(name = "base", deps = [":leaf"])

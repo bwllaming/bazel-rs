@@ -11,23 +11,25 @@ native-only boundaries fail loudly, never silently.
 `aspect()` (N33) keeps Bazel's parameter names, validation and errors at
 load. At application, the native profile supports: `implementation`
 (called as `f(target, ctx)`, `StarlarkAspectFactory.create`),
-`attr_aspects` (a fixed list or a function), `propagation_predicate`
-(see "Propagation functions"), `attrs` (implicit `_`-attributes and
+`attr_aspects` and `toolchains_aspects` (fixed lists or functions),
+`propagation_predicate` (see "Propagation functions" and "Toolchain
+propagation"), `attrs` (implicit `_`-attributes and
 parameter attributes), `required_providers`, `required_aspect_providers`,
 `provides`, `requires`, `apply_to_generating_rules`, `mandatory_providers`
 wording, `toolchains`, `exec_compatible_with`, `exec_groups`, `fragments`
 (and `host_fragments`, which Bazel 9.3 ignores) — see "Aspect toolchains,
 exec groups and fragments". Aspect-declared features whose application is
 not modelled fail explicitly when the aspect applies (never a silent
-no-op): a function or non-empty `toolchains_aspects` and `subrules`:
+no-op): `subrules`:
 
 ```
-aspect //:gaps.bzl%toolchains_aspect declares toolchains_aspects: not analyzed by the native profile
+aspect //:gaps.bzl%subrules_aspect declares subrules: not analyzed by the native profile
 ```
 
 ## Propagation functions
 
-A function `attr_aspects` and the `propagation_predicate`
+A function `attr_aspects` or `toolchains_aspects` and the
+`propagation_predicate`
 (crate::aspect_propagation; AspectPropagationEdgesSupplier,
 AspectPropagationPredicate, StarlarkAspectPropagationContext) are called
 with a `propagation_ctx`: `ctx.attr` is a struct of the aspect's public
@@ -58,6 +60,33 @@ function.`).
 
 Paired capture tests/fixtures/aspect_propagation_functions (genuine.txt;
 tests/aspects.rs `aspect_propagation_functions`).
+
+## Toolchain propagation
+
+`toolchains_aspects` (labels, `'*'`, or a function returning Labels,
+evaluated per target like the edge function) propagates an aspect to the
+base target's RESOLVED toolchains whose type it names (the type label or
+any requested alias of it; computePropagatingAspectsToToolchainDep, the
+path top-down with required aspects pulled in), in the base target's
+configuration like the toolchain dependencies (`Engine::
+base_target_toolchains` over the default and exec-group contexts; phase 1
+`analyze_aspect_applications`, planning `plan_aspect_application`). The
+aspect then propagates on from the toolchain target along its own
+`attr_aspects`.
+
+`ctx.rule.toolchains` (StarlarkAttributesCollection.toolchains over
+AspectBaseTargetResolvedToolchainContext) is a `ToolchainContext` of the
+base target's requested types (`<toolchain_context.resolved_labels: //tc:t,
+//tc:u>`, empty for a rule without toolchain types) whose entries are
+`ToolchainAspectsProviders` (`<ToolchainAspectsProviders for toolchain
+target: //tc:t_impl>`): `label`, and indexing/`in` over the providers of
+the aspects applied to that toolchain only (none where no aspect
+propagated; the toolchain's own providers are never visible there). An
+unrequested type fails `In aspect A applied to KIND rule L, toolchain type
+T was requested but only types [...] are configured`. Paired capture
+tests/fixtures/aspect_toolchains_aspects (genuine.txt; tests/aspects.rs
+`aspects_propagate_to_base_target_toolchains`). Not projected into cquery's
+aspect edges.
 
 ## Application and propagation
 
@@ -401,7 +430,6 @@ identity unchanged, and depset snapshots taken from either agree.
 
 ## Native-only boundaries (explicit failures, documented)
 
-- function or non-empty `toolchains_aspects`;
 - aspect `subrules` at application;
 - parameter values of `--aspects_parameters` are string/bool/int/string-list
   typed by the attribute (AspectParameters); other types are rejected at

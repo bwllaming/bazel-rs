@@ -49,8 +49,13 @@ impl Workspace {
     /// the built-in profile offline (no closure module registers a
     /// toolchain of the fixture's types; tests/exec_groups.rs's approach).
     fn toolchains_fixture() -> Self {
+        Self::toolchains_fixture_named("aspect_toolchains")
+    }
+
+    /// [`Self::toolchains_fixture`] over tests/fixtures/NAME/workspace.
+    fn toolchains_fixture_named(name: &str) -> Self {
         use std::io::Read as _;
-        let ws = Self::fixture("aspect_toolchains");
+        let ws = Self::fixture(name);
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
         let archive: serde_json::Value = serde_json::from_slice(
             &fs::read(manifest.join("tests/fixtures/label_repo_name/platforms_archive.json"))
@@ -472,20 +477,19 @@ fn aspect_declaration_gaps_fail_explicitly() {
     // N11: an aspect's `fragments` are its configuration fragment policy
     // (genuine: the application succeeds, //:a builds a.lib; the receipt's
     // former native gap). Aspect-declared features whose application is not
-    // modelled still fail loudly (never silently ignored): non-empty
-    // `toolchains_aspects`.
+    // modelled still fail loudly (never silently ignored): `subrules`.
     let ws = Workspace::new();
     ok(&ws.build_with(&["--aspects=//:defs.bzl%fragments_aspect"], &["//:a"]));
     assert_eq!(ws.output("a.lib"), "lib");
     let ws = Workspace::new();
     fs::write(
         ws.path().join("gaps.bzl"),
-        "def _impl(target, ctx):\n    return []\n\ntoolchains_aspect = aspect(implementation = _impl, toolchains_aspects = ['//:t'])\n",
+        "def _impl(target, ctx):\n    return []\n\ndef _s(ctx):\n    pass\n\ns = subrule(implementation = _s)\n\nsubrules_aspect = aspect(implementation = _impl, subrules = [s])\n",
     )
     .unwrap();
     rejected(
-        &ws.build_with(&["--aspects=//:gaps.bzl%toolchains_aspect"], &["//:a"]),
-        "aspect //:gaps.bzl%toolchains_aspect declares toolchains_aspects: not analyzed by the native profile",
+        &ws.build_with(&["--aspects=//:gaps.bzl%subrules_aspect"], &["//:a"]),
+        "aspect //:gaps.bzl%subrules_aspect declares subrules: not analyzed by the native profile",
     );
 }
 
@@ -934,7 +938,11 @@ fn genuine_sections(fixture: &str) -> Vec<(Vec<String>, Vec<String>)> {
 /// the failure text.
 fn compare_genuine_builtin(fixture: &str, markers: &[&str], dedup: bool) {
     for (arguments, expected) in genuine_sections(fixture) {
-        let ws = Workspace::fixture(fixture);
+        let ws = if fixture == "aspect_toolchains_aspects" {
+            Workspace::toolchains_fixture_named(fixture)
+        } else {
+            Workspace::fixture(fixture)
+        };
         let (flags, targets): (Vec<&str>, Vec<&str>) = arguments
             .iter()
             .map(String::as_str)
@@ -981,4 +989,13 @@ fn ctx_rule_attr_holds_base_aspect_attributes() {
 #[test]
 fn aspect_propagation_functions() {
     compare_genuine_builtin("aspect_propagation_functions", &["A ", "F ", "P "], true);
+}
+
+/// `toolchains_aspects` (a list, `'*'`, a function) propagates aspects to
+/// the base target's resolved toolchains, whose providers
+/// `ctx.rule.toolchains` exposes (tests/fixtures/aspect_toolchains_aspects/
+/// genuine.txt).
+#[test]
+fn aspects_propagate_to_base_target_toolchains() {
+    compare_genuine_builtin("aspect_toolchains_aspects", &["TA ", "TF "], true);
 }

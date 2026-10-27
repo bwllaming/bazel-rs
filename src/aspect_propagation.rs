@@ -326,7 +326,6 @@ fn context<'v>(
 
 /// Which callback of the aspect value to call.
 #[derive(Clone, Copy)]
-#[allow(dead_code)] // ToolchainsAspects: used by toolchains_aspects propagation.
 enum Callback {
     AttrAspects,
     ToolchainsAspects,
@@ -415,7 +414,6 @@ pub(crate) fn computed_attr_aspects(
 /// A function `toolchains_aspects` evaluated over `rule`
 /// (ToolchainsAspectsFunctionSupplier.computeList: a list of Labels);
 /// `None` for a fixed list.
-#[allow(dead_code)] // Used by toolchains_aspects propagation.
 pub(crate) fn computed_toolchains_aspects(
     aspect: &AspectDefinition,
     rule: &Rule,
