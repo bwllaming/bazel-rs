@@ -144,6 +144,7 @@ dependencies = [
  "blake3",
  "bytes",
  "bzip2",
+ "cc",
  "fancy-regex",
  "flate2",
  "fs2",

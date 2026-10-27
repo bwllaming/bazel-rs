@@ -81,6 +81,17 @@ tokio = { version = "=1.53.2", default-features = false, features = ["rt-multi-t
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12"] }
 tikv-jemallocator = { version = "=0.7.0", optional = true }
 
+[build-dependencies]
+# build.rs compiles src/musl_string.c for musl targets only; the version
+# ring and tikv-jemalloc-sys already build with (no new crate).
+cc = "=1.8.0"
+
+# The static musl release (docs/RELEASING.md): jemalloc also provides the
+# unprefixed malloc/free, so musl's own (slow) allocator serves nothing, not
+# even libc-internal or C allocations. glibc builds keep prefixed symbols.
+[target.'cfg(target_env = "musl")'.dependencies]
+tikv-jemallocator = { version = "=0.7.0", optional = true, features = ["unprefixed_malloc_on_supported_platforms"] }
+
 [features]
 default = ["jemalloc"]
 # `--no-default-features` builds with the system allocator (glibc malloc),
