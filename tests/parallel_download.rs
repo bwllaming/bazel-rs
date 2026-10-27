@@ -129,7 +129,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// The extension: twelve non-blocking downloads (two missing, one to a
 /// nested output whose parent another pending download's output becomes
 /// the directory of, two expecting the same checksum, one never waited for)
-/// with prints, `path.exists` and reads in between, then one repository
+/// with prints, `path.exists`, reads and `file()` writes in between (one
+/// beside each of the first eight, as bazel-gazelle's go_deps writes, one
+/// onto a pending output), then one repository
 /// whose BUILD lists what it saw.
 const DEFS: &str = r#"
 def _repo_impl(ctx):
@@ -146,6 +148,7 @@ def _ext_impl(ctx):
     for index in range(8):
         name = "p%d" % index
         pending[name] = ctx.download(url + "/" + name, "out/" + name + ".txt", sha256 = sha[name], block = False)
+        ctx.file("out/" + name + ".info", "{}")
         if index == 3:
             print("issued four, out/p0.txt exists: %s" % ctx.path("out/p0.txt").exists)
     pending["m0"] = ctx.download(url + "/missing/m0", "out/m0.txt", sha256 = sha["m0"], block = False, allow_fail = True)
@@ -154,6 +157,7 @@ def _ext_impl(ctx):
     pending["s0"] = ctx.download(url + "/s0", "same0.txt", sha256 = sha["s0"], block = False, allow_fail = True)
     pending["s1"] = ctx.download(url + "/s0", "same1.txt", sha256 = sha["s0"], block = False)
     ctx.download(url + "/never-waited", "never.txt", sha256 = sha["never-waited"], block = False)
+    ctx.file("same1.txt", "written over the pending same1.txt\n")
     if tag.fail:
         fail("failing with pending downloads")
     seen = []

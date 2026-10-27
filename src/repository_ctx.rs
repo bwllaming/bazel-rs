@@ -3369,8 +3369,21 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let _ = (this, legacy_utf8);
-        let context = context(eval)?;
-        let path = context.path_of(path, "file", "path")?;
+        // Writing a file observes only the pending downloads to it or into
+        // it (bazel-gazelle's go_deps writes a `.info` file after each
+        // non-blocking `.mod` download): the others stay in flight. A label
+        // may fetch its repository first: commit them all.
+        let (context, path) = if unpack_label(path).is_some()
+            || (path.downcast_ref::<RepositoryPath>().is_none() && path.unpack_str().is_none())
+        {
+            let context = context(eval)?;
+            (context, context.path_of(path, "file", "path")?)
+        } else {
+            let context = context_unflushed(eval)?;
+            let bytes = context.path_of(path, "file", "path")?;
+            pending_downloads::flush_conflicting(&path_buf(&bytes), None);
+            (context, bytes)
+        };
         // Bazel writes its internal Latin-1 string bytes; characters above
         // U+00FF are not representable there and are rejected explicitly.
         let bytes = crate::repository_rule::latin1_bytes(content).ok_or_else(|| {
