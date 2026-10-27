@@ -470,6 +470,15 @@ pub fn count(strategy: Strategy) {
     }
 }
 
+/// How many executed actions ran sandboxed and how many did not
+/// (meaningful after execution; the summary prints once the build ends).
+pub fn executed_counts() -> (u64, u64) {
+    (
+        EXECUTED_SANDBOXED.load(Ordering::Relaxed),
+        EXECUTED_STANDALONE.load(Ordering::Relaxed),
+    )
+}
+
 /// Whether every executed action ran sandboxed (meaningful after execution;
 /// the summary prints once the build ends).
 pub fn all_sandboxed() -> bool {

@@ -80,7 +80,12 @@ run sandboxed like any action (test actions stay local-only, the N23g note).
   (`tests/sandbox.rs::action_keys_do_not_change_with_the_strategy`).
 - The build summary's note names the mode: "(experimental local execution;
   sandboxed)" when every executed action ran sandboxed, "(experimental local
-  execution; not sandboxed)" otherwise.
+  execution; not sandboxed)" when none did, and "(experimental local
+  execution; N sandboxed, M not sandboxed)" when only some did (spawns with
+  `local`/`no-sandbox` requirements, Bazel's `M local` processes). On the
+  bazel-gazelle cold build both tools sandbox the same 1,083 spawns and run
+  the same 5 (`//internal:bazel_test`, `tags = ["local"]`) unsandboxed; the
+  earlier bare "not sandboxed" note made that look like a divergence.
 
 ## The sandbox
 

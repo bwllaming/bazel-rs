@@ -559,3 +559,27 @@ fn py_internal_expand_location_and_make_variables_like_bazel() {
         "{err}"
     );
 }
+
+/// The bazel-gazelle cold build: genuine runs `INFO: 1950 processes: 862
+/// internal, 5 local, 1083 processwrapper-sandbox`, the 5 local spawns being
+/// //internal:bazel_test's (tags = ["local"]); native runs the same split,
+/// and the summary now counts both instead of the bare "not sandboxed" of
+/// a build where only some spawns could be sandboxed.
+#[test]
+fn partly_sandboxed_builds_report_both_counts() {
+    let ws = Workspace::new(&[
+        ("MODULE.bazel", "module(name = \"m\")\n"),
+        (
+            "BUILD.bazel",
+            "genrule(name = \"s\", outs = [\"s.txt\"], cmd = \"touch $@\")\n\
+             genrule(name = \"l\", outs = [\"l.txt\"], cmd = \"touch $@\", tags = [\"local\"])\n",
+        ),
+    ]);
+    let output = ws.run(&["build", "//:s", "//:l"]);
+    let err = stderr(&output);
+    assert!(output.status.success(), "{err}");
+    assert!(
+        err.contains("(experimental local execution; 1 sandboxed, 1 not sandboxed)"),
+        "{err}"
+    );
+}

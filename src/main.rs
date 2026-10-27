@@ -5259,15 +5259,20 @@ impl Drop for ProgressGuard {
 
 /// The build summary's execution-mode note: which strategy executed the
 /// actions (N59). "sandboxed" when every executed spawn ran under the sandbox
-/// strategy, "not sandboxed" otherwise (a --spawn_strategy=standalone request
-/// or a kernel without Landlock support).
+/// strategy, "not sandboxed" when none did (a --spawn_strategy=standalone
+/// request or a kernel without Landlock support), and both counts when only
+/// some did (spawns whose `local`/`no-sandbox` requirements make the
+/// sandboxed strategy skip them, like Bazel's `N local, M
+/// processwrapper-sandbox` process counts).
 /// With a remote executor it starts with the number of remotely executed
 /// spawns (docs/REMOTE_EXECUTION.md).
 fn execution_note() -> String {
-    let local = if bazel_rs::sandbox::all_sandboxed() {
-        "sandboxed"
-    } else {
-        "not sandboxed"
+    let local = match bazel_rs::sandbox::executed_counts() {
+        (sandboxed, 0) if sandboxed > 0 => "sandboxed".to_owned(),
+        (sandboxed, standalone) if sandboxed > 0 => {
+            format!("{sandboxed} sandboxed, {standalone} not sandboxed")
+        }
+        _ => "not sandboxed".to_owned(),
     };
     match bazel_rs::remote_cache::active().filter(|remote| remote.executor().is_some()) {
         Some(remote) => format!(
