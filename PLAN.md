@@ -120,8 +120,10 @@ Done since the last increment recorded under "History", one line each:
 - [x] Runfiles link/manifest policy is per configuration, including typed
       transitions, provider identities and run/test replay
       (docs/RUNFILES_TRANSITIONS.md).
-- [ ] Latest-code configured query now stops at `py_internal.is_singleton_depset`
-      in rules_python's `py3_runtime`. Whole-repository target-determinator
+- [x] `py_internal.is_singleton_depset` landed with coverage support; retain its
+      independent edge-case/performance checks rather than adding a duplicate.
+- [ ] Revalidate the latest-code configured query with runfiles transitions and
+      the singleton helper together. Whole-repository target-determinator
       revision comparison remains unperformed.
 
 ### Commands that are rejected today
