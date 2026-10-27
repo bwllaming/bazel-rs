@@ -219,16 +219,43 @@ fn coverage_configurations_forward_instrumented_files_info_on_every_rule() {
     );
 }
 
+/// Collection in a coverage configuration (a Starlark transition sets
+/// `--collect_code_coverage`; the default `--instrumentation_filter`
+/// includes everything here): the collected providers of Starlark rules,
+/// filegroup, genrule, output files and aliases, `ctx.coverage_instrumented`
+/// and forwardAll, byte for byte against genuine Bazel 9.3.0
+/// (tests/fixtures/instrumented_files/coverage_*.txt, captured on this
+/// fixture with `build //inf:cov //inf:cov_p //inf:cov_presence_read`).
 #[test]
-fn coverage_configurations_stay_explicit() {
+fn coverage_configurations_follow_bazel() {
     let ws = Workspace::fixture();
-    for target in ["//inf:cov", "//inf:cov_p", "//inf:cov_presence_read"] {
+    for (target, expected) in [
+        ("//inf:cov_p", "coverage_p.txt"),
+        ("//inf:cov_presence_read", "coverage_presence_read.txt"),
+    ] {
         let output = ws.run(target);
-        assert_eq!(output.status.code(), Some(1), "{target}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("in a configuration with --collect_code_coverage (set by a Starlark transition) is not implemented in the native profile"),
-            "{target}: {stderr}"
+            output.status.success(),
+            "{target}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let path = stdout.lines().next().unwrap().split_once('\t').unwrap().1;
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            fs::read_to_string(
+                manifest()
+                    .join("tests/fixtures/instrumented_files")
+                    .join(expected)
+            )
+            .unwrap(),
+            "{target}"
         );
     }
+    let output = ws.run("//inf:cov");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

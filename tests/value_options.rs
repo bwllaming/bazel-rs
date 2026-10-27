@@ -97,6 +97,8 @@ const GROUPS: &[(&str, &[&str])] = &[
             "coverage_transition",
             "coverage_transition_off",
             "coverage_setting_bad",
+            // A command-line option since `bazel coverage` (docs/COVERAGE.md).
+            "coverage_cmdline",
         ],
     ),
     ("apple", &["apple_defaults"]),
@@ -104,10 +106,7 @@ const GROUPS: &[(&str, &[&str])] = &[
     // the case keeps the name it had before the option was modelled.
     ("enable_runfiles", &["unmodelled_enable_runfiles"]),
     ("combined", &["all_defaults", "all_set"]),
-    (
-        "declared",
-        &["coverage_cmdline", "apple_cmdline", "proto_transition"],
-    ),
+    ("declared", &["apple_cmdline", "proto_transition"]),
 ];
 
 struct Workspace(tempfile::TempDir);

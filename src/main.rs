@@ -5092,14 +5092,13 @@ fn main() {
     }
     // The native coverage output generator (crate::coverage): a coverage
     // test action's LCOV_MERGER launcher starts this binary with it.
-    let mut raw = std::env::args().skip(1);
+    let mut raw = std::env::args_os().skip(1);
     if raw
         .next()
         .is_some_and(|arg| arg == bazel_rs::coverage::OUTPUT_GENERATOR_ARG)
     {
-        std::process::exit(bazel_rs::coverage::output_generator_main(
-            &raw.collect::<Vec<_>>(),
-        ));
+        let args: Vec<String> = raw.map(|arg| arg.to_string_lossy().into_owned()).collect();
+        std::process::exit(bazel_rs::coverage::output_generator_main(&args));
     }
     bazel_rs::progress::process_start();
     // Ctrl-C exits 8 like Bazel's interrupted command (crate::signals).

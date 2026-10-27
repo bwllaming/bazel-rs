@@ -46,12 +46,12 @@
  "known_divergences": [
   "Exit codes of command-line errors: genuine 2, native 1 (native's single error channel); success/failure always agrees.",
   "Native prints its own result format (`LABEL\\tPATH` on stdout, `bazel-rs: N actions executed ...`) and no INFO lines.",
-  "Declared divergences (verdict DECLARED_DIVERGENCE): --collect_code_coverage and --apple_platform_type on the command line, a Starlark transition writing a proto option: explicit native errors. config_setting on enable_runfiles (case unmodelled_enable_runfiles, named before the option was modelled) now matches: CoreOptions.enableRunfiles is a table-driven row (tests/fixtures/enable_runfiles_option).",
+  "Declared divergences (verdict DECLARED_DIVERGENCE; --collect_code_coverage on the command line matches since docs/COVERAGE.md): --apple_platform_type on the command line, a Starlark transition writing a proto option: explicit native errors. config_setting on enable_runfiles (case unmodelled_enable_runfiles, named before the option was modelled) now matches: CoreOptions.enableRunfiles is a table-driven row (tests/fixtures/enable_runfiles_option).",
   "Native needs --experimental-builtin-modules for the exec cases (the default host platform's @platforms//host); it is passed in every native case."
  ],
  "counts": {
-  "MATCH": 36,
-  "DECLARED_DIVERGENCE": 3
+  "MATCH": 37,
+  "DECLARED_DIVERGENCE": 2
  },
  "scratch_removed": true,
  "cases": {
@@ -886,16 +886,11 @@
     }
    },
    "native": {
-    "exit": 1,
-    "seconds": 0.009,
-    "stdout": "",
-    "stderr": "bazel-rs: unsupported option \"--collect_code_coverage\"; options are never silently ignored\n",
-    "outputs": null
+    "exit": 0,
+    "note": "since `bazel coverage` (docs/COVERAGE.md) --collect_code_coverage is a command-line option; live comparison in tests/value_options.rs"
    },
-   "declared_divergence": "--collect_code_coverage on the command line turns on coverage instrumentation (--instrumentation_filter, CoverageOptions), which the native profile does not model; it stays an unsupported command-line option (a Starlark transition may set it, coverage_transition)",
-   "native_message": "unsupported option \"--collect_code_coverage\"; options are never silently ignored",
-   "verdict": "DECLARED_DIVERGENCE",
-   "exit_code_equal": false
+   "verdict": "MATCH",
+   "exit_code_equal": true
   },
   "coverage_query": {
    "argv": [

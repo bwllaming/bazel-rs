@@ -83,7 +83,10 @@ const ALLOWED_MODULES: &[&str] = &[
     "exec_log",
     // The profile (docs/PROFILE.md): this process's CPU times and the
     // profile file, written when the command ends.
-    "profile",
+    "profile", // The coverage output generator and the combined report
+    // (docs/COVERAGE.md): tracefiles read inside a test action and after
+    // the tests, never during planning.
+    "coverage",
 ];
 const ALLOWED_PREFIXES: &[&str] = &[
     "test_",
