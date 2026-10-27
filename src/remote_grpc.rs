@@ -15,8 +15,12 @@
 //! and the header interceptors), `util/Utils.java`
 //! (`refreshIfUnauthenticated`) and `RemoteGrpcServiceConfig.java`
 //! (`--remote_timeout` as every call's deadline). Like Bazel 9.3 the cache
-//! never calls BatchReadBlobs or BatchUpdateBlobs, and compression
-//! (`--remote_cache_compression`, off by default) is not modelled.
+//! never calls BatchReadBlobs or BatchUpdateBlobs. `--remote_cache_compression`
+//! (off by default) reads and writes blobs of at least
+//! `--experimental_remote_cache_compression_threshold` bytes as zstd
+//! streams under `compressed-blobs/zstd/` resource names
+//! (GrpcCacheClient.getResourceName, ByteStreamUploader
+//! .buildUploadResourceName, Chunker), once the server advertised ZSTD.
 //!
 //! Remote execution (`--remote_executor`, docs/REMOTE_EXECUTION.md) adds
 //! Execution.Execute/WaitExecution (server-streaming
@@ -65,6 +69,10 @@ pub struct GrpcOptions {
     pub upload_local_results: bool,
     /// What the endpoint must support (ServerCapabilitiesRequirement).
     pub requirement: Requirement,
+    /// `--remote_cache_compression`.
+    pub compression: bool,
+    /// `--experimental_remote_cache_compression_threshold` (default 100).
+    pub compression_threshold: u64,
 }
 
 /// GoogleChannelConnectionFactory's ServerCapabilitiesRequirement: what
@@ -171,6 +179,8 @@ fn highest_supported(low: &ApiVersion, high: &ApiVersion) -> Option<ApiVersion> 
 pub struct ServerCapabilities {
     digest_functions: Vec<u64>,
     update_enabled: bool,
+    /// CacheCapabilities.supported_compressors (`Compressor.Value`).
+    compressors: Vec<u64>,
     /// ExecutionCapabilities: `exec_enabled`, `digest_function` (singular)
     /// and `digest_functions`.
     exec_enabled: bool,
@@ -219,6 +229,7 @@ impl ServerCapabilities {
                     for field in reapi::fields(cache)? {
                         match field {
                             (1, value) => enums(&value, &mut capabilities.digest_functions)?,
+                            (6, value) => enums(&value, &mut capabilities.compressors)?,
                             (2, Value::Bytes(update)) => {
                                 for field in reapi::fields(update)? {
                                     if let (1, Value::Varint(value)) = field {
@@ -286,8 +297,16 @@ pub fn check_compatibility(
     capabilities: &ServerCapabilities,
     upload_local_results: bool,
 ) -> Compatibility {
-    check_requirement(capabilities, upload_local_results, Requirement::Cache)
+    check_requirement(
+        capabilities,
+        upload_local_results,
+        false,
+        Requirement::Cache,
+    )
 }
+
+/// `Compressor.Value.ZSTD`.
+const ZSTD: u64 = 1;
 
 /// `DigestFunction.Value` list as Java's `List.toString`.
 fn digest_function_names(values: &[u64]) -> String {
@@ -303,6 +322,7 @@ fn digest_function_names(values: &[u64]) -> String {
 pub fn check_requirement(
     capabilities: &ServerCapabilities,
     upload_local_results: bool,
+    compression: bool,
     requirement: Requirement,
 ) -> Compatibility {
     let mut warnings = Vec::new();
@@ -362,6 +382,12 @@ pub fn check_requirement(
         }
         if upload_local_results && !capabilities.update_enabled {
             warnings.push("--remote_upload_local_results is set, but the remote cache does not support uploading action results or the current account is not authorized to write local results to the remote cache.".into());
+        }
+        if compression && !capabilities.compressors.contains(&ZSTD) {
+            errors.push(
+                "--remote_cache_compression requested but remote does not support compression"
+                    .into(),
+            );
         }
     }
     Compatibility {
@@ -692,6 +718,7 @@ impl GrpcCache {
                 let result = check_requirement(
                     &capabilities,
                     self.options.upload_local_results,
+                    self.options.compression,
                     self.options.requirement,
                 );
                 for warning in &result.warnings {
@@ -778,19 +805,39 @@ impl GrpcCache {
         }
     }
 
-    /// ByteStream.Read of `INSTANCE/blobs/HASH/SIZE`, resumed at the bytes
-    /// received so far; `Ok(None)` on NOT_FOUND. A server sending more than
-    /// the digest's size fails the download.
+    /// GrpcCacheClient.shouldCompress: `--remote_cache_compression` and at
+    /// least the threshold's size.
+    fn compressed(&self, digest: &Digest) -> bool {
+        self.options.compression && digest.size >= self.options.compression_threshold
+    }
+
+    /// ByteStream.Read of `INSTANCE/blobs/HASH/SIZE` (compressed:
+    /// `INSTANCE/compressed-blobs/zstd/HASH/SIZE`, a zstd stream decoded as
+    /// it arrives, ZstdDecompressingOutputStream), resumed at the
+    /// (uncompressed) bytes received so far; `Ok(None)` on NOT_FOUND. A
+    /// server sending more than the digest's size fails the download.
     pub fn read_blob(&self, digest: &Digest, action_id: &str) -> Result<Option<Vec<u8>>, Status> {
         if digest.size == 0 {
             return Ok(Some(Vec::new()));
         }
+        let compressed = self.compressed(digest);
         let resource = format!(
-            "{}blobs/{}/{}",
+            "{}{}/{}/{}",
             self.resource_prefix(),
+            if compressed {
+                "compressed-blobs/zstd"
+            } else {
+                "blobs"
+            },
             digest.hash,
             digest.size
         );
+        let too_many = || {
+            Status::local(format!(
+                "Received more bytes than expected for digest '{}/{}'. Server may have ignored read_offset.",
+                digest.hash, digest.size
+            ))
+        };
         let path = format!("/{BYTE_STREAM}/Read");
         let mut data = Vec::with_capacity(digest.size.min(64 << 20) as usize);
         let mut backoff = ProgressiveBackoff::new(&self.options);
@@ -801,7 +848,10 @@ impl GrpcCache {
             reapi::string(&mut request, 1, &resource);
             reapi::varint_field(&mut request, 2, data.len() as u64);
             let before = data.len();
-            let result = self.channel.server_streaming(
+            // One zstd stream per attempt (a fresh decompressor, like
+            // requestRead's ZstdDecompressingOutputStream).
+            let mut stream = Vec::new();
+            let mut result = self.channel.server_streaming(
                 &Call {
                     path: &path,
                     metadata: &metadata,
@@ -811,11 +861,12 @@ impl GrpcCache {
                 &mut |message| {
                     for field in reapi::fields(&message).map_err(Status::local)? {
                         if let (10, Value::Bytes(chunk)) = field {
+                            if compressed {
+                                stream.extend_from_slice(chunk);
+                                continue;
+                            }
                             if chunk.len() as u64 > digest.size - data.len() as u64 {
-                                return Err(Status::local(format!(
-                                    "Received more bytes than expected for digest '{}/{}'. Server may have ignored read_offset.",
-                                    digest.hash, digest.size
-                                )));
+                                return Err(too_many());
                             }
                             data.extend_from_slice(chunk);
                         }
@@ -823,6 +874,21 @@ impl GrpcCache {
                     Ok(())
                 },
             );
+            if compressed {
+                // What the stream decodes to (all of it, or up to where an
+                // interrupted stream ends).
+                let (decoded, complete) = zstd_decode(&stream);
+                if decoded.len() as u64 > digest.size - data.len() as u64 {
+                    return Err(too_many());
+                }
+                data.extend_from_slice(&decoded);
+                if result.is_ok() && !complete && (data.len() as u64) < digest.size {
+                    result = Err(Status::local(format!(
+                        "Failed to decompress the zstd stream of '{}/{}'",
+                        digest.hash, digest.size
+                    )));
+                }
+            }
             match result {
                 Ok(()) => break,
                 // A fully received blob ignores a late error.
@@ -879,15 +945,26 @@ impl GrpcCache {
     /// ByteStream.Write of `INSTANCE/uploads/UUID/blobs/HASH/SIZE` in 16 KiB
     /// requests; a retry resumes at QueryWriteStatus's committed size (from
     /// the start without QueryWriteStatus); a server completing early, or
-    /// ALREADY_EXISTS, means the blob exists.
+    /// ALREADY_EXISTS, means the blob exists. Compressed
+    /// (`uploads/UUID/compressed-blobs/zstd/HASH/SIZE`): the zstd stream of
+    /// the bytes from the resume offset on, its requests' `write_offset`s
+    /// counting from that offset (Chunker.seek re-initializes a compressed
+    /// stream at the uncompressed offset), and the server's `committed_size`
+    /// must be the stream's end or -1 (checkCommittedSize).
     pub fn write_blob(&self, digest: &Digest, bytes: &[u8], action_id: &str) -> Result<(), Status> {
         if digest.size == 0 {
             return Ok(());
         }
+        let compressed = self.compressed(digest);
         let resource = format!(
-            "{}uploads/{}/blobs/{}/{}",
+            "{}uploads/{}/{}/{}/{}",
             self.resource_prefix(),
             random_uuid(),
+            if compressed {
+                "compressed-blobs/zstd"
+            } else {
+                "blobs"
+            },
             digest.hash,
             digest.size
         );
@@ -917,22 +994,30 @@ impl GrpcCache {
                 };
                 last_committed = Some(offset);
                 let metadata = self.metadata(BYTE_STREAM, action_id)?;
-                let mut position = offset as usize;
+                // The bytes sent and the write_offset of their first byte.
+                let stream;
+                let (data, base): (&[u8], usize) = if compressed {
+                    stream = zstd_encode(&bytes[offset as usize..]);
+                    (&stream, offset as usize)
+                } else {
+                    (bytes, 0)
+                };
+                let mut position = if compressed { 0 } else { offset as usize };
                 let mut first = true;
                 let mut requests = std::iter::from_fn(|| {
-                    if !first && position >= bytes.len() {
+                    if !first && position >= data.len() {
                         return None;
                     }
-                    let end = (position + CHUNK).min(bytes.len());
+                    let end = (position + CHUNK).min(data.len());
                     let mut request = Vec::new();
                     if first {
                         reapi::string(&mut request, 1, &resource);
                     }
                     first = false;
-                    reapi::varint_field(&mut request, 2, position as u64);
-                    reapi::varint_field(&mut request, 3, u64::from(end == bytes.len()));
+                    reapi::varint_field(&mut request, 2, (base + position) as u64);
+                    reapi::varint_field(&mut request, 3, u64::from(end == data.len()));
                     if end > position {
-                        reapi::bytes_field(&mut request, 10, &bytes[position..end]);
+                        reapi::bytes_field(&mut request, 10, &data[position..end]);
                     }
                     position = end.max(position + 1);
                     Some(request)
@@ -948,16 +1033,25 @@ impl GrpcCache {
                 if !all_sent {
                     return Ok(true);
                 }
-                let mut committed = 0;
+                let mut committed = 0i64;
                 if let Some(response) = response {
                     for field in reapi::fields(&response).map_err(Status::local)? {
                         if let (1, Value::Varint(value)) = field {
-                            committed = value;
+                            committed = value as i64;
                         }
                     }
                 }
                 // checkCommittedSize.
-                if committed != digest.size {
+                if compressed {
+                    let expected = (base + data.len()) as i64;
+                    if committed != expected && committed != -1 {
+                        return Err(Status::local(format!(
+                            "compressed write incomplete: committed_size {committed} is neither -1 nor total {expected} - {resource}"
+                        )));
+                    }
+                    return Ok(true);
+                }
+                if committed != digest.size as i64 {
                     return Err(Status::local(format!(
                         "write incomplete: committed_size {committed} for {} total - {resource}",
                         digest.size
@@ -990,9 +1084,67 @@ impl GrpcCache {
     }
 }
 
+/// One zstd frame of `bytes` (ZstdCompressingInputStream).
+pub fn zstd_encode(bytes: &[u8]) -> Vec<u8> {
+    ruzstd::encoding::compress_to_vec(bytes, ruzstd::encoding::CompressionLevel::Fastest)
+}
+
+/// The bytes a zstd stream decodes to, and whether it decoded completely
+/// (a truncated stream yields what its complete blocks hold).
+pub fn zstd_decode(stream: &[u8]) -> (Vec<u8>, bool) {
+    use std::io::Read as _;
+    let mut out = Vec::new();
+    let mut rest = stream;
+    while !rest.is_empty() {
+        // Skippable frames (magic 0x184D2A50..=0x184D2A5F; bazel-remote
+        // stores its blobs behind one) carry no data.
+        if rest.len() >= 4 && rest[0] & 0xf0 == 0x50 && rest[1..4] == [0x2a, 0x4d, 0x18] {
+            if rest.len() < 8 {
+                return (out, false);
+            }
+            let length = u32::from_le_bytes([rest[4], rest[5], rest[6], rest[7]]) as usize;
+            if rest.len() < 8 + length {
+                return (out, false);
+            }
+            rest = &rest[8 + length..];
+            continue;
+        }
+        let mut decoder = match ruzstd::decoding::StreamingDecoder::new(&mut rest) {
+            Ok(decoder) => decoder,
+            Err(_) => return (out, false),
+        };
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            match decoder.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => out.extend_from_slice(&buffer[..count]),
+                Err(_) => return (out, false),
+            }
+        }
+    }
+    (out, true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zstd_streams_round_trip_and_truncate() {
+        let bytes: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        let stream = zstd_encode(&bytes);
+        assert!(stream.len() < bytes.len());
+        assert_eq!(zstd_decode(&stream), (bytes.clone(), true));
+        let (partial, complete) = zstd_decode(&stream[..stream.len() / 2]);
+        assert!(!complete);
+        assert!(bytes.starts_with(&partial));
+        // A skippable frame first (bazel-remote's stored blobs), then
+        // two frames.
+        let mut two = vec![0x50, 0x2a, 0x4d, 0x18, 3, 0, 0, 0, 1, 2, 3];
+        two.extend(zstd_encode(&bytes[..10]));
+        two.extend(zstd_encode(&bytes[10..20]));
+        assert_eq!(zstd_decode(&two), (bytes[..20].to_vec(), true));
+    }
 
     fn version(major: u64, minor: u64) -> Option<ApiVersion> {
         Some(ApiVersion::new(major, minor))
@@ -1003,6 +1155,7 @@ mod tests {
         let good = ServerCapabilities {
             digest_functions: vec![SHA256],
             update_enabled: true,
+            compressors: Vec::new(),
             exec_enabled: false,
             exec_digest_function: 0,
             exec_digest_functions: Vec::new(),
@@ -1048,6 +1201,7 @@ mod tests {
         let caps = ServerCapabilities {
             digest_functions: vec![SHA256],
             update_enabled: true,
+            compressors: Vec::new(),
             exec_enabled: false,
             exec_digest_function: 0,
             exec_digest_functions: Vec::new(),
@@ -1055,7 +1209,7 @@ mod tests {
             low: version(2, 0),
             high: version(2, 3),
         };
-        let result = check_requirement(&caps, true, Requirement::ExecutionAndCache);
+        let result = check_requirement(&caps, true, false, Requirement::ExecutionAndCache);
         assert_eq!(
             result.errors,
             [
@@ -1064,7 +1218,7 @@ mod tests {
         );
         // A cache-only check ignores the execution capabilities.
         assert!(
-            check_requirement(&caps, true, Requirement::Cache)
+            check_requirement(&caps, true, false, Requirement::Cache)
                 .errors
                 .is_empty()
         );
@@ -1074,7 +1228,7 @@ mod tests {
             ..caps.clone()
         };
         assert_eq!(
-            check_requirement(&enabled, true, Requirement::Execution).errors,
+            check_requirement(&enabled, true, false, Requirement::Execution).errors,
             [
                 "Cannot use hash function SHA256 with remote execution. Server supported function is SHA1"
             ]
@@ -1086,7 +1240,7 @@ mod tests {
             ..caps.clone()
         };
         assert_eq!(
-            check_requirement(&listed, true, Requirement::ExecutionAndCache).errors,
+            check_requirement(&listed, true, false, Requirement::ExecutionAndCache).errors,
             [
                 "Cannot use hash function SHA256 with remote execution. Server supported functions are: [MD5]",
                 "Cannot use hash function SHA256 with remote cache. Server supported functions are: []"
@@ -1097,7 +1251,7 @@ mod tests {
             exec_digest_functions: vec![SHA256],
             ..caps
         };
-        let result = check_requirement(&good, true, Requirement::ExecutionAndCache);
+        let result = check_requirement(&good, true, false, Requirement::ExecutionAndCache);
         assert!(result.errors.is_empty() && result.warnings.is_empty());
     }
 
@@ -1138,6 +1292,8 @@ mod tests {
             tls: TlsOptions::default(),
             upload_local_results: true,
             requirement: Requirement::Cache,
+            compression: false,
+            compression_threshold: 100,
         };
         let mut backoff = Backoff::new(&options);
         let first = backoff.next_delay().unwrap();

@@ -245,5 +245,6 @@ remotely, local spawns …)`).
 * `--incompatible_remote_symlinks` does not exist in 9.3 (output symlinks
   always come back as symlinks); `--experimental_remote_require_cached`,
   `--remote_grpc_log`, `--remote_proxy`, scrubbing, persistent-worker keys
-  for remote workers (`--experimental_remote_mark_tool_inputs`) and
-  compression stay unmodelled options.
+  for remote workers (`--experimental_remote_mark_tool_inputs`) stay
+  unmodelled options; `--remote_cache_compression` applies to the
+  executor's ByteStream uploads and downloads like the cache's.

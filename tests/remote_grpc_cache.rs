@@ -245,9 +245,13 @@ fn grpc_cache_round_trip_with_genuine_keys_headers_and_helpers() {
     // The native action cache hits first; the remote cache is not consulted.
     let third = ws.run("c2", &args);
     assert!(stderr(&third).contains("0 actions executed, 3 cache hits, 0 remote cache hits"));
+    // (Only the background capability check, RemoteModule's eager
+    // channel check, which the command does not wait for.)
     let log = server.take_log();
     assert!(
-        log.iter().all(|call| call.detail.contains("other")),
+        log.iter()
+            .filter(|call| !call.method.ends_with("/GetCapabilities"))
+            .all(|call| call.detail.contains("other")),
         "{log:?}"
     );
 }
@@ -691,8 +695,8 @@ fn options_and_their_errors() {
             "While parsing option --remote_retries=x: 'x' is not an int",
         ),
         (
-            "--remote_cache_compression",
-            "zstd remote cache compression is not implemented",
+            "--experimental_remote_cache_compression_threshold=x",
+            "While parsing option --experimental_remote_cache_compression_threshold=x: 'x' is not an int",
         ),
         (
             "--remote_executor=grpc://127.0.0.1:1/path",
@@ -1046,4 +1050,96 @@ fn genuine_bazel_shares_grpc_entries_both_ways() {
         String::from_utf8_lossy(&read_back.stderr)
     );
     assert_eq!(genuine_read_outputs, genuine_outputs);
+}
+
+#[test]
+fn zstd_compression_follows_the_server_capabilities() {
+    let ws = Workspace::new();
+    let server = Server::with_config(Config {
+        compressors: vec![1],
+        read_chunk: 7,
+        ..Config::default()
+    });
+    let cache = format!("--remote_cache={}", server.url());
+    let args = [
+        "build",
+        &cache,
+        "--remote_cache_compression",
+        "--experimental_remote_cache_compression_threshold=1",
+        "//pkg:all",
+    ];
+    let first = ws.run("c1", &args);
+    assert!(first.status.success(), "{}", stderr(&first));
+    let built = outputs(&first);
+    // The keys do not change; every non-empty blob is written as a zstd
+    // stream under compressed-blobs/zstd/ (ByteStreamUploader).
+    assert_eq!(server.ac_keys(""), [SH_KEY, RUN_KEY, GEN_KEY]);
+    let log = server.take_log();
+    let writes: Vec<&str> = log
+        .iter()
+        .filter(|call| call.method.ends_with("/Write"))
+        .map(|call| call.detail.as_str())
+        .collect();
+    assert_eq!(writes.len(), 9, "{writes:?}");
+    assert!(
+        writes
+            .iter()
+            .all(|detail| detail.contains("/compressed-blobs/zstd/")),
+        "{writes:?}"
+    );
+    // A fresh native cache reads the outputs as zstd streams (in 7-byte
+    // response chunks) and gets the same bytes.
+    let second = ws.run("c2", &args);
+    assert!(second.status.success(), "{}", stderr(&second));
+    assert!(stderr(&second).contains("3 remote cache hits"));
+    assert_eq!(outputs(&second), built);
+    let reads: Vec<String> = server
+        .take_log()
+        .iter()
+        .filter(|call| call.method.ends_with("/Read"))
+        .map(|call| call.detail.clone())
+        .collect();
+    assert_eq!(reads.len(), 3, "{reads:?}");
+    assert!(
+        reads
+            .iter()
+            .all(|detail| detail.starts_with("compressed-blobs/zstd/")),
+        "{reads:?}"
+    );
+    // Below the threshold (default 100 bytes) blobs stay uncompressed.
+    let third = ws.run(
+        "c3",
+        &["build", &cache, "--remote_cache_compression", "//pkg:all"],
+    );
+    assert!(third.status.success(), "{}", stderr(&third));
+    let reads: Vec<String> = server
+        .take_log()
+        .iter()
+        .filter(|call| call.method.ends_with("/Read"))
+        .map(|call| call.detail.clone())
+        .collect();
+    assert!(
+        reads.iter().all(|detail| detail.starts_with("blobs/")),
+        "{reads:?}"
+    );
+    // A server without ZSTD: RemoteServerCapabilities' error fails every
+    // action that uses the cache (exit code 34).
+    let plain = Server::new();
+    let failed = ws.run(
+        "c4",
+        &[
+            "build",
+            &format!("--remote_cache={}", plain.url()),
+            "--remote_cache_compression",
+            "//pkg:gen",
+        ],
+    );
+    assert_eq!(failed.status.code(), Some(34), "{}", stderr(&failed));
+    assert!(
+        stderr(&failed).contains(
+            "Failed to query remote execution capabilities: --remote_cache_compression requested but remote does not support compression"
+        ),
+        "{}",
+        stderr(&failed)
+    );
 }

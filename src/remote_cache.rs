@@ -58,6 +58,10 @@ pub struct RemoteOptions {
     pub local_fallback: bool,
     /// `--remote_print_execution_messages` (default `failure`).
     pub print_execution_messages: PrintExecutionMessages,
+    /// `--remote_cache_compression` (gRPC zstd ByteStream).
+    pub cache_compression: bool,
+    /// `--experimental_remote_cache_compression_threshold` (default 100).
+    pub cache_compression_threshold: i32,
 }
 
 /// RemoteOptions.ExecutionMessagePrintMode.
@@ -108,6 +112,8 @@ impl Default for RemoteOptions {
             default_exec_properties: Vec::new(),
             local_fallback: false,
             print_execution_messages: PrintExecutionMessages::Failure,
+            cache_compression: false,
+            cache_compression_threshold: 100,
         }
     }
 }
@@ -220,6 +226,10 @@ impl RemoteOptions {
             ),
             (&["remote_max_connections"][..], &mut self.max_connections),
             (
+                &["experimental_remote_cache_compression_threshold"][..],
+                &mut self.cache_compression_threshold,
+            ),
+            (
                 &["remote_max_concurrency_per_connection"][..],
                 &mut self.max_concurrency_per_connection,
             ),
@@ -281,21 +291,14 @@ impl RemoteOptions {
                 return Some(Ok(false));
             }
         }
-        // `--remote_cache_compression` (default false) is not modelled when
-        // enabled (zstd ByteStream resources).
         for name in [
             "remote_cache_compression",
             "experimental_remote_cache_compression",
         ] {
             if let Some(value) = crate::configuration::boolean_option(arg, name) {
-                return Some(value.and_then(|value| {
-                    if value {
-                        Err(format!(
-                            "unsupported option {arg}: zstd remote cache compression is not implemented by the native profile (Bazel's default --noremote_cache_compression is)"
-                        ))
-                    } else {
-                        Ok(false)
-                    }
+                return Some(value.map(|value| {
+                    self.cache_compression = value;
+                    false
                 }));
             }
         }
@@ -632,6 +635,8 @@ pub fn setup(
                     tls: options.tls.clone(),
                     upload_local_results: options.upload_local_results,
                     requirement,
+                    compression: options.cache_compression,
+                    compression_threshold: options.cache_compression_threshold.max(0) as u64,
                 },
             )
             .map_err(|error| fail(format!("--{option}={target}: {error}")))?;
@@ -1823,10 +1828,16 @@ mod tests {
             options.parse("--noremote_cache_compression", None),
             Some(Ok(false))
         );
-        assert!(matches!(
+        assert_eq!(
             options.parse("--remote_cache_compression", None),
-            Some(Err(_))
-        ));
+            Some(Ok(false))
+        );
+        assert!(options.cache_compression);
+        assert_eq!(
+            options.parse("--experimental_remote_cache_compression_threshold=7", None),
+            Some(Ok(false))
+        );
+        assert_eq!(options.cache_compression_threshold, 7);
         assert_eq!(options.parse("--remote_download_regex=x", None), None);
     }
 

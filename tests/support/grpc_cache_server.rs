@@ -65,6 +65,9 @@ mod grpc_cache_server {
         pub exec_digest_functions: Vec<u64>,
         /// One step per Execute/WaitExecution call, then `ExecStep::Run`.
         pub exec_script: VecDeque<ExecStep>,
+        /// CacheCapabilities.supported_compressors (1: ZSTD); with ZSTD the
+        /// ByteStream serves `compressed-blobs/zstd/` resources.
+        pub compressors: Vec<u64>,
     }
 
     /// How the server answers one Execute or WaitExecution call.
@@ -122,6 +125,7 @@ mod grpc_cache_server {
                 execution: false,
                 exec_digest_functions: vec![1],
                 exec_script: VecDeque::new(),
+                compressors: Vec::new(),
             }
         }
     }
@@ -220,16 +224,34 @@ mod grpc_cache_server {
 
     /// `[INSTANCE/]blobs/HASH/SIZE` or `[INSTANCE/]uploads/UUID/blobs/HASH/SIZE`.
     fn parse_resource(resource: &str) -> (String, String, u64) {
+        let (instance, hash, size, _) = parse_resource_compressed(resource);
+        (instance, hash, size)
+    }
+
+    /// [`parse_resource`] that also accepts `compressed-blobs/zstd/HASH/SIZE`
+    /// (and whether the resource is compressed).
+    fn parse_resource_compressed(resource: &str) -> (String, String, u64, bool) {
         let parts = resource.split('/').collect::<Vec<_>>();
-        let blobs = parts.iter().position(|part| *part == "blobs").unwrap();
+        let (blobs, compressed) = match parts.iter().position(|part| *part == "blobs") {
+            Some(blobs) => (blobs, false),
+            None => (
+                parts
+                    .iter()
+                    .position(|part| *part == "compressed-blobs")
+                    .unwrap()
+                    + 1,
+                true,
+            ),
+        };
         let instance_end = parts
             .iter()
-            .position(|part| *part == "uploads" || *part == "blobs")
+            .position(|part| *part == "uploads" || *part == "blobs" || *part == "compressed-blobs")
             .unwrap();
         (
             parts[..instance_end].join("/"),
             parts[blobs + 1].to_owned(),
             parts[blobs + 2].parse().unwrap(),
+            compressed,
         )
     }
 
@@ -302,6 +324,13 @@ mod grpc_cache_server {
                 reapi::varint_field(&mut update, 1, u64::from(config.update_enabled));
                 reapi::message(&mut cache, 2, &update);
                 reapi::varint_field(&mut cache, 4, 4 << 20);
+                let mut packed = Vec::new();
+                for value in &config.compressors {
+                    reapi::varint(&mut packed, *value);
+                }
+                if !packed.is_empty() {
+                    reapi::bytes_field(&mut cache, 6, &packed);
+                }
                 let mut out = Vec::new();
                 reapi::message(&mut out, 1, &cache);
                 if config.execution {
@@ -390,11 +419,28 @@ mod grpc_cache_server {
                 (vec![out], ok())
             }
             "google.bytestream.ByteStream/Read" => {
-                let (instance, hash, _) = parse_resource(&string_field(&request, 1));
+                let (instance, hash, _, compressed) =
+                    parse_resource_compressed(&string_field(&request, 1));
                 let offset = varint(&request, 2) as usize;
                 let Some(data) = state.cas.get(&format!("{instance}|{hash}")).cloned() else {
                     return (Vec::new(), status(5, "blob not found"));
                 };
+                if compressed {
+                    if !state.config.compressors.contains(&1) {
+                        return (Vec::new(), status(3, "compression is not supported"));
+                    }
+                    // The zstd stream of the blob from the (uncompressed)
+                    // read offset on.
+                    let stream =
+                        bazel_rs::remote_grpc::zstd_encode(&data[offset.min(data.len())..]);
+                    let mut out = Vec::new();
+                    for piece in stream.chunks(state.config.read_chunk.max(1)) {
+                        let mut response = Vec::new();
+                        reapi::bytes_field(&mut response, 10, piece);
+                        out.push(response);
+                    }
+                    return (out, ok());
+                }
                 let limit = state
                     .config
                     .fail_read_after
@@ -421,11 +467,44 @@ mod grpc_cache_server {
             }
             "google.bytestream.ByteStream/Write" => {
                 let resource = string_field(&request, 1);
-                let (instance, hash, size) = parse_resource(&resource);
+                let (instance, hash, size, compressed) = parse_resource_compressed(&resource);
                 let key = format!("{instance}|{hash}");
                 if state.cas.contains_key(&key) {
                     let mut response = Vec::new();
-                    reapi::varint_field(&mut response, 1, size);
+                    // -1 for compressed uploads (REAPI).
+                    reapi::varint_field(&mut response, 1, if compressed { u64::MAX } else { size });
+                    return (vec![response], ok());
+                }
+                if compressed {
+                    if !state.config.compressors.contains(&1) {
+                        return (Vec::new(), status(3, "compression is not supported"));
+                    }
+                    let mut committed = state.uploads.remove(&resource).unwrap_or_default();
+                    let base = varint(&requests[0], 2) as usize;
+                    if base != committed.len() {
+                        return (Vec::new(), status(3, "write_offset mismatch"));
+                    }
+                    let mut stream = Vec::new();
+                    for request in &requests {
+                        let offset = varint(request, 2) as usize;
+                        let data = message_field(request, 10).pop().unwrap_or_default();
+                        state.max_write_chunk = state.max_write_chunk.max(data.len());
+                        if offset != base + stream.len() {
+                            return (Vec::new(), status(3, "write_offset mismatch"));
+                        }
+                        stream.extend_from_slice(&data);
+                    }
+                    let (decoded, complete) = bazel_rs::remote_grpc::zstd_decode(&stream);
+                    if !complete {
+                        return (Vec::new(), status(3, "truncated zstd stream"));
+                    }
+                    committed.extend_from_slice(&decoded);
+                    if Digest::of(&committed).hash != hash {
+                        return (Vec::new(), status(3, "digest mismatch"));
+                    }
+                    let mut response = Vec::new();
+                    reapi::varint_field(&mut response, 1, (base + stream.len()) as u64);
+                    state.cas.insert(key, committed);
                     return (vec![response], ok());
                 }
                 let mut committed = state.uploads.remove(&resource).unwrap_or_default();
@@ -468,7 +547,7 @@ mod grpc_cache_server {
                     );
                 }
                 let resource = string_field(&request, 1);
-                let (instance, hash, _) = parse_resource(&resource);
+                let (instance, hash, _, _) = parse_resource_compressed(&resource);
                 let complete = state.cas.contains_key(&format!("{instance}|{hash}"));
                 let committed = state.uploads.get(&resource).map_or(0, Vec::len);
                 let mut response = Vec::new();

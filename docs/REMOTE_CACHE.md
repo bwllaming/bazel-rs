@@ -107,7 +107,7 @@ and `mod`:
 | `--remote_retries` (old `--experimental_remote_retry_max_attempts`, default 5), `--remote_retry_max_delay` (5s) | gRPC retries (HTTP requests are not retried) |
 | `--remote_max_connections` (100; 0 unlimited), `--remote_max_concurrency_per_connection` (100) | gRPC connection pool |
 | `--remote_download_outputs=all\|minimal\|toplevel`, `--remote_download_{all,minimal,toplevel}` | accepted; every output is downloaded (divergence below) |
-| `--noremote_cache_compression` | the default; `--remote_cache_compression` (zstd) is an explicit failure |
+| `--[no]remote_cache_compression`, `--experimental_remote_cache_compression_threshold` (100) | gRPC zstd ByteStream (below); HTTP caches ignore it, like Bazel |
 | `--tls_certificate`, `--tls_client_certificate`, `--tls_client_key`, `--tls_authority_override` | grpcs:// (and the root/client certificate for https://) |
 | `--[no]incompatible_strict_action_env` (build) | both values, N42's action environment (docs/ACTION_ENV.md) |
 | anything else (`--disk_cache`, `--remote_local_fallback`, `--remote_proxy`…) | unmodelled option error |
@@ -328,6 +328,30 @@ cache never uses `BatchReadBlobs`/`BatchUpdateBlobs`. Every call carries
 command id and build request id per invocation) and the credential
 helper's headers, and has `--remote_timeout` as its deadline
 (`RemoteGrpcServiceConfig`; also the connect timeout).
+
+**Compression** (`--remote_cache_compression`, GrpcCacheClient
+.shouldCompress/getResourceName, ByteStreamUploader, Chunker,
+RemoteServerCapabilities): the capability check requires `ZSTD` among
+the server's `supported_compressors`, else its error `--remote_cache_compression
+requested but remote does not support compression` fails every action
+that uses the cache (exit 34). Blobs of at least
+`--experimental_remote_cache_compression_threshold` bytes (default 100)
+are read from `[INSTANCE/]compressed-blobs/zstd/HASH/SIZE` (a zstd stream,
+decoded and verified against the digest; skippable frames, which
+bazel-remote stores in front of its blobs, are skipped; an interrupted
+read resumes at the uncompressed bytes received, with a fresh stream) and
+written to `[INSTANCE/]uploads/UUID/compressed-blobs/zstd/HASH/SIZE` (one
+zstd frame, `write_offset`s of the compressed bytes; a resumed upload
+compresses the rest from the committed uncompressed offset like
+Chunker.seek; `committed_size` must be the stream's end or -1). Keys and
+FindMissingBlobs are unchanged. Paired with genuine 9.3.0 and
+bazel-remote 2.x (GitHub release binary, loopback, threshold 1): genuine
+writes compressed entries and native reads them (2 remote cache hits);
+native writes them (`compressed-blobs/zstd/` writes in bazel-remote's
+log) and genuine reads them (`2 remote cache hit`).
+`tests/remote_grpc_cache.rs::zstd_compression_follows_the_server_capabilities`
+pins resource names, the threshold and the capability error against the
+in-process server.
 
 **Retries** (`RemoteRetrier`): CANCELLED, UNKNOWN, DEADLINE_EXCEEDED,
 ABORTED, INTERNAL, UNAVAILABLE and RESOURCE_EXHAUSTED are retried up to
