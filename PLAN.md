@@ -191,9 +191,11 @@ Done since the last increment recorded under "History", one line each:
 
 - [x] Aspects: parameters from rule attributes; the same aspect from `--aspects`
       and an attribute (descriptor identity).
-- [ ] Aspects: `ctx.rule.attr` of base aspects; function `attr_aspects`,
-      `toolchains_aspects`, subrules on aspects; the rule-side parameter check.
-- [ ] One toolchain needed on two execution platforms in one configuration.
+- [x] Aspects: `ctx.rule.attr` of base aspects; function `attr_aspects` and
+      `propagation_predicate`; `toolchains_aspects` with `ctx.rule.toolchains`;
+      subrules on aspects; the rule-side parameter check (docs/ASPECTS.md).
+- [ ] One toolchain needed on two execution platforms in one configuration
+      (design note docs/TOOLCHAIN_EXEC_PLATFORM_KEYS.md; deferred).
 - [x] `register_execution_platforms` from root and non-root modules.
 - [x] Console text: `INFO: Analyzed …` / `Found …` / `Elapsed time` / `Build
       completed …` in every UI mode, `DEBUG: FILE:LINE:COL:` on every `print()`

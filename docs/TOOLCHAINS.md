@@ -305,7 +305,8 @@ parent's selected platform. Paired capture
   `ImmutableMap.buildOrThrow` in `configureRegisteredExecutionPlatforms`).
 * A toolchain implementation needed for two execution platforms in one
   configuration fails explicitly (Bazel keys it by its execution platform,
-  `ConfiguredTargetKey.executionPlatformLabel`; the native key has none).
+  `ConfiguredTargetKey.executionPlatformLabel`; the native key has none;
+  design note docs/TOOLCHAIN_EXEC_PLATFORM_KEYS.md).
 * Declared and automatic exec groups, `exec_group_compatible_with`,
   `ctx.exec_groups` and `config.exec(exec_group = NAME)` are N35
   (docs/EXEC_GROUPS.md); only exec groups of aspects remain unsupported.
