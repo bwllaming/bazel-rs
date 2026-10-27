@@ -34,7 +34,8 @@ The `bazel-rs` binary uses jemalloc as its Rust global allocator: cargo feature
 `jemalloc`, on by default, through `tikv-jemallocator` 0.7.0 (bundling a jemalloc
 5.3.1 snapshot) with jemalloc's default options. It is linked statically with
 prefixed symbols, so only Rust allocations go to jemalloc, C code keeps glibc
-malloc, and `ldd` shows no new library. Building it needs `make` and a POSIX `sh`
+malloc, and `ldd` shows no new library (the static musl release build instead
+gives jemalloc the unprefixed `malloc` family too, docs/RELEASING.md). Building it needs `make` and a POSIX `sh`
 in addition to the C compiler that `ring` and `blake3` already require: the
 `tikv-jemalloc-sys` build script runs jemalloc's bundled `configure` and `make`,
 which adds about 90-100 s of CPU to a clean build.
@@ -55,8 +56,11 @@ affected.
 ## Releases and license
 
 Linux x86_64 binaries are published as GitHub releases of `bwllaming/bazel-rs`
-(`gh release download v<version> --repo bwllaming/bazel-rs`; each release's
-notes give the checksum, glibc requirement and install steps). Install the
+(`gh release download v<version> --repo bwllaming/bazel-rs`): a static
+`x86_64-unknown-linux-musl` build that runs on any distribution and a
+`x86_64-unknown-linux-gnu` build that needs the glibc it was built against
+(each release's notes give the checksums, requirements and install steps; from
+0.2.0 on). Install the
 `bazel-rs` binary anywhere on PATH and run it from a workspace like Bazel
 (`bazel-rs build //...`); it does not replace `bazel` or Bazelisk. Releases are
 cut with `scripts/release.py` and the version is bumped with

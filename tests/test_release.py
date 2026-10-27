@@ -91,6 +91,9 @@ class VersionTest(unittest.TestCase):
     def test_names_and_prerelease(self):
         self.assertEqual(release.tag_name("0.1.0"), "v0.1.0")
         self.assertEqual(release.archive_stem("0.1.0"), "bazel-rs-0.1.0-x86_64-unknown-linux-gnu")
+        self.assertEqual(
+            release.archive_stem("0.2.0", "x86_64-unknown-linux-musl"), "bazel-rs-0.2.0-x86_64-unknown-linux-musl"
+        )
         self.assertTrue(release.is_prerelease("0.1.0"))
         self.assertFalse(release.is_prerelease("0.1.0", latest=True))
         self.assertTrue(release.is_prerelease("1.0.0-rc.1"))
@@ -239,6 +242,143 @@ class BuildTest(unittest.TestCase):
             self.assertIsNone(release.elf_machine(elf))
 
 
+def elf64(phdrs):
+    """A minimal ELF64 LE header plus program headers [(p_type, payload bytes)]."""
+    phoff, phentsize = 64, 56
+    data_at = phoff + phentsize * len(phdrs)
+    header = bytearray(64)
+    header[:7] = b"\x7fELF\x02\x01\x01"
+    header[18:20] = (62).to_bytes(2, "little")
+    header[32:40] = phoff.to_bytes(8, "little")
+    header[54:56] = phentsize.to_bytes(2, "little")
+    header[56:58] = len(phdrs).to_bytes(2, "little")
+    table, payload = bytearray(), bytearray()
+    for kind, body in phdrs:
+        ph = bytearray(phentsize)
+        ph[0:4] = kind.to_bytes(4, "little")
+        ph[8:16] = (data_at + len(payload)).to_bytes(8, "little")
+        ph[32:40] = len(body).to_bytes(8, "little")
+        table += ph
+        payload += body
+    return bytes(header + table + payload)
+
+
+def dynamic(*tags):
+    return b"".join(t.to_bytes(8, "little") + bytes(8) for t in (*tags, 0))
+
+
+class TargetsTest(unittest.TestCase):
+    def test_target_table(self):
+        self.assertEqual(
+            [t.triple for t in release.select_targets(None)],
+            ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"],
+        )
+        self.assertEqual(
+            [t.triple for t in release.select_targets(["aarch64-unknown-linux-musl", "x86_64-unknown-linux-gnu"])],
+            ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-musl"],
+        )
+        with self.assertRaises(release.ReleaseError):
+            release.select_targets(["riscv64gc-unknown-linux-gnu"])
+        arm = release.TARGETS_BY_TRIPLE["aarch64-unknown-linux-musl"]
+        self.assertTrue(arm.static and not arm.default and arm.caveat)
+        self.assertIn(("JEMALLOC_SYS_WITH_LG_PAGE", "16"), arm.env)
+        toolchain = (ROOT / "rust-toolchain.toml").read_text()
+        for t in release.TARGETS:
+            if t.zig:
+                self.assertIn(f'"{t.triple}"', toolchain)
+
+    def test_zig_wrapper_and_cross_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            fake = tmp / "zig dir" / "zig"
+            fake.parent.mkdir()
+            fake.write_text('#!/bin/sh\nprintf "%s|" "$@"\n')
+            fake.chmod(0o755)
+            arm = release.TARGETS_BY_TRIPLE["aarch64-unknown-linux-musl"]
+            env = release.cross_env(arm, str(fake), tmp / "tools", tmp / "cache")
+            self.assertEqual(env["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"], "rust-lld")
+            self.assertEqual(env["JEMALLOC_SYS_WITH_LG_PAGE"], "16")
+            self.assertEqual(env["ZIG_GLOBAL_CACHE_DIR"], str(tmp / "cache"))
+            cc = env["CC_aarch64_unknown_linux_musl"]
+            out = release.run_command([cc, "--target=aarch64-unknown-linux-musl", "-O2", "a b.c"]).stdout
+            self.assertEqual(out, "cc|-target|aarch64-linux-musl|-fno-sanitize=all|-O2|a b.c|")
+            out = release.run_command([env["AR_aarch64_unknown_linux_musl"], "crs", "x.a"]).stdout
+            self.assertEqual(out, "ar|crs|x.a|")
+            musl = release.TARGETS_BY_TRIPLE["x86_64-unknown-linux-musl"]
+            env = release.cross_env(musl, str(fake), tmp / "tools", tmp / "cache")
+            self.assertFalse(any(k.startswith("CARGO_TARGET_") for k in env))
+            self.assertNotIn("JEMALLOC_SYS_WITH_LG_PAGE", env)
+
+    def test_find_zig(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.assertIsNone(release.find_zig(None, repo, {"PATH": ""}))
+            zig = repo / ".direnv" / "zig" / "zig"
+            zig.parent.mkdir(parents=True)
+            zig.write_text("#!/bin/sh\n")
+            zig.chmod(0o755)
+            self.assertEqual(release.find_zig(None, repo, {"PATH": ""}), str(zig.resolve()))
+            self.assertEqual(release.find_zig(None, repo, {"ZIG": "/bin/sh", "PATH": ""}), str(Path("/bin/sh").resolve()))
+
+    def test_elf_linkage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            elf = Path(tmp) / "bin"
+            elf.write_bytes(elf64([(1, b""), (2, dynamic(30, 0x6FFFFEF5))]))  # static-pie: PT_DYNAMIC, no DT_NEEDED
+            self.assertEqual(release.elf_linkage(elf), (False, 0))
+            static = release.TARGETS_BY_TRIPLE["x86_64-unknown-linux-musl"]
+            self.assertIn("statically linked", release.check_linkage(FakeRunner(), static, elf))
+            elf.write_bytes(elf64([(3, b"/lib64/ld-linux-x86-64.so.2\0"), (2, dynamic(1, 1, 30))]))
+            self.assertEqual(release.elf_linkage(elf), (True, 2))
+            with self.assertRaisesRegex(release.ReleaseError, "is not static"):
+                release.check_linkage(FakeRunner(), static, elf)
+            with self.assertRaisesRegex(release.ReleaseError, "arm64"):
+                release.check_linkage(FakeRunner(), release.TARGETS_BY_TRIPLE["aarch64-unknown-linux-musl"], elf)
+            elf.write_bytes(b"#!/bin/sh\n" + bytes(60))
+            with self.assertRaises(release.ReleaseError):
+                release.elf_linkage(elf)
+        if Path("/bin/sh").is_file() and release.elf_machine(Path("/bin/sh")) is not None:
+            interp, needed = release.elf_linkage(Path("/bin/sh").resolve())
+            self.assertTrue(interp and needed >= 1)
+
+    def test_smoke_plan(self):
+        gnu = release.TARGETS_BY_TRIPLE["x86_64-unknown-linux-gnu"]
+        arm = release.TARGETS_BY_TRIPLE["aarch64-unknown-linux-musl"]
+        no_binfmt = lambda machine: False
+        self.assertEqual(release.smoke_plan(gnu, None, False, release.EM_X86_64, no_binfmt), ([], True, release.SMOKE_FULL))
+        self.assertEqual(release.smoke_plan(arm, None, False, release.EM_AARCH64, no_binfmt)[:2], ([], True))
+        self.assertEqual(release.smoke_plan(arm, None, False, release.EM_X86_64, lambda m: True)[:2], ([], True))
+        self.assertEqual(
+            release.smoke_plan(arm, "/q/qemu-aarch64", False, release.EM_X86_64, no_binfmt),
+            (["/q/qemu-aarch64"], False, release.SMOKE_QEMU),
+        )
+        self.assertEqual(release.smoke_plan(arm, None, True, release.EM_X86_64, no_binfmt), (None, False, release.SMOKE_NONE))
+        with self.assertRaisesRegex(release.ReleaseError, "--qemu-aarch64"):
+            release.smoke_plan(arm, None, False, release.EM_X86_64, no_binfmt)
+
+    def test_binfmt_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "status").write_text("enabled\n")
+            (root / "register").write_text("")
+            self.assertFalse(release.binfmt_runs(release.EM_AARCH64, root))
+            (root / "qemu-aarch64").write_text(
+                "enabled\ninterpreter /usr/bin/qemu-aarch64-static\nflags: F\noffset 0\n"
+                "magic 7f454c460201010000000000000000000200b700\nmask ffffffffffffff00fffffffffffffffffeffffff\n"
+            )
+            self.assertTrue(release.binfmt_runs(release.EM_AARCH64, root))
+            self.assertFalse(release.binfmt_runs(release.EM_X86_64, root))
+            (root / "qemu-aarch64").write_text("disabled\nmagic 7f454c460201010000000000000000000200b700\n")
+            self.assertFalse(release.binfmt_runs(release.EM_AARCH64, root))
+
+    def test_default_temp_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            self.assertEqual(release.default_temp_root({"TMPDIR": "/t", "HOME": str(home)}), Path("/t"))
+            self.assertIsNone(release.default_temp_root({"HOME": str(home)}))
+            (home / "opencodetmp").mkdir()
+            self.assertEqual(release.default_temp_root({"HOME": str(home)}), home / "opencodetmp")
+
+
 class PackageTest(unittest.TestCase):
     FILES = [
         ("bazel-rs", b"\x7fELF binary", 0o775),
@@ -337,6 +477,30 @@ class LicensesTest(unittest.TestCase):
         self.assertIn("`embedded_tools/jdk/legal/y/LICENSE`: same text as `embedded_tools/jdk/legal/x/LICENSE`.", text)
         self.assertIn("````text\nbazel license ```\n````", text)
         self.assertIn("No license file in the crate; license expression: Apache-2.0.", text)
+        self.assertIn("`x86_64-unknown-linux-gnu` (dev-dependencies excluded)", text)
+        self.assertNotIn("Statically linked C runtime", text)
+
+    def test_markdown_static_runtime(self):
+        text = release.third_party_markdown(
+            "0.1.0", HEAD, release.runtime_packages(self.METADATA), lambda p: [], b"bazel", [],
+            "x86_64-unknown-linux-musl", [("musl libc (MIT)", b"musl text"), ("LLVM libunwind", b"llvm text")],
+        )
+        self.assertIn("`x86_64-unknown-linux-musl` (dev-dependencies excluded)", text)
+        self.assertIn("## Statically linked C runtime", text)
+        self.assertIn("musl libc (MIT):\n\n```text\nmusl text\n```", text)
+
+    def test_static_runtime_licenses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            zig = Path(tmp) / "zig"
+            zig.write_text("")
+            with self.assertRaisesRegex(release.ReleaseError, "COPYRIGHT"):
+                release.static_runtime_licenses(str(zig))
+            for _, relative in release.STATIC_RUNTIME_LICENSES:
+                (Path(tmp) / relative).parent.mkdir(parents=True, exist_ok=True)
+                (Path(tmp) / relative).write_text(relative)
+            found = release.static_runtime_licenses(str(zig))
+            self.assertEqual([t for t, _ in found], [t for t, _ in release.STATIC_RUNTIME_LICENSES])
+            self.assertEqual(found[0][1], b"lib/libc/musl/COPYRIGHT")
 
     def test_bundle_legal_files(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -353,11 +517,27 @@ class LicensesTest(unittest.TestCase):
 
 
 class NotesTest(unittest.TestCase):
-    INFO = dict(
-        version="0.2.0", commit=HEAD, commit_date="2026-10-26T18:40:41+00:00", compatibility="9.3.0", glibc="2.39",
-        rustc="rustc 1.99.0", archive="bazel-rs-0.2.0-x86_64-unknown-linux-gnu.tar.gz", archive_sha256="f" * 64,
-        gh_repo="o/r", prerelease=True, previous_tag="v0.1.0",
+    GNU = dict(
+        triple="x86_64-unknown-linux-gnu", arch="x86_64", archive="bazel-rs-0.2.0-x86_64-unknown-linux-gnu.tar.gz",
+        sha256="f" * 64, requirement="glibc ≥ 2.39", tested=release.SMOKE_FULL,
     )
+    MUSL = dict(
+        triple="x86_64-unknown-linux-musl", arch="x86_64", archive="bazel-rs-0.2.0-x86_64-unknown-linux-musl.tar.gz",
+        sha256="e" * 64, requirement="statically linked (musl libc, jemalloc): no glibc or other shared library needed",
+        tested=release.SMOKE_FULL, static=True,
+    )
+    ARM = dict(
+        triple="aarch64-unknown-linux-musl", arch="arm64", archive="bazel-rs-0.2.0-aarch64-unknown-linux-musl.tar.gz",
+        sha256="d" * 64, requirement="statically linked", tested=release.SMOKE_QEMU, static=True,
+        caveat=release.ARM64_CAVEAT,
+    )
+
+    def info(self, *assets):
+        return release.NotesInfo(
+            version="0.2.0", commit=HEAD, commit_date="2026-10-26T18:40:41+00:00", compatibility="9.3.0",
+            rustc="rustc 1.99.0", assets=[release.AssetInfo(**a) for a in assets], gh_repo="o/r", prerelease=True,
+            previous_tag="v0.1.0",
+        )
 
     def test_classify_and_changelog(self):
         self.assertEqual(release.classify("parity(aspects): x"), "parity")
@@ -386,7 +566,7 @@ class NotesTest(unittest.TestCase):
         self.assertIsNone(release.previous_tag(runner, Path("/r"), HEAD, "0.1.0"))
 
     def test_render(self):
-        info = release.NotesInfo(**self.INFO)
+        info = self.info(self.GNU)
         text = release.render_notes(info, "### Fixes\n\n- fix: x (1)\n", prepend="Read me first.\n")
         self.assertTrue(text.startswith("Read me first.\n\n# bazel-rs 0.2.0\n"))
         for needle in (
@@ -400,6 +580,24 @@ class NotesTest(unittest.TestCase):
             "## Changes since v0.1.0\n\n### Fixes",
         ):
             self.assertIn(needle, text)
+        self.assertNotIn("prefer the static one", text)
+
+    def test_render_static_and_arm64(self):
+        text = release.render_notes(self.info(self.GNU, self.MUSL, self.ARM), "")
+        for needle in (
+            f"| `bazel-rs-0.2.0-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64 (`x86_64-unknown-linux-gnu`) | glibc ≥ 2.39 | {release.SMOKE_FULL} | `{'f' * 64}` |",
+            f"| `bazel-rs-0.2.0-x86_64-unknown-linux-musl.tar.gz` | Linux x86_64 (`x86_64-unknown-linux-musl`) |",
+            "- `x86_64-unknown-linux-musl`: any Linux x86_64 distribution (kernel 3.2 or newer); statically linked, no glibc needed.",
+            "- `x86_64-unknown-linux-gnu`: Linux x86_64 with glibc ≥ 2.39 (e.g. Ubuntu 24.04 or newer).",
+            f"- `aarch64-unknown-linux-musl`: any Linux arm64 distribution (kernel 3.2 or newer); statically linked, no glibc needed. **Not for general use:** {release.ARM64_CAVEAT}.",
+            release.SMOKE_QEMU,
+            "prefer the static one",
+            # The install steps use the static x86_64 archive.
+            "gh release download v0.2.0 --repo o/r --pattern 'bazel-rs-0.2.0-x86_64-unknown-linux-musl.tar.gz*'",
+            "install -m 0755 bazel-rs-0.2.0-x86_64-unknown-linux-musl/bazel-rs",
+        ):
+            self.assertIn(needle, text)
+        self.assertEqual(release.recommended_asset(self.info(self.ARM, self.GNU).assets).triple, "x86_64-unknown-linux-gnu")
 
     def test_recovery_commands(self):
         self.assertEqual(release.recovery_commands("tagged", "v1.0.0", "o/r"), ["git tag -d v1.0.0"])

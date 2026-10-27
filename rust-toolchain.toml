@@ -2,3 +2,6 @@
 channel = "1.99.0"
 profile = "minimal"
 components = ["clippy", "rustfmt", "rust-src", "rust-analyzer"]
+# The static release targets (scripts/release.py, docs/RELEASING.md); the
+# normal build stays x86_64-unknown-linux-gnu.
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]

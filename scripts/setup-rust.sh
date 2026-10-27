@@ -21,7 +21,8 @@ if ! test -x "$CARGO_HOME/bin/rustup"; then
   chmod +x "$tmp/rustup-init"
   "$tmp/rustup-init" -y --no-modify-path --default-toolchain none
 fi
-# rustup reads the pinned rust-toolchain.toml and installs its components.
+# rustup reads the pinned rust-toolchain.toml and installs its components and
+# targets (the musl release targets; zig for their C code: scripts/setup-zig.sh).
 rustup toolchain install --no-self-update
 rustup show
 rustc --version
