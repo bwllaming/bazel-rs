@@ -73,6 +73,8 @@ impl Workspace {
         let mut command = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
         command
             .env_clear()
+            // The native result lines this harness reads (crate::build_results).
+            .env("BAZEL_RS_RESULT_LINES", "1")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &home)
             .env("TMPDIR", &tmp)

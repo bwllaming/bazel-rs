@@ -106,6 +106,9 @@ impl Fixture {
             // BAZEL_RS_VERIFY_* variables are not forwarded here
             // (tests/support/verify_env.rs).
             .env_clear()
+            // The native result lines `Built` reads (crate::build_results;
+            // the environ dumps below leave the variable out).
+            .env("BAZEL_RS_RESULT_LINES", "1")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.temp.path().join("home"))
             .env("TMPDIR", self.temp.path().join("tmp"))
@@ -477,7 +480,7 @@ fn repository_environ_is_the_client_environment_and_never_a_recorded_dependency(
     f.repository(
         "",
         &format!(
-            "json.encode([ctx.os.environ.get('{A}','fallback'), ctx.os.environ.keys()])+'\\n'"
+            "json.encode([ctx.os.environ.get('{A}','fallback'), [k for k in ctx.os.environ.keys() if k != 'BAZEL_RS_RESULT_LINES']])+'\\n'"
         ),
         "",
     );
@@ -511,7 +514,7 @@ fn module_ctx_environ_is_the_client_environment_too() {
     // (StarlarkBaseExternalContext.java:194-196); environ records nothing.
     let f = Fixture::new(Route::Extension);
     f.extension(
-        &format!("    e=ctx.os.environ\n    e['MUTATED']='x'\n    make(name='made',text=json.encode([getattr(ctx.os,'environ',{{}}).get('{A}','fallback'), ctx.os.environ.keys()])+'\\n')\n"),
+        &format!("    e=ctx.os.environ\n    e['MUTATED']='x'\n    make(name='made',text=json.encode([getattr(ctx.os,'environ',{{}}).get('{A}','fallback'), [k for k in ctx.os.environ.keys() if k != 'BAZEL_RS_RESULT_LINES']])+'\\n')\n"),
         "module_extension(_impl)",
     );
     let keys = serde_json::to_string(&[A, "HOME", "LC_ALL", "PATH", "TMPDIR"]).unwrap();

@@ -50,6 +50,10 @@ class NormalisationTests(unittest.TestCase):
             ab.norm("INFO: Elapsed time: 12.345s", CACHE),
             "INFO: Elapsed time: <T>s",
         )
+        self.assertEqual(
+            ab.norm("INFO: Elapsed time: 12.345s, Critical Path: 1.02s", CACHE),
+            "INFO: Elapsed time: <T>s",
+        )
 
     def test_split_err_separates_dump_rest_and_perf(self):
         dump, rest, perf = ab.split_err(ERR, CACHE)

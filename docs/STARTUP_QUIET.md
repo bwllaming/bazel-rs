@@ -18,7 +18,8 @@ and the command's own output, like Bazel 9.3:
   limit, peak RSS and watchdog warning lines, legacy-cache, lockfile and
   snapshot-removal notes, `bazel-rs: warning: …` cleanup notes).
 * **Kept**: errors (with a *failed* action's output), the build result lines
-  (native `LABEL<TAB>PATH`, Bazel's `Target //x up-to-date:`), aspect result
+  (Bazel's `Target //x up-to-date:`, `Use --verbose_failures …`; the native
+  `LABEL<TAB>PATH` with `BAZEL_RS_RESULT_LINES=1`), aspect result
   lines, the test summary on stdout (with `(Summary)` blocks and cached
   outputs), `execute(quiet = False)` echoes of repository rules, a `run`
   binary's and a streamed test's own output, `query`/`info` output, and the

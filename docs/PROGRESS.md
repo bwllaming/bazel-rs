@@ -43,17 +43,42 @@ tests/console_text.rs):
   so an analysis snapshot hit replays them byte for byte (the counts of the
   analysis it saved; a warm genuine server says `0 packages loaded` on a
   no-op instead). P counts the packages committed, T the targets planning
-  configured; genuine's `, N aspect applications` is not counted.
+  configured, then `, N aspect applications` when aspects were applied
+  (every analysis is a fresh one natively; a warm genuine server counts only
+  the newly configured ones).
+* the build results (crate::build_results, BuildResultPrinter; genuine
+  captures in tests/fixtures/build_results), after an execution phase only:
+  `Target //x up-to-date:` with the artifacts' paths, `Target //x
+  up-to-date (nothing to build)`, `Target //x failed to build`
+  (`--keep_going`), `Aspect A of //x up-to-date:`, budgeted by
+  `--show_result` (default 1), then `Use --verbose_failures to see the
+  command lines of failed build steps.` after a failure. The paths are the
+  output tree's (`$(bazel-rs info bazel-bin)/…`): bazel-rs creates no
+  convenience symlinks, so it prints what Bazel prints with
+  `--symlink_prefix=/`. The targets print in the request's order (genuine's
+  is a hash set's). The earlier native lines, `LABEL<TAB>PATH` per artifact
+  at its executed path in the action cache, every artifact whatever
+  `--show_result`, are printed too when `BAZEL_RS_RESULT_LINES=1` (stdout
+  for `build`, stderr for `test` and `run`); the test suite sets it
+  (.cargo/config.toml), like scripts/ab_bench.py and the validate scripts.
 * at the end of a command that analyzed (or hit): `INFO: Elapsed time:
-  X.XXXs` and `INFO: Build completed successfully, N total actions` (exit 0)
-  or `INFO: Build completed, K tests FAILED, N total actions` (exit 3); N is
-  the size of the execution graph (no thousands separator, like
-  UiStateTracker). Without the display they are printed for exits 0 and 3
-  only (a failure ends with its own `ERROR:` lines); the display prints the
-  elapsed time for every exit. Not printed: genuine's `, Critical Path: …`
-  and `INFO: N processes: …` (the native `bazel-rs: N actions executed, M
-  cache hits …` line stays) and the `Target //x up-to-date:` lines (the
-  native result lines are `LABEL<TAB>PATH` on stdout).
+  X.XXXs, Critical Path: Y.YYs`, `INFO: N processes: …` and `INFO: Build
+  completed successfully, N total actions` (exit 0) or `INFO: Build
+  completed, K tests FAILED, N total actions` (exit 3) (crate::spawn_stats,
+  BuildSummaryStatsModule, SpawnStats): N counts the completed actions —
+  executed, with or without a process (`internal`: writes, native transforms,
+  the workspace status action, a failed action), not the action cache hits
+  (`M action cache hit`) — then the spawns by runner name (`remote cache
+  hit`, then alphabetically `linux-sandbox` for the Landlock sandbox,
+  `local`, `processwrapper-sandbox`, `remote`, `worker`; a test action counts
+  its attempts and its test.xml generation). The critical path is the
+  longest chain of action execution times (a cache hit adds nothing; tests
+  are not on it). No thousands separator (UiStateTracker). Without the
+  display they are printed for exits 0 and 3, and before `--keep_going`'s
+  `ERROR: Build did NOT complete successfully` (without its completion
+  line); another failure ends with its own `ERROR:` lines; the display
+  prints them for every exit. The native `bazel-rs: N actions executed, M
+  cache hits …` line stays.
 * `print()` everywhere but MODULE.bazel files (crate::bzlmod's own) goes
   through crate::debug_print: `DEBUG: FILE:LINE:COL: TEXT` at the call's
   left parenthesis, FILE a BUILD file's path or a main-repository `.bzl`

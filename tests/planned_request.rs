@@ -223,6 +223,8 @@ impl Workspace {
             .args(with_explicit_modules(arguments))
             .current_dir(self.root())
             .env_clear()
+            // The native result lines this harness reads (crate::build_results).
+            .env("BAZEL_RS_RESULT_LINES", "1")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &home)
             .env("TMPDIR", &home)

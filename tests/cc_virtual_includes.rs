@@ -270,6 +270,8 @@ impl Workspace {
             .args(&argv[1..])
             .current_dir(self.ws())
             .env_clear()
+            // The native result lines this harness reads (crate::build_results).
+            .env("BAZEL_RS_RESULT_LINES", "1")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.keep.path().join("home"))
             .env("TMPDIR", self.keep.path().join("tmp"))

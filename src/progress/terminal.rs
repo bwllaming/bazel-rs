@@ -388,7 +388,7 @@ impl Painter {
             for line in render::summary(
                 super::start_instant().elapsed(),
                 exit_code,
-                counters.actions_total.load(Ordering::Relaxed),
+                &render::Totals::current(),
                 counters.tests_failed.load(Ordering::Relaxed),
                 self.config.color,
             ) {

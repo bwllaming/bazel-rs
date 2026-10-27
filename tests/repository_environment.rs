@@ -69,6 +69,9 @@ impl Fixture {
             // BAZEL_RS_VERIFY_* variables are not forwarded here
             // (tests/support/verify_env.rs).
             .env_clear()
+            // The native result lines `Built` reads (crate::build_results;
+            // the environ dumps below leave the variable out).
+            .env("BAZEL_RS_RESULT_LINES", "1")
             .env("PATH", "/usr/bin:/bin");
         for key in [A, B, UNUSED, "?"] {
             command.env_remove(key);
@@ -809,7 +812,7 @@ fn repository_environ_untracked_and_extension_environ_and_module_getenv_supporte
     let os = Fixture::new(
         Route::Direct,
         "",
-        "ctx.os.environ.get('BAZEL_RS_ENV_B','none')+'|'+','.join(ctx.os.environ.keys())",
+        "ctx.os.environ.get('BAZEL_RS_ENV_B','none')+'|'+','.join([k for k in ctx.os.environ.keys() if k != 'BAZEL_RS_RESULT_LINES'])",
         DECLARED,
     );
     let first = os.generated(&[(A, "alpha"), (B, "beta")]);

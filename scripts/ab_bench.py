@@ -71,7 +71,7 @@ WORKSPACE = Path('/home/coder/code')
 TREES = re.compile(r'repositories/direct/trees/[0-9a-f]{8,}')
 LOCKSIDE = re.compile(r'/lock-[ab]\b')
 # The build summary's wall time (docs/PROGRESS.md), different on every run.
-ELAPSED = re.compile(r'INFO: Elapsed time: [0-9.]+s')
+ELAPSED = re.compile(r'INFO: Elapsed time: [0-9.]+s(, Critical Path: [0-9.]+s)?')
 
 # PERF output shapes (src/lib.rs perf_mark, src/plan_timings.rs report,
 # src/engine/alloc_report.rs). `hwm=` is absent from older binaries.
@@ -229,8 +229,11 @@ def run_one(bin_, cache, out, args, extra_env, tag, workspace, timeout):
     tmp = out / f'{tag}-tmp'
     home.mkdir(parents=True, exist_ok=True)
     tmp.mkdir(parents=True, exist_ok=True)
+    # BAZEL_RS_RESULT_LINES: the native `LABEL<TAB>PATH` result lines on
+    # stdout (crate::build_results), compared like the rest.
     env = {'PATH': '/usr/bin:/bin', 'HOME': str(home), 'TMPDIR': str(tmp),
-           'BAZEL_RS_DUMP_ACTIONS': '1', 'BAZEL_RS_TIMING': '1'}
+           'BAZEL_RS_DUMP_ACTIONS': '1', 'BAZEL_RS_TIMING': '1',
+           'BAZEL_RS_RESULT_LINES': '1'}
     env.update(extra_env)
     argv = [bin_, '--ignore_all_rc_files', f'--cache-dir={cache}', 'build'] + args
     with open(out / f'{tag}.out', 'wb') as stdout, open(out / f'{tag}.err', 'wb') as stderr:

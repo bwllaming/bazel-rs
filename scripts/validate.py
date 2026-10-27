@@ -140,6 +140,9 @@ def clean_environment():
     env["DO_NOT_TRACK"] = "1"
     env["BAZEL_METRICS"] = "0"
     env["NEXT_TELEMETRY_DISABLED"] = "1"
+    # bazel-rs's native `LABEL<TAB>PATH` result lines on stdout, which the
+    # native result parsers read (crate::build_results; Bazel ignores it).
+    env["BAZEL_RS_RESULT_LINES"] = "1"
     return env
 
 

@@ -182,9 +182,16 @@ pub(crate) fn short_output(path: &str) -> &str {
 /// analysisComplete), without the `INFO: ` prefix; `what` is `target //x`
 /// or `N targets`. PackageProgressReceiver.progressState says `packages`
 /// whatever the count (`1 packages loaded`).
-pub(crate) fn analyzed(what: &str, packages: usize, configured: usize) -> String {
+pub(crate) fn analyzed(what: &str, packages: usize, configured: usize, aspects: usize) -> String {
+    // UiStateTracker.analysisComplete: the aspect applications only when
+    // there are some.
+    let aspects = if aspects == 0 {
+        String::new()
+    } else {
+        format!(", {}", plural(aspects, "aspect application"))
+    };
     format!(
-        "Analyzed {what} ({packages} packages loaded, {} configured).",
+        "Analyzed {what} ({packages} packages loaded, {} configured{aspects}).",
         plural(configured, "target"),
     )
 }
@@ -232,21 +239,51 @@ pub(crate) fn info(text: &str, color: bool) -> String {
     }
 }
 
-/// The interactive-only summary at the end of the command
-/// (BuildResultPrinter / BuildTool.stopRequest): the elapsed time, and how
-/// the build completed — for a success (`exit_code` 0) or failed tests (3).
+/// What the build summary reports of the execution (crate::spawn_stats).
+pub(crate) struct Totals {
+    /// The critical path's length.
+    pub critical: std::time::Duration,
+    /// `N processes: …` (SpawnStats.convertSummaryToString).
+    pub processes: String,
+    /// The completed actions (`N total actions`).
+    pub actions: usize,
+}
+
+impl Totals {
+    /// This process's execution statistics.
+    pub(crate) fn current() -> Self {
+        Self {
+            critical: crate::spawn_stats::critical_path(),
+            processes: crate::spawn_stats::processes_text(),
+            actions: crate::spawn_stats::completed_actions(),
+        }
+    }
+}
+
+/// The summary at the end of the command (BuildSummaryStatsModule
+/// .buildComplete, UiStateTracker.buildComplete): the elapsed time with the
+/// critical path, the process counts, and how the build completed — for a
+/// success (`exit_code` 0) or failed tests (3).
 pub(crate) fn summary(
     elapsed: std::time::Duration,
     exit_code: i32,
-    actions: usize,
+    totals: &Totals,
     tests_failed: usize,
     color: bool,
 ) -> Vec<String> {
-    let mut lines = vec![info(
-        &format!("Elapsed time: {:.3}s", elapsed.as_secs_f64()),
-        color,
-    )];
+    let mut lines = vec![
+        info(
+            &format!(
+                "Elapsed time: {:.3}s, Critical Path: {:.2}s",
+                elapsed.as_secs_f64(),
+                totals.critical.as_secs_f64()
+            ),
+            color,
+        ),
+        info(&totals.processes, color),
+    ];
     // UiStateTracker.buildComplete appends the int as it is (no grouping).
+    let actions = totals.actions;
     let actions = format!(
         "{actions} total action{}",
         if actions == 1 { "" } else { "s" }
@@ -624,12 +661,20 @@ mod tests {
         assert_eq!(short_output("bazel-out/x"), "bazel-out/x");
         assert_eq!(short_output("external/x"), "external/x");
         assert_eq!(
-            analyzed("target //:b", 1, 1),
+            analyzed("target //:b", 1, 1, 0),
             "Analyzed target //:b (1 packages loaded, 1 target configured)."
         );
         assert_eq!(
-            analyzed("2 targets", 2, 3),
+            analyzed("2 targets", 2, 3, 0),
             "Analyzed 2 targets (2 packages loaded, 3 targets configured)."
+        );
+        assert_eq!(
+            analyzed("target //:a", 0, 1, 1),
+            "Analyzed target //:a (0 packages loaded, 1 target configured, 1 aspect application)."
+        );
+        assert_eq!(
+            analyzed("target //:a", 0, 1, 2),
+            "Analyzed target //:a (0 packages loaded, 1 target configured, 2 aspect applications)."
         );
         assert_eq!(found(1, None), "Found 1 target...");
         assert_eq!(found(2, None), "Found 2 targets...");
@@ -638,23 +683,36 @@ mod tests {
         assert_eq!(found(2, Some(1)), "Found 1 target and 1 test target...");
         assert_eq!(found(5, Some(2)), "Found 3 targets and 2 test targets...");
         assert_eq!(
-            summary(Duration::from_millis(1500), 0, 1, 0, false),
+            summary(Duration::from_millis(1500), 0, &totals(1), 0, false),
             [
-                "INFO: Elapsed time: 1.500s",
+                "INFO: Elapsed time: 1.500s, Critical Path: 0.25s",
+                "INFO: 1 process: 1 internal.",
                 "INFO: Build completed successfully, 1 total action"
             ]
         );
         assert_eq!(
-            summary(Duration::from_secs(2), 3, 1234, 2, false),
+            summary(Duration::from_secs(2), 3, &totals(1234), 2, false),
             [
-                "INFO: Elapsed time: 2.000s",
+                "INFO: Elapsed time: 2.000s, Critical Path: 0.25s",
+                "INFO: 1 process: 1 internal.",
                 "INFO: Build completed, 2 tests FAILED, 1234 total actions"
             ]
         );
         assert_eq!(
-            summary(Duration::from_secs(2), 1, 689, 0, true),
-            ["\x1b[32mINFO:\x1b[0m Elapsed time: 2.000s"]
+            summary(Duration::from_secs(2), 1, &totals(689), 0, true),
+            [
+                "\x1b[32mINFO:\x1b[0m Elapsed time: 2.000s, Critical Path: 0.25s",
+                "\x1b[32mINFO:\x1b[0m 1 process: 1 internal."
+            ]
         );
+    }
+
+    fn totals(actions: usize) -> Totals {
+        Totals {
+            critical: Duration::from_millis(250),
+            processes: "1 process: 1 internal.".to_owned(),
+            actions,
+        }
     }
 
     #[test]

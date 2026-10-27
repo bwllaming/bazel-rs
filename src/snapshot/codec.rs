@@ -77,7 +77,7 @@ pub const MAGIC: &[u8; 8] = b"BZRSPLN1";
 /// (PA-1's shared input groups, integration-21). 3: portable Args
 /// `map_each` functions (crate::snapshot::mapper). 4: META carries the
 /// build event plan (crate::bep::plan).
-pub const FORMAT: u32 = 4;
+pub const FORMAT: u32 = 5;
 /// Actions per NODES section (fixed: the encoding must not depend on the
 /// machine).
 pub const CHUNK: usize = 1024;
@@ -131,7 +131,7 @@ struct Meta<'a> {
     execute: bool,
     requested: &'a [(crate::label::Label, crate::request::Produced)],
     aspect_reports: &'a [(String, crate::label::Label, Vec<crate::request::Produced>)],
-    non_empty_targets: usize,
+    results: &'a [(crate::label::Label, Vec<crate::request::Produced>)],
     run_plans: &'a [(crate::label::Label, crate::request::PlannedRun)],
     configurations: &'a [crate::request::ConfigurationSummary],
     warnings: &'a [String],
@@ -147,7 +147,7 @@ struct MetaOwned {
     execute: bool,
     requested: Vec<(crate::label::Label, crate::request::Produced)>,
     aspect_reports: Vec<(String, crate::label::Label, Vec<crate::request::Produced>)>,
-    non_empty_targets: usize,
+    results: Vec<(crate::label::Label, Vec<crate::request::Produced>)>,
     run_plans: Vec<(crate::label::Label, crate::request::PlannedRun)>,
     configurations: Vec<crate::request::ConfigurationSummary>,
     warnings: Vec<String>,
@@ -177,7 +177,7 @@ fn meta_of(request: &PlannedRequest) -> Meta<'_> {
         nodes: _,
         requested,
         aspect_reports,
-        non_empty_targets,
+        results,
         run_plans,
         configurations,
         warnings,
@@ -191,7 +191,7 @@ fn meta_of(request: &PlannedRequest) -> Meta<'_> {
         execute: *execute,
         requested,
         aspect_reports,
-        non_empty_targets: *non_empty_targets,
+        results,
         run_plans,
         configurations,
         warnings,
@@ -709,7 +709,7 @@ pub fn decode_cancellable(bytes: &[u8], cancel: &AtomicBool) -> Result<PlannedRe
         nodes,
         requested: meta.requested,
         aspect_reports: meta.aspect_reports,
-        non_empty_targets: meta.non_empty_targets,
+        results: meta.results,
         run_plans: meta.run_plans,
         configurations: meta.configurations,
         warnings: meta.warnings,
@@ -1448,7 +1448,10 @@ mod tests {
                 label("//pkg:t"),
                 vec![produced("pkg/src", None)],
             )],
-            non_empty_targets: 1,
+            results: vec![(
+                label("//pkg:t"),
+                vec![produced("bazel-out/t", Some(("//pkg:gen", 0)))],
+            )],
             run_plans: vec![(
                 label("//pkg:t"),
                 PlannedRun {
@@ -1572,7 +1575,7 @@ mod tests {
         assert_eq!(decoded.errors, request.errors);
         assert_eq!(decoded.build_info, request.build_info);
         assert_eq!(decoded.bep, request.bep);
-        assert_eq!(decoded.non_empty_targets, 1);
+        assert_eq!(decoded.results, request.results);
         assert!(decoded.execute);
         // The decoded completions expand exactly like the planned ones.
         for (index, write) in [(0, false), (10, true)] {

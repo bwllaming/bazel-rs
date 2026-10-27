@@ -269,7 +269,8 @@ fn executing_build_builds_every_reported_artifact() {
     let reported = aspect_report(&err);
     assert_eq!(reported.len(), 1, "{err}");
     let path = Path::new(reported[0]);
-    assert!(path.starts_with(ws.path().join("cache/actions")), "{err}");
+    // In the output tree (crate::build_results).
+    assert!(path.starts_with(ws.path().join("cache/worktrees")), "{err}");
     assert!(path.ends_with("bazel-out/k8-fastbuild/bin/pkg/t.aspect"));
     assert_eq!(fs::read_to_string(path).unwrap(), "aspect\n");
 
@@ -282,11 +283,10 @@ fn executing_build_builds_every_reported_artifact() {
     let err = stderr(&output);
     assert!(output.status.success(), "{err}");
     assert!(err.contains("0 actions executed, 0 cache hits"), "{err}");
-    assert_eq!(
-        aspect_report(&err),
-        ["bazel-out/k8-fastbuild/bin/pkg/t.aspect"],
-        "{err}"
-    );
+    // No build results without an execution phase (BuildResultPrinter
+    // runs in ExecutionTool; genuine `build --nobuild` prints none).
+    assert!(aspect_report(&err).is_empty(), "{err}");
+    assert!(!err.contains(" up-to-date"), "{err}");
     assert!(ws.cache_files().is_empty(), "{:?}", ws.cache_files());
 }
 

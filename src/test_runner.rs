@@ -1051,6 +1051,7 @@ impl Runner<'_> {
             // logs (TestSummaryPrinter.printCachedOutput) before the summary;
             // crate::main does that from the summary.
             self.link_testlogs(&paths.base, &entry);
+            crate::spawn_stats::action_cache_hit();
             return Ok(Some(UnitOutcome::Result(result)));
         }
         if interrupt.load(std::sync::atomic::Ordering::Acquire) {
@@ -1221,6 +1222,9 @@ impl Runner<'_> {
             });
         };
         drop(lock);
+        if outcome.is_some() {
+            crate::spawn_stats::test_completed();
+        }
         // `INFO: From Testing`, the test log bound to the event: both are
         // dropped under --quiet (crate::ui).
         if !printed.is_empty() && outcome.is_some() && !crate::ui::quiet() {
@@ -1423,6 +1427,8 @@ impl Runner<'_> {
             _ => None,
         };
         let sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
+        // The attempt's spawn (`INFO: N processes: …`, crate::spawn_stats).
+        crate::spawn_stats::spawn(strategy.runner_name());
         let (millis, exit_code, timed_out) = if let Some(done) = remote_done {
             drop((log, err));
             done
@@ -1581,10 +1587,12 @@ impl Runner<'_> {
         if !xml.exists()
             && let (Some(remote), Some(_)) = (remote, remote_done)
         {
+            crate::spawn_stats::spawn("remote");
             self.xml_remotely(
                 unit, paths, env, test_name, remote, execroot, millis, exit_code,
             )?;
         } else if !xml.exists() {
+            crate::spawn_stats::spawn(strategy.runner_name());
             let mut xml_env = env.clone();
             xml_env.insert("TEST_NAME".to_owned(), test_name.to_owned());
             if unit.shards <= 1 {

@@ -169,8 +169,15 @@ fn private_transitive_validation_group_is_restricted() {
     // validation action runs when the target builds and the output is not
     // reported (a `_`-prefixed group is never important,
     // TopLevelArtifactHelper.java:228-236).
-    let text = ok(&ws.build(&[":validation"]));
-    assert!(!text.contains("validation.txt"), "{text}");
+    // Its DefaultInfo file is still the target's result (genuine 9.3:
+    // `Target //:validation up-to-date:` with `bazel-bin/validation.txt`).
+    let built = ws.build(&[":validation"]);
+    let text = ok(&built);
+    assert!(
+        text.contains("Target //:validation up-to-date:\n  ")
+            && text.contains("/bin/validation.txt\n"),
+        "{text}"
+    );
     assert_eq!(ws.read("validation.txt").as_deref(), Some("x"));
     ok(&ws.build(&[":validation_empty"]));
 }

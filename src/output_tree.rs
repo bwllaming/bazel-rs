@@ -717,6 +717,8 @@ mod tests {
             cache_hit: false,
             remote_hit: false,
             remote_executed: false,
+            runner: None,
+            critical: std::time::Duration::ZERO,
             trees: BTreeMap::new(),
         }
     }

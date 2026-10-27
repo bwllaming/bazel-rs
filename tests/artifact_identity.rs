@@ -338,10 +338,10 @@ fn status_file_in_an_output_group_resolves_alone() {
     let planned = ws.build(&all);
     let text = stderr(&planned);
     assert!(planned.status.success(), "{text}");
+    // No build results without an execution phase (BuildResultPrinter
+    // runs in ExecutionTool).
     assert!(
-        text.contains(
-            "Aspect //pkg:defs.bzl%status_aspect of //pkg:gen up-to-date:\n  bazel-out/volatile-status.txt\n"
-        ),
+        !text.contains("Aspect //pkg:defs.bzl%status_aspect"),
         "{text}"
     );
     let built = ws.build(&aspect);
@@ -349,7 +349,7 @@ fn status_file_in_an_output_group_resolves_alone() {
     assert!(built.status.success(), "{text}");
     assert!(
         text.contains("Aspect //pkg:defs.bzl%status_aspect of //pkg:gen up-to-date:\n  ")
-            && text.contains("/outputs/bazel-out/volatile-status.txt\n"),
+            && text.contains("/execroot/_main/bazel-out/volatile-status.txt\n"),
         "{text}"
     );
 }

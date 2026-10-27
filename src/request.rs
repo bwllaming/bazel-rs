@@ -190,8 +190,11 @@ pub struct PlannedRequest {
     pub requested: Vec<(Label, Produced)>,
     /// `Aspect NAME of LABEL up-to-date:` reports.
     pub aspect_reports: Vec<(String, Label, Vec<Produced>)>,
-    /// Labels whose own artifacts print a target result (`--show_result`).
-    pub non_empty_targets: usize,
+    /// The requested targets that print a build result, each with the
+    /// artifacts it displays, in request order (BuildResultPrinter
+    /// .outputTargets; crate::engine filters them like
+    /// filterTargetsToPrint).
+    pub results: Vec<(Label, Vec<Produced>)>,
     pub run_plans: Vec<(Label, PlannedRun)>,
     pub configurations: Vec<ConfigurationSummary>,
     /// Analysis warnings and errors, printed after execution (without the
@@ -835,7 +838,7 @@ pub fn execute_with_tests(
         nodes,
         requested,
         aspect_reports,
-        non_empty_targets,
+        results: result_targets,
         run_plans,
         configurations,
         ..
@@ -881,6 +884,10 @@ pub fn execute_with_tests(
             },
         };
         action_errors = errors.into_iter().collect();
+        // A failed action completed without a spawn result (internal).
+        for _ in &action_errors {
+            crate::spawn_stats::action_completed(&[]);
+        }
         crate::perf_mark("execute.graph");
         // `$(bazel-rs info bazel-bin)/...` names the built files
         // (crate::output_tree, docs/INFO.md); never fails the build.
@@ -905,6 +912,23 @@ pub fn execute_with_tests(
     // like any action but are not counted: Bazel reports the status action
     // as an internal process (`INFO: 1 process: 1 internal`), outside the
     // build's action tally.
+    // `INFO: N processes: …` and the critical path (crate::spawn_stats):
+    // the status nodes are Bazel's one workspace status action, executed
+    // (internal) on every build.
+    if results.keys().any(|id| id.starts_with(STATUS_ID_PREFIX)) {
+        crate::spawn_stats::action_completed(&[]);
+    }
+    for (id, result) in &results {
+        crate::spawn_stats::critical_path_at_least(result.critical);
+        if id.starts_with(STATUS_ID_PREFIX) {
+            continue;
+        }
+        if result.cache_hit {
+            crate::spawn_stats::action_cache_hit();
+        } else {
+            crate::spawn_stats::action_completed(result.runner.as_slice());
+        }
+    }
     for (id, result) in &results {
         if id.starts_with(STATUS_ID_PREFIX) {
             continue;
@@ -944,15 +968,30 @@ pub fn execute_with_tests(
             summary.outputs.push((label.clone(), published(produced)));
         }
     }
-    summary.non_empty_targets = non_empty_targets;
+    // The build results (BuildResultPrinter): only after an execution
+    // phase, at the artifacts' paths in the output tree (crate::output_tree;
+    // the paths Bazel prints without convenience symlinks).
+    let execution_root = crate::output_tree::execution_root(options.cache);
+    let displayed = |produced: &Produced| execution_root.join(&produced.real);
+    if execute {
+        for (label, artifacts) in &result_targets {
+            if reported(label) {
+                summary
+                    .results
+                    .push((label.clone(), artifacts.iter().map(displayed).collect()));
+            } else {
+                summary.failed_targets.push(label.clone());
+            }
+        }
+    }
     summary.aspects = aspect_reports
         .iter()
-        .filter(|(_, label, _)| reported(label))
+        .filter(|(_, label, _)| execute && reported(label))
         .map(|(aspect, label, artifacts)| {
             (
                 aspect.clone(),
                 label.clone(),
-                artifacts.iter().map(published).collect(),
+                artifacts.iter().map(displayed).collect(),
             )
         })
         .collect();
@@ -1136,6 +1175,8 @@ mod tests {
                 cache_hit: false,
                 remote_hit: false,
                 remote_executed: false,
+                runner: None,
+                critical: std::time::Duration::ZERO,
                 trees: BTreeMap::new(),
             },
         );
@@ -1208,7 +1249,7 @@ mod tests {
                 Label::parse_canonical("//:t").unwrap(),
                 vec![stable()],
             )],
-            non_empty_targets: 1,
+            results: vec![(Label::parse_canonical("//:t").unwrap(), vec![stable()])],
             run_plans: Vec::new(),
             configurations: Vec::new(),
             warnings: Vec::new(),

@@ -16,8 +16,7 @@ in this order, a fresh `--output_user_root`):
 Each file holds the exit code (`rc=N`) and the stderr lines starting `DEBUG:`
 or `INFO:` (plus a multi-line print's continuation `line`), the workspace path
 replaced by `<WS>`. Declared native differences the test normalizes: the counts
-in `Analyzed (…)` (and genuine's `N aspect applications`), the elapsed time and
-genuine's `, Critical Path: …`, genuine's `INFO: N processes: …` line (native
-prints `bazel-rs: N actions executed, …` instead), the `N total actions`
-count, and the order of the DEBUG lines (genuine's parallel evaluation order
+in `Analyzed (…)`, the elapsed time, the `INFO: N processes: …` line and the
+`N total actions` count (other internal actions; tests/fixtures/build_results
+pins their form), and the order of the DEBUG lines (genuine's parallel evaluation order
 varies; the native order is the sequential one).

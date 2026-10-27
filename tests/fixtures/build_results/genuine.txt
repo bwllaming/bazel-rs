@@ -1,0 +1,96 @@
+### build //:a
+rc=0
+INFO: Analyzed target //:a (6 packages loaded, 8 targets configured).
+Target //:a up-to-date:
+  bazel-bin/a.txt
+  bazel-bin/a2.txt
+INFO: Elapsed time: <T>s, Critical Path: <T>s
+INFO: 2 processes: 1 internal, 1 processwrapper-sandbox.
+### build //:a //:b
+rc=0
+INFO: Analyzed 2 targets (0 packages loaded, 1 target configured).
+INFO: Elapsed time: <T>s, Critical Path: <T>s
+INFO: 2 processes: 1 internal, 1 processwrapper-sandbox.
+### build //:a //:b //sub:c //:empty //:src //:b.txt --show_result=10
+rc=0
+INFO: Analyzed 6 targets (1 packages loaded, 5 targets configured).
+Target //:b up-to-date:
+  bazel-bin/b.txt
+Target //sub:c up-to-date:
+  bazel-bin/sub/c.txt
+Target //:a up-to-date:
+  bazel-bin/a.txt
+  bazel-bin/a2.txt
+Target //:empty up-to-date (nothing to build)
+Target //:src up-to-date (nothing to build)
+INFO: Elapsed time: <T>s, Critical Path: <T>s
+INFO: 2 processes: 1 internal, 1 processwrapper-sandbox.
+### build //:a.txt //:a
+rc=0
+INFO: Analyzed 2 targets (0 packages loaded, 1 target configured).
+Target //:a up-to-date:
+  bazel-bin/a.txt
+  bazel-bin/a2.txt
+INFO: Elapsed time: <T>s, Critical Path: <T>s
+INFO: 1 process: 1 internal.
+### build --nobuild //:b
+rc=0
+INFO: Analyzed target //:b (0 packages loaded, 0 targets configured).
+INFO: Elapsed time: <T>s, Critical Path: <T>s
+INFO: 0 processes.
+### build -k //:fail //:a
+rc=1
+INFO: Analyzed 2 targets (0 packages loaded, 1 target configured).
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <T>s, Critical Path: <T>s
+INFO: 2 processes: 2 internal.
+### build -k //:fail //:a --show_result=5
+rc=1
+INFO: Analyzed 2 targets (0 packages loaded, 0 targets configured).
+Target //:a up-to-date:
+  bazel-bin/a.txt
+  bazel-bin/a2.txt
+Target //:fail failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: <T>s, Critical Path: <T>s
+INFO: 2 processes: 2 internal.
+### build -k //:fail //:a --show_result=5 --verbose_failures
+rc=1
+INFO: Analyzed 2 targets (0 packages loaded, 0 targets configured).
+Target //:a up-to-date:
+  bazel-bin/a.txt
+  bazel-bin/a2.txt
+Target //:fail failed to build
+INFO: Elapsed time: <T>s, Critical Path: <T>s
+INFO: 2 processes: 2 internal.
+### build //:tool --aspects=//:defs.bzl%asp --output_groups=+asp_out --show_result=5
+rc=0
+INFO: Analyzed target //:tool (0 packages loaded, 1 target configured, 1 aspect application).
+Target //:tool up-to-date:
+  bazel-bin/tool.sh
+Aspect //:defs.bzl%asp of //:tool up-to-date:
+  bazel-bin/tool.asp.txt
+INFO: Elapsed time: <T>s, Critical Path: <T>s
+INFO: 7 processes: 7 internal.
+### build //:tool --aspects=//:defs.bzl%asp --output_groups=asp_out --show_result=5
+rc=0
+INFO: Analyzed target //:tool (0 packages loaded, 0 targets configured).
+Target //:tool up-to-date (nothing to build)
+Aspect //:defs.bzl%asp of //:tool up-to-date:
+  bazel-bin/tool.asp.txt
+INFO: Elapsed time: <T>s, Critical Path: <T>s
+INFO: 1 process: 1 internal.
+### test //:t
+rc=0
+INFO: Analyzed target //:t (75 packages loaded, 829 targets configured).
+Target //:t up-to-date:
+  bazel-bin/t.sh
+INFO: Elapsed time: <T>s, Critical Path: <T>s
+INFO: 7 processes: 6 internal, 2 processwrapper-sandbox.
+### run //:tool
+rc=0
+INFO: Analyzed target //:tool (0 packages loaded, 0 targets configured).
+Target //:tool up-to-date:
+  bazel-bin/tool.sh
+INFO: Elapsed time: <T>s, Critical Path: <T>s
+INFO: 1 process: 1 internal.

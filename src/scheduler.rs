@@ -847,7 +847,21 @@ where
             // groups' empty files stay.
             list_empty_files(&mut node.action, &groups);
         }
-        let result = execute(cache, &node.action)?;
+        let clock = std::time::Instant::now();
+        let mut result = execute(cache, &node.action)?;
+        // The critical path through this action (CriticalPathComputer): a
+        // cache hit adds nothing of its own.
+        let own = if result.cache_hit {
+            std::time::Duration::ZERO
+        } else {
+            clock.elapsed()
+        };
+        result.critical = own
+            + producers
+                .iter()
+                .map(|producer| producer.critical)
+                .max()
+                .unwrap_or_default();
         if result.outputs.len() != node.action.outputs.len() {
             return Err(format!(
                 "executor returned {} outputs, expected {}",
@@ -1270,6 +1284,8 @@ mod tests {
             trees: BTreeMap::new(),
             remote_hit: false,
             remote_executed: false,
+            runner: None,
+            critical: std::time::Duration::ZERO,
         })
     }
 

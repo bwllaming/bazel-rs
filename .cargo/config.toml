@@ -1,0 +1,6 @@
+# The test suite reads build results from bazel-rs's native `LABEL<TAB>PATH`
+# result lines (crate::build_results): every process cargo starts (`cargo
+# test`, `cargo run`) gets them in addition to Bazel's `Target … up-to-date:`
+# lines. Tests of the genuine console text remove the variable.
+[env]
+BAZEL_RS_RESULT_LINES = "1"

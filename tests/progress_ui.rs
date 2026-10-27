@@ -117,7 +117,7 @@ fn the_status_area_shows_on_a_terminal_and_nowhere_else() {
     let expected = ws.normalized(&text(&plain), "plain");
     let info: Vec<&String> = expected
         .iter()
-        .filter(|line| line.starts_with("INFO: "))
+        .filter(|line| line.starts_with("INFO: ") && !line.contains(" processes: "))
         .collect();
     assert_eq!(
         info,
@@ -125,8 +125,24 @@ fn the_status_area_shows_on_a_terminal_and_nowhere_else() {
             "INFO: Analyzed target //:top (1 packages loaded, 2 targets configured).",
             "INFO: Found 1 target...",
             "INFO: Elapsed time: <T>s",
-            "INFO: Build completed successfully, 4 total actions",
+            "INFO: Build completed successfully, 3 total actions",
         ],
+        "{expected:#?}"
+    );
+    // SpawnStats: the workspace status action and the two genrules (their
+    // strategy's runner name depends on the host's sandbox).
+    assert!(
+        expected
+            .iter()
+            .any(|line| line.starts_with("INFO: 3 processes: 1 internal, 2 ")),
+        "{expected:#?}"
+    );
+    assert!(
+        expected
+            .windows(2)
+            .any(|lines| lines[0] == "Target //:top up-to-date:"
+                && lines[1].starts_with("  <cache>/worktrees/")
+                && lines[1].ends_with("/execroot/_main/bazel-out/k8-fastbuild/bin/top.txt")),
         "{expected:#?}"
     );
     assert!(
@@ -165,7 +181,7 @@ fn the_status_area_shows_on_a_terminal_and_nowhere_else() {
         expected
     );
     // The startup option --quiet (crate::ui): no status area, and of the
-    // plain output only the result lines.
+    // plain output only the result lines (native and Bazel's).
     let startup_quiet = on_pty(
         &ws.command("startup-quiet", &[&["--quiet"][..], &build[..]].concat()),
         100,
@@ -184,7 +200,9 @@ fn the_status_area_shows_on_a_terminal_and_nowhere_else() {
         ),
         expected
             .iter()
-            .filter(|line| line.starts_with("//:"))
+            .filter(|line| {
+                line.starts_with("//:") || line.starts_with("Target ") || line.starts_with("  ")
+            })
             .cloned()
             .collect::<Vec<_>>()
     );

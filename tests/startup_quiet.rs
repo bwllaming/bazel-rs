@@ -146,7 +146,7 @@ fn expected(name: &str) -> (i32, &'static str, &'static str) {
         "build_keep_going" => (
             1,
             "//:noisy\t<WS>/cache/actions/<H>/outputs/bazel-out/k8-fastbuild/bin/noisy.txt\n//:uses_old\t<WS>/cache/actions/<H>/outputs/bazel-out/k8-fastbuild/bin/uses_old.txt\n",
-            "ERROR: analysis of //:bad: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:15, in _fails\n      fail(\"intentional analysis failure\")\nerror: fail: intentional analysis failure\n  --> //:defs.bzl:15:5\n   |\n15 |     fail(\"intentional analysis failure\")\n   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\nERROR: action '//:broken': action '//:broken' failed (exit status: 1):\nstdout:\nbroken-stdout\n\nstderr:\nbroken-stderr\n\n\nUse --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging\nERROR: Build did NOT complete successfully\n",
+            "ERROR: analysis of //:bad: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:15, in _fails\n      fail(\"intentional analysis failure\")\nerror: fail: intentional analysis failure\n  --> //:defs.bzl:15:5\n   |\n15 |     fail(\"intentional analysis failure\")\n   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\nERROR: action '//:broken': action '//:broken' failed (exit status: 1):\nstdout:\nbroken-stdout\n\nstderr:\nbroken-stderr\n\n\nUse --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Build did NOT complete successfully\n",
         ),
         "test" | "test_output_errors" => (
             3,
@@ -156,7 +156,7 @@ fn expected(name: &str) -> (i32, &'static str, &'static str) {
         "run" => (
             0,
             "bin-stdout\n",
-            "//:bin\t<WS>/cache/actions/<H>/outputs/bazel-out/k8-fastbuild/bin/bin.sh\nbin-stderr\n",
+            "//:bin\t<WS>/cache/actions/<H>/outputs/bazel-out/k8-fastbuild/bin/bin.sh\nTarget //:bin up-to-date:\n  <WS>/cache/worktrees/<W>/execroot/_main/bazel-out/k8-fastbuild/bin/bin.sh\nbin-stderr\n",
         ),
         "query" => (
             0,
@@ -166,7 +166,7 @@ fn expected(name: &str) -> (i32, &'static str, &'static str) {
         "fetch" => (
             0,
             "//:fetched_copy\t<WS>/cache/actions/<H>/outputs/bazel-out/k8-fastbuild/bin/fetched_copy.txt\n",
-            "repo-execute-stdout\nrepo-execute-stderr\n",
+            "repo-execute-stdout\nrepo-execute-stderr\nTarget //:fetched_copy up-to-date:\n  <WS>/cache/worktrees/<W>/execroot/_main/bazel-out/k8-fastbuild/bin/fetched_copy.txt\n",
         ),
         "info" => (0, "<WS>\n", ""),
         other => panic!("unknown scenario {other}"),
@@ -288,8 +288,26 @@ impl Workspace {
             out.push(c);
         }
         out.push_str(if run.len() == 64 { "<H>" } else { &run });
-        test_times(&out)
+        test_times(&worktree_names(&out))
     }
+}
+
+/// `text` with the workspace's state directory name in the cache
+/// (`worktrees/<name>-<hash>`, crate::worktree) as `worktrees/<W>`.
+fn worktree_names(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("/worktrees/") {
+        let start = at + "/worktrees/".len();
+        out.push_str(&rest[..start]);
+        out.push_str("<W>");
+        let end = rest[start..]
+            .find('/')
+            .map_or(rest.len(), |slash| start + slash);
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// `text` with the test summary's run times (` in 0.1s` at a line's end,
@@ -322,7 +340,11 @@ fn test_times(text: &str) -> String {
 /// diagnostics (`BAZEL_RS_SNAPSHOT_EXPLAIN`).
 fn planning_lines(text: &str) -> String {
     text.lines()
-        .take_while(|line| !line.starts_with("action '") && !line.contains(" actions executed, "))
+        .take_while(|line| {
+            !line.starts_with("action '")
+                && !line.contains(" actions executed, ")
+                && !line.starts_with("Target ")
+        })
         .filter(|line| !line.starts_with("bazel-rs-snapshot: "))
         .map(|line| format!("{line}\n"))
         .collect()

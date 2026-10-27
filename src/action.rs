@@ -555,6 +555,16 @@ pub struct ActionResult {
     /// Declaration-order output index of each tree output: its regular files,
     /// relative to the tree root, in byte order (TreeArtifactValue children).
     pub trees: BTreeMap<usize, Vec<PathBuf>>,
+    /// The SpawnResult runner name of the spawn that produced the outputs
+    /// (SpawnStats, `INFO: N processes: …`): `linux-sandbox`,
+    /// `processwrapper-sandbox`, `local`, `worker`, `remote`, `remote cache
+    /// hit`; `None` for an action that ran no spawn (a write, a native
+    /// transform: Bazel's `internal`) and for a cache hit.
+    pub runner: Option<&'static str>,
+    /// The critical path up to and including this action
+    /// (CriticalPathComputer): its execution time plus the longest of its
+    /// producers'; set by crate::scheduler.
+    pub critical: std::time::Duration,
 }
 
 /// A regular file's content identity; its bytes stay on disk at `path` (the
@@ -6701,6 +6711,8 @@ pub fn execute_with_remote(
             cache_hit,
             remote_hit,
             remote_executed: false,
+            runner: None,
+            critical: std::time::Duration::ZERO,
             trees: action
                 .outputs
                 .iter()
@@ -7027,6 +7039,9 @@ pub fn execute_with_remote(
     // Whether the executed spawn ran under the sandbox strategy (N59); a
     // native write, transform or remote hit runs no process at all.
     let mut sandboxed = false;
+    // The spawn's runner name (SpawnResult.getRunnerName); none for a write
+    // or a native transform.
+    let mut runner: Option<&'static str> = None;
     // Whether the spawn ran in a sandboxed worker (`--worker_sandboxing`).
     let worker_sandboxed = worker.as_ref().is_some_and(|(lease, _)| lease.sandboxed());
     if let Some(write) = &action.write {
@@ -7043,6 +7058,11 @@ pub fn execute_with_remote(
         }
         run_transform(action, transform, &prepared, &execroot, (cas, root))?;
     } else if let Some(hit) = &remote_hit {
+        runner = Some(if hit.cached && !remote_exec {
+            "remote cache hit"
+        } else {
+            "remote"
+        });
         crate::progress::spawn_started(if hit.cached {
             crate::progress::Strategy::RemoteCache
         } else {
@@ -7082,6 +7102,7 @@ pub fn execute_with_remote(
         // the spawn's stderr (`response.getOutputBytes().writeTo(outErr
         // .getErrorStream())`), its exit code the spawn's.
         crate::progress::spawn_started(crate::progress::Strategy::Worker);
+        runner = Some("worker");
         let request_inputs = worker_request_inputs(inputs, &action.extra.param_files);
         let read = |path: &str| -> Option<io::Result<Vec<u8>>> {
             declared_input(inputs, &action.extra.param_files, Path::new(path))
@@ -7121,6 +7142,7 @@ pub fn execute_with_remote(
             .take()
             .expect("a process spawn resolved its strategy");
         sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
+        runner = Some(strategy.runner_name());
         crate::progress::spawn_started(match strategy {
             crate::sandbox::Strategy::Sandboxed => crate::progress::Strategy::LinuxSandbox,
             crate::sandbox::Strategy::ProcessWrapper => {
@@ -7543,6 +7565,7 @@ pub fn execute_with_remote(
         // stored its result.
         let mut done = result(listings, false, hit.cached);
         done.remote_executed = !hit.cached;
+        done.runner = runner;
         return Ok(done);
     }
     if let (Some(remote), Some(spec)) = (remote, &remote_spec)
@@ -7587,7 +7610,9 @@ pub fn execute_with_remote(
     if sandboxed && crate::sandbox::debug() {
         std::mem::forget(work);
     }
-    Ok(result(listings, false, false))
+    let mut done = result(listings, false, false);
+    done.runner = runner;
+    Ok(done)
 }
 
 mod tree_stamps;

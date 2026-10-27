@@ -187,7 +187,10 @@ def plan(reference_only):
 
 
 def environment(scratch):
-    return dict(PATH='/usr/bin:/bin', HOME=str(scratch / 'home'), TMPDIR=str(scratch / 'tmp'), LC_ALL='C')
+    # BAZEL_RS_RESULT_LINES: the native `LABEL<TAB>PATH` result lines the
+    # native rows are read from (bazel-rs crate::build_results).
+    return dict(PATH='/usr/bin:/bin', HOME=str(scratch / 'home'), TMPDIR=str(scratch / 'tmp'), LC_ALL='C',
+                BAZEL_RS_RESULT_LINES='1')
 
 
 def locations(scratch, step):

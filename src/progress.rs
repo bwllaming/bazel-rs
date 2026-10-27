@@ -110,6 +110,8 @@ struct Counters {
     packages: AtomicUsize,
     planned: AtomicUsize,
     configured: AtomicUsize,
+    /// Aspect applications configured (`, N aspect applications`).
+    aspects: AtomicUsize,
     actions_total: AtomicUsize,
     actions_done: AtomicUsize,
     tests_total: AtomicUsize,
@@ -124,6 +126,7 @@ static COUNTERS: Counters = Counters {
     packages: AtomicUsize::new(0),
     planned: AtomicUsize::new(0),
     configured: AtomicUsize::new(0),
+    aspects: AtomicUsize::new(0),
     actions_total: AtomicUsize::new(0),
     actions_done: AtomicUsize::new(0),
     tests_total: AtomicUsize::new(0),
@@ -184,6 +187,7 @@ pub(crate) fn analysis_report(labels: &[crate::label::Label], tests: Option<usiz
             &what,
             COUNTERS.packages.load(Ordering::Relaxed),
             COUNTERS.configured.load(Ordering::Relaxed),
+            COUNTERS.aspects.load(Ordering::Relaxed),
         )
     );
     crate::note!("INFO: {}", render::found(labels.len(), tests));
@@ -206,8 +210,28 @@ fn plain_summary(exit_code: i32) {
     for line in render::summary(
         start_instant().elapsed(),
         exit_code,
-        COUNTERS.actions_total.load(Ordering::Relaxed),
+        &render::Totals::current(),
         COUNTERS.tests_failed.load(Ordering::Relaxed),
+        false,
+    ) {
+        crate::ui::note(&line);
+    }
+}
+
+/// The build summary of a failed build that reports its failure itself
+/// (`--keep_going`'s `ERROR: Build did NOT complete successfully`): Bazel's
+/// `INFO: Elapsed time: …` and `INFO: N processes: …` precede that line
+/// (BuildSummaryStatsModule.buildComplete). Without the display only (the
+/// display prints its summary when it ends).
+pub fn failed_build_summary() {
+    if enabled() || !take_summary() {
+        return;
+    }
+    for line in render::summary(
+        start_instant().elapsed(),
+        1,
+        &render::Totals::current(),
+        0,
         false,
     ) {
         crate::ui::note(&line);
@@ -226,6 +250,12 @@ fn info_line(text: &str) {
 #[inline]
 pub(crate) fn package_loaded() {
     COUNTERS.packages.fetch_add(1, Ordering::Relaxed);
+}
+
+/// An aspect application was configured (its implementation ran).
+#[inline]
+pub(crate) fn aspect_applied() {
+    COUNTERS.aspects.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Analysis of `count` requested targets starts.

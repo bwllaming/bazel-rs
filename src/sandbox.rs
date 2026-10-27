@@ -121,6 +121,19 @@ impl Strategy {
         }
     }
 
+    /// The runner name of a spawn under this strategy
+    /// (SpawnRunner.getName, SpawnStats): Landlock is this engine's
+    /// `linux-sandbox`, standalone is LocalSpawnRunner's `local`.
+    pub fn runner_name(self) -> &'static str {
+        match self {
+            Strategy::Standalone => "local",
+            Strategy::Sandboxed => "linux-sandbox",
+            Strategy::ProcessWrapper => "processwrapper-sandbox",
+            Strategy::Worker => "worker",
+            Strategy::Remote => "remote",
+        }
+    }
+
     /// Whether this strategy runs the spawn inside a sandbox of any strength
     /// (the build summary's "sandboxed" note).
     fn is_sandbox(self) -> bool {

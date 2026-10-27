@@ -204,7 +204,10 @@ Done since the last increment recorded under "History", one line each:
 - [x] `register_execution_platforms` from root and non-root modules.
 - [x] Console text: `INFO: Analyzed …` / `Found …` / `Elapsed time` / `Build
       completed …` in every UI mode, `DEBUG: FILE:LINE:COL:` on every `print()`
-      (docs/PROGRESS.md; no critical path, `N processes` or `Target … up-to-date`).
+      (docs/PROGRESS.md), with the critical path, `INFO: N processes: …`,
+      `N aspect applications` and the `Target … up-to-date:` build results on
+      stderr (tests/fixtures/build_results; native `LABEL<TAB>PATH` lines only
+      with `BAZEL_RS_RESULT_LINES=1`).
 - [ ] Console text: exclusive-test order, `-k` error ordering, analysis warnings
       printed after execution.
 - [ ] Identical outputs share one inode in `bazel-bin` (not inside actions).
@@ -214,9 +217,7 @@ Done since the last increment recorded under "History", one line each:
       (tests/fixtures/module_archives/README.md).
 - [ ] Sandbox is Landlock-only (no private `/tmp`, no namespaces);
       `--sandbox_add_mount_pair` with a real remount fails (genuine ignores it here).
-- [ ] Console/exit codes: build results print `label<TAB>path` on stdout where
-      genuine prints `Target //x up-to-date:` on stderr; no critical path or
-      `N processes` line; option errors exit 1 (genuine 2); `print()` inside
+- [ ] Console/exit codes: option errors exit 1 (genuine 2); `print()` inside
       execution-time callbacks (Args.map_each) has no `DEBUG:` prefix.
 - [ ] `mod`: extensions are evaluated only when their output is printed (genuine
       evaluates all); `show_repo` proto outputs.

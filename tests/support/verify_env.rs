@@ -16,6 +16,8 @@
 // switch: `BAZEL_RS_SNAPSHOT=verify BAZEL_RS_SNAPSHOT_VERIFY_STRICT=1` runs
 // the full analysis beside every hit and fails the command (exit 70) when
 // they disagree — like the harnesses that do not clear the environment.
+// `BAZEL_RS_RESULT_LINES` (the native `LABEL<TAB>PATH` result lines the
+// harnesses read, set for every test by .cargo/config.toml) is forwarded too.
 // Harnesses whose tests pin the exact client environment (tests/host_os.rs,
 // tests/repository_environment.rs) do not forward.
 fn verifier_environment() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
@@ -25,7 +27,8 @@ fn verifier_environment() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
                 key.starts_with("BAZEL_RS_VERIFY_")
                     || matches!(
                         key,
-                        "BAZEL_RS_SNAPSHOT_ROUNDTRIP"
+                        "BAZEL_RS_RESULT_LINES"
+                            | "BAZEL_RS_SNAPSHOT_ROUNDTRIP"
                             | "BAZEL_RS_SNAPSHOT"
                             | "BAZEL_RS_SNAPSHOT_VERIFY_STRICT"
                     )

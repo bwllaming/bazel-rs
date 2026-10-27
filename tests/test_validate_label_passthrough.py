@@ -308,7 +308,7 @@ class FixtureTests(unittest.TestCase):
         self.assertNotIn('validate_label_repo_name', raw)
         self.assertNotIn('os.environ', raw)
         self.assertNotIn('GOROOT', raw)
-        self.assertEqual(set(suite.environment(Path('/private'))), {'HOME', 'TMPDIR', 'PATH', 'LC_ALL'})
+        self.assertEqual(set(suite.environment(Path('/private'))), {'HOME', 'TMPDIR', 'PATH', 'LC_ALL', 'BAZEL_RS_RESULT_LINES'})
 
     def test_full_and_reference_modes_both_need_freeze(self):
         common = ['--reference', '/frozen/ref', '--official-source', '/official', '--output', '/receipt']

@@ -265,7 +265,6 @@ fn run() -> Result<(), String> {
     let output_selection;
     let aspects;
     let aspects_parameters;
-    let show_result;
     let run_options;
     let test_options;
     let mut deferred = None;
@@ -375,7 +374,7 @@ fn run() -> Result<(), String> {
         output_selection = native.output.clone();
         aspects = native.aspects;
         aspects_parameters = native.aspects_parameters;
-        show_result = native.show_result;
+        bazel_rs::build_results::set_options(native.show_result, native.verbose_failures);
         // The test runner reads `--run_under` and the shell too.
         native.test.run_under = native.run.run_under.clone();
         native.test.shell = native.run.shell.clone();
@@ -867,7 +866,6 @@ fn run() -> Result<(), String> {
                                         cache: &cache,
                                         jobs,
                                         action_dump: action_dump.as_deref(),
-                                        show_result,
                                         remote_enabled,
                                         loading_threads,
                                         memory_limit_mb,
@@ -1250,7 +1248,6 @@ fn run() -> Result<(), String> {
             cache: &cache,
             jobs,
             action_dump: action_dump.as_deref(),
-            show_result,
             remote_enabled,
             loading_threads: loading_threads_for_report(
                 &command,
@@ -1511,7 +1508,6 @@ struct BuildTail<'a> {
     cache: &'a Path,
     jobs: usize,
     action_dump: Option<&'a Path>,
-    show_result: usize,
     remote_enabled: bool,
     /// The effective loading-thread count, for the repository timing report.
     loading_threads: usize,
@@ -1536,7 +1532,6 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
         cache,
         jobs,
         action_dump,
-        show_result,
         remote_enabled,
         loading_threads,
         memory_limit_mb,
@@ -1583,50 +1578,20 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
             return Err(error);
         }
     };
-    let non_empty_targets = summary.non_empty_targets;
     // `fetch TARGET...` (TargetFetcher): a no-build build that reports only
     // that the repositories are fetched.
     let fetch = FETCH_TARGETS.load(std::sync::atomic::Ordering::Relaxed);
-    for (label, output) in summary.outputs.iter().filter(|_| !fetch) {
+    if !fetch {
         // `run` reports its built targets on stderr (its stdout is the
         // program's).
-        if run {
-            eprintln!("{label}\t{}", output.display());
-            continue;
-        }
-        // The path's raw bytes: a lone-byte target name names the byte
-        // itself (bazel_bytes::internal_path), not U+FFFD.
-        use std::io::Write as _;
-        use std::os::unix::ffi::OsStrExt as _;
-        let mut stdout = std::io::stdout().lock();
-        stdout
-            .write_all(format!("{label}\t").as_bytes())
-            .and_then(|()| stdout.write_all(output.as_os_str().as_bytes()))
-            .and_then(|()| stdout.write_all(b"\n"))
-            .map_err(|error| error.to_string())?;
-    }
-    // BuildResultPrinter.outputTargetsAndAspects (:118-160): the
-    // `--show_result` budget (default 1) counts every non-empty target and
-    // aspect result; exceeding it aborts the whole result printing.
-    {
-        let non_empty_aspects = summary
-            .aspects
-            .iter()
-            .filter(|(_, _, artifacts)| !artifacts.is_empty())
-            .count();
-        if !fetch && non_empty_targets + non_empty_aspects <= show_result {
-            for (aspect, label, artifacts) in &summary.aspects {
-                // outputAspects (:312-332): an aspect line is printed only
-                // when the aspect has artifacts in a requested, reportable
-                // output group.
-                if !artifacts.is_empty() {
-                    eprintln!("Aspect {aspect} of {label} up-to-date:");
-                    for path in artifacts {
-                        eprintln!("  {}", path.display());
-                    }
-                }
-            }
-        }
+        bazel_rs::build_results::print(
+            &summary,
+            if run {
+                bazel_rs::build_results::NativeLines::Stderr
+            } else {
+                bazel_rs::build_results::NativeLines::Stdout
+            },
+        )?;
     }
     if fetch {
         // No native summary: fetch reports the fetched repositories only.
@@ -1654,6 +1619,7 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
         if let Some(message) = keep_going_failure_detail(&result, pattern_failure) {
             eprintln!("ERROR: {message}");
         }
+        bazel_rs::progress::failed_build_summary();
         eprintln!("ERROR: Build did NOT complete successfully");
         if run {
             eprintln!("ERROR: Build failed. Not running target");
@@ -1671,6 +1637,7 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
     if let Some(message) = pattern_failure {
         eprintln!("ERROR: {message}");
         if keep_going_requested {
+            bazel_rs::progress::failed_build_summary();
             eprintln!("ERROR: Build did NOT complete successfully");
         }
         write_lockfile();
@@ -2121,7 +2088,6 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
                 cache: tail.cache,
                 jobs: tail.jobs,
                 action_dump: None,
-                show_result: 1,
                 remote_enabled: tail.remote_enabled,
                 loading_threads: 0,
                 memory_limit_mb: None,
@@ -2247,6 +2213,7 @@ fn run_tail(
         if let Some(message) = keep_going_failure_detail(&result, pattern_failure) {
             eprintln!("ERROR: {message}");
         }
+        bazel_rs::progress::failed_build_summary();
         eprintln!("ERROR: Build did NOT complete successfully");
         eprintln!("ERROR: Build failed. Not running target");
         write_lockfile();
@@ -2279,40 +2246,9 @@ fn run_tail(
             "internal error: {label} was not planned as a run target"
         )),
     };
-    for (label, output) in &summary.outputs {
-        eprintln!("{label}\t{}", output.display());
-    }
-    // BuildResultPrinter.outputTargetsAndAspects (:118-160): the
-    // `--show_result` budget (default 1) counts every non-empty target and
-    // aspect result; exceeding it aborts the whole result printing.
-    {
-        let non_empty_targets = summary
-            .outputs
-            .iter()
-            .map(|(label, _)| label)
-            .collect::<std::collections::BTreeSet<_>>()
-            .len();
-        let non_empty_aspects = summary
-            .aspects
-            .iter()
-            .filter(|(_, _, artifacts)| !artifacts.is_empty())
-            .count();
-        // The --show_result budget (not threaded here; aspects are a
-        // build-request feature, and the default budget is 1).
-        if non_empty_targets + non_empty_aspects <= 1 {
-            for (aspect, label, artifacts) in &summary.aspects {
-                // outputAspects (:312-332): an aspect line is printed only
-                // when the aspect has artifacts in a requested, reportable
-                // output group.
-                if !artifacts.is_empty() {
-                    eprintln!("Aspect {aspect} of {label} up-to-date:");
-                    for path in artifacts {
-                        eprintln!("  {}", path.display());
-                    }
-                }
-            }
-        }
-    }
+    // Bazel reports built targets on stderr; stdout carries the
+    // program's or the tests' output.
+    bazel_rs::build_results::print(&summary, bazel_rs::build_results::NativeLines::Stderr)?;
     if remote_enabled {
         bazel_rs::note!(
             "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; {})",
@@ -2706,42 +2642,9 @@ fn test_tail(
         bazel_rs::request::RequestCommand::Test { tests, .. } => tests,
         _ => Vec::new(),
     };
-    // Bazel reports built targets on stderr; stdout carries test output
-    // and the summary.
-    for (label, output) in &summary.outputs {
-        eprintln!("{label}\t{}", output.display());
-    }
-    // BuildResultPrinter.outputTargetsAndAspects (:118-160): the
-    // `--show_result` budget (default 1) counts every non-empty target and
-    // aspect result; exceeding it aborts the whole result printing.
-    {
-        let non_empty_targets = summary
-            .outputs
-            .iter()
-            .map(|(label, _)| label)
-            .collect::<std::collections::BTreeSet<_>>()
-            .len();
-        let non_empty_aspects = summary
-            .aspects
-            .iter()
-            .filter(|(_, _, artifacts)| !artifacts.is_empty())
-            .count();
-        // The --show_result budget (not threaded here; aspects are a
-        // build-request feature, and the default budget is 1).
-        if non_empty_targets + non_empty_aspects <= 1 {
-            for (aspect, label, artifacts) in &summary.aspects {
-                // outputAspects (:312-332): an aspect line is printed only
-                // when the aspect has artifacts in a requested, reportable
-                // output group.
-                if !artifacts.is_empty() {
-                    eprintln!("Aspect {aspect} of {label} up-to-date:");
-                    for path in artifacts {
-                        eprintln!("  {}", path.display());
-                    }
-                }
-            }
-        }
-    }
+    // Bazel reports built targets on stderr; stdout carries the
+    // program's or the tests' output.
+    bazel_rs::build_results::print(&summary, bazel_rs::build_results::NativeLines::Stderr)?;
     if std::env::var_os("BAZEL_RS_REMOTE_STATS").is_some_and(|value| value == "1") {
         let (blobs, bytes) = bazel_rs::remote_grpc::read_totals();
         bazel_rs::note!("bazel-rs: remote downloads: {blobs} blobs, {bytes} bytes");
@@ -2862,12 +2765,14 @@ fn test_tail(
             if let Some(message) = keep_going_failure_detail(result, pattern_failure) {
                 eprintln!("ERROR: {message}");
             }
+            bazel_rs::progress::failed_build_summary();
             eprintln!("ERROR: Build did NOT complete successfully");
         }
         None => {
             if let Some(message) = pattern_failure {
                 eprintln!("ERROR: {message}");
                 if options.keep_going {
+                    bazel_rs::progress::failed_build_summary();
                     eprintln!("ERROR: Build did NOT complete successfully");
                 }
             }
@@ -3432,6 +3337,9 @@ struct NativeOptions {
     /// `--show_result` (BuildRequestOptions.maxResultTargets): how many
     /// non-empty target/aspect results print.
     show_result: usize,
+    /// `--verbose_failures` (ExecutionOptions.verboseFailures): only its
+    /// BuildResultPrinter hint is modelled (crate::build_results).
+    verbose_failures: bool,
     /// RunCommand.RunOptions (N23f, crate::run_command).
     run: bazel_rs::run_command::RunOptions,
     test: bazel_rs::test_command::TestOptions,
@@ -3490,6 +3398,7 @@ impl NativeOptions {
             aspects: Vec::new(),
             aspects_parameters: Vec::new(),
             show_result: 1,
+            verbose_failures: false,
             run: bazel_rs::run_command::RunOptions::default(),
             test: bazel_rs::test_command::TestOptions::default(),
             spawn: bazel_rs::sandbox::SpawnOptions::default(),
@@ -3878,6 +3787,11 @@ impl NativeOptions {
             // (OutputGroupInfo.java:246-250): validation outputs are promoted
             // by the ValidateTarget aspect (N58, rules/core/ValidateTarget.java).
             self.output.use_validation_aspect = value?;
+            false
+        } else if builds(command)
+            && let Some(value) = bazel_rs::configuration::boolean_option(arg, "verbose_failures")
+        {
+            self.verbose_failures = value?;
             false
         } else if builds(command) && arg == "--show_result" {
             let value = next.ok_or("--show_result requires a value")?;

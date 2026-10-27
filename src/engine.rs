@@ -1588,9 +1588,10 @@ type BuildPlan = (
     Vec<PlannedAction>,
     Vec<(ConfiguredTargetKey, Artifact)>,
     Vec<(String, Label, Vec<Artifact>)>,
-    // Labels whose own artifacts print a target result (the --show_result
-    // budget; BuildResultPrinter.outputTargetsAndAspects).
-    usize,
+    // The targets that print a build result with their displayed artifacts
+    // (BuildResultPrinter.outputTargets; crate::request::PlannedRequest
+    // ::results).
+    Vec<(Label, Vec<Artifact>)>,
 );
 
 /// The analyzed rules of a build in analysis (postorder) order, each with
@@ -1742,12 +1743,19 @@ impl EdgeConfigurations {
 
 #[derive(Debug, Default)]
 pub struct BuildSummary {
+    /// The requested targets' artifacts at their executed paths (the
+    /// `LABEL<TAB>PATH` result lines, crate::main's
+    /// `BAZEL_RS_RESULT_LINES=1`).
     pub outputs: Vec<(Label, PathBuf)>,
-    /// Labels whose own (non-aspect) artifacts print a target result — the
-    /// `--show_result` budget half for targets (N58).
-    pub non_empty_targets: usize,
-    /// `Aspect NAME of LABEL up-to-date:` reports with their artifacts
-    /// (BuildResultPrinter.outputAspects, :312-332), in aspect order.
+    /// `Target LABEL up-to-date:` results (BuildResultPrinter
+    /// .outputTargets) with the displayed paths (in the output tree), after
+    /// an execution phase.
+    pub results: Vec<(Label, Vec<PathBuf>)>,
+    /// `Target LABEL failed to build` (--keep_going).
+    pub failed_targets: Vec<Label>,
+    /// `Aspect NAME of LABEL up-to-date:` reports (BuildResultPrinter
+    /// .outputAspects, :312-332), in aspect order, with the displayed paths
+    /// (in the output tree).
     pub aspects: Vec<(String, Label, Vec<PathBuf>)>,
     pub executed: usize,
     pub cache_hits: usize,
@@ -9620,7 +9628,7 @@ impl Engine {
         let planned = self.plan_build(spec.build);
         self.run_requests.clear();
         self.run_trees = true;
-        let (nodes, requested, aspect_reports, non_empty_targets) = planned?;
+        let (nodes, requested, aspect_reports, results) = planned?;
         let plans = std::mem::take(&mut self.run_plans);
         // --keep_going: a `test` request runs only the tests that analyzed
         // (a test whose analysis failed is not one of its tests, genuine
@@ -9719,7 +9727,10 @@ impl Engine {
                 })
                 .collect(),
             nodes,
-            non_empty_targets,
+            results: results
+                .iter()
+                .map(|(label, artifacts)| (label.clone(), artifacts.iter().map(produced).collect()))
+                .collect(),
             run_plans,
             configurations,
             warnings: std::mem::take(&mut self.warnings),
@@ -10955,6 +10966,7 @@ impl Engine {
             let providers = self.plan_aspect_application(
                 state, configured, &base_key, &base, aspect, bases, collection,
             )?;
+            crate::progress::aspect_applied();
             state
                 .aspect_providers
                 .insert(key.clone(), providers.clone());
@@ -14023,6 +14035,54 @@ impl Engine {
         }
     }
 
+    /// The requested targets that print a build result and the artifacts
+    /// they display (BuildResultPrinter.filterTargetsToPrint and
+    /// getArtifactsToPrint): no source file target (shouldConsiderForDisplay),
+    /// no output file whose generating rule is requested too and builds it
+    /// (it shows under its rule), and only generated artifacts
+    /// (shouldDisplay), each once.
+    fn displayed_results(
+        &mut self,
+        results: Vec<(Label, Vec<Artifact>)>,
+    ) -> Result<Vec<(Label, Vec<Artifact>)>, String> {
+        let requested: HashMap<Label, HashSet<SharedPath>> = results
+            .iter()
+            .map(|(label, artifacts)| {
+                (
+                    label.clone(),
+                    artifacts
+                        .iter()
+                        .map(|artifact| artifact.real.clone())
+                        .collect(),
+                )
+            })
+            .collect();
+        let mut displayed = Vec::with_capacity(results.len());
+        for (label, artifacts) in results {
+            match self.target(&label)? {
+                Target::Source(_) => continue,
+                Target::Output(rule, _) => {
+                    let shown_by_rule = requested.get(&rule.label).is_some_and(|files| {
+                        artifacts
+                            .iter()
+                            .all(|artifact| files.contains(&artifact.real))
+                    });
+                    if shown_by_rule {
+                        continue;
+                    }
+                }
+                Target::Rule(_) => {}
+            }
+            let mut seen = HashSet::new();
+            let artifacts = artifacts
+                .into_iter()
+                .filter(|artifact| !artifact.file.is_source && seen.insert(artifact.real.clone()))
+                .collect();
+            displayed.push((label, artifacts));
+        }
+        Ok(displayed)
+    }
+
     /// Analysis and action planning of a build: the actions reachable from
     /// the requested targets' artifacts, validated before any execution.
     fn plan_build(&mut self, labels: &[Label]) -> Result<BuildPlan, String> {
@@ -14270,7 +14330,7 @@ impl Engine {
             // Full provider analysis (including top-level aspects) succeeded.
             // Nothing below this boundary is part of configured querying.
             crate::perf_mark("cquery.analysis_done");
-            return Ok((Vec::new(), Vec::new(), Vec::new(), 0));
+            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
         }
         // N63 follow-up (BLOCKER 1): Bazel adds the workspace status
         // artifacts to artifactsToBuild UNCONDITIONALLY on every build
@@ -14377,10 +14437,10 @@ impl Engine {
         // (BuildResultPrinter.outputAspects); validation aspects are built
         // but never reported (partitionAspectKeys).
         let mut aspect_reports: Vec<(String, Label, Vec<Artifact>)> = Vec::new();
-        // Labels whose own (non-aspect) artifacts print a target result —
-        // the `--show_result` budget counts these and the aspects with
-        // artifacts (BuildResultPrinter.outputTargetsAndAspects).
-        let mut target_result_labels: BTreeSet<Label> = BTreeSet::new();
+        // Each requested target's own (non-aspect) artifacts in the
+        // requested reportable groups (TopLevelArtifactHelper
+        // .getAllArtifactsToBuild over the target): its build result.
+        let mut results: Vec<(Label, Vec<Artifact>)> = Vec::new();
         // The build event plan's output groups (crate::bep::plan): per
         // requested label, each reported group's indices into `requested`.
         let mut bep_groups: Vec<(Label, String, usize, usize)> = Vec::new();
@@ -14389,6 +14449,7 @@ impl Engine {
             let merged = top_level_aspects.get(label);
             let merged_view = merged.map(|(view, _)| view);
             let before_default = requested.len();
+            let mut own: Vec<Artifact> = Vec::new();
             if selected.contains(crate::output_group_info::DEFAULT) {
                 match merged_view {
                     // The merged files to build: the base target's plus every
@@ -14403,11 +14464,12 @@ impl Engine {
                             })?;
                             requested.push((key.clone(), artifact));
                         }
+                        own.extend(self.artifacts(label, top, &dry, &declared)?);
                     }
                     _ => {
                         for artifact in self.artifacts(label, top, &dry, &declared)? {
+                            own.push(artifact.clone());
                             requested.push((key.clone(), artifact));
-                            target_result_labels.insert(label.clone());
                         }
                     }
                 }
@@ -14448,8 +14510,10 @@ impl Engine {
                     Some(files) if base_files.is_empty() => files,
                     _ => base_files.clone(),
                 };
-                if !base_files.is_empty() {
-                    target_result_labels.insert(label.clone());
+                if reports(group) {
+                    for file in &base_files {
+                        own.extend(resolve(self, file)?);
+                    }
                 }
                 let before_group = requested.len();
                 group_artifacts(
@@ -14518,7 +14582,9 @@ impl Engine {
                     aspect_reports.push((class, label.clone(), artifacts));
                 }
             }
+            results.push((label.clone(), own));
         }
+        let results = self.displayed_results(results)?;
         // OutputGroupInfo.HIDDEN_TOP_LEVEL (RuleConfiguredTargetBuilder.java:156-171):
         // the default runfiles artifacts of requested targets are built too,
         // but not reported. The runfiles tree itself is not created (docs/RUNFILES.md).
@@ -15098,7 +15164,7 @@ impl Engine {
             });
         }
         self.bep_groups = bep_groups;
-        let built = (nodes, requested, aspect_reports, target_result_labels.len());
+        let built = (nodes, requested, aspect_reports, results);
         if self.skip_teardown && !self.execute_build {
             // W7: the process exits right after this --nobuild command
             // (`set_skip_teardown`); the analysis and planning maps are
