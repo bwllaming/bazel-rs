@@ -86,6 +86,9 @@ pub struct TestSpec {
     /// an exclusive test's execution info gets `local`
     /// (TestTargetProperties.java:91-108).
     pub exclusive_sandboxed: bool,
+    /// The `--run_under` target's executable by its runfiles path
+    /// (LabelRunUnder; the target's runfiles hold it).
+    pub run_under_executable: Option<String>,
 }
 
 impl TestSpec {
@@ -154,6 +157,7 @@ impl TestSpec {
             test_env: target.test_env.clone(),
             requirements,
             exclusive_sandboxed: true,
+            run_under_executable: target.settings.run_under_executable.clone(),
         })
     }
 
@@ -169,6 +173,35 @@ impl TestSpec {
         }
         info.extend(self.requirements.iter().cloned());
         info
+    }
+}
+
+/// The test command line (TestStrategy.expandedArgsFromAction,
+/// analysis/test/TestStrategy.java:205-238): test-setup.sh, the `--run_under`
+/// prefix (TestStrategy.addRunUnderArgs), the executable's runfiles path, its
+/// `args` and `--test_arg`s.
+pub fn test_arguments(spec: &TestSpec, options: &TestOptions) -> Vec<String> {
+    let mut args = vec![SETUP_EXEC_PATH.to_owned()];
+    if let Some(run_under) = &options.run_under {
+        args.extend(run_under.test_prefix(spec.run_under_executable.as_deref(), &options.shell));
+    }
+    args.push(spec.binary.clone());
+    args.extend(spec.args.iter().cloned());
+    args.extend(options.args.iter().cloned());
+    args
+}
+
+/// A LabelRunUnder needs an executable (TestTargetExecutionSettings
+/// .getRunUnderExecutable: the target's FilesToRunProvider executable).
+pub fn run_under_ready(spec: TestSpec, options: &TestOptions) -> Result<TestSpec, String> {
+    match &options.run_under {
+        Some(run_under) if run_under.is_label() && spec.run_under_executable.is_none() => {
+            Err(format!(
+                "{}: the --run_under target {} has no executable",
+                spec.label, run_under.first
+            ))
+        }
+        _ => Ok(spec),
     }
 }
 
@@ -460,6 +493,7 @@ impl<'a> Session<'a> {
                     planned.location.clone(),
                     &target,
                 )
+                .and_then(|spec| run_under_ready(spec, self.runner.options))
                 .map(|spec| TestSpec {
                     exclusive_sandboxed: self.runner.options.exclusive_test_sandboxed,
                     ..spec
@@ -824,12 +858,9 @@ impl Runner<'_> {
         })
     }
 
-    /// The command line (TestStrategy.expandedArgsFromAction, :176-205).
+    /// The command line ([`test_arguments`]).
     fn arguments(&self, spec: &TestSpec) -> Vec<String> {
-        let mut args = vec![SETUP_EXEC_PATH.to_owned(), spec.binary.clone()];
-        args.extend(spec.args.iter().cloned());
-        args.extend(self.options.args.iter().cloned());
-        args
+        test_arguments(spec, self.options)
     }
 
     /// One test action (TestRunnerAction.execute): a cached result, or the
@@ -2097,6 +2128,7 @@ mod tests {
                 ("no-sandbox".into(), String::new()),
             ],
             exclusive_sandboxed: true,
+            run_under_executable: None,
         };
         assert_eq!(
             spec.execution_info(),

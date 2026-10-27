@@ -31,20 +31,84 @@ EnumFilterConverter, TriStateConverter):
 | `--cache_test_results=auto\|yes\|no`, `-t`, `-t-` | TestRunnerAction.shouldAcceptCachedResult/executeUnconditionally (:565-680) |
 | `--test_env`, `--test_arg`, `--test_filter`, `--test_runner_fail_fast` | TestPolicy / setupEnvVariables / TestTargetExecutionSettings |
 | `--test_timeout=N\|N,N,N,N` | TestTimeout.TestTimeoutConverter |
-| `--flaky_test_attempts=N\|default` | TestStrategy.getTestAttempts (flaky: 3) |
-| `--runs_per_test=N` | TestActionBuilder (run directories, TEST_RANDOM_SEED/TEST_RUN_NUMBER) |
+| `--flaky_test_attempts=N\|default\|REGEX@N` | TestStrategy.getTestAttempts (flaky: 3); PerLabelOptions: comma-separated RegexFilter (`-` excludes, `\,` escapes, `find` on the label), the last matching value wins (TestAttemptsConverter errors) |
+| `--runs_per_test=N\|REGEX@N` | TestActionBuilder (run directories, TEST_RANDOM_SEED/TEST_RUN_NUMBER); per label like `--flaky_test_attempts` (RunsPerTestConverter errors), unmatched tests run once |
 | `--test_sharding_strategy=explicit\|disabled\|forced=K` | TestConfiguration.TestShardingStrategy |
 | `--test_tag_filters`, `--test_size_filters`, `--test_timeout_filters`, `--test_lang_filters`, `--build_tests_only` | TestFilter, TargetPatternPhaseFunction |
-| `--[no]verbose_test_summary`, `--test_verbose_timeout_warnings`, `--max_test_output_bytes`, `--[no]incompatible_check_sharding_support`, `--zip_undeclared_test_outputs`, `--local_test_jobs`, `--test_tmpdir`, `--test_strategy=standalone\|local\|exclusive`, `--[no]keep_going` | as in Bazel |
+| `--[no]verbose_test_summary`, `--test_verbose_timeout_warnings`, `--max_test_output_bytes`, `--[no]incompatible_check_sharding_support`, `--zip_undeclared_test_outputs`, `--local_test_jobs`, `--test_tmpdir`, `--[no]keep_going` | as in Bazel |
+| `--test_strategy=""\|standalone\|exclusive` | any other value (`local`, `sandboxed`, `remote`, ...) fails every building command like ModuleActionContextRegistry (only StandaloneModule registers TestActionContexts): `No context of type TestActionContext registered for requested value 'local', available identifiers are: [exclusive, standalone]`, `unused [interface ...TestActionContext]`, `Build did NOT complete successfully` (+ `Couldn't start the build. Unable to run tests` / `Build failed. Not running target`), exit 2 |
+| `--[no]test_keep_going` | see "`--notest_keep_going`" below |
+| `--run_under=COMMAND\|LABEL [OPTIONS]` | see "`--run_under`" below; `--[no]incompatible_bazel_test_exec_run_under` (default true) |
+| `--[no]incompatible_exclusive_test_sandboxed` | false: exclusive tests get `local` (TestTargetProperties.java:91-108) |
+| `--test_result_expiration`, `--[no]allow_local_tests`, `--experimental_cancel_concurrent_tests=never` | no effect in Bazel 9.3 either (deprecated; no reader; the default) |
+| `--target_pattern_file=FILE` | `build`/`test`/`fetch` read their patterns from FILE (TargetPatternsHelper.readFrom): one per line, up to `#`, trimmed, empty lines dropped, negative patterns as on the command line; with command-line patterns `Command-line target pattern and --target_pattern_file cannot both be specified` (exit 2); an unreadable file `I/O error reading from PATH: PATH (No such file or directory)` (exit 2); `run`/`cquery` accept and ignore it, `query` does not know it (`Unrecognized option`); an empty list builds nothing (`build`: the usage warning, success; `test`: no test targets, exit 4) |
 
 Explicit failures: coverage (`--collect_code_coverage`, not parsed),
-per-label `regex@N` forms of `--flaky_test_attempts`/`--runs_per_test`,
 `--check_tests_up_to_date`, `--print_relative_test_log_paths` (no
-convenience symlinks), other `--test_strategy` values, `--run_under` with a
-test under `run`, a `select()` in `shard_count` of a test to run (`test`, `run`
+convenience symlinks), `--experimental_cancel_concurrent_tests=on_failed|on_passed`,
+`--runs_per_test_detects_flakes`, `--[no]trim_test_configuration`,
+`--experimental_retain_test_configuration_across_testonly`,
+`--default_test_resources`, a `select()` in `shard_count` of a test to run (`test`, `run`
 of a test; a build, the `--build_tests_only` filters and a test_suite's
 runfiles do not read the shard count). (A `select()`
 in test_suite `tests` is a loading error: the attribute is not configurable.)
+
+## `--notest_keep_going`
+
+TestRunnerAction.executeAllAttempts (analysis/test/TestRunnerAction.java
+:1246-1310): a test action whose last attempt did not pass (a flaky pass is
+a pass; a cached result runs no attempt) posts its result (FAIL lines, the
+`(Summary)` line), then fails with the TestExecException `Test failed,
+aborting` (`ERROR: LOCATION: Testing L failed: Test failed, aborting`).
+Under `--nokeep_going` that is the build's first failure (BuildTool
+.shouldStopOnFailure): no build or test action starts after it, test actions
+in flight are interrupted (NO STATUS, `skipped`), exclusive tests do not run,
+the failed test stays FAILED, the command ends with `ERROR: Test failed,
+aborting` and exit 3 (TESTS_FAILED, NO_KEEP_GOING_TEST_FAILURE). Under
+`--keep_going` every other action and test goes on (no final error, exit 3)
+and the failed test is FAILED, not FAILED TO BUILD (its result was posted
+first; `crate::test_runner::Session::abort_on_failure`). The interrupt is the
+execution graph's failure flag (crate::scheduler::Leaves), so the overlap
+scheduling of "Scheduling" applies unchanged.
+
+## `--run_under`
+
+RunUnderConverter (analysis/config/RunUnderConverter.java): the value is
+shell-tokenized (`Not a valid command prefix ...`, `Empty command`); a first
+word starting with `//` or `@` is a label (LabelRunUnder), anything else a
+command (CommandRunUnder); the other words are its options. It is a
+configuration option of `build`, `test`, `run` and `cquery`.
+
+* test command (TestStrategy.addRunUnderArgs, :240-270): `test-setup.sh`,
+  then the label target's executable by its runfiles path (`p/runner.sh`),
+  or the command — wrapped as `SHELL -c "$@" SHELL` when it has no `/`
+  (TestTargetExecutionSettings.needsShell; SHELL is `--shell_executable`,
+  default `/bin/bash`) — then the options, then the test executable and its
+  arguments. The prefix is part of the arguments the test action key frames
+  (TestRunnerAction.computeKey adds `runUnder.value()`), and a label
+  runner's runfiles are among the test's staged inputs.
+* label: every Starlark test rule in a target configuration (null in an
+  exec configuration) gets the late-bound `:run_under_exec_config`
+  prerequisite (exec transition of the `test` exec group; with
+  `--noincompatible_bazel_test_exec_run_under` `:run_under_target_config` in
+  the target configuration; in the explicit-module profile, without the
+  `test` exec group, the target configuration), exempt from visibility and
+  testonly checks (skipPrereqValidatorCheck). RunfilesSupport.create merges
+  its default runfiles before the test's own into the test's runfiles tree —
+  also under `build` (genuine MANIFEST: `_main/p/runner.sh
+  bazel-out/k8-opt-exec/bin/p/runner.sh`). A direct prerequisite with that
+  label that has no executable fails the rule (`run_under target L is not
+  executable`, ConfiguredTargetFunction.java:330-346; native: Starlark rules).
+* `run` of a test: the same test command (RunCommand.getTestCommandLine).
+
+Paired capture `tests/fixtures/cli_test_options/reference_receipt.json`
+(script /home/coder/opencodetmp/w/perf-research/cli-test-options-capture.py,
+fixture `tests/cli_test_options.rs`): `--target_pattern_file`,
+`--test_strategy`, `--notest_keep_going` (alone, interrupting a running
+test, before an exclusive test, with `--keep_going`), per-label attempts and
+runs, and `--run_under` (label in the exec and target configuration, shell
+and absolute commands, a failing test, `run` of a binary and of a test, the
+runfiles MANIFEST, a non-executable runner).
 
 ## Selecting tests
 
@@ -317,9 +381,10 @@ against the logged reference reproduces every recorded verdict (M36: EXACT).
 
 ## Not covered
 
-Coverage; `--run_under` for tests and labels; remote caching/execution of test
-actions (local-only, see above); `--test_strategy` values beyond
-`standalone`/`local`/`exclusive` and worker test strategies (test actions
+Coverage; the runner's executable is not staged at its exec path (only in
+the runfiles tree, where the command uses it); the non-executable runner
+check covers Starlark rules only; remote caching/execution of test
+actions (local-only, see above); worker test strategies (test actions
 themselves run through the spawn strategy selection and are sandboxed by
 default, docs/SANDBOX.md; runfiles other than external repository files
 are hardlinks where Bazel's sandbox shows symlinks); Bazel's

@@ -1472,6 +1472,7 @@ mod tests {
                             requirements: vec![("requires-network".into(), String::new())],
                             exec_group: "test".into(),
                         }),
+                        run_under_executable: Some("p/runner.sh".into()),
                     },
                     configuration: 0,
                     completion: vec!["write".into(), "tree".into()],

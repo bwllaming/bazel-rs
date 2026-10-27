@@ -1059,9 +1059,10 @@ fn run_validates_its_target() {
             vec!["run", "//pkg:all"],
             "Only a single target can be run. Your target pattern //pkg:all expanded to the targets",
         ),
+        // A LabelRunUnder target must be executable (fullyValidateTarget).
         (
-            vec!["run", "--run_under=//pkg:tool", "//pkg:b"],
-            "a label prefix (LabelRunUnder) is not supported",
+            vec!["run", "--run_under=//pkg:group", "//pkg:b"],
+            "Cannot run target //pkg:group: Not executable",
         ),
         // --run_env converts with N42's EnvVarsConverter (crate::action_env).
         (
@@ -1077,6 +1078,17 @@ fn run_validates_its_target() {
             stderr(&output)
         );
     }
+    // A LabelRunUnder: the runner is built (with its runfiles tree) and its
+    // executable's path prefixes the command line (RunCommand
+    // .constructCommandLine; genuine 9.3 capture tests/fixtures/cli_test_options).
+    let output = ws.run(&["run", "--run_under=//pkg:tool", "//pkg:b"]);
+    success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "tool-ran\n");
+    assert!(
+        stderr(&output).contains("/bin/pkg/tool /"),
+        "{}",
+        stderr(&output)
+    );
     // A source file target runs in the working directory, without runfiles.
     let output = ws.run_in(&["run", "//pkg:script.sh", "--", "a"], "pkg");
     success(&output);

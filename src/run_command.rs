@@ -33,8 +33,8 @@ pub struct RunOptions {
     pub run_env: Vec<EnvVar>,
     pub run_in_cwd: bool,
     pub omit_run_args: bool,
-    /// `--run_under`: a command prefix (a label prefix is unsupported).
-    pub run_under: Option<String>,
+    /// `--run_under` (CoreOptions.runUnder, RunUnderConverter).
+    pub run_under: Option<RunUnder>,
     /// `--shell_executable` (default /bin/bash, the Linux sh toolchain).
     pub shell: String,
 }
@@ -50,6 +50,70 @@ impl Default for RunOptions {
             run_under: None,
             shell: "/bin/bash".to_owned(),
         }
+    }
+}
+
+/// One `--run_under` value (analysis/config/RunUnder.java, parsed by
+/// RunUnderConverter, analysis/config/RunUnderConverter.java:33-57): the
+/// whole value, the first shell token (a label when it starts with `//` or
+/// `@`, LabelRunUnder; otherwise a command, CommandRunUnder) and the
+/// remaining tokens (`options`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunUnder {
+    pub value: String,
+    pub first: String,
+    pub options: Vec<String>,
+}
+
+impl RunUnder {
+    /// RunUnderConverter.convert: `Err` is the converter's message (the
+    /// caller prefixes `While parsing option --run_under=VALUE: `).
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let tokens = crate::ctx_surface::tokenize(value)
+            .map_err(|error| format!("Not a valid command prefix {error}"))?;
+        let Some((first, options)) = tokens.split_first() else {
+            return Err("Empty command".to_owned());
+        };
+        Ok(RunUnder {
+            value: value.to_owned(),
+            first: first.clone(),
+            options: options.to_vec(),
+        })
+    }
+
+    /// LabelRunUnder: the first word starts with `//` or `@`.
+    pub fn is_label(&self) -> bool {
+        self.first.starts_with("//") || self.first.starts_with('@')
+    }
+
+    /// TestTargetExecutionSettings.needsShell (analysis/test/TestTargetExecutionSettings.java
+    /// :167-178): a command without `/` (a shell built-in or a PATH lookup)
+    /// runs through the shell.
+    pub fn needs_shell(&self) -> bool {
+        !self.is_label() && !self.first.contains('/')
+    }
+
+    /// The prefix of a test's command line (TestStrategy.addRunUnderArgs,
+    /// analysis/test/TestStrategy.java:240-270): the label's executable
+    /// (`label_executable`, its runfiles path) or the command (wrapped as
+    /// `SHELL -c "$@" SHELL` when it needs the shell), then the options.
+    pub fn test_prefix(&self, label_executable: Option<&str>, shell: &str) -> Vec<String> {
+        let mut args = Vec::new();
+        if self.is_label() {
+            args.extend(label_executable.map(str::to_owned));
+        } else {
+            if self.needs_shell() {
+                args.extend([
+                    shell.to_owned(),
+                    "-c".to_owned(),
+                    "\"$@\"".to_owned(),
+                    shell.to_owned(),
+                ]);
+            }
+            args.push(self.first.clone());
+        }
+        args.extend(self.options.iter().cloned());
+        args
     }
 }
 
@@ -92,6 +156,8 @@ pub struct RunInputs<'a> {
     pub residue: &'a [String],
     /// The runfiles working directory (`<tree>/_main`), if any.
     pub runfiles_working_directory: Option<&'a str>,
+    /// The built `--run_under` target's executable (LabelRunUnder), if any.
+    pub run_under_executable: Option<&'a str>,
 }
 
 /// RunCommand.getCommandLineInfo/constructCommandLine (:688-752, 862-912).
@@ -149,7 +215,19 @@ pub fn command_line(inputs: &RunInputs<'_>) -> RunCommandLine {
     RunCommandLine {
         args,
         residue: inputs.residue.len(),
-        run_under: inputs.options.run_under.clone(),
+        // Builder.setRunUnderTarget/setRunUnderPrefix (RunCommandLine.java
+        // :354-377): the label's escaped executable path and escaped options,
+        // or the command prefix as given.
+        run_under: inputs.options.run_under.as_ref().map(|run_under| {
+            match inputs.run_under_executable.filter(|_| run_under.is_label()) {
+                Some(executable) => std::iter::once(executable)
+                    .chain(run_under.options.iter().map(String::as_str))
+                    .map(shell_escape)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                None => run_under.value.clone(),
+            }
+        }),
         environment,
         clear,
         working_directory,
@@ -278,6 +356,7 @@ mod tests {
             binary_args: &[],
             residue,
             runfiles_working_directory: Some("/x/bazel-out/k8-fastbuild/bin/pkg/b.runfiles/_main"),
+            run_under_executable: None,
         }
     }
 
@@ -308,7 +387,7 @@ mod tests {
     #[test]
     fn run_under_prefix_wraps_the_script_command() {
         let options = RunOptions {
-            run_under: Some("env FOO=1".to_owned()),
+            run_under: Some(RunUnder::parse("env FOO=1").unwrap()),
             ..RunOptions::default()
         };
         let client = BTreeMap::new();
@@ -320,6 +399,46 @@ mod tests {
         assert_eq!(
             line.argv("/bin/bash")[2],
             "env FOO=1 /x/bazel-out/k8-fastbuild/bin/pkg/b"
+        );
+    }
+
+    /// RunUnderConverter and TestStrategy.addRunUnderArgs (genuine 9.3
+    /// captures, tests/fixtures/cli_test_options).
+    #[test]
+    fn run_under_forms() {
+        let label = RunUnder::parse("//p:runner --flag 'a b'").unwrap();
+        assert!(label.is_label() && !label.needs_shell());
+        assert_eq!(label.options, ["--flag", "a b"]);
+        assert_eq!(
+            label.test_prefix(Some("p/runner.sh"), "/bin/bash"),
+            ["p/runner.sh", "--flag", "a b"]
+        );
+        let shell = RunUnder::parse("echo pre").unwrap();
+        assert_eq!(
+            shell.test_prefix(None, "/bin/bash"),
+            ["/bin/bash", "-c", "\"$@\"", "/bin/bash", "echo", "pre"]
+        );
+        let direct = RunUnder::parse("/usr/bin/env FOO=1").unwrap();
+        assert_eq!(
+            direct.test_prefix(None, "/bin/bash"),
+            ["/usr/bin/env", "FOO=1"]
+        );
+        assert_eq!(RunUnder::parse("  ").unwrap_err(), "Empty command");
+        assert!(
+            RunUnder::parse("'x")
+                .unwrap_err()
+                .starts_with("Not a valid command prefix ")
+        );
+        let options = RunOptions {
+            run_under: Some(label),
+            ..RunOptions::default()
+        };
+        let client = BTreeMap::new();
+        let mut inputs = inputs(&options, &client, &[]);
+        inputs.run_under_executable = Some("/x/bazel-out/k8-fastbuild/bin/p/runner.sh");
+        assert_eq!(
+            command_line(&inputs).argv("/bin/bash")[2],
+            "/x/bazel-out/k8-fastbuild/bin/p/runner.sh --flag 'a b' /x/bazel-out/k8-fastbuild/bin/pkg/b"
         );
     }
 

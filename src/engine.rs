@@ -1260,12 +1260,14 @@ struct Edge {
 /// crate::package::custom_dependency_labels), then genrule `tools`, then
 /// the effective `package_metadata` (nonconfigurable, NoConfigTransition).
 /// The implicit test-runner attributes of every Starlark test rule that
-/// are analyzed without `--collect_code_coverage` and `--run_under`
+/// are analyzed without `--collect_code_coverage` (`--run_under` adds one,
+/// [`RunUnderEdge`])
 /// (StarlarkRuleClassFunctions.getTestBaseRule, analysis/starlark/StarlarkRuleClassFunctions.java:290-352):
 /// all use the exec transition of the `test` exec group. `:coverage_report_generator`
 /// is null without coverage (CoverageConfiguration.reportGenerator,
 /// analysis/test/CoverageConfiguration.java:98-103), the run-under
-/// attributes without `--run_under` (BaseRuleClasses.java:155-197).
+/// attributes without a label `--run_under` (BaseRuleClasses.java:155-197;
+/// Engine::rule_edges adds that edge).
 pub(crate) const TEST_RUNNER_ATTRIBUTES: [(&str, &str); 7] = [
     ("$test_wrapper", "@@bazel_tools//tools/test:test_wrapper"),
     ("$xml_writer", "@@bazel_tools//tools/test:xml_writer"),
@@ -1284,6 +1286,20 @@ pub(crate) const TEST_RUNNER_ATTRIBUTES: [(&str, &str); 7] = [
         "@@bazel_tools//tools/test:coverage_support",
     ),
 ];
+
+/// A LabelRunUnder's late-bound test-rule dependency (StarlarkRuleClassFunctions
+/// .getTestBaseRule, analysis/starlark/StarlarkRuleClassFunctions.java:353-363;
+/// BaseRuleClasses.java:155-197): `:run_under_exec_config` (exec transition
+/// of the `test` exec group) or `:run_under_target_config`; both skip the
+/// prerequisite validator (visibility, testonly).
+#[derive(Clone, Debug)]
+struct RunUnderEdge {
+    label: Label,
+    exec: bool,
+}
+
+/// The attribute names of the run_under edges.
+const RUN_UNDER_ATTRIBUTES: [&str; 2] = [":run_under_exec_config", ":run_under_target_config"];
 
 /// The loading-time test properties of a test rule (TestTargetProperties,
 /// analysis/test/TestTargetProperties.java:81-135): size, timeout, the
@@ -1597,6 +1613,8 @@ struct ComputeSnapshot {
     runfiles: crate::runfiles_tree::RunfilesOptions,
     loaded_functions: Arc<crate::analysis_runtime::LoadedFunctions>,
     repositories: Arc<RepositorySet>,
+    /// ConfiguredOutputs.run_under.
+    run_under: Option<Arc<analysis::RunUnderPrerequisite>>,
 }
 
 /// The compute of one custom rule: the analysis result (or error) and
@@ -1976,6 +1994,10 @@ pub struct Engine {
     source_directories: BTreeMap<PathBuf, BTreeSet<Label>>,
     /// The runfiles options of builds (N23f, crate::runfiles_tree).
     runfiles_options: crate::runfiles_tree::RunfilesOptions,
+    /// A label `--run_under` (LabelRunUnder): the late-bound
+    /// `:run_under_exec_config`/`:run_under_target_config` edge of every
+    /// test rule in a target configuration ([`RunUnderEdge`]).
+    run_under: Option<RunUnderEdge>,
     /// The requested top-level output groups of builds
     /// (`--output_groups`/`--run_validations`, N56,
     /// crate::output_group_info::determine_output_groups).
@@ -2120,6 +2142,7 @@ impl Engine {
             deferred_duplicates: BTreeMap::new(),
             source_directories: BTreeMap::new(),
             runfiles_options: crate::runfiles_tree::RunfilesOptions::default(),
+            run_under: None,
             output_selection: OutputSelection::default(),
             aspects: crate::aspects::AspectRegistry::default(),
             requested_aspects: Vec::new(),
@@ -2152,6 +2175,40 @@ impl Engine {
     /// options/CoreOptionConverters.java:351-357).
     pub fn parse_option_label(&self, text: &str) -> Result<Label, String> {
         self.repositories.parse(text, "", "")
+    }
+
+    /// A label `--run_under` of later builds: `label` in the test exec
+    /// group's exec configuration (`exec`, the default
+    /// `--incompatible_bazel_test_exec_run_under`) or the target's.
+    pub fn set_run_under(&mut self, label: Label, exec: bool) {
+        self.run_under = Some(RunUnderEdge { label, exec });
+    }
+
+    /// The analysis dependency key of the run_under edge of a test rule
+    /// configured in `config` (BaseRuleClasses.RUN_UNDER_EXEC_CONFIG /
+    /// RUN_UNDER_TARGET_CONFIG: null in an exec configuration).
+    fn run_under_dependency_key(
+        &self,
+        config: ConfigId,
+    ) -> Option<Arc<analysis::RunUnderPrerequisite>> {
+        let run_under = self.run_under.as_ref()?;
+        if self.configurations.get(config).native.is_exec {
+            return None;
+        }
+        let label = run_under.label.to_string();
+        Some(Arc::new(analysis::RunUnderPrerequisite {
+            key: analysis::dependency_key(&label, self.run_under_exec_edge(run_under)),
+            label,
+        }))
+    }
+
+    /// Whether the run_under edge uses the `test` exec group's exec
+    /// transition: `--incompatible_bazel_test_exec_run_under` in the
+    /// built-in profile (where `@bazel_tools` and the default `test` exec
+    /// group exist, D3 of docs/TEST_FLAGS.md); the explicit-module profile
+    /// configures the runner in the target configuration.
+    fn run_under_exec_edge(&self, run_under: &RunUnderEdge) -> bool {
+        run_under.exec && self.repositories.root("bazel_tools").is_ok()
     }
 
     /// The runfiles options of later builds (`--build_runfile_links`, ...).
@@ -3988,7 +4045,7 @@ impl Engine {
         // analysis/DependencyResolutionHelpers.java:223-253): the exec
         // transition needs the parent's execution platform, which toolchain
         // resolution chose before any dependency (ExecutionTransitionFactory).
-        let edges = self.rule_edges(&rule);
+        let edges = self.rule_edges(&rule, config);
         // The native genrule embeds this real built-in source in its action
         // instead of requesting a provider view. Configured querying retains
         // its source-file dependency when the built-in repository is enabled.
@@ -4112,7 +4169,9 @@ impl Engine {
             };
             for dep_config in dep_configs.ids() {
                 let src = &edge.label;
-                let late_bound = late_bound_rule || analysis_dependent.contains(src);
+                let late_bound = late_bound_rule
+                    || analysis_dependent.contains(src)
+                    || RUN_UNDER_ATTRIBUTES.contains(&edge.attribute.as_str());
                 let dependency = self.resolve_rule_src(&rule, src)?;
                 if self.cquery_capture.is_some() {
                     self.capture_cquery_edge(
@@ -4486,7 +4545,7 @@ impl Engine {
             return Ok(());
         }
         let mut seen: BTreeSet<(ConfiguredTargetKey, Vec<String>)> = BTreeSet::new();
-        for edge in self.rule_edges(rule) {
+        for edge in self.rule_edges(rule, key.config) {
             let Some(spec) = rule
                 .custom
                 .as_ref()
@@ -4708,7 +4767,7 @@ impl Engine {
         // applies to the edge's dependency (computePropagatingAspects), in
         // the edge's configuration exactly as the application's planning
         // reaches it (Self::plan_aspect_application).
-        for edge in self.rule_edges(&base_rule) {
+        for edge in self.rule_edges(&base_rule, base_key.config) {
             let attribute_aspects = base_rule
                 .custom
                 .as_ref()
@@ -10060,7 +10119,7 @@ impl Engine {
     /// (TEST_RUNNER_ATTRIBUTES), so they are analyzed and their packages'
     /// repositories reach the target's repository mapping manifest
     /// (RuleContext.getTransitivePackagesForRunfileRepoMappingManifest; N23g).
-    fn rule_edges(&self, rule: &Rule) -> Vec<Edge> {
+    fn rule_edges(&self, rule: &Rule, config: ConfigId) -> Vec<Edge> {
         let mut edges = dependency_edges(rule);
         // FilegroupRule (rules/filegroup/FilegroupRule.java:36-80): `data`
         // (after `srcs`), target-configuration prerequisites that only
@@ -10108,6 +10167,24 @@ impl Engine {
                         )),
                     }),
             );
+        }
+        // The late-bound run_under attribute (after `:coverage_support`,
+        // getTestBaseRule order), null in an exec configuration.
+        if test
+            && let Some(run_under) = &self.run_under
+            && !self.configurations.get(config).native.is_exec
+        {
+            let label = &run_under.label;
+            let exec = self.run_under_exec_edge(run_under);
+            edges.push(Edge {
+                label: format!("@@{}//{}:{}", label.repository, label.package, label.name),
+                attribute: RUN_UNDER_ATTRIBUTES[usize::from(!run_under.exec)].to_owned(),
+                cfg: if exec {
+                    EdgeCfg::Exec(Some(crate::exec_groups::TEST_EXEC_GROUP_NAME.to_owned()))
+                } else {
+                    EdgeCfg::Target
+                },
+            });
         }
         edges
     }
@@ -11149,7 +11226,7 @@ impl Engine {
             .iter()
             .map(|(used, _)| used.clone())
             .collect();
-        for edge in self.rule_edges(&base_rule) {
+        for edge in self.rule_edges(&base_rule, base_key.config) {
             let attribute_aspects = base_rule
                 .custom
                 .as_ref()
@@ -11282,6 +11359,7 @@ impl Engine {
             action_env,
             runfiles: self.runfiles_options,
             loaded_functions: Some(&loaded_functions),
+            run_under: self.run_under_dependency_key(base_key.config),
         };
         // The aspect's RuleContext is built in the aspect's configuration,
         // the base configured target's (AspectFunction.java:296-310,
@@ -11799,6 +11877,7 @@ impl Engine {
             action_env: snapshot.action_env.clone(),
             runfiles: snapshot.runfiles,
             loaded_functions: Some(&snapshot.loaded_functions),
+            run_under: snapshot.run_under.clone(),
         };
         let (analyzed, printed) = analysis::analyze_buffered(
             &snapshot.rule,
@@ -11851,7 +11930,7 @@ impl Engine {
             ..
         } = state;
         // The rule's dependency edges, built once per prepare (W1a).
-        let edges = self.rule_edges(rule);
+        let edges = self.rule_edges(rule, key.config);
         let custom_rule = matches!(rule.kind, RuleKind::Custom);
         // The transitive repositories of this configured target: its own and
         // those of every (configured) dependency edge. A Starlark rule
@@ -12318,6 +12397,7 @@ impl Engine {
                 runfiles: self.runfiles_options,
                 loaded_functions,
                 repositories: self.repositories.clone(),
+                run_under: self.run_under_dependency_key(config),
             };
             return Ok(PreparedTarget {
                 key,
@@ -12938,7 +13018,7 @@ impl Engine {
         // before its dependent (analysis postorder).
         {
             let mut members = Vec::new();
-            let edges = self.rule_edges(rule);
+            let edges = self.rule_edges(rule, config);
             // Rule-class attribute order (AbstractAttributeMapper.
             // getAttributeNames over RuleClass.getAttributes): the built-in
             // `toolchains` attribute before the rule's own `srcs`.
@@ -14066,7 +14146,7 @@ impl Engine {
             let mut edges: HashMap<u64, Vec<u64>> = HashMap::new();
             for (index, (key, rule)) in plan.iter().enumerate() {
                 let mut deps = Vec::new();
-                for edge in self.rule_edges(rule) {
+                for edge in self.rule_edges(rule, key.config) {
                     if let Ok(label) = self.resolve_rule_src(rule, &edge.label) {
                         let dep = ConfiguredTargetKey::new(label, key.config);
                         if let Some(dep_index) = positions.get(&dep) {

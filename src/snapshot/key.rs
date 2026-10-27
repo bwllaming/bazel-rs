@@ -58,7 +58,8 @@ pub const FORMAT: u32 = 3;
 ///   whose expanded sets the planned request carries): they stay in G.
 /// * run (crate::run_command::RunOptions, read after the build part):
 ///   `script_path`, `run_env`, `run`, `run_in_cwd`, `omit_run_args`.
-///   `run_under` stays: a label prefix is rejected before planning.
+///   `run_under` stays: a label is an analysis edge of every test rule
+///   (crate::engine RUN_UNDER_ATTRIBUTES).
 /// * spawn strategies and the sandbox (crate::sandbox::SpawnOptions, read
 ///   by action execution and the test runner only), and the persistent
 ///   worker options (crate::worker::WorkerOptions, read by action execution).

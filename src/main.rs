@@ -376,6 +376,9 @@ fn run() -> Result<(), String> {
         aspects = native.aspects;
         aspects_parameters = native.aspects_parameters;
         show_result = native.show_result;
+        // The test runner reads `--run_under` and the shell too.
+        native.test.run_under = native.run.run_under.clone();
+        native.test.shell = native.run.shell.clone();
         run_options = native.run;
         test_options = native.test;
         mod_options = native.module;
@@ -994,6 +997,23 @@ fn run() -> Result<(), String> {
     let mut engine = std::mem::ManuallyDrop::new(Engine::with_repositories(repositories.clone()));
     engine.set_skip_teardown(true);
     engine.set_runfiles_options(runfiles_options);
+    // A LabelRunUnder: every test rule's late-bound run_under prerequisite
+    // (the label converts with the main repository's mapping, LabelConverter).
+    if let Some(run_under) = run_options
+        .run_under
+        .as_ref()
+        .filter(|run_under| run_under.is_label() && analyzes(&command))
+    {
+        let label = engine
+            .parse_option_label(&run_under.first)
+            .map_err(|error| {
+                format!(
+                    "While parsing option --run_under={}: Not a valid label {error}",
+                    run_under.value
+                )
+            })?;
+        engine.set_run_under(label, test_options.run_under_exec);
+    }
     engine.set_workspace_status(workspace_status);
     engine.set_execute_build(!no_build && command != "cquery");
     engine.set_keep_going(test_options.keep_going && analyzes(&command));
@@ -2107,13 +2127,29 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
         return Err(error);
     }
     let label = &labels[0];
-    if let Some(value) = options.run_under.as_deref()
-        && let Some(first) = value.split_whitespace().next()
-        && (first.starts_with("//") || first.starts_with('@'))
+    // RunCommand.runBuild (:394-432): a LabelRunUnder's target is built
+    // too (in the target configuration) and must be executable
+    // (fullyValidateTarget); its executable prefixes the command line.
+    let mut built = vec![label.clone()];
+    if let Some(run_under) = options
+        .run_under
+        .as_ref()
+        .filter(|run_under| run_under.is_label())
     {
-        return Err(format!(
-            "--run_under={value}: a label prefix (LabelRunUnder) is not supported by the native profile; use a command prefix"
-        ));
+        let runner = engine
+            .parse_option_label(&run_under.first)
+            .map_err(|error| {
+                format!(
+                    "While parsing option --run_under={}: Not a valid label {error}",
+                    run_under.value
+                )
+            })?;
+        if let bazel_rs::engine::Runnable::No = engine.runnable(&runner)? {
+            return Err(format!("Cannot run target {runner}: Not executable"));
+        }
+        if runner != *label {
+            built.push(runner);
+        }
     }
     // `run` of a test target reads the test properties (run_test): looked
     // up now, with the target loaded; an error surfaces there.
@@ -2134,8 +2170,8 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
                 label: label.clone(),
                 test: test_info,
             },
-            build: std::slice::from_ref(label),
-            runs: std::slice::from_ref(label),
+            build: &built,
+            runs: &built,
             trees: true,
         },
         &mut tail.snapshot,
@@ -2209,6 +2245,25 @@ fn run_tail(
         exit(remote_or(1));
     }
     let target = targets.remove(label);
+    // The LabelRunUnder target: the other run target of the request (the
+    // run target itself when both are one label).
+    let run_under_executable = if options
+        .run_under
+        .as_ref()
+        .is_some_and(|run_under| run_under.is_label())
+    {
+        targets
+            .pop_first()
+            .map(|(_, runner)| runner)
+            .as_ref()
+            .or(target.as_ref())
+            .map(|runner| match &runner.runfiles {
+                Some(tree) => tree.executable.clone(),
+                None => runner.executable.clone(),
+            })
+    } else {
+        None
+    };
     let test_info = match planned_command {
         bazel_rs::request::RequestCommand::Run { test, .. } => test,
         _ => Err(format!(
@@ -2346,6 +2401,11 @@ fn run_tail(
         binary_args: &target.settings.args,
         residue,
         runfiles_working_directory: runfiles_working_directory
+            .as_deref()
+            .map(utf8)
+            .transpose()?
+            .as_deref(),
+        run_under_executable: run_under_executable
             .as_deref()
             .map(utf8)
             .transpose()?
@@ -3020,9 +3080,10 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
     if shards > 1 || test.runs(&spec.label) > 1 {
         return Err("Run command does not support tests with more than one shard or run (--runs_per_test and shard_count must be 1)".into());
     }
-    if options.run_under.is_some() {
-        return Err("--run_under with a test target is not supported by the native profile".into());
-    }
+    // RunCommand.getTestCommandLine: TestStrategy.getArgs, the run_under
+    // prefix included (a LabelRunUnder's executable by its runfiles path:
+    // the test's runfiles tree holds it).
+    let spec = bazel_rs::test_runner::run_under_ready(spec, test)?;
     let Some(tree) = &target.runfiles else {
         return Err(format!("{}: test target has no runfiles tree", spec.label));
     };
@@ -3098,12 +3159,7 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
             runfiles_enabled: runfiles.enable_runfiles,
         },
     ));
-    let mut args = vec![
-        bazel_rs::test_runner::SETUP_EXEC_PATH.to_owned(),
-        spec.binary.clone(),
-    ];
-    args.extend(spec.args.iter().cloned());
-    args.extend(test.args.iter().cloned());
+    let mut args = bazel_rs::test_runner::test_arguments(&spec, test);
     let fixed = args.len();
     args.extend(residue.iter().cloned());
     let escaped: Vec<String> = args.iter().map(|arg| shell_escape(arg)).collect();
@@ -3892,10 +3948,17 @@ impl NativeOptions {
         } else if let Some(result) = builds(command).then(|| self.runfiles.parse(arg)).flatten() {
             result?;
             false
-        } else if let Some(used) = (command == "run" || command == "test")
-            .then(|| self.parse_run(arg, next))
-            .transpose()?
-            .flatten()
+        } else if let Some(used) = (command == "run"
+            || command == "test"
+            // CoreOptions.runUnder and the shell are build options too
+            // (a LabelRunUnder adds the runner to every test's runfiles).
+            || (command == "build"
+                && ["--run_under", "--shell_executable"].iter().any(|name| {
+                    arg == *name || arg.strip_prefix(name).is_some_and(|rest| rest.starts_with('='))
+                })))
+        .then(|| self.parse_run(arg, next))
+        .transpose()?
+        .flatten()
         {
             used
         } else if let Some(used) = reports.then(|| self.bep.parse(arg, next)).flatten() {
@@ -4134,12 +4197,9 @@ impl NativeOptions {
                 }
                 "run_under" => {
                     // RunUnderConverter (analysis/config/RunUnderConverter.java:33-57).
-                    if value.split_whitespace().next().is_none() {
-                        return Err(format!(
-                            "While parsing option --run_under={value}: Empty command"
-                        ));
-                    }
-                    run.run_under = Some(value.to_owned());
+                    run.run_under = Some(bazel_rs::run_command::RunUnder::parse(value).map_err(
+                        |error| format!("While parsing option --run_under={value}: {error}"),
+                    )?);
                 }
                 _ => run.shell = value.to_owned(),
             }

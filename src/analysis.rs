@@ -1802,6 +1802,7 @@ pub fn analyze_in(
         action_env: Arc::new(crate::configuration::NativeOptions::default().action_environment()),
         runfiles: crate::runfiles_tree::RunfilesOptions::default(),
         loaded_functions: None,
+        run_under: None,
     };
     let (result, printed) = analyze_buffered(rule, dependencies, repositories, &target);
     for line in printed {
@@ -2495,6 +2496,17 @@ pub(crate) struct ConfiguredOutputs<'a> {
     /// The build's registry of loaded top-level functions
     /// (crate::analysis_runtime::LoadedFunctions).
     pub loaded_functions: Option<&'a Arc<crate::analysis_runtime::LoadedFunctions>>,
+    /// A LabelRunUnder in this configuration (crate::engine; `None` without
+    /// a label `--run_under` and in exec configurations).
+    pub run_under: Option<Arc<RunUnderPrerequisite>>,
+}
+
+/// A LabelRunUnder as a configured target sees it: its label and the
+/// dependency key of a test rule's late-bound prerequisite.
+#[derive(Debug)]
+pub(crate) struct RunUnderPrerequisite {
+    pub label: String,
+    pub key: String,
 }
 
 /// `print()` output of an implementation, kept until the caller decides
@@ -2657,6 +2669,21 @@ fn analyze_inner(
     for output in &rule.outs {
         context.declare(output)?;
     }
+    // ConfiguredTargetFunction.compute (skyframe/ConfiguredTargetFunction.java
+    // :330-346): with a LabelRunUnder, a direct prerequisite with that label
+    // must be executable — for any rule of the configuration.
+    if let Some(run_under) = &target.run_under
+        && dependencies.values().any(|dependency| {
+            dependency.label == run_under.label
+                && dependency
+                    .runfiles
+                    .files_to_run(&dependency.files)
+                    .executable()
+                    .is_none()
+        })
+    {
+        bail!("run_under target {} is not executable", run_under.label);
+    }
     let (files, providers, provider_keys, target_runfiles) = Module::with_temp_heap(
         |module| -> anyhow::Result<_> {
             let ctx = make_ctx(rule, &context, dependencies, module.heap(), surface.clone())?;
@@ -2713,6 +2740,33 @@ fn analyze_inner(
                     "Returning RunEnvironmentInfo from a non-executable, non-test target has no effect"
                 );
             }
+            // RuleContext.getRunUnderPrerequisite of a test rule: the
+            // runfiles RunfilesSupport.create merges (getRunfiles,
+            // analysis/RunfilesSupport.java:382-391) and the executable.
+            let run_under = match target
+                .run_under
+                .as_deref()
+                .filter(|_| kind.test)
+                .and_then(|run_under| dependencies.get(&run_under.key))
+            {
+                Some(prerequisite) => {
+                    let runfiles = match &prerequisite.runfiles.provider {
+                        Some(provider) => provider.default.clone(),
+                        None => {
+                            let mut builder = crate::runfiles::RunfilesBuilder::default();
+                            builder.add_files_to_build(&prerequisite.files);
+                            builder.build()?
+                        }
+                    };
+                    let executable = prerequisite
+                        .runfiles
+                        .files_to_run(&prerequisite.files)
+                        .executable()
+                        .map(|file| file.short_path.clone());
+                    Some((runfiles, executable))
+                }
+                None => None,
+            };
             // parseDefaultProviderFields/addSimpleProviders (:359-490).
             let (files, target_runfiles) = crate::runfiles::configure_target(
                 returned_default.unwrap_or_default(),
@@ -2722,6 +2776,7 @@ fn analyze_inner(
                     executable: executable_rule,
                     test: kind.test,
                     args: &|| computed_args(rule, invocation, dependencies, &surface),
+                    run_under,
                 },
                 predeclared,
                 context.runfiles.default_executable.as_ref(),

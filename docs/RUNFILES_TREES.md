@@ -234,8 +234,16 @@ trees, the memos, the identities or the action keys (integration-21).
   "<run_under prefix> <escaped executable> <escaped args attribute> <escaped residue>"]`
   with ShellEscaper quoting; the shell is `--shell_executable` (default
   `/bin/bash`). The executable is the sibling next to the runfiles tree (or
-  the file target's path). `--run_under=COMMAND-PREFIX` is supported; a label
-  prefix (LabelRunUnder) fails explicitly.
+  the file target's path). `--run_under=COMMAND-PREFIX` is put in front as
+  given; a label (LabelRunUnder, `--run_under=//pkg:runner OPTIONS`) is
+  built too, in the target configuration with its runfiles tree
+  (RunCommand.runBuild/ensureRunfilesBuilt; it must be executable:
+  `Cannot run target L: Not executable`), and its escaped absolute
+  executable path and escaped options are the prefix
+  (RunCommandLine.Builder.setRunUnderTarget); the runner finds its runfiles
+  next to that path. Test targets take the test command with the prefix
+  (docs/TEST_COMMAND.md, `--run_under`), and a label runner's runfiles are
+  part of every test's runfiles tree.
 * Working directory: `<tree>/_main` (`<tree>` with `--enable_runfiles=no`),
   the client's working directory with `--run_in_cwd` or without runfiles
   support.
@@ -295,8 +303,7 @@ targets matches the recorded genuine runfiles trees, MANIFEST paths,
 
 ## Not covered
 
-`--run_under` labels (`bazel test` and test targets under `run` are N23g,
-docs/TEST_COMMAND.md); Bazel's
+Bazel's
 convenience symlinks and relative pretty paths; `--portable_paths` and
 `--emit_script_path_in_exec_request`; fileset trees, unresolved
 symlink artifacts in runfiles, output services; Windows (no runfiles trees,

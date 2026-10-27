@@ -260,6 +260,18 @@ pub struct TestOptions {
     /// `--[no]incompatible_exclusive_test_sandboxed` (default true): when
     /// false exclusive tests run locally (TestTargetProperties.java:91-108).
     pub exclusive_test_sandboxed: bool,
+    /// `--run_under` (CoreOptions.runUnder; set from crate::run_command::RunOptions):
+    /// the prefix of every test's command (TestStrategy.addRunUnderArgs).
+    pub run_under: Option<crate::run_command::RunUnder>,
+    /// The test action's shell (TestRunnerAction.getShExecutableMaybe:
+    /// `--shell_executable`, default `/bin/bash`), for a command prefix
+    /// that needs it.
+    pub shell: String,
+    /// `--[no]incompatible_bazel_test_exec_run_under` (CoreOptions, default
+    /// true): a LabelRunUnder is built in the test exec group's exec
+    /// configuration (`:run_under_exec_config`), else in the target
+    /// configuration (`:run_under_target_config`), BaseRuleClasses.java:155-197.
+    pub run_under_exec: bool,
     /// `--keep_going`/`-k` (KeepGoingOption): a failing test action does
     /// not stop the remaining tests.
     pub keep_going: bool,
@@ -295,6 +307,9 @@ impl Default for TestOptions {
             strategy: String::new(),
             test_keep_going: true,
             exclusive_test_sandboxed: true,
+            run_under: None,
+            shell: "/bin/bash".to_owned(),
+            run_under_exec: true,
             keep_going: false,
         }
     }
@@ -461,8 +476,9 @@ impl TestOptions {
     /// One test option: `Some(used_next)` when `arg` is one. Boolean options
     /// take `--NAME`, `--noNAME` and `--NAME=BOOL`.
     pub fn parse(&mut self, arg: &str, next: Option<&str>) -> Result<Option<bool>, String> {
-        const BOOLEANS: [&str; 12] = [
+        const BOOLEANS: [&str; 13] = [
             "build_tests_only",
+            "incompatible_bazel_test_exec_run_under",
             "incompatible_exclusive_test_sandboxed",
             "allow_local_tests",
             "verbose_test_summary",
@@ -492,6 +508,7 @@ impl TestOptions {
                         return Err(unsupported(arg));
                     }
                     "test_keep_going" => self.test_keep_going = value,
+                    "incompatible_bazel_test_exec_run_under" => self.run_under_exec = value,
                     "incompatible_exclusive_test_sandboxed" => {
                         self.exclusive_test_sandboxed = value;
                     }

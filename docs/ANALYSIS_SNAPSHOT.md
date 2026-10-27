@@ -87,8 +87,10 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    lists them with the reason). The test filters, `--build_tests_only`,
    `--[no]expand_test_suites` (the target pattern phase selects the targets
    and tests before planning, and the planned request carries its expanded
-   sets) and `--run_under` (a label prefix is rejected before planning) stay
-   in G.
+   sets) and `--run_under` (a label adds the late-bound run_under edge to
+   every test rule and the runner's runfiles to its tree; the test runner
+   reads the prefix too) stay in G. `--target_pattern_file` stays as given;
+   the patterns read from the file are the key's targets.
    Test and debug hooks (`BAZEL_RS_LOADING_JITTER`,
    `BAZEL_RS_LOADING_NO_DEMAND`, `BAZEL_RS_VERIFY_VIEWS`,
    `BAZEL_RS_VERIFY_ARTIFACTS`, `BAZEL_RS_DIGEST_MEMO`,

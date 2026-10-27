@@ -1190,6 +1190,10 @@ pub struct RunSettings {
     /// reads (crate::execution_info::TestRequirements; `run` ignores it,
     /// like RunCommand).
     pub test_requirements: Option<crate::execution_info::TestRequirements>,
+    /// A test rule's `--run_under` target executable, by its runfiles path
+    /// (TestTargetExecutionSettings.getRunUnderExecutable): the first
+    /// argument after test-setup.sh (TestStrategy.addRunUnderArgs).
+    pub run_under_executable: Option<String>,
 }
 
 impl TargetRunfiles {
@@ -1779,6 +1783,10 @@ pub(crate) struct RuleClassification<'a> {
     pub executable: bool,
     /// TargetUtils.isTestRuleName of the rule class.
     pub test: bool,
+    /// A test rule's LabelRunUnder prerequisite (RuleContext.getRunUnderPrerequisite):
+    /// its default runfiles (RunfilesSupport.getRunfiles: the RunfilesProvider's,
+    /// else its files to build) and its executable's runfiles path.
+    pub run_under: Option<(Runfiles, Option<String>)>,
     /// RunfilesSupport.computeArgs (analysis/RunfilesSupport.java:602-610):
     /// the built-in `args` attribute (binaryBaseRule/getTestBaseRule)
     /// expanded and tokenized (crate::ctx_surface::expand_args), called
@@ -1897,6 +1905,16 @@ pub(crate) fn configure_target(
                 .ok_or_else(|| anyhow!("executable must not be null"))?;
             // RunfilesSupport.withExecutable: computeArgs (:602-610).
             args = (rule.args)()?;
+            // RunfilesSupport.create (:292-302): a test rule's LabelRunUnder
+            // target's runfiles join the tree, before the rule's own.
+            let runfiles = match rule.run_under.as_ref().filter(|_| rule.test) {
+                Some((run_under, _)) => {
+                    let mut builder = RunfilesBuilder::default();
+                    builder.merge(run_under).merge(&provider.default);
+                    builder.build()?
+                }
+                None => provider.default.clone(),
+            };
             // RunfilesSupport.create (analysis/RunfilesSupport.java:305-325):
             // the MANIFEST in the tree with --build_runfile_links, the input
             // manifest without, none with --nobuild_runfile_manifests.
@@ -1908,7 +1926,7 @@ pub(crate) fn configure_target(
                 None
             };
             Some((
-                provider.default.clone(),
+                runfiles,
                 manifest,
                 suffixed(file, ".repo_mapping", rule.label),
             ))
@@ -1932,6 +1950,11 @@ pub(crate) fn configure_target(
             run: RunSettings {
                 args,
                 test: rule.test,
+                run_under_executable: rule
+                    .run_under
+                    .as_ref()
+                    .filter(|_| rule.test)
+                    .and_then(|(_, executable)| executable.clone()),
                 ..RunSettings::default()
             },
         },
@@ -1960,6 +1983,7 @@ mod tests {
             executable: true,
             test,
             args: &|| Ok(Vec::new()),
+            run_under: None,
         }
     }
 
