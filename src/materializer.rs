@@ -388,8 +388,23 @@ fn materialize_registry(
         .write(true)
         .open(&lock_path)
         .map_err(|e| format!("cannot open repository cache lock: {e}"))?;
-    lock.lock_exclusive()
-        .map_err(|e| format!("cannot lock repository cache: {e}"))?;
+    #[cfg(test)]
+    crate::module_root_warm::tests::schedule(warming, None);
+    if warming {
+        loop {
+            crate::module_root_warm::check()?;
+            match FileExt::try_lock_exclusive(&lock) {
+                Ok(()) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => return Err(format!("cannot lock repository cache: {error}")),
+            }
+        }
+    } else {
+        lock.lock_exclusive()
+            .map_err(|e| format!("cannot lock repository cache: {e}"))?;
+    }
     let destination = trees.join(&key);
     let manifest_path = trees.join(format!("{key}.json"));
     reject_symlink(&destination)?;
@@ -410,6 +425,7 @@ fn materialize_registry(
         }
     }
     let materialize = || -> Result<(PathBuf, bool), String> {
+        crate::module_root_warm::check()?;
         if destination.is_dir()
             && let Ok(bytes) = fs::read(&manifest_path)
             && let Ok(manifest) = serde_json::from_slice::<Manifest>(&bytes)
@@ -429,11 +445,15 @@ fn materialize_registry(
             format!("registry archive {name}@{version}")
         });
         let blob = cached_download(&cache, &urls, &integrity, downloads_enabled)?;
+        crate::module_root_warm::check()?;
         let staging = tempfile::Builder::new()
             .prefix(".stage-")
             .tempdir_in(&trees)
             .map(crate::repository_store::Scratch::new)
             .map_err(|e| format!("cannot stage repository: {e}"))?;
+        #[cfg(test)]
+        crate::module_root_warm::tests::schedule(warming, Some(staging.path()));
+        crate::module_root_warm::check()?;
         // Bazel names the archive by its downloaded file, the URL's last path
         // segment (e.g. in the zip link-escape error).
         let archive_name = reqwest::Url::parse(url)
@@ -455,6 +475,7 @@ fn materialize_registry(
             }
         })?;
         for (path, value) in &overlays {
+            crate::module_root_warm::check()?;
             let relative = relative_path(path)?;
             let integrity = Integrity::parse(value.as_str().expect("validated overlay integrity"))?;
             let location =
@@ -464,6 +485,7 @@ fn materialize_registry(
         }
         // Preserve descriptor insertion order, not lexical patch-name order.
         for (path, value) in &patches {
+            crate::module_root_warm::check()?;
             let integrity = Integrity::parse(value.as_str().expect("validated patch integrity"))?;
             let location =
                 registry.download_location(&format!("modules/{name}/{version}/patches/{path}"))?;
@@ -488,6 +510,7 @@ fn materialize_registry(
             files: snapshot(staging.path())?,
         };
         let encoded = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
+        crate::module_root_warm::check()?;
         if destination.exists() {
             // Directories may have been made read-only (tampering): they are
             // made writable first, and symlinks are never followed.
@@ -578,6 +601,7 @@ fn cached_download(
     integrity: &Integrity,
     downloads_enabled: bool,
 ) -> Result<PathBuf, String> {
+    crate::module_root_warm::check()?;
     let directory = download_cache_dir(cache, &integrity.algorithm);
     ensure_directory(&directory)?;
     let path = directory.join(hex(&integrity.digest));
@@ -596,6 +620,7 @@ fn cached_download(
     }
     let mut failures = Vec::new();
     for url in urls {
+        crate::module_root_warm::check()?;
         let mut temp = tempfile::NamedTempFile::new_in(&directory)
             .map_err(|e| format!("cannot create download file: {e}"))?;
         let mut hash = Hash::new(integrity.kind());
@@ -609,6 +634,7 @@ fn cached_download(
         .and_then(|_| integrity.check(hash.finish()));
         match fetched {
             Ok(()) => {
+                crate::module_root_warm::check()?;
                 temp.as_file()
                     .sync_all()
                     .map_err(|e| format!("cannot sync downloaded blob: {e}"))?;

@@ -493,6 +493,7 @@ pub fn invoke(
             helper.display()
         ))
     };
+    crate::module_root_warm::check().map_err(fail)?;
     let mut command = Command::new(helper);
     command
         .arg("get")
@@ -584,7 +585,10 @@ pub fn invoke(
     let mut status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
-            Ok(None) if limited && Instant::now() >= deadline => {
+            Ok(None)
+                if (limited && Instant::now() >= deadline)
+                    || crate::module_root_warm::cancelled() =>
+            {
                 if !kill_group() {
                     let _ = child.kill();
                 }
@@ -605,7 +609,7 @@ pub fn invoke(
     // readers a short grace period before detaching them.
     let finished = |deadline: Instant| {
         while !(out_thread.is_finished() && err_thread.is_finished()) {
-            if limited && Instant::now() >= deadline {
+            if (limited && Instant::now() >= deadline) || crate::module_root_warm::cancelled() {
                 return false;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -791,7 +795,20 @@ impl Credentials {
             .entry(uri.to_owned())
             .or_default()
             .clone();
-        let _loading = lock.lock().expect("uri lock");
+        let _loading = if crate::module_root_warm::active() {
+            loop {
+                crate::module_root_warm::check().map_err(HelperError)?;
+                match lock.try_lock() {
+                    Ok(guard) => break guard,
+                    Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        std::thread::sleep(Duration::from_millis(10))
+                    }
+                }
+            }
+        } else {
+            lock.lock().expect("uri lock")
+        };
         if let Some(pairs) = cached() {
             return Ok(Some(pairs));
         }
@@ -869,6 +886,10 @@ pub fn download_credentials(url: &str) -> Option<Vec<(String, String)>> {
     let credentials = global()?;
     match credentials.headers(url) {
         Ok(headers) => headers,
+        // A canceled module-root warm-up is never a user-visible demand.
+        // Its caller checks the token before issuing a request; do not add
+        // a timeout warning to an otherwise unchanged command result.
+        Err(_) if crate::module_root_warm::cancelled() => Some(Vec::new()),
         Err(error) => {
             crate::note!("WARNING: Error retrieving auth headers, continuing without: {error}");
             Some(Vec::new())

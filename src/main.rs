@@ -1022,6 +1022,7 @@ fn run() -> Result<(), String> {
     // memo (`digest_memo::finish`), the snapshot recording, test logs —
     // is explicit. Freeing the analysis state node by node only delays
     // the exit.
+    let _root_warming = RootWarmingGuard::new(&repositories);
     let mut engine = std::mem::ManuallyDrop::new(Engine::with_repositories(repositories.clone()));
     engine.set_skip_teardown(true);
     engine.set_compact_repo_mapping(runfiles_options.compact_repo_mapping);
@@ -5068,6 +5069,38 @@ fn shutdown_command(line: &bazelrc::CommandLine, path_to_binary: &str) -> Result
     Ok(())
 }
 
+// Like the worker shutdown, root-warming shutdown must also run on explicit
+// CLI exit paths, where Rust does not drop local guards. The small invocation
+// owner is separate from the intentionally leaked analysis graph.
+static ROOT_WARMING: std::sync::Mutex<Option<bazel_rs::repository::RootWarmingScope>> =
+    std::sync::Mutex::new(None);
+
+struct RootWarmingGuard;
+
+impl RootWarmingGuard {
+    fn new(repositories: &bazel_rs::repository::RepositorySet) -> Self {
+        *ROOT_WARMING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(repositories.root_warming_scope());
+        Self
+    }
+}
+
+impl Drop for RootWarmingGuard {
+    fn drop(&mut self) {
+        finish_root_warming();
+    }
+}
+
+fn finish_root_warming() {
+    let scope = ROOT_WARMING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    drop(scope);
+}
+
 fn main() {
     // The process-wrapper (crate::process_wrapper): the executor starts this
     // binary with the hidden `__process-wrapper` subcommand where Bazel
@@ -5158,6 +5191,7 @@ fn retry_after_lost_inputs() {
     let Some(attempt) = bazel_rs::remote_outputs::next_attempt() else {
         return;
     };
+    finish_root_warming();
     bazel_rs::worker::shutdown();
     bazel_rs::progress::finish(1);
     bazel_rs::digest_memo::finish();
@@ -5202,6 +5236,7 @@ fn failure_exit_code() -> i32 {
 /// Exit with `code`, ending the progress display first (its summary, and
 /// whatever is still in its pipe).
 fn exit(code: i32) -> ! {
+    finish_root_warming();
     bazel_rs::worker::shutdown();
     bazel_rs::progress::finish(code);
     let code = finish_reports(code, None);

@@ -424,10 +424,27 @@ pub(crate) fn check(url: &reqwest::Url) -> Result<(), String> {
 pub(crate) fn configure(
     builder: reqwest::blocking::ClientBuilder,
 ) -> reqwest::blocking::ClientBuilder {
-    if installed().is_none() {
-        return builder;
-    }
     let mut builder = builder;
+    for proxy in proxies() {
+        builder = builder.proxy(proxy);
+    }
+    builder
+}
+
+/// Same routes, credentials and mandatory `check` contract for cancellable
+/// module-root warming. No different proxy policy for speculative transport.
+pub(crate) fn configure_async(mut builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    for proxy in proxies() {
+        builder = builder.proxy(proxy);
+    }
+    builder
+}
+
+fn proxies() -> Vec<reqwest::Proxy> {
+    if installed().is_none() {
+        return Vec::new();
+    }
+    let mut proxies = Vec::with_capacity(2);
     for scheme in ["https", "http"] {
         // One custom proxy per scheme carries that scheme's credentials.
         let credentials = match installed().map(|environment| {
@@ -451,9 +468,9 @@ pub(crate) fn configure(
         if let Some((user, password)) = credentials {
             proxy = proxy.basic_auth(&user, &password);
         }
-        builder = builder.proxy(proxy);
+        proxies.push(proxy);
     }
-    builder
+    proxies
 }
 
 /// The proxy variables a Git child process receives.

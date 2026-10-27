@@ -1112,6 +1112,46 @@ published (materializer `WARMED`, checked and consumed under the tree's
 file lock) it replays what that cold materialization observed (download,
 taint) instead of the reuse check. A failed warm-up leaves nothing.
 
+**Invocation shutdown.** The CLI owns a small `RepositorySet::root_warming_scope`
+independently of its intentionally leaked analysis graph. Normal return/unwind,
+explicit CLI exits and retry-before-exec close admission, discard queued jobs,
+cancel in-flight warm-ups and join their threads. A spawning worker uses the
+same worker-list/state lock order as shutdown, so no new handle escapes it.
+Library callers enabling warming may own the same scope; simply dropping the
+repository set is insufficient while its workers still hold clones.
+
+This closes a reproducible lifecycle hole: the foreground fails a missing
+overlay under the per-key publication lock, cleans its stage and releases the
+lock; a queued warmer then repeats materialization and owns a new `.stage-*`
+when the command returns. Previously the worker's dropped JoinHandle allowed
+process exit before that stage's destructor. The controlled subprocess test
+records the exact private stage before and after exit. It does not imply that
+every historical nameless directory-emptiness failure had this cause; published
+64-hex trees/manifests must still be distinguished from private stages.
+
+Cancellation does not delete any published tree or weaken verification. Warm
+lock acquisition is cancellable; extraction and materialization check the
+token before work/publication. Registry HTTP warm-ups use a per-worker async
+transport to interrupt headers/body waits (10 ms polling), with **the same**
+URL/redirect/proxy/credential/status/encoding rules, 10 s connect and 20 s
+per-read limits, and no whole-transfer deadline. Ordinary transport is unchanged.
+Credentials waiting on a URI lock and helper subprocesses also honor this token,
+including helpers configured with an unlimited timeout. This avoids joining an
+endlessly trickling body or a blocked helper, without shortening healthy warm
+downloads' timeouts or globally disabling warming. Private stages/download
+temporaries unwind before the worker is joined. Successful, fully verified
+publications remain available for ordinary reuse and WARMED observation replay.
+
+The cancellation bound is cooperative, not a hard real-time guarantee for
+arbitrary local filesystem calls, decompression, patch processing or cleanup.
+System DNS resolver tasks cannot safely be killed: canceled network futures
+are dropped and their runtime does not wait for OS resolver tasks, which own
+no cache files/stages. SIGKILL, immediate signal termination and filesystem
+cleanup errors retain the existing crash/garbage-collection boundary. Tests
+cover queued/late admission, active-stage cleanup, stalled HTTP headers/body
+(including socket closure and incomplete blob removal), and an unlimited
+credential helper's process-group termination, each with bounded deadlines.
+
 **Load batches.** The loads of a file the coordinator enters request the
 speculation (`repository_speculation`, unchanged semantics) of their
 direct and extension-generated repositories — those of a group the batch's

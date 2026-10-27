@@ -159,6 +159,15 @@ pub fn extract_file(
     archive_name: &str,
 ) -> Result<(), Failure> {
     let file = File::open(archive).map_err(|e| format!("open archive: {e}"))?;
+    if crate::module_root_warm::active() {
+        return run(
+            crate::module_root_warm::Cancellable(file),
+            archive_type,
+            strip_prefix,
+            destination,
+            archive_name,
+        );
+    }
     run(file, archive_type, strip_prefix, destination, archive_name)
 }
 
@@ -615,8 +624,11 @@ impl Extraction<'_> {
             .map_err(|e| format!("create archive file {path:?}: {e}"))?;
         // The extra byte detects streams larger than the declared size without
         // allowing an attacker-controlled stream to expand without a bound.
-        let copied = io::copy(&mut reader.take(size + 1), &mut output)
-            .map_err(|e| format!("read archive file {path:?}: {e}"))?;
+        let copied = io::copy(
+            &mut crate::module_root_warm::Cancellable(reader.take(size + 1)),
+            &mut output,
+        )
+        .map_err(|e| format!("read archive file {path:?}: {e}"))?;
         if copied != size {
             return Err(format!(
                 "archive file {path:?} has an incorrect expanded size"

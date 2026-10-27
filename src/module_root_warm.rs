@@ -27,6 +27,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::label::Label;
@@ -67,12 +68,84 @@ struct State {
     /// Files whose loads were (or are being) followed, by repository.
     files: HashSet<(String, File)>,
     running: usize,
+    cancel: Arc<AtomicBool>,
 }
+
+type Workers = Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>;
 
 /// One repository set's warm-ups (crate::repository).
 #[derive(Default)]
 pub(crate) struct RootWarmer {
     state: Arc<Mutex<State>>,
+    workers: Workers,
+}
+
+/// Invocation-owned independently of the intentionally leaked analysis graph.
+/// Dropping it closes admission, cancels work, and joins every worker so owned
+/// private stages have run their destructors before the process can exit.
+pub struct Scope {
+    state: Arc<Mutex<State>>,
+    workers: Workers,
+}
+
+impl Drop for Scope {
+    fn drop(&mut self) {
+        let handles = {
+            // Same lock order as grow; no worker can be spawned after this.
+            let mut workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut state = lock(&self.state);
+            state.width = 0;
+            state.cancel.store(true, Ordering::Release);
+            state.queue.clear();
+            std::mem::take(&mut *workers)
+        };
+        for handle in handles {
+            let _ = handle.join();
+        }
+    }
+}
+
+thread_local! {
+    static CURRENT: std::cell::RefCell<Option<Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn active() -> bool {
+    CURRENT.with(|current| current.borrow().is_some())
+}
+
+pub(crate) fn cancelled() -> bool {
+    CURRENT.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Acquire))
+    })
+}
+
+pub(crate) fn check() -> Result<(), String> {
+    if cancelled() {
+        Err(crate::repository_speculation::CANCELLED.into())
+    } else {
+        Ok(())
+    }
+}
+
+/// Cooperative local I/O boundary for a warm extraction only. It neither
+/// changes archive validation nor imposes limits on foreground extraction.
+pub(crate) struct Cancellable<R>(pub R);
+
+impl<R: std::io::Read> std::io::Read for Cancellable<R> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        check().map_err(std::io::Error::other)?;
+        self.0.read(bytes)
+    }
+}
+
+impl<R: std::io::Seek> std::io::Seek for Cancellable<R> {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        check().map_err(std::io::Error::other)?;
+        self.0.seek(position)
+    }
 }
 
 impl std::fmt::Debug for RootWarmer {
@@ -91,10 +164,17 @@ fn switched_off() -> bool {
 }
 
 impl RootWarmer {
+    pub(crate) fn scope(&self) -> Scope {
+        Scope {
+            state: self.state.clone(),
+            workers: self.workers.clone(),
+        }
+    }
     /// Accept requests with at most `width` workers (0 or 1: off — one
     /// loading thread is the sequential engine).
     pub(crate) fn enable(&self, width: usize) {
-        lock(&self.state).width = if width <= 1 || switched_off() {
+        let mut state = lock(&self.state);
+        state.width = if width <= 1 || switched_off() || state.cancel.load(Ordering::Acquire) {
             0
         } else {
             width.min(WORKERS)
@@ -118,13 +198,24 @@ impl RootWarmer {
                 enqueue(&mut state, set, &label);
             }
         }
-        grow(&self.state, set);
+        grow(&self.state, &self.workers, set);
     }
 }
 
 /// Start workers until every queued job has one (at most the width).
 /// Workers end when the queue is empty, so an idle pool holds nothing.
-fn grow(state: &Arc<Mutex<State>>, set: &RepositorySet) {
+fn grow(state: &Arc<Mutex<State>>, workers: &Workers, set: &RepositorySet) {
+    let mut handles = workers.lock().unwrap_or_else(PoisonError::into_inner);
+    // Workers end while idle; reap completed handles rather than retaining
+    // one allocation per historical job for the whole invocation.
+    let mut i = 0;
+    while i < handles.len() {
+        if handles[i].is_finished() {
+            let _ = handles.swap_remove(i).join();
+        } else {
+            i += 1;
+        }
+    }
     let spawn = {
         let mut guard = lock(state);
         let wanted = (guard.queue.len() + guard.running).min(guard.width);
@@ -134,13 +225,25 @@ fn grow(state: &Arc<Mutex<State>>, set: &RepositorySet) {
     };
     for _ in 0..spawn {
         let shared = state.clone();
+        let workers = workers.clone();
         let set = set.clone();
         let spawned = std::thread::Builder::new()
             .name("bazel-rs-warm".to_owned())
             .stack_size(WORKER_STACK)
-            .spawn(move || worker(&shared, &set));
-        if spawned.is_err() {
-            lock(state).running -= 1;
+            .spawn(move || {
+                let cancel = lock(&shared).cancel.clone();
+                CURRENT.with(|current| *current.borrow_mut() = Some(cancel.clone()));
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    crate::repository_speculation::with_cancel(Some(cancel), || {
+                        worker(&shared, &workers, &set)
+                    });
+                }));
+                CURRENT.with(|current| *current.borrow_mut() = None);
+                lock(&shared).running -= 1;
+            });
+        match spawned {
+            Ok(handle) => handles.push(handle),
+            Err(_) => lock(state).running -= 1,
         }
     }
 }
@@ -148,6 +251,9 @@ fn grow(state: &Arc<Mutex<State>>, set: &RepositorySet) {
 /// Queue `label`'s file: with its root's warm-up when nobody started it,
 /// to be read once its root is there, or at once when it is.
 fn enqueue(state: &mut State, set: &RepositorySet, label: &Label) {
+    if state.width == 0 {
+        return;
+    }
     let file = (label.package.clone(), label.name.clone());
     if !state.files.insert((label.repository.clone(), file.clone())) {
         return;
@@ -177,14 +283,13 @@ fn enqueue(state: &mut State, set: &RepositorySet, label: &Label) {
     }
 }
 
-fn worker(state: &Arc<Mutex<State>>, set: &RepositorySet) {
+fn worker(state: &Arc<Mutex<State>>, workers: &Workers, set: &RepositorySet) {
     loop {
         let job = {
             let mut guard = lock(state);
             match guard.queue.pop_front() {
                 Some(job) if guard.width > 0 => job,
                 _ => {
-                    guard.running -= 1;
                     return;
                 }
             }
@@ -217,6 +322,9 @@ fn worker(state: &Arc<Mutex<State>>, set: &RepositorySet) {
         };
         let mut found = Vec::new();
         for (package, name) in &files {
+            if cancelled() {
+                return;
+            }
             found.extend(set.crawl_loads(&job.repository, &root, package, name));
         }
         {
@@ -225,7 +333,7 @@ fn worker(state: &Arc<Mutex<State>>, set: &RepositorySet) {
                 enqueue(&mut guard, set, &label);
             }
         }
-        grow(state, set);
+        grow(state, workers, set);
     }
 }
 
@@ -262,8 +370,388 @@ pub(crate) fn file_loads(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn shutdown_cancels_stalled_overlay_headers_and_body_and_discards_queue() {
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+        use std::io::{Read, Write};
+        use std::time::{Duration, Instant};
+        for body_started in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let archive =
+                include_bytes!("../tests/fixtures/build_settings/bazel-skylib-1.8.2.tar.gz");
+            let digest = Sha256::digest(archive);
+            let downloads = root.path().join("downloads/sha256");
+            std::fs::create_dir_all(&downloads).unwrap();
+            std::fs::write(downloads.join(format!("{digest:x}")), archive).unwrap();
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let (started, pending) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                assert!(
+                    String::from_utf8_lossy(&request)
+                        .starts_with("GET /modules/dep/1/overlay/pending.txt ")
+                );
+                if body_started {
+                    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\nConnection: close\r\n\r\nx").unwrap();
+                }
+                started.send(()).unwrap();
+                // Cancellation must drop the request/response, not detach a
+                // still-active transfer until the ordinary 20s read timeout.
+                assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+            });
+            let source = serde_json::json!({
+                "url": format!("{url}/source.tar.gz"),
+                "integrity": format!("sha256-{}", base64::engine::general_purpose::STANDARD.encode(digest)),
+                "overlay": {"pending.txt": format!("sha256-{}", base64::engine::general_purpose::STANDARD.encode(Sha256::digest(b"pending")))},
+            });
+            let warmer = RootWarmer::default();
+            warmer.enable(2);
+            let scope = warmer.scope();
+            let cancel = lock(&warmer.state).cancel.clone();
+            let cache = root.path().to_owned();
+            let (done, finished) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                CURRENT.with(|current| *current.borrow_mut() = Some(cancel));
+                let error = crate::materializer::warm_with_registry_config(
+                    &crate::registry::Registry::parse(&url).unwrap(),
+                    "dep",
+                    "1",
+                    b"module(name='dep')\n",
+                    source.as_object().unwrap(),
+                    &cache,
+                    &crate::patch_inputs::LocalPatchPlan::default(),
+                    true,
+                    None,
+                )
+                .unwrap_err();
+                assert!(
+                    error.contains(crate::repository_speculation::CANCELLED),
+                    "{error}"
+                );
+                done.send(()).unwrap();
+            });
+            warmer.workers.lock().unwrap().push(worker);
+            pending.recv_timeout(Duration::from_secs(5)).unwrap();
+            let trees = root.path().join("trees");
+            let entries: Vec<_> = std::fs::read_dir(&trees)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(entries.len(), 1, "{entries:?}");
+            assert!(entries[0].to_string_lossy().starts_with(".stage-"));
+            lock(&warmer.state).queue.push_back(Job {
+                repository: "not-admitted".into(),
+                files: Vec::new(),
+            });
+            let start = Instant::now();
+            drop(scope);
+            finished.recv_timeout(Duration::from_secs(1)).unwrap();
+            server.join().unwrap();
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "shutdown took {:?}",
+                start.elapsed()
+            );
+            assert!(warmer.workers.lock().unwrap().is_empty());
+            assert!(lock(&warmer.state).queue.is_empty());
+            // Terminal stop: late workers/callers cannot enqueue or re-enable.
+            warmer.enable(8);
+            let set = RepositorySet::new(root.path().to_owned());
+            warmer.request(&set, [Label::parse_canonical("//:late.bzl").unwrap()]);
+            assert!(!warmer.enabled());
+            assert!(lock(&warmer.state).queue.is_empty());
+            assert!(std::fs::read_dir(trees).unwrap().next().is_none());
+            let remaining: Vec<_> = std::fs::read_dir(&downloads)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(
+                remaining,
+                [std::ffi::OsString::from(format!("{digest:x}"))],
+                "no incomplete download blob may survive shutdown"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn shutdown_cancels_even_an_unlimited_credential_helper() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+        // Credentials are invocation-global. Isolate the installed helper
+        // and verify that cancellation adds no warning to command stderr.
+        if std::env::var_os("BAZEL_RS_UNIT_WARM_HELPER_CHILD").is_none() {
+            let output = std::process::Command::new("timeout")
+                .args(["--kill-after=2s", "10s"])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "module_root_warm::tests::shutdown_cancels_even_an_unlimited_credential_helper",
+                    "--nocapture",
+                ])
+                .env("BAZEL_RS_UNIT_WARM_HELPER_CHILD", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                !String::from_utf8_lossy(&output.stderr).contains("WARNING:"),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("helper");
+        let pid_path = root.path().join("pid");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho $$ > '{}'\nexec /bin/sleep 30\n",
+                pid_path.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::credentials::install(
+            crate::credentials::Credentials::new(
+                &crate::credentials::CredentialOptions {
+                    helpers: vec![crate::credentials::HelperOption {
+                        scope: None,
+                        path: script.display().to_string(),
+                    }],
+                    timeout: Duration::ZERO,
+                    ..Default::default()
+                },
+                None,
+                "/usr/bin:/bin",
+            )
+            .unwrap(),
+        );
+        let warmer = RootWarmer::default();
+        warmer.enable(2);
+        let scope = warmer.scope();
+        let cancel = lock(&warmer.state).cancel.clone();
+        let (done, finished) = std::sync::mpsc::channel();
+        warmer
+            .workers
+            .lock()
+            .unwrap()
+            .push(std::thread::spawn(move || {
+                CURRENT.with(|current| *current.borrow_mut() = Some(cancel));
+                let headers = crate::credentials::download_headers("http://127.0.0.1/");
+                assert!(headers.is_empty());
+                assert!(cancelled());
+                done.send(()).unwrap();
+            }));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !pid_path.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let pid = std::fs::read_to_string(pid_path).unwrap();
+        let start = Instant::now();
+        drop(scope);
+        finished.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(
+            !std::path::Path::new(&format!("/proc/{}", pid.trim())).exists(),
+            "helper survived shutdown"
+        );
+    }
+
+    #[derive(Default)]
+    struct Trace {
+        before_lock: bool,
+        foreground_failed: bool,
+        stage: Option<PathBuf>,
+    }
+
+    #[derive(Default)]
+    struct Schedule {
+        trace: Mutex<Trace>,
+        changed: std::sync::Condvar,
+    }
+
+    static SCHEDULE: std::sync::OnceLock<Schedule> = std::sync::OnceLock::new();
+
+    /// Test-binary-only scheduling: the warmer arrives before the foreground
+    /// attempt, but may take the publication lock only after that attempt
+    /// failed. Then hold its private stage across invocation shutdown.
+    pub(crate) fn schedule(warming: bool, stage: Option<&std::path::Path>) {
+        let Some(schedule) = SCHEDULE.get().filter(|_| warming) else {
+            return;
+        };
+        let mut trace = schedule.trace.lock().unwrap();
+        if let Some(stage) = stage {
+            trace.stage = Some(stage.to_owned());
+            schedule.changed.notify_all();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !crate::repository_speculation::cancelled()
+                && std::time::Instant::now() < deadline
+            {
+                trace = schedule
+                    .changed
+                    .wait_timeout(trace, std::time::Duration::from_millis(10))
+                    .unwrap()
+                    .0;
+            }
+        } else {
+            trace.before_lock = true;
+            schedule.changed.notify_all();
+            while !trace.foreground_failed {
+                let (next, timeout) = schedule
+                    .changed
+                    .wait_timeout(trace, std::time::Duration::from_secs(5))
+                    .unwrap();
+                assert!(!timeout.timed_out(), "foreground did not release warm-up");
+                trace = next;
+            }
+        }
+    }
+
+    #[test]
+    fn failed_invocation_stage_child() {
+        let Some(root) = std::env::var_os("BAZEL_RS_UNIT_WARM_STAGE_CHILD").map(PathBuf::from)
+        else {
+            return;
+        };
+        let schedule = SCHEDULE.get_or_init(Schedule::default);
+        let registry = root.join("registry");
+        let module_dir = registry.join("modules/dep/1");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(
+            root.join("MODULE.bazel"),
+            "module(name='main')\nbazel_dep(name='dep', version='1')\n",
+        )
+        .unwrap();
+        std::fs::write(
+            module_dir.join("MODULE.bazel"),
+            "module(name='dep', version='1')\n",
+        )
+        .unwrap();
+        let archive = include_bytes!("../tests/fixtures/build_settings/bazel-skylib-1.8.2.tar.gz");
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(archive);
+        let cache = root.join("cache");
+        let downloads = cache.join("downloads/sha256");
+        std::fs::create_dir_all(&downloads).unwrap();
+        std::fs::write(downloads.join(format!("{digest:x}")), archive).unwrap();
+        let source = serde_json::json!({
+            "url": "http://127.0.0.1:1/source.tar.gz",
+            "integrity": format!("sha256-{}", base64::engine::general_purpose::STANDARD.encode(digest)),
+            "overlay": {"missing.txt": format!("sha256-{}", base64::engine::general_purpose::STANDARD.encode(Sha256::digest(b"missing")))},
+        });
+        std::fs::write(module_dir.join("source.json"), source.to_string()).unwrap();
+        let set = RepositorySet::with_options(
+            root.clone(),
+            crate::module_graph::ResolverOptions {
+                registries: vec![crate::registry::Registry::LocalPath(registry)],
+                ..Default::default()
+            },
+        )
+        .with_source_cache(cache)
+        .with_repository_downloads_enabled(false);
+        set.resolve_graph().unwrap();
+        let _invocation = set.root_warming_scope();
+        set.enable_root_warming(2);
+        set.warm_loads(&[Label::parse_canonical("@@dep+//:version.bzl").unwrap()]);
+        let mut trace = schedule.trace.lock().unwrap();
+        while !trace.before_lock {
+            let (next, timeout) = schedule
+                .changed
+                .wait_timeout(trace, std::time::Duration::from_secs(5))
+                .unwrap();
+            assert!(
+                !timeout.timed_out(),
+                "warmer did not reach publication lock"
+            );
+            trace = next;
+        }
+        drop(trace);
+        let error = set.root("dep+").unwrap_err();
+        assert!(error.contains("--repository_disable_download"), "{error}");
+        assert!(
+            std::fs::read_dir(root.join("cache/trees"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        let mut trace = schedule.trace.lock().unwrap();
+        trace.foreground_failed = true;
+        schedule.changed.notify_all();
+        while trace.stage.is_none() {
+            let (next, timeout) = schedule
+                .changed
+                .wait_timeout(trace, std::time::Duration::from_secs(5))
+                .unwrap();
+            assert!(
+                !timeout.timed_out(),
+                "second materialization did not reach stage"
+            );
+            trace = next;
+        }
+        std::fs::write(
+            root.join("stage-evidence.txt"),
+            trace.stage.as_ref().unwrap().display().to_string(),
+        )
+        .unwrap();
+        drop(trace);
+        // Normal invocation return. Before the fix, the detached warm worker
+        // still owns its stage when the test process exits.
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn failed_invocation_cleans_active_warm_stage() {
+        let root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new("timeout")
+            .args(["--kill-after=2s", "15s"])
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "module_root_warm::tests::failed_invocation_stage_child",
+                "--nocapture",
+            ])
+            .env("BAZEL_RS_UNIT_WARM_STAGE_CHILD", root.path())
+            .env_remove("BAZEL_RS_DEBUG_NO_ROOT_WARM")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stage = std::fs::read_to_string(root.path().join("stage-evidence.txt")).unwrap();
+        let remaining = std::fs::read_dir(root.path().join("cache/trees"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect::<Vec<_>>();
+        eprintln!(
+            "controlled lifecycle: foreground failed; warmer then owned {stage}; after child exit={remaining:?}"
+        );
+        assert!(
+            remaining.is_empty(),
+            "private warm stage survived normal failed invocation: {remaining:?}; stage={stage}"
+        );
+    }
 
     #[test]
     fn file_loads_resolve_with_the_base_mapping_and_skip_unknown_names() {

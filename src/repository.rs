@@ -2463,6 +2463,12 @@ impl RepositorySet {
         self.state.root_warmer.enable(width);
     }
 
+    /// Own root-warming workers for one invocation, independently of the
+    /// CLI's intentionally leaked Engine/RepositorySet analysis graph.
+    pub fn root_warming_scope(&self) -> RootWarmingScope {
+        self.state.root_warmer.scope()
+    }
+
     /// The files `labels` name are about to be loaded (the `load()`
     /// statements of a file the sequential engine entered): warm their
     /// module roots and, transitively, those of their loads
@@ -4550,6 +4556,8 @@ impl RepositorySet {
         crate::native_rules::did_you_mean(name, &keys)
     }
 }
+
+pub use crate::module_root_warm::Scope as RootWarmingScope;
 
 /// [`registry_source_root`] ahead of the demand (crate::module_root_warm):
 /// archive sources only, the registry files peeked (never recorded).

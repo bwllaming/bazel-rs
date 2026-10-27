@@ -362,25 +362,137 @@ fn client_with(read_timeout: Duration) -> Result<Client, String> {
         .no_brotli()
         .no_deflate()
         .no_zstd()
-        .redirect(Policy::custom(|attempt| {
-            if attempt.previous().len() > 10 {
-                attempt.error("too many HTTP redirects")
-            } else if !redirect_allowed(attempt.url(), attempt.previous()) {
-                attempt.error("unsafe HTTP redirect")
-            } else if let Err(error) = crate::download_proxy::check(attempt.url()) {
-                // HttpConnector asks ProxyHelper again for every redirect
-                // (HttpConnector.java:125-136).
-                attempt.error(error)
-            } else {
-                attempt.follow()
-            }
-        }))
+        .redirect(redirect_policy())
         .build()
         .map_err(|_| "cannot initialize HTTP transport".into())
 }
 
+fn redirect_policy() -> Policy {
+    Policy::custom(|attempt| {
+        if attempt.previous().len() > 10 {
+            attempt.error("too many HTTP redirects")
+        } else if !redirect_allowed(attempt.url(), attempt.previous()) {
+            attempt.error("unsafe HTTP redirect")
+        } else if let Err(error) = crate::download_proxy::check(attempt.url()) {
+            // HttpConnector asks ProxyHelper again for every redirect
+            // (HttpConnector.java:125-136).
+            attempt.error(error)
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
 fn read_http(url: Url) -> Result<Option<Vec<u8>>, String> {
+    if crate::module_root_warm::active() {
+        let mut bytes = Vec::new();
+        return warm_http_to(url, &mut bytes).map(|found| found.map(|_| bytes));
+    }
     open_http(url)?.map(read_all).transpose()
+}
+
+/// Only module-root warm-ups use this transport. The ordinary blocking
+/// transport has per-read timeouts but cannot be interrupted while awaiting
+/// headers or a body chunk. Await the same protocol with cancellation instead
+/// of joining a potentially endless trickling body at invocation shutdown.
+struct WarmTransport {
+    runtime: Option<tokio::runtime::Runtime>,
+    client: reqwest::Client,
+}
+
+impl Drop for WarmTransport {
+    fn drop(&mut self) {
+        // Request/body futures are already dropped. OS getaddrinfo tasks do
+        // not own cache files/stages and cannot be forcibly interrupted; do
+        // not wait indefinitely for a system resolver when dropping Tokio.
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_timeout(Duration::ZERO);
+        }
+    }
+}
+
+thread_local! {
+    static WARM_TRANSPORT: std::cell::RefCell<Option<WarmTransport>> = const { std::cell::RefCell::new(None) };
+}
+
+async fn warm_await<F: std::future::Future>(future: F) -> Result<F::Output, String> {
+    let mut future = std::pin::pin!(future);
+    loop {
+        crate::module_root_warm::check()?;
+        if let Ok(result) = tokio::time::timeout(Duration::from_millis(10), future.as_mut()).await {
+            return Ok(result);
+        }
+    }
+}
+
+fn warm_http_to(url: Url, writer: &mut dyn Write) -> Result<Option<u64>, String> {
+    crate::module_root_warm::check()?;
+    crate::observed_fs::taint(crate::observed_fs::Taint::Network, || url.to_string());
+    crate::download_proxy::check(&url)?;
+    let headers = crate::credentials::download_headers(url.as_str());
+    crate::module_root_warm::check()?;
+    WARM_TRANSPORT.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| "cannot initialize HTTP runtime")?;
+            let client =
+                crate::download_proxy::configure_async(reqwest::Client::builder().no_proxy())
+                    .user_agent("bazel-rs/0.1")
+                    .referer(false)
+                    .connect_timeout(crate::extension_download::CONNECT_TIMEOUT)
+                    .read_timeout(crate::extension_download::READ_TIMEOUT)
+                    .no_gzip()
+                    .no_brotli()
+                    .no_deflate()
+                    .no_zstd()
+                    .redirect(redirect_policy())
+                    .build()
+                    .map_err(|_| "cannot initialize HTTP transport")?;
+            *slot = Some(WarmTransport {
+                runtime: Some(runtime),
+                client,
+            });
+        }
+        let transport = slot.as_ref().expect("initialized");
+        let mut request = transport
+            .client
+            .get(url)
+            .header(reqwest::header::ACCEPT_ENCODING, "identity");
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        transport
+            .runtime
+            .as_ref()
+            .expect("live runtime")
+            .block_on(async {
+                let mut response = warm_await(tokio::time::timeout(
+                    crate::extension_download::READ_TIMEOUT,
+                    request.send(),
+                ))
+                .await?
+                .map_err(|_| "HTTP request timed out")?
+                .map_err(|_| "HTTP request failed (connection, TLS, or redirect error)")?;
+                if !check_response(response.status(), response.headers())? {
+                    return Ok(None);
+                }
+                let mut total = 0;
+                while let Some(chunk) = warm_await(response.chunk())
+                    .await?
+                    .map_err(|_| "cannot read complete resource body")?
+                {
+                    crate::module_root_warm::check()?;
+                    writer
+                        .write_all(&chunk)
+                        .map_err(|error| format!("cannot write downloaded resource: {error}"))?;
+                    total += chunk.len() as u64;
+                }
+                Ok(Some(total))
+            })
+    })
 }
 
 fn open_http(url: Url) -> Result<Option<reqwest::blocking::Response>, String> {
@@ -412,22 +524,29 @@ fn open_http_with(
             "HTTP request failed (connection, TLS, or redirect error)".to_owned()
         }
     })?;
-    if matches!(
-        response.status(),
-        reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE
-    ) {
+    if !check_response(response.status(), response.headers())? {
         return Ok(None);
     }
-    if response.status() != reqwest::StatusCode::OK {
+    Ok(Some(response))
+}
+
+fn check_response(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) -> Result<bool, String> {
+    if matches!(
+        status,
+        reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE
+    ) {
+        return Ok(false);
+    }
+    if status != reqwest::StatusCode::OK {
         return Err(format!(
             "HTTP request failed with status {}",
-            response.status().as_u16()
+            status.as_u16()
         ));
     }
-    for encoding in response
-        .headers()
-        .get_all(reqwest::header::CONTENT_ENCODING)
-    {
+    for encoding in headers.get_all(reqwest::header::CONTENT_ENCODING) {
         if !encoding.to_str().is_ok_and(|value| {
             value
                 .split(',')
@@ -436,7 +555,7 @@ fn open_http_with(
             return Err("unsupported HTTP content encoding: expected identity".into());
         }
     }
-    Ok(Some(response))
+    Ok(true)
 }
 
 fn read_all(mut reader: impl Read) -> Result<Vec<u8>, String> {
@@ -455,6 +574,10 @@ pub fn download_to(url: &str, writer: &mut dyn Write) -> Result<u64, String> {
     crate::observed_fs::taint(crate::observed_fs::Taint::Network, || {
         format!("download {url}")
     });
+    if crate::module_root_warm::active() && !url.starts_with("file://") {
+        return warm_http_to(http_url(url)?, writer)?
+            .ok_or_else(|| "download resource not found".into());
+    }
     let reader: Option<Box<dyn Read>> = if url.starts_with("file://") {
         open_local(&file_path(url)?)?.map(|file| Box::new(file) as Box<dyn Read>)
     } else {
@@ -470,6 +593,7 @@ pub fn download_to(url: &str, writer: &mut dyn Write) -> Result<u64, String> {
     let mut buffer = vec![0u8; 64 * 1024];
     let mut total = 0u64;
     loop {
+        crate::module_root_warm::check()?;
         let n = match reader.read(&mut buffer) {
             Ok(0) => return Ok(total),
             Ok(n) => n,
