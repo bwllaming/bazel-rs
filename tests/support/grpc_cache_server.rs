@@ -165,6 +165,11 @@ mod grpc_cache_server {
         _runtime: tokio::runtime::Runtime,
     }
 
+    /// The canonical test temporary parent (support/temp_root.rs).
+    pub fn fs_canonical_tmp() -> PathBuf {
+        crate::test_temp::root()
+    }
+
     fn status(code: u32, message: &str) -> (u32, String) {
         (code, message.to_owned())
     }
