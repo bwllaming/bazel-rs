@@ -13,18 +13,12 @@ load. At application, the native profile supports: `implementation`
 (called as `f(target, ctx)`, `StarlarkAspectFactory.create`),
 `attr_aspects` and `toolchains_aspects` (fixed lists or functions),
 `propagation_predicate` (see "Propagation functions" and "Toolchain
-propagation"), `attrs` (implicit `_`-attributes and
+propagation"), `subrules` (see "Subrules"), `attrs` (implicit `_`-attributes and
 parameter attributes), `required_providers`, `required_aspect_providers`,
 `provides`, `requires`, `apply_to_generating_rules`, `mandatory_providers`
 wording, `toolchains`, `exec_compatible_with`, `exec_groups`, `fragments`
 (and `host_fragments`, which Bazel 9.3 ignores) — see "Aspect toolchains,
-exec groups and fragments". Aspect-declared features whose application is
-not modelled fail explicitly when the aspect applies (never a silent
-no-op): `subrules`:
-
-```
-aspect //:gaps.bzl%subrules_aspect declares subrules: not analyzed by the native profile
-```
+exec groups and fragments". Every declared feature is applied (none is a silent no-op).
 
 ## Propagation functions
 
@@ -60,6 +54,21 @@ function.`).
 
 Paired capture tests/fixtures/aspect_propagation_functions (genuine.txt;
 tests/aspects.rs `aspect_propagation_functions`).
+
+## Subrules
+
+`aspect(subrules = [...])`: the subrules the main aspect declares are
+callable from its implementation (StarlarkRuleContext.getSubrules over the
+main aspect; the analysis scope's root is `aspect 'A'`, so an undeclared
+call fails `aspect '//:defs.bzl%bad' must declare 'other' in 'subrules'`);
+their actions are the application's, `subrule_ctx.toolchains` reads the
+aspect's own toolchain context, and lifted label attributes (part of the
+aspect's attributes since load, hidden from `ctx.attr`) pass their Target.
+A lifted `allow_single_file`/executable attribute crashes genuine Bazel 9.3
+when called from an aspect (the prerequisite is read from the rule's
+collection: NullPointerException); the native call fails explicitly. Paired
+capture tests/fixtures/aspect_subrules (genuine.txt; tests/aspects.rs
+`aspects_call_their_subrules`).
 
 ## Toolchain propagation
 
@@ -430,7 +439,6 @@ identity unchanged, and depset snapshots taken from either agree.
 
 ## Native-only boundaries (explicit failures, documented)
 
-- aspect `subrules` at application;
 - parameter values of `--aspects_parameters` are string/bool/int/string-list
   typed by the attribute (AspectParameters); other types are rejected at
   aspect() load (N33). They apply to the top-level aspects (and the

@@ -1,0 +1,20 @@
+# Genuine Bazel 9.3.0, a fresh server per command (`--noshow_progress --curses=no --color=no`):
+# the sorted `print()` texts (DEBUG lines without their `DEBUG: <WS>/defs.bzl:L:C: ` lead) or, for
+# a failing command, `ERROR <genuine error text>`. bazel-bin/top.sub of the first command: `p @@//:top`.
+# An aspect passing an allow_single_file subrule attribute crashes Bazel 9.3 (NullPointerException in
+# PrerequisitesCollection.checkAttributeIsDependency; `file_asp`, not captured below).
+### build --aspects=//:defs.bzl%asp --output_groups=sub //:top
+A //:leaf []
+A //:top []
+O //:leaf inner
+O //:top inner
+S //:leaf <sub context for //:leaf> actions
+S //:top <sub context for //:top> actions
+### build --aspects=//:defs.bzl%bad //:top
+ERROR aspect '//:defs.bzl%bad' must declare 'other' in 'subrules'
+### build --aspects=//:defs.bzl%nested //:top
+ERROR aspect '//:defs.bzl%nested' must declare 'inner' in 'subrules'
+### build --aspects=//:defs.bzl%attr_asp //:top
+D <target //:dep, keys:[OutputGroupInfo]>
+### build //:br
+ERROR rule 'bad_rule' must declare 'other' in 'subrules'

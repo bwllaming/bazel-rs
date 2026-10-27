@@ -2137,11 +2137,29 @@ impl ScopeState {
             let caller = frames
                 .last()
                 .ok_or_else(|| anyhow!("subrule is only available during active rule analysis"))?;
-            ensure!(
-                caller.allowed.contains(&identity),
-                "subrule {identity} must be declared in subrules of its immediate caller {}",
-                caller.identity
-            );
+            // StarlarkSubrule.call (:143-151): the root frame's identity is
+            // its description (`rule 'R'`, `aspect 'A'`), a subrule frame's
+            // the subrule's `{bzl}%{name}` identity.
+            let short = |identity: &str| {
+                identity
+                    .rsplit_once('%')
+                    .map_or(identity, |(_, name)| name)
+                    .to_owned()
+            };
+            if !caller.allowed.contains(&identity) {
+                if frames.len() == 1 {
+                    bail!(
+                        "{} must declare '{}' in 'subrules'",
+                        caller.identity,
+                        short(&identity)
+                    );
+                }
+                bail!(
+                    "subrule {} must declare {} in 'subrules'",
+                    short(&caller.identity),
+                    short(&identity)
+                );
+            }
         }
         let token = self
             .next

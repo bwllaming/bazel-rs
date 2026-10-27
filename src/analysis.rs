@@ -1917,14 +1917,10 @@ fn analyze_aspect_inner(
     // (its own ToolchainCollection, crate::engine; `host_fragments` is
     // ignored by Bazel 9.3, StarlarkRuleClassFunctions.aspect).
     let declaration = &aspect.declaration;
-    let has_subrules = crate::rule_declarations::Aspect::from_value(aspect.value.value())
-        .is_some_and(|value| !value.subrules.is_empty());
-    if has_subrules {
-        bail!(
-            "aspect {} declares subrules: not analyzed by the native profile",
-            aspect.identity
-        );
-    }
+    let subrules = crate::rule_declarations::Aspect::from_value(aspect.value.value())
+        .map(|value| crate::subrule::direct_ids(value.subrules.iter().copied()))
+        .transpose()?
+        .unwrap_or_default();
     let invocation = rule
         .custom
         .as_ref()
@@ -1968,8 +1964,21 @@ fn analyze_aspect_inner(
         top_level_functions: invocation.top_level_functions.clone(),
         loaded_functions: target.loaded_functions.cloned(),
         repositories: application.repositories.clone(),
-        scope: crate::analysis_runtime::ScopeState::new(rule.label.to_string(), BTreeSet::new()),
-        subrule: crate::subrule::RuleEnvironment::new(None, false, invocation.cpp),
+        // The aspect's subrules (StarlarkRuleContext.getSubrules: the main
+        // aspect's), with the aspect's own toolchain context
+        // (SubruleContext.toolchains).
+        scope: crate::analysis_runtime::ScopeState::new(
+            format!("aspect '{}'", aspect.identity),
+            subrules,
+        ),
+        subrule: crate::subrule::RuleEnvironment::new(
+            Some(application.toolchains.toolchains.clone()),
+            application
+                .toolchains
+                .action_exec_groups
+                .use_auto_exec_groups,
+            invocation.cpp,
+        ),
         exec_groups: application.toolchains.action_exec_groups.clone(),
         runfiles: crate::runfiles::ContextRunfiles {
             default_executable: None,
@@ -2061,6 +2070,9 @@ struct AspectAttributeMaps<'v> {
     files: BTreeMap<String, Value<'v>>,
     single_files: BTreeMap<String, Value<'v>>,
     executables: BTreeMap<String, Value<'v>>,
+    /// Lifted subrule attributes (hidden from `ctx.attr`,
+    /// StarlarkAttributesCollection.shouldIgnore): the subrule argument.
+    lifted: Vec<(String, Value<'v>)>,
 }
 
 fn aspect_attribute_maps<'v>(
@@ -2080,12 +2092,46 @@ fn aspect_attribute_maps<'v>(
     let mut files: BTreeMap<String, Value> = BTreeMap::new();
     let mut single_files: BTreeMap<String, Value> = BTreeMap::new();
     let mut executables: BTreeMap<String, Value> = BTreeMap::new();
+    let mut lifted = Vec::new();
     let mut parameter_errors = Vec::new();
     for (name, spec) in &aspect.declaration.attrs {
         if names.is_some_and(|names| !names.contains(name)) {
             continue;
         }
         let value = aspect.parameters.get(name).unwrap_or(&spec.default);
+        if crate::subrule::is_lifted_attribute(name) {
+            // StarlarkSubrule.call (:162-183) for an aspect: a Target
+            // through getPrerequisite (the owning, aspect's, collection).
+            // Bazel 9.3 looks a single-file or executable prerequisite up
+            // in the RULE's collection, where the aspect's lifted
+            // attribute is not defined: the server crashes
+            // (NullPointerException in PrerequisitesCollection.
+            // checkAttributeIsDependency), so those fail explicitly here.
+            if spec.allow_single_file || spec.declaration.executable {
+                lifted.push((name.clone(), None));
+                continue;
+            }
+            let target = match value {
+                AttrValue::Label(Some(label)) => Some(dependency(
+                    label,
+                    name,
+                    spec,
+                    dependencies,
+                    &prefix_for(aspect, shown_label, name, spec),
+                    consumer,
+                )?),
+                _ => None,
+            };
+            lifted.push((
+                name.clone(),
+                Some(
+                    target
+                        .map(|target| alloc_dependency(heap, target))
+                        .unwrap_or_else(Value::new_none),
+                ),
+            ));
+            continue;
+        }
         let prefix = crate::rule_errors::RuleEvents {
             rule_class: &aspect.exported_name,
             label: shown_label,
@@ -2217,12 +2263,42 @@ fn aspect_attribute_maps<'v>(
             parameter_errors.join("\n"),
         )));
     }
+    let mut supported = Vec::new();
+    for (name, value) in lifted {
+        match value {
+            Some(value) => supported.push((name, value)),
+            None => {
+                context.subrule.unsupported.borrow_mut().insert(
+                    name.clone(),
+                    format!(
+                        "aspect {} passes the subrule attribute '{name}' (allow_single_file or executable): Bazel 9.3 crashes there (NullPointerException: the aspect's lifted attribute is looked up in the rule's prerequisites); not supported by the native profile",
+                        aspect.identity
+                    ),
+                );
+            }
+        }
+    }
+    let lifted = supported;
     Ok(AspectAttributeMaps {
         attrs,
         files,
         single_files,
         executables,
+        lifted,
     })
+}
+
+fn prefix_for(
+    aspect: &crate::aspects::AspectDefinition,
+    shown_label: &str,
+    name: &str,
+    spec: &crate::custom_rule::AttrSpec,
+) -> String {
+    crate::rule_errors::RuleEvents {
+        rule_class: &aspect.exported_name,
+        label: shown_label,
+    }
+    .attribute_message(&crate::custom_rule::attribute_message_name(name, spec), "")
 }
 
 /// The aspect context: `ctx.attr`/`ctx.files`/`ctx.file` of the aspect's own
@@ -2254,7 +2330,14 @@ fn make_aspect_ctx<'v>(
     // a `ctx.executable` entry, whose FilesToRunProvider a spawn running the
     // File picks up (the first one per executable, :410-433). Frozen like a
     // rule's (immutable in Bazel).
-    const NAMES: [&str; 5] = ["attr", "files", "file", "executable", "$aspect_ids"];
+    const NAMES: [&str; 6] = [
+        "attr",
+        "files",
+        "file",
+        "executable",
+        "$aspect_ids",
+        "lifted",
+    ];
     let owned = Module::with_temp_heap(|module| -> anyhow::Result<_> {
         let heap = module.heap();
         let AspectAttributeMaps {
@@ -2262,6 +2345,7 @@ fn make_aspect_ctx<'v>(
             files,
             single_files,
             executables,
+            lifted,
         } = aspect_attribute_maps(
             aspect,
             None,
@@ -2299,6 +2383,12 @@ fn make_aspect_ctx<'v>(
             "$aspect_ids",
             module.heap().alloc(application.aspect_ids.clone()),
         );
+        module.set(
+            "lifted",
+            module
+                .heap()
+                .alloc(starlark::values::dict::AllocDict(lifted)),
+        );
         let frozen = module
             .freeze_named(FrozenHeapName::User(Box::new(
                 "aspect context attributes".to_owned(),
@@ -2309,10 +2399,13 @@ fn make_aspect_ctx<'v>(
             .into_iter()
             .collect::<anyhow::Result<Vec<_>>>()
     })?;
-    let owned = <[OwnedFrozenValue; 5]>::try_from(owned)
+    let owned = <[OwnedFrozenValue; 6]>::try_from(owned)
         .map_err(|_| anyhow!("internal error: aspect context attribute structs"))?;
-    let [attr, files, file, executable, aspect_ids] =
-        owned.map(|value| heap.access_owned_frozen_value(&value));
+    let [attr, files, file, executable, aspect_ids, lifted] = owned;
+    // Lifted subrule attributes are read by subrule invocations only.
+    context.subrule.lifted.replace(Some(lifted));
+    let [attr, files, file, executable, aspect_ids] = [attr, files, file, executable, aspect_ids]
+        .map(|value| heap.access_owned_frozen_value(&value));
     // ctx.rule: the base rule's attribute structs over the application's
     // dependencies (allocated beside the ctx; StarlarkAttributesCollection
     // is not frozen separately in Bazel either).
@@ -2545,7 +2638,7 @@ fn analyze_inner(
         loaded_functions: target.loaded_functions.cloned(),
         repositories: repositories.clone(),
         scope: crate::analysis_runtime::ScopeState::new(
-            rule.label.to_string(),
+            format!("rule '{}'", invocation.declaration.rule_class),
             crate::subrule::direct_ids(invocation.subrules.iter().map(|value| value.value()))?,
         ),
         subrule: crate::subrule::RuleEnvironment::new(

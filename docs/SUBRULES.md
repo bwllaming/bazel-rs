@@ -19,9 +19,20 @@ fresh subrule context before user arguments and returns the actual callback
 result. Generated Files and actions belong to the consuming target.
 
 The constructor belongs in ordinary and MODULE-loaded `.bzl` files, not top-level
-BUILD or MODULE globals. Aspects (their lifted attributes and toolchain types
-are retained, never applied), inheritance and run/test APIs remain unsupported
-rather than accepted and ignored. The four subrule context property names are
+BUILD or MODULE globals. Inheritance and run/test APIs remain unsupported
+rather than accepted and ignored. An undeclared call fails with Bazel's text
+(StarlarkSubrule.call): `rule 'R' must declare 'S' in 'subrules'`, `aspect
+'//:defs.bzl%a' must declare 'S' in 'subrules'`, and inside a subrule
+`subrule Outer must declare Leaf in 'subrules'`.
+
+Aspects (`aspect(subrules = [...])`, docs/ASPECTS.md "Subrules"): the main
+aspect's subrules are callable from its implementation; actions belong to the
+aspect application, `subrule_ctx.toolchains` reads the aspect's own context,
+and lifted label attributes (aspect attributes, resolved from the aspect's
+`.bzl`) pass their Target. A lifted `allow_single_file`/executable attribute
+crashes Bazel 9.3 when an aspect calls the subrule (getPrerequisiteArtifact
+reads the RULE's prerequisites: NullPointerException); the native profile
+fails that call explicitly. The four subrule context property names are
 `actions`, `fragments`, `label` and `toolchains`.
 
 ## N24: attributes, toolchains, fragments, late-bound defaults

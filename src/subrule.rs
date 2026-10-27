@@ -340,6 +340,9 @@ pub(crate) struct RuleEnvironment {
     /// Frozen dict from lifted rule attribute name to the implementation
     /// argument (FilesToRunProvider, [Target], File or Target, or None).
     pub lifted: RefCell<Option<OwnedFrozenValue>>,
+    /// Lifted attributes whose value an aspect cannot pass (Bazel 9.3
+    /// crashes reading them): the explicit failure of a call.
+    pub unsupported: RefCell<std::collections::BTreeMap<String, String>>,
     pub toolchains: SubruleToolchains,
     /// The configuration's C++ options (CustomInvocation::cpp).
     pub cpp: crate::custom_rule::CppConfigurationView,
@@ -353,6 +356,7 @@ impl RuleEnvironment {
     ) -> Self {
         Self {
             lifted: RefCell::new(None),
+            unsupported: RefCell::default(),
             cpp,
             toolchains: match toolchain_context {
                 None => SubruleToolchains::NotValid,
@@ -370,6 +374,9 @@ impl RuleEnvironment {
         rule_name: &str,
         heap: starlark::values::Heap<'v>,
     ) -> anyhow::Result<Value<'v>> {
+        if let Some(message) = self.unsupported.borrow().get(rule_name) {
+            bail!("{message}");
+        }
         let lifted = self.lifted.borrow();
         let value = lifted
             .as_ref()
@@ -1184,7 +1191,7 @@ declared.append(Leaf)
 "#
             );
             let error = analyze(&defs).unwrap_err();
-            assert!(error.contains("immediate caller"), "{error}");
+            assert!(error.contains("must declare"), "{error}");
         }
     }
 
@@ -1427,7 +1434,7 @@ def dict_payload(s):
                     .eval_function(function, &[denied], &[])
                     .unwrap_err()
                     .to_string();
-                assert!(error.contains("immediate caller"), "{name}: {error}");
+                assert!(error.contains("must declare"), "{name}: {error}");
                 assert!(!error.contains("limit exceeded"), "{name}: {error}");
                 context.scope.root().current(&context.scope).unwrap();
             }
@@ -1457,7 +1464,7 @@ def dict_payload(s):
                     .eval_function(function, &[denied], &[])
                     .unwrap_err()
                     .to_string();
-                assert!(error.contains("immediate caller"), "{name}: {error}");
+                assert!(error.contains("must declare"), "{name}: {error}");
                 context.scope.root().current(&context.scope).unwrap();
             }
             // Large borrowed payloads are one slot, not recursively copied or

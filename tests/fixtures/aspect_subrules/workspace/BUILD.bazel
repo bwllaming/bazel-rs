@@ -1,0 +1,13 @@
+load(":defs.bzl", "lib")
+
+exports_files(["data.txt"])
+
+lib(name = "dep")
+
+lib(name = "leaf")
+
+lib(name = "top", deps = [":leaf"])
+
+load(":defs.bzl", "bad_rule")
+
+bad_rule(name = "br")

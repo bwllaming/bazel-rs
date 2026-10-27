@@ -476,21 +476,11 @@ fn instrumented_files_info_of_an_aspect_wins_over_the_base_target() {
 fn aspect_declaration_gaps_fail_explicitly() {
     // N11: an aspect's `fragments` are its configuration fragment policy
     // (genuine: the application succeeds, //:a builds a.lib; the receipt's
-    // former native gap). Aspect-declared features whose application is not
-    // modelled still fail loudly (never silently ignored): `subrules`.
+    // former native gap). The former aspect gaps (`toolchains_aspects`,
+    // functions, subrules) are analyzed now (their own tests).
     let ws = Workspace::new();
     ok(&ws.build_with(&["--aspects=//:defs.bzl%fragments_aspect"], &["//:a"]));
     assert_eq!(ws.output("a.lib"), "lib");
-    let ws = Workspace::new();
-    fs::write(
-        ws.path().join("gaps.bzl"),
-        "def _impl(target, ctx):\n    return []\n\ndef _s(ctx):\n    pass\n\ns = subrule(implementation = _s)\n\nsubrules_aspect = aspect(implementation = _impl, subrules = [s])\n",
-    )
-    .unwrap();
-    rejected(
-        &ws.build_with(&["--aspects=//:gaps.bzl%subrules_aspect"], &["//:a"]),
-        "aspect //:gaps.bzl%subrules_aspect declares subrules: not analyzed by the native profile",
-    );
 }
 
 #[test]
@@ -998,4 +988,24 @@ fn aspect_propagation_functions() {
 #[test]
 fn aspects_propagate_to_base_target_toolchains() {
     compare_genuine_builtin("aspect_toolchains_aspects", &["TA ", "TF "], true);
+}
+
+/// Subrules from aspects (tests/fixtures/aspect_subrules/genuine.txt): the
+/// aspect's declared subrules (and theirs) run under the aspect, with
+/// Bazel's undeclared-subrule texts for aspects and rules; a lifted
+/// single-file attribute, which crashes Bazel 9.3, fails explicitly.
+#[test]
+fn aspects_call_their_subrules() {
+    compare_genuine_builtin("aspect_subrules", &["A ", "D ", "O ", "S "], false);
+    let ws = Workspace::fixture("aspect_subrules");
+    ok(&ws.build_builtin(
+        &["--aspects=//:defs.bzl%asp", "--output_groups=sub"],
+        &["//:top"],
+    ));
+    assert_eq!(ws.output("top.sub"), "p @@//:top\n");
+    let ws = Workspace::fixture("aspect_subrules");
+    rejected(
+        &ws.build_builtin(&["--aspects=//:defs.bzl%file_asp"], &["//:top"]),
+        "(allow_single_file or executable): Bazel 9.3 crashes there",
+    );
 }
