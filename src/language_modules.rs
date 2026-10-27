@@ -127,6 +127,8 @@ pub(crate) enum Behavior {
     /// `_is_valid_shared_library_artifact(shared_library)`
     /// (py_internal.bzl:101-131, `py_internal.cc_helper`).
     PyIsValidSharedLibraryArtifact,
+    /// Pure String.matches helper; also callable during repository execution.
+    PyRegexMatch,
 }
 
 /// The four Java builtin namespaces plus `cc_internal`; each has its own
@@ -1025,6 +1027,7 @@ fn call<'v>(
             let label = py_label_argument(args, heap, qualified)?;
             Ok(heap.alloc(package_runfiles_path(&label)))
         }
+        Behavior::PyRegexMatch => crate::py_regex::call(args, heap),
         Behavior::PyIsToolConfiguration => {
             // The `def`'s one parameter, then its body
             // `ctx.configuration.is_tool_configuration()`: the field and the
@@ -1733,6 +1736,7 @@ fn py_internal(heap: &FrozenHeap) -> FrozenValue {
                     Behavior::PyMergeGeneratedInits
                 }
                 "get_label_repo_runfiles_path" => Behavior::PyLabelRepoRunfilesPath,
+                "regex_match" => Behavior::PyRegexMatch,
                 "is_tool_configuration" => Behavior::PyIsToolConfiguration,
                 "get_legacy_external_runfiles" => Behavior::PyLegacyExternalRunfiles,
                 "is_bzlmod_enabled" => Behavior::PyIsBzlmodEnabled,

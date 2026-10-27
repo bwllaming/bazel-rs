@@ -1,0 +1,5 @@
+load(":defs.bzl", "LOAD_RESULTS", "f", "probe")
+# Imported helper works in BUILD, as well as .bzl initialization and analysis.
+[f(s, "(?U)\\w+") or fail(s) for s in ["abc", "\351"]]
+probe(name = "probe")
+filegroup(name = "repo", srcs = ["@namespaces//:accepted.txt", "@namespaces//:namespaces"])

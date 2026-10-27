@@ -107,6 +107,7 @@ pub mod process_wrapper;
 pub mod profile;
 pub mod progress;
 pub mod providers;
+mod py_regex;
 pub mod query_language;
 pub mod rc_options;
 pub mod reapi;

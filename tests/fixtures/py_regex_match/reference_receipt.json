@@ -1,0 +1,1375 @@
+{
+  "reference": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+  "elf_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "source": "PyBuiltins.java:91-100; py_internal.bzl:76-77",
+  "matrix": [
+    {
+      "subject": "",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "abc",
+      "pattern": "\\w+",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "abc",
+      "pattern": "(?U)\\w+",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "a_b9",
+      "pattern": "\\w+",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "a_b9",
+      "pattern": "(?U)\\w+",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "9abc",
+      "pattern": "\\w+",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "9abc",
+      "pattern": "(?U)\\w+",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "-",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "-",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "a-b",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "a-b",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "a.b",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "a.b",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "name.dist-info",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "name.dist-info",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "é",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "é",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "中文",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "中文",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "𐐀",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "𐐀",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "😀",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "😀",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "é",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "é",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "́",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "́",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "‌",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "‌",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "‍",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "‍",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "a‌b",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "a‌b",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "١",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "١",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "９",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "９",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "‿",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "‿",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "℘",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "℘",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "Ᲊ",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "Ᲊ",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "𑼂",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "𑼂",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "𞓐",
+      "pattern": "\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "𞓐",
+      "pattern": "(?U)\\w+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "9",
+      "pattern": "\\d+",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "9",
+      "pattern": "(?U)\\d+",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "١",
+      "pattern": "\\d+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "١",
+      "pattern": "(?U)\\d+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "９",
+      "pattern": "\\d+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "９",
+      "pattern": "(?U)\\d+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "²",
+      "pattern": "\\d+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "²",
+      "pattern": "(?U)\\d+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "𝟘",
+      "pattern": "\\d+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "𝟘",
+      "pattern": "(?U)\\d+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": " ",
+      "pattern": "\\s",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": " ",
+      "pattern": "(?U)\\s",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "\t",
+      "pattern": "\\s",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "\t",
+      "pattern": "(?U)\\s",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "\n",
+      "pattern": "\\s",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "\n",
+      "pattern": "(?U)\\s",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "\r",
+      "pattern": "\\s",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "\r",
+      "pattern": "(?U)\\s",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "\u000b",
+      "pattern": "\\s",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "\u000b",
+      "pattern": "(?U)\\s",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "\f",
+      "pattern": "\\s",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "\f",
+      "pattern": "(?U)\\s",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "",
+      "pattern": "\\s",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "",
+      "pattern": "(?U)\\s",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": " ",
+      "pattern": "\\s",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": " ",
+      "pattern": "(?U)\\s",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": " ",
+      "pattern": "\\s",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": " ",
+      "pattern": "(?U)\\s",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": " ",
+      "pattern": "\\s",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": " ",
+      "pattern": "(?U)\\s",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": " ",
+      "pattern": "\\s",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": " ",
+      "pattern": "(?U)\\s",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": " ",
+      "pattern": "\\s",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": " ",
+      "pattern": "(?U)\\s",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "​",
+      "pattern": "\\s",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "​",
+      "pattern": "(?U)\\s",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "abc",
+      "pattern": "b",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "ab",
+      "pattern": "a|ab",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "ab",
+      "pattern": "(a|ab)",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "",
+      "pattern": "",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "a",
+      "pattern": "",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "",
+      "pattern": "a*",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "",
+      "pattern": "^$",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "a\n",
+      "pattern": "a$",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "a\n",
+      "pattern": "a$\n",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "a\r\n",
+      "pattern": "a$\r\n",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "a\r\n",
+      "pattern": "a\r$\n",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "a\r",
+      "pattern": "a$\r",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "a",
+      "pattern": "a$",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "a ",
+      "pattern": "a$ ",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "\n",
+      "pattern": ".",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "\r",
+      "pattern": ".",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "",
+      "pattern": ".",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": " ",
+      "pattern": ".",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": " ",
+      "pattern": ".",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "😀",
+      "pattern": ".",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "\n",
+      "pattern": "(?s).",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "\r",
+      "pattern": "(?d).",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "\n",
+      "pattern": "(?d).",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "",
+      "pattern": "(?d).",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "a\r",
+      "pattern": "(?d)a$\r",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "a\r\n",
+      "pattern": "(?d)a\r$\n",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "éa",
+      "pattern": "(?U)\\w(?-U)\\w",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "éé",
+      "pattern": "(?U)\\w(?-U)\\w",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "éa",
+      "pattern": "(?U:\\w)\\w",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "éé",
+      "pattern": "(?U:\\w)\\w",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "é",
+      "pattern": "(?u)\\w",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "é",
+      "pattern": "(?U-u)\\w",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "é",
+      "pattern": "(?U-u:\\w)",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "a_9",
+      "pattern": "[a-z_0-9]+",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "é_",
+      "pattern": "(?U)[\\w]+",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "!",
+      "pattern": "\\W",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "é",
+      "pattern": "\\W",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "é",
+      "pattern": "(?U)\\W",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": false
+    },
+    {
+      "subject": "a.b[0]",
+      "pattern": "\\Qa.b[0]\\E",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "é",
+      "pattern": "\\x{e9}",
+      "expected": false,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "a",
+      "pattern": "\\u0061",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "abbb",
+      "pattern": "ab{2,4}?",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "a\nb",
+      "pattern": "(?s:a.b)",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "ab",
+      "pattern": "(a)(?:b)",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "\n",
+      "pattern": "[^\\w]",
+      "expected": true,
+      "supported": true,
+      "unicode_expected": true
+    },
+    {
+      "subject": "a\nb",
+      "pattern": "(?m)^a$\nb",
+      "expected": true,
+      "supported": false,
+      "unicode_expected": true
+    },
+    {
+      "subject": "É",
+      "pattern": "(?iu)é",
+      "expected": false,
+      "supported": false,
+      "unicode_expected": true
+    },
+    {
+      "subject": "a",
+      "pattern": "(?i)A",
+      "expected": true,
+      "supported": false,
+      "unicode_expected": true
+    },
+    {
+      "subject": "ab",
+      "pattern": "(?x) a b",
+      "expected": true,
+      "supported": false,
+      "unicode_expected": true
+    },
+    {
+      "subject": "aa",
+      "pattern": "(a)\\1",
+      "expected": true,
+      "supported": false,
+      "unicode_expected": true
+    },
+    {
+      "subject": "a",
+      "pattern": "(?=a)a",
+      "expected": true,
+      "supported": false,
+      "unicode_expected": true
+    },
+    {
+      "subject": "aa",
+      "pattern": "a++",
+      "expected": true,
+      "supported": false,
+      "unicode_expected": true
+    }
+  ],
+  "cases": {
+    "build": {
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "build",
+        "//tools/build_defs/python:probe",
+        "//tools/build_defs/python:repo",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (6 packages loaded, 13 targets configured).\nINFO: Found 2 targets...\nTarget //tools/build_defs/python:probe up-to-date:\n  bazel-bin/tools/build_defs/python/probe.txt\nINFO: Elapsed time: 7.552s, Critical Path: 0.03s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n"
+    },
+    "cquery": {
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "cquery",
+        "deps(//tools/build_defs/python:repo)",
+        "--output=label",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 0,
+      "stdout": "//tools/build_defs/python:repo (a7a71fd)\n@namespaces//:accepted.txt (null)\n@bazel_tools//tools:host_platform (3030ed4)\n@namespaces//:namespaces (a7a71fd)\n@platforms//host:host (3030ed4)\n@platforms//os:linux (3030ed4)\n@platforms//cpu:x86_64 (3030ed4)\n@namespaces//:ansible/__init__.py (null)\n@namespaces//:9pkg/__init__.py (null)\n@namespaces//:_vendor/__init__.py (null)\n@platforms//cpu:cpu (3030ed4)\n@platforms//os:os (3030ed4)\n",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //tools/build_defs/python:repo (6 packages loaded, 12 targets configured).\nINFO: Found 1 target...\nINFO: Elapsed time: 9.817s, Critical Path: 0.00s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n"
+    },
+    "bad_subject": {
+      "expression": "f(1, \"a\")",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 7,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"/home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/error.bzl\", line 2, column 6, in <toplevel>\n\t\tx = f(1, \"a\")\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 77, column 36, in _regex_match\nError in regex_match: in call to regex_match(), parameter 'subject' got value of type 'int', want 'string'\nERROR: error loading package 'errors': initialization of module 'tools/build_defs/python/error.bzl' failed\n"
+    },
+    "bad_pattern": {
+      "expression": "f(\"a\", None)",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 7,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"/home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/error.bzl\", line 2, column 6, in <toplevel>\n\t\tx = f(\"a\", None)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 77, column 36, in _regex_match\nError in regex_match: in call to regex_match(), parameter 'pattern' got value of type 'NoneType', want 'string'\nERROR: error loading package 'errors': initialization of module 'tools/build_defs/python/error.bzl' failed\n"
+    },
+    "bad_bool": {
+      "expression": "f(True, \"a\")",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 7,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"/home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/error.bzl\", line 2, column 6, in <toplevel>\n\t\tx = f(True, \"a\")\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 77, column 36, in _regex_match\nError in regex_match: in call to regex_match(), parameter 'subject' got value of type 'bool', want 'string'\nERROR: error loading package 'errors': initialization of module 'tools/build_defs/python/error.bzl' failed\n"
+    },
+    "bad_list": {
+      "expression": "f(\"a\", [])",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 7,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"/home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/error.bzl\", line 2, column 6, in <toplevel>\n\t\tx = f(\"a\", [])\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 77, column 36, in _regex_match\nError in regex_match: in call to regex_match(), parameter 'pattern' got value of type 'list', want 'string'\nERROR: error loading package 'errors': initialization of module 'tools/build_defs/python/error.bzl' failed\n"
+    },
+    "named_subject": {
+      "expression": "f(subject = \"a\", pattern = \"a\")",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 7,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"/home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/error.bzl\", line 2, column 6, in <toplevel>\n\t\tx = f(subject = \"a\", pattern = \"a\")\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 77, column 36, in _regex_match\nError in regex_match: regex_match() got named argument for positional-only parameter 'subject'\nERROR: error loading package 'errors': initialization of module 'tools/build_defs/python/error.bzl' failed\n"
+    },
+    "named_pattern": {
+      "expression": "f(\"a\", pattern = \"a\")",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 7,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"/home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/error.bzl\", line 2, column 6, in <toplevel>\n\t\tx = f(\"a\", pattern = \"a\")\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 77, column 36, in _regex_match\nError in regex_match: regex_match() got named argument for positional-only parameter 'pattern'\nERROR: error loading package 'errors': initialization of module 'tools/build_defs/python/error.bzl' failed\n"
+    },
+    "unknown": {
+      "expression": "f(\"a\", \"a\", extra = 1)",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 7,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"/home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/error.bzl\", line 2, column 6, in <toplevel>\n\t\tx = f(\"a\", \"a\", extra = 1)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 77, column 36, in _regex_match\nError in regex_match: regex_match() got unexpected keyword argument 'extra'\nERROR: error loading package 'errors': initialization of module 'tools/build_defs/python/error.bzl' failed\n"
+    },
+    "too_many": {
+      "expression": "f(\"a\", \"a\", \"a\")",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 7,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"/home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/error.bzl\", line 2, column 6, in <toplevel>\n\t\tx = f(\"a\", \"a\", \"a\")\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 77, column 36, in _regex_match\nError in regex_match: regex_match() accepts no more than 2 positional arguments but got 3\nERROR: error loading package 'errors': initialization of module 'tools/build_defs/python/error.bzl' failed\n"
+    },
+    "type_before_extra": {
+      "expression": "f(1, \"a\", \"a\")",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 7,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Traceback (most recent call last):\n\tFile \"/home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/error.bzl\", line 2, column 6, in <toplevel>\n\t\tx = f(1, \"a\", \"a\")\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 77, column 36, in _regex_match\nError in regex_match: in call to regex_match(), parameter 'subject' got value of type 'int', want 'string'\nERROR: error loading package 'errors': initialization of module 'tools/build_defs/python/error.bzl' failed\n"
+    },
+    "missing": {
+      "expression": "f()",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 37,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nFATAL: bazel crashed due to an internal error. Printing stack trace:\njava.lang.RuntimeException: Unrecoverable error while evaluating node 'KeyForBuild{label=//tools/build_defs/python:error.bzl, isBuildPrelude=false}' (requested by nodes 'errors')\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:552)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\nCaused by: net.starlark.java.eval.Starlark$UncheckedEvalException: IllegalArgumentException thrown during Starlark evaluation\n\tat <starlark>.regex_match(<builtin>:0)\n\tat <starlark>._regex_match(/virtual_builtins_bzl/common/python/py_internal.bzl:77)\n\tat <starlark>.<toplevel>(/home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/error.bzl:2)\nCaused by: java.lang.IllegalArgumentException: IllegalArgumentException (argument type mismatch) in Starlark call of public boolean com.google.devtools.build.lib.rules.python.PyBuiltins.regexMatch(java.lang.String,java.lang.String), obj=<unknown object com.google.devtools.build.lib.bazel.rules.python.BazelPyBuiltins> (py_builtins), args=[<unbound> (unbound), <unbound> (unbound)]\n\tat net.starlark.java.eval.MethodDescriptor.call(MethodDescriptor.java:280)\n\tat net.starlark.java.eval.BuiltinFunction$ArgumentProcessor.call(BuiltinFunction.java:446)\n\tat net.starlark.java.eval.Starlark.callViaArgumentProcessor(Starlark.java:844)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:765)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execReturn(Eval.java:282)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:321)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Eval.evalPositionalOnlyCall(Eval.java:790)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:707)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execAssignment(Eval.java:121)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:301)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Starlark.execFileProgram(Starlark.java:1164)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.execAndExport(BzlLoadFunction.java:1436)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.executeBzlFile(BzlLoadFunction.java:1410)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.computeInternalWithCompiledBzl(BzlLoadFunction.java:913)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.computeInternal(BzlLoadFunction.java:580)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.compute(BzlLoadFunction.java:204)\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:471)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\n"
+    },
+    "missing_pattern": {
+      "expression": "f(\"a\")",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 37,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nFATAL: bazel crashed due to an internal error. Printing stack trace:\njava.lang.RuntimeException: Unrecoverable error while evaluating node 'KeyForBuild{label=//tools/build_defs/python:error.bzl, isBuildPrelude=false}' (requested by nodes 'errors')\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:552)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\nCaused by: net.starlark.java.eval.Starlark$UncheckedEvalException: IllegalArgumentException thrown during Starlark evaluation\n\tat <starlark>.regex_match(<builtin>:0)\n\tat <starlark>._regex_match(/virtual_builtins_bzl/common/python/py_internal.bzl:77)\n\tat <starlark>.<toplevel>(/home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/error.bzl:2)\nCaused by: java.lang.IllegalArgumentException: IllegalArgumentException (argument type mismatch) in Starlark call of public boolean com.google.devtools.build.lib.rules.python.PyBuiltins.regexMatch(java.lang.String,java.lang.String), obj=<unknown object com.google.devtools.build.lib.bazel.rules.python.BazelPyBuiltins> (py_builtins), args=[\"a\" (string), <unbound> (unbound)]\n\tat net.starlark.java.eval.MethodDescriptor.call(MethodDescriptor.java:280)\n\tat net.starlark.java.eval.BuiltinFunction$ArgumentProcessor.call(BuiltinFunction.java:446)\n\tat net.starlark.java.eval.Starlark.callViaArgumentProcessor(Starlark.java:844)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:765)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execReturn(Eval.java:282)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:321)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Eval.evalPositionalOnlyCall(Eval.java:790)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:707)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execAssignment(Eval.java:121)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:301)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Starlark.execFileProgram(Starlark.java:1164)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.execAndExport(BzlLoadFunction.java:1436)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.executeBzlFile(BzlLoadFunction.java:1410)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.computeInternalWithCompiledBzl(BzlLoadFunction.java:913)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.computeInternal(BzlLoadFunction.java:580)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.compute(BzlLoadFunction.java:204)\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:471)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\n"
+    },
+    "invalid_class": {
+      "expression": "f(\"a\", \"[\")",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 37,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nFATAL: bazel crashed due to an internal error. Printing stack trace:\njava.lang.RuntimeException: Unrecoverable error while evaluating node 'KeyForBuild{label=//tools/build_defs/python:error.bzl, isBuildPrelude=false}' (requested by nodes 'errors')\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:552)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\nCaused by: net.starlark.java.eval.Starlark$UncheckedEvalException: PatternSyntaxException thrown during Starlark evaluation\n\tat <starlark>.regex_match(<builtin>:0)\n\tat <starlark>._regex_match(/virtual_builtins_bzl/common/python/py_internal.bzl:77)\n\tat <starlark>.<toplevel>(/home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/error.bzl:2)\nCaused by: java.util.regex.PatternSyntaxException: Unclosed character class near index 0\n[\n^\n\tat java.base/java.util.regex.Pattern.error(Unknown Source)\n\tat java.base/java.util.regex.Pattern.clazz(Unknown Source)\n\tat java.base/java.util.regex.Pattern.sequence(Unknown Source)\n\tat java.base/java.util.regex.Pattern.expr(Unknown Source)\n\tat java.base/java.util.regex.Pattern.compile(Unknown Source)\n\tat java.base/java.util.regex.Pattern.<init>(Unknown Source)\n\tat java.base/java.util.regex.Pattern.compile(Unknown Source)\n\tat java.base/java.util.regex.Pattern.matches(Unknown Source)\n\tat java.base/java.lang.String.matches(Unknown Source)\n\tat com.google.devtools.build.lib.rules.python.PyBuiltins.regexMatch(PyBuiltins.java:99)\n\tat java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(Unknown Source)\n\tat java.base/java.lang.reflect.Method.invoke(Unknown Source)\n\tat net.starlark.java.eval.MethodDescriptor.call(MethodDescriptor.java:261)\n\tat net.starlark.java.eval.BuiltinFunction$ArgumentProcessor.call(BuiltinFunction.java:446)\n\tat net.starlark.java.eval.Starlark.callViaArgumentProcessor(Starlark.java:844)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:765)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execReturn(Eval.java:282)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:321)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Eval.evalPositionalOnlyCall(Eval.java:790)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:707)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execAssignment(Eval.java:121)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:301)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Starlark.execFileProgram(Starlark.java:1164)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.execAndExport(BzlLoadFunction.java:1436)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.executeBzlFile(BzlLoadFunction.java:1410)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.computeInternalWithCompiledBzl(BzlLoadFunction.java:913)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.computeInternal(BzlLoadFunction.java:580)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.compute(BzlLoadFunction.java:204)\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:471)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\n"
+    },
+    "invalid_group": {
+      "expression": "f(\"a\", \"(\")",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 37,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nFATAL: bazel crashed due to an internal error. Printing stack trace:\njava.lang.RuntimeException: Unrecoverable error while evaluating node 'KeyForBuild{label=//tools/build_defs/python:error.bzl, isBuildPrelude=false}' (requested by nodes 'errors')\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:552)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\nCaused by: net.starlark.java.eval.Starlark$UncheckedEvalException: PatternSyntaxException thrown during Starlark evaluation\n\tat <starlark>.regex_match(<builtin>:0)\n\tat <starlark>._regex_match(/virtual_builtins_bzl/common/python/py_internal.bzl:77)\n\tat <starlark>.<toplevel>(/home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/error.bzl:2)\nCaused by: java.util.regex.PatternSyntaxException: Unclosed group near index 1\n(\n\tat java.base/java.util.regex.Pattern.error(Unknown Source)\n\tat java.base/java.util.regex.Pattern.accept(Unknown Source)\n\tat java.base/java.util.regex.Pattern.group0(Unknown Source)\n\tat java.base/java.util.regex.Pattern.sequence(Unknown Source)\n\tat java.base/java.util.regex.Pattern.expr(Unknown Source)\n\tat java.base/java.util.regex.Pattern.compile(Unknown Source)\n\tat java.base/java.util.regex.Pattern.<init>(Unknown Source)\n\tat java.base/java.util.regex.Pattern.compile(Unknown Source)\n\tat java.base/java.util.regex.Pattern.matches(Unknown Source)\n\tat java.base/java.lang.String.matches(Unknown Source)\n\tat com.google.devtools.build.lib.rules.python.PyBuiltins.regexMatch(PyBuiltins.java:99)\n\tat java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(Unknown Source)\n\tat java.base/java.lang.reflect.Method.invoke(Unknown Source)\n\tat net.starlark.java.eval.MethodDescriptor.call(MethodDescriptor.java:261)\n\tat net.starlark.java.eval.BuiltinFunction$ArgumentProcessor.call(BuiltinFunction.java:446)\n\tat net.starlark.java.eval.Starlark.callViaArgumentProcessor(Starlark.java:844)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:765)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execReturn(Eval.java:282)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:321)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Eval.evalPositionalOnlyCall(Eval.java:790)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:707)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execAssignment(Eval.java:121)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:301)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Starlark.execFileProgram(Starlark.java:1164)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.execAndExport(BzlLoadFunction.java:1436)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.executeBzlFile(BzlLoadFunction.java:1410)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.computeInternalWithCompiledBzl(BzlLoadFunction.java:913)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.computeInternal(BzlLoadFunction.java:580)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.compute(BzlLoadFunction.java:204)\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:471)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\n"
+    },
+    "invalid_range": {
+      "expression": "f(\"a\", \"[z-a]\")",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 37,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nFATAL: bazel crashed due to an internal error. Printing stack trace:\njava.lang.RuntimeException: Unrecoverable error while evaluating node 'KeyForBuild{label=//tools/build_defs/python:error.bzl, isBuildPrelude=false}' (requested by nodes 'errors')\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:552)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\nCaused by: net.starlark.java.eval.Starlark$UncheckedEvalException: PatternSyntaxException thrown during Starlark evaluation\n\tat <starlark>.regex_match(<builtin>:0)\n\tat <starlark>._regex_match(/virtual_builtins_bzl/common/python/py_internal.bzl:77)\n\tat <starlark>.<toplevel>(/home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/error.bzl:2)\nCaused by: java.util.regex.PatternSyntaxException: Illegal character range near index 3\n[z-a]\n   ^\n\tat java.base/java.util.regex.Pattern.error(Unknown Source)\n\tat java.base/java.util.regex.Pattern.range(Unknown Source)\n\tat java.base/java.util.regex.Pattern.clazz(Unknown Source)\n\tat java.base/java.util.regex.Pattern.sequence(Unknown Source)\n\tat java.base/java.util.regex.Pattern.expr(Unknown Source)\n\tat java.base/java.util.regex.Pattern.compile(Unknown Source)\n\tat java.base/java.util.regex.Pattern.<init>(Unknown Source)\n\tat java.base/java.util.regex.Pattern.compile(Unknown Source)\n\tat java.base/java.util.regex.Pattern.matches(Unknown Source)\n\tat java.base/java.lang.String.matches(Unknown Source)\n\tat com.google.devtools.build.lib.rules.python.PyBuiltins.regexMatch(PyBuiltins.java:99)\n\tat java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(Unknown Source)\n\tat java.base/java.lang.reflect.Method.invoke(Unknown Source)\n\tat net.starlark.java.eval.MethodDescriptor.call(MethodDescriptor.java:261)\n\tat net.starlark.java.eval.BuiltinFunction$ArgumentProcessor.call(BuiltinFunction.java:446)\n\tat net.starlark.java.eval.Starlark.callViaArgumentProcessor(Starlark.java:844)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:765)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execReturn(Eval.java:282)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:321)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Eval.evalPositionalOnlyCall(Eval.java:790)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:707)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execAssignment(Eval.java:121)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:301)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Starlark.execFileProgram(Starlark.java:1164)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.execAndExport(BzlLoadFunction.java:1436)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.executeBzlFile(BzlLoadFunction.java:1410)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.computeInternalWithCompiledBzl(BzlLoadFunction.java:913)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.computeInternal(BzlLoadFunction.java:580)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.compute(BzlLoadFunction.java:204)\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:471)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\n"
+    },
+    "invalid_repeat": {
+      "expression": "f(\"a\", \"a**\")",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 37,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nFATAL: bazel crashed due to an internal error. Printing stack trace:\njava.lang.RuntimeException: Unrecoverable error while evaluating node 'KeyForBuild{label=//tools/build_defs/python:error.bzl, isBuildPrelude=false}' (requested by nodes 'errors')\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:552)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\nCaused by: net.starlark.java.eval.Starlark$UncheckedEvalException: PatternSyntaxException thrown during Starlark evaluation\n\tat <starlark>.regex_match(<builtin>:0)\n\tat <starlark>._regex_match(/virtual_builtins_bzl/common/python/py_internal.bzl:77)\n\tat <starlark>.<toplevel>(/home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/error.bzl:2)\nCaused by: java.util.regex.PatternSyntaxException: Dangling meta character '*' near index 2\na**\n  ^\n\tat java.base/java.util.regex.Pattern.error(Unknown Source)\n\tat java.base/java.util.regex.Pattern.sequence(Unknown Source)\n\tat java.base/java.util.regex.Pattern.expr(Unknown Source)\n\tat java.base/java.util.regex.Pattern.compile(Unknown Source)\n\tat java.base/java.util.regex.Pattern.<init>(Unknown Source)\n\tat java.base/java.util.regex.Pattern.compile(Unknown Source)\n\tat java.base/java.util.regex.Pattern.matches(Unknown Source)\n\tat java.base/java.lang.String.matches(Unknown Source)\n\tat com.google.devtools.build.lib.rules.python.PyBuiltins.regexMatch(PyBuiltins.java:99)\n\tat java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(Unknown Source)\n\tat java.base/java.lang.reflect.Method.invoke(Unknown Source)\n\tat net.starlark.java.eval.MethodDescriptor.call(MethodDescriptor.java:261)\n\tat net.starlark.java.eval.BuiltinFunction$ArgumentProcessor.call(BuiltinFunction.java:446)\n\tat net.starlark.java.eval.Starlark.callViaArgumentProcessor(Starlark.java:844)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:765)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execReturn(Eval.java:282)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:321)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Eval.evalPositionalOnlyCall(Eval.java:790)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:707)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execAssignment(Eval.java:121)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:301)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Starlark.execFileProgram(Starlark.java:1164)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.execAndExport(BzlLoadFunction.java:1436)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.executeBzlFile(BzlLoadFunction.java:1410)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.computeInternalWithCompiledBzl(BzlLoadFunction.java:913)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.computeInternal(BzlLoadFunction.java:580)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.compute(BzlLoadFunction.java:204)\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:471)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\n"
+    },
+    "invalid_escape": {
+      "expression": "f(\"a\", \"\\\\q\")",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 37,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nFATAL: bazel crashed due to an internal error. Printing stack trace:\njava.lang.RuntimeException: Unrecoverable error while evaluating node 'KeyForBuild{label=//tools/build_defs/python:error.bzl, isBuildPrelude=false}' (requested by nodes 'errors')\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:552)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\nCaused by: net.starlark.java.eval.Starlark$UncheckedEvalException: PatternSyntaxException thrown during Starlark evaluation\n\tat <starlark>.regex_match(<builtin>:0)\n\tat <starlark>._regex_match(/virtual_builtins_bzl/common/python/py_internal.bzl:77)\n\tat <starlark>.<toplevel>(/home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/error.bzl:2)\nCaused by: java.util.regex.PatternSyntaxException: Illegal/unsupported escape sequence near index 1\n\\q\n ^\n\tat java.base/java.util.regex.Pattern.error(Unknown Source)\n\tat java.base/java.util.regex.Pattern.escape(Unknown Source)\n\tat java.base/java.util.regex.Pattern.atom(Unknown Source)\n\tat java.base/java.util.regex.Pattern.sequence(Unknown Source)\n\tat java.base/java.util.regex.Pattern.expr(Unknown Source)\n\tat java.base/java.util.regex.Pattern.compile(Unknown Source)\n\tat java.base/java.util.regex.Pattern.<init>(Unknown Source)\n\tat java.base/java.util.regex.Pattern.compile(Unknown Source)\n\tat java.base/java.util.regex.Pattern.matches(Unknown Source)\n\tat java.base/java.lang.String.matches(Unknown Source)\n\tat com.google.devtools.build.lib.rules.python.PyBuiltins.regexMatch(PyBuiltins.java:99)\n\tat java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(Unknown Source)\n\tat java.base/java.lang.reflect.Method.invoke(Unknown Source)\n\tat net.starlark.java.eval.MethodDescriptor.call(MethodDescriptor.java:261)\n\tat net.starlark.java.eval.BuiltinFunction$ArgumentProcessor.call(BuiltinFunction.java:446)\n\tat net.starlark.java.eval.Starlark.callViaArgumentProcessor(Starlark.java:844)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:765)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execReturn(Eval.java:282)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:321)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Eval.evalPositionalOnlyCall(Eval.java:790)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:707)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execAssignment(Eval.java:121)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:301)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Starlark.execFileProgram(Starlark.java:1164)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.execAndExport(BzlLoadFunction.java:1436)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.executeBzlFile(BzlLoadFunction.java:1410)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.computeInternalWithCompiledBzl(BzlLoadFunction.java:913)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.computeInternal(BzlLoadFunction.java:580)\n\tat com.google.devtools.build.lib.skyframe.BzlLoadFunction.compute(BzlLoadFunction.java:204)\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:471)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\n"
+    },
+    "build_direct": {
+      "expression": "py_internal.regex_match(\"a\", \"a\")",
+      "argv": [
+        "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+        "--batch",
+        "--ignore_all_rc_files",
+        "--host_jvm_args=-Xmx768m",
+        "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+        "query",
+        "//errors:x",
+        "--lockfile_mode=off",
+        "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+        "--color=no",
+        "--curses=no",
+        "--noshow_progress"
+      ],
+      "exit": 7,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: /home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/errors/BUILD.bazel:1:5: name 'py_internal' is not defined\nERROR: no such target '//errors:x': target 'x' not declared in package 'errors' defined by /home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/errors/BUILD.bazel\n"
+    }
+  },
+  "build_output": "False\nFalse\nTrue\nTrue\nTrue\nTrue\nTrue\nTrue\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nTrue\nTrue\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nTrue\nTrue\nTrue\nTrue\nTrue\nTrue\nTrue\nTrue\nTrue\nTrue\nTrue\nTrue\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nTrue\nTrue\nTrue\nFalse\nTrue\nTrue\nFalse\nTrue\nTrue\nFalse\nTrue\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nTrue\nTrue\nFalse\nFalse\nFalse\nTrue\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nFalse\nTrue\nFalse\nTrue\nFalse\nFalse\nTrue\nFalse\nTrue\nTrue\nTrue\nTrue\nTrue\n",
+  "repo_output": "ansible\n_vendor\n9pkg\n",
+  "matrix_capture": {
+    "argv": [
+      "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+      "--batch",
+      "--ignore_all_rc_files",
+      "--host_jvm_args=-Xmx768m",
+      "--output_user_root=/home/coder/opencodetmp/py-regex-match/scratch/genuine-output",
+      "query",
+      "//oracle:x",
+      "--lockfile_mode=off",
+      "--repository_cache=/home/coder/opencodetmp/py-regex-match/scratch/genuine-repo-cache",
+      "--color=no",
+      "--curses=no",
+      "--noshow_progress"
+    ],
+    "exit": 0,
+    "stdout": "//oracle:x\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nDEBUG: /home/coder/opencodetmp/py-regex-match/scratch/genuine-workspace/tools/build_defs/python/oracle.bzl:4:6: REGEX_MATRIX=[False, False, True, True, True, True, True, True, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, True, True, False, False, False, False, False, False, False, False, True, True, True, True, True, True, True, True, True, True, True, True, False, False, False, False, False, False, False, False, False, False, False, False, False, False, False, True, True, True, False, True, True, False, True, True, False, True, False, False, False, False, False, False, False, False, True, True, False, False, False, True, False, False, False, False, False, False, False, True, False, True, False, False, True, False, True, True, True, True, True, True, False, True, True, True, True, True]\n"
+  },
+  "java_unicode_capture": {
+    "java": "/home/coder/opencodetmp/py-regex-match/scratch/genuine-output/install/bf018ed227128835327c556cff5c0ff0/embedded_tools/jdk/bin/java",
+    "sha256": "89686531da3a4b84b66ced22d0642c930bc113a8ba70453bdffa452faa14eedf",
+    "release": "JAVA_VERSION=\"25.0.2\"\nMODULES=\"java.base java.compiler java.instrument java.logging java.management java.security.sasl java.naming java.transaction.xa java.xml java.sql jdk.crypto.ec jdk.management jdk.net jdk.unsupported\"\n",
+    "source": "import java.util.Base64;\nimport java.nio.charset.StandardCharsets;\npublic class RegexOracle {\nstatic String s(String x) { return new String(Base64.getDecoder().decode(x), StandardCharsets.UTF_8); }\npublic static void main(String[] args) {\nSystem.out.println(s(\"\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"YWJj\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"YWJj\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"YV9iOQ==\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"YV9iOQ==\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"OWFiYw==\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"OWFiYw==\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"LQ==\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"LQ==\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"YS1i\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"YS1i\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"YS5i\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"YS5i\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"bmFtZS5kaXN0LWluZm8=\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"bmFtZS5kaXN0LWluZm8=\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"w6k=\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"w6k=\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"5Lit5paH\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"5Lit5paH\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"8JCQgA==\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"8JCQgA==\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"8J+YgA==\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"8J+YgA==\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"ZcyB\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"ZcyB\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"zIE=\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"zIE=\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"4oCM\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"4oCM\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"4oCN\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"4oCN\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"YeKAjGI=\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"YeKAjGI=\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"2aE=\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"2aE=\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"77yZ\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"77yZ\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"4oC/\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"4oC/\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"4oSY\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"4oSY\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"4bKJ\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"4bKJ\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"8JG8gg==\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"8JG8gg==\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"8J6TkA==\").matches(s(\"XHcr\")));\nSystem.out.println(s(\"8J6TkA==\").matches(s(\"KD9VKVx3Kw==\")));\nSystem.out.println(s(\"OQ==\").matches(s(\"XGQr\")));\nSystem.out.println(s(\"OQ==\").matches(s(\"KD9VKVxkKw==\")));\nSystem.out.println(s(\"2aE=\").matches(s(\"XGQr\")));\nSystem.out.println(s(\"2aE=\").matches(s(\"KD9VKVxkKw==\")));\nSystem.out.println(s(\"77yZ\").matches(s(\"XGQr\")));\nSystem.out.println(s(\"77yZ\").matches(s(\"KD9VKVxkKw==\")));\nSystem.out.println(s(\"wrI=\").matches(s(\"XGQr\")));\nSystem.out.println(s(\"wrI=\").matches(s(\"KD9VKVxkKw==\")));\nSystem.out.println(s(\"8J2fmA==\").matches(s(\"XGQr\")));\nSystem.out.println(s(\"8J2fmA==\").matches(s(\"KD9VKVxkKw==\")));\nSystem.out.println(s(\"IA==\").matches(s(\"XHM=\")));\nSystem.out.println(s(\"IA==\").matches(s(\"KD9VKVxz\")));\nSystem.out.println(s(\"CQ==\").matches(s(\"XHM=\")));\nSystem.out.println(s(\"CQ==\").matches(s(\"KD9VKVxz\")));\nSystem.out.println(s(\"Cg==\").matches(s(\"XHM=\")));\nSystem.out.println(s(\"Cg==\").matches(s(\"KD9VKVxz\")));\nSystem.out.println(s(\"DQ==\").matches(s(\"XHM=\")));\nSystem.out.println(s(\"DQ==\").matches(s(\"KD9VKVxz\")));\nSystem.out.println(s(\"Cw==\").matches(s(\"XHM=\")));\nSystem.out.println(s(\"Cw==\").matches(s(\"KD9VKVxz\")));\nSystem.out.println(s(\"DA==\").matches(s(\"XHM=\")));\nSystem.out.println(s(\"DA==\").matches(s(\"KD9VKVxz\")));\nSystem.out.println(s(\"woU=\").matches(s(\"XHM=\")));\nSystem.out.println(s(\"woU=\").matches(s(\"KD9VKVxz\")));\nSystem.out.println(s(\"wqA=\").matches(s(\"XHM=\")));\nSystem.out.println(s(\"wqA=\").matches(s(\"KD9VKVxz\")));\nSystem.out.println(s(\"4oCo\").matches(s(\"XHM=\")));\nSystem.out.println(s(\"4oCo\").matches(s(\"KD9VKVxz\")));\nSystem.out.println(s(\"4oCp\").matches(s(\"XHM=\")));\nSystem.out.println(s(\"4oCp\").matches(s(\"KD9VKVxz\")));\nSystem.out.println(s(\"4oCH\").matches(s(\"XHM=\")));\nSystem.out.println(s(\"4oCH\").matches(s(\"KD9VKVxz\")));\nSystem.out.println(s(\"4oCv\").matches(s(\"XHM=\")));\nSystem.out.println(s(\"4oCv\").matches(s(\"KD9VKVxz\")));\nSystem.out.println(s(\"4oCL\").matches(s(\"XHM=\")));\nSystem.out.println(s(\"4oCL\").matches(s(\"KD9VKVxz\")));\nSystem.out.println(s(\"YWJj\").matches(s(\"Yg==\")));\nSystem.out.println(s(\"YWI=\").matches(s(\"YXxhYg==\")));\nSystem.out.println(s(\"YWI=\").matches(s(\"KGF8YWIp\")));\nSystem.out.println(s(\"\").matches(s(\"\")));\nSystem.out.println(s(\"YQ==\").matches(s(\"\")));\nSystem.out.println(s(\"\").matches(s(\"YSo=\")));\nSystem.out.println(s(\"\").matches(s(\"XiQ=\")));\nSystem.out.println(s(\"YQo=\").matches(s(\"YSQ=\")));\nSystem.out.println(s(\"YQo=\").matches(s(\"YSQK\")));\nSystem.out.println(s(\"YQ0K\").matches(s(\"YSQNCg==\")));\nSystem.out.println(s(\"YQ0K\").matches(s(\"YQ0kCg==\")));\nSystem.out.println(s(\"YQ0=\").matches(s(\"YSQN\")));\nSystem.out.println(s(\"YcKF\").matches(s(\"YSTChQ==\")));\nSystem.out.println(s(\"YeKAqA==\").matches(s(\"YSTigKg=\")));\nSystem.out.println(s(\"Cg==\").matches(s(\"Lg==\")));\nSystem.out.println(s(\"DQ==\").matches(s(\"Lg==\")));\nSystem.out.println(s(\"woU=\").matches(s(\"Lg==\")));\nSystem.out.println(s(\"4oCo\").matches(s(\"Lg==\")));\nSystem.out.println(s(\"4oCp\").matches(s(\"Lg==\")));\nSystem.out.println(s(\"8J+YgA==\").matches(s(\"Lg==\")));\nSystem.out.println(s(\"Cg==\").matches(s(\"KD9zKS4=\")));\nSystem.out.println(s(\"DQ==\").matches(s(\"KD9kKS4=\")));\nSystem.out.println(s(\"Cg==\").matches(s(\"KD9kKS4=\")));\nSystem.out.println(s(\"woU=\").matches(s(\"KD9kKS4=\")));\nSystem.out.println(s(\"YQ0=\").matches(s(\"KD9kKWEkDQ==\")));\nSystem.out.println(s(\"YQ0K\").matches(s(\"KD9kKWENJAo=\")));\nSystem.out.println(s(\"w6lh\").matches(s(\"KD9VKVx3KD8tVSlcdw==\")));\nSystem.out.println(s(\"w6nDqQ==\").matches(s(\"KD9VKVx3KD8tVSlcdw==\")));\nSystem.out.println(s(\"w6lh\").matches(s(\"KD9VOlx3KVx3\")));\nSystem.out.println(s(\"w6nDqQ==\").matches(s(\"KD9VOlx3KVx3\")));\nSystem.out.println(s(\"w6k=\").matches(s(\"KD91KVx3\")));\nSystem.out.println(s(\"w6k=\").matches(s(\"KD9VLXUpXHc=\")));\nSystem.out.println(s(\"w6k=\").matches(s(\"KD9VLXU6XHcp\")));\nSystem.out.println(s(\"YV85\").matches(s(\"W2Etel8wLTldKw==\")));\nSystem.out.println(s(\"w6lf\").matches(s(\"KD9VKVtcd10r\")));\nSystem.out.println(s(\"IQ==\").matches(s(\"XFc=\")));\nSystem.out.println(s(\"w6k=\").matches(s(\"XFc=\")));\nSystem.out.println(s(\"w6k=\").matches(s(\"KD9VKVxX\")));\nSystem.out.println(s(\"YS5iWzBd\").matches(s(\"XFFhLmJbMF1cRQ==\")));\nSystem.out.println(s(\"w6k=\").matches(s(\"XHh7ZTl9\")));\nSystem.out.println(s(\"YQ==\").matches(s(\"XHUwMDYx\")));\nSystem.out.println(s(\"YWJiYg==\").matches(s(\"YWJ7Miw0fT8=\")));\nSystem.out.println(s(\"YQpi\").matches(s(\"KD9zOmEuYik=\")));\nSystem.out.println(s(\"YWI=\").matches(s(\"KGEpKD86Yik=\")));\nSystem.out.println(s(\"Cg==\").matches(s(\"W15cd10=\")));\nSystem.out.println(s(\"YQpi\").matches(s(\"KD9tKV5hJApi\")));\nSystem.out.println(s(\"w4k=\").matches(s(\"KD9pdSnDqQ==\")));\nSystem.out.println(s(\"YQ==\").matches(s(\"KD9pKUE=\")));\nSystem.out.println(s(\"YWI=\").matches(s(\"KD94KSBhIGI=\")));\nSystem.out.println(s(\"YWE=\").matches(s(\"KGEpXDE=\")));\nSystem.out.println(s(\"YQ==\").matches(s(\"KD89YSlh\")));\nSystem.out.println(s(\"YWE=\").matches(s(\"YSsr\")));\n}\n}\n",
+    "stdout": "false\nfalse\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\nfalse\nfalse\nfalse\nfalse\nfalse\nfalse\nfalse\nfalse\nfalse\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\nfalse\nfalse\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\nfalse\nfalse\ntrue\nfalse\ntrue\nfalse\ntrue\ntrue\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\nfalse\nfalse\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\ntrue\nfalse\nfalse\nfalse\ntrue\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\ntrue\nfalse\nfalse\nfalse\nfalse\nfalse\ntrue\ntrue\ntrue\nfalse\ntrue\nfalse\ntrue\ntrue\nfalse\ntrue\nfalse\nfalse\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\nfalse\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\n"
+  },
+  "fixture_files_sha256": {
+    "MODULE.bazel": "dce9b97ee9f142f2968232e730a0da5a61f101c225ea6ddda6d858d0757156d5",
+    "tools/build_defs/python/BUILD.bazel": "ba6156fa1d14228071a2c359309ab5a24ec51c1322429f4af059455459214ed0",
+    "tools/build_defs/python/cases.bzl": "2a875fee4f7c0586e3da34cc7919c13e1a69415bd72f0f1ee3e09edae1543966",
+    "tools/build_defs/python/defs.bzl": "abd3a482622c14fe911cf6ef8d47921a79668d0f36605358752b05dd74036e85"
+  }
+}

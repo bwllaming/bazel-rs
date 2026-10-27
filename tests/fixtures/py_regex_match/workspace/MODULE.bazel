@@ -1,0 +1,5 @@
+module(name = "py_regex_match")
+bazel_dep(name = "platforms", version = "1.0.0")
+local_path_override(module_name = "platforms", path = "platforms")
+namespace_repo = use_repo_rule("//tools/build_defs/python:defs.bzl", "namespace_repo")
+namespace_repo(name = "namespaces")
