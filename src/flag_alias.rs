@@ -29,6 +29,11 @@ pub(crate) fn normalize_module_label(raw: &str, own: &str, root: bool) -> Result
 /// later modules replace earlier definitions. Resolve using each owner's
 /// *full* mapping, including use_repo imports, not the root's mapping.
 pub fn module_aliases(repositories: &RepositorySet) -> Result<Aliases, String> {
+    // The native legacy WORKSPACE/REPO marker profile permits an absent
+    // MODULE. It has no module aliases; do not invent a graph demand.
+    if !crate::observed_fs::exists(repositories.main_root().join("MODULE.bazel")) {
+        return Ok(Aliases::new());
+    }
     let graph = repositories.resolve_graph()?;
     let mut result = Aliases::new();
     for (owner, module) in std::iter::once(("", &graph.root)).chain(

@@ -4415,7 +4415,12 @@ fn parse_command_option(
 }
 
 fn alias_candidate_error(error: &str) -> bool {
-    error.contains(" :: Unrecognized option: ") || error.starts_with("unsupported option ")
+    // Only unrecognized/unmodelled *names* can be supplied by an alias.
+    // Never defer an implemented option's rejected value/profile: execution
+    // options may be absent from snapshot keys and a hit must not hide errors.
+    error.contains(" :: Unrecognized option: ")
+        || error.starts_with("unsupported option \"")
+            && error.contains("options are never silently ignored")
 }
 
 /// Explicit --flag_alias already affects the first parsing round. In

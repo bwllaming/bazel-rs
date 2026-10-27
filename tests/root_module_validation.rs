@@ -435,10 +435,6 @@ fn root_module_cli_argument_errors_and_metadata_commands_precede_recording() {
             vec!["query", "--unsupported-root-module-option"],
             "--unsupported-root-module-option :: Unrecognized option: --unsupported-root-module-option",
         ),
-        (
-            vec!["build", "--unsupported-root-module-option", "//app:check"],
-            "--unsupported-root-module-option :: Unrecognized option: --unsupported-root-module-option",
-        ),
         (vec!["build", "--jobs=0", "//app:check"], "positive integer"),
     ] {
         let output = ws.run(&args);
@@ -447,6 +443,12 @@ fn root_module_cli_argument_errors_and_metadata_commands_precede_recording() {
         assert!(!stderr(&output).contains("MODULE.bazel"));
         ws.not_loaded(&output);
     }
+    // An unknown build option may be a MODULE alias. Like the genuine
+    // dispatcher's second parsing round, module resolution precedes its error.
+    let alias_candidate = ws.run(&["build", "--unsupported-root-module-option", "//app:check"]);
+    rejected(&alias_candidate, "Floor division by zero");
+    assert!(stderr(&alias_candidate).contains("G_ROOT_ONCE"));
+    ws.not_loaded(&alias_candidate);
     // QueryOptionHelper.java:61-68, before any loading: readQuery's
     // "missing query expression" is the command's failure detail without an
     // event, exit 2 and nothing on stderr (genuine Bazel 9.3,

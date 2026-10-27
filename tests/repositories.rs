@@ -290,16 +290,16 @@ fn explicit_main_labels_and_missing_empty_alias_are_distinct() {
 }
 
 #[test]
-fn unused_module_resolution_remains_lazy_but_requested_failures_do_not_fallback() {
+fn loading_remains_lazy_but_analysis_resolves_aliases_from_unused_modules() {
     let fixture = Fixture::new();
     fixture.file(
         "MODULE.bazel",
         "module(name='main_module')\nbazel_dep(name='not_downloaded',version='1')\n",
     );
-    assert_eq!(
-        fs::read(&files(&fixture.run(&["build", "//p:files"]))[0].1).unwrap(),
-        b"main"
-    );
+    assert!(fixture.run(&["query", "//p:files"]).status.success());
+    let build = fixture.run(&["build", "//p:files"]);
+    assert!(!build.status.success());
+    assert!(String::from_utf8_lossy(&build.stderr).contains("not_downloaded"));
     assert!(
         !fixture
             .run(&["query", "@not_downloaded//p:all"])
