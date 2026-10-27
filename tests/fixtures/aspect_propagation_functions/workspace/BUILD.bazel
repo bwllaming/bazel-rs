@@ -1,0 +1,15 @@
+load(":defs.bzl", "lib", "top")
+
+lib(name = "t")
+
+lib(name = "leaf")
+
+lib(name = "skipped", tags = ["skip"], deps = [":leaf"])
+
+lib(name = "stopper", s = "stop", deps = [":leaf"])
+
+lib(name = "x", deps = [":leaf"])
+
+lib(name = "mid", deps = [":leaf", ":skipped", ":stopper"], extra = [":x"], tool = ":t", s = "go")
+
+top(name = "top", deps = [":mid"])

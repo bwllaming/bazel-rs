@@ -11,19 +11,53 @@ native-only boundaries fail loudly, never silently.
 `aspect()` (N33) keeps Bazel's parameter names, validation and errors at
 load. At application, the native profile supports: `implementation`
 (called as `f(target, ctx)`, `StarlarkAspectFactory.create`),
-`attr_aspects` (a fixed list), `attrs` (implicit `_`-attributes and
+`attr_aspects` (a fixed list or a function), `propagation_predicate`
+(see "Propagation functions"), `attrs` (implicit `_`-attributes and
 parameter attributes), `required_providers`, `required_aspect_providers`,
 `provides`, `requires`, `apply_to_generating_rules`, `mandatory_providers`
 wording, `toolchains`, `exec_compatible_with`, `exec_groups`, `fragments`
 (and `host_fragments`, which Bazel 9.3 ignores) — see "Aspect toolchains,
 exec groups and fragments". Aspect-declared features whose application is
 not modelled fail explicitly when the aspect applies (never a silent
-no-op): a function `attr_aspects`/`toolchains_aspects` or a propagation
-predicate, non-empty `toolchains_aspects` and `subrules`:
+no-op): a function or non-empty `toolchains_aspects` and `subrules`:
 
 ```
 aspect //:gaps.bzl%toolchains_aspect declares toolchains_aspects: not analyzed by the native profile
 ```
+
+## Propagation functions
+
+A function `attr_aspects` and the `propagation_predicate`
+(crate::aspect_propagation; AspectPropagationEdgesSupplier,
+AspectPropagationPredicate, StarlarkAspectPropagationContext) are called
+with a `propagation_ctx`: `ctx.attr` is a struct of the aspect's public
+parameters (AspectParameters: every parameter of a top-level aspect, the
+rule-extracted ones of an attribute's aspect); `ctx.rule`
+(`StarlarkAspectPropagationRule`) has `label`, `qualified_kind`
+(`QualifiedRuleKind`: `file_label`, the `.bzl` that defined the rule class,
+and `rule_name`) and `attr`, whose fields are `RuleAttribute`s (`value`,
+`is_tool` = an exec-transitioned attribute). For the edge function
+`ctx.rule.attr` holds every attribute of the configured (select-resolved)
+target, label attributes as Labels
+(convertAttributeValueForAspectPropagationFunc); for the predicate only
+`tags` (`Only rule's "tags" are available in propagation_predicate
+function.`).
+
+- The edge function runs per configured target the aspect applies to
+  (AspectResolutionHelpers.computeAttributeAspects in DependencyMapProducer;
+  `Engine::with_computed_attr_aspects`, memoized per (target, descriptor),
+  so its `print()`s appear once) and its list names the attributes the
+  aspect propagates along from THAT target (`'*'` is rejected:
+  `'*' is not allowed in 'attr_aspects' list`; a non-list `Expected a
+  list`; both at the target's location).
+- The predicate runs in computeAspectCollection for each aspect the target
+  admits (required providers, or required by a kept aspect), also for a
+  top-level target: `False` drops the aspect there (a top-level target
+  then gets no application); a non-boolean is `Expected a boolean`.
+  Memoized per (label, descriptor).
+
+Paired capture tests/fixtures/aspect_propagation_functions (genuine.txt;
+tests/aspects.rs `aspect_propagation_functions`).
 
 ## Application and propagation
 
@@ -367,8 +401,7 @@ identity unchanged, and depset snapshots taken from either agree.
 
 ## Native-only boundaries (explicit failures, documented)
 
-- function `attr_aspects`/`toolchains_aspects`, propagation predicates;
-  non-empty `toolchains_aspects`;
+- function or non-empty `toolchains_aspects`;
 - aspect `subrules` at application;
 - parameter values of `--aspects_parameters` are string/bool/int/string-list
   typed by the attribute (AspectParameters); other types are rejected at

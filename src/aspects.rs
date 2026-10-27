@@ -54,6 +54,11 @@ pub(crate) struct AspectDefinition {
     /// two applications (an attribute's aspect with its rule's parameters
     /// and the same aspect from `--aspects`), equal descriptors one.
     pub descriptor: String,
+    /// A function `attr_aspects` evaluated over the target this definition
+    /// is applied to (crate::aspect_propagation::computed_attr_aspects,
+    /// AspectResolutionHelpers.computeAttributeAspects): the attribute
+    /// names it propagates along there. `None` for a fixed list.
+    pub computed_attr_aspects: Option<Arc<[String]>>,
 }
 
 /// Whether `name`/`spec` is one of the aspect's parameter attributes: a
@@ -460,8 +465,13 @@ pub(crate) fn propagating_over_aspect_attribute(
 /// AspectDefinition.getAttributeAspects: the aspect propagates along every
 /// attribute (`'*'`) or the named one.
 fn propagates_along(aspect: &AspectDefinition, attribute: &str) -> bool {
+    if let Some(names) = &aspect.computed_attr_aspects {
+        // A function's list (never `'*'`, parseAttrAspects allowAll=false).
+        return names.iter().any(|name| name == attribute);
+    }
     match &aspect.declaration.attr_aspects {
-        None => false, // A function: rejected before, at application.
+        // A function not evaluated over this target propagates nowhere.
+        None => false,
         Some(names) => names.iter().any(|name| name == "*" || name == attribute),
     }
 }
@@ -473,13 +483,18 @@ fn propagates_along(aspect: &AspectDefinition, attribute: &str) -> bool {
 pub(crate) fn aspect_collection(
     mut aspects: Vec<Arc<AspectDefinition>>,
     rule: &Rule,
+    predicate: &mut dyn FnMut(&AspectDefinition) -> Result<bool, String>,
 ) -> Result<AspectCollection, String> {
     // computeAspectCollection (AspectResolutionHelpers.java:140-170): from
     // the end of the path, keep the aspect if the target satisfies its
-    // required providers or a kept aspect requires it; then reverse.
+    // required providers or a kept aspect requires it, and its
+    // propagation_predicate accepts the target
+    // (evaluatePropagationPredicate); then reverse.
     let mut kept: Vec<Arc<AspectDefinition>> = Vec::new();
     for aspect in aspects.iter().rev() {
-        if aspect.applies_to_rule(rule) || kept.iter().any(|other| other.requires(aspect)) {
+        if (aspect.applies_to_rule(rule) || kept.iter().any(|other| other.requires(aspect)))
+            && predicate(aspect)?
+        {
             kept.push(aspect.clone());
         }
     }

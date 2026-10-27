@@ -1,0 +1,29 @@
+# Genuine Bazel 9.3.0, a fresh server per command (`--noshow_progress --curses=no --color=no`):
+# the sorted, deduplicated `print()` texts (DEBUG lines without their `DEBUG: <WS>/defs.bzl:L:C: `
+# lead) or, for a failing command, `ERROR <genuine error text>`.
+### build //:top
+A mid extra
+A x extra
+F //:mid //:defs.bzl lib mode=extra deps=[L(@@//:leaf),L(@@//:skipped),L(@@//:stopper)] deps_tool=False tool=L(@@//:t) tool_tool=True s="go" name="mid" tags=[] type=propagation_ctx StarlarkAspectPropagationRule
+F //:x //:defs.bzl lib mode=extra deps=[L(@@//:leaf)] deps_tool=False tool=None tool_tool=True s="" name="x" tags=[] type=propagation_ctx StarlarkAspectPropagationRule
+P //:mid lib tags=[] mode=extra has_deps=False
+P //:x lib tags=[] mode=extra has_deps=False
+### build --aspects=//:defs.bzl%fa //:mid
+A leaf deps
+A mid deps
+A stopper deps
+F //:leaf //:defs.bzl lib mode=deps deps=[] deps_tool=False tool=None tool_tool=True s="" name="leaf" tags=[] type=propagation_ctx StarlarkAspectPropagationRule
+F //:mid //:defs.bzl lib mode=deps deps=[L(@@//:leaf),L(@@//:skipped),L(@@//:stopper)] deps_tool=False tool=L(@@//:t) tool_tool=True s="go" name="mid" tags=[] type=propagation_ctx StarlarkAspectPropagationRule
+F //:stopper //:defs.bzl lib mode=deps deps=[L(@@//:leaf)] deps_tool=False tool=None tool_tool=True s="stop" name="stopper" tags=[] type=propagation_ctx StarlarkAspectPropagationRule
+P //:leaf lib tags=[] mode=deps has_deps=False
+P //:mid lib tags=[] mode=deps has_deps=False
+P //:skipped lib tags=["skip"] mode=deps has_deps=False
+P //:stopper lib tags=[] mode=deps has_deps=False
+### build --aspects=//:defs.bzl%fa //:skipped
+P //:skipped lib tags=["skip"] mode=deps has_deps=False
+### build --aspects=//:defs.bzl%bad_list //:mid
+ERROR BUILD.bazel:13:4: Expected a list
+### build --aspects=//:defs.bzl%bad_star //:mid
+ERROR BUILD.bazel:13:4: '*' is not allowed in 'attr_aspects' list
+### build --aspects=//:defs.bzl%bad_pred //:mid
+ERROR Expected a boolean

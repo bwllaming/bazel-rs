@@ -1916,24 +1916,13 @@ fn analyze_aspect_inner(
     let declaration = &aspect.declaration;
     let has_subrules = crate::rule_declarations::Aspect::from_value(aspect.value.value())
         .is_some_and(|value| !value.subrules.is_empty());
-    if declaration.attr_aspects.is_none()
-        || declaration
-            .toolchains_aspects
-            .as_ref()
-            .is_some_and(|aspects| !aspects.is_empty())
-        || has_subrules
-    {
+    let toolchains_aspects = declaration
+        .toolchains_aspects
+        .as_ref()
+        .is_none_or(|aspects| !aspects.is_empty());
+    if toolchains_aspects || has_subrules {
         let mut gaps = Vec::new();
-        if declaration.attr_aspects.is_none() {
-            gaps.push(
-                "a function attr_aspects/toolchains_aspects or a propagation predicate".to_owned(),
-            );
-        }
-        if declaration
-            .toolchains_aspects
-            .as_ref()
-            .is_some_and(|aspects| !aspects.is_empty())
-        {
+        if toolchains_aspects {
             gaps.push("toolchains_aspects".to_owned());
         }
         if has_subrules {

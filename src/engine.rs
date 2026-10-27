@@ -2000,6 +2000,12 @@ pub struct Engine {
     /// (Self::aspect_attribute_configurations) and read by its planning.
     aspect_attribute_configs:
         BTreeMap<(ConfiguredTargetKey, String), Arc<BTreeMap<String, TransitionConfigurations>>>,
+    /// The `propagation_predicate` result per (target label, aspect
+    /// descriptor) (it reads the label, rule class and tags only) and the
+    /// function `attr_aspects` list per (configured target, descriptor):
+    /// evaluated once, print()ing once (crate::aspect_propagation).
+    aspect_predicates: BTreeMap<(Label, String), bool>,
+    aspect_attr_aspects: BTreeMap<(ConfiguredTargetKey, String), Arc<[String]>>,
     /// The aspect's own toolchain contexts per (configuration, aspect
     /// identity) (Self::aspect_toolchain_contexts), resolved by phase 1
     /// and read by the application's planning.
@@ -2117,6 +2123,8 @@ impl Engine {
             aspect_parameters: BTreeMap::new(),
             configured_rules: BTreeMap::new(),
             aspect_attribute_configs: BTreeMap::new(),
+            aspect_predicates: BTreeMap::new(),
+            aspect_attr_aspects: BTreeMap::new(),
             aspect_toolchains: BTreeMap::new(),
             resolving_aspect_toolchains: false,
             tests_requested: false,
@@ -2466,6 +2474,7 @@ impl Engine {
                 parameters: BTreeMap::new(),
                 top_level: false,
                 descriptor: identity.to_owned(),
+                computed_attr_aspects: None,
             });
             return Ok(self.aspects.get(identity));
         }
@@ -2510,6 +2519,7 @@ impl Engine {
             parameters: BTreeMap::new(),
             top_level: false,
             descriptor: identity.to_owned(),
+            computed_attr_aspects: None,
         };
         self.aspects.insert(definition);
         Ok(self.aspects.get(identity))
@@ -4575,10 +4585,13 @@ impl Engine {
                 .unwrap_or(rule),
             _ => return Ok(Vec::new()),
         };
-        let collection = crate::aspects::aspect_collection(aspects, &base_rule)?;
+        let collection = self.aspect_collection_for(aspects, &base_rule)?;
         if collection.is_empty() {
             return Ok(Vec::new());
         }
+        // Function `attr_aspects` evaluated over this configured target
+        // (computeAttributeAspects, DependencyMapProducer.java:360-380).
+        let collection = self.with_computed_attr_aspects(collection, &base_key, &base_rule)?;
         let applications = self
             .cquery_capture
             .as_mut()
@@ -4816,6 +4829,65 @@ impl Engine {
             }
         }
         Ok(())
+    }
+
+    /// [`crate::aspects::aspect_collection`] with the aspects'
+    /// `propagation_predicate`s evaluated over `rule`
+    /// (evaluatePropagationPredicate), once per (label, descriptor).
+    fn aspect_collection_for(
+        &mut self,
+        aspects: Vec<std::sync::Arc<crate::aspects::AspectDefinition>>,
+        rule: &Rule,
+    ) -> Result<crate::aspects::AspectCollection, String> {
+        let predicates = &mut self.aspect_predicates;
+        crate::aspects::aspect_collection(aspects, rule, &mut |aspect| {
+            let memo = (rule.label.clone(), aspect.descriptor.clone());
+            if let Some(&result) = predicates.get(&memo) {
+                return Ok(result);
+            }
+            let result = crate::aspect_propagation::propagation_predicate(aspect, rule)?;
+            predicates.insert(memo, result);
+            Ok(result)
+        })
+    }
+
+    /// `collection` with each function `attr_aspects` evaluated over the
+    /// configured target `key` (`rule`, select-resolved): the aspect
+    /// definitions carry the list they propagate along from this target
+    /// (AspectResolutionHelpers.computeAttributeAspects); memoized per
+    /// (configured target, descriptor). An evaluation error fails at the
+    /// target (DependencyMapProducer.step: `e.getMessageWithStack()` at
+    /// the target's location).
+    fn with_computed_attr_aspects(
+        &mut self,
+        mut collection: crate::aspects::AspectCollection,
+        key: &ConfiguredTargetKey,
+        rule: &Rule,
+    ) -> Result<crate::aspects::AspectCollection, String> {
+        for (aspect, _) in &mut collection.used {
+            if aspect.declaration.attr_aspects.is_some() {
+                continue;
+            }
+            let memo = (key.clone(), aspect.descriptor.clone());
+            let names = match self.aspect_attr_aspects.get(&memo) {
+                Some(names) => names.clone(),
+                None => {
+                    let Some(names) =
+                        crate::aspect_propagation::computed_attr_aspects(aspect, rule)
+                            .map_err(|error| located(rule.location.as_deref(), error))?
+                    else {
+                        continue;
+                    };
+                    let names: Arc<[String]> = Arc::from(names);
+                    self.aspect_attr_aspects.insert(memo, names.clone());
+                    names
+                }
+            };
+            let mut definition = aspect.as_ref().clone();
+            definition.computed_attr_aspects = Some(names);
+            *aspect = std::sync::Arc::new(definition);
+        }
+        Ok(collection)
     }
 
     /// The aspect's OWN ToolchainCollection in configuration `config`
@@ -10961,7 +11033,9 @@ impl Engine {
                     aspect.identity, base_key.label
                 )
             })?;
-        let path = collection.path_aspects(&aspect.descriptor);
+        let path = self
+            .with_computed_attr_aspects(collection.clone(), base_key, &base_rule)?
+            .path_aspects(&aspect.descriptor);
         let (aspect_dependencies, aspect_split_dependencies) = self
             .plan_aspect_attribute_dependencies(
                 state,
@@ -11002,7 +11076,9 @@ impl Engine {
             });
         }
         let mut dependencies: BTreeMap<String, DependencyTarget> = BTreeMap::new();
-        let incoming: Vec<std::sync::Arc<crate::aspects::AspectDefinition>> = collection
+        let specialized =
+            self.with_computed_attr_aspects(collection.clone(), base_key, &base_rule)?;
+        let incoming: Vec<std::sync::Arc<crate::aspects::AspectDefinition>> = specialized
             .used
             .iter()
             .map(|(used, _)| used.clone())
@@ -11554,7 +11630,7 @@ impl Engine {
         let collection = if aspects.is_empty() {
             crate::aspects::AspectCollection::default()
         } else {
-            crate::aspects::aspect_collection(aspects.to_vec(), &rule)?
+            self.aspect_collection_for(aspects.to_vec(), &rule)?
         };
         if collection.is_empty() {
             let PlanState {
@@ -13790,6 +13866,8 @@ impl Engine {
         self.rule_delegations.clear();
         self.configured_rules.clear();
         self.aspect_attribute_configs.clear();
+        self.aspect_predicates.clear();
+        self.aspect_attr_aspects.clear();
         self.aspect_toolchains.clear();
         self.action_planning = Some(ActionPlanning::default());
         // BuildConfigurationKeyProducer resolves an explicit --platforms

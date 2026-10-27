@@ -929,9 +929,10 @@ fn genuine_sections(fixture: &str) -> Vec<(Vec<String>, Vec<String>)> {
 }
 
 /// Runs each genuine section of `fixture` under the built-in profile and
-/// compares the sorted prints starting with one of `markers`, or, for a
-/// section whose expectation is an `ERROR ` line, the failure text.
-fn compare_genuine_builtin(fixture: &str, markers: &[&str]) {
+/// compares the sorted (with `dedup`, deduplicated) prints starting with one
+/// of `markers`, or, for a section whose expectation is an `ERROR ` line,
+/// the failure text.
+fn compare_genuine_builtin(fixture: &str, markers: &[&str], dedup: bool) {
     for (arguments, expected) in genuine_sections(fixture) {
         let ws = Workspace::fixture(fixture);
         let (flags, targets): (Vec<&str>, Vec<&str>) = arguments
@@ -954,6 +955,9 @@ fn compare_genuine_builtin(fixture: &str, markers: &[&str]) {
             .map(str::to_owned)
             .collect();
         printed.sort();
+        if dedup {
+            printed.dedup();
+        }
         assert_eq!(printed, expected, "{arguments:?}: {text}");
     }
 }
@@ -966,5 +970,15 @@ fn compare_genuine_builtin(fixture: &str, markers: &[&str]) {
 /// aspect_base_attributes/genuine.txt).
 #[test]
 fn ctx_rule_attr_holds_base_aspect_attributes() {
-    compare_genuine_builtin("aspect_base_attributes", &["M ", "V "]);
+    compare_genuine_builtin("aspect_base_attributes", &["M ", "V "], false);
+}
+
+/// Function-valued `attr_aspects` and `propagation_predicate` with their
+/// `propagation_ctx` (tests/fixtures/aspect_propagation_functions/
+/// genuine.txt): the edge function per target from the aspect's parameters
+/// and the rule's configured attributes, the predicate over the tags (also
+/// of a top-level target), and Bazel's errors for invalid results.
+#[test]
+fn aspect_propagation_functions() {
+    compare_genuine_builtin("aspect_propagation_functions", &["A ", "F ", "P "], true);
 }

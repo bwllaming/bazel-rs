@@ -513,8 +513,13 @@ mod values {
     #[repr(C)]
     pub(crate) struct AspectGen<V> {
         pub implementation: V,
-        /// attr_aspects/toolchains_aspects functions and propagation_predicate.
-        pub callbacks: Vec<V>,
+        /// A function `attr_aspects` (crate::aspect_propagation; empty or
+        /// one value).
+        pub attr_aspects_function: Vec<V>,
+        /// A function `toolchains_aspects` (empty or one value).
+        pub toolchains_aspects_function: Vec<V>,
+        /// The `propagation_predicate` function (empty or one value).
+        pub propagation_predicate: Vec<V>,
         pub requires: Vec<V>,
         pub subrules: Vec<V>,
         /// The `transition()` objects of the aspect's Starlark-transitioned
@@ -1728,7 +1733,7 @@ fn construct_aspect<'v>(
             "An aspect cannot simultaneously have required providers and apply to generating rules."
         );
     }
-    let mut callbacks = Vec::new();
+    let mut propagation_predicate = Vec::new();
     if !args.propagation_predicate.is_none() {
         if !is_function(args.propagation_predicate) {
             bail!(
@@ -1741,7 +1746,7 @@ fn construct_aspect<'v>(
                 "An aspect cannot simultaneously have a propagation predicate and apply to generating rules."
             );
         }
-        callbacks.push(args.propagation_predicate);
+        propagation_predicate.push(args.propagation_predicate);
     }
     let exec_compatible_with = exec_compatible_with(eval, args.exec_compatible_with)?;
     let exec_groups = declared_exec_groups(args.exec_groups)?;
@@ -1752,14 +1757,16 @@ fn construct_aspect<'v>(
             toolchains.push(toolchain);
         }
     }
+    let mut attr_aspects_function = Vec::new();
     let attr_aspects = if is_function(args.attr_aspects) {
-        callbacks.push(args.attr_aspects);
+        attr_aspects_function.push(args.attr_aspects);
         None
     } else {
         Some(attr_aspects_list(args.attr_aspects)?)
     };
+    let mut toolchains_aspects_function = Vec::new();
     let toolchains_aspects = if is_function(args.toolchains_aspects) {
-        callbacks.push(args.toolchains_aspects);
+        toolchains_aspects_function.push(args.toolchains_aspects);
         None
     } else {
         Some(toolchains_aspects_list(eval, args.toolchains_aspects)?)
@@ -1781,7 +1788,9 @@ fn construct_aspect<'v>(
     budget.string(&label).map_err(anyhow::Error::msg)?;
     Ok(eval.heap().alloc(AspectGen {
         implementation: args.implementation,
-        callbacks,
+        attr_aspects_function,
+        toolchains_aspects_function,
+        propagation_predicate,
         requires: required,
         subrules,
         transitions,
