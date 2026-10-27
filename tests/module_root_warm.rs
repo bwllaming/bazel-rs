@@ -324,3 +324,105 @@ fn a_failed_warm_up_leaves_the_demand_its_own_error() {
         assert_same(&reference, &other, &format!("threads={threads}"));
     }
 }
+
+/// The extension-generated repositories a file loads from execute on the
+/// speculation pool while the target patterns load (a file's loads are
+/// one batch for Bazel): cold builds at threads 1, 8 and 8 with jitter are
+/// byte-identical (a printing repository's output where the sequential
+/// engine executes it), and at threads 8 the repositories ran on fetch
+/// workers during the pattern phase.
+#[test]
+fn a_files_extension_repositories_execute_ahead_while_patterns_load() {
+    let fixture = tempfile::Builder::new()
+        .prefix("module-root-warm-batch-")
+        .tempdir()
+        .unwrap();
+    let write = |relative: &str, text: &str| {
+        let path = fixture.path().join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    };
+    let names: Vec<String> = (0..8).map(|index| format!("r{index}")).collect();
+    let quoted: Vec<String> = names.iter().map(|name| format!("'{name}'")).collect();
+    write(
+        "MODULE.bazel",
+        &format!(
+            "module(name = 'main')\next = use_extension('//:ext.bzl', 'ext')\nuse_repo(ext, {})\n",
+            quoted.join(", ")
+        ),
+    );
+    write(
+        "ext.bzl",
+        "def _repo(rctx):\n    rctx.execute(['sleep', '0.2'])\n    if rctx.attr.loud:\n        print('repository ' + rctx.attr.name + ' executed')\n    rctx.file('BUILD.bazel', '')\n    rctx.file('defs.bzl', 'V = %r\\n' % rctx.attr.name)\n\nrepo = repository_rule(implementation = _repo, attrs = {'loud': attr.bool()})\n\ndef _ext(mctx):\n    for index in range(8):\n        repo(name = 'r%d' % index, loud = index == 3)\n\next = module_extension(implementation = _ext)\n",
+    );
+    let loads: String = names
+        .iter()
+        .map(|name| format!("load('@{name}//:defs.bzl', {name} = 'V')\n"))
+        .collect();
+    write(
+        "BUILD.bazel",
+        &format!(
+            "{loads}print('main BUILD ' + {})\nfilegroup(name = 'fg')\n",
+            names.join(" + ")
+        ),
+    );
+    let run = |threads: usize, env: &[(&str, &str)]| {
+        let _ = fs::remove_dir_all(fixture.path().join("cache"));
+        let _ = fs::remove_file(fixture.path().join("MODULE.bazel.lock"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
+        command
+            .arg("--ignore_all_rc_files")
+            .arg("--cache-dir=cache")
+            .arg("build")
+            .arg(format!("--loading_phase_threads={threads}"))
+            .arg("--lockfile_mode=update")
+            .arg("--nobuild")
+            .arg("//:fg")
+            .current_dir(fixture.path())
+            .env_remove("BAZEL_RS_TIMING")
+            .env_remove("BAZEL_RS_TIMING_TIMELINE")
+            .env_remove("BAZEL_RS_LOADING_JITTER");
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        let output = command.explicit_modules().output().unwrap();
+        let text = String::from_utf8_lossy(&output.stderr).into_owned();
+        let (timeline, stderr): (Vec<&str>, Vec<&str>) = text
+            .split_inclusive('\n')
+            .partition(|line| line.starts_with("PERF"));
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            without_elapsed(&stderr.concat()),
+            fs::read_to_string(fixture.path().join("MODULE.bazel.lock")).ok(),
+            timeline.concat(),
+        )
+    };
+    let reference = run(1, &[]);
+    assert_eq!(reference.0, Some(0), "{}", reference.2);
+    let printed = reference
+        .2
+        .find("repository +ext+r3 executed")
+        .unwrap_or_else(|| panic!("{}", reference.2));
+    let main = reference
+        .2
+        .find("main BUILD +ext+r0+ext+r1")
+        .expect("main printed");
+    assert!(printed < main, "{}", reference.2);
+    for (threads, env) in [(8, vec![]), (8, vec![("BAZEL_RS_LOADING_JITTER", "30")])] {
+        let other = run(threads, &env);
+        assert_eq!(
+            (&other.0, &other.1, &other.2, &other.3),
+            (&reference.0, &reference.1, &reference.2, &reference.3),
+            "threads={threads} {env:?}"
+        );
+    }
+    let traced = run(8, &[("BAZEL_RS_TIMING_TIMELINE", "1")]);
+    assert_eq!(traced.2, reference.2);
+    let ahead = traced
+        .4
+        .lines()
+        .filter(|line| line.contains(" bazel-rs-fetch executed +ext+r"))
+        .count();
+    assert!(ahead >= 4, "speculated while loading:\n{}", traced.4);
+}

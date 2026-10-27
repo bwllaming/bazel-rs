@@ -10289,6 +10289,48 @@ impl Engine {
         relative_directory: &str,
         options: &TargetPatternPhaseOptions<'_>,
     ) -> Result<TargetPatternPhase, String> {
+        // Parallel fetching (crate::repository_speculation) while the
+        // patterns load: the direct and extension-generated repositories
+        // a file the loader enters loads from execute ahead of their
+        // sequential demand (`RepositorySet::warm_loads`), as Bazel fetches
+        // a file's loads as one batch. Phase 1 starts its own pool.
+        let speculating = self.start_pattern_speculation();
+        let result = self.target_pattern_phase_loaded(patterns, relative_directory, options);
+        if speculating {
+            self.repositories.stop_speculation();
+        }
+        result
+    }
+
+    /// The speculation pool of the target pattern phase
+    /// ([`Self::target_pattern_phase`]), on the conditions of phase 1's
+    /// (`start_prefetch`). Whether it started.
+    fn start_pattern_speculation(&mut self) -> bool {
+        if self.loading_phase_threads <= 1
+            || !self.repositories.prefetch_allowed()
+            || std::env::var_os("BAZEL_RS_LOADING_NO_DEMAND").is_some()
+            || std::env::var_os("BAZEL_RS_DEBUG_NO_PREFETCH").is_some()
+            || (crate::observed_fs::recording()
+                && std::env::var_os("BAZEL_RS_SNAPSHOT_PREFETCH").is_some_and(|value| value == "0"))
+        {
+            return false;
+        }
+        // Computed on the coordinator first (recorded, W6R), as phase 1's.
+        let _ = self.repositories.source_cache_path();
+        self.repositories.start_speculation(
+            self.loading_phase_threads,
+            Arc::new(|| {}),
+            loading_jitter_millis(),
+        );
+        true
+    }
+
+    fn target_pattern_phase_loaded(
+        &mut self,
+        patterns: &[String],
+        relative_directory: &str,
+        options: &TargetPatternPhaseOptions<'_>,
+    ) -> Result<TargetPatternPhase, String> {
         let mut failures = PatternFailures::default();
         let selected = if self.keep_going {
             self.select_keep_going(patterns, relative_directory, &mut failures)

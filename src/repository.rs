@@ -261,6 +261,9 @@ struct RepositoryState {
     speculation: crate::repository_speculation::Speculations,
     /// Module roots warmed ahead of their demand (crate::module_root_warm).
     root_warmer: crate::module_root_warm::RootWarmer,
+    /// Repositories a file's loads name whose extension group was not
+    /// prepared yet, by group: speculated once it is (`warm_loads`).
+    pending_speculation: std::sync::Mutex<BTreeMap<String, Vec<String>>>,
     /// `mod tidy`: extensions are evaluated for their eval-only value
     /// (no `use_repo` fixup warning).
     eval_only: std::sync::atomic::AtomicBool,
@@ -877,6 +880,7 @@ impl RepositorySet {
                 verified_trees: Arc::default(),
                 speculation: Default::default(),
                 root_warmer: Default::default(),
+                pending_speculation: Default::default(),
                 eval_only: Default::default(),
             }),
         }
@@ -2464,10 +2468,50 @@ impl RepositorySet {
     /// module roots and, transitively, those of their loads
     /// (crate::module_root_warm). Never demands or records anything.
     pub(crate) fn warm_loads(&self, labels: &[Label]) {
-        if labels.is_empty() || !self.state.root_warmer.enabled() {
+        if labels.is_empty() {
             return;
         }
-        self.state.root_warmer.request(self, labels.iter().cloned());
+        // Direct and extension-generated repositories (of a prepared
+        // group) execute on the speculation pool when one runs.
+        if let Some(Ok(runtime)) = self.state.direct.get() {
+            let mut requested = BTreeSet::new();
+            for label in labels {
+                if label.repository.is_empty() || !requested.insert(label.repository.as_str()) {
+                    continue;
+                }
+                match runtime.root_slot(&label.repository) {
+                    Some(slot) if slot.ready().is_none() => {
+                        self.state.speculation.request(&label.repository);
+                    }
+                    Some(_) => {}
+                    None => {
+                        // A repository of a group not prepared yet: the
+                        // batch's first load prepares it.
+                        let group = label
+                            .repository
+                            .rsplit_once('+')
+                            .and_then(|(prefix, _)| runtime.catalog.ordinary_routes.get(prefix))
+                            .filter(|id| {
+                                runtime
+                                    .ordinary
+                                    .get(*id)
+                                    .is_some_and(|slot| slot.ready().is_none())
+                            });
+                        if let Some(id) = group
+                            && self.state.speculation.accepting()
+                        {
+                            lock_ignoring_poison(&self.state.pending_speculation)
+                                .entry(id.clone())
+                                .or_default()
+                                .push(label.repository.clone());
+                        }
+                    }
+                }
+            }
+        }
+        if self.state.root_warmer.enabled() {
+            self.state.root_warmer.request(self, labels.iter().cloned());
+        }
     }
 
     /// The registered toolchain (or execution platform) patterns are
@@ -3793,7 +3837,7 @@ impl RepositorySet {
             .ordinary
             .get(id)
             .ok_or_else(|| format!("missing ordinary extension preparation slot {id:?}"))?;
-        slot.get_or_try_init(self.state.runtime_id, &format!("prepare:ordinary:{id}"), || {
+        let prepared = slot.get_or_try_init(self.state.runtime_id, &format!("prepare:ordinary:{id}"), || {
             let _span = crate::timeline::span("extension", || id.to_owned());
             for participant in &group.participants {
                 if let Some(error) = &participant.source_profile_error {
@@ -4087,7 +4131,16 @@ impl RepositorySet {
                 import_error,
                 provenance_digest,
             })
-        })
+        });
+        if prepared.is_ok() {
+            // The loads a file entered before this group was prepared
+            // (`warm_loads`) can execute ahead now.
+            let pending = lock_ignoring_poison(&self.state.pending_speculation).remove(id);
+            for canonical in pending.unwrap_or_default() {
+                self.state.speculation.request(&canonical);
+            }
+        }
+        prepared
     }
 
     fn ordinary_repository(
@@ -5183,6 +5236,12 @@ fn guarded_root_slot<'a>(
 /// Registration patterns with the repository each is parsed in (module
 /// order, `""` for the main repository).
 pub(crate) type Registrations = Vec<(String, Vec<String>)>;
+
+fn lock_ignoring_poison<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 #[cfg(test)]
 mod tests {

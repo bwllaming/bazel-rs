@@ -306,6 +306,11 @@ impl Speculations {
         state.jitter_millis = jitter_millis;
     }
 
+    /// Whether the pool runs (requests are accepted).
+    pub(crate) fn accepting(&self) -> bool {
+        lock(&self.shared.state).width > 0
+    }
+
     /// Queue `canonical`, unless the pool is stopped or it was requested
     /// (or demanded) before.
     pub(crate) fn request(&self, canonical: &str) {
