@@ -274,6 +274,7 @@ fn run() -> Result<(), String> {
     let profile_options;
     let exec_log_options;
     let mod_options;
+    let target_pattern_file;
     let rc_options;
     let rest: Vec<String> = {
         let first_options = first_pass_flag_alias_options(&options, &command);
@@ -378,12 +379,24 @@ fn run() -> Result<(), String> {
         run_options = native.run;
         test_options = native.test;
         mod_options = native.module;
+        target_pattern_file = native.target_pattern_file;
         options.residue.iter().map(|arg| arg.text.clone()).collect()
     };
     // ModOptions' converters fail the command before it runs (exit 2).
     if let Some(error) = mod_options.error() {
         fail_with(2, error);
     }
+    // TargetPatternsHelper.readFrom (BuildCommand, TestCommand, FetchCommand):
+    // the patterns of `--target_pattern_file` replace the residue; its
+    // failures are the command's (exit 2).
+    let rest = if bazel_rs::target_pattern_file::reads_patterns(&command) {
+        match bazel_rs::target_pattern_file::read_from(target_pattern_file.as_deref(), rest, &cwd) {
+            Ok(patterns) => patterns,
+            Err(error) => fail_with(2, &error),
+        }
+    } else {
+        rest
+    };
     // FetchCommand.validateOptions, then the request: target patterns are
     // a `build --nobuild` (TargetFetcher), anything else fetches
     // repositories once the repository set exists (below).
@@ -606,8 +619,13 @@ fn run() -> Result<(), String> {
     } else {
         rest
     };
-    if (command == "build" || command == "test") && rest.is_empty() {
-        return Err(format!("{command} requires at least one target"));
+    // BuildTool.processRequest (buildtool/BuildTool.java): an empty target
+    // list warns and builds nothing (`test` then finds no tests, exit 4;
+    // genuine 9.3 captures, tests/fixtures/cli_test_options).
+    if command == "build" && rest.is_empty() {
+        bazel_rs::note!(
+            "WARNING: Usage: bazel build <options> <targets>.\nInvoke `bazel help build` for full description of usage and options.\nYour request is correct, but requested an empty set of targets. Nothing will be built."
+        );
     }
     // TestCommand.exec (runtime/commands/TestCommand.java:98-107).
     if command == "test" && test_options.output == bazel_rs::test_command::TestOutput::Streamed {
@@ -3345,6 +3363,9 @@ struct NativeOptions {
     exec_log: bazel_rs::exec_log::Options,
     /// ModCommand's ModOptions (crate::mod_command).
     module: bazel_rs::mod_command::ModOptions,
+    /// `--target_pattern_file` (BuildRequestOptions.targetPatternFile; the
+    /// last one wins, empty is unset): crate::target_pattern_file.
+    target_pattern_file: Option<String>,
 }
 
 impl NativeOptions {
@@ -3386,6 +3407,7 @@ impl NativeOptions {
             profile: bazel_rs::profile::Options::default(),
             exec_log: bazel_rs::exec_log::Options::default(),
             module: bazel_rs::mod_command::ModOptions::default(),
+            target_pattern_file: None,
             configuration: if command == "query" {
                 // query is configuration-independent; it accepts (and validates)
                 // the modelled CoreOptions (runtime/commands/QueryCommand.java:59-67).
@@ -3621,6 +3643,18 @@ impl NativeOptions {
         ) {
             self.resolver.ignore_dev_dependencies = false;
             false
+        } else if let Some(parsed) = (builds(command) || command == "query")
+            .then(|| bazel_rs::rc_options::value_option(arg, next, "target_pattern_file"))
+            .flatten()
+        {
+            // A BuildRequestOptions option: `query` does not register it
+            // (genuine `--target_pattern_file=f :: Unrecognized option`).
+            if command == "query" {
+                return Err(format!("{arg} :: Unrecognized option: {arg}"));
+            }
+            let (_, value, used) = parsed?;
+            self.target_pattern_file = Some(value.to_owned());
+            used
         } else if builds(command) && arg == "--jobs" {
             self.jobs = Some(parse_jobs(
                 next.ok_or("--jobs requires a positive integer")?,

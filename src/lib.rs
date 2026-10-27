@@ -154,6 +154,7 @@ mod subrule;
 mod subrule_fragments;
 mod symbolic_macro;
 mod target_pattern;
+pub mod target_pattern_file;
 mod template_dict;
 pub mod template_variable_info;
 pub mod test_command;
