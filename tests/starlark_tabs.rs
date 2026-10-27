@@ -228,7 +228,7 @@ fn module_indentation_tabs_are_rejected() {
 }
 
 #[test]
-fn syntax_vendor_inventory_is_anchored_and_only_lexer_is_patched() {
+fn syntax_vendor_inventory_is_anchored_and_only_declared_files_are_patched() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let provenance: serde_json::Value = serde_json::from_slice(
         &fs::read(root.join("vendor/starlark_syntax-0.14.2.provenance.json")).unwrap(),
@@ -236,8 +236,11 @@ fn syntax_vendor_inventory_is_anchored_and_only_lexer_is_patched() {
     .unwrap();
     let vendor = root.join("vendor/starlark_syntax-0.14.2");
     let patches = provenance["declared_source_patches"].as_array().unwrap();
-    assert_eq!(patches.len(), 1);
-    assert_eq!(patches[0]["path"], "src/lexer.rs");
+    let declared: Vec<&str> = patches
+        .iter()
+        .map(|p| p["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(declared, ["src/lexer.rs", "src/syntax/parser_rd.rs"]);
     let mut files = Vec::new();
     fn collect(root: &Path, path: &Path, files: &mut Vec<String>) {
         for entry in fs::read_dir(path).unwrap() {
@@ -267,9 +270,9 @@ fn syntax_vendor_inventory_is_anchored_and_only_lexer_is_patched() {
             assert_eq!(current, provenance["license"]["content"]);
             continue;
         }
-        let original = if path == "src/lexer.rs" {
-            assert_eq!(current, patches[0]["current"]);
-            patches[0]["original"].clone()
+        let original = if let Some(patch) = patches.iter().find(|p| p["path"] == path.as_str()) {
+            assert_eq!(current, patch["current"]);
+            patch["original"].clone()
         } else {
             current
         };

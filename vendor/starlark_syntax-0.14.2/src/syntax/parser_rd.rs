@@ -293,7 +293,11 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
         self.consume(&Token::For);
         let var_expr = self.parse_expr_list()?;
         self.expect(&Token::In)?;
-        let over = self.parse_test()?;
+        // Modified (bazel-rs): the iterable is Bazel's `expr`, an optionally
+        // unparenthesized tuple without a trailing comma, as in
+        // `for key in "A", "B":` (net/starlark/java/syntax/Parser.java
+        // parseForStatement -> parseExpr). Upstream parsed a single `test`.
+        let over = self.parse_test_list(false)?;
         self.expect(&Token::Colon)?;
         let body = self.parse_suite()?;
         let r = self.last_end;
@@ -407,7 +411,10 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
             let r = self.last_end;
             let stmt = grammar_util::check_assignment(self.state.codemap, lhs, ty, assign_op, rhs)?;
             Ok(stmt.ast(l, r))
-        } else if lhs_is_expr_list || ty.is_some() {
+        // Modified (bazel-rs): an unparenthesized tuple is a valid expression
+        // statement, as in Bazel (Parser.java parseSmallStatement -> parseExpr
+        // -> ExpressionStatement). Upstream required an assignment operator.
+        } else if ty.is_some() {
             Err(self.error_expected("assignment operator"))
         } else {
             // Expression statement
@@ -932,12 +939,39 @@ impl<'a, I: Iterator<Item = Lexeme>> ParserRd<'a, I> {
                     Ok(Expr::Slice(Box::new(expr), Some(Box::new(first)), stop, step).ast(l, r))
                 }
                 Some(Token::Comma) => {
-                    // Index2: [a, b]
-                    self.advance();
-                    let second = self.parse_test()?;
+                    // Modified (bazel-rs): Bazel parses the subscript as `expr`
+                    // (Parser.java parseSliceSuffix -> parseExpr), so `x[a, b]`
+                    // indexes with the tuple `(a, b)` and any number of
+                    // elements is accepted (no trailing comma). Upstream's
+                    // two-element `Index2` is kept only for dialects with type
+                    // expressions, where `dict[str, int]` needs it.
+                    let tl = first.span.begin().get() as usize;
+                    let mut items = vec![first];
+                    while self.eat(&Token::Comma) {
+                        if !self.is_test_start() {
+                            let r = self.last_end;
+                            return grammar_util::reject_unparenthesized_tuple_trailing_comma(
+                                self.state.codemap,
+                                tl,
+                                r,
+                            );
+                        }
+                        items.push(self.parse_test()?);
+                    }
+                    let tr = self.last_end;
+                    if items.len() == 2
+                        && self.state.dialect.enable_types != crate::dialect::DialectTypes::Disable
+                    {
+                        self.expect(&Token::ClosingSquare)?;
+                        let r = self.last_end;
+                        let second = items.pop().expect("two items");
+                        let first = items.pop().expect("two items");
+                        return Ok(Expr::Index2(Box::new((expr, first, second))).ast(l, r));
+                    }
+                    let index = Expr::Tuple(items).ast(tl, tr);
                     self.expect(&Token::ClosingSquare)?;
                     let r = self.last_end;
-                    Ok(Expr::Index2(Box::new((expr, first, second))).ast(l, r))
+                    Ok(Expr::Index(Box::new((expr, index))).ast(l, r))
                 }
                 _ => {
                     // Simple index: [a]

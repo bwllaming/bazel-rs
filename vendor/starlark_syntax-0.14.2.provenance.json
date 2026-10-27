@@ -31,6 +31,17 @@
         "size": 62478,
         "sha256": "320aa892a81f278f77c2b4eb56d5e5dda37f7123d6634a2d1fec4a9639458539"
       }
+    },
+    {
+      "path": "src/syntax/parser_rd.rs",
+      "original": {
+        "size": 56037,
+        "sha256": "7137152ed9df2b8bcf0d610c306e9c0473f520806edd2b7ddfe9cfaaeb0b148b"
+      },
+      "current": {
+        "size": 58130,
+        "sha256": "671ebef783cdd55447f6bd20fac51348b24559a866d8bd7108cc58e7c015e966"
+      }
     }
   ],
   "license": {
@@ -42,5 +53,5 @@
       "sha256": "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a"
     }
   },
-  "scope": "Only tab whitespace lexing and backslash-literal-tab rejection change. No general string/Unicode/byte semantics, dialect, AST, source rewriting, dependency version or feature change. All published archive files preserved; LICENSE is the sole addition."
+  "scope": "Tab whitespace lexing and backslash-literal-tab rejection (src/lexer.rs); unparenthesized tuples where Bazel's grammar takes `expr` (src/syntax/parser_rd.rs: for iterable, subscripts of any arity indexing with a tuple, tuple expression statements; Index2 kept only for dialects with types). No general string/Unicode/byte semantics, dialect, AST type, source rewriting, dependency version or feature change. All published archive files preserved; LICENSE is the sole addition."
 }

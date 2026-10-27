@@ -426,6 +426,32 @@ snapshot. Four vendored files carry the support (each with a header notice):
 Nothing changes for evaluation itself: the registry is one pointer per
 compiled function, and no existing code path reads it.
 
+## Vendored `starlark_syntax` (parser)
+
+The parser lives in the separate `starlark_syntax` crate, vendored as
+`vendor/starlark_syntax-0.14.2` (see "Tab whitespace parser parity" above).
+A second declared patch in
+`vendor/starlark_syntax-0.14.2.provenance.json` (original and current size
+and sha256, verified by `tests/starlark_tabs.rs`) changes the parser.
+
+Its changes (`src/syntax/parser_rd.rs`, each with an inline
+`Modified (bazel-rs)` notice) make the parser take an unparenthesized tuple
+wherever Bazel's grammar takes `expr` (`Parser.java` `parseExpr`). Upstream
+took a single `test` at some of these positions:
+
+* a `for` iterable: `for key in "GONOPROXY", "GONOSUMDB":`, as in
+  bazel-gazelle `internal/env.bzl:223` (`parseForStatement`);
+* a subscript with any number of elements, `d["x", 1, 2]`, which indexes
+  with the tuple (`parseSliceSuffix`). Upstream's two-element `Index2` node
+  (`at2`) remains only in dialects with type expressions, where
+  `dict[str, int]` needs it. The Bazel dialects disable types, so
+  `d["y", 2] = v` is also a valid assignment target there;
+* an expression statement `"a", "b"` (`parseSmallStatement`).
+
+The return value and both sides of an assignment already took the tuple.
+A trailing comma stays an error at all these positions, as in Bazel. The
+behaviour is pinned by `tests/bench_parity.rs`.
+
 ## Original published contents
 
 The source archive is
