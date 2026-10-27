@@ -1429,7 +1429,7 @@ impl Depset {
 impl DepsetNode {
     /// The element of a set with exactly one distinct element, stopping at
     /// the second distinct one.
-    fn single_item(&self) -> Option<&Item> {
+    pub(crate) fn single_item(&self) -> Option<&Item> {
         let mut stack = vec![self];
         let mut seen = HashSet::new();
         let mut found: Option<&Item> = None;

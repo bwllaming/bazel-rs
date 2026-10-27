@@ -134,6 +134,8 @@ pub(crate) enum Behavior {
     PyIsValidSharedLibraryArtifact,
     /// Pure String.matches helper; also callable during repository execution.
     PyRegexMatch,
+    /// `_is_singleton_depset(*args, **kwargs)` (PyBuiltins.isSingletonDepset).
+    PyIsSingletonDepset,
 }
 
 /// The four Java builtin namespaces plus `cc_internal`; each has its own
@@ -1033,6 +1035,44 @@ fn call<'v>(
             Ok(heap.alloc(package_runfiles_path(&label)))
         }
         Behavior::PyRegexMatch => crate::py_regex::call(args, heap),
+        Behavior::PyIsSingletonDepset => {
+            // PyBuiltins.isSingletonDepset (rules/python/PyBuiltins.java:76-89):
+            // one positional-only `value` (a Depset parameter, an unbound
+            // default) and NestedSet.isSingleton — the set's one child is an
+            // element, which holds exactly when it has one distinct element
+            // (a nested array always holds two or more; empty is not one).
+            const FUNCTION: &str = "is_singleton_depset";
+            let positions: Vec<_> = args.positions(heap)?.collect();
+            if let Some(value) = positions.first()
+                && crate::starlark_types::Depset::from_value(*value).is_none()
+            {
+                return Err(type_error(FUNCTION, "value", *value, "depset"));
+            }
+            if let Some((name, _)) = args.names_map()?.iter().next() {
+                let name = name.as_str();
+                return Err(failure(if name == "value" {
+                    format!("{FUNCTION}() got named argument for positional-only parameter 'value'")
+                } else {
+                    format!(
+                        "{FUNCTION}() got unexpected keyword argument '{name}'{}",
+                        crate::native_rules::did_you_mean(name, &["value"])
+                    )
+                }));
+            }
+            if positions.len() > 1 {
+                return Err(failure(format!(
+                    "{FUNCTION}() accepts no more than 1 positional argument but got {}",
+                    positions.len()
+                )));
+            }
+            let Some(value) = positions.first() else {
+                return Err(failure(
+                    "py_internal.is_singleton_depset() requires a depset: genuine Bazel 9.3 crashes on a missing argument (unbound reaches PyBuiltins.isSingletonDepset); native reports an error instead".into(),
+                ));
+            };
+            let depset = crate::starlark_types::Depset::from_value(*value).expect("checked");
+            Ok(Value::new_bool(depset.node.single_item().is_some()))
+        }
         Behavior::PyIsToolConfiguration => {
             // The `def`'s one parameter, then its body
             // `ctx.configuration.is_tool_configuration()`: the field and the
@@ -1805,6 +1845,7 @@ fn py_internal(heap: &FrozenHeap) -> FrozenValue {
                 }
                 "get_label_repo_runfiles_path" => Behavior::PyLabelRepoRunfilesPath,
                 "regex_match" => Behavior::PyRegexMatch,
+                "is_singleton_depset" => Behavior::PyIsSingletonDepset,
                 "is_tool_configuration" => Behavior::PyIsToolConfiguration,
                 "get_legacy_external_runfiles" => Behavior::PyLegacyExternalRunfiles,
                 "is_bzlmod_enabled" => Behavior::PyIsBzlmodEnabled,

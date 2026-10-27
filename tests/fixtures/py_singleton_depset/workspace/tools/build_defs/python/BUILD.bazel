@@ -1,0 +1,10 @@
+load(":defs.bzl", "named", "probe", "wrong_type")
+
+probe(
+    name = "probe",
+    srcs = ["a.txt", "b.txt"],
+)
+
+wrong_type(name = "wrong_type")
+
+named(name = "named")

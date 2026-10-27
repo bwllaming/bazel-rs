@@ -1,0 +1,12 @@
+empty=False
+one=True
+one_twice=True
+two=False
+only_child=True
+same_direct_and_child=True
+two_singleton_children=True
+child_of_two=False
+empty_child=False
+topological=True
+files=False
+file=True
