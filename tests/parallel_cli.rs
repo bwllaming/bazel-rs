@@ -189,7 +189,6 @@ fn jobs_requires_a_positive_integer_and_is_only_a_build_option() {
     for args in [
         vec!["build", "--jobs"],
         vec!["build", "--jobs", ":ok"],
-        vec!["build", "--jobs=2"],
         vec!["query", "--jobs=2", ":ok"],
         vec!["query", "--jobs=2"],
         vec!["--jobs=2", "build", ":ok"],
@@ -203,6 +202,11 @@ fn jobs_requires_a_positive_integer_and_is_only_a_build_option() {
     }
     assert!(ws.run(&["build", "--jobs=1000", ":ok"]).status.success());
     only_status_outputs(&ws);
+    // No targets: Bazel 9.3 warns and builds nothing (BuildTool; genuine
+    // capture tests/fixtures/cli_test_options, tpf_empty_build).
+    let empty = ws.run(&["build", "--jobs=2"]);
+    assert!(empty.status.success(), "{}", stderr(&empty));
+    assert!(stderr(&empty).contains("requested an empty set of targets. Nothing will be built."));
 }
 
 #[test]
