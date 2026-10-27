@@ -1420,23 +1420,64 @@ fn network_and_printing_local_repositories_never_save() {
     }
 }
 
-/// Fixture 18: failed builds — an action failure, an analysis error — are
-/// never saved.
+/// Fixture 18 (SURVEY3 S2): a build whose analysis succeeded but an action
+/// failed is saved — the next run hits, executes only the failed action
+/// again and reports the same failure, exactly as the run without the
+/// snapshot does (also under `--keep_going`); an analysis error, or a
+/// `--keep_going` plan that skipped one, is never saved.
 #[test]
-fn failed_builds_never_save() {
+fn action_failures_save_and_analysis_failures_never_do() {
     let twin = fixture();
     twin.write(
         "fail/BUILD.bazel",
-        "genrule(name = 'f', outs = ['f.txt'], cmd = 'echo failing >&2; exit 1')\ngenrule(name = 'broken', srcs = [':missing'], outs = ['b.txt'], cmd = 'touch $@')\n",
+        "genrule(name = 'f', outs = ['f.txt'], cmd = 'echo failing >&2; exit 1')\ngenrule(name = 'ok', outs = ['ok.txt'], cmd = 'echo ok > $@')\ngenrule(name = 'broken', srcs = [':missing'], outs = ['b.txt'], cmd = 'touch $@')\n",
     );
-    for target in ["//fail:f", "//fail:broken"] {
+    for args in [
+        &["build", "//fail:f", "//fail:ok"][..],
+        &["build", "--keep_going", "//fail:f", "//fail:ok"],
+    ] {
+        let failed = twin.same(args, &[]);
+        assert!(!failed.on.status.success(), "{args:?}");
+        failed.assert_saved();
         for _ in 0..2 {
-            let failed = twin.same(&["build", target], &[]);
-            assert!(!failed.on.status.success());
+            let again = twin.same(args, &[]);
+            assert!(!again.on.status.success(), "{args:?}");
+            again.assert_hit();
+            let stderr = again.stderr();
+            assert!(stderr.contains("failing"), "{args:?}: {stderr}");
+            // Only the failed action runs again (`--keep_going` builds the
+            // other one: a cache hit).
+            if args.contains(&"--keep_going") {
+                assert!(
+                    stderr.contains("0 actions executed, 1 cache hits"),
+                    "{args:?}: {stderr}"
+                );
+            }
+        }
+    }
+    let saved = twin.snapshots().len();
+    for args in [
+        &["build", "//fail:broken"][..],
+        &["build", "--keep_going", "//fail:broken", "//fail:f"],
+        &["build", "--keep_going", "//fail:broken", "//fail:ok"],
+    ] {
+        for _ in 0..2 {
+            let failed = twin.same(args, &[]);
+            assert!(!failed.on.status.success(), "{args:?}");
             failed.assert_not_saved("");
         }
     }
-    assert!(twin.snapshots().is_empty());
+    assert_eq!(twin.snapshots().len(), saved);
+    // Fixed: the saved plan misses on the BUILD edit and saves again.
+    twin.write(
+        "fail/BUILD.bazel",
+        "genrule(name = 'f', outs = ['f.txt'], cmd = 'echo fixed > $@')\ngenrule(name = 'ok', outs = ['ok.txt'], cmd = 'echo ok > $@')\n",
+    );
+    let fixed = twin.same(&["build", "//fail:f", "//fail:ok"], &[]);
+    fixed
+        .assert_success()
+        .assert_miss("BUILD.bazel")
+        .assert_saved();
 }
 
 const HOST_REPOS: &str = r#"def _jdk(ctx):
@@ -2705,7 +2746,7 @@ fn the_event_log_names_each_outcome() {
     twin.same(BUILD_ALL, &[]).assert_hit();
     twin.write(
         "pkg/BUILD.bazel",
-        "exports_files(['in.txt'])\ngenrule(name = 'bad', outs = ['bad.txt'], cmd = 'exit 1')\n",
+        "exports_files(['in.txt'])\ngenrule(name = 'bad', srcs = [':missing'], outs = ['bad.txt'], cmd = 'exit 1')\n",
     );
     let failing = &["build", "//pkg:bad"];
     assert!(!twin.same(failing, &[]).on.status.success());
@@ -4566,8 +4607,8 @@ mod verify_mode {
     }
 
     #[test]
-    fn failed_builds_never_save() {
-        verified(super::failed_builds_never_save);
+    fn action_failures_save_and_analysis_failures_never_do() {
+        verified(super::action_failures_save_and_analysis_failures_never_do);
     }
 
     #[test]

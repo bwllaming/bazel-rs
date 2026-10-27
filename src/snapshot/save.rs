@@ -12,9 +12,12 @@
 //! build-info and `map_each`), no pending lockfile write, no analysis
 //! error, a complete capture, an encodable plan below the size cap — and
 //! encodes the sections on the main thread; a background thread writes them
-//! to a temporary file while the actions execute. Only when the command (for
-//! `test` and `run`: its build part) succeeded does [`Save::finish`] rename
-//! it into place (crate::snapshot::store). Failures are never saved. A save
+//! to a temporary file while the actions execute. When the command (for
+//! `test` and `run`: its build part) succeeded — or failed only in
+//! execution, an action failing after a complete analysis (SURVEY3 S2,
+//! crate::snapshot::Scope::execution_failed) — [`Save::finish`] renames it
+//! into place (crate::snapshot::store). Analysis failures (also a
+//! `--keep_going` plan that skipped some) are never saved. A save
 //! appends a `kind=saved` line to `<state>/snapshots/events.log`, a run that
 //! is not saved its reason (`kind=not-saved`, crate::snapshot::telemetry;
 //! L2-W5g, L2-W5h).
@@ -167,6 +170,22 @@ impl Save {
                 request.errors.len()
             ));
         }
+        // `--keep_going`: a plan that skipped what failed to analyze (or
+        // whose inputs are missing) is incomplete; only a complete plan is
+        // saved, also when its execution then fails (crate::snapshot::Scope
+        // ::execution_failed).
+        if let Some(plan) = &request.keep_going
+            && (!plan.errors.is_empty()
+                || !plan.failed.is_empty()
+                || !plan.input_errors.is_empty()
+                || !plan.unbuilt.is_empty())
+        {
+            return Err(format!(
+                "taint errors: --keep_going analysis failures ({} target(s), {} input error(s))",
+                plan.failed.len() + plan.unbuilt.len(),
+                plan.input_errors.len()
+            ));
+        }
         let recorder = observed_fs::recorder().ok_or("nothing was recorded")?;
         let taints_now = recorder.taints();
         if !taints_now.is_empty() {
@@ -270,8 +289,8 @@ impl Save {
         }))
     }
 
-    /// The command (for `test` and `run`: its build part) succeeded: put the
-    /// snapshot in place.
+    /// The command (for `test` and `run`: its build part) succeeded, or
+    /// failed only in execution: put the snapshot in place.
     pub fn finish(mut self) {
         self.end_window();
         self.finished = true;

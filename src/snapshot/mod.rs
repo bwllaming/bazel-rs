@@ -194,6 +194,30 @@ impl Scope {
         }
     }
 
+    /// Planning succeeded and the build part then failed in execution with
+    /// `error` (a failed action, also under `--keep_going`): the full
+    /// analysis is still saved — Skyframe keeps an analysis whatever its
+    /// execution did, and a failed action has no cache entry, so the next
+    /// run executes it again from the saved plan and reports the same
+    /// failure (SURVEY3 S2). A plan with analysis failures is never saved
+    /// ([`save::Save::planned`] refuses it); a hit heals like [`Self::failed`].
+    pub fn execution_failed(self, error: &str) {
+        let Self {
+            record,
+            save,
+            hit,
+            verify,
+        } = self;
+        drop(verify);
+        drop(record);
+        if let Some(save) = save {
+            save.finish();
+        }
+        if let Some(hit) = hit {
+            hit.failed(error);
+        }
+    }
+
     /// The command failed with `error` (the record mode reports, nothing is
     /// saved, a stale hit removes its snapshot).
     pub fn failed(self, error: &str) {

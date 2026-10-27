@@ -1546,6 +1546,9 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
         run,
     } = tail;
     report_keep_going_errors(&planned.request);
+    // Planning succeeded: a failure below is execution's, and the analysis
+    // is saved anyway (crate::snapshot::Scope::execution_failed).
+    let planned_ok = planned.request.is_ok();
     let result = planned.request.and_then(|request| {
         bazel_rs::request::execute(
             request,
@@ -1572,7 +1575,11 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
             (executed.summary, keep_going)
         }
         Err(error) => {
-            snapshot.failed(&error);
+            if planned_ok {
+                snapshot.execution_failed(&error);
+            } else {
+                snapshot.failed(&error);
+            }
             return Err(error);
         }
     };
@@ -1642,7 +1649,7 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
     bazel_rs::memory_limit::report_peak(memory_limit_mb);
     // --keep_going: a build with failures fails once everything else built.
     if let Some(result) = keep_going {
-        snapshot.failed("the --keep_going build failed");
+        snapshot.execution_failed("the --keep_going build failed");
         bazel_rs::snapshot::hit::heal_after_failure(None);
         if let Some(message) = keep_going_failure_detail(&result, pattern_failure) {
             eprintln!("ERROR: {message}");
@@ -2201,6 +2208,7 @@ fn run_tail(
         snapshot,
     } = tail;
     report_keep_going_errors(&planned.request);
+    let planned_ok = planned.request.is_ok();
     let result = planned.request.and_then(|request| {
         bazel_rs::request::execute(
             request,
@@ -2217,9 +2225,10 @@ fn run_tail(
     // process).
     match &result {
         Ok(executed) if executed.keep_going.as_ref().is_some_and(|kg| kg.failed()) => {
-            snapshot.failed("the --keep_going build failed")
+            snapshot.execution_failed("the --keep_going build failed")
         }
         Ok(_) => snapshot.finish(),
+        Err(error) if planned_ok => snapshot.execution_failed(error),
         Err(error) => snapshot.failed(error),
     }
     let bazel_rs::request::Executed {
@@ -2639,6 +2648,7 @@ fn test_tail(
         _ => None,
     };
     report_keep_going_errors(&planned.request);
+    let planned_ok = planned.request.is_ok();
     let result = planned.request.and_then(|request| {
         bazel_rs::request::execute_with_tests(
             request,
@@ -2670,8 +2680,9 @@ fn test_tail(
     // The build part is the snapshot's scope (test results are execution
     // outcomes; the test runner exits the process).
     match &result {
-        Ok(_) if build_failed => snapshot.failed("the --keep_going build failed"),
+        Ok(_) if build_failed => snapshot.execution_failed("the --keep_going build failed"),
         Ok(_) => snapshot.finish(),
+        Err(error) if planned_ok => snapshot.execution_failed(error),
         Err(error) => snapshot.failed(error),
     }
     let bazel_rs::request::Executed {

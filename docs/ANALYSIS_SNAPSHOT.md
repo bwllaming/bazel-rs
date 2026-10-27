@@ -46,6 +46,21 @@ inputs, validation, replay, local trees, decode, status and attempt
 times). Without them the snapshot prints nothing but the one line of a
 failed hit that removes its snapshot (step 6 below).
 
+## Failed builds (SURVEY3 S2)
+
+A run whose analysis completed but whose execution failed (an action
+failed, with or without `--keep_going`; for `test` and `run` in the build
+part) is saved like a successful one: the plan does not depend on what
+execution did, and a failed action has no cache entry, so the next run hits,
+executes the failed action again and reports the same failure — its output
+is the snapshot-less run's (Bazel's Skyframe likewise keeps an analysis
+whatever its execution did). A failed hit still verifies its trees (step 6)
+and keeps the snapshot when they verify (`heal-kept`). Never saved: an
+analysis or loading error, and a `--keep_going` plan that skipped targets
+or actions (analysis failures, missing inputs; `taint errors: --keep_going
+analysis failures`). Pinned by `tests/snapshot.rs`
+`action_failures_save_and_analysis_failures_never_do`.
+
 ## What a hit does
 
 A `build`, `test` or `run` whose every recorded input is unchanged skips
@@ -523,7 +538,9 @@ first differing entry), `status-stderr`, `capture`, `panic` or `other`;
 EXPLAIN a replay cancelled by the first failure is not named).
 A not-saved run's class is the first taint's name (`repository-rule-executed`,
 `network`, `extension-evaluated`, `lockfile-write-pending`, `errors`, ...),
-`failed` (the command failed), `capture`, `too-large`, `incomplete` or
+`failed` (the command failed before its plan was complete: an analysis
+error; a build that analyzed completely and failed only in execution is
+saved, SURVEY3 S2), `capture`, `too-large`, `incomplete` or
 `other`. A heal's entry is the first differing entry's class
 (crate::repository_store::TreeMismatch: `extra`, `missing`, `kind`,
 `mode`, `content`, `link`, `manifest`, `unreadable`, `other`). Each line
@@ -639,7 +656,8 @@ and logs):
    `not-saved` for `lockfile-write-pending` (the run after a lockfile
    change), `repository-rule-executed` (after a fetch that printed or
    whose re-probe failed), `network` or
-   another taint, `failed` (failed commands are never saved), keys never
+   another taint, `failed` (analysis failures are never saved; execution
+   failures are, see "Failed builds"), keys never
    saved for those reasons, and `heal-kept` (a failed hit whose trees all
    verified: the failure was the build's own).
 5. **On a mismatch** nothing is needed for the command itself: its output
