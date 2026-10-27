@@ -52,6 +52,8 @@ impl Fixture {
             ))
             .args(args)
             .env_clear()
+            // The native result lines the harness reads (crate::build_results).
+            .env("BAZEL_RS_RESULT_LINES", "1")
             .env("PATH", "/usr/local/bin:/usr/bin:/bin")
             .env("HOME", self.0.path().join("home"))
             .env("TMPDIR", self.0.path().join("tmp"))

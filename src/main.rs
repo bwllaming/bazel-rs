@@ -2076,10 +2076,10 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
     }
     if let Some(error) = rejected {
         // RunCommand's NO_TARGET_SPECIFIED, TOO_MANY_TARGETS_SPECIFIED and
-        // TARGET_NOT_EXECUTABLE: exit 2 (also after a --keep_going build).
-        bazel_rs::exit_code::record(bazel_rs::exit_code::COMMAND_LINE_ERROR);
+        // TARGET_NOT_EXECUTABLE: exit 2 (under --keep_going once the build
+        // succeeded; a failed build exits 1).
         if !tail.test.keep_going {
-            return Err(error);
+            return Err(bazel_rs::exit_code::command_line(error));
         }
         warn(&format!("{error}. Will continue anyway"));
         // A failing command: never saved as the snapshot of this `run`.
@@ -2106,7 +2106,7 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
                 run: true,
             },
         )?;
-        return Err(error);
+        return Err(bazel_rs::exit_code::command_line(error));
     }
     let label = &labels[0];
     // RunCommand.runBuild (:394-432): a LabelRunUnder's target is built

@@ -2,6 +2,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use bazel_rs::module_graph::{self, BuiltinProfile, ModuleSource, ResolverOptions};
 include!("support/temp_root.rs");
+include!("support/exit_codes.rs");
 use bazel_rs::repository::RepositorySet;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -64,9 +65,10 @@ fn success(output: &Output) {
 }
 
 fn rejected(output: &Output, marker: &str) {
+    // Exit 2 for an option error (crate::exit_code), 1 otherwise.
     assert_eq!(
         output.status.code(),
-        Some(1),
+        Some(rejection_code(&String::from_utf8_lossy(&output.stderr))),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );

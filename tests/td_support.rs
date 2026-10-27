@@ -47,6 +47,8 @@ impl Workspace {
             .args(args)
             .current_dir(&self.root)
             .env_clear()
+            // The native result lines the harness reads (crate::build_results).
+            .env("BAZEL_RS_RESULT_LINES", "1")
             .env("HOME", &self.home)
             .env("PATH", "/usr/bin:/bin")
             .env("BAZEL_RS_MAX_MEMORY_MB", "4096")
@@ -186,7 +188,14 @@ fn output_base_and_quiet_startup_options_both_take_effect() {
         assert!(!ws.root.join(directory).exists());
         let built = ws.run(&startup, &["build", "//:g"]);
         assert!(built.status.success(), "{built:?}");
-        assert!(built.stderr.is_empty(), "{:?}", built.stderr);
+        // --quiet keeps only Bazel's build result (`Target //:g up-to-date:`
+        // and its path, crate::build_results).
+        let stderr = String::from_utf8(built.stderr.clone()).unwrap();
+        let lines: Vec<&str> = stderr.lines().collect();
+        assert!(
+            lines.len() == 2 && lines[0] == "Target //:g up-to-date:" && lines[1].starts_with("  "),
+            "{stderr:?}"
+        );
         assert!(ws.root.join(directory).join("execroot").is_dir());
     }
 }

@@ -57,6 +57,8 @@ impl Fixture {
             .args(args)
             .current_dir(self.ws())
             .env_clear()
+            // The native result lines the harness reads (crate::build_results).
+            .env("BAZEL_RS_RESULT_LINES", "1")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.root.path().join("home"))
             .env("TMPDIR", self.root.path().join("tmp"))
@@ -354,6 +356,8 @@ impl GoWorkspace {
             .args(["build", "//:all"])
             .current_dir(&self.root)
             .env_clear()
+            // The native result lines the harness reads (crate::build_results).
+            .env("BAZEL_RS_RESULT_LINES", "1")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", base.join("home"))
             .env("TMPDIR", base.join("tmp"))

@@ -29,6 +29,8 @@ fn rejection_code(stderr: &str) -> i32 {
         ":: Failed to load build setting ",
         "Unknown startup option",
         "requires a positive integer",
+        "expects true or false",
+        "expected a boolean",
     ]
     .iter()
     .any(|pattern| stderr.contains(pattern));

@@ -2,6 +2,7 @@
 //! Download policy is not a registry-metadata, Git, or general network prohibition.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 include!("support/verify_env.rs");
+include!("support/exit_codes.rs");
 use base64::Engine;
 use bazel_rs::{materializer, patch_inputs::LocalPatchPlan, registry::Registry};
 use serde_json::{Map, Value, json};
@@ -302,9 +303,10 @@ fn success(output: &Output) {
 }
 
 fn rejected(output: &Output, expected: &str) {
+    // Exit 2 for an option error (crate::exit_code), 1 otherwise.
     assert_eq!(
         output.status.code(),
-        Some(1),
+        Some(rejection_code(&String::from_utf8_lossy(&output.stderr))),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
