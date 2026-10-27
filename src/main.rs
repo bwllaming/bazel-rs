@@ -565,7 +565,7 @@ fn run() -> Result<(), String> {
     // print()'s DEBUG lines name main-repository `.bzl` files by path.
     bazel_rs::debug_print::set_workspace(&root);
     // --attempt_to_print_relative_paths (LocationPrinter, crate::location_printer).
-    let _ = PRINTER.set(bazel_rs::location_printer::LocationPrinter::new(
+    bazel_rs::location_printer::set(bazel_rs::location_printer::LocationPrinter::new(
         rc_options.attempt_to_print_relative_paths,
         root.clone(),
         cache.clone(),
@@ -1565,7 +1565,8 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
     // analyzing — most of a build's — are counted too, which a report
     // printed after target-pattern selection missed.
     bazel_rs::repository_store::timing::report(loading_threads);
-    // Analysis warnings precede the result, also when the build fails.
+    // Analysis errors (and a failed planning's warnings) precede the result,
+    // also when the build fails.
     report_diagnostics(planned.diagnostics);
     let (summary, keep_going) = match result {
         Ok(executed) => {
@@ -1719,7 +1720,7 @@ fn plan_request(
     let (diagnostics, request) = match request {
         Ok(mut request) => {
             snapshot.planned(&request, status_computed);
-            (request.take_diagnostics(), Ok(request))
+            (printed_warnings(request.take_diagnostics()), Ok(request))
         }
         Err(error) => (failed.unwrap_or_default(), Err(error)),
     };
@@ -1750,7 +1751,7 @@ fn planned_hit(
     let mut request = hit.request;
     snapshot.hit = Some(hit.session);
     Planned {
-        diagnostics: request.take_diagnostics(),
+        diagnostics: printed_warnings(request.take_diagnostics()),
         status: bazel_rs::request::StatusSource::Planned(hit.status),
         request: Ok(request),
     }
@@ -1779,8 +1780,18 @@ fn release_engine(engine: Engine) {
     }
 }
 
-/// The analysis warnings and errors of a request, printed after execution,
-/// also when the build failed; an error taints the snapshot recording.
+/// A planned request's diagnostics without its warnings: planning printed
+/// them before `INFO: Analyzed …` (a snapshot hit replays them).
+fn printed_warnings(
+    mut diagnostics: bazel_rs::request::Diagnostics,
+) -> bazel_rs::request::Diagnostics {
+    diagnostics.warnings.clear();
+    diagnostics
+}
+
+/// The analysis errors of a request (and a failed planning's warnings),
+/// printed after execution, also when the build failed; an error taints the
+/// snapshot recording.
 fn report_diagnostics(diagnostics: bazel_rs::request::Diagnostics) {
     for warning in diagnostics.warnings {
         warn(&warning);
@@ -4401,16 +4412,10 @@ fn terminal_columns() -> i64 {
         .unwrap_or(80)
 }
 
-/// The message printer of this command (--attempt_to_print_relative_paths),
-/// set once the command options are parsed.
-static PRINTER: std::sync::OnceLock<bazel_rs::location_printer::LocationPrinter> =
-    std::sync::OnceLock::new();
-
+/// `message` as this command prints it (--attempt_to_print_relative_paths,
+/// crate::location_printer).
 fn located(message: &str) -> std::borrow::Cow<'_, str> {
-    match PRINTER.get() {
-        Some(printer) => printer.print(message),
-        None => std::borrow::Cow::Borrowed(message),
-    }
+    bazel_rs::location_printer::located(message)
 }
 
 /// A WARNING event (informational: dropped under `--quiet`, crate::ui).

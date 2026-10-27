@@ -208,8 +208,10 @@ Done since the last increment recorded under "History", one line each:
       `N aspect applications` and the `Target … up-to-date:` build results on
       stderr (tests/fixtures/build_results; native `LABEL<TAB>PATH` lines only
       with `BAZEL_RS_RESULT_LINES=1`).
-- [ ] Console text: exclusive-test order, `-k` error ordering, analysis warnings
-      printed after execution.
+- [x] Console text: analysis warnings before `INFO: Analyzed …` (also on a
+      snapshot hit). Kept: exclusive tests and `--keep_going`'s `errors
+      encountered while analyzing` lines in label order (Bazel's are the hash
+      order of its evaluation and error maps, not reproducible).
 - [ ] Identical outputs share one inode in `bazel-bin` (not inside actions).
 - [x] Children no longer inherit ignored SIGINT/SIGQUIT/SIGHUP (src/signals.rs).
 - [x] Five network-dependent tests: their module archives come from a

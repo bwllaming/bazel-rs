@@ -109,6 +109,23 @@ fn location_prefix(line: &str) -> Option<(&str, &str)> {
     tail.starts_with(": ").then_some((&line[..end], rest))
 }
 
+/// The printer of this command (--attempt_to_print_relative_paths), set
+/// once its options are parsed (crate::main).
+static PRINTER: std::sync::OnceLock<LocationPrinter> = std::sync::OnceLock::new();
+
+/// Set this command's printer (once).
+pub fn set(printer: LocationPrinter) {
+    let _ = PRINTER.set(printer);
+}
+
+/// `message` as this command prints it (unchanged before [`set`]).
+pub fn located(message: &str) -> std::borrow::Cow<'_, str> {
+    match PRINTER.get() {
+        Some(printer) => printer.print(message),
+        None => std::borrow::Cow::Borrowed(message),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

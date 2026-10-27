@@ -9753,6 +9753,12 @@ impl Engine {
                 .into_iter()
                 .map(|blocker| (blocker.taint, blocker.detail)),
         );
+        // The analysis warnings, as Bazel reports them while it analyzes:
+        // before `INFO: Analyzed …` (in the window an analysis snapshot hit
+        // replays; crate::main prints only the errors after execution).
+        for warning in &request.warnings {
+            crate::note!("WARNING: {}", crate::location_printer::located(warning));
+        }
         crate::progress::analysis_report(spec.build, test_count);
         crate::perf_mark("plan.end");
         Ok(request)

@@ -205,6 +205,8 @@ impl Twin {
                 None => self.ws(),
             })
             .env_clear()
+            // The native result lines the harness reads (crate::build_results).
+            .env("BAZEL_RS_RESULT_LINES", "1")
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &home)
             .env("TMPDIR", &home)
@@ -1712,11 +1714,14 @@ fn post_planning_warnings_survive_a_hit() {
     for _ in 0..2 {
         let hit = twin.same(args, &[]);
         hit.assert_hit().assert_success();
+        let stderr = hit.stderr();
+        let warning = "depends on deprecated target '//dep:old': use //dep:new";
+        assert!(stderr.contains(warning), "{stderr}");
+        // Once, before `INFO: Analyzed …`, like Bazel's analysis warnings.
+        assert_eq!(stderr.matches(warning).count(), 1, "{stderr}");
         assert!(
-            hit.stderr()
-                .contains("depends on deprecated target '//dep:old': use //dep:new"),
-            "{}",
-            hit.stderr()
+            stderr.find(warning) < stderr.find("INFO: Analyzed "),
+            "{stderr}"
         );
     }
 }

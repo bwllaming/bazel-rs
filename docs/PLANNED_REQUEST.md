@@ -21,8 +21,8 @@ snapshot hit:   decode ---------------------------------------> finalize -> exec
   unless a switch asks for the encoding (below).
 * `PlannedRequest::finalize` completes the request for this run (on a hit as on a miss), then
   `crate::request::execute` writes the action dumps, runs the scheduler and computes the build summary and the
-  run targets. The analysis warnings and errors travel in the request and are printed after execution, as
-  before.
+  run targets. The analysis warnings and errors travel in the request: planning prints the warnings before
+  `INFO: Analyzed …` (a hit replays them with its window), the errors are printed after execution.
 * After the hand-over the CLI frees the engine (see *Freeing the engine*): execution and reporting read only the
   request.
 
@@ -41,7 +41,7 @@ same pipeline and keep the analysis diagnostics in the engine (`take_warnings`/`
 | `requested`, `aspect_reports`, `non_empty_targets` | the reported artifacts as `Produced { real, producer }` (where `--nobuild` reports them / which action output publishes them) |
 | `run_plans` | per run/test target with an executable: the executable (exec path, short path), the built runfiles tree's MANIFEST, the runfiles mapping, the run settings, and an index into `configurations` |
 | `configurations` | per configuration a run plan uses: the output directory mnemonic, the action environment and the `--test_env` environment (what `build_requests` read from the configuration table) |
-| `warnings`, `errors` | the analysis diagnostics, printed after execution |
+| `warnings`, `errors` | the analysis diagnostics (warnings printed by planning, errors after execution) |
 | `build_info` | the planned actions whose planning ran a build-info translation callback |
 
 Paths and byte strings stay exactly what they were in memory (lone bytes included, crate::bazel_bytes).

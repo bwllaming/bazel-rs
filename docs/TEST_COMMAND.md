@@ -289,7 +289,7 @@ test actions are part of the build's one execution graph
 * a test action's own events (`FAIL: ...`, `INFO: From Testing ...` with the
   output block on stdout, `STATUS: L (Summary)`, `Testing X failed: ...`) are
   printed when it ends, while the build runs; after the execution phase
-  (exclusive tests included) come the analysis diagnostics, the built-target
+  (exclusive tests included) come the analysis errors, the built-target
   lines and the action counts (build actions only), then the summary in
   TestSummary order, as Bazel prints its build result after the exclusive
   tests and the summary last.

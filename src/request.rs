@@ -197,8 +197,9 @@ pub struct PlannedRequest {
     pub results: Vec<(Label, Vec<Produced>)>,
     pub run_plans: Vec<(Label, PlannedRun)>,
     pub configurations: Vec<ConfigurationSummary>,
-    /// Analysis warnings and errors, printed after execution (without the
-    /// `WARNING: `/`ERROR: ` prefixes).
+    /// Analysis warnings (printed by planning, before `INFO: Analyzed …`)
+    /// and errors (printed after execution), without the `WARNING: `/`ERROR: `
+    /// prefixes.
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
     /// The planned actions whose planning ran a build-info translation
