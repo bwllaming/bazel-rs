@@ -838,7 +838,7 @@ fn rule_fragment<'v>(this: Value<'v>, name: &str, heap: Heap<'v>) -> anyhow::Res
     require_declared(rule, name)?;
     let surface = rule.config.clone();
     Ok(match name {
-        "cpp" => crate::subrule_fragments::alloc_cpp(heap, surface.cpp),
+        "cpp" => crate::subrule_fragments::alloc_cpp(heap, surface.cpp.clone()),
         "platform" => PlatformFragment::alloc(heap, surface),
         "coverage" => CoverageFragment::alloc(heap, surface),
         "android" => AndroidFragment::alloc(heap, surface),

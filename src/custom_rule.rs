@@ -495,7 +495,7 @@ pub struct BuiltinAttributes {
 /// compilationMode, --strip, --force_pic), taken from the Configuration the
 /// target is analyzed in (crate::engine). The default is the default
 /// configuration.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CppConfigurationView {
     pub compilation_mode: &'static str,
     pub strip: &'static str,
@@ -503,9 +503,18 @@ pub struct CppConfigurationView {
     /// The no-config configuration has no configuration fragments at all
     /// (CommonOptions.EMPTY_OPTIONS, analysis/config/CommonOptions.java:32-42).
     pub no_fragments: bool,
-    /// An exec configuration: the exec transition appends `-g0` to `--copt`
-    /// and `--cxxopt` on non-Windows hosts (builtin_exec_platforms.bzl:341-342).
-    pub exec: bool,
+    /// CppOptions.coptList (`--copt`): the C and C++ compiler flags, the
+    /// exec configuration's `--host_copt` + `-g0` (the exec transition,
+    /// builtin_exec_platforms.bzl:334-342). Only a Starlark transition or
+    /// the exec transition sets it (`--copt` is not a modelled
+    /// command-line option).
+    pub copts: Vec<String>,
+    /// CppOptions.cxxoptList (`--cxxopt`); see [`Self::copts`].
+    pub cxxopts: Vec<String>,
+    /// CppOptions.conlyoptList (`--conlyopt`); see [`Self::copts`].
+    pub conlyopts: Vec<String>,
+    /// CppOptions.linkoptList (`--linkopt`); see [`Self::copts`].
+    pub linkopts: Vec<String>,
 }
 
 impl Default for CppConfigurationView {
@@ -515,7 +524,10 @@ impl Default for CppConfigurationView {
             strip: "sometimes",
             force_pic: false,
             no_fragments: false,
-            exec: false,
+            copts: Vec::new(),
+            cxxopts: Vec::new(),
+            conlyopts: Vec::new(),
+            linkopts: Vec::new(),
         }
     }
 }
@@ -527,7 +539,10 @@ impl CppConfigurationView {
             strip: native.strip,
             force_pic: native.force_pic,
             no_fragments: native.no_config,
-            exec: native.is_exec,
+            copts: native.copts.clone(),
+            cxxopts: native.cxxopts.clone(),
+            conlyopts: native.conlyopts.clone(),
+            linkopts: native.linkopts.clone(),
         }
     }
 

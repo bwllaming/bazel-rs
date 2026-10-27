@@ -472,6 +472,28 @@ pub fn exec_transition(
         // Not in CppOptions' propagate list (builtin_exec_platforms.bzl:291-348):
         // the default.
         crosstool_top: defaults.crosstool_top,
+        // `_cxx_options` (builtin_exec_platforms.bzl:327-345): the target C++
+        // flag lists are the host ones, with `-g0` appended to `--copt` and
+        // `--cxxopt` off Windows (`py_internal.get_current_os_name()`);
+        // `--host_*` themselves propagate.
+        copts: {
+            let mut copts = from.native.host_copts.clone();
+            copts.push("-g0".to_owned());
+            copts
+        },
+        cxxopts: {
+            let mut cxxopts = from.native.host_cxxopts.clone();
+            cxxopts.push("-g0".to_owned());
+            cxxopts
+        },
+        conlyopts: from.native.host_conlyopts.clone(),
+        linkopts: from.native.host_linkopts.clone(),
+        per_file_copts: from.native.host_per_file_copts.clone(),
+        host_copts: from.native.host_copts.clone(),
+        host_cxxopts: from.native.host_cxxopts.clone(),
+        host_conlyopts: from.native.host_conlyopts.clone(),
+        host_per_file_copts: from.native.host_per_file_copts.clone(),
+        host_linkopts: from.native.host_linkopts.clone(),
         // The table-driven options (crate::configuration::VALUE_OPTIONS):
         // each row's exec rule (propagated, default or set).
         values: from.native.exec_values(),
@@ -554,6 +576,53 @@ pub(crate) fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static
     options.insert(
         "extra_execution_platforms",
         list(&native.extra_execution_platforms),
+    );
+    // The CppOptions flag lists (N66): Java's List.toString is `[a, b]`, and
+    // each PerLabelOptions is `regexFilter + " Options: " + optionsList`
+    // (PerLabelOptions.java:120-123) — the strings the ST- hash feeds on
+    // (hashChosenOptions, OutputPathMnemonicComputer.java:388-405).
+    options.insert("copt", list(&native.copts));
+    options.insert("cxxopt", list(&native.cxxopts));
+    options.insert("conlyopt", list(&native.conlyopts));
+    options.insert("linkopt", list(&native.linkopts));
+    options.insert("host_copt", list(&native.host_copts));
+    options.insert("host_cxxopt", list(&native.host_cxxopts));
+    options.insert("host_conlyopt", list(&native.host_conlyopts));
+    options.insert("host_linkopt", list(&native.host_linkopts));
+    let per_label_options = |items: &[String]| {
+        let entries = items
+            .iter()
+            .map(|entry| {
+                let (filter, options) = entry.split_once('@').unwrap_or((entry.as_str(), ""));
+                let mut pieces = Vec::new();
+                let mut current = String::new();
+                let mut previous = None;
+                for character in options.chars() {
+                    if character == ',' && previous != Some('\\') {
+                        pieces.push(std::mem::take(&mut current));
+                    } else {
+                        current.push(character);
+                    }
+                    previous = Some(character);
+                }
+                pieces.push(current);
+                // PerLabelOptions.toString (:120-123): `regexFilter +
+                // " Options: " + optionsList` — RegexFilter prints its
+                // normalized union pattern (RegexFilter.toString :133-147),
+                // not the original spelling (the value a transition READS
+                // shows, reverseForStarlark's toOriginalString).
+                let filter = crate::coverage::RegexFilter::parse(filter)
+                    .map(|filter| filter.to_string())
+                    .unwrap_or_else(|_| filter.to_owned());
+                format!("{filter} Options: [{}]", pieces.join(", "))
+            })
+            .collect::<Vec<_>>();
+        format!("=[{}]", entries.join(", "))
+    };
+    options.insert("per_file_copt", per_label_options(&native.per_file_copts));
+    options.insert(
+        "host_per_file_copt",
+        per_label_options(&native.host_per_file_copts),
     );
     options.insert("is exec configuration", format!("={}", native.is_exec));
     options.insert(
@@ -1079,13 +1148,13 @@ mod tests {
             ),
             ("remotejdk_11", "", "remotejdk_11", "")
         );
-        // The identity serialization omits the kind's default versions, so
-        // the exec configuration keeps its pre-N28b identity.
-        let pre_n28b = br#"{"version":1,"native":{"compilation_mode":"opt","stamp":false,"define":[],"strip":"always","force_pic":false,"platforms":["//p:exec"],"host_platform":"@@bazel_tools//tools:host_platform","is_exec":true,"platform_suffix":"exec"},"starlark":[]}"#;
-        assert_eq!(
-            default.id.to_string(),
-            format!("{:x}", Sha256::digest(pre_n28b))
-        );
+        // The identity serialization omits the kind's default versions
+        // (N28b) and the empty default C++ flag lists; N66's exec transition
+        // writes `--copt`/`--cxxopt` = `--host_*` + `-g0`
+        // (builtin_exec_platforms.bzl:334-342), which the exec identity
+        // carries (genuine Bazel's exec BuildOptions hold the same lists).
+        let n66 = br#"{"version":1,"native":{"compilation_mode":"opt","stamp":false,"define":[],"strip":"always","force_pic":false,"platforms":["//p:exec"],"host_platform":"@@bazel_tools//tools:host_platform","is_exec":true,"platform_suffix":"exec","copts":["-g0"],"cxxopts":["-g0"]},"starlark":[]}"#;
+        assert_eq!(default.id.to_string(), format!("{:x}", Sha256::digest(n66)));
         let from = parsed(&[
             "--java_runtime_version=remotejdk_17",
             "--java_language_version=17",

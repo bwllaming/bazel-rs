@@ -271,7 +271,7 @@ mod values {
                 name,
                 &self.fragments,
                 handle.clone(),
-                context.subrule.cpp,
+                context.subrule.cpp.clone(),
             );
             let toolchains = match &context.subrule.toolchains {
                 SubruleToolchains::AutoExecGroups(data) => SubruleToolchains::AutoExecGroups(

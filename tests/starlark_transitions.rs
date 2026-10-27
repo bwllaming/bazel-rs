@@ -591,8 +591,8 @@ def _bad_mode(settings, attr):
 def _empty(settings, attr):
     return {}
 
-def _copt(settings, attr):
-    return {"//command_line_option:copt": ["-O2"]}
+def _objccopt(settings, attr):
+    return {"//command_line_option:objccopt": ["-O2"]}
 
 def _fails(settings, attr):
     fail("boom")
@@ -624,7 +624,7 @@ bad_mode = _rule(_bad_mode, [], ["//command_line_option:compilation_mode"])
 unknown_option = _rule(_empty, ["//command_line_option:nope"], [])
 non_configurable = _rule(_empty, [], ["//command_line_option:check_visibility"])
 define = _rule(_empty, [], ["//command_line_option:define"])
-copt = _rule(_copt, [], ["//command_line_option:copt"])
+objccopt = _rule(_objccopt, [], ["//command_line_option:objccopt"])
 not_a_setting = _rule(_empty, ["//f:dfl"], [])
 missing_target = _rule(_empty, ["//f:nothere"], [])
 alias_select = _rule(_empty, ["//f:color_select"], [])
@@ -637,7 +637,7 @@ bool_for_int = _rule(_bool_for_int, [], ["//f:b"])
         ),
         (
             "BUILD.bazel",
-            r#"load("//e:errors.bzl", "returns_int", "undeclared", "missing", "int_for_string", "int_for_label", "bad_label", "none_platforms", "bool_mode", "bad_mode", "unknown_option", "non_configurable", "define", "copt", "not_a_setting", "missing_target", "alias_select", "fails", "two", "one", "int_list", "bool_for_int")
+            r#"load("//e:errors.bzl", "returns_int", "undeclared", "missing", "int_for_string", "int_for_label", "bad_label", "none_platforms", "bool_mode", "bad_mode", "unknown_option", "non_configurable", "define", "objccopt", "not_a_setting", "missing_target", "alias_select", "fails", "two", "one", "int_list", "bool_for_int")
 returns_int(name = "returns_int")
 undeclared(name = "undeclared")
 missing(name = "missing")
@@ -650,7 +650,7 @@ bad_mode(name = "bad_mode")
 unknown_option(name = "unknown_option")
 non_configurable(name = "non_configurable")
 define(name = "define")
-copt(name = "copt")
+objccopt(name = "objccopt")
 not_a_setting(name = "not_a_setting")
 missing_target(name = "missing_target")
 alias_select(name = "alias_select")
@@ -779,12 +779,14 @@ bool_for_int(name = "bool_for_int")
             7
         )
     );
+    // `--copt` (and its CppOptions siblings) is modelled since N66;
+    // `--objccopt` still is not.
     assert_eq!(
-        ws.rejected(&["//:copt"]),
+        ws.rejected(&["//:objccopt"]),
         at_rule(
             14,
-            5,
-            "Starlark transition on '//command_line_option:copt' is not implemented in the native profile (modelled native options: compilation_mode, host_compilation_mode, stamp, strip, force_pic, platforms, plugin, host_platform, extra_toolchains, extra_execution_platforms, cpu, collect_code_coverage, build_runfile_links, build_runfile_manifests, enable_runfiles, java_runtime_version, java_language_version, tool_java_runtime_version, tool_java_language_version; read only: define, copt)"
+            9,
+            "Starlark transition on '//command_line_option:objccopt' is not implemented in the native profile (modelled native options: compilation_mode, host_compilation_mode, stamp, strip, force_pic, platforms, plugin, host_platform, extra_toolchains, extra_execution_platforms, cpu, collect_code_coverage, build_runfile_links, build_runfile_manifests, enable_runfiles, java_runtime_version, java_language_version, tool_java_runtime_version, tool_java_language_version, copt, cxxopt, conlyopt, linkopt, per_file_copt, host_copt, host_cxxopt, host_conlyopt, host_linkopt, host_per_file_copt, crosstool_top; read only: define)"
         )
     );
     assert_eq!(

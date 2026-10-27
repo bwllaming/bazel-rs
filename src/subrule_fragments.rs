@@ -5,7 +5,7 @@
 //! `src/main/java/com/google/devtools/build/lib/` of the pinned Bazel 9.3.
 use allocative::Allocative;
 use anyhow::bail;
-use starlark::environment::{GlobalsBuilder, Methods, MethodsBuilder};
+use starlark::environment::{GlobalsBuilder, Methods, MethodsBuilder, Module};
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::values::none::NoneType;
@@ -228,7 +228,7 @@ fn fragment<'v>(this: Value<'v>, name: &str, heap: Heap<'v>) -> anyhow::Result<V
     require_declared(collection, name)?;
     match name {
         "cpp" => Ok(heap.alloc(CppFragment {
-            view: collection.cpp,
+            view: collection.cpp.clone(),
         })),
         _ => bail!(
             "configuration fragment '{name}' is not implemented in subrule contexts by the native profile"
@@ -370,16 +370,23 @@ pub(crate) fn empty_list<'v>() -> Value<'v> {
     value.to_value()
 }
 
-/// The immutable `["-g0"]` of an exec configuration's `--copt`/`--cxxopt`
-/// (builtin_exec_platforms.bzl:341-342 on non-Windows hosts).
-fn exec_g0<'v>() -> Value<'v> {
-    static G0: OnceLock<(FrozenHeapRef, FrozenValue)> = OnceLock::new();
-    let (_, value) = G0.get_or_init(|| {
-        let heap = FrozenHeap::new();
-        let value = heap.alloc(starlark::values::list::AllocList(["-g0"]));
-        (heap.into_ref(), value)
-    });
-    value.to_value()
+/// An immutable Starlark list of strings (StarlarkList.immutableCopyOf of a
+/// non-empty ImmutableList member, e.g. `ctx.fragments.cpp.copts`).
+pub(crate) fn frozen_strings<'v>(heap: Heap<'v>, items: &[String]) -> anyhow::Result<Value<'v>> {
+    if items.is_empty() {
+        return Ok(empty_list());
+    }
+    let owned = Module::with_temp_heap(|module| -> anyhow::Result<_> {
+        module.set("l", module.heap().alloc(items.to_vec()));
+        module
+            .freeze()
+            .map_err(|error| anyhow::anyhow!("{error:?}"))
+    })?;
+    Ok(heap.access_owned_frozen_value(
+        &owned
+            .get("l")
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?,
+    ))
 }
 
 /// The CppConfiguration members (49). Every value is the Bazel 9.3 option
@@ -425,18 +432,16 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
     }
     /// CppConfiguration.java:291, 535-537; --conlyopt.
     #[starlark(attribute)]
-    fn conlyopts<'v>(this: Value<'v>) -> anyhow::Result<Value<'v>> {
-        receiver(this)?;
-        Ok(empty_list())
+    fn conlyopts<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        frozen_strings(heap, &receiver(this)?.view.conlyopts)
     }
-    /// CppConfiguration.java:292, 515-527; --copt, --experimental_omitfp default false.
+    /// CppConfiguration.java:292, 515-527; --copt. The exec configuration's
+    /// list carries the exec transition's `-g0`
+    /// (builtin_exec_platforms.bzl:334-342); `--experimental_omitfp` is
+    /// always false, so `getCopts` adds nothing.
     #[starlark(attribute)]
-    fn copts<'v>(this: Value<'v>) -> anyhow::Result<Value<'v>> {
-        Ok(if receiver(this)?.view.exec {
-            exec_g0()
-        } else {
-            empty_list()
-        })
+    fn copts<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        frozen_strings(heap, &receiver(this)?.view.copts)
     }
     /// CppConfiguration.java:637-646; --cs_fdo_instrument default null.
     fn cs_fdo_instrument<'v>(
@@ -464,12 +469,8 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
     }
     /// CppConfiguration.java:293, 529-531; --cxxopt.
     #[starlark(attribute)]
-    fn cxxopts<'v>(this: Value<'v>) -> anyhow::Result<Value<'v>> {
-        Ok(if receiver(this)?.view.exec {
-            exec_g0()
-        } else {
-            empty_list()
-        })
+    fn cxxopts<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        frozen_strings(heap, &receiver(this)?.view.cxxopts)
     }
     /// CppConfiguration.java:799-807; --incompatible_disable_nocopts default true.
     fn disable_nocopts<'v>(
@@ -614,11 +615,10 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
         private_api(eval)?;
         Ok(true)
     }
-    /// CppConfiguration.java:174-178, 295, 547-549; --linkopt, --experimental_omitfp default false.
+    /// CppConfiguration.java:174-178, 295, 547-549; --linkopt.
     #[starlark(attribute)]
-    fn linkopts<'v>(this: Value<'v>) -> anyhow::Result<Value<'v>> {
-        receiver(this)?;
-        Ok(empty_list())
+    fn linkopts<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        frozen_strings(heap, &receiver(this)?.view.linkopts)
     }
     /// CppConfiguration.java:297, 340-343; --ltobackendopt.
     #[starlark(attribute)]

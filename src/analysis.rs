@@ -2208,7 +2208,7 @@ fn analyze_aspect_inner(
                 .toolchains
                 .action_exec_groups
                 .use_auto_exec_groups,
-            invocation.cpp,
+            invocation.cpp.clone(),
         ),
         exec_groups: application.toolchains.action_exec_groups.clone(),
         runfiles: crate::runfiles::ContextRunfiles {
@@ -2890,7 +2890,7 @@ fn analyze_inner(
         subrule: crate::subrule::RuleEnvironment::new(
             invocation.toolchains.clone(),
             invocation.use_auto_exec_groups,
-            invocation.cpp,
+            invocation.cpp.clone(),
         ),
         exec_groups: invocation.action_exec_groups.clone(),
         runfiles: crate::runfiles::ContextRunfiles {

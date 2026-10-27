@@ -1,0 +1,27 @@
+{
+  "bazel": "9.3.0",
+  "elf_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "source_commit": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+  "capture_root": "/home/coder/opencodetmp/w/cpp-flag-options-genuine",
+  "policy": "Independent tiny scratch, batch ELF, private HOME/TMPDIR/output user root, --platforms=//:p --host_platform=//:p. Every output path and file content matched exactly; the error cases matched except the inner regex-engine message text.",
+  "cases": {
+    "default": {"exit": 0},
+    "outputs": {
+      "//:flags": ["bazel-out/k8-fastbuild-ST-34436af9073b/bin/flags.out", "([\"-O2\", \"-DNDEBUG\"], [\"-std=c++17\"], [\"-std=c11\"], [\"-lm\"])"],
+      "//:plain": ["bazel-out/k8-fastbuild/bin/plain.out", "([], [], [], [])"],
+      "//:per_file child before": ["bazel-out/k8-fastbuild-ST-350d3f8b752c/bin/per_file_after.out", "[]"],
+      "//:per_file child after": ["bazel-out/k8-fastbuild-ST-6e15fd9a1933/bin/per_file_after.out", "[\"//pkg/.*\\\\.cc,-//pkg/skip\\\\.cc@-O0,-pg\", \"//other/@-g3\"]"],
+      "//:host child before": ["bazel-out/k8-fastbuild-ST-1d470c2a02e3/bin/host_after.out", "([], [])"],
+      "//:host child after": ["bazel-out/k8-fastbuild-ST-2965e904c542/bin/host_after.out", "([\"-Os\"], [\"-fno-rtti\"])"],
+      "//:crosstool child before": ["bazel-out/k8-fastbuild-ST-eae889f02454/bin/crosstool_after.out", "@@bazel_tools//tools/cpp:toolchain"],
+      "//:crosstool child after": ["bazel-out/k8-fastbuild-ST-c7b9dc8a69eb/bin/crosstool_after.out", "@@//:flags"],
+      "//:exec_plain tool": "bazel-out/p-opt-exec-ST-56c600ff889b/bin/plain.out",
+      "//:exec_host tool": "bazel-out/p-opt-exec-ST-88aca3559b90/bin/plain.out"
+    },
+    "st_hash_notes": "per_file_copt hashes the normalized union pattern spelling (RegexFilter.toString `(?:(?>re))` per inclusion, `-` exclusion), while a transition READ shows the original spelling (PerLabelOptionsConverter.reverseForStarlark's toOriginalString); the exec hashes follow the diff_against_dynamic_baseline scheme with --copt/--cxxopt = --host_* + [-g0] equal in the exec baseline and the default exec configuration.",
+    "bad_regex": {"exit": 1, "error": "OptionsParsingError for option 'per_file_copt': Failed to build valid regular expression: Unclosed character class near index 8", "note": "native's inner message is fancy-regex's wording, not Java PatternSyntaxException's; the prefix and option name match"},
+    "none_list": {"exit": 1, "error": "'None' value not allowed for List-type option 'copt'. Please use '[]' instead if trying to set option to empty value."},
+    "string_form": {"exit": 1, "error": "IllegalArgumentError for option 'copt': Can not set java.util.List field com.google.devtools.build.lib.rules.cpp.CppOptions.coptList to java.lang.String"},
+    "build_python_zip": {"note": "genuine 9.3 maps //command_line_option:build_python_zip to @@rules_python+//python/config_settings:build_python_zip (SkyframeExecutor.PY_FLAG_ALIASES; rules_python declares the flag_alias in MODULE.bazel), so it is a Starlark flag alias, never a native transition option: a string write fails the bool_flag's conversion ('expected one of [False, True, 0, 1] ... but got \"false\" (string)'). bazel-rs handles it through module flag aliases (crate::flag_alias), not a native option."}
+  }
+}

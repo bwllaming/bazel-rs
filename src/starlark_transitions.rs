@@ -41,9 +41,10 @@ pub(crate) const COMMAND_LINE_OPTION_PREFIX: &str = "//command_line_option:";
 
 /// The native options a transition may read and write natively: the
 /// modelled options of crate::configuration (docs/CONFIGURATION.md),
-/// including N28b's JavaOptions version strings, and `--cpu` and
-/// `--collect_code_coverage` (N47, rules_go's go_stdlib_transition), which only a
-/// transition sets natively.
+/// including N28b's JavaOptions version strings, `--cpu` and
+/// `--collect_code_coverage` (N47, rules_go's go_stdlib_transition), the
+/// runfiles policy (N65) and the CppOptions flag lists plus `--crosstool_top`
+/// and `--build_python_zip` (N66).
 const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "compilation_mode",
     "host_compilation_mode",
@@ -64,12 +65,29 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "java_language_version",
     "tool_java_runtime_version",
     "tool_java_language_version",
+    // The CppOptions flag lists (N66): the exec transition's `--host_*`
+    // mapping and rules_rust bindgen's llvm transition write them
+    // (extensions/bindgen/private/llvm_utils.bzl). The native cc actions do
+    // not consume them (docs/CONFIGURATION.md "C++ flag options").
+    "copt",
+    "cxxopt",
+    "conlyopt",
+    "linkopt",
+    "per_file_copt",
+    "host_copt",
+    "host_cxxopt",
+    "host_conlyopt",
+    "host_linkopt",
+    "host_per_file_copt",
+    // CppOptions.crosstoolTop (`--crosstool_top`): a NO_OP option whose
+    // value only the configuration identity and `config_setting(values)`
+    // observe.
+    "crosstool_top",
 ];
 
 /// Native options a transition may only read: `define` (Bazel forbids
-/// writing it, FunctionTransitionUtil.java:420-426) and `copt`, which is
-/// always its default `[]` natively (`--copt` is not a native option).
-const READ_ONLY_NATIVE_OPTIONS: &[&str] = &["define", "copt"];
+/// writing it, FunctionTransitionUtil.java:420-426).
+const READ_ONLY_NATIVE_OPTIONS: &[&str] = &["define"];
 
 /// A transition setting: a native option or a Starlark build setting.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -842,10 +860,33 @@ fn native_input<'v>(
         "java_language_version" => heap.alloc(native.java.java_language_version.as_str()),
         "tool_java_runtime_version" => heap.alloc(native.java.tool_java_runtime_version.as_str()),
         "tool_java_language_version" => heap.alloc(native.java.tool_java_language_version.as_str()),
+        // The CppOptions flag lists (N66): List<String> fields read as
+        // Starlark lists of strings (Starlark.fromJava);
+        // per_file_copt/host_per_file_copt are List<PerLabelOptions>, whose
+        // converter is Starlark-convertible: each entry reads as its
+        // `reverseForStarlark` string `filter@opt,...`
+        // (StarlarkDefinedConfigTransition.getTransitionSafeString, :472-516).
+        "copt" => heap.alloc(native.copts.clone()),
+        "cxxopt" => heap.alloc(native.cxxopts.clone()),
+        "conlyopt" => heap.alloc(native.conlyopts.clone()),
+        "linkopt" => heap.alloc(native.linkopts.clone()),
+        "per_file_copt" => heap.alloc(native.per_file_copts.clone()),
+        "host_copt" => heap.alloc(native.host_copts.clone()),
+        "host_cxxopt" => heap.alloc(native.host_cxxopts.clone()),
+        "host_conlyopt" => heap.alloc(native.host_conlyopts.clone()),
+        "host_linkopt" => heap.alloc(native.host_linkopts.clone()),
+        "host_per_file_copt" => heap.alloc(native.host_per_file_copts.clone()),
+        // CppOptions.crosstoolTop: a Label field (its default is a real
+        // label, never null).
+        "crosstool_top" => label(
+            &native
+                .crosstool_top
+                .clone()
+                .unwrap_or_else(crate::configuration::default_crosstool_top),
+        )?,
         // An empty `--define` list is a readable empty list (a non-empty
-        // one is unreadable, see unreadable_input); `--copt` is always its
-        // default natively.
-        "define" | "copt" => heap.alloc(Vec::<String>::new()),
+        // one is unreadable, see unreadable_input).
+        "define" => heap.alloc(Vec::<String>::new()),
         other => {
             return Err(anyhow!(
                 "internal error: unmodelled native transition input {other}"
@@ -1596,7 +1637,19 @@ fn convert_native(
     let option = crate::configuration::option(name);
     let list_typed = matches!(
         name,
-        "platforms" | "extra_toolchains" | "extra_execution_platforms"
+        "platforms"
+            | "extra_toolchains"
+            | "extra_execution_platforms"
+            | "copt"
+            | "cxxopt"
+            | "conlyopt"
+            | "linkopt"
+            | "per_file_copt"
+            | "host_copt"
+            | "host_cxxopt"
+            | "host_conlyopt"
+            | "host_linkopt"
+            | "host_per_file_copt"
     );
     let invalid = || format!("Invalid value type for option '{name}'");
     let parsing = |message: String| format!("OptionsParsingError for option '{name}': {message}");
@@ -1645,9 +1698,12 @@ fn convert_native(
             }
             "strip" => native.strip = defaults.strip,
             "enable_runfiles" => native.set_value(
-                crate::configuration::value_option(name).expect("runfiles option"),
+                crate::configuration::value_option(name).expect("a TriState value option"),
                 OptionValue::Null,
             ),
+            // A null Label field: the raw value is null, `getValue` the
+            // default (never null: `@bazel_tools//tools/cpp:toolchain`).
+            "crosstool_top" => native.crosstool_top = None,
             _ => {
                 return Err(format!(
                     "setting //command_line_option:{name} to None (a null option value) is not implemented in the native profile"
@@ -1740,6 +1796,96 @@ fn convert_native(
                 crate::configuration::value_option(name).expect("runfiles option"),
                 value,
             );
+        }
+        // The CppOptions flag lists (N66): allowMultiple `List<String>`
+        // options with the default ELEMENT converter (StringConverter,
+        // FieldOptionDefinition.getFieldSingularType) — a list converts each
+        // element (:707-721); a bare string converts to a String, which the
+        // List field rejects (FieldOptionDefinition.setValue's
+        // IllegalArgumentException, :762-764; observed: the paired capture
+        // tests/fixtures/cpp_flag_options).
+        "copt" | "cxxopt" | "conlyopt" | "linkopt" | "host_copt" | "host_cxxopt"
+        | "host_conlyopt" | "host_linkopt" => {
+            let field = match name {
+                "copt" => "coptList",
+                "cxxopt" => "cxxoptList",
+                "conlyopt" => "conlyoptList",
+                "linkopt" => "linkoptList",
+                "host_copt" => "hostCoptList",
+                "host_cxxopt" => "hostCxxoptList",
+                "host_conlyopt" => "hostConlyoptList",
+                _ => "hostLinkoptList",
+            };
+            let values = match &raw.kind {
+                RawKind::List(items) if items.is_empty() => Vec::new(),
+                RawKind::List(items) => items.iter().map(|item| item.element_text(false)).collect(),
+                RawKind::String(_) => {
+                    return Err(format!(
+                        "IllegalArgumentError for option '{name}': Can not set java.util.List field com.google.devtools.build.lib.rules.cpp.CppOptions.{field} to java.lang.String"
+                    ));
+                }
+                _ => return Err(invalid()),
+            };
+            let target = match name {
+                "copt" => &mut native.copts,
+                "cxxopt" => &mut native.cxxopts,
+                "conlyopt" => &mut native.conlyopts,
+                "linkopt" => &mut native.linkopts,
+                "host_copt" => &mut native.host_copts,
+                "host_cxxopt" => &mut native.host_cxxopts,
+                "host_conlyopt" => &mut native.host_conlyopts,
+                _ => &mut native.host_linkopts,
+            };
+            *target = values;
+        }
+        // allowMultiple `List<PerLabelOptions>` with the explicit
+        // PerLabelOptionsConverter (per element): each list element converts
+        // as a whole `regex_filter@opt_1,...,opt_n` (only the first `@`
+        // splits; the filter validates as a RegexFilter; options split on
+        // non-escaped commas); a bare string converts to one PerLabelOptions,
+        // which the List field rejects.
+        "per_file_copt" | "host_per_file_copt" => {
+            let per_label_options = |text: &str| -> Result<String, String> {
+                let (filter, _) = match text.split_once('@') {
+                    Some(split) => split,
+                    None => (text, ""),
+                };
+                crate::coverage::RegexFilter::parse(filter).map_err(parsing)?;
+                Ok(text.to_owned())
+            };
+            let values = match &raw.kind {
+                RawKind::List(items) if items.is_empty() => Vec::new(),
+                RawKind::List(items) => items
+                    .iter()
+                    .map(|item| per_label_options(&item.element_text(false)))
+                    .collect::<Result<Vec<_>, _>>()?,
+                RawKind::String(text) => {
+                    // The converter runs first (validating the regex), then
+                    // the List field rejects the single converted value.
+                    per_label_options(text)?;
+                    return Err(format!(
+                        "IllegalArgumentError for option '{name}': Can not set java.util.List field com.google.devtools.build.lib.rules.cpp.CppOptions.{} to com.google.devtools.build.lib.analysis.config.PerLabelOptions",
+                        if name == "per_file_copt" {
+                            "perFileCopts"
+                        } else {
+                            "hostPerFileCoptsList"
+                        }
+                    ));
+                }
+                _ => return Err(invalid()),
+            };
+            match name {
+                "per_file_copt" => native.per_file_copts = values,
+                _ => native.host_per_file_copts = values,
+            }
+        }
+        // CppOptions.crosstoolTop (LabelConverter with a PackageContext).
+        "crosstool_top" => {
+            native.crosstool_top = Some(match &raw.kind {
+                RawKind::Label(label) => label.clone(),
+                RawKind::String(text) => package_label(text).map_err(parsing)?,
+                _ => return Err(invalid()),
+            });
         }
         "platforms" => {
             native.platforms = match &raw.kind {

@@ -1,0 +1,97 @@
+load(
+    ":defs.bzl",
+    "bad_writer",
+    "cpp_report",
+    "crosstool_reader",
+    "crosstool_writer",
+    "exec_host_report",
+    "exec_report",
+    "host_reader",
+    "host_writer",
+    "per_file_reader",
+    "per_file_writer",
+    "report_setting",
+)
+
+report_setting(
+    name = "report",
+    build_setting_default = "",
+)
+
+# The CppOptions flag lists: written by the transition, read back from
+# ctx.fragments.cpp.
+cpp_report(
+    name = "flags",
+    copts = ["-O2", "-DNDEBUG"],
+    cxxopts = ["-std=c++17"],
+    conlyopts = ["-std=c11"],
+    linkopts = ["-lm"],
+)
+
+cpp_report(
+    name = "plain",
+)
+
+per_file_writer(
+    name = "per_file",
+    per_file_copt = ["//pkg/.*\\.cc,-//pkg/skip\\.cc@-O0,-pg", "//other/@-g3"],
+    child = ":per_file_after",
+)
+
+host_writer(
+    name = "host",
+    host_copt = ["-Os"],
+    host_cxxopt = ["-fno-rtti"],
+    child = ":host_after",
+)
+
+crosstool_writer(
+    name = "crosstool",
+    crosstool_top = "//:flags",
+    child = ":crosstool_after",
+)
+
+per_file_reader(name = "per_file_after")
+host_reader(name = "host_after")
+crosstool_reader(name = "crosstool_after")
+
+exec_report(
+    name = "exec_plain",
+    tool = ":plain",
+)
+
+exec_host_report(
+    name = "exec_host",
+    tool = ":plain",
+    host_copt = ["-Os"],
+    host_cxxopt = ["-fno-rtti"],
+)
+
+# Error cases (built individually by the test).
+bad_writer(
+    name = "bad_regex",
+    kind = "per_file",
+    value = ["[@-O0"],
+    child = ":per_file_after",
+)
+
+bad_writer(
+    name = "none_list",
+    kind = "copt_none",
+    child = ":per_file_after",
+)
+
+bad_writer(
+    name = "bad_type",
+    kind = "copt_int",
+    child = ":per_file_after",
+)
+
+bad_writer(
+    name = "string_form",
+    kind = "copt_string_value",
+    value = ["-O2,-Os"],
+    child = ":per_file_after",
+)
+
+platform(name = "p")

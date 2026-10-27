@@ -1043,6 +1043,61 @@ pub struct NativeOptions {
         serialize_with = "serialize_optional_label"
     )]
     pub crosstool_top: Option<Label>,
+    /// CppOptions.coptList (`--copt`, CppOptions.java:236-244, allowMultiple
+    /// with the List<String> default CommaSeparatedOptionListConverter): the
+    /// C and C++ compiler flags. The command-line option stays unsupported
+    /// (`--copt` is not a modelled command-line option); the value is set by
+    /// the exec transition (`--host_copt` + `-g0` off Windows,
+    /// builtin_exec_platforms.bzl:334-342) or a Starlark transition, is part
+    /// of the configuration identity, and is read by `ctx.fragments.cpp
+    /// .copts`. The native cc actions do not consume it (documented
+    /// divergence, docs/CONFIGURATION.md "C++ flag options"). Omitted from
+    /// the identity when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub copts: Vec<String>,
+    /// CppOptions.cxxoptList (`--cxxopt`, CppOptions.java:246-255): the C++
+    /// compiler flags; see [`Self::copts`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cxxopts: Vec<String>,
+    /// CppOptions.conlyoptList (`--conlyopt`, CppOptions.java:256-265): the
+    /// C compiler flags; see [`Self::copts`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub conlyopts: Vec<String>,
+    /// CppOptions.linkoptList (`--linkopt`, CppOptions.java:269-281): the
+    /// linker flags; see [`Self::copts`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub linkopts: Vec<String>,
+    /// CppOptions.perFileCopts (`--per_file_copt`, CppOptions.java:563-582,
+    /// allowMultiple with PerLabelOptions.PerLabelOptionsConverter): the
+    /// `regex_filter@option_1,...,option_n` strings as converted (the
+    /// converter keeps the filter's original spelling and the unescaped
+    /// options, `reverseForStarlark`). The native cc actions do not consume
+    /// them. Omitted from the identity when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub per_file_copts: Vec<String>,
+    /// CppOptions.hostCoptList (`--host_copt`, CppOptions.java:602-613): the
+    /// `--copt` of exec configurations; propagated by the exec transition
+    /// (builtin_exec_platforms.bzl:291-348). Omitted from the identity when
+    /// empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub host_copts: Vec<String>,
+    /// CppOptions.hostCxxoptList (`--host_cxxopt`, CppOptions.java:615-624);
+    /// see [`Self::host_copts`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub host_cxxopts: Vec<String>,
+    /// CppOptions.hostConlyoptList (`--host_conlyopt`, CppOptions.java:626-635);
+    /// see [`Self::host_copts`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub host_conlyopts: Vec<String>,
+    /// CppOptions.hostPerFileCoptsList (`--host_per_file_copt`,
+    /// CppOptions.java:637-657); see [`Self::host_copts`] and
+    /// [`Self::per_file_copts`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub host_per_file_copts: Vec<String>,
+    /// CppOptions.hostLinkoptList (`--host_linkopt`, CppOptions.java:659-667);
+    /// see [`Self::host_copts`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub host_linkopts: Vec<String>,
     /// The table-driven [`VALUE_OPTIONS`] whose value differs from the
     /// default, by name ([`NativeOptions::value`] gives the default for the
     /// others). Serialized as `NAME: toString` and omitted from the
@@ -1324,6 +1379,16 @@ impl Default for NativeOptions {
             cpu: None,
             host_cpu: None,
             crosstool_top: None,
+            copts: Vec::new(),
+            cxxopts: Vec::new(),
+            conlyopts: Vec::new(),
+            linkopts: Vec::new(),
+            per_file_copts: Vec::new(),
+            host_copts: Vec::new(),
+            host_cxxopts: Vec::new(),
+            host_conlyopts: Vec::new(),
+            host_per_file_copts: Vec::new(),
+            host_linkopts: Vec::new(),
             values: BTreeMap::new(),
             collect_code_coverage: false,
             instrumentation: Instrumentation::default(),

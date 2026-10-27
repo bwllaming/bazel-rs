@@ -878,6 +878,48 @@ alias, as a tuple and in `config_setting(flag_values)`). Mapping D1
 roots; exec roots are `linux-opt-exec` on both sides with
 `--host_platform=//p:linux`).
 
+## C++ flag options (N66)
+
+The CppOptions flag lists a Starlark transition may read and write
+(`--copt`, `--cxxopt`, `--conlyopt`, `--linkopt`, `--per_file_copt` and
+their `--host_*` variants) and `--crosstool_top` are modelled as native
+options (rules_rust bindgen's llvm transition reads and writes `cxxopt` and
+`host_cxxopt`, `extensions/bindgen/private/llvm_utils.bzl`). Genuine's
+conversion is followed exactly (`FunctionTransitionUtil.applyTransition`
+:700-737): a list value converts each element with the element converter, a
+bare string value converts to one converted element and then fails the
+`List` field (`IllegalArgumentError for option 'copt': Can not set
+java.util.List field ...coptList to java.lang.String`; these options have
+no explicit converter, unlike `--extra_toolchains`), `None` fails with the
+List-type message, and `--per_file_copt` entries validate as
+`regex_filter@opt_1,...` (`PerLabelOptionsConverter`; a read shows the
+original spelling, `reverseForStarlark`).
+
+The values are configuration data: they are part of the configuration
+identity and the `ST-` output-path hash (which hashes the *normalized*
+union-pattern spelling of a `RegexFilter`, `(?:(?>re))` per inclusion, `-`
+exclusions — not the original text), the exec transition maps them from the
+`--host_*` variants with `-g0` appended to `--copt` and `--cxxopt` off
+Windows (`builtin_exec_platforms.bzl:327-345`, so the exec identity changed
+once when this landed; the exec `ST-` hash is unchanged because the dynamic
+exec baseline carries the same lists), `ctx.fragments.cpp.copts/cxxopts/
+conlyopts/linkopts` read them, and `config_setting(values)` matches
+`crosstool_top`. The native cc actions do not consume them (the toolchain's
+own flags apply); `--copt` on the command line stays unsupported, and
+`config_setting(values)` on the flag lists is not modelled.
+
+`//command_line_option:build_python_zip` is deliberately NOT a native
+option: genuine 9.3 maps it to `@@rules_python+//python/config_settings:
+build_python_zip` (a `bool_flag`) through a flag alias
+(`SkyframeExecutor.PY_FLAG_ALIASES`; rules_python's MODULE.bazel declares
+the same `flag_alias`), which the module flag-alias machinery handles
+(crate::flag_alias, `TransitionDef::with_flag_aliases`).
+
+Paired capture `tests/fixtures/cpp_flag_options` (reference.json): every
+output path (including the exec `ST-` hashes) and file content matched
+genuine exactly; the error cases matched except the inner regex-engine
+message wording.
+
 ## Analysis order per target
 
 `src/engine.rs` `Engine::analyze` follows Bazel's per-target order
@@ -1380,9 +1422,10 @@ inputs/outputs. Query records declarations without applying MODULE aliases.
 * `config.none()` and
   `analysis_test_transition`, `transition.and_then`, Starlark
   transitions on native options outside the modelled ones (writing
-  `copt` or any other unmodelled option, also `host_cpu`, `crosstool_top` and
-  the value options other than `collect_code_coverage`;
-  `--copt` on the command line; `select()` on `copt`),
+  `objccopt`, `compiler`, `grte_top`, `--features`, `action_env` or any
+  other unmodelled option, also `host_cpu`;
+  `--copt` and its CppOptions siblings on the command line;
+  `select()` on `copt`),
   flag alias forms outside [the supported configuration profile](MODULE_FLAG_ALIAS.md),
   `--debug_select_always_succeed`, `--incompatible_disable_select_on`,
    platform mappings and every other build option. The configured-query subset
