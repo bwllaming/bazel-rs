@@ -106,7 +106,7 @@ and `mod`:
 | `--remote_instance_name` | gRPC requests and resource names; HTTP caches ignore it, like Bazel |
 | `--remote_retries` (old `--experimental_remote_retry_max_attempts`, default 5), `--remote_retry_max_delay` (5s) | gRPC retries (HTTP requests are not retried) |
 | `--remote_max_connections` (100; 0 unlimited), `--remote_max_concurrency_per_connection` (100) | gRPC connection pool |
-| `--remote_download_outputs=all\|minimal\|toplevel`, `--remote_download_{all,minimal,toplevel}` | accepted; every output is downloaded (divergence below) |
+| `--remote_download_outputs=all\|minimal\|toplevel` (default `toplevel`), `--remote_download_{all,minimal,toplevel}`, `--remote_download_regex`, `--experimental_remote_cache_ttl` (3h), `--experimental_remote_cache_eviction_retries` (5) | Build without the Bytes (below) |
 | `--[no]remote_cache_compression`, `--experimental_remote_cache_compression_threshold` (100) | gRPC zstd ByteStream (below); HTTP caches ignore it, like Bazel |
 | `--tls_certificate`, `--tls_client_certificate`, `--tls_client_key`, `--tls_authority_override` | grpcs:// (and the root/client certificate for https://) |
 | `--[no]incompatible_strict_action_env` (build) | both values, N42's action environment (docs/ACTION_ENV.md) |
@@ -232,15 +232,13 @@ spawns and never use the remote cache, like Bazel's `FileWriteAction`.
 is consulted first; a native hit makes no remote request. Otherwise, with
 `--remote_accept_cached`, the AC entry is fetched; a failed cached action, a
 missing declared output or a missing CAS blob is a miss. Every declared output
-is downloaded and verified (`--remote_verify_downloads`; inlined
+that is to be downloaded (Build without the Bytes, below) is downloaded and
+verified (`--remote_verify_downloads`; inlined
 `contents`/`stdout_raw`/`stderr_raw` are verified against their digests too),
 stdout/stderr are
 replayed, and the outputs are written into the execution root and published
 into the native action cache through the content-addressed store
-(docs/HARDLINK_STAGING.md), exactly like executed outputs. Bazel's default
-`--remote_download_outputs=toplevel` skips downloading intermediate outputs;
-the native profile always materializes them (like `=all`), so its request log
-has more CAS `GET`s on hits. On a miss the action runs locally and, with
+(docs/HARDLINK_STAGING.md), exactly like executed outputs. On a miss the action runs locally and, with
 `--remote_upload_local_results` **and the native opt-in below**, the Action and Command protos, the outputs and
 non-empty stdout/stderr are uploaded (empty blobs never are; each blob once per
 invocation), then the `ActionResult` (`output_files` with `is_executable`,
@@ -380,6 +378,88 @@ downloader too.
 (`grpc_channel::Channel::server_streaming`), and one endpoint serves both
 when `--remote_executor` and `--remote_cache` are equal.
 
+## Build without the Bytes
+
+`--remote_download_outputs` (crate::remote_outputs; RemoteOutputChecker,
+RemoteExecutionService.downloadOutputs, RemoteActionInputFetcher,
+ActionCacheChecker in the pinned source) decides which regular-file
+outputs of remote cache hits and remote executions are downloaded:
+
+* `all`: every output (the behaviour before this change).
+* `toplevel` (Bazel's default): the requested targets' reported artifacts
+  (in `test` not those of the test targets themselves), aspect reports, and
+  in `run` the target's executable, runfiles tree and runfiles; plus
+  `--remote_download_regex` matches (whole exec paths). Everything else stays
+  in the remote CAS.
+* `minimal`: only `--remote_download_regex` matches (and, in `run`, what
+  `toplevel` downloads, like Bazel).
+
+Tree artifacts, unresolved symlinks, stdout/stderr, empty files and the
+outputs of failed results are always downloaded. A remote-only output is
+recorded in its action's native cache entry as metadata only (manifest
+`remote`: digest, size, expiration = now + `--experimental_remote_cache_ttl`),
+with no file; the process-wide registry gives consumers its digest without
+reading it, so they key, hit (native or remote) and execute remotely without
+the bytes, and the output tree (`bazel-bin`) has nothing at its path (an
+earlier build's link is removed), as in Bazel. A consumer that runs locally
+(a local spawn, a local test, a native transform: symlink, template,
+runfiles tree) first **materializes** its remote-only inputs: the blob is
+downloaded, verified, stored and linked at its published path, where it
+then is an ordinary output for this and later commands.
+
+**Later commands.** A cache entry whose remote-only output has no file is
+valid while the output may stay remote under the command's policy and its
+metadata has not expired; otherwise the action reruns (a remote cache hit),
+which downloads it — switching `minimal` to `toplevel` downloads the newly
+requested outputs, and an expired lease is rechecked. Bazel 9.3 records the
+same expiration but trusts expired metadata optimistically (relying on
+rewinding); the native check is the conservative reading of
+`--experimental_remote_cache_ttl`. Without a remote cache such entries
+always rerun.
+
+**Lost blobs.** A remote cache hit whose remote-only outputs would stay
+remote is checked with one FindMissingBlobs first (a missing blob makes the
+result unusable: a miss, or execution without the cached result) — a
+native addition (Bazel trusts the result and recovers later), so that a
+consumer is never handed a lost input knowingly. A blob lost later (a
+materialization finds NOT_FOUND, or remote execution needs a remote-only
+input the CAS lost) invalidates the producer's cache entry and fails the
+consumer with `Lost inputs no longer available remotely: PATH (DIGEST)`; the
+command then runs again in a fresh process (`Found transient remote cache
+error, retrying the build...`), at most
+`--experimental_remote_cache_eviction_retries` times, else exits 34.
+An HTTP cache cannot tell whether a blob is present: its hits download
+everything (like `all`).
+
+**Measurement** (release binary, NativeLink 1.8.2 local CAS+executor on
+loopback, a 691-genrule scratch build of ~150 kB outputs (10 layers),
+`--jobs=16`, fresh native cache each time, `BAZEL_RS_REMOTE_STATS=1`
+counting ByteStream reads):
+
+| run | wall | downloaded |
+|---|---|---|
+| cold (691 executed remotely), `all` | 8.9 s | 691 blobs, 103.5 MB |
+| cold, `minimal` | 9.9 s | 0 |
+| warm remote (691 remote cache hits), `all` | 0.55 s | 691 blobs, 103.5 MB |
+| warm remote, `minimal` | 0.40 s | 0 |
+| warm remote, `toplevel` | 0.42 s | 1 blob, 15 B |
+
+On loopback the transfer is nearly free (the cold builds are dominated by
+the executor; their difference is noise); the saving is the 103.5 MB that
+never cross a real network nor land in the local cache.
+
+Evidence: `tests/remote_download.rs` (in-process executor): minimal builds
+download nothing and leave `bazel-bin` empty; a second build is a native
+hit with no remote call; `toplevel` afterwards reruns only the requested
+action and downloads its output; a local consumer materializes its input;
+`--remote_download_regex`, `all`, an expired TTL; `run` and a local test of
+remote-only binaries/runfiles; a remote test; an evicted blob retried
+(producer re-executed) and, with no retries, exit 34. Paired with genuine
+9.3.0 (`genuine_bazel_shares_grpc_entries_both_ways`): genuine and native
+now both read 9 blobs from a fresh native cache (native adds one
+FindMissingBlobs); `genuine_bazel_sends_identical_execute_requests`:
+genuine 12 Reads, native 13 (was 14).
+
 ## D1: output roots
 
 Before N41, native target configurations wrote `bazel-out/rust-<mode>/bin`
@@ -403,11 +483,16 @@ both roots. Tracked receipts of earlier captures keep their `rust-*` paths.
 
 * HTTP caches are not retried (`--remote_retries`, default 5 in Bazel): a
   failing request is one warning and local execution. gRPC calls are.
-* `--remote_download_outputs=toplevel` (the default) and `minimal` are
-  accepted, but every output of a hit is downloaded, like `all`: genuine
-  Bazel's gRPC paired capture reads 9 blobs where native reads 10 (the
-  exec-configuration tool output is not top level). Outputs are never
-  missing; only the transfer is larger.
+* Build without the Bytes: expired metadata reruns its action, a remote
+  cache hit with remote-only outputs costs one FindMissingBlobs, tree
+  artifacts are always downloaded, a native transform (runfiles tree,
+  symlink, template) materializes its inputs (Bazel's in-memory output
+  filesystem does not need to), and HTTP cache hits download everything
+  (above). Build event files name remote-only outputs by
+  `bytestream://AUTHORITY/[INSTANCE/]blobs/HASH/SIZE` (other files keep
+  `file://`; Bazel converts every file with a remote cache).
+  The execution log lists no `actual_outputs` entry for a remote-only
+  output of a remote hit.
 * gRPC metadata: native sends no `grpc-accept-encoding` (it accepts no
   compressed messages), `user-agent: bazel-rs/<version> grpc-h2` and a
   millisecond `grpc-timeout`; RequestMetadata names the tool `bazel-rs` and
@@ -420,7 +505,7 @@ both roots. Tracked receipts of earlier captures keep their `rust-*` paths.
 * Gson leniency in helper output (comments, single quotes, unquoted names) is
   not reproduced; such output is `error parsing output`.
 * The disk cache, the remote downloader,
-  remote output services, build without the bytes, `.netrc` for the cache and
+  remote output services, `.netrc` for the cache and
   helper scopes needing Punycode remain explicit failures.
 
 ## Evidence
@@ -488,7 +573,8 @@ both roots. Tracked receipts of earlier captures keep their `rust-*` paths.
     fails), compared on the URLs both engines request.
   * **Divergences** (documented above): no retries on HTTP 500, helper
     invocation counts under concurrent uploads, all outputs downloaded on
-    hits, User-Agent/Accept-Encoding, exit codes.
+    hits (before Build without the Bytes), User-Agent/Accept-Encoding,
+    exit codes (34 since).
   * Native-only probe: a scratch copy of `~/code/.bazelrc` (never run in
     `~/code`) now stops at `--attempt_to_print_relative_paths=true`
     (`.bazelrc:6`).

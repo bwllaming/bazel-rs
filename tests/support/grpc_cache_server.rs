@@ -1366,6 +1366,16 @@ mod grpc_cache_server {
             self.state.lock().unwrap().executed.clone()
         }
 
+        /// Remove a blob from the CAS (an eviction).
+        pub fn evict(&self, instance: &str, hash: &str) -> bool {
+            self.state
+                .lock()
+                .unwrap()
+                .cas
+                .remove(&format!("{instance}|{hash}"))
+                .is_some()
+        }
+
         /// The PublishLifecycleEvent requests and the requests of each
         /// PublishBuildToolEventStream call so far.
         pub fn bes(&self) -> (Vec<Vec<u8>>, Vec<Vec<Vec<u8>>>) {

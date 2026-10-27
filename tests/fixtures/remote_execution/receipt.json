@@ -788,7 +788,7 @@
   },
   "native_calls": {
     "ActionCache/GetActionResult": 11,
-    "ByteStream/Read": 14,
+    "ByteStream/Read": 13,
     "ByteStream/Write": 64,
     "Capabilities/GetCapabilities": 1,
     "ContentAddressableStorage/FindMissingBlobs": 12,
@@ -796,9 +796,9 @@
   },
   "native_read_calls": {
     "ActionCache/GetActionResult": 11,
-    "ByteStream/Read": 14,
+    "ByteStream/Read": 13,
     "Capabilities/GetCapabilities": 1,
-    "ContentAddressableStorage/FindMissingBlobs": 1,
+    "ContentAddressableStorage/FindMissingBlobs": 2,
     "Execution/Execute": 1
   },
   "genuine_outputs": {

@@ -1626,7 +1626,9 @@ impl Runner<'_> {
         let mut spec = spec;
         spec.cacheable = cacheable;
         let action = crate::remote_cache::remote_action_of(&spec)?;
-        crate::action::remote_spawn(remote, &action, blobs, declared, cacheable, false)
+        crate::action::remote_spawn(remote, &action, blobs, declared, cacheable, false, &|_| {
+            false
+        })
     }
 
     /// The common SpawnSpec fields of a test action's spawns: the

@@ -1241,6 +1241,23 @@ fn artifact_file(exec: &str, location: &Path, execution_root: &Path, workspace: 
     } else {
         execution_root.join(location)
     };
+    // A remote-only output (Build without the Bytes): its remote CAS URI
+    // (ByteStreamBuildEventArtifactUploader's `bytestream://`).
+    if !uri.exists()
+        && let Some(file) = crate::remote_outputs::by_exec(Path::new(exec))
+        && let Some(remote) = crate::remote_cache::active().and_then(|r| r.bytestream_prefix())
+    {
+        return Msg::new()
+            .str(1, "name", name)
+            .str(
+                2,
+                "uri",
+                format!("{remote}blobs/{}/{}", file.hash, file.size),
+            )
+            .strs(4, "path_prefix", prefix)
+            .str(5, "digest", file.hash)
+            .i64(6, "length", file.size as i64);
+    }
     let (digest, length) = file_digest(&uri);
     Msg::new()
         .str(1, "name", name)

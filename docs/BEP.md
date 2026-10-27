@@ -94,6 +94,10 @@ for a non-retryable stream failure the same exit code (45) and the same
 error line. The streamed event kinds differ as declared below (genuine
 also posts a Fetch event, hence one more progress event).
 
+Remote-only outputs (Build without the Bytes, docs/REMOTE_CACHE.md) are
+named by `bytestream://AUTHORITY/[INSTANCE/]blobs/HASH/SIZE` in every
+transport, with their digest and length.
+
 Divergences: the BES transport converts local files to `file://` URIs;
 with a remote cache genuine uploads referenced files and uses
 `bytestream://` URIs (ByteStreamBuildEventArtifactUploader). Progress

@@ -44,9 +44,15 @@ pub struct RemoteOptions {
     pub retry_max_delay: Duration,
     pub max_connections: i32,
     pub max_concurrency_per_connection: i32,
-    /// `--remote_download_outputs`: accepted; the native profile always
-    /// materializes every output (docs/REMOTE_CACHE.md).
+    /// `--remote_download_outputs` (Build without the Bytes,
+    /// crate::remote_outputs).
     pub download_outputs: DownloadOutputs,
+    /// `--remote_download_regex` (old `--experimental_remote_download_regex`).
+    pub download_regex: Vec<String>,
+    /// `--experimental_remote_cache_ttl` (default 3h).
+    pub cache_ttl: Duration,
+    /// `--experimental_remote_cache_eviction_retries` (default 5).
+    pub eviction_retries: i32,
     /// `--tls_certificate`, `--tls_client_certificate`, `--tls_client_key`,
     /// `--tls_authority_override` (AuthAndTLSOptions).
     pub tls: TlsOptions,
@@ -114,6 +120,9 @@ impl Default for RemoteOptions {
             print_execution_messages: PrintExecutionMessages::Failure,
             cache_compression: false,
             cache_compression_threshold: 100,
+            download_regex: Vec::new(),
+            cache_ttl: Duration::from_secs(3 * 3600),
+            eviction_retries: 5,
         }
     }
 }
@@ -213,6 +222,26 @@ impl RemoteOptions {
                 Ok(used)
             }));
         }
+        if let Some(found) = value_option(
+            arg,
+            next,
+            &[
+                "remote_download_regex",
+                "experimental_remote_download_regex",
+            ],
+        ) {
+            return Some(found.and_then(|(value, used)| {
+                crate::remote_outputs::pattern("remote_download_regex", value)?;
+                self.download_regex.push(value.to_owned());
+                Ok(used)
+            }));
+        }
+        if let Some(found) = value_option(arg, next, &["experimental_remote_cache_ttl"]) {
+            return Some(found.and_then(|(value, used)| {
+                self.cache_ttl = remote_duration("experimental_remote_cache_ttl", value)?;
+                Ok(used)
+            }));
+        }
         if let Some(found) = value_option(arg, next, &["remote_retry_max_delay"]) {
             return Some(found.and_then(|(value, used)| {
                 self.retry_max_delay = remote_duration("remote_retry_max_delay", value)?;
@@ -225,6 +254,10 @@ impl RemoteOptions {
                 &mut self.retries,
             ),
             (&["remote_max_connections"][..], &mut self.max_connections),
+            (
+                &["experimental_remote_cache_eviction_retries"][..],
+                &mut self.eviction_retries,
+            ),
             (
                 &["experimental_remote_cache_compression_threshold"][..],
                 &mut self.cache_compression_threshold,
@@ -925,6 +958,8 @@ pub struct Hit {
 pub enum Output {
     File(Vec<u8>),
     Symlink(String),
+    /// A file left in the remote CAS (Build without the Bytes).
+    Remote(Digest),
 }
 
 /// The REAPI form of one spawn.
@@ -1266,10 +1301,13 @@ impl RemoteCache {
     /// `--remote_download_outputs=all`).
     /// `outputs`: the declared outputs and whether each is an unresolved
     /// symlink artifact (read from `output_symlinks`).
+    /// `stay_remote(index)`: whether a non-empty file output may stay in
+    /// the remote CAS (crate::remote_outputs).
     pub fn lookup(
         &self,
         action: &RemoteAction,
         outputs: &[(String, bool)],
+        stay_remote: &dyn Fn(usize) -> bool,
     ) -> Result<Option<Hit>, CacheError> {
         let Some(bytes) = self.action_result(&action.key)? else {
             return Ok(None);
@@ -1280,8 +1318,25 @@ impl RemoteCache {
         if result.exit_code != 0 {
             return Ok(None);
         }
+        let remote_ok = match self.remote_only(
+            outputs
+                .iter()
+                .enumerate()
+                .filter_map(|(index, (output, symlink))| {
+                    let file = result
+                        .output_files
+                        .iter()
+                        .find(|file| &file.path == output)?;
+                    (!symlink && file.digest.size != 0 && stay_remote(index))
+                        .then(|| (index, file.digest.clone()))
+                }),
+            &action.key,
+        )? {
+            Some(remote_ok) => remote_ok,
+            None => return Ok(None),
+        };
         let mut downloaded = Vec::new();
-        for (output, symlink) in outputs {
+        for (index, (output, symlink)) in outputs.iter().enumerate() {
             let linked = result
                 .output_symlinks
                 .iter()
@@ -1291,6 +1346,9 @@ impl RemoteCache {
                 // (else SkyframeActionExecutor.checkOutputs fails it as `not
                 // a symlink`, a miss here).
                 Some(_) if *symlink => return Ok(None),
+                Some(file) if remote_ok.contains(&index) => {
+                    downloaded.push(Output::Remote(file.digest.clone()))
+                }
                 Some(file) => match self.blob(&file.digest, &file.contents, output, &action.key)? {
                     Some(bytes) => downloaded.push(Output::File(bytes)),
                     None => return Ok(None),
@@ -1364,6 +1422,11 @@ impl RemoteCache {
                     path: path.clone(),
                     target: target.clone(),
                 }),
+                Output::Remote(_) => {
+                    return Err(CacheError::Other(format!(
+                        "remote-only output {path} cannot be uploaded"
+                    )));
+                }
             }
         }
         let stdout_digest = Digest::of(stdout);
@@ -1490,6 +1553,8 @@ pub enum Downloaded {
     Directory(DownloadedTree),
     /// Not in the result (a failed action's).
     Missing,
+    /// A file left in the remote CAS (Build without the Bytes).
+    Remote(Digest),
 }
 
 /// A downloaded ActionResult (RemoteExecutionService.downloadOutputs with
@@ -1520,6 +1585,54 @@ impl RemoteCache {
 
     pub fn count_hit(&self) {
         self.hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `bytestream://AUTHORITY/[INSTANCE/]` of a gRPC cache (the build
+    /// event files' URIs of remote-only outputs); `None` for HTTP.
+    pub fn bytestream_prefix(&self) -> Option<String> {
+        match &self.backend {
+            Backend::Grpc(grpc) => Some(grpc.bytestream_prefix()),
+            Backend::Http(_) => None,
+        }
+    }
+
+    /// Which of the `candidates` (output index, digest) stay remote-only
+    /// (Build without the Bytes): with a gRPC cache all of them, once one
+    /// FindMissingBlobs found every blob present (`None` when one is
+    /// missing: the result is unusable, a cache miss, and the producer
+    /// runs instead of leaving a consumer a lost input); an HTTP cache
+    /// cannot tell, so its outputs are downloaded.
+    fn remote_only(
+        &self,
+        candidates: impl Iterator<Item = (usize, Digest)>,
+        key: &Digest,
+    ) -> Result<Option<HashSet<usize>>, CacheError> {
+        let candidates: Vec<(usize, Digest)> = candidates.collect();
+        if candidates.is_empty() {
+            return Ok(Some(HashSet::new()));
+        }
+        let Backend::Grpc(grpc) = &self.backend else {
+            return Ok(Some(HashSet::new()));
+        };
+        let mut digests: Vec<Digest> = candidates
+            .iter()
+            .map(|(_, digest)| digest.clone())
+            .collect();
+        digests.sort_by(|a, b| a.hash.cmp(&b.hash));
+        digests.dedup();
+        if !grpc.find_missing(&digests, &key.hash)?.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(
+            candidates.into_iter().map(|(index, _)| index).collect(),
+        ))
+    }
+
+    /// One blob by digest, verified (a remote-only output being
+    /// materialized, crate::remote_outputs); `Ok(None)` when the CAS lacks
+    /// it.
+    pub fn fetch_blob(&self, digest: &Digest) -> Result<Option<Vec<u8>>, CacheError> {
+        self.blob(digest, &[], &digest.to_string(), digest)
     }
 
     /// GetActionResult, decoded; `Ok(None)` on a miss.
@@ -1590,12 +1703,24 @@ impl RemoteCache {
                     let data: &[u8] = match source {
                         BlobSource::Bytes(bytes) => bytes,
                         BlobSource::File(path) => {
-                            bytes = std::fs::read(path).map_err(|error| {
-                                CacheError::Other(format!(
-                                    "cannot read input {}: {error}",
-                                    path.display()
-                                ))
-                            })?;
+                            bytes = match std::fs::read(path) {
+                                Ok(bytes) => bytes,
+                                // A remote-only input (Build without the
+                                // Bytes) the remote CAS lost.
+                                Err(_) if crate::remote_outputs::get(path).is_some() => {
+                                    crate::action::lost_remote_output(path);
+                                    return Err(CacheError::Other(format!(
+                                        "Lost inputs no longer available remotely: {} ({digest})",
+                                        path.display()
+                                    )));
+                                }
+                                Err(error) => {
+                                    return Err(CacheError::Other(format!(
+                                        "cannot read input {}: {error}",
+                                        path.display()
+                                    )));
+                                }
+                            };
                             if Digest::of(&bytes) != digest {
                                 return Err(CacheError::Other(format!(
                                     "input {} changed during the build (expected digest {digest})",
@@ -1635,14 +1760,41 @@ impl RemoteCache {
     /// RemoteExecutionService.downloadOutputs (`all`): every declared
     /// output of `result` (files, symlinks, tree artifacts from their
     /// `Tree`), stdout and stderr. `Ok(None)` when a blob is missing.
+    /// `stay_remote(index)`: whether a non-empty file output may stay in
+    /// the remote CAS (crate::remote_outputs; a failed result's outputs are
+    /// always downloaded); a cached result's are checked present first,
+    /// a `fresh`ly executed one's are not.
     pub fn download(
         &self,
         result: &reapi::ActionResult,
         declared: &[(String, OutputKind)],
         key: &Digest,
+        stay_remote: &dyn Fn(usize) -> bool,
+        fresh: bool,
     ) -> Result<Option<DownloadedResult>, CacheError> {
+        let remote_ok = if result.exit_code == 0 {
+            let candidates = declared
+                .iter()
+                .enumerate()
+                .filter_map(|(index, (path, kind))| {
+                    let file = result.output_files.iter().find(|file| &file.path == path)?;
+                    (*kind == OutputKind::File && file.digest.size != 0 && stay_remote(index))
+                        .then(|| (index, file.digest.clone()))
+                });
+            if fresh {
+                // Just executed: the executor's outputs are in its CAS.
+                candidates.map(|(index, _)| index).collect()
+            } else {
+                match self.remote_only(candidates, key)? {
+                    Some(remote_ok) => remote_ok,
+                    None => return Ok(None),
+                }
+            }
+        } else {
+            HashSet::new()
+        };
         let mut outputs = Vec::new();
-        for (path, kind) in declared {
+        for (index, (path, kind)) in declared.iter().enumerate() {
             let file = result.output_files.iter().find(|file| &file.path == path);
             let link = result
                 .output_symlinks
@@ -1653,6 +1805,9 @@ impl RemoteCache {
                 .iter()
                 .find(|directory| &directory.path == path);
             let output = match (kind, file, link, directory) {
+                (OutputKind::File, Some(file), _, _) if remote_ok.contains(&index) => {
+                    Downloaded::Remote(file.digest.clone())
+                }
                 (OutputKind::File, Some(file), _, _) => {
                     match self.verified(&file.digest, &file.contents, path, key)? {
                         Some(bytes) => Downloaded::File(bytes),
@@ -1838,7 +1993,20 @@ mod tests {
             Some(Ok(false))
         );
         assert_eq!(options.cache_compression_threshold, 7);
-        assert_eq!(options.parse("--remote_download_regex=x", None), None);
+        assert_eq!(
+            options.parse("--remote_download_regex=.*\\.o", None),
+            Some(Ok(false))
+        );
+        assert_eq!(options.download_regex, [".*\\.o"]);
+        assert!(matches!(
+            options.parse("--remote_download_regex=(", None),
+            Some(Err(_))
+        ));
+        assert_eq!(
+            options.parse("--experimental_remote_cache_ttl=10", None),
+            Some(Ok(false))
+        );
+        assert_eq!(options.cache_ttl, Duration::from_secs(10));
     }
 
     #[test]

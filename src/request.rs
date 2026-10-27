@@ -750,6 +750,58 @@ fn execute_tests(
     Ok(outcome)
 }
 
+/// RemoteOutputChecker's top-level outputs (crate::remote_outputs): with
+/// `--remote_download_outputs=toplevel`, and always in `run`, the requested
+/// targets' reported artifacts (in `test` not those of the tests
+/// themselves: shouldAddTopLevelTarget), aspect reports, and `run`'s
+/// executable, runfiles tree and runfiles.
+fn set_remote_downloads(
+    command: &RequestCommand,
+    requested: &[(Label, Produced)],
+    aspect_reports: &[(String, Label, Vec<Produced>)],
+    run_plans: &[(Label, PlannedRun)],
+) {
+    let Some(policy) = crate::remote_outputs::policy() else {
+        return;
+    };
+    let run = matches!(command, RequestCommand::Run { .. });
+    if !run && policy.mode != crate::remote_outputs::Mode::Toplevel {
+        return;
+    }
+    let tests: std::collections::HashSet<&Label> = match command {
+        RequestCommand::Test { tests, .. } => tests.iter().map(|test| &test.label).collect(),
+        _ => Default::default(),
+    };
+    let mut download = std::collections::HashSet::new();
+    let mut add = |produced: &Produced| {
+        if let Some((id, index)) = &produced.producer {
+            download.insert((id.clone(), *index));
+        }
+    };
+    for (label, produced) in requested {
+        if !tests.contains(label) {
+            add(produced);
+        }
+    }
+    for (_, _, produced) in aspect_reports {
+        produced.iter().for_each(&mut add);
+    }
+    if run {
+        for (_, plan) in run_plans {
+            add(&plan.executable);
+            if let Some((manifest, _)) = &plan.tree {
+                add(manifest);
+            }
+            for (_, entry) in plan.entries.iter().flatten() {
+                if let Some(entry) = entry {
+                    add(entry);
+                }
+            }
+        }
+    }
+    crate::remote_outputs::set_download(download);
+}
+
 /// [`execute`], with the test actions of `bazel test` run inside its
 /// execution phase when `tests` is given ([`execute_tests`]); a failed build
 /// returns its error while the session keeps what its tests reported.
@@ -788,6 +840,7 @@ pub fn execute_with_tests(
     // at their exec paths, as BuildResultPrinter reports artifactsToBuild
     // under --nobuild (no status nodes are planned under --nobuild).
     let symlink_outputs = symlink_outputs(&nodes, &run_plans);
+    set_remote_downloads(&command, &requested, &aspect_reports, &run_plans);
     let mut action_errors: Vec<(String, String)> = Vec::new();
     let results = if execute {
         crate::perf_mark("execute.start");

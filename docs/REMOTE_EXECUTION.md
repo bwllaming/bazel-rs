@@ -28,7 +28,7 @@ strategy), `src/engine.rs` (`remote_platform`). Pinned source:
 | `--remote_print_execution_messages=failure\|success\|all` | `Remote server execution message: …` |
 | `--remote_execution_priority`, `--remote_result_cache_priority` | `0` only |
 | `--remote_timeout`, `--remote_retries`, `--remote_retry_max_delay`, `--remote_instance_name`, TLS and credential helpers | as for the cache; Execution calls have **no** deadline (`RemoteGrpcServiceConfig` covers the cache services only) |
-| `--remote_download_outputs` | accepted; every output is downloaded (`all`) |
+| `--remote_download_outputs`, `--remote_download_regex`, `--experimental_remote_cache_ttl` | Build without the Bytes (docs/REMOTE_CACHE.md): remote-only outputs stay in the executor's CAS |
 
 These options are execution-only: they are left out of the analysis
 snapshot key (`src/snapshot/key.rs`).
@@ -116,7 +116,9 @@ change remote resolution (they are the server's business, as in Bazel).
    forced), or lost output blobs (retried without cached results), or a
    `cached_result` that failed or lacks outputs. Statuses without details
    are final.
-6. Download (`--remote_download_outputs=all`): files (inline contents or
+6. Download (what `--remote_download_outputs` keeps local, docs/REMOTE_CACHE.md
+   "Build without the Bytes"; a cached result's remote-only outputs are
+   checked present first, a fresh execution's are not): files (inline contents or
    ByteStream, verified), symlinks, tree artifacts from their `Tree`
    (directories, files with executable bits, symlinks), stdout and stderr.
    The outputs are written into the spawn's execution root and published
@@ -210,8 +212,8 @@ remotely, local spawns …)`).
     identical; native then reads genuine's results (11 remote cache hits,
     the `no-remote-cache` genrule executes). Receipt
     `tests/fixtures/remote_execution/receipt.json`. Call counts differ
-    (genuine: 13 FindMissingBlobs and 12 Reads, native 12 and 14: genuine
-    downloads top-level outputs only).
+    (genuine: 13 FindMissingBlobs and 12 Reads, native 12 and 13 since
+    Build without the Bytes; 14 before).
   * `genuine_bazel_and_native_share_a_nativelink_executor`
     (`BAZEL_RS_NATIVELINK=<nativelink>`): NativeLink 1.8.2 (the
     `nativelink-1.8.2-x86_64-unknown-linux-musl` GitHub release binary: CAS,
@@ -231,8 +233,7 @@ remotely, local spawns …)`).
 
 ## Divergences
 
-* Outputs are always downloaded (`--remote_download_outputs=all`); no
-  build without the bytes.
+* Build without the Bytes diverges as docs/REMOTE_CACHE.md lists.
 * gRPC `grpc-status-details-bin` trailers are not parsed: call failures
   carry no details (ExecuteRetrier never retries them); details inside
   Operations and ExecuteResponses are used.

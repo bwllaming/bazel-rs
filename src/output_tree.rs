@@ -182,6 +182,13 @@ pub fn publish(
         let Some(name) = exec.file_name() else {
             continue;
         };
+        // A remote-only output (Build without the Bytes) has no file: like
+        // Bazel's output tree, nothing is at its path (an earlier build's
+        // entry goes).
+        if crate::remote_outputs::get(source).is_some() {
+            let _ = fs::remove_file(root.join(exec));
+            continue;
+        }
         if clean.contains(parent)
             && let Some(kind) = crate::action::published_kind(source)
             && record

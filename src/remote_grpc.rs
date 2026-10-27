@@ -799,6 +799,15 @@ impl GrpcCache {
         Ok(missing)
     }
 
+    /// `bytestream://AUTHORITY/[INSTANCE/]` (ByteStreamBuildEventArtifactUploader).
+    pub fn bytestream_prefix(&self) -> String {
+        format!(
+            "bytestream://{}/{}",
+            self.channel.target().authority,
+            self.resource_prefix()
+        )
+    }
+
     fn resource_prefix(&self) -> String {
         if self.options.instance_name.is_empty() {
             String::new()
@@ -916,6 +925,8 @@ impl GrpcCache {
                 }
             }
         }
+        READ_BLOBS.fetch_add(1, Ordering::Relaxed);
+        READ_BYTES.fetch_add(data.len() as u64, Ordering::Relaxed);
         if data.len() as u64 != digest.size {
             // OutputDigestMismatchException (verification also catches it).
             return Err(Status::local(format!(
@@ -1084,6 +1095,17 @@ impl GrpcCache {
             }
         }
     }
+}
+
+static READ_BLOBS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static READ_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The blobs and (uncompressed) bytes ByteStream.Read delivered so far.
+pub fn read_totals() -> (u64, u64) {
+    (
+        READ_BLOBS.load(Ordering::Relaxed),
+        READ_BYTES.load(Ordering::Relaxed),
+    )
 }
 
 /// One zstd frame of `bytes` (ZstdCompressingInputStream).

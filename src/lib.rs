@@ -114,6 +114,7 @@ pub mod registry_session;
 pub mod remote_cache;
 pub mod remote_execution;
 pub mod remote_grpc;
+pub mod remote_outputs;
 pub mod repo_env;
 pub mod repository;
 mod repository_budget;

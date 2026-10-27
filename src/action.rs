@@ -692,6 +692,22 @@ struct Output {
     /// The runfiles tree published with a Transform::RunfilesTree MANIFEST.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runfiles: Option<RunfilesTreeManifest>,
+    /// A file left in the remote CAS (Build without the Bytes,
+    /// crate::remote_outputs): no file is published until a consumer
+    /// materializes it. Absent from every other manifest, so those are
+    /// byte for byte what they were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    remote: Option<RemoteRecord>,
+}
+
+/// A remote-only output's metadata: its size and when the remote cache's
+/// guarantee for it ends (`--experimental_remote_cache_ttl` after it was
+/// received; Unix milliseconds).
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
+#[serde(deny_unknown_fields)]
+struct RemoteRecord {
+    size: u64,
+    expires: u64,
 }
 
 /// A published runfiles tree: every entry below the tree root except
@@ -769,6 +785,24 @@ impl Sha256Digest {
     /// Whether `text` is exactly this digest's spelling (a manifest's).
     fn spelled(&self, text: &str) -> bool {
         self.hex_bytes().as_slice() == text.as_bytes()
+    }
+
+    /// The digest spelled `text` (64 lowercase hex digits).
+    fn from_hex(text: &str) -> Option<Self> {
+        let bytes = text.as_bytes();
+        if bytes.len() != 64 {
+            return None;
+        }
+        let digit = |byte: u8| match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            _ => None,
+        };
+        let mut out = [0u8; 32];
+        for (index, pair) in bytes.chunks(2).enumerate() {
+            out[index] = digit(pair[0])? << 4 | digit(pair[1])?;
+        }
+        Some(Self(out))
     }
 }
 
@@ -1794,6 +1828,9 @@ fn repository_tree_file(root: &Path, path: &Path) -> bool {
 /// enables following published symlink outputs when `follow` is set. A file
 /// of the cache's immutable stores is read once per process ([`file_memo`]).
 fn read_input(path: &Path, root: Option<&Path>, follow: bool) -> Result<Input, String> {
+    if let Some(input) = remote_only_input(path) {
+        return Ok(input);
+    }
     let (path, leaf) = if follow {
         resolve_published(path, root)?
     } else {
@@ -1821,6 +1858,101 @@ fn read_input(path: &Path, root: Option<&Path>, follow: bool) -> Result<Input, S
         remember_file(&input);
     }
     Ok(input)
+}
+
+/// A remote-only published output (crate::remote_outputs) as an input:
+/// its digest and size, published mode, never read.
+fn remote_only_input(path: &Path) -> Option<Input> {
+    let file = crate::remote_outputs::get(path)?;
+    Some(Input {
+        path: path.to_path_buf(),
+        digest: Sha256Digest::from_hex(&file.hash)?,
+        size: file.size,
+        executable: 0o111,
+        mode: OUTPUT_MODE,
+    })
+}
+
+/// Materialize the remote-only output published at `path`
+/// (RemoteActionInputFetcher before a local consumer runs): its blob is
+/// downloaded (verified) into the store and linked at its published path,
+/// where it then is an ordinary published output. A blob the remote CAS
+/// lost invalidates its producer's cache entry and fails the consumer
+/// with Bazel's lost-input text; the command is retried
+/// (`--experimental_remote_cache_eviction_retries`).
+fn materialize(cas: &Path, root: &Path, path: &Path) -> Result<(), String> {
+    if crate::remote_outputs::get(path).is_none() {
+        return Ok(());
+    }
+    static STRIPES: [Mutex<()>; 64] = [const { Mutex::new(()) }; 64];
+    let stripe = usize::try_from(crate::digest_memo::path_hash(path)).unwrap_or(0) % 64;
+    let _single = STRIPES[stripe].lock().unwrap_or_else(|e| e.into_inner());
+    let Some(file) = crate::remote_outputs::get(path) else {
+        return Ok(());
+    };
+    let exec = action_entry(root, path).and_then(|entry| {
+        path.strip_prefix(entry.join("outputs"))
+            .ok()
+            .map(Path::to_path_buf)
+    });
+    if fs::symlink_metadata(path).is_ok() {
+        crate::remote_outputs::materialized(path, None);
+        return Ok(());
+    }
+    let shown = exec.as_deref().unwrap_or(path).display().to_string();
+    let remote = crate::remote_cache::active().ok_or_else(|| {
+        format!("remote-only output {shown} needs the remote cache, which is not configured")
+    })?;
+    let digest = crate::reapi::Digest {
+        hash: file.hash.clone(),
+        size: file.size,
+    };
+    let bytes = match remote.fetch_blob(&digest) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            // ActionRewindStrategy's lost inputs: the producer reruns on
+            // the next attempt.
+            lost_remote_output(path);
+            return Err(format!(
+                "Lost inputs no longer available remotely: {shown} ({digest})"
+            ));
+        }
+        Err(error) => {
+            crate::remote_cache::note_remote_failure();
+            return Err(format!("Failed to fetch remote input {shown}: {error}"));
+        }
+    };
+    let blob = store_bytes(cas, &bytes, 0o111)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("invalid output path {}", path.display()))?;
+    ensure_directory(parent)?;
+    let replacement = temporary(parent, "remote");
+    if hard_link(&blob, &replacement).is_err() {
+        copy_verified(&blob, &replacement, digest_of_hex(&file.hash)?)?;
+        set_mode(&replacement, OUTPUT_MODE)?;
+    }
+    fs::rename(&replacement, path).map_err(|e| io_error("cannot publish", path, e))?;
+    crate::remote_outputs::materialized(path, exec.as_deref());
+    Ok(())
+}
+
+/// The remote-only output published at `path` is gone from the remote CAS:
+/// its producer's cache entry is invalidated (the producer reruns on the
+/// next attempt) and the command is marked for a retry.
+pub(crate) fn lost_remote_output(path: &Path) {
+    crate::remote_outputs::note_lost();
+    let entry = crate::remote_outputs::entry_of(path).map(Path::to_path_buf);
+    if let Some(entry) = entry {
+        let _ = fs::remove_file(entry.join("manifest.json"));
+        forget_outputs(&entry);
+        forget_published(&entry);
+        crate::remote_outputs::forget_entry(&entry);
+    }
+}
+
+fn digest_of_hex(text: &str) -> Result<Sha256Digest, String> {
+    Sha256Digest::from_hex(text).ok_or_else(|| format!("invalid digest '{text}'"))
 }
 
 /// read_input for a path already checked to be a regular file.
@@ -4548,6 +4680,7 @@ fn stage_inputs_untimed(
     for (name, input) in inputs {
         match input {
             Staged::File(input) => {
+                materialize(cas, root, &input.path)?;
                 stage_input_file(cas, root, input, execroot, name, &mut staged, &mut distinct)?
             }
             Staged::Tree(tree) => {
@@ -4897,6 +5030,12 @@ type Listings = BTreeMap<PathBuf, Vec<PathBuf>>;
 /// published tree (also a symlink output's target tree) seeds the tree
 /// memo, and every other published output the output memo, so consumers in
 /// this process never inspect them again ([`read_staged`]).
+///
+/// A remote-only output (Build without the Bytes) without a file is valid
+/// while `stay_remote` admits it and its metadata has not expired
+/// (`--experimental_remote_cache_ttl`); otherwise the action reruns, which
+/// downloads it (ActionCacheChecker with RemoteOutputChecker
+/// .shouldTrustMetadata). Once materialized it is an ordinary output.
 fn cache_valid(
     directory: &Path,
     key: &str,
@@ -4904,10 +5043,12 @@ fn cache_valid(
     (trees, links): (&BTreeSet<PathBuf>, &BTreeSet<PathBuf>),
     root: &Path,
     write_stamps: bool,
+    stay_remote: &dyn Fn(&Path) -> bool,
 ) -> Option<(Listings, bool)> {
     let manifest_path = directory.join("manifest.json");
     let mut validated = Vec::new();
     let mut values = Vec::new();
+    let mut remote_values = Vec::new();
     let mut check = || -> Result<Option<(Listings, bool)>, String> {
         let bytes = read_manifest(&manifest_path, root)?;
         let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
@@ -4984,6 +5125,25 @@ fn cache_valid(
                     listings.insert(name.clone(), tree_listing(&tree));
                     validated.push((path, tree));
                 }
+                (None, false)
+                    if entry.remote.is_some()
+                        && entry.symlink.is_none()
+                        && fs::symlink_metadata(&path)
+                            .is_err_and(|error| error.kind() == io::ErrorKind::NotFound) =>
+                {
+                    let remote = entry.remote.as_ref().expect("checked");
+                    if !stay_remote(name) || !crate::remote_outputs::alive(remote.expires) {
+                        return Ok(None);
+                    }
+                    remote_values.push((
+                        path,
+                        name.clone(),
+                        crate::remote_outputs::RemoteFile {
+                            hash: entry.digest.clone(),
+                            size: remote.size,
+                        },
+                    ));
+                }
                 (None, false) => {
                     // read_input (no symlink to follow), with the file's
                     // identity for the output tree.
@@ -5026,6 +5186,9 @@ fn cache_valid(
         }
     }
     remember_outputs(root, values);
+    for (path, exec, file) in remote_values {
+        crate::remote_outputs::register(path, exec, file);
+    }
     Some((listings, pending))
 }
 
@@ -6142,7 +6305,9 @@ pub fn write_downloaded(
             }
             Ok(())
         }
-        Downloaded::Missing => Ok(()),
+        // Missing stays missing (the publication reports it); a
+        // remote-only file is published as metadata.
+        Downloaded::Missing | Downloaded::Remote(_) => Ok(()),
     }
 }
 
@@ -6224,6 +6389,7 @@ pub fn remote_spawn(
     declared: &[(String, crate::remote_cache::OutputKind)],
     cacheable: bool,
     mandatory: bool,
+    stay_remote: &dyn Fn(usize) -> bool,
 ) -> Result<RemoteSpawn, String> {
     use crate::remote_cache::CacheError;
     use crate::remote_execution::ExecError;
@@ -6286,7 +6452,7 @@ pub fn remote_spawn(
     if accept_cached {
         match remote.cached_result(key) {
             Ok(Some(result)) if result.exit_code == 0 && !missing(&result) => {
-                match remote.download(&result, declared, key) {
+                match remote.download(&result, declared, key, stay_remote, false) {
                     Ok(Some(downloaded)) => {
                         remote.count_hit();
                         return Ok(RemoteSpawn::Done {
@@ -6355,7 +6521,7 @@ pub fn remote_spawn(
             {
                 crate::note!("Remote server execution message: {}", response.message);
             }
-            match remote.download(&result, declared, key) {
+            match remote.download(&result, declared, key, stay_remote, !response.cached_result) {
                 Ok(Some(downloaded)) => Ok((downloaded, response.cached_result)),
                 // A BulkTransferException of CacheNotFoundExceptions:
                 // retried without cached results.
@@ -6404,6 +6570,9 @@ fn run_remotely(
 ) -> Result<RemoteRun, String> {
     let declared = declared_outputs(action)?;
     let failure = format!("action '{}'", action.id);
+    let stay_remote = |index: usize| {
+        crate::remote_outputs::may_stay_remote(&action.id, index, &action.outputs[index])
+    };
     match remote_spawn(
         remote,
         spec,
@@ -6411,6 +6580,7 @@ fn run_remotely(
         &declared,
         remote_policy(action).0,
         true,
+        &stay_remote,
     )? {
         RemoteSpawn::Fallback => Ok(RemoteRun::Fallback),
         RemoteSpawn::Failed(message) => Err(format!("{failure} failed: {message}")),
@@ -6500,6 +6670,15 @@ pub fn execute_with_remote(
     // takes the lock below). The lock serializes checking and executing one
     // key across processes; it never protected an entry after its check.
     // Stamps to record (crate::action::tree_stamps) are written under it.
+    // Build without the Bytes: which outputs may stay remote-only
+    // (crate::remote_outputs, by declaration index).
+    let stay_remote = |name: &Path| -> bool {
+        action
+            .outputs
+            .iter()
+            .position(|output| output == name)
+            .is_some_and(|index| crate::remote_outputs::may_stay_remote(&action.id, index, name))
+    };
     if let Some((listings, false)) = cache_valid(
         &cached,
         key,
@@ -6507,6 +6686,7 @@ pub fn execute_with_remote(
         (&action.extra.tree_outputs, &action.extra.symlink_outputs),
         root,
         false,
+        &stay_remote,
     ) {
         count_check(3, &mut clock);
         CHECKS[4].fetch_add(1, Ordering::Relaxed);
@@ -6547,6 +6727,7 @@ pub fn execute_with_remote(
         (&action.extra.tree_outputs, &action.extra.symlink_outputs),
         root,
         true,
+        &stay_remote,
     ) {
         count_check(3, &mut clock);
         CHECKS[4].fetch_add(1, Ordering::Relaxed);
@@ -6559,6 +6740,7 @@ pub fn execute_with_remote(
     forget_trees(&cached);
     forget_outputs(&cached);
     forget_published(&cached);
+    crate::remote_outputs::forget_entry(&cached);
     remove_stale(&cached)?;
     let work = fresh_work(work_parent, key)?;
     let execroot = work.0.join("execroot");
@@ -6683,7 +6865,10 @@ pub fn execute_with_remote(
                 ))
             })
             .collect::<Result<Vec<_>, String>>()?;
-        match remote.lookup(spec, &declared) {
+        let stay_remote = |index: usize| {
+            crate::remote_outputs::may_stay_remote(&action.id, index, &action.outputs[index])
+        };
+        match remote.lookup(spec, &declared, &stay_remote) {
             Ok(hit) => {
                 remote_hit = hit.map(|hit| RemoteDone {
                     outputs: hit
@@ -6695,6 +6880,9 @@ pub fn execute_with_remote(
                             }
                             crate::remote_cache::Output::Symlink(target) => {
                                 crate::remote_cache::Downloaded::Symlink(target)
+                            }
+                            crate::remote_cache::Output::Remote(digest) => {
+                                crate::remote_cache::Downloaded::Remote(digest)
                             }
                         })
                         .collect(),
@@ -6803,6 +6991,11 @@ pub fn execute_with_remote(
             if write.executable { 0o111 } else { 0 },
         )?;
     } else if let Some(transform) = &action.extra.transform {
+        // A native transform reads or links its inputs in place: remote-only
+        // ones are materialized first (a runfiles tree links every input).
+        for (source, _) in &action.inputs {
+            materialize(cas, root, source.as_path())?;
+        }
         run_transform(action, transform, &prepared, &execroot, (cas, root))?;
     } else if let Some(hit) = &remote_hit {
         crate::progress::spawn_started(if hit.cached {
@@ -7095,6 +7288,25 @@ pub fn execute_with_remote(
             tree_reads.insert(name, read);
         }
     }
+    // Remote-only outputs (Build without the Bytes): published as metadata.
+    let remote_only: BTreeMap<&PathBuf, &crate::reapi::Digest> = match &remote_hit {
+        Some(hit) => action
+            .outputs
+            .iter()
+            .zip(&hit.outputs)
+            .filter_map(|(name, output)| match output {
+                crate::remote_cache::Downloaded::Remote(digest) => Some((name, digest)),
+                _ => None,
+            })
+            .collect(),
+        None => BTreeMap::new(),
+    };
+    let expires = if remote_only.is_empty() {
+        0
+    } else {
+        crate::remote_outputs::expiration()
+    };
+    let mut registered = Vec::new();
     let mut listings = BTreeMap::new();
     // Published tree outputs, for the tree memo once the entry is in place.
     let mut published_trees = Vec::new();
@@ -7106,6 +7318,21 @@ pub fn execute_with_remote(
         let tree_output = action.extra.tree_outputs.contains(name);
         let mut publish = || -> Result<Output, String> {
             let hex_name = hex(name.as_os_str().as_bytes());
+            if let Some(digest) = remote_only.get(name) {
+                registered.push((name.clone(), (*digest).clone()));
+                return Ok(Output {
+                    name: hex_name,
+                    digest: digest.hash.clone(),
+                    mode: OUTPUT_MODE,
+                    tree: None,
+                    symlink: None,
+                    runfiles: None,
+                    remote: Some(RemoteRecord {
+                        size: digest.size,
+                        expires,
+                    }),
+                });
+            }
             // An unresolved symlink output: the symlink itself, published
             // as is; its value is its link text
             // (ActionOutputMetadataStore.fileArtifactValueFromArtifact ->
@@ -7135,6 +7362,7 @@ pub fn execute_with_remote(
                     tree: None,
                     symlink: Some(hex(text)),
                     runfiles: None,
+                    remote: None,
                 });
             }
             if let Some(symlink_target) = symlink_target {
@@ -7172,6 +7400,7 @@ pub fn execute_with_remote(
                         tree: None,
                         symlink,
                         runfiles,
+                        remote: None,
                     },
                     Staged::Tree(tree) => {
                         listings.insert(name.clone(), tree_listing(tree));
@@ -7182,6 +7411,7 @@ pub fn execute_with_remote(
                             tree: Some(tree_manifest(tree)),
                             symlink,
                             runfiles: None,
+                            remote: None,
                         }
                     }
                     Staged::SourceDirectory(_) | Staged::Symlink(_) => {
@@ -7202,6 +7432,7 @@ pub fn execute_with_remote(
                     tree: Some(tree_manifest(&tree)),
                     symlink: None,
                     runfiles: None,
+                    remote: None,
                 };
                 published_trees.push((name, tree));
                 return Ok(output);
@@ -7219,6 +7450,7 @@ pub fn execute_with_remote(
                 tree: None,
                 symlink: None,
                 runfiles: None,
+                remote: None,
             })
         };
         let output = publish().map_err(|e| {
@@ -7236,6 +7468,16 @@ pub fn execute_with_remote(
     // Same-filesystem rename publishes all declared files and the manifest at
     // once. Crash durability is not promised; damaged entries rebuild on use.
     fs::rename(&completed, &cached).map_err(|e| io_error("cannot publish action", &cached, e))?;
+    for (name, digest) in registered {
+        crate::remote_outputs::register(
+            cached.join("outputs").join(&name),
+            name,
+            crate::remote_outputs::RemoteFile {
+                hash: digest.hash,
+                size: digest.size,
+            },
+        );
+    }
     // What a consumer would read from the published entry: the same files,
     // digests and (normalized) modes at their published paths.
     for (name, input) in &published_files {

@@ -2637,6 +2637,10 @@ fn test_tail(
             }
         }
     }
+    if std::env::var_os("BAZEL_RS_REMOTE_STATS").is_some_and(|value| value == "1") {
+        let (blobs, bytes) = bazel_rs::remote_grpc::read_totals();
+        bazel_rs::note!("bazel-rs: remote downloads: {blobs} blobs, {bytes} bytes");
+    }
     if remote_enabled {
         bazel_rs::note!(
             "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; {})",
@@ -4182,6 +4186,21 @@ fn setup_credentials_and_remote(
     let enabled = remote.is_some();
     if let Some(remote) = remote {
         bazel_rs::remote_cache::install(remote);
+        // Build without the Bytes (crate::remote_outputs): the patterns
+        // were checked when parsed.
+        bazel_rs::remote_outputs::install(bazel_rs::remote_outputs::Policy {
+            mode: remote_options.download_outputs,
+            patterns: remote_options
+                .download_regex
+                .iter()
+                .filter_map(|text| {
+                    bazel_rs::remote_outputs::pattern("remote_download_regex", text).ok()
+                })
+                .collect(),
+            ttl: remote_options.cache_ttl,
+            download: Default::default(),
+            retries: remote_options.eviction_retries.max(0) as u32,
+        });
     }
     Ok(enabled)
 }
@@ -4936,8 +4955,35 @@ fn main() {
 /// failure, Bazel's EnvironmentalExecException class), else 1. Typed
 /// flags, never the error text: an action's own output could contain the
 /// phrases.
+/// After a remote-only input was lost (Build without the Bytes), the whole
+/// command runs once more in a fresh process, like Bazel's
+/// `--experimental_remote_cache_eviction_retries` (BlazeCommandDispatcher:
+/// `Found transient remote cache error, retrying the build...`); the lost
+/// input's producer was invalidated and reruns. Returns when no retry is
+/// due.
+fn retry_after_lost_inputs() {
+    let Some(attempt) = bazel_rs::remote_outputs::next_attempt() else {
+        return;
+    };
+    bazel_rs::worker::shutdown();
+    bazel_rs::progress::finish(1);
+    bazel_rs::digest_memo::finish();
+    eprintln!("Found transient remote cache error, retrying the build...");
+    let mut args = std::env::args_os();
+    let program = args.next().unwrap_or_default();
+    use std::os::unix::process::CommandExt as _;
+    let mut process = std::process::Command::new("/proc/self/exe");
+    process
+        .arg0(program)
+        .args(args)
+        .env(bazel_rs::remote_outputs::ATTEMPT, attempt.to_string());
+    let error = bazel_rs::spawn_lock::exec(&mut process);
+    eprintln!("bazel-rs: cannot retry the command: {error}");
+}
+
 /// 34 after a remote failure of a spawn, else `code`.
 fn remote_or(code: i32) -> i32 {
+    retry_after_lost_inputs();
     if bazel_rs::remote_cache::remote_failure_occurred() {
         34
     } else {
@@ -4946,6 +4992,7 @@ fn remote_or(code: i32) -> i32 {
 }
 
 fn failure_exit_code() -> i32 {
+    retry_after_lost_inputs();
     if bazel_rs::remote_cache::remote_failure_occurred() {
         34
     } else if bazel_rs::sandbox::setup_failure_occurred() {
@@ -4970,6 +5017,15 @@ fn exit(code: i32) -> ! {
 /// Build Event Service upload; the command's exit code (a failed upload's
 /// replaces `code`, crate::bep::finish).
 fn finish_reports(code: i32, failure: Option<&str>) -> i32 {
+    // Measurement aid (BAZEL_RS_REMOTE_STATS=1): what the gRPC cache
+    // downloaded (docs/REMOTE_CACHE.md, Build without the Bytes).
+    if std::env::var_os("BAZEL_RS_REMOTE_STATS").is_some_and(|value| value == "1") {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let (blobs, bytes) = bazel_rs::remote_grpc::read_totals();
+            bazel_rs::note!("bazel-rs: remote downloads: {blobs} blobs, {bytes} bytes");
+        });
+    }
     bazel_rs::exec_log::finish();
     bazel_rs::profile::finish();
     bazel_rs::bep::finish(code, failure).unwrap_or(code)
