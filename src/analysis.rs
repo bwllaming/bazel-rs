@@ -924,6 +924,7 @@ fn rule_surface(
             .shared_mapping(&rule.label.repository)
             .unwrap_or_default(),
         locations: Default::default(),
+        data_locations: Default::default(),
         errors: Default::default(),
     }
 }
@@ -2613,6 +2614,9 @@ fn analyze_inner(
         .transpose()?;
     let mut surface = rule_surface(rule, invocation, &repositories, dependencies);
     surface.locations = location_map(rule, invocation, dependencies, target.output_root)?;
+    attribute_locations(invocation, dependencies, "data", &mut |label, files| {
+        surface.data_locations.push((label.to_owned(), files))
+    });
     // ctx.configuration.default_shell_env reads the environment the target's
     // actions get (crate::action_env), not a constant.
     Arc::make_mut(&mut surface.config).action_env = target.action_env.clone();

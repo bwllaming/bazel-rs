@@ -221,6 +221,9 @@ pub struct RuleSurface {
     /// The location map of `ctx.expand_location` without `targets`
     /// (LocationExpander.buildLocationMap with collectSrcs, analysis/LocationExpander.java:393-485).
     pub(crate) locations: crate::location_expander::LocationMap,
+    /// The `data` attribute's location entries (Expander.withDataLocations,
+    /// LocationExpander allowData).
+    pub(crate) data_locations: Vec<(String, Vec<crate::starlark_types::File>)>,
     /// Attribute and rule errors reported during the implementation
     /// (RuleContext.attributeError/ruleError): the target fails after the
     /// implementation returns.
@@ -1977,6 +1980,56 @@ pub(crate) fn expand_args(
         }
     }
     Ok(tokens)
+}
+
+/// `Expander.withDataLocations().expand(attribute, expression)`
+/// (analysis/Expander.java:159-172) over RuleContext.getExpander(labelMap)
+/// (PyBuiltins.expandLocationAndMakeVariables): `$(location)` is a runfiles
+/// path, the location map adds `targets` and the `data` prerequisites to
+/// the rule's, and other variables are the configuration's Make variables.
+/// A failure is an attribute error and the expression is returned
+/// unchanged.
+pub(crate) fn expand_data_locations_and_make_variables(
+    rule: &RuleSurface,
+    attribute: &str,
+    expression: &str,
+    targets: &[(String, Vec<crate::starlark_types::File>)],
+) -> anyhow::Result<String> {
+    let parse = |arg: &str| {
+        Label::parse_in(
+            arg,
+            &rule.label.repository,
+            &rule.label.package,
+            &rule.mapping,
+        )
+    };
+    let lookup = |name: &str| lookup_variable(&rule.config, &[], name);
+    let data: Vec<(String, Vec<crate::starlark_types::File>)> = targets
+        .iter()
+        .chain(&rule.data_locations)
+        .cloned()
+        .collect();
+    let function =
+        |name: &str, param: &str| -> anyhow::Result<Result<String, String>> {
+            Ok(crate::location_expander::apply_with(
+                name,
+                param,
+                false,
+                &parse,
+                &rule.locations,
+                &data,
+            )
+            .unwrap_or_else(|| Err(format!("$({name}) not defined"))))
+        };
+    Ok(
+        match expand_template_with(expression, &lookup, &function, 0)? {
+            Ok(expanded) => expanded,
+            Err(message) => {
+                rule.attribute_error(attribute, &message);
+                expression.to_owned()
+            }
+        },
+    )
 }
 
 /// ShellUtils.tokenize (util/ShellUtils.java:90-143).

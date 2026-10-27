@@ -507,3 +507,55 @@ fn java_plugins_flag_alias_like_bazel() {
         "{err}"
     );
 }
+
+/// `py_internal.expand_location_and_make_variables` (rules_python 1.7.0
+/// `py_test(env = {"X": "$(rootpaths ...)"})`): Expander.withDataLocations
+/// over `targets` and the rule's `data`, runfiles paths for `$(location)`;
+/// an unknown label is an attribute error. `tools/build_defs/python` may
+/// use py_internal (BuiltinRestriction).
+#[test]
+fn py_internal_expand_location_and_make_variables_like_bazel() {
+    let ws = Workspace::new(&[
+        ("MODULE.bazel", "module(name = \"p\")\n"),
+        ("tools/build_defs/python/BUILD.bazel", ""),
+        (
+            "tools/build_defs/python/defs.bzl",
+            "def _impl(ctx):\n    print(py_internal.expand_location_and_make_variables(ctx = ctx, attribute_name = \"env\", expression = ctx.attr.expr, targets = ctx.attr.extra))\n    return []\n\nprobe = rule(_impl, attrs = {\"expr\": attr.string(), \"data\": attr.label_list(allow_files = True), \"extra\": attr.label_list(allow_files = True)})\n",
+        ),
+        ("x.txt", ""),
+        ("sub/a.txt", ""),
+        ("sub/b.txt", ""),
+        (
+            "BUILD.bazel",
+            "load(\"//tools/build_defs/python:defs.bzl\", \"probe\")\n\
+             filegroup(name = \"fg\", srcs = [\"sub/a.txt\", \"sub/b.txt\"])\n\
+             probe(name = \"p\", expr = \"$(rootpaths :fg) $(location x.txt) $(rlocationpath x.txt) $$HOME\", data = [\":fg\", \"x.txt\"])\n\
+             probe(name = \"q\", expr = \"$(rootpath :fg2) $(execpath :fg2)\", extra = [\":fg2\"])\n\
+             filegroup(name = \"fg2\", srcs = [\"x.txt\"])\n\
+             probe(name = \"bad\", expr = \"$(location :nope) z\", data = [])\n",
+        ),
+    ]);
+    let root = ws.0.path().display().to_string();
+    let debug = |text: &str| format!("DEBUG: {root}/tools/build_defs/python/defs.bzl:2:10: {text}");
+    // Genuine 9.3, verbatim.
+    for (target, line) in [
+        ("//:p", "sub/a.txt sub/b.txt ./x.txt _main/x.txt $HOME"),
+        ("//:q", "./x.txt ./x.txt"),
+    ] {
+        let output = ws.run(&["build", "--nobuild", target]);
+        let err = stderr(&output);
+        assert!(output.status.success(), "{err}");
+        assert!(err.lines().any(|l| l == debug(line)), "{err}");
+    }
+    let output = ws.run(&["build", "--nobuild", "//:bad"]);
+    let err = stderr(&output);
+    assert!(!output.status.success());
+    assert!(
+        err.lines().any(|l| l == debug("$(location :nope) z")),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!("{root}/BUILD.bazel:6:6: in env attribute of probe rule //:bad: label '//:nope' in $(location) expression is not a declared prerequisite of this rule")),
+        "{err}"
+    );
+}

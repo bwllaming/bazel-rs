@@ -125,6 +125,10 @@ pub(crate) enum Behavior {
     /// PyBuiltins.repoMappingAction (rules/python/PyBuiltins.java:157-181):
     /// a RepoMappingManifestAction of `runfiles` to `output`.
     PyCreateRepoMappingManifest,
+    /// PyBuiltins.expandLocationAndMakeVariables
+    /// (rules/python/PyBuiltins.java:131-191): `Expander.withDataLocations()
+    /// .expand(attribute_name, expression)` over `targets`.
+    PyExpandLocationAndMakeVariables,
     /// `_is_valid_shared_library_artifact(shared_library)`
     /// (py_internal.bzl:101-131, `py_internal.cc_helper`).
     PyIsValidSharedLibraryArtifact,
@@ -1066,6 +1070,66 @@ fn call<'v>(
             })?;
             Ok(Value::new_bool(true))
         }
+        Behavior::PyExpandLocationAndMakeVariables => {
+            // `_expand_location_and_make_variables(*args, **kwargs)` forwards
+            // to the Java method: four named-only parameters
+            // (StarlarkRuleContext, String, String, Sequence).
+            const FUNCTION: &str = "expand_location_and_make_variables";
+            let bound = bind_styled(
+                Style::Builtin,
+                FUNCTION,
+                &[
+                    param("ctx", false, true, false),
+                    param("attribute_name", false, true, false),
+                    param("expression", false, true, false),
+                    param("targets", false, true, false),
+                ],
+                args,
+                heap,
+            )?;
+            let (Some(ctx), Some(attribute), Some(expression), Some(targets)) =
+                (bound[0], bound[1], bound[2], bound[3])
+            else {
+                return Err(failure(format!(
+                    "{qualified}() without each of ctx, attribute_name, expression and targets: genuine Bazel 9.3 crashes on it (an `unbound` default reaches PyBuiltins.expandLocationAndMakeVariables), which the native profile reports instead"
+                )));
+            };
+            if ctx.get_type() != "ctx" {
+                return Err(type_error(FUNCTION, "ctx", ctx, "ctx"));
+            }
+            let Some(attribute) = attribute.unpack_str() else {
+                return Err(type_error(FUNCTION, "attribute_name", attribute, "string"));
+            };
+            let Some(expression) = expression.unpack_str() else {
+                return Err(type_error(FUNCTION, "expression", expression, "string"));
+            };
+            let items: Vec<Value> =
+                if let Some(list) = starlark::values::list::ListRef::from_value(targets) {
+                    list.iter().collect()
+                } else if let Some(tuple) = starlark::values::tuple::TupleRef::from_value(targets) {
+                    tuple.iter().collect()
+                } else {
+                    return Err(type_error(FUNCTION, "targets", targets, "sequence"));
+                };
+            let mut entries = Vec::new();
+            for item in items {
+                // Sequence.cast(targets, TransitiveInfoCollection.class, "targets").
+                let Some(entry) = crate::starlark_types::target_location_entry(item) else {
+                    return Err(failure(format!(
+                        "for targets, got {}, want TransitiveInfoCollection",
+                        item.get_type()
+                    )));
+                };
+                entries.push(entry);
+            }
+            let rule =
+                crate::analysis_ctx::current_surface(ctx).map_err(starlark::Error::new_other)?;
+            let expanded = crate::ctx_surface::expand_data_locations_and_make_variables(
+                rule, attribute, expression, &entries,
+            )
+            .map_err(starlark::Error::new_other)?;
+            Ok(heap.alloc(expanded))
+        }
         Behavior::PyCreateRepoMappingManifest => {
             // `_create_repo_mapping_manifest(*args, **kwargs)` forwards to the
             // Java method: three named-only parameters (StarlarkRuleContext,
@@ -1748,6 +1812,7 @@ fn py_internal(heap: &FrozenHeap) -> FrozenValue {
                     Behavior::PyRespectLegacyExternalRunfiles
                 }
                 "create_repo_mapping_manifest" => Behavior::PyCreateRepoMappingManifest,
+                "expand_location_and_make_variables" => Behavior::PyExpandLocationAndMakeVariables,
                 _ => unimplemented,
             };
             (
