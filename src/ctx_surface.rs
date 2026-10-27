@@ -213,6 +213,8 @@ pub struct RuleSurface {
     pub has_alwayslink_attribute: bool,
     /// A rule attribute uses a Starlark transition (`ctx.split_attr`).
     pub split_transition_attribute: bool,
+    /// `rule(_skylark_testable=True)` (`ctx.created_actions()`).
+    pub skylark_testable: bool,
     /// The repository mapping of the rule's repository
     /// (`ctx.package_relative_label`).
     pub mapping: Arc<std::collections::BTreeMap<String, String>>,

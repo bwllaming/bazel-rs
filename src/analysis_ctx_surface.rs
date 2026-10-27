@@ -330,9 +330,14 @@ pub(crate) fn surface_properties(builder: &mut MethodsBuilder) {
         crate::analysis_ctx::split_attributes(this, heap)
     }
     /// StarlarkRuleContext.createdActions (:667-675): None unless
-    /// `_skylark_testable` (not analyzed natively).
+    /// `_skylark_testable`, whose Actions provider (`by_file`, Action
+    /// values) is not modelled natively: an explicit failure.
     fn created_actions<'v>(this: Value<'v>) -> anyhow::Result<NoneType> {
-        current_surface(this)?;
+        if current_surface(this)?.skylark_testable {
+            bail!(
+                "ctx.created_actions() of a _skylark_testable rule (the Actions provider) is not implemented in the native profile"
+            );
+        }
         Ok(NoneType)
     }
 }

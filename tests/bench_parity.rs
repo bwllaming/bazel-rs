@@ -422,3 +422,88 @@ fn no_effect_options_are_accepted_like_bazel() {
         stderr(&output)
     );
 }
+
+/// `rule(_skylark_testable=True)` (bazel_skylib's `unittest.make`) is an
+/// ordinary analyzed rule; `ctx.created_actions()` of other rules is None.
+#[test]
+fn skylark_testable_rules_analyze_like_bazel() {
+    let ws = Workspace::new(&[
+        ("MODULE.bazel", "module(name = \"s\")\n"),
+        (
+            "defs.bzl",
+            "def _t(ctx):\n    out = ctx.actions.declare_file(ctx.label.name + \".sh\")\n    ctx.actions.write(out, \"#!/bin/sh\\nexit 0\\n\", is_executable = True)\n    return [DefaultInfo(executable = out)]\n\ntestable_test = rule(implementation = _t, test = True, _skylark_testable = True)\n\ndef _p(ctx):\n    print(ctx.created_actions())\n    return []\n\nplain = rule(implementation = _p)\n",
+        ),
+        (
+            "BUILD.bazel",
+            "load(\":defs.bzl\", \"plain\", \"testable_test\")\ntestable_test(name = \"t\")\nplain(name = \"p\")\n",
+        ),
+    ]);
+    let output = ws.run(&["test", "//:t"]);
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        stderr(&output)
+    );
+    assert!(output.status.success(), "{all}");
+    assert!(
+        all.contains("Executed 1 out of 1 test: 1 test passes."),
+        "{all}"
+    );
+    let output = ws.run(&["build", "--nobuild", "//:p"]);
+    let err = stderr(&output);
+    let debug = format!("DEBUG: {}/defs.bzl:9:10: None", ws.0.path().display());
+    assert!(err.lines().any(|line| line == debug), "{err}");
+}
+
+/// The native `java_plugins_flag_alias` (reached through rules_java's
+/// `_java_plugins` default, e.g. by stardoc): without `--plugin` its
+/// JavaPluginInfo is rules_java's empty one; any other label is a private
+/// rule error. A rules_java-shaped module stands in for rules_java.
+#[test]
+fn java_plugins_flag_alias_like_bazel() {
+    let ws = Workspace::new(&[
+        (
+            "MODULE.bazel",
+            "module(name = \"j\")\nbazel_dep(name = \"rules_java\", version = \"0\")\nlocal_path_override(module_name = \"rules_java\", path = \"rj\")\n",
+        ),
+        (
+            "rj/MODULE.bazel",
+            "module(name = \"rules_java\", version = \"0\")\n",
+        ),
+        ("rj/java/private/BUILD.bazel", ""),
+        (
+            "rj/java/private/java_info.bzl",
+            "JavaPluginDataInfo = provider(fields = [\"processor_classes\", \"processor_jars\", \"processor_data\"])\n_EMPTY_PLUGIN_DATA = JavaPluginDataInfo(processor_classes = depset(), processor_jars = depset(), processor_data = depset())\ndef _init(**kwargs):\n    fail(\"init\")\nJavaPluginInfo, _new_javaplugininfo = provider(fields = [\"plugins\", \"api_generating_plugins\", \"java_outputs\"], init = _init)\n",
+        ),
+        (
+            "tools/jdk/BUILD.bazel",
+            "java_plugins_flag_alias(name = \"java_plugins_flag_alias\", visibility = [\"//visibility:public\"])\n",
+        ),
+        (
+            "defs.bzl",
+            "load(\"@rules_java//java/private:java_info.bzl\", \"JavaPluginInfo\")\ndef _impl(ctx):\n    info = ctx.attr._p[JavaPluginInfo]\n    print(info.java_outputs, info.plugins.processor_classes.to_list(), info.api_generating_plugins.processor_jars.to_list(), info.plugins == info.api_generating_plugins)\n    return []\nprobe = rule(implementation = _impl, attrs = {\"_p\": attr.label(default = \"//tools/jdk:java_plugins_flag_alias\", providers = [JavaPluginInfo])})\n",
+        ),
+        (
+            "BUILD.bazel",
+            "load(\":defs.bzl\", \"probe\")\nprobe(name = \"p\")\njava_plugins_flag_alias(name = \"bad\")\n",
+        ),
+    ]);
+    let output = ws.run(&["build", "--nobuild", "//:p"]);
+    let err = stderr(&output);
+    assert!(output.status.success(), "{err}");
+    let debug = format!(
+        "DEBUG: {}/defs.bzl:4:10: [] [] [] True",
+        ws.0.path().display()
+    );
+    assert!(err.lines().any(|line| line == debug), "{err}");
+    let output = ws.run(&["build", "--nobuild", "//:bad"]);
+    let err = stderr(&output);
+    assert!(!output.status.success());
+    assert!(
+        err.contains(&format!(
+            "{}/BUILD.bazel:3:24: in java_plugins_flag_alias rule //:bad: Rule //:bad cannot use private rule",
+            ws.0.path().display()
+        )),
+        "{err}"
+    );
+}

@@ -919,6 +919,7 @@ fn rule_surface(
                 crate::rule_declarations::Cfg::Starlark { .. }
             )
         }),
+        skylark_testable: invocation.declaration.skylark_testable,
         mapping: repositories
             .shared_mapping(&rule.label.repository)
             .unwrap_or_default(),

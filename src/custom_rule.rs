@@ -411,6 +411,8 @@ pub struct InvocationDeclaration {
     /// fails explicitly when nonempty, after attribute validation and before
     /// dependencies (test/executable classes, late-bound defaults, ...).
     pub unanalyzed: Vec<String>,
+    /// `rule(_skylark_testable=True)` (RuleClass.isStarlarkTestable).
+    pub skylark_testable: bool,
     /// A rule `cfg` transition: it decides the configuration the target and
     /// its select() conditions are analyzed in, so it fails first.
     pub transition_gaps: Vec<String>,
@@ -1848,6 +1850,7 @@ mod values {
                 InvocationDeclaration {
                     implicit_outputs,
                     unanalyzed,
+                    skylark_testable: self.declaration.skylark_testable,
                     transition_gaps,
                     toolchain_gaps,
                     toolchain_types: self.declaration.toolchains.clone(),
@@ -1951,9 +1954,9 @@ impl RuleDeclaration {
         // executable, DefaultInfo runfiles and FilesToRunProvider
         // (crate::runfiles, docs/RUNFILES.md). The implicit test-runner
         // attributes need the exec transition and are not analyzed (N23g).
-        if self.skylark_testable {
-            features.push("rule(_skylark_testable=True)".to_owned());
-        }
+        // rule(_skylark_testable=True) (bazel_skylib unittest.make) is
+        // analyzed natively; only ctx.created_actions() of such a rule (the
+        // Actions provider) fails explicitly (crate::analysis_ctx_surface).
         if self.output_to_genfiles {
             features.push("rule(output_to_genfiles=True)".to_owned());
         }
