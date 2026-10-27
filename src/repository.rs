@@ -219,13 +219,18 @@ struct RepositoryState {
     ignored: std::sync::Mutex<BTreeMap<String, IgnoredEntry>>,
     /// Canonical forms of materialized roots and blocked prefixes for the
     /// link policy, memoized per invocation (published roots never move).
-    link_canonical: std::sync::Mutex<BTreeMap<PathBuf, PathBuf>>,
+    /// Keyed by the path's bytes (a path spelled two ways is canonicalized
+    /// twice, to the same answer), hashed: the roots of a link policy are
+    /// looked up on every change of the materialized set, thousands each.
+    link_canonical: std::sync::Mutex<
+        std::collections::HashMap<std::ffi::OsString, PathBuf, crate::fast_hash::FxBuildHasher>,
+    >,
     /// [`RepositorySet::shared_mapping`]: one shared copy per mapping table
     /// entry, by the entry's address.
     shared_mappings: std::sync::Mutex<std::collections::HashMap<usize, SharedMapping>>,
     /// The last canonical `others` of [`RepositorySet::link_policy`] per
     /// root view (materialized, sequential) with the roots it was made of.
-    link_others: std::sync::Mutex<[Option<LinkOthers>; 2]>,
+    link_others: std::sync::Mutex<[Option<Arc<LinkOthers>>; 2]>,
     /// BUILD-phase `.bzl` modules evaluated in this invocation, shared by
     /// every package that loads them (BzlLoadValue; crate::loading).
     build_bzl: crate::loading::BzlCache,
@@ -2676,23 +2681,11 @@ impl RepositorySet {
 
     /// [`Self::friendly_repository`] over `roots`.
     fn friendly_in(&self, roots: Vec<(String, PathBuf)>, path: &Path) -> Option<(String, PathBuf)> {
-        let found = {
-            let mut memo = self
-                .state
-                .link_canonical
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            longest_root(
-                roots,
-                |root| match memo.get(root) {
-                    Some(canonical) => Some(canonical.clone()),
-                    None => link_canonical_form(root).ok().inspect(|canonical| {
-                        memo.insert(root.to_path_buf(), canonical.clone());
-                    }),
-                },
-                path,
-            )
-        };
+        let mut canonical = self
+            .link_canonical_all(roots.iter().map(|(_, root)| root.as_path()))
+            .into_iter();
+        // longest_root asks once per root, in order.
+        let found = longest_root(roots, |_| canonical.next().flatten(), path);
         found.filter(|(name, _)| !(name.is_empty() && self.in_repository_store(path)))
     }
 
@@ -2716,12 +2709,12 @@ impl RepositorySet {
                 .link_canonical
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match memo.get(store) {
+            match memo.get(store.as_os_str()) {
                 Some(canonical) => Some(canonical.clone()),
                 None => crate::observed_fs::canonicalize(store)
                     .ok()
                     .inspect(|canonical| {
-                        memo.insert(store.to_path_buf(), canonical.clone());
+                        memo.insert(store.as_os_str().to_owned(), canonical.clone());
                     }),
             }
         };
@@ -2764,10 +2757,10 @@ impl RepositorySet {
                 .link_canonical
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match memo.get(store) {
+            match memo.get(store.as_os_str()) {
                 Some(canonical) => Some(canonical.clone()),
                 None => link_canonical_form(store).ok().inspect(|canonical| {
-                    memo.insert(store.to_path_buf(), canonical.clone());
+                    memo.insert(store.as_os_str().to_owned(), canonical.clone());
                 }),
             }
         };
@@ -2851,6 +2844,57 @@ impl RepositorySet {
         })
     }
 
+    /// The memoized [`link_canonical_form`] of each of `paths`, in order.
+    /// Only existing paths are memoized: a prefix created later in the
+    /// invocation is canonicalized again. The memo is locked once to look
+    /// the paths up and once to insert what was missing, never while the
+    /// filesystem is asked (the coordinator and the loading workers ask
+    /// for link policies all the time; two threads canonicalizing the same
+    /// new root get the same answer).
+    fn link_canonical_all<'a>(
+        &self,
+        paths: impl IntoIterator<Item = &'a Path>,
+    ) -> Vec<Option<PathBuf>> {
+        let memo = || {
+            self.state
+                .link_canonical
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        let mut missing = Vec::new();
+        let mut canonical: Vec<Option<PathBuf>> = {
+            let memo = memo();
+            paths
+                .into_iter()
+                .enumerate()
+                .map(|(index, path)| {
+                    let known = memo.get(path.as_os_str()).cloned();
+                    if known.is_none() {
+                        missing.push((index, path));
+                    }
+                    known
+                })
+                .collect()
+        };
+        if missing.is_empty() {
+            return canonical;
+        }
+        let found: Vec<(usize, &Path, PathBuf)> = missing
+            .into_iter()
+            .filter_map(|(index, path)| {
+                link_canonical_form(path)
+                    .ok()
+                    .map(|canonical| (index, path, canonical))
+            })
+            .collect();
+        let mut memo = memo();
+        for (index, path, path_canonical) in found {
+            memo.insert(path.as_os_str().to_owned(), path_canonical.clone());
+            canonical[index] = Some(path_canonical);
+        }
+        canonical
+    }
+
     /// The shared native link policy for reads of `repository`'s sources,
     /// `.bzl` files and globs (`source_links::LinkPolicy`): materialized roots
     /// and blocked store prefixes, plus host-path reads for repositories
@@ -2875,62 +2919,69 @@ impl RepositorySet {
         } else {
             self.materialized_roots()
         };
-        let mut memo = self
-            .state
-            .link_canonical
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Only existing paths are memoized: a prefix created later in the
-        // invocation is canonicalized again.
-        let mut canonical = |path: PathBuf| -> Option<PathBuf> {
-            if let Some(canonical) = memo.get(&path) {
-                return Some(canonical.clone());
-            }
-            let canonical = link_canonical_form(&path).ok()?;
-            memo.insert(path, canonical.clone());
-            Some(canonical)
-        };
         // The same roots as last time share the canonical list (a root
         // that does not exist yet is retried: such a list is not kept).
-        let mut last = self
+        // Neither lock is held while a path is canonicalized: the
+        // coordinator and the loading workers ask for policies all the
+        // time, and two threads canonicalizing the same new root get the
+        // same answer.
+        let slot = usize::from(sequential);
+        let last = self
             .state
             .link_others
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let slot = &mut last[usize::from(sequential)];
-        let others = match slot.as_ref() {
-            Some(known) if same_roots(&known.roots, &roots) => Arc::clone(&known.others),
-            _ => {
+            .unwrap_or_else(std::sync::PoisonError::into_inner)[slot]
+            .clone();
+        let known = last
+            .filter(|known| same_roots(&known.roots, &roots))
+            .map(|known| Arc::clone(&known.others));
+        let others = match known {
+            Some(others) => others,
+            None => {
                 let count = roots.len();
                 let others: Vec<(String, PathBuf)> = roots
                     .iter()
-                    .filter_map(|(name, path)| {
-                        canonical(path.clone()).map(|path| (name.clone(), path))
-                    })
+                    .zip(self.link_canonical_all(roots.iter().map(|(_, path)| path.as_path())))
+                    .filter_map(|((name, _), canonical)| canonical.map(|path| (name.clone(), path)))
                     .collect();
                 let others = Arc::new(others);
-                *slot = (others.len() == count).then(|| LinkOthers {
-                    roots,
-                    others: Arc::clone(&others),
-                });
+                // Roots only become ready: of two threads that computed
+                // lists concurrently, the one that saw more roots keeps
+                // its list (no ping-pong between an older and a newer set).
+                if others.len() == count {
+                    let mut last = self
+                        .state
+                        .link_others
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if last[slot]
+                        .as_ref()
+                        .is_none_or(|known| known.roots.len() <= count)
+                    {
+                        last[slot] = Some(Arc::new(LinkOthers {
+                            roots,
+                            others: Arc::clone(&others),
+                        }));
+                    }
+                }
                 others
             }
         };
-        drop(last);
-        let blocked = self
-            .link_blocked_prefixes()
+        let prefixes = self.link_blocked_prefixes();
+        let store = self.source_cache_path().ok();
+        let mut canonical =
+            self.link_canonical_all(prefixes.iter().map(PathBuf::as_path).chain(store));
+        let store_canonical = store.and_then(|_| canonical.pop().flatten());
+        let blocked = prefixes
             .into_iter()
-            .map(|path| canonical(path.clone()).unwrap_or(path))
+            .zip(canonical)
+            .map(|(path, canonical)| canonical.unwrap_or(path))
             .collect();
         // Published store trees anchor links whatever was materialized
         // before (PLAN-L2 update 1 §(c)).
-        let store = self
-            .source_cache_path()
-            .ok()
-            .and_then(|store| canonical(store.to_path_buf()))
-            .map(|store| {
-                crate::source_links::StoreTrees::new(store, self.state.verified_trees.clone())
-            });
+        let store = store_canonical.map(|store| {
+            crate::source_links::StoreTrees::new(store, self.state.verified_trees.clone())
+        });
         crate::source_links::LinkPolicy {
             others,
             blocked,
