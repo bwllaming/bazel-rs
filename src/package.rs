@@ -302,6 +302,7 @@ mod collector {
         /// (GlobCache, packages/GlobCache.java: one traversal per pattern
         /// and package evaluation). Lookups only: never iterated.
         pub globs: RefCell<HashMap<super::GlobKey, crate::glob::GlobOutcome>>,
+        pub subpackages: RefCell<crate::glob::SubpackagesCache>,
     }
 
     /// REPO.bazel evaluation state (packages/RepoThreadContext.java).
@@ -1612,6 +1613,81 @@ fn package_globals(builder: &mut GlobalsBuilder) {
         Ok(outcome.paths)
     }
 
+    /// StarlarkNativeModule.subpackages: named-only API, callable only in
+    /// BUILD evaluation (including legacy macros), never symbolic macros.
+    fn subpackages<'v>(
+        #[starlark(args)] args: UnpackTuple<Value<'v>>,
+        #[starlark(kwargs)] kwargs: SmallMap<String, Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Vec<String>> {
+        if !args.items.is_empty() {
+            bail!("subpackages() got unexpected positional argument");
+        }
+        let mut include = None;
+        let mut exclude = None;
+        let mut allow_empty = false;
+        for (name, value) in &kwargs {
+            match name.as_str() {
+                "include" | "exclude" => {
+                    if crate::custom_rule::sequence_ref(*value).is_none()
+                        && value.get_type() != "range"
+                    {
+                        bail!(
+                            "in call to subpackages(), parameter '{name}' got value of type '{}', want 'sequence'",
+                            value.get_type()
+                        );
+                    }
+                    if name == "include" {
+                        include = Some(*value);
+                    } else {
+                        exclude = Some(*value);
+                    }
+                }
+                "allow_empty" => {
+                    allow_empty = value.unpack_bool().ok_or_else(|| anyhow!("in call to subpackages(), parameter 'allow_empty' got value of type '{}', want 'bool'", value.get_type()))?;
+                }
+                _ => bail!("subpackages() got unexpected keyword argument '{name}'"),
+            }
+        }
+        let include = include
+            .ok_or_else(|| anyhow!("subpackages() missing 1 required named argument: include"))?;
+        let context = eval
+            .extra
+            .and_then(|extra| extra.downcast_ref::<Declarations>())
+            .filter(|context| !context.transient.get() && context.active_macro.borrow().is_none())
+            .ok_or_else(|| {
+                anyhow!(
+                    "subpackages() can only be used while evaluating a BUILD file or a legacy macro"
+                )
+            })?;
+        let strings = |value: Value<'v>| -> anyhow::Result<Vec<String>> {
+            value.iterate(eval.heap()).map_err(|e| anyhow!("{e}"))?.enumerate()
+                .map(|(index, value)| value.unpack_str().map(str::to_owned).ok_or_else(|| anyhow!("expected value of type 'string' for element {index} of 'subpackages' argument, but got {} ({})", value.to_repr(), value.get_type())))
+                .collect()
+        };
+        let includes = strings(include)?;
+        let excludes = exclude.map(strings).transpose()?.unwrap_or_default();
+        let outcome = crate::glob::subpackages(
+            &context.root,
+            &context.package,
+            &includes,
+            &excludes,
+            allow_empty,
+            &context.ignored,
+            &context.repositories.link_policy(&context.repository),
+            &mut context.subpackages.borrow_mut(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        if let Some(error) = outcome.io_error {
+            *context.glob_io_error.borrow_mut() = Some(error);
+            return Ok(Vec::new());
+        }
+        if let Some(issue) = outcome.symlink_issue {
+            context.glob_symlink_issue.borrow_mut().get_or_insert(issue);
+        }
+        Ok(outcome.paths)
+    }
+
     fn package_name(eval: &mut Evaluator<'_, '_, '_>) -> anyhow::Result<String> {
         Ok(declarations(eval)?.package.clone())
     }
@@ -2303,6 +2379,7 @@ fn evaluate_at(
         glob_io_error: RefCell::new(None),
         glob_symlink_issue: RefCell::new(None),
         globs: RefCell::default(),
+        subpackages: RefCell::default(),
     };
     // Canonical label texts parse once per package evaluation.
     let parse_memo = crate::label::package_parse_memo();
@@ -4018,6 +4095,7 @@ def legacy():
                 glob_io_error: RefCell::new(None),
                 glob_symlink_issue: RefCell::new(None),
                 globs: RefCell::default(),
+                subpackages: RefCell::default(),
             };
             Module::with_temp_heap(|module| {
                 module.set(

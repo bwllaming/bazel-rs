@@ -31,7 +31,7 @@
 //! `DirectoryDirentProducer`/`GlobFunction` `matchingEntry` checks on the
 //! repository-relative directory path. Regular files are never checked.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -40,6 +40,9 @@ use std::path::{Path, PathBuf};
 struct Pattern<'a> {
     text: &'a str,
     components: Vec<&'a str>,
+    /// subpackages uses UnixGlob's full literal/matching dialect. Keep the
+    /// older glob subset independent; notably parentheses and exclusions differ.
+    subpackages: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -72,7 +75,41 @@ impl<'a> Pattern<'a> {
                 ));
             }
         }
-        Ok(Self { text, components })
+        Ok(Self {
+            text,
+            components,
+            subpackages: false,
+        })
+    }
+
+    fn subpackages(text: &'a str) -> Result<Self, String> {
+        let error = if text.contains('?') {
+            Some("wildcard ? forbidden".to_owned())
+        } else {
+            subpackages_pattern_error(text)
+        };
+        if let Some(error) = error {
+            return Err(format!("invalid glob pattern '{text}': {error}"));
+        }
+        Ok(Self {
+            text,
+            components: text.split('/').collect(),
+            subpackages: true,
+        })
+    }
+
+    fn component_matches(&self, pattern: &str, name: &str) -> bool {
+        if self.subpackages {
+            // UnixGlob uses a literal lookup (not its regex matcher) when
+            // there is no wildcard. Parentheses in literal names survive.
+            if pattern.contains('*') {
+                crate::ignored::segment_matches(pattern, name)
+            } else {
+                pattern == name
+            }
+        } else {
+            component_matches(pattern, name)
+        }
     }
 
     // NFA states are positions between pattern components. Epsilon closure
@@ -99,7 +136,7 @@ impl<'a> Pattern<'a> {
                         next[index + 1] = true;
                     } else if match mode {
                         MatchMode::Exclude => wildcard_matches(pattern, component),
-                        _ => component_matches(pattern, component),
+                        _ => self.component_matches(pattern, component),
                     } {
                         next[index + 1] = true;
                     }
@@ -146,7 +183,7 @@ impl<'a> Pattern<'a> {
         self.components.iter().enumerate().any(|(index, pattern)| {
             states[index]
                 && pattern.contains('*')
-                && (*pattern == "**" || component_matches(pattern, last))
+                && (*pattern == "**" || self.component_matches(pattern, last))
         })
     }
 
@@ -291,7 +328,10 @@ fn read_listing(
     relative: &str,
     host: bool,
 ) -> Result<Vec<fs::DirEntry>, String> {
-    let projection = if host {
+    let projection = if host || pattern.subpackages {
+        // The existing Glob projection implements glob's restricted dialect.
+        // A full listing conservatively records BUILD additions/removals and
+        // all names in subpackages' wider dialect without changing that schema.
         crate::observed_fs::Projection::All
     } else {
         crate::observed_fs::Projection::Glob {
@@ -389,6 +429,7 @@ pub fn glob(
         directory: &directory,
         package,
         exclude_directories,
+        subpackages: false,
         ignored,
         links,
     };
@@ -444,11 +485,186 @@ pub fn glob(
     })
 }
 
+/// Per-package, per-include cache (GlobCache.getGlobUnsortedAsync). Exclusions
+/// and allow_empty do not trigger another filesystem walk. The link policy is
+/// part of the key because repository materialization can change it mid-load.
+#[derive(Default)]
+pub(crate) struct SubpackagesCache {
+    patterns: HashMap<(String, crate::source_links::LinkPolicy), SubpackagePattern>,
+    #[cfg(test)]
+    walks: usize,
+}
+
+struct SubpackagePattern {
+    walk: Walk,
+    symlink_issue: Option<crate::source_links::SymlinkIssue>,
+    deferred: Option<String>,
+}
+
+/// UnixGlob.checkPatternForError, without changing native.glob's dialect.
+fn subpackages_pattern_error(text: &str) -> Option<String> {
+    if text.is_empty() {
+        return Some("pattern cannot be empty".to_owned());
+    }
+    if text.starts_with('/') {
+        return Some("pattern cannot be absolute".to_owned());
+    }
+    for segment in text.split('/') {
+        if segment.is_empty() {
+            return Some("empty segment not permitted".to_owned());
+        }
+        if matches!(segment, "." | "..") {
+            return Some(format!("segment '{segment}' not permitted"));
+        }
+        if segment.contains("**") && segment != "**" {
+            return Some("recursive wildcard must be its own segment".to_owned());
+        }
+    }
+    None
+}
+
+/// UnixGlob.removeExcludes has deliberately partial validation: literal
+/// exclusions are exact removals, `head**/*tail` has a string fast path, and
+/// only the remaining patterns are validated and matched segment-wise.
+fn exclude_subpackages(paths: &mut BTreeSet<String>, excludes: &[String]) -> Result<(), String> {
+    let wildcard_free = |text: &str| !text.contains(['*', '?']);
+    let mut complex = Vec::new();
+    for text in excludes {
+        if wildcard_free(text) {
+            paths.remove(text);
+        } else if let Some((head, tail)) = text.split_once("**/*")
+            && wildcard_free(head)
+            && wildcard_free(tail)
+        {
+            paths.retain(|path| !(path.starts_with(head) && path.ends_with(tail)));
+        } else {
+            complex.push(text);
+        }
+    }
+    for text in &complex {
+        if let Some(error) = subpackages_pattern_error(text) {
+            return Err(format!("{error} (in glob pattern '{text}')"));
+        }
+    }
+    paths.retain(|path| {
+        !complex
+            .iter()
+            .any(|text| crate::ignored::matches(text, path))
+    });
+    Ok(())
+}
+
+/// Bazel 9.3 native.subpackages: nearest package boundaries, using exactly the
+/// same source-only, observed traversal and link policy as glob. No package
+/// contents are evaluated, no files are substituted for package names.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn subpackages(
+    root: &Path,
+    package: &str,
+    includes: &[String],
+    excludes: &[String],
+    allow_empty: bool,
+    ignored: &crate::ignored::IgnoredSubdirectories,
+    links: &crate::source_links::LinkPolicy,
+    cache: &mut SubpackagesCache,
+) -> Result<GlobOutcome, String> {
+    // HybridGlobber.runAsync validates ALL includes before fetching any of
+    // their results. Excludes are not validated until after empty-include errors.
+    let patterns = includes
+        .iter()
+        .map(|text| Pattern::subpackages(text))
+        .collect::<Result<Vec<_>, _>>()?;
+    crate::workspace::package_build_file(root, package)?;
+    let canonical_root = crate::observed_fs::canonicalize(root)
+        .map_err(|error| format!("cannot resolve repository root {}: {error}", root.display()))?;
+    let directory = canonical_root.join(package);
+    let walker = Walker {
+        canonical_root: &canonical_root,
+        directory: &directory,
+        package,
+        exclude_directories: false,
+        subpackages: true,
+        ignored,
+        links,
+    };
+    let mut values = crate::source_links::FileValues::default();
+    let mut results = BTreeSet::new();
+    let mut symlink_issue = None;
+    let mut deferred = None;
+    for pattern in &patterns {
+        let key = (pattern.text.to_owned(), links.clone());
+        if let std::collections::hash_map::Entry::Vacant(entry) = cache.patterns.entry(key.clone())
+        {
+            let mut issue = None;
+            let mut error = None;
+            let walk = walker.walk(pattern, &mut values, &mut issue, &mut error)?;
+            #[cfg(test)]
+            {
+                cache.walks += 1;
+            }
+            entry.insert(SubpackagePattern {
+                walk,
+                symlink_issue: issue,
+                deferred: error,
+            });
+        }
+        let cached = &cache.patterns[&key];
+        match &cached.walk {
+            Walk::Io(error) => {
+                let excluded = if excludes.is_empty() {
+                    String::new()
+                } else {
+                    format!(" - [{}]", excludes.join(", "))
+                };
+                return Ok(GlobOutcome {
+                    paths: Vec::new(),
+                    io_error: Some(format!(
+                        "error globbing [{}]{excluded} op=SUBPACKAGES: {error}",
+                        includes.join(", ")
+                    )),
+                    symlink_issue: None,
+                });
+            }
+            Walk::Done(paths) => {
+                if !allow_empty && paths.is_empty() {
+                    return Err(format!(
+                        "subpackages pattern '{}' didn't match anything, but allow_empty is set to False (the default value)",
+                        pattern.text
+                    ));
+                }
+                results.extend(paths.iter().cloned());
+            }
+        }
+        if symlink_issue.is_none() {
+            symlink_issue = cached.symlink_issue.clone();
+        }
+        if deferred.is_none() {
+            deferred = cached.deferred.clone();
+        }
+    }
+    if let Some(error) = deferred {
+        return Err(error);
+    }
+    exclude_subpackages(&mut results, excludes)?;
+    if !allow_empty && results.is_empty() {
+        return Err(
+            "all subpackages in subpackages() have been excluded, but allow_empty is set to False "
+                .to_owned(),
+        );
+    }
+    Ok(GlobOutcome {
+        paths: results.into_iter().collect(),
+        io_error: None,
+        symlink_issue,
+    })
+}
+
 struct Walker<'a> {
     canonical_root: &'a Path,
     directory: &'a Path,
     package: &'a str,
     exclude_directories: bool,
+    subpackages: bool,
     ignored: &'a crate::ignored::IgnoredSubdirectories,
     links: &'a crate::source_links::LinkPolicy,
 }
@@ -541,7 +757,7 @@ impl Walker<'_> {
                     // so nothing is read through it: skip it before the native
                     // link policy (e.g. `bazel-*` convenience links listed in
                     // .bazelignore or REPO.bazel ignore_directories()).
-                    if metadata.is_dir() {
+                    if metadata.is_dir() && !self.subpackages {
                         let repository_path = if self.package.is_empty() {
                             path.clone()
                         } else {
@@ -624,9 +840,8 @@ impl Walker<'_> {
                     };
                     // GlobCache.globCacheShouldTraverseDirectory: ignored
                     // directories, then subpackages; the native store is skipped.
-                    if self.ignored.matching_entry(&repository_path).is_some()
-                        || self.links.skips(&anchor, &real)
-                    {
+                    let ignored = self.ignored.matching_entry(&repository_path).is_some();
+                    if (ignored && !self.subpackages) || self.links.skips(&anchor, &real) {
                         continue;
                     }
                     // UnixGlob.reallyGlob (vfs/UnixGlob.java:778-797) reads a
@@ -653,6 +868,16 @@ impl Walker<'_> {
                     if (descend || !self.exclude_directories)
                         && is_subpackage(&logical, listing.as_deref(), deferred)
                     {
+                        // GlobCache.GlobUnixPathDiscriminator: SUBPACKAGES
+                        // includes the boundary itself, never anything below.
+                        // Its include predicate does NOT check ignored dirs:
+                        // even an ignored boundary is returned if it matches.
+                        if self.subpackages && direct {
+                            result.insert(path);
+                        }
+                        continue;
+                    }
+                    if ignored {
                         continue;
                     }
                     if descend {
@@ -665,9 +890,11 @@ impl Walker<'_> {
                             listing,
                         });
                     }
-                    if self.exclude_directories {
+                    if self.exclude_directories || self.subpackages {
                         continue;
                     }
+                } else if self.subpackages {
+                    continue;
                 } else if !is_file {
                     if direct {
                         return Err(format!(
@@ -842,6 +1069,75 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn subpackages_share_include_walks_across_excludes_and_empty_policies() {
+        let temp = Temp::new();
+        temp.file("a/BUILD");
+        temp.file("a/deep/BUILD");
+        temp.file("unowned/b/BUILD.bazel");
+        let mut cache = SubpackagesCache::default();
+        for (includes, excludes, empty, expected) in [
+            (vec!["**"], vec![], false, vec!["a", "unowned/b"]),
+            (vec!["**", "**"], vec!["a"], false, vec!["unowned/b"]),
+            (vec!["**"], vec!["**"], true, vec![]),
+        ] {
+            let result = subpackages(
+                &temp.0,
+                "",
+                &strings(&includes),
+                &strings(&excludes),
+                empty,
+                &none(),
+                &LinkPolicy::default(),
+                &mut cache,
+            )
+            .unwrap();
+            assert_eq!(result.paths, expected);
+            assert_eq!(cache.walks, 1);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn subpackages_do_not_scan_unmatched_trees_or_cross_boundaries() {
+        let temp = Temp::new();
+        temp.file("a/BUILD");
+        temp.file("unowned/b/BUILD");
+        std::os::unix::fs::symlink("loop", temp.0.join("a/loop")).unwrap();
+        std::os::unix::fs::symlink("loop", temp.0.join("unowned/loop")).unwrap();
+        let result = subpackages(
+            &temp.0,
+            "",
+            &strings(&["a/**"]),
+            &[],
+            false,
+            &none(),
+            &LinkPolicy::default(),
+            &mut SubpackagesCache::default(),
+        )
+        .unwrap();
+        assert_eq!(result.paths, ["a"]);
+        assert_eq!(result.io_error, None);
+    }
+
+    #[test]
+    fn subpackages_exclude_fast_paths_are_bazels_partial_validation() {
+        let mut paths = strings(&["a", ".hidden", "aa", "b/x", "b/.hidden"])
+            .into_iter()
+            .collect();
+        exclude_subpackages(
+            &mut paths,
+            &strings(&["**/*hidden", "?", "bad//literal", "../**/*x"]),
+        )
+        .unwrap();
+        assert_eq!(paths, strings(&["aa", "b/x"]).into_iter().collect());
+        let error = exclude_subpackages(&mut paths, &strings(&["bad//*x"])).unwrap_err();
+        assert_eq!(
+            error,
+            "empty segment not permitted (in glob pattern 'bad//*x')"
+        );
     }
 
     #[test]
