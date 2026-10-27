@@ -598,6 +598,52 @@ pub(crate) struct SplitAttribute {
     pub prerequisites: Vec<SplitPrerequisite>,
 }
 
+/// StarlarkRuleClassFunctions.validateRulePropagatedAspects (:1900-1904)
+/// with AspectsList.validateRulePropagatedAspectsParameters
+/// (packages/AspectsList.java:87-115), run when the rule is instantiated:
+/// for each aspect an attribute attaches, a public parameter attribute other
+/// than a bool must use `values`, and each required parameter must be an
+/// attribute of the rule with the same type.
+fn validate_rule_propagated_aspects(schema: &Schema, rule_class: &str) -> anyhow::Result<()> {
+    let type_name = |kind: &AttrKind| match kind {
+        AttrKind::Int => "int",
+        AttrKind::Bool => "boolean",
+        AttrKind::String => "string",
+        AttrKind::StringList => "list(string)",
+        _ => "unknown",
+    };
+    for spec in schema.values() {
+        for aspect in &spec.declaration.aspect_definitions {
+            for (name, attribute) in &aspect.attrs {
+                if crate::subrule::is_lifted_attribute(name) {
+                    continue;
+                }
+                if !name.starts_with('_')
+                    && attribute.kind != AttrKind::Bool
+                    && attribute.declaration.values.is_empty()
+                {
+                    bail!(
+                        "Aspect {}: Aspect parameter attribute '{name}' must use the 'values' restriction.",
+                        aspect.identity
+                    );
+                }
+                if aspect.required_parameters.contains(name)
+                    && schema
+                        .get(name)
+                        .is_none_or(|rule_attribute| rule_attribute.kind != attribute.kind)
+                {
+                    bail!(
+                        "Aspect {} requires rule {rule_class} to specify attribute '{name}' with type {}.",
+                        aspect.identity,
+                        type_name(&attribute.kind)
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Attribute sequences accept only lists and tuples, without copying their elements.
 pub(crate) fn sequence_ref<'v>(value: Value<'v>) -> Option<&'v [Value<'v>]> {
     ListRef::from_value(value)
@@ -1385,6 +1431,10 @@ mod values {
             eval: &mut Evaluator<'v, '_, '_>,
         ) -> starlark::Result<Value<'v>> {
             args.no_positional_args(eval.heap())?;
+            if let Some(rule_class) = self.exported.get() {
+                validate_rule_propagated_aspects(&self.schema, rule_class)
+                    .map_err(starlark::Error::new_other)?;
+            }
             let named = args.names_map()?;
             let (repositories, package) =
                 crate::package::custom_label_context(eval).map_err(starlark::Error::new_other)?;

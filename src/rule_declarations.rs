@@ -897,6 +897,9 @@ pub(crate) struct QueryAspect {
     pub identity: String,
     pub attrs: Vec<(String, crate::custom_rule::AttrSpec)>,
     pub required_providers: Vec<Vec<ProviderRequirement>>,
+    /// The aspect's required parameters (StarlarkDefinedAspect.
+    /// getRequiredParameters), checked against a rule propagating it.
+    pub required_parameters: Vec<String>,
 }
 
 /// The aspects of an `aspects=` list with their required aspects first, once
@@ -922,6 +925,7 @@ pub(crate) fn query_aspects(value: Value<'_>) -> Vec<QueryAspect> {
             identity,
             attrs: aspect.declaration.attrs.clone(),
             required_providers: aspect.declaration.required_providers.clone(),
+            required_parameters: aspect.declaration.required_parameters.clone(),
         });
     }
     let mut result = Vec::new();

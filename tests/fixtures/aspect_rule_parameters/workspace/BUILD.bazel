@@ -1,0 +1,6 @@
+load(":defs.bzl", "lib")
+
+lib(
+    name = "leaf",
+    visibility = ["//visibility:public"],
+)

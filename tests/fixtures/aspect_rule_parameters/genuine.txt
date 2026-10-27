@@ -1,0 +1,13 @@
+# Genuine Bazel 9.3.0, a fresh server per command (`--noshow_progress --curses=no --color=no`):
+# the sorted `print()` texts (DEBUG lines without their `DEBUG: <WS>/defs.bzl:L:C: ` lead) or, for
+# a failing command, `ERROR <the "Error in RULE: " text of the BUILD file's traceback>`.
+### build //good:t
+A //:leaf ["//:defs.bzl%req[p=\"2\",s=\"\"]"]
+### build //wrong:t
+ERROR Aspect //:defs.bzl%req requires rule wrong_type to specify attribute 'p' with type int.
+### build //missing:t
+ERROR Aspect //:defs.bzl%req requires rule missing to specify attribute 's' with type string.
+### build //novals:t
+ERROR Aspect //:defs.bzl%novals: Aspect parameter attribute 'n' must use the 'values' restriction.
+### build //flag:t
+ERROR Aspect //:defs.bzl%flag requires rule uses_flag to specify attribute 'b' with type boolean.

@@ -158,6 +158,14 @@ aspect edges.
   `apply_to_generating_rules` (the native ValidateTarget applies to files);
   aliases apply at the alias chain's end; aspects never apply to source
   files or package groups (`AspectFunction.java:327-341`).
+- When a rule attaching aspects to attributes is instantiated, each such
+  aspect's public non-bool parameter must use `values` (`Aspect A: Aspect
+  parameter attribute 'n' must use the 'values' restriction.`) and each
+  REQUIRED parameter (no default, or mandatory) must be a same-typed
+  attribute of the rule (`Aspect A requires rule R to specify attribute 'p'
+  with type int.`; StarlarkRuleClassFunctions.validateRulePropagatedAspects,
+  AspectsList.validateRulePropagatedAspectsParameters), an error of the BUILD
+  call (paired capture tests/fixtures/aspect_rule_parameters).
 - An attribute's aspect takes its parameters from the rule declaring the
   attribute: the values of its same-named, same-typed attributes
   (StarlarkDefinedAspect.getDefaultParametersExtractor), shown in its
@@ -443,11 +451,8 @@ identity unchanged, and depset snapshots taken from either agree.
   typed by the attribute (AspectParameters); other types are rejected at
   aspect() load (N33). They apply to the top-level aspects (and the
   aspects those require) only;
-- the rule-instantiation check that a rule propagating an aspect declares
-  its required (`values`-restricted) parameter attributes (`Aspect X requires
-  rule R to specify attribute 'p' with type int.`,
-  AspectsList.validateRulePropagatedAspectsParameters) is not made: such a
-  rule's aspect keeps the parameter's default.
+- a subrule's lifted `allow_single_file`/executable attribute passed from an
+  aspect (genuine Bazel 9.3 crashes; "Subrules").
 
 ## Divergences
 

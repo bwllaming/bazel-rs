@@ -1,0 +1,6 @@
+load("//:defs.bzl", "wrong_type")
+
+wrong_type(
+    name = "t",
+    deps = ["//:leaf"],
+)

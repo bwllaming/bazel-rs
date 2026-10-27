@@ -1009,3 +1009,10 @@ fn aspects_call_their_subrules() {
         "(allow_single_file or executable): Bazel 9.3 crashes there",
     );
 }
+
+/// The rule-side check of an attribute-attached aspect's parameters at rule
+/// instantiation (tests/fixtures/aspect_rule_parameters/genuine.txt).
+#[test]
+fn rules_must_declare_their_aspects_required_parameters() {
+    compare_genuine_builtin("aspect_rule_parameters", &["A "], false);
+}

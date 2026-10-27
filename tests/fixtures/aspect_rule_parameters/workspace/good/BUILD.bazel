@@ -1,0 +1,6 @@
+load("//:defs.bzl", "good")
+
+good(
+    name = "t",
+    deps = ["//:leaf"],
+)

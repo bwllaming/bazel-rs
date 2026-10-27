@@ -1,0 +1,6 @@
+load("//:defs.bzl", "uses_novals")
+
+uses_novals(
+    name = "t",
+    deps = ["//:leaf"],
+)

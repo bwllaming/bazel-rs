@@ -1,0 +1,6 @@
+load("//:defs.bzl", "uses_flag")
+
+uses_flag(
+    name = "t",
+    deps = ["//:leaf"],
+)

@@ -1,0 +1,6 @@
+load("//:defs.bzl", "missing")
+
+missing(
+    name = "t",
+    deps = ["//:leaf"],
+)
