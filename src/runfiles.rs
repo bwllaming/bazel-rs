@@ -1207,6 +1207,9 @@ pub struct TestCoverage {
 /// The `run` command settings of a Starlark rule target.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RunSettings {
+    /// Effective options of this executable's own configuration, retained
+    /// through aliases, incoming transitions and binary snapshot replay.
+    pub runfiles_options: Option<crate::runfiles_tree::RunfilesOptions>,
     /// The tokenized `args` attribute (RunfilesSupport.computeArgs).
     pub args: Vec<String>,
     /// RunEnvironmentInfo.environment (computeActionEnvironment, :612-619).
@@ -1981,6 +1984,7 @@ pub(crate) fn configure_target(
             provider: Some(provider),
             files_to_run: Some(files_to_run),
             run: RunSettings {
+                runfiles_options: Some(options),
                 args,
                 test: rule.test,
                 run_under_executable: rule

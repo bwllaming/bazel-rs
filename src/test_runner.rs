@@ -56,6 +56,8 @@ const STATUS_FORMAT: &str = "native-test-v1";
 
 /// One test target to run.
 pub struct TestSpec {
+    /// The test rule's effective runfiles mode after incoming transitions.
+    pub runfiles_enabled: bool,
     /// Label.print of the target (TEST_TARGET, summaries).
     pub label: String,
     pub info: TestRuleInfo,
@@ -143,6 +145,11 @@ impl TestSpec {
             }
         };
         Ok(TestSpec {
+            runfiles_enabled: target
+                .settings
+                .runfiles_options
+                .unwrap_or_default()
+                .enable_runfiles,
             label: label_print(label),
             info,
             location,
@@ -263,8 +270,6 @@ pub struct Runner<'a> {
     pub workspace: &'a Path,
     pub options: &'a TestOptions,
     pub client_env: &'a BTreeMap<String, String>,
-    /// RunfilesSupport: whether runfiles symlinks exist (`--enable_runfiles`).
-    pub runfiles_enabled: bool,
     pub tools: &'a Tools,
 }
 
@@ -952,7 +957,7 @@ impl Runner<'_> {
             total_shards: unit.shards,
             run: unit.run,
             total_runs: unit.runs,
-            runfiles_enabled: self.runfiles_enabled,
+            runfiles_enabled: unit.spec.runfiles_enabled,
         })
     }
 
@@ -2273,6 +2278,7 @@ mod tests {
     #[test]
     fn execution_info_requirements_go_over_the_rule_tags() {
         let spec = TestSpec {
+            runfiles_enabled: true,
             label: "//pkg:t".into(),
             info: TestRuleInfo {
                 rule_class: "x_test".into(),

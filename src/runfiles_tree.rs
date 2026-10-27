@@ -12,9 +12,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// The runfiles options of a build (CoreOptions.java:591-638, 954-961;
 /// BuildConfigurationValue.java:689-696, 855-882). They are request options
-/// here: they select which runfiles artifacts and actions a build creates and
-/// never enter configuration identities.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// here only for compact repo mapping. The other fields are an effective view
+/// of each rule/aspect's configuration (AUTO enables symlinks off Windows).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RunfilesOptions {
     /// `--build_runfile_manifests` (default true).
     pub build_runfile_manifests: bool,
@@ -39,6 +39,21 @@ impl Default for RunfilesOptions {
 }
 
 impl RunfilesOptions {
+    /// Evaluate the configured CoreOptions while retaining the request's
+    /// compact-mapping policy, which is not transitionable in this profile.
+    pub fn configured(self, native: &crate::configuration::NativeOptions) -> Self {
+        use crate::configuration::OptionValue as V;
+        Self {
+            build_runfile_links: native.value("build_runfile_links") == Some(V::Bool(true)),
+            build_runfile_manifests: native.value("build_runfile_manifests") == Some(V::Bool(true)),
+            enable_runfiles: matches!(
+                native.raw_value("enable_runfiles"),
+                Some(V::Enum("YES" | "AUTO"))
+            ),
+            compact_repo_mapping: self.compact_repo_mapping,
+        }
+    }
+
     /// BuildConfigurationValue.buildRunfileLinks: links need manifests.
     pub fn links(&self) -> bool {
         self.build_runfile_manifests && self.build_runfile_links
@@ -90,6 +105,21 @@ pub fn is_enable_runfiles(arg: &str) -> bool {
     };
     let name = rest.split_once('=').map_or(rest, |(name, _)| name);
     matches!(name, "enable_runfiles" | "noenable_runfiles")
+}
+
+/// Flags parsed ONLY by CommandLineOptions. Keeping them out of the request
+/// parser avoids stale first-pass side effects after MODULE alias reparsing.
+pub fn is_configured_runfiles_option(arg: &str) -> bool {
+    let Some(name) = arg
+        .strip_prefix("--")
+        .map(|s| s.split('=').next().unwrap_or(s))
+    else {
+        return false;
+    };
+    matches!(
+        name.strip_prefix("no").unwrap_or(name),
+        "enable_runfiles" | "build_runfile_links" | "build_runfile_manifests"
+    )
 }
 
 /// The repository mapping (apparent name -> canonical name) of a repository.

@@ -784,7 +784,7 @@ bool_for_int(name = "bool_for_int")
         at_rule(
             14,
             5,
-            "Starlark transition on '//command_line_option:copt' is not implemented in the native profile (modelled native options: compilation_mode, host_compilation_mode, stamp, strip, force_pic, platforms, plugin, host_platform, extra_toolchains, extra_execution_platforms, cpu, collect_code_coverage, java_runtime_version, java_language_version, tool_java_runtime_version, tool_java_language_version; read only: define, copt)"
+            "Starlark transition on '//command_line_option:copt' is not implemented in the native profile (modelled native options: compilation_mode, host_compilation_mode, stamp, strip, force_pic, platforms, plugin, host_platform, extra_toolchains, extra_execution_platforms, cpu, collect_code_coverage, build_runfile_links, build_runfile_manifests, enable_runfiles, java_runtime_version, java_language_version, tool_java_runtime_version, tool_java_language_version; read only: define, copt)"
         )
     );
     assert_eq!(

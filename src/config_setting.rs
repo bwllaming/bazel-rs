@@ -754,12 +754,11 @@ mod tests {
             in_coverage(&[("enable_runfiles", "maybe")]).unwrap_err(),
             "in values attribute of config_setting rule //c:x: error while parsing configuration settings: While parsing option --enable_runfiles=maybe: 'maybe' is not a boolean"
         );
-        // Real options outside both tables keep the explicit error.
-        assert!(
-            in_coverage(&[("build_runfile_links", "true")])
-                .unwrap_err()
-                .contains("select() on build option 'build_runfile_links' is not implemented in the native profile")
-        );
+        for name in ["build_runfile_links", "build_runfile_manifests"] {
+            assert_eq!(result(&[(name, "true")], &[], &[]), matched);
+            let flag = format!("--no{name}");
+            assert_eq!(result(&[(name, "false")], &[], &[&flag]), matched);
+        }
     }
 
     #[test]

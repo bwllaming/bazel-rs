@@ -1467,6 +1467,11 @@ mod tests {
                         ("_main/empty".into(), None),
                     ]),
                     settings: crate::runfiles::RunSettings {
+                        runfiles_options: Some(crate::runfiles_tree::RunfilesOptions {
+                            build_runfile_links: false,
+                            enable_runfiles: false,
+                            ..Default::default()
+                        }),
                         args: vec!["--x".into()],
                         environment: vec![("E".into(), "v".into())],
                         inherited: vec!["HOME".into()],

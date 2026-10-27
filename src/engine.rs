@@ -2016,8 +2016,8 @@ pub struct Engine {
     /// Source directories used as file targets (path -> label).
     /// Several labels (a directory and links to it, N28d) may name one.
     source_directories: BTreeMap<PathBuf, BTreeSet<Label>>,
-    /// The runfiles options of builds (N23f, crate::runfiles_tree).
-    runfiles_options: crate::runfiles_tree::RunfilesOptions,
+    /// Request-only policy; tree/manifest/mode flags live in configurations.
+    compact_repo_mapping: bool,
     /// A label `--run_under` (LabelRunUnder): the late-bound
     /// `:run_under_exec_config`/`:run_under_target_config` edge of every
     /// test rule in a target configuration ([`RunUnderEdge`]).
@@ -2165,7 +2165,7 @@ impl Engine {
             toolchain_implementations: BTreeMap::new(),
             deferred_duplicates: BTreeMap::new(),
             source_directories: BTreeMap::new(),
-            runfiles_options: crate::runfiles_tree::RunfilesOptions::default(),
+            compact_repo_mapping: true,
             run_under: None,
             output_selection: OutputSelection::default(),
             aspects: crate::aspects::AspectRegistry::default(),
@@ -2235,9 +2235,22 @@ impl Engine {
         run_under.exec && self.repositories.root("bazel_tools").is_ok()
     }
 
-    /// The runfiles options of later builds (`--build_runfile_links`, ...).
-    pub fn set_runfiles_options(&mut self, options: crate::runfiles_tree::RunfilesOptions) {
-        self.runfiles_options = options;
+    /// Request-only mapping compression; other runfiles flags are configured.
+    pub fn set_compact_repo_mapping(&mut self, compact: bool) {
+        self.compact_repo_mapping = compact;
+    }
+
+    /// Configuration-sensitive policy, never the first-pass CLI view. The
+    /// retained request view supplies only compact repo mapping policy.
+    fn configured_runfiles_options(
+        &self,
+        config: ConfigId,
+    ) -> crate::runfiles_tree::RunfilesOptions {
+        crate::runfiles_tree::RunfilesOptions {
+            compact_repo_mapping: self.compact_repo_mapping,
+            ..Default::default()
+        }
+        .configured(&self.configurations.get(config).native)
     }
 
     /// The workspace status options of later builds
@@ -11550,7 +11563,7 @@ impl Engine {
             output_root: &output_root,
             action_owner: &action_owner,
             action_env,
-            runfiles: self.runfiles_options,
+            runfiles: self.configured_runfiles_options(base_key.config),
             loaded_functions: Some(&loaded_functions),
             run_under: self.run_under_dependency_key(base_key.config),
         };
@@ -12587,7 +12600,7 @@ impl Engine {
                 output_root: output_root.clone(),
                 action_owner: action_owner.clone(),
                 action_env: action_env.clone(),
-                runfiles: self.runfiles_options,
+                runfiles: self.configured_runfiles_options(config),
                 loaded_functions,
                 repositories: self.repositories.clone(),
                 run_under: self.run_under_dependency_key(config),
@@ -14936,10 +14949,8 @@ impl Engine {
             let key = self.configurations.top_key(label.clone());
             let actual = forwarded.get(&key).unwrap_or(label);
             let owner = owners.index(key.clone());
-            if runfiles_requested
-                && let Some(runfiles) =
-                    runfiles_info.get(&self.configurations.top_key(actual.clone()))
-            {
+            let actual_key = self.output_group_key(actual, top)?;
+            if runfiles_requested && let Some(runfiles) = runfiles_info.get(&actual_key) {
                 for file in runfiles.default_runfiles().all_artifacts() {
                     let artifact = resolve(self, &file)?.ok_or_else(|| {
                         format!(
@@ -14957,7 +14968,6 @@ impl Engine {
             // needs the MANIFEST (SymlinkTreeAction, --build_runfile_links),
             // or the input manifest, and the repository mapping manifest.
             // `run` always creates the tree (RunCommand.ensureRunfilesBuilt).
-            let actual_key = self.configurations.top_key(actual.clone());
             // CoverageReportActionBuilder.getBaselineCoverageArtifacts: the
             // baseline coverage of every top-level target is built for the
             // combined report.
@@ -14986,8 +14996,10 @@ impl Engine {
                     }
                 }
             }
-            if let Some(support) = runfiles_nodes.get(&actual_key) {
-                let options = self.runfiles_options;
+            let options = self.configured_runfiles_options(actual_key.config);
+            if (runfiles_requested || self.run_requests.contains(label))
+                && let Some(support) = runfiles_nodes.get(&actual_key)
+            {
                 let running = self.run_requests.contains(label) && self.run_trees;
                 let mut artifacts = vec![support.repo_mapping.clone()];
                 artifacts.extend(support.manifest.clone());
@@ -15044,6 +15056,12 @@ impl Engine {
                         hidden.push((owner, artifact.clone()));
                     }
                 }
+                let mut settings = runfiles_info
+                    .get(&actual_key)
+                    .map(|runfiles| runfiles.run.clone())
+                    .unwrap_or_default();
+                // Also for source-file run targets (no RunfilesSupport).
+                settings.runfiles_options = Some(options);
                 let plan = RunPlan {
                     executable,
                     // Only a built tree is published (build_requests): `run`
@@ -15052,16 +15070,13 @@ impl Engine {
                     // runfiles by content and never reads it.
                     tree: runfiles_nodes
                         .get(&actual_key)
-                        .filter(|_| self.run_trees || self.runfiles_options.links())
+                        .filter(|_| self.run_trees || options.links())
                         .and_then(|support| support.tree.clone()),
                     entries: runfiles_nodes
                         .get(&actual_key)
                         .map(|support| support.entries.clone()),
-                    settings: runfiles_info
-                        .get(&actual_key)
-                        .map(|runfiles| runfiles.run.clone())
-                        .unwrap_or_default(),
-                    config: top,
+                    settings,
+                    config: actual_key.config,
                     completion: Vec::new(),
                     coverage: None,
                     baselines: Vec::new(),
@@ -15352,7 +15367,8 @@ impl Engine {
             .map(|owner| &owners.keys[owner])
             .filter(|key| {
                 let actual = forwarded.get(*key).unwrap_or(&key.label);
-                runfiles_nodes.contains_key(&self.configurations.top_key(actual.clone()))
+                let key = self.configurations.top_key(actual.clone());
+                runfiles_nodes.contains_key(self.rule_delegations.get(&key).unwrap_or(&key))
             })
             .collect();
         let mut by_target: Vec<(Label, Vec<InputFailure>)> = Vec::new();
@@ -16515,7 +16531,7 @@ impl Engine {
         ) else {
             return Ok(None);
         };
-        let options = self.runfiles_options;
+        let options = self.configured_runfiles_options(key.config);
         let lookup =
             |planning: &mut RunfilesPlanning<'_>, file: &File| -> Result<Artifact, String> {
                 planning.artifact(self, file)?.ok_or_else(|| {
@@ -16885,7 +16901,7 @@ impl Engine {
             &runfiles,
             transitive,
             &|repository: &str| repositories.mapping(repository),
-            self.runfiles_options.compact_repo_mapping,
+            self.compact_repo_mapping,
         )?;
         match registered.action.write.as_mut() {
             Some(write) => write.content = content,

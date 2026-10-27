@@ -850,7 +850,6 @@ fn run() -> Result<(), String> {
                                         cache: &cache,
                                         jobs,
                                         root: &root,
-                                        runfiles: runfiles_options,
                                         options: &test_options,
                                         remote_enabled,
                                         pattern_failure: None,
@@ -1025,7 +1024,7 @@ fn run() -> Result<(), String> {
     // the exit.
     let mut engine = std::mem::ManuallyDrop::new(Engine::with_repositories(repositories.clone()));
     engine.set_skip_teardown(true);
-    engine.set_runfiles_options(runfiles_options);
+    engine.set_compact_repo_mapping(runfiles_options.compact_repo_mapping);
     // A LabelRunUnder: every test rule's late-bound run_under prerequisite
     // (the label converts with the main repository's mapping, LabelConverter).
     if let Some(run_under) = run_options
@@ -1210,7 +1209,6 @@ fn run() -> Result<(), String> {
                 cache: &cache,
                 jobs,
                 root: &root,
-                runfiles: runfiles_options,
                 options: &test_options,
                 remote_enabled,
                 pattern_failure: None,
@@ -2341,6 +2339,9 @@ fn run_tail(
             "Cannot run target {label}: Not executable"
         )));
     };
+    // RunCommand reads the built target's configuration, not the pre-transition
+    // command line. Files retain the request fallback (no rule configuration).
+    let runfiles = target.settings.runfiles_options.unwrap_or(runfiles);
     if !runfiles.build_runfile_manifests {
         // RUN_PREREQ_UNMET: exit 2.
         return Err(bazel_rs::exit_code::command_line(
@@ -2495,7 +2496,6 @@ struct TestTail<'a> {
     cache: &'a Path,
     jobs: usize,
     root: &'a Path,
-    runfiles: bazel_rs::runfiles_tree::RunfilesOptions,
     options: &'a bazel_rs::test_command::TestOptions,
     /// Whether the remote cache is set up (N41): the build summary names its
     /// hits. Test actions themselves are local-only (docs/TEST_COMMAND.md).
@@ -2609,7 +2609,6 @@ fn test_tail(
         cache,
         jobs,
         root,
-        runfiles,
         options,
         remote_enabled,
         pattern_failure,
@@ -2654,7 +2653,6 @@ fn test_tail(
                 workspace: root,
                 options,
                 client_env: &client_env,
-                runfiles_enabled: runfiles.enable_runfiles,
                 tools,
             },
             tests,
@@ -3991,16 +3989,10 @@ impl NativeOptions {
         {
             self.output.parse_groups(value);
             false
-        } else if builds(command) && bazel_rs::runfiles_tree::is_enable_runfiles(arg) {
-            // CoreOptions.enableRunfiles is a configuration value
-            // (config_setting `values`, the exec propagation, the identity:
-            // crate::configuration::VALUE_OPTIONS) that the runfiles trees
-            // read too: the configuration converts and records it first, so
-            // its errors are the TriStateConverter's.
-            self.configuration.parse(arg, None)?;
-            if let Some(result) = self.runfiles.parse(arg) {
-                result?;
-            }
+        } else if bazel_rs::runfiles_tree::is_configured_runfiles_option(arg) {
+            // One source of truth, including query conversion and second-pass
+            // MODULE alias rewriting. No global runfiles side effect survives.
+            self.configuration.parse(arg, next)?;
             false
         } else if let Some(result) = builds(command).then(|| self.runfiles.parse(arg)).flatten() {
             result?;

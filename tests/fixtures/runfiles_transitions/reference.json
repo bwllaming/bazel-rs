@@ -1,0 +1,32 @@
+{
+  "bazel": "9.3.0",
+  "elf_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "source_commit": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+  "capture_root": "/home/coder/opencodetmp/runfiles-transitions/genuine",
+  "policy": "Independent tiny scratch, batch ELF, private HOME/TMPDIR/output cache, file registry, repository downloads disabled, 1GiB JVM. Unused built-in modules stubbed; genuine platforms/rules_shell/rules_cc loading closure retained for actual test execution. Setup-failure receipts are separate and not counted as semantic cases.",
+  "cases": {
+    "default": {"exit": 0, "plain_links_match": true, "native_macro_match": true, "plain": "bazel-out/k8-fastbuild/bin/exe.sh.runfiles/MANIFEST", "off": "bazel-out/k8-fastbuild-ST-dacff1feb035/bin/exe.sh.runfiles_manifest", "no": "bazel-out/k8-fastbuild-ST-20e3c3d41263/bin/exe.sh.runfiles/MANIFEST", "none": null, "split_configurations": 2},
+    "cli-off": {"exit": 0, "links_match": false, "native_macro_match": false, "exec_manifest_suffix": ".runfiles_manifest"},
+    "cli-no": {"exit": 0, "exec_manifest_suffix": ".runfiles/MANIFEST"},
+    "incoming-off": {"exit": 0},
+    "no-build": {"exit": 0, "executes": false},
+    "tool-off": {"exit": 0, "output": "runfiles-ok"},
+    "tool-no": {"exit": 0, "output": "runfiles-ok"},
+    "run-off": {"exit": 0, "stdout": "runfiles-ok manifest_only=unset"},
+    "run-no": {"exit": 0, "stdout": "runfiles-ok manifest_only=unset"},
+    "run-none": {"exit": 2, "error": "--nobuild_runfile_manifests is incompatible with the \"run\" command"},
+    "tests": {"exit": 0, "off_test": "runfiles-ok manifest_only=unset", "no_test": "runfiles-ok manifest_only=1"},
+    "bad": {"exit": 1, "error": "Invalid value type for option 'build_runfile_links'"},
+    "null": {"exit": 1, "error": "IllegalArgumentError for option 'build_runfile_links': Can not set boolean field com.google.devtools.build.lib.analysis.config.CoreOptions.buildRunfileLinks to null value"},
+    "bad-string": {"exit": 1, "error": "OptionsParsingError for option 'build_runfile_links': 'bad' is not a boolean"},
+    "bad-enum": {"exit": 1, "error": "Invalid value type for option 'enable_runfiles'"},
+    "null-enum": {"exit": 0, "manifest": "bazel-out/k8-fastbuild-ST-7b2c9fc6dc8f/bin/exe.sh.runfiles/MANIFEST"},
+    "graph": {"exit": 0, "executes": false},
+    "hidden-default": {"exit": 0, "fresh_output_base": true, "only_target_file": "bazel-out/k8-fastbuild-ST-dacff1feb035/bin/incoming_off.sh"},
+    "aspect-tools": {"exit": 0, "native_status": "Unaddressed subject-FilesToRunProvider gap; not claimed fixed"},
+    "test-no-manifests": {"exit": 0, "note": "Default processwrapper-sandbox test succeeds even though CoreOptions help warns about local tests."},
+    "aspect-private-tools": {"exit": 0, "outputs": ["runfiles-ok", "runfiles-ok"]}
+  },
+  "transition_input_types": ["bool", "bool", "TriState"],
+  "tristate_repr": "<unknown object com.google.devtools.common.options.TriState>"
+}

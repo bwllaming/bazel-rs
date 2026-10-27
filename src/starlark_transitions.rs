@@ -57,6 +57,9 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "extra_execution_platforms",
     "cpu",
     "collect_code_coverage",
+    "build_runfile_links",
+    "build_runfile_manifests",
+    "enable_runfiles",
     "java_runtime_version",
     "java_language_version",
     "tool_java_runtime_version",
@@ -324,6 +327,13 @@ mod values {
     }
     option_enum!(CompilationModeValue, "CompilationMode");
     option_enum!(StripModeValue, "StripMode");
+    option_enum!(TriStateValue, "TriState");
+
+    impl fmt::Display for TriStateValue {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("<unknown object com.google.devtools.common.options.TriState>")
+        }
+    }
 
     impl fmt::Display for CompilationModeValue {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -414,7 +424,7 @@ mod values {
         }
     }
 }
-pub(crate) use values::{CompilationModeValue, StripModeValue, TransitionAttrsGen};
+pub(crate) use values::{CompilationModeValue, StripModeValue, TransitionAttrsGen, TriStateValue};
 
 /// A native enum option value: its Starlark type name and constant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -427,6 +437,8 @@ impl OptionEnum {
     fn alloc<'v>(self, heap: Heap<'v>) -> Value<'v> {
         if self.type_name == "CompilationMode" {
             heap.alloc(CompilationModeValue(self.value))
+        } else if self.type_name == "TriState" {
+            heap.alloc(TriStateValue(self.value))
         } else {
             heap.alloc(StripModeValue(self.value))
         }
@@ -441,6 +453,12 @@ impl OptionEnum {
             .or_else(|| {
                 StripModeValue::from_value(value).map(|mode| Self {
                     type_name: "StripMode",
+                    value: mode.0,
+                })
+            })
+            .or_else(|| {
+                TriStateValue::from_value(value).map(|mode| Self {
+                    type_name: "TriState",
                     value: mode.0,
                 })
             })
@@ -782,6 +800,18 @@ fn native_input<'v>(
         "stamp" => heap.alloc(native.stamp),
         "force_pic" => heap.alloc(native.force_pic),
         "collect_code_coverage" => heap.alloc(native.collect_code_coverage),
+        "build_runfile_links" | "build_runfile_manifests" => {
+            heap.alloc(native.value(name) == Some(OptionValue::Bool(true)))
+        }
+        "enable_runfiles" => match native.raw_value(name) {
+            Some(OptionValue::Null) => Value::new_none(),
+            Some(OptionValue::Enum(value)) => OptionEnum {
+                type_name: "TriState",
+                value,
+            }
+            .alloc(heap),
+            _ => unreachable!("enable_runfiles is TriState or null"),
+        },
         "platforms" => heap.alloc(
             native
                 .platforms
@@ -1585,12 +1615,22 @@ fn convert_native(
         // default top-level configuration's root).
         let defaults = NativeOptions::default();
         match name {
-            "stamp" | "force_pic" | "collect_code_coverage" => {
+            "stamp"
+            | "force_pic"
+            | "collect_code_coverage"
+            | "build_runfile_links"
+            | "build_runfile_manifests" => {
                 let field = match name {
                     "stamp" => {
                         "com.google.devtools.build.lib.analysis.config.CoreOptions.stampBinaries"
                     }
                     "force_pic" => "com.google.devtools.build.lib.rules.cpp.CppOptions.forcePic",
+                    "build_runfile_links" => {
+                        "com.google.devtools.build.lib.analysis.config.CoreOptions.buildRunfileLinks"
+                    }
+                    "build_runfile_manifests" => {
+                        "com.google.devtools.build.lib.analysis.config.CoreOptions.buildRunfileManifests"
+                    }
                     _ => {
                         "com.google.devtools.build.lib.analysis.config.CoreOptions.collectCodeCoverage"
                     }
@@ -1604,6 +1644,10 @@ fn convert_native(
                 native.host_compilation_mode = defaults.host_compilation_mode
             }
             "strip" => native.strip = defaults.strip,
+            "enable_runfiles" => native.set_value(
+                crate::configuration::value_option(name).expect("runfiles option"),
+                OptionValue::Null,
+            ),
             _ => {
                 return Err(format!(
                     "setting //command_line_option:{name} to None (a null option value) is not implemented in the native profile"
@@ -1648,7 +1692,11 @@ fn convert_native(
                 _ => native.strip = value,
             }
         }
-        "stamp" | "force_pic" | "collect_code_coverage" => {
+        "stamp"
+        | "force_pic"
+        | "collect_code_coverage"
+        | "build_runfile_links"
+        | "build_runfile_manifests" => {
             let value = match &raw.kind {
                 RawKind::Bool(flag) => *flag,
                 RawKind::String(text) => {
@@ -1670,8 +1718,28 @@ fn convert_native(
             match name {
                 "stamp" => native.stamp = value,
                 "force_pic" => native.force_pic = value,
+                "build_runfile_links" | "build_runfile_manifests" => native.set_value(
+                    crate::configuration::value_option(name).expect("runfiles option"),
+                    OptionValue::Bool(value),
+                ),
                 _ => native.collect_code_coverage = value,
             }
+        }
+        "enable_runfiles" => {
+            let value = match &raw.kind {
+                RawKind::Enum("TriState", value) => OptionValue::Enum(value),
+                RawKind::String(text) => crate::configuration::convert(
+                    option.expect("runfiles option"),
+                    text,
+                    package_label,
+                )
+                .map_err(parsing)?,
+                _ => return Err(invalid()),
+            };
+            native.set_value(
+                crate::configuration::value_option(name).expect("runfiles option"),
+                value,
+            );
         }
         "platforms" => {
             native.platforms = match &raw.kind {

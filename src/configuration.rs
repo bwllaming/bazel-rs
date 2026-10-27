@@ -449,6 +449,38 @@ const STRICT_DEPS_MODES: &[&str] = &["OFF", "WARN", "ERROR", "STRICT", "DEFAULT"
 /// tests/fixtures/value_options): converter texts, case rules, defaults,
 /// the exec transition, `query`'s `Unrecognized option`.
 pub const VALUE_OPTIONS: &[ValueOption] = &[
+    ValueOption {
+        option: OptionDef {
+            name: "build_runfile_links",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "true",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/analysis/config/CoreOptions.java:601-609",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:250",
+    },
+    ValueOption {
+        option: OptionDef {
+            name: "build_runfile_manifests",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "true",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/analysis/config/CoreOptions.java:591-599",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:249",
+    },
     // ProtoConfiguration.Options (build/lib/rules/proto/ProtoConfiguration.java:47-154):
     // read natively only by `config_setting` (protobuf's native_bool_flag,
     // bazel/private/native_bool_flag.bzl) and the private
@@ -738,6 +770,9 @@ pub fn boolean_option(arg: &str, name: &str) -> Option<Result<bool, String>> {
 /// A converted option value, compared like the Java objects Bazel stores.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OptionValue {
+    /// A nullable Java option explicitly set to None by a Starlark transition.
+    /// getRawValue observes null; getValue (config_setting) observes its default.
+    Null,
     Bool(bool),
     Enum(&'static str),
     /// `List<Map.Entry<String, String>>`.
@@ -755,6 +790,7 @@ impl fmt::Display for OptionValue {
     /// getCanonicalForm, cmdline/Label.java:479-492).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Null => f.write_str("null"),
             Self::Bool(value) => write!(f, "{value}"),
             Self::Enum(value) => f.write_str(value),
             Self::Assignments(entries) => {
@@ -1363,10 +1399,15 @@ impl NativeOptions {
             "collect_code_coverage" => OptionValue::Bool(self.collect_code_coverage),
             name => {
                 let option = value_option(name)?;
-                self.values
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_else(|| option.default_value())
+                match self.values.get(name) {
+                    // FieldOptionDefinition.getValue returns the UNPARSED
+                    // default string, not the enum, for a non-special null.
+                    Some(OptionValue::Null) => {
+                        OptionValue::String(option.option.default.to_owned())
+                    }
+                    Some(value) => value.clone(),
+                    None => option.default_value(),
+                }
             }
         })
     }
@@ -1379,6 +1420,12 @@ impl NativeOptions {
         } else {
             self.values.insert(option.option.name, value);
         }
+    }
+
+    /// FieldOptionDefinition.getRawValue, unlike the defaulting config_setting
+    /// view above. Only enable_runfiles admits a null transition value here.
+    pub fn raw_value(&self, name: &str) -> Option<OptionValue> {
+        self.values.get(name).cloned().or_else(|| self.value(name))
     }
 
     /// The table-driven values of the exec configuration of `self`
@@ -2763,6 +2810,55 @@ mod tests {
     }
 
     #[test]
+    fn runfile_options_preserve_default_ids_and_model_nondefault_and_null_values() {
+        let default = parsed(&[]).unwrap();
+        let explicit = parsed(&[
+            "--build_runfile_links=true",
+            "--build_runfile_manifests",
+            "--enable_runfiles=auto",
+        ])
+        .unwrap();
+        assert_eq!(default.id, explicit.id);
+        assert!(explicit.native.values.is_empty());
+        for flag in [
+            "--nobuild_runfile_links",
+            "--nobuild_runfile_manifests",
+            "--noenable_runfiles",
+        ] {
+            let changed = parsed(&[flag]).unwrap();
+            assert_ne!(default.id, changed.id);
+            let exec = crate::config_registry::exec_transition(
+                &changed,
+                changed.native.host_platform.clone(),
+                &Default::default(),
+            );
+            for name in [
+                "build_runfile_links",
+                "build_runfile_manifests",
+                "enable_runfiles",
+            ] {
+                assert_eq!(exec.native.raw_value(name), changed.native.raw_value(name));
+            }
+        }
+        let mut native = default.native.clone();
+        native.set_value(value_option("enable_runfiles").unwrap(), OptionValue::Null);
+        assert_eq!(native.raw_value("enable_runfiles"), Some(OptionValue::Null));
+        assert_eq!(
+            native.value("enable_runfiles"),
+            Some(OptionValue::String("auto".into()))
+        );
+        assert!(
+            !crate::runfiles_tree::RunfilesOptions::default()
+                .configured(&native)
+                .enable_runfiles
+        );
+        assert_ne!(
+            Configuration::new(native, Default::default()).id,
+            default.id
+        );
+    }
+
+    #[test]
     fn action_environment_options_parse_normalize_and_enter_the_identity() {
         use crate::action_env::{EnvVar, STRICT_PATH};
         let default = parsed(&[]).unwrap();
@@ -2971,6 +3067,8 @@ mod tests {
         assert_eq!(
             names[OPTIONS.len()..],
             [
+                "build_runfile_links",
+                "build_runfile_manifests",
                 "experimental_proto_descriptor_sets_include_source_info",
                 "strict_proto_deps",
                 "strict_public_imports",
