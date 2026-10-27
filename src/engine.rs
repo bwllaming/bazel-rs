@@ -1416,6 +1416,21 @@ fn test_suite_filter_tags(rule: &Rule) -> Option<BTreeSet<String>> {
 /// The label texts of an aspect attribute's value (its default; parameters
 /// are never labels): the dependencies of the aspect's own attributes,
 /// resolved from the aspect's `.bzl` package.
+/// The [`Engine::aspect_attribute_configurations`] memo name of the
+/// attributes of `owner` in an application of `main`: the aspect's identity
+/// for its own attributes, `owner@main` for a base aspect's (resolved over
+/// the main aspect's execution platforms).
+fn aspect_attribute_memo_name(
+    owner: &crate::aspects::AspectDefinition,
+    main: &crate::aspects::AspectDefinition,
+) -> String {
+    if owner.identity == main.identity {
+        owner.identity.clone()
+    } else {
+        format!("{}@{}", owner.identity, main.identity)
+    }
+}
+
 fn aspect_attribute_labels(spec: &crate::custom_rule::AttrSpec) -> Vec<String> {
     match &spec.default {
         crate::custom_rule::AttrValue::Label(Some(label)) => vec![label.clone()],
@@ -4589,11 +4604,7 @@ impl Engine {
             // The aspect's own attribute dependencies, each in its
             // attribute's configuration (Self::aspect_attribute_configurations),
             // validated from the aspect's `.bzl` package
-            // (CommonPrerequisiteValidator).
-            let authority = crate::label::PackageId {
-                repository: aspect.definition_label.repository.clone(),
-                package: aspect.definition_label.package.clone(),
-            };
+            // (CommonPrerequisiteValidator, Self::analyze_aspect_attribute_edges).
             // The aspect's own toolchain contexts first: they decide its
             // execution platforms (DependencyContextProducer runs before
             // the dependencies); a ToolchainException is the application's
@@ -4623,57 +4634,55 @@ impl Engine {
                 &base_rule,
                 &base_key,
                 aspect,
+                aspect,
                 &toolchains,
                 configured,
                 plan,
             )?;
-            for (name, spec) in &aspect.declaration.attrs {
-                let Some(branches) = attribute_configs.get(name) else {
-                    continue;
-                };
-                for text in aspect_attribute_labels(spec) {
-                    // Aspect attribute labels resolve relative to the
-                    // aspect's `.bzl` package (LabelConverter.
-                    // forBzlEvaluatingThread at aspect() declaration).
-                    let dependency = self.repositories.parse(
-                        &text,
-                        &aspect.definition_label.repository,
-                        &aspect.definition_label.package,
-                    )?;
-                    for (_, attribute_config) in branches.iter() {
-                        let attribute_config = *attribute_config;
-                        self.analyze(&dependency, attribute_config, active, configured, plan)
-                            .map_err(|error| {
-                                format!(
-                                    "in {} aspect on {} rule {}: {error}",
-                                    aspect.identity,
-                                    base_rule.rule_class_name(),
-                                    crate::rule_declarations::canonical_form(&base_label)
-                                )
-                            })?;
-                        if let Some(capture) = &mut self.cquery_capture {
-                            capture.aspect_target(
-                                applications[index],
-                                dependency.clone(),
-                                attribute_config,
-                            );
-                        }
-                        let dep_rule = match self.target(&dependency)? {
-                            Target::Rule(dep_rule) => dep_rule,
-                            Target::Output(generating, _) => generating,
-                            _ => continue,
-                        };
-                        if let Err(error) = self.visible(&dep_rule.visibility, &authority, None) {
-                            return Err(format!(
-                                "in {} aspect on {} rule {}: {}",
-                                aspect.identity,
-                                base_rule.rule_class_name(),
-                                crate::rule_declarations::canonical_form(&base_label),
-                                error
-                            ));
-                        }
-                    }
-                }
+            let path = collection.path_aspects(&aspect.descriptor);
+            self.analyze_aspect_attribute_edges(
+                &base_rule,
+                &base_label,
+                aspect,
+                aspect,
+                None,
+                &attribute_configs,
+                &path,
+                applications.get(index).copied(),
+                active,
+                configured,
+                plan,
+                seen,
+            )?;
+            // The attributes of the base aspects of the path that
+            // `ctx.rule.attr` holds are dependencies of this application
+            // too (DependencyResolutionHelpers.getAttributes/
+            // addAspectAttributes), each in its attribute's configuration
+            // over THIS aspect's execution platforms.
+            for (owner, names) in crate::aspects::base_aspect_attributes(&path, &base_rule) {
+                let owner_configs = self.aspect_attribute_configurations(
+                    &base_rule,
+                    &base_key,
+                    &owner,
+                    aspect,
+                    &toolchains,
+                    configured,
+                    plan,
+                )?;
+                self.analyze_aspect_attribute_edges(
+                    &base_rule,
+                    &base_label,
+                    &owner,
+                    aspect,
+                    Some(&names),
+                    &owner_configs,
+                    &path,
+                    None,
+                    active,
+                    configured,
+                    plan,
+                    seen,
+                )?;
             }
         }
         // The applications propagated along the base target's edges: each
@@ -4721,6 +4730,92 @@ impl Engine {
             }
         }
         Ok(applications)
+    }
+
+    /// Phase 1 of the label attributes of `owner` (the applied aspect
+    /// `main` itself, or a base aspect of its path whose attributes
+    /// `ctx.rule.attr` holds, restricted to `names`) in one application of
+    /// `main` to `base_rule`: each dependency analyzed in its attribute's
+    /// configuration, with the aspects of the path that propagate over the
+    /// attribute (collectPropagatingAspects: never the owner itself), and
+    /// visibility-checked from the owner's `.bzl` package
+    /// (CommonPrerequisiteValidator). `capture` is the cquery application
+    /// of `main` recording the owner's edges (its own attributes only).
+    #[allow(clippy::too_many_arguments)]
+    fn analyze_aspect_attribute_edges(
+        &mut self,
+        base_rule: &Rule,
+        base_label: &Label,
+        owner: &crate::aspects::AspectDefinition,
+        main: &crate::aspects::AspectDefinition,
+        names: Option<&[String]>,
+        attribute_configs: &BTreeMap<String, TransitionConfigurations>,
+        path: &[std::sync::Arc<crate::aspects::AspectDefinition>],
+        capture: Option<u32>,
+        active: &mut Vec<ConfiguredTargetKey>,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Plan,
+        seen: &mut BTreeSet<(ConfiguredTargetKey, Vec<String>)>,
+    ) -> Result<(), String> {
+        let authority = crate::label::PackageId {
+            repository: owner.definition_label.repository.clone(),
+            package: owner.definition_label.package.clone(),
+        };
+        let failure = |error: String| {
+            format!(
+                "in {} aspect on {} rule {}: {error}",
+                main.identity,
+                base_rule.rule_class_name(),
+                crate::rule_declarations::canonical_form(base_label)
+            )
+        };
+        for (name, spec) in &owner.declaration.attrs {
+            if names.is_some_and(|names| !names.contains(name)) {
+                continue;
+            }
+            let Some(branches) = attribute_configs.get(name) else {
+                continue;
+            };
+            let propagating = crate::aspects::propagating_over_aspect_attribute(path, owner, name);
+            for text in aspect_attribute_labels(spec) {
+                // Aspect attribute labels resolve relative to the
+                // aspect's `.bzl` package (LabelConverter.
+                // forBzlEvaluatingThread at aspect() declaration).
+                let dependency = self.repositories.parse(
+                    &text,
+                    &owner.definition_label.repository,
+                    &owner.definition_label.package,
+                )?;
+                for (_, attribute_config) in branches.iter() {
+                    let attribute_config = *attribute_config;
+                    self.analyze(&dependency, attribute_config, active, configured, plan)
+                        .map_err(failure)?;
+                    if let (Some(index), Some(cquery)) = (capture, &mut self.cquery_capture) {
+                        cquery.aspect_target(index, dependency.clone(), attribute_config);
+                    }
+                    if !propagating.is_empty() {
+                        self.analyze_aspect_applications(
+                            &dependency,
+                            attribute_config,
+                            propagating.clone(),
+                            active,
+                            configured,
+                            plan,
+                            seen,
+                        )?;
+                    }
+                    let dep_rule = match self.target(&dependency)? {
+                        Target::Rule(dep_rule) => dep_rule,
+                        Target::Output(generating, _) => generating,
+                        _ => continue,
+                    };
+                    if let Err(error) = self.visible(&dep_rule.visibility, &authority, None) {
+                        return Err(failure(error));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The aspect's OWN ToolchainCollection in configuration `config`
@@ -4919,17 +5014,19 @@ impl Engine {
     /// not declare is DependencyProducer.ExecGroupErrorEmitter's error at
     /// the base target. Memoized per application
     /// (Self::aspect_attribute_configs), read by its planning.
+    #[allow(clippy::too_many_arguments)]
     fn aspect_attribute_configurations(
         &mut self,
         base_rule: &Rule,
         base_key: &ConfiguredTargetKey,
         aspect: &crate::aspects::AspectDefinition,
+        main: &crate::aspects::AspectDefinition,
         toolchains: &AspectToolchains,
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
     ) -> Result<Arc<BTreeMap<String, TransitionConfigurations>>, String> {
         use crate::rule_declarations::Cfg;
-        let memo = (base_key.clone(), aspect.identity.clone());
+        let memo = (base_key.clone(), aspect_attribute_memo_name(aspect, main));
         if let Some(configs) = self.aspect_attribute_configs.get(&memo) {
             return Ok(configs.clone());
         }
@@ -10678,6 +10775,78 @@ impl Engine {
         Ok((base, applications))
     }
 
+    /// The planned dependencies of the label attributes of `owner` (the
+    /// applied aspect itself, or a base aspect of its path restricted to
+    /// `names`) in one application, keyed like a rule context's
+    /// ([`analysis::attribute_dependency_key`], split keys for Starlark
+    /// transitions), aspect-applied with the path's aspects that propagate
+    /// over the attribute (Self::analyze_aspect_attribute_edges).
+    #[allow(clippy::type_complexity)]
+    fn plan_aspect_attribute_dependencies(
+        &mut self,
+        state: &mut PlanState<'_>,
+        configured: &mut ConfiguredNodes,
+        owner: &crate::aspects::AspectDefinition,
+        names: Option<&[String]>,
+        attribute_configs: &BTreeMap<String, TransitionConfigurations>,
+        path: &[std::sync::Arc<crate::aspects::AspectDefinition>],
+    ) -> Result<
+        (
+            BTreeMap<String, DependencyTarget>,
+            BTreeMap<String, crate::custom_rule::SplitAttribute>,
+        ),
+        String,
+    > {
+        let mut aspect_dependencies: BTreeMap<String, DependencyTarget> = BTreeMap::new();
+        let mut aspect_split_dependencies = BTreeMap::new();
+        for (name, spec) in &owner.declaration.attrs {
+            if names.is_some_and(|names| !names.contains(name)) {
+                continue;
+            }
+            let Some(branches) = attribute_configs.get(name) else {
+                continue;
+            };
+            let propagating = crate::aspects::propagating_over_aspect_attribute(path, owner, name);
+            let split = branches.len() != 1 || !branches[0].0.is_empty();
+            let mut labels = Vec::new();
+            for text in aspect_attribute_labels(spec) {
+                let dependency = self.repositories.parse(
+                    &text,
+                    &owner.definition_label.repository,
+                    &owner.definition_label.package,
+                )?;
+                labels.push(dependency.clone());
+                for (_, attribute_config) in branches.iter() {
+                    let attribute_config = *attribute_config;
+                    let (view, _) = self.plan_aspect_dependency(
+                        state,
+                        configured,
+                        &dependency,
+                        attribute_config,
+                        propagating.clone(),
+                    )?;
+                    aspect_dependencies.insert(
+                        if split {
+                            analysis::split_dependency_key(
+                                &dependency.to_string(),
+                                name,
+                                attribute_config,
+                            )
+                        } else {
+                            analysis::attribute_dependency_key(&dependency.to_string(), name, spec)
+                        },
+                        view,
+                    );
+                }
+            }
+            if split {
+                aspect_split_dependencies
+                    .insert(name.clone(), self.split_attribute(name, labels, branches)?);
+            }
+        }
+        Ok((aspect_dependencies, aspect_split_dependencies))
+    }
+
     /// Plan one aspect application (one AspectValue): the aspect's
     /// implementation over its `target` parameter and its dependencies (the
     /// aspect's own attributes plus the base rule's edges, aspect-applied
@@ -10792,48 +10961,45 @@ impl Engine {
                     aspect.identity, base_key.label
                 )
             })?;
-        let mut aspect_dependencies: BTreeMap<String, DependencyTarget> = BTreeMap::new();
-        let mut aspect_split_dependencies = BTreeMap::new();
-        for (name, spec) in &aspect.declaration.attrs {
-            let Some(branches) = attribute_configs.get(name) else {
-                continue;
-            };
-            let split = branches.len() != 1 || !branches[0].0.is_empty();
-            let mut labels = Vec::new();
-            for text in aspect_attribute_labels(spec) {
-                let dependency = self.repositories.parse(
-                    &text,
-                    &aspect.definition_label.repository,
-                    &aspect.definition_label.package,
-                )?;
-                labels.push(dependency.clone());
-                for (_, attribute_config) in branches.iter() {
-                    let attribute_config = *attribute_config;
-                    let (view, _) = self.plan_aspect_dependency(
-                        state,
-                        configured,
-                        &dependency,
-                        attribute_config,
-                        Vec::new(),
-                    )?;
-                    aspect_dependencies.insert(
-                        if split {
-                            analysis::split_dependency_key(
-                                &dependency.to_string(),
-                                name,
-                                attribute_config,
-                            )
-                        } else {
-                            analysis::attribute_dependency_key(&dependency.to_string(), name, spec)
-                        },
-                        view,
-                    );
-                }
-            }
-            if split {
-                aspect_split_dependencies
-                    .insert(name.clone(), self.split_attribute(name, labels, branches)?);
-            }
+        let path = collection.path_aspects(&aspect.descriptor);
+        let (aspect_dependencies, aspect_split_dependencies) = self
+            .plan_aspect_attribute_dependencies(
+                state,
+                configured,
+                aspect,
+                None,
+                &attribute_configs,
+                &path,
+            )?;
+        // The base aspects' attributes `ctx.rule.attr` holds, planned as
+        // phase 1 analyzed them (Self::analyze_aspect_attribute_edges).
+        let mut base_aspect_attributes = Vec::new();
+        for (owner, names) in crate::aspects::base_aspect_attributes(&path, &base_rule) {
+            let memo = (base_key.clone(), aspect_attribute_memo_name(&owner, aspect));
+            let owner_configs = self
+                .aspect_attribute_configs
+                .get(&memo)
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "internal analysis order error: the attributes of aspect {} under {} on {} were not analyzed",
+                        owner.identity, aspect.identity, base_key.label
+                    )
+                })?;
+            let (dependencies, split_dependencies) = self.plan_aspect_attribute_dependencies(
+                state,
+                configured,
+                &owner,
+                Some(&names),
+                &owner_configs,
+                &path,
+            )?;
+            base_aspect_attributes.push(analysis::BaseAspectAttributes {
+                aspect: owner,
+                names,
+                dependencies,
+                split_dependencies,
+            });
         }
         let mut dependencies: BTreeMap<String, DependencyTarget> = BTreeMap::new();
         let incoming: Vec<std::sync::Arc<crate::aspects::AspectDefinition>> = collection
@@ -11102,6 +11268,7 @@ impl Engine {
             rule: analyzed_rule,
             dependencies: dependencies.clone(),
             aspect_dependencies,
+            base_aspect_attributes,
             toolchains: aspect_toolchains,
             repositories: self.repositories.clone(),
         };

@@ -1,0 +1,13 @@
+# Genuine Bazel 9.3.0, a fresh server per command (`--noshow_progress --curses=no --color=no`),
+# the sorted `print()` texts of the main aspect (DEBUG lines without their
+# `DEBUG: <WS>/defs.bzl:L:C: ` lead).
+### build //:top
+M leaf ["_bdata", "_bfile", "_btool", "_cdep", "_rimpl", "_shared", "deps", "flavor"]
+M mid ["_bdata", "_bfile", "_btool", "_cdep", "_rimpl", "_shared", "deps", "flavor"]
+V leaf btool=btool exe=bazel-out/k8-opt-exec/bin/btool.sh bdata=["bdata.txt", "bazel-out/k8-fastbuild/bin/gen.out"] bfile=bdata.txt shared=from_base rimpl=<target //:rimpl> flavor=plain cdep=cdep own=[False, True, True] mdep_b=True ids=["//:defs.bzl%base", "//:defs.bzl%seen", "//:defs.bzl%main"]
+V mid btool=btool exe=bazel-out/k8-opt-exec/bin/btool.sh bdata=["bdata.txt", "bazel-out/k8-fastbuild/bin/gen.out"] bfile=bdata.txt shared=from_base rimpl=<target //:rimpl> flavor=plain cdep=cdep own=[False, True, True] mdep_b=True ids=["//:defs.bzl%base", "//:defs.bzl%seen", "//:defs.bzl%main"]
+### build --aspects=//:defs.bzl%main --aspects_parameters=flavor=spicy //:mid
+M leaf ["_bdata", "_bfile", "_btool", "_rimpl", "_shared", "deps", "flavor"]
+M mid ["_bdata", "_bfile", "_btool", "_rimpl", "_shared", "deps", "flavor"]
+V leaf btool=btool exe=bazel-out/k8-opt-exec/bin/btool.sh bdata=["bdata.txt", "bazel-out/k8-fastbuild/bin/gen.out"] bfile=bdata.txt shared=from_base rimpl=<target //:rimpl> flavor=spicy cdep=- own=[False, True, True] mdep_b=True ids=["//:defs.bzl%base[flavor=\"spicy\"]", "//:defs.bzl%main"]
+V mid btool=btool exe=bazel-out/k8-opt-exec/bin/btool.sh bdata=["bdata.txt", "bazel-out/k8-fastbuild/bin/gen.out"] bfile=bdata.txt shared=from_base rimpl=<target //:rimpl> flavor=spicy cdep=- own=[False, True, True] mdep_b=True ids=["//:defs.bzl%base[flavor=\"spicy\"]", "//:defs.bzl%main"]

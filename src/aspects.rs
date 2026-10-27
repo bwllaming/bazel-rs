@@ -302,10 +302,21 @@ impl AspectCollection {
     /// :851-866), then itself — RuleContext.getAspectDescriptors, read by
     /// `ctx.aspect_ids` and the `ASPECTS aspect on KIND` messages.
     pub fn path_descriptions(&self, descriptor: &str) -> Vec<String> {
-        fn visit<'a>(
-            collection: &'a AspectCollection,
+        self.path_aspects(descriptor)
+            .iter()
+            .map(|aspect| aspect.description())
+            .collect()
+    }
+
+    /// The aspects of `descriptor`'s application path (RuleContext.
+    /// getAspects: the topological aspect path, AspectFunction.java:342-363):
+    /// its base aspects in topological order, then itself. A base aspect
+    /// that is a NonApplicableAspect on the target stays on the path.
+    pub fn path_aspects(&self, descriptor: &str) -> Vec<Arc<AspectDefinition>> {
+        fn visit(
+            collection: &AspectCollection,
             descriptor: &str,
-            ordered: &mut Vec<&'a AspectDefinition>,
+            ordered: &mut Vec<Arc<AspectDefinition>>,
         ) {
             let Some((aspect, bases)) = collection
                 .used
@@ -314,21 +325,38 @@ impl AspectCollection {
             else {
                 return;
             };
-            for base in bases {
-                if !ordered.iter().any(|seen| seen.descriptor == *base) {
-                    visit(collection, base, ordered);
+            // The AspectKey's baseKeys are sorted by aspect class name
+            // (AspectKeyCreator.createAspectKey, :127-133), the order the
+            // postorder visits them in.
+            let mut sorted: Vec<&AspectDefinition> = bases
+                .iter()
+                .filter_map(|base| {
+                    collection
+                        .used
+                        .iter()
+                        .find(|(used, _)| used.descriptor == *base)
+                        .map(|(used, _)| used.as_ref())
+                })
+                .collect();
+            sorted.sort_by(|a, b| a.identity.cmp(&b.identity));
+            for base in sorted {
+                if !ordered
+                    .iter()
+                    .any(|seen| seen.descriptor == base.descriptor)
+                {
+                    visit(collection, &base.descriptor, ordered);
                 }
             }
             if !ordered
                 .iter()
                 .any(|seen| seen.descriptor == aspect.descriptor)
             {
-                ordered.push(aspect);
+                ordered.push(aspect.clone());
             }
         }
         let mut ordered = Vec::new();
         visit(self, descriptor, &mut ordered);
-        ordered.iter().map(|aspect| aspect.description()).collect()
+        ordered
     }
 }
 
@@ -370,6 +398,63 @@ pub(crate) fn propagating_aspects(
         }
     }
     result
+}
+
+/// The attributes of the base aspects of an application path (`path`, the
+/// main aspect last) that `ctx.rule.attr` holds besides the base rule's
+/// (StarlarkRuleContext.java:302-316, AspectContext.
+/// mergeRuleAndBaseAspectsAttributes, DependencyResolutionHelpers.
+/// addAspectAttributes): per base aspect in path order, its attribute names
+/// that neither the rule nor an earlier base aspect has (the first
+/// attribute of a name wins, StarlarkAttributesCollection.Builder.
+/// addAttribute). The main aspect's own attributes are `ctx.attr`'s only.
+pub(crate) fn base_aspect_attributes(
+    path: &[Arc<AspectDefinition>],
+    rule: &Rule,
+) -> Vec<(Arc<AspectDefinition>, Vec<String>)> {
+    let mut taken: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    taken.insert("name".to_owned());
+    if let Some(invocation) = &rule.custom {
+        taken.extend(invocation.schema.keys().cloned());
+        taken.extend(invocation.attrs.keys().cloned());
+    }
+    let mut result = Vec::new();
+    for aspect in path.iter().take(path.len().saturating_sub(1)) {
+        let mut names = Vec::new();
+        for (name, _) in &aspect.declaration.attrs {
+            if taken.insert(name.clone()) {
+                names.push(name.clone());
+            }
+        }
+        if !names.is_empty() {
+            result.push((aspect.clone(), names));
+        }
+    }
+    result
+}
+
+/// The aspects of an application path `path` (bottom up, the main aspect
+/// last) that propagate along the attribute `attribute` of the aspect
+/// `owner` (collectPropagatingAspects, AspectResolutionHelpers.java:
+/// 211-243 with `aspectOwningAttribute`): an aspect never propagates over
+/// its own attributes; another one does when its `attr_aspects` names the
+/// attribute (or `'*'`), or when an already-kept aspect requires it.
+pub(crate) fn propagating_over_aspect_attribute(
+    path: &[Arc<AspectDefinition>],
+    owner: &AspectDefinition,
+    attribute: &str,
+) -> Vec<Arc<AspectDefinition>> {
+    let mut kept: Vec<Arc<AspectDefinition>> = Vec::new();
+    for aspect in path.iter().rev() {
+        if aspect.identity == owner.identity {
+            continue;
+        }
+        if propagates_along(aspect, attribute) || kept.iter().any(|other| other.requires(aspect)) {
+            kept.push(aspect.clone());
+        }
+    }
+    kept.reverse();
+    kept
 }
 
 /// AspectDefinition.getAttributeAspects: the aspect propagates along every

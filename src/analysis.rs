@@ -723,8 +723,14 @@ fn make_ctx<'v>(
         "split_attr",
     ];
     let owned = Module::with_temp_heap(|module| -> anyhow::Result<_> {
-        let structs =
-            ctx_attribute_structs(rule, invocation, context, dependencies, module.heap())?;
+        let structs = ctx_attribute_structs(
+            rule,
+            invocation,
+            context,
+            dependencies,
+            Vec::new(),
+            module.heap(),
+        )?;
         for (name, value) in NAMES.into_iter().zip(structs) {
             module.set(name, value);
         }
@@ -1135,6 +1141,7 @@ fn ctx_attribute_structs<'v>(
     invocation: &crate::custom_rule::CustomInvocation,
     context: &Context,
     dependencies: &BTreeMap<String, DependencyTarget>,
+    base_aspects: Vec<AspectAttributeMaps<'v>>,
     heap: Heap<'v>,
 ) -> anyhow::Result<[Value<'v>; 6]> {
     // RuleContext attribute errors: `in A attribute of KIND rule L: `
@@ -1500,6 +1507,26 @@ fn ctx_attribute_structs<'v>(
         outputs.insert(key.clone(), file);
     }
     builtin_ctx_attrs(rule, invocation, dependencies, &mut attrs, &mut files, heap)?;
+    // An aspect's `ctx.rule`: the base aspects' attributes after the
+    // rule's, the first attribute of a name winning
+    // (StarlarkAttributesCollection.Builder.addAttribute, :387-390).
+    for base in base_aspects {
+        for (name, value) in base.attrs {
+            if attrs.contains_key(&name) {
+                continue;
+            }
+            attrs.insert(name.clone(), value);
+            if let Some(value) = base.files.get(&name) {
+                files.insert(name.clone(), *value);
+            }
+            if let Some(value) = base.single_files.get(&name) {
+                single_files.insert(name.clone(), *value);
+            }
+            if let Some(value) = base.executables.get(&name) {
+                executables.insert(name.clone(), *value);
+            }
+        }
+    }
     Ok([
         heap.alloc(AllocStruct(attrs)),
         heap.alloc(AllocStruct(files)),
@@ -1812,9 +1839,23 @@ pub(crate) struct AspectApplication {
     /// (AspectContext.getMainAspectPrerequisitesCollection), keyed by
     /// [`attribute_dependency_key`].
     pub aspect_dependencies: BTreeMap<String, DependencyTarget>,
+    /// The attributes of the base aspects of the path that `ctx.rule.attr`
+    /// holds (crate::aspects::base_aspect_attributes), in path order.
+    pub base_aspect_attributes: Vec<BaseAspectAttributes>,
     /// The aspect's own ToolchainCollection (crate::engine).
     pub toolchains: AspectToolchains,
     pub repositories: Arc<RepositorySet>,
+}
+
+/// One base aspect's attributes in an aspect's `ctx.rule`
+/// (StarlarkRuleContext.java:302-316): the names it contributes and the
+/// dependencies of its label attributes, resolved by the main aspect's
+/// application (AspectContext's rule-and-base-aspects prerequisites).
+pub(crate) struct BaseAspectAttributes {
+    pub aspect: std::sync::Arc<crate::aspects::AspectDefinition>,
+    pub names: Vec<String>,
+    pub dependencies: BTreeMap<String, DependencyTarget>,
+    pub split_dependencies: BTreeMap<String, crate::custom_rule::SplitAttribute>,
 }
 
 /// The aspect's own toolchain contexts at analysis (AspectFunction.java:
@@ -2029,6 +2070,181 @@ fn analyze_aspect_inner(
     })
 }
 
+/// The `ctx.attr`/`ctx.files`/`ctx.file`/`ctx.executable` entries of an
+/// aspect's attributes (all of them, or `names`): implicit label
+/// attributes resolved from `dependencies` (and `split_dependencies` for
+/// Starlark transitions), parameters from their values (AspectParameters).
+/// StarlarkRuleContext.java:270-285 for the main aspect's attributes,
+/// :302-316 for the base aspects' in `ctx.rule`.
+struct AspectAttributeMaps<'v> {
+    attrs: BTreeMap<String, Value<'v>>,
+    files: BTreeMap<String, Value<'v>>,
+    single_files: BTreeMap<String, Value<'v>>,
+    executables: BTreeMap<String, Value<'v>>,
+}
+
+fn aspect_attribute_maps<'v>(
+    aspect: &crate::aspects::AspectDefinition,
+    names: Option<&[String]>,
+    dependencies: &BTreeMap<String, DependencyTarget>,
+    split_dependencies: &BTreeMap<String, crate::custom_rule::SplitAttribute>,
+    shown_label: &str,
+    context: &Context,
+    heap: Heap<'v>,
+) -> anyhow::Result<AspectAttributeMaps<'v>> {
+    let consumer = Consumer {
+        rule_class: &aspect.exported_name,
+        label: shown_label,
+    };
+    let mut attrs: BTreeMap<String, Value> = BTreeMap::new();
+    let mut files: BTreeMap<String, Value> = BTreeMap::new();
+    let mut single_files: BTreeMap<String, Value> = BTreeMap::new();
+    let mut executables: BTreeMap<String, Value> = BTreeMap::new();
+    let mut parameter_errors = Vec::new();
+    for (name, spec) in &aspect.declaration.attrs {
+        if names.is_some_and(|names| !names.contains(name)) {
+            continue;
+        }
+        let value = aspect.parameters.get(name).unwrap_or(&spec.default);
+        let prefix = crate::rule_errors::RuleEvents {
+            rule_class: &aspect.exported_name,
+            label: shown_label,
+        }
+        .attribute_message(&crate::custom_rule::attribute_message_name(name, spec), "");
+        if let Some(metadata) = split_dependencies.get(name) {
+            let values = split::allocate(
+                name,
+                value,
+                spec,
+                metadata,
+                dependencies,
+                context,
+                &prefix,
+                consumer,
+                heap,
+            )?;
+            attrs.insert(name.clone(), values.attr);
+            files.insert(name.clone(), values.files);
+            if let Some(file) = values.file {
+                single_files.insert(name.clone(), file);
+            }
+            if let Some(executable) = values.executable {
+                executables.insert(name.clone(), executable);
+            }
+            continue;
+        }
+        let resolve = |label: &str| dependency(label, name, spec, dependencies, &prefix, consumer);
+        let attr = match value {
+            AttrValue::Label(label) => {
+                let target = match label.as_deref().map(resolve).transpose() {
+                    Ok(target) => target,
+                    Err(error) => {
+                        parameter_errors.push(format!("{prefix}{error}"));
+                        continue;
+                    }
+                };
+                let target_files = target.map(|target| target.files.as_slice());
+                files.insert(
+                    name.clone(),
+                    prerequisite_files(heap, target_files.into_iter()),
+                );
+                if spec.allow_single_file {
+                    single_files.insert(
+                        name.clone(),
+                        target_files
+                            .and_then(|files| files.first())
+                            .map(|file| alloc_file(heap, file.clone()))
+                            .unwrap_or_else(Value::new_none),
+                    );
+                }
+                if spec.declaration.executable {
+                    let executable = match target {
+                        Some(target) => {
+                            let files_to_run = target.runfiles.files_to_run(&target.files);
+                            let Some(file) = files_to_run.executable().cloned() else {
+                                parameter_errors.push(format!(
+                                    "{prefix}{} does not refer to a valid executable target",
+                                    canonical_text(&target.label)
+                                ));
+                                continue;
+                            };
+                            context
+                                .runfiles
+                                .executables
+                                .borrow_mut()
+                                .entry(file.clone())
+                                .or_insert(files_to_run);
+                            alloc_file(heap, file)
+                        }
+                        None => Value::new_none(),
+                    };
+                    executables.insert(name.clone(), executable);
+                }
+                let dependency = target.map(|target| alloc_dependency(heap, target));
+                // A label attribute with a Starlark transition is a
+                // list of its prerequisites (StarlarkAttributesCollection.
+                // convertAttributeValue: the transition factory isSplit).
+                if starlark_transition(spec) {
+                    heap.alloc(dependency.into_iter().collect::<Vec<_>>())
+                } else {
+                    dependency.unwrap_or_else(Value::new_none)
+                }
+            }
+            AttrValue::Labels(labels) => {
+                let targets = match labels
+                    .iter()
+                    .map(|label| resolve(label))
+                    .collect::<anyhow::Result<Vec<_>>>()
+                {
+                    Ok(targets) => targets,
+                    Err(error) => {
+                        parameter_errors.push(format!("{prefix}{error}"));
+                        continue;
+                    }
+                };
+                files.insert(
+                    name.clone(),
+                    prerequisite_files(heap, targets.iter().map(|target| target.files.as_slice())),
+                );
+                heap.alloc(
+                    targets
+                        .iter()
+                        .map(|target| alloc_dependency(heap, target))
+                        .collect::<Vec<_>>(),
+                )
+            }
+            AttrValue::String(value) => heap.alloc(value.as_str()),
+            AttrValue::Strings(values) => heap.alloc(values.clone()),
+            AttrValue::Int(value) => heap.alloc(*value),
+            AttrValue::Ints(values) => heap.alloc(values.clone()),
+            AttrValue::Bool(value) => heap.alloc(*value),
+            AttrValue::StringDict(entries) => {
+                crate::attribute_values::alloc_string_dict(heap, entries)?
+            }
+            AttrValue::StringListDict(entries) => {
+                crate::attribute_values::alloc_string_list_dict(heap, entries)?
+            }
+            _ => bail!(
+                "aspect attribute '{}' has a type the native profile does not analyze (label-keyed dictionaries, outputs); {}",
+                name,
+                crate::rule_declarations::NOT_ANALYZED
+            ),
+        };
+        attrs.insert(name.clone(), attr);
+    }
+    if !parameter_errors.is_empty() {
+        return Err(anyhow::Error::new(crate::rule_errors::ReportedErrors(
+            parameter_errors.join("\n"),
+        )));
+    }
+    Ok(AspectAttributeMaps {
+        attrs,
+        files,
+        single_files,
+        executables,
+    })
+}
+
 /// The aspect context: `ctx.attr`/`ctx.files`/`ctx.file` of the aspect's own
 /// attributes (their defaults, or the `--aspects_parameters` values),
 /// `ctx.label` of the base target, `ctx.actions`, and `ctx.rule` over the
@@ -2047,10 +2263,6 @@ fn make_aspect_ctx<'v>(
         .as_ref()
         .ok_or_else(|| anyhow!("{} is not a custom rule", rule.label))?;
     let shown_label = crate::rule_declarations::canonical_form(&rule.label);
-    let consumer = Consumer {
-        rule_class: &aspect.exported_name,
-        label: &shown_label,
-    };
     // The aspect's own attributes (StarlarkRuleContext.java:270-285 over the
     // main aspect's attributes, StarlarkAttributesCollection.Builder
     // .addAttribute, :382-450): implicit label attributes resolved from the
@@ -2065,156 +2277,20 @@ fn make_aspect_ctx<'v>(
     const NAMES: [&str; 5] = ["attr", "files", "file", "executable", "$aspect_ids"];
     let owned = Module::with_temp_heap(|module| -> anyhow::Result<_> {
         let heap = module.heap();
-        let mut attrs: BTreeMap<String, Value> = BTreeMap::new();
-        let mut files: BTreeMap<String, Value> = BTreeMap::new();
-        let mut single_files: BTreeMap<String, Value> = BTreeMap::new();
-        let mut executables: BTreeMap<String, Value> = BTreeMap::new();
-        let mut parameter_errors = Vec::new();
-        for (name, spec) in &aspect.declaration.attrs {
-            let value = aspect.parameters.get(name).unwrap_or(&spec.default);
-            let prefix = crate::rule_errors::RuleEvents {
-                rule_class: &aspect.exported_name,
-                label: &shown_label,
-            }
-            .attribute_message(&crate::custom_rule::attribute_message_name(name, spec), "");
-            if let Some(metadata) = application.aspect_split_dependencies.get(name) {
-                let values = split::allocate(
-                    name,
-                    value,
-                    spec,
-                    metadata,
-                    &application.aspect_dependencies,
-                    context,
-                    &prefix,
-                    consumer,
-                    heap,
-                )?;
-                attrs.insert(name.clone(), values.attr);
-                files.insert(name.clone(), values.files);
-                if let Some(file) = values.file {
-                    single_files.insert(name.clone(), file);
-                }
-                if let Some(executable) = values.executable {
-                    executables.insert(name.clone(), executable);
-                }
-                continue;
-            }
-            let resolve = |label: &str| {
-                dependency(
-                    label,
-                    name,
-                    spec,
-                    &application.aspect_dependencies,
-                    &prefix,
-                    consumer,
-                )
-            };
-            let attr = match value {
-                AttrValue::Label(label) => {
-                    let target = match label.as_deref().map(resolve).transpose() {
-                        Ok(target) => target,
-                        Err(error) => {
-                            parameter_errors.push(format!("{prefix}{error}"));
-                            continue;
-                        }
-                    };
-                    let target_files = target.map(|target| target.files.as_slice());
-                    files.insert(
-                        name.clone(),
-                        prerequisite_files(heap, target_files.into_iter()),
-                    );
-                    if spec.allow_single_file {
-                        single_files.insert(
-                            name.clone(),
-                            target_files
-                                .and_then(|files| files.first())
-                                .map(|file| alloc_file(heap, file.clone()))
-                                .unwrap_or_else(Value::new_none),
-                        );
-                    }
-                    if spec.declaration.executable {
-                        let executable = match target {
-                            Some(target) => {
-                                let files_to_run = target.runfiles.files_to_run(&target.files);
-                                let Some(file) = files_to_run.executable().cloned() else {
-                                    parameter_errors.push(format!(
-                                        "{prefix}{} does not refer to a valid executable target",
-                                        canonical_text(&target.label)
-                                    ));
-                                    continue;
-                                };
-                                context
-                                    .runfiles
-                                    .executables
-                                    .borrow_mut()
-                                    .entry(file.clone())
-                                    .or_insert(files_to_run);
-                                alloc_file(heap, file)
-                            }
-                            None => Value::new_none(),
-                        };
-                        executables.insert(name.clone(), executable);
-                    }
-                    let dependency = target.map(|target| alloc_dependency(heap, target));
-                    // A label attribute with a Starlark transition is a
-                    // list of its prerequisites (StarlarkAttributesCollection.
-                    // convertAttributeValue: the transition factory isSplit).
-                    if starlark_transition(spec) {
-                        heap.alloc(dependency.into_iter().collect::<Vec<_>>())
-                    } else {
-                        dependency.unwrap_or_else(Value::new_none)
-                    }
-                }
-                AttrValue::Labels(labels) => {
-                    let targets = match labels
-                        .iter()
-                        .map(|label| resolve(label))
-                        .collect::<anyhow::Result<Vec<_>>>()
-                    {
-                        Ok(targets) => targets,
-                        Err(error) => {
-                            parameter_errors.push(format!("{prefix}{error}"));
-                            continue;
-                        }
-                    };
-                    files.insert(
-                        name.clone(),
-                        prerequisite_files(
-                            heap,
-                            targets.iter().map(|target| target.files.as_slice()),
-                        ),
-                    );
-                    heap.alloc(
-                        targets
-                            .iter()
-                            .map(|target| alloc_dependency(heap, target))
-                            .collect::<Vec<_>>(),
-                    )
-                }
-                AttrValue::String(value) => heap.alloc(value.as_str()),
-                AttrValue::Strings(values) => heap.alloc(values.clone()),
-                AttrValue::Int(value) => heap.alloc(*value),
-                AttrValue::Ints(values) => heap.alloc(values.clone()),
-                AttrValue::Bool(value) => heap.alloc(*value),
-                AttrValue::StringDict(entries) => {
-                    crate::attribute_values::alloc_string_dict(heap, entries)?
-                }
-                AttrValue::StringListDict(entries) => {
-                    crate::attribute_values::alloc_string_list_dict(heap, entries)?
-                }
-                _ => bail!(
-                    "aspect attribute '{}' has a type the native profile does not analyze (label-keyed dictionaries, outputs); {}",
-                    name,
-                    crate::rule_declarations::NOT_ANALYZED
-                ),
-            };
-            attrs.insert(name.clone(), attr);
-        }
-        if !parameter_errors.is_empty() {
-            return Err(anyhow::Error::new(crate::rule_errors::ReportedErrors(
-                parameter_errors.join("\n"),
-            )));
-        }
+        let AspectAttributeMaps {
+            attrs,
+            files,
+            single_files,
+            executables,
+        } = aspect_attribute_maps(
+            aspect,
+            None,
+            &application.aspect_dependencies,
+            &application.aspect_split_dependencies,
+            &shown_label,
+            context,
+            heap,
+        )?;
         module.set(
             "attr",
             module.heap().alloc(starlark::values::structs::AllocStruct(
@@ -2267,7 +2343,28 @@ fn make_aspect_ctx<'v>(
         _outputs,
         base_executable,
         _lifted,
-    ] = ctx_attribute_structs(rule, invocation, context, &application.dependencies, heap)?;
+    ] = {
+        let mut base_aspects = Vec::new();
+        for base in &application.base_aspect_attributes {
+            base_aspects.push(aspect_attribute_maps(
+                &base.aspect,
+                Some(&base.names),
+                &base.dependencies,
+                &base.split_dependencies,
+                &shown_label,
+                context,
+                heap,
+            )?);
+        }
+        ctx_attribute_structs(
+            rule,
+            invocation,
+            context,
+            &application.dependencies,
+            base_aspects,
+            heap,
+        )?
+    };
     let rule_attributes = heap.alloc_complex_no_freeze(crate::analysis_ctx::RuleAttributes {
         attr: base_attr,
         executable: base_executable,

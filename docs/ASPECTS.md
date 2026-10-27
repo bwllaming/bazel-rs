@@ -168,7 +168,29 @@ AspectDescriptor):
 - `ctx.rule`: the base target's attributes — `ctx.rule.attr.<name>` values
   are the aspect-applied `Target`s for attributes the aspect (or the path)
   propagates along, plain configured targets otherwise; `ctx.rule.kind` is
-  the base rule class;
+  the base rule class. `ctx.rule.attr`/`files`/`file`/`executable` also
+  hold the attributes of the path's BASE aspects (StarlarkRuleContext.java:
+  302-316 over AspectContext's rule-and-base-aspects prerequisites): the
+  rule's attributes win a name, then the base aspects in path order (the
+  first attribute of a name wins, StarlarkAttributesCollection.Builder.
+  addAttribute); a base aspect's parameters show their (top-level) values.
+  Their label attributes are dependencies of the main aspect's application
+  (DependencyResolutionHelpers.getAttributes/addAspectAttributes), each in
+  its attribute's configuration over the MAIN aspect's execution platforms
+  (`Engine::analyze_aspect_attribute_edges`, memo `owner@main`), visibility-
+  checked from the base aspect's `.bzl` package. The path's other aspects
+  propagate along an aspect's own attributes when their `attr_aspects`
+  name them (collectPropagatingAspects' `aspectOwningAttribute`: never the
+  owner itself) — a base aspect with `attr_aspects = ["_mdep"]` applies to
+  the main aspect's `_mdep` dependency. The path is the topological order
+  over the AspectKey's baseKeys sorted by aspect class name
+  (AspectKeyCreator.createAspectKey:127-133), so `ctx.aspect_ids` of an
+  aspect requiring `base` and seeing `seen` is `[base, seen, main]` whatever
+  the attribute's list order. Paired capture tests/fixtures/
+  aspect_base_attributes (genuine.txt; tests/aspects.rs
+  `ctx_rule_attr_holds_base_aspect_attributes`). Not captured into cquery's
+  aspect edges (crate::engine::cquery records the main aspect's own
+  attribute edges only);
 - `ctx.aspect_ids`: the descriptions of the application's aspect path —
   its base aspects in topological order (a postorder over the directly
   required aspects, AspectFunction.collectAspectKeysInTopologicalOrder),
@@ -371,7 +393,3 @@ identity unchanged, and depset snapshots taken from either agree.
   (identical providers), so cross-consumer `Target` equality differs.
 - `--aspect_filters` does not exist in Bazel 9.3 (probed in the reference
   tree); nothing to implement.
-- `ctx.rule.attr` holds the base rule's attributes only: Bazel also merges
-  the attributes of the base aspects of the path there (the first of a name
-  wins, StarlarkRuleContext.java:302-316), an aspect-on-aspect detail the
-  native context does not model.

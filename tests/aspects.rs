@@ -902,3 +902,69 @@ fn attribute_aspects_take_their_rules_parameters() {
         assert_eq!(printed, expected, "{arguments:?}: {text}");
     }
 }
+
+/// The `### build ARGS` sections of a fixture's `genuine.txt` (a genuine
+/// Bazel 9.3.0 capture, a fresh server per command): each command's
+/// arguments and its sorted expected print texts.
+fn genuine_sections(fixture: &str) -> Vec<(Vec<String>, Vec<String>)> {
+    let genuine = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(fixture)
+            .join("genuine.txt"),
+    )
+    .unwrap();
+    let mut sections: Vec<(Vec<String>, Vec<String>)> = Vec::new();
+    for line in genuine
+        .lines()
+        .filter(|line| !line.starts_with('#') || line.starts_with("###"))
+    {
+        if let Some(command) = line.strip_prefix("### build ") {
+            sections.push((command.split(' ').map(str::to_owned).collect(), Vec::new()));
+        } else {
+            sections.last_mut().unwrap().1.push(line.to_owned());
+        }
+    }
+    sections
+}
+
+/// Runs each genuine section of `fixture` under the built-in profile and
+/// compares the sorted prints starting with one of `markers`, or, for a
+/// section whose expectation is an `ERROR ` line, the failure text.
+fn compare_genuine_builtin(fixture: &str, markers: &[&str]) {
+    for (arguments, expected) in genuine_sections(fixture) {
+        let ws = Workspace::fixture(fixture);
+        let (flags, targets): (Vec<&str>, Vec<&str>) = arguments
+            .iter()
+            .map(String::as_str)
+            .partition(|argument| argument.starts_with("--"));
+        let output = ws.build_builtin(&flags, &targets);
+        if let Some(error) = expected
+            .first()
+            .and_then(|line| line.strip_prefix("ERROR "))
+        {
+            rejected(&output, error);
+            continue;
+        }
+        let text = ok(&output);
+        let mut printed: Vec<String> = text
+            .lines()
+            .map(print_text)
+            .filter(|line| markers.iter().any(|marker| line.starts_with(marker)))
+            .map(str::to_owned)
+            .collect();
+        printed.sort();
+        assert_eq!(printed, expected, "{arguments:?}: {text}");
+    }
+}
+
+/// `ctx.rule.attr` of an aspect also holds the attributes of its path's
+/// base aspects, label-typed ones resolved as the application's
+/// dependencies; the rule's attributes win a name, then the base aspects in
+/// path order (baseKeys sorted by class name); a base aspect propagates
+/// along the main aspect's own attributes (tests/fixtures/
+/// aspect_base_attributes/genuine.txt).
+#[test]
+fn ctx_rule_attr_holds_base_aspect_attributes() {
+    compare_genuine_builtin("aspect_base_attributes", &["M ", "V "]);
+}

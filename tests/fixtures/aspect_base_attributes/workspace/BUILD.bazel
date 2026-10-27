@@ -1,0 +1,19 @@
+load(":defs.bzl", "gen", "lib", "tool", "top")
+
+exports_files(["bdata.txt"])
+
+tool(name = "btool")
+
+gen(name = "gen")
+
+lib(name = "cdep")
+
+lib(name = "mdep")
+
+gen(name = "rimpl")
+
+lib(name = "leaf")
+
+lib(name = "mid", deps = [":leaf"])
+
+top(name = "top", deps = [":mid"])
