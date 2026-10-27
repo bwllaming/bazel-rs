@@ -51,6 +51,9 @@ pub struct CtxSurface {
     /// CoreOptions.collectCodeCoverage (`--collect_code_coverage`, set
     /// natively only by a Starlark transition, N47).
     pub coverage_enabled: bool,
+    /// The instrumentation options of a coverage configuration (`None`
+    /// without coverage).
+    pub instrumenting: Option<Arc<crate::coverage::Instrumenting>>,
     /// PlatformOptions.platforms (normalized, never empty) and host_platform.
     pub platforms: Vec<Label>,
     pub host_platform: Label,
@@ -112,6 +115,7 @@ impl Default for CtxSurface {
             no_config: false,
             stamp: false,
             coverage_enabled: false,
+            instrumenting: None,
             platforms: vec![host.clone()],
             host_platform: host,
             java_plugins: Vec::new(),
@@ -981,29 +985,19 @@ enum Member {
 use Member::{Field, Gap, Method};
 
 /// CoverageConfiguration.outputGenerator (analysis/test/CoverageConfiguration.java:76-95):
-/// null unless coverage is enabled. With `--collect_code_coverage` (set by a
-/// Starlark transition, N47) it is `--coverage_output_generator`, a
-/// coverage-instrumentation value the native profile does not model.
+/// null unless coverage is enabled, then `--coverage_output_generator`
+/// (default `@bazel_tools//tools/test:lcov_merger`).
 fn coverage_output_generator<'v>(
     surface: &CtxSurface,
-    _heap: Heap<'v>,
+    heap: Heap<'v>,
 ) -> anyhow::Result<Value<'v>> {
     if surface.coverage_enabled {
-        bail!(
-            "{}",
-            coverage_gap("ctx.fragments.coverage.output_generator")
-        );
+        let text = crate::coverage::explicit_output_generator()
+            .unwrap_or(crate::coverage::DEFAULT_OUTPUT_GENERATOR);
+        let label = Label::parse_canonical(text).map_err(anyhow::Error::msg)?;
+        return label_value(heap, &label);
     }
     Ok(Value::new_none())
-}
-
-/// The explicit failure of coverage instrumentation in a configuration a
-/// Starlark transition enabled `--collect_code_coverage` in (N47,
-/// docs/CONFIGURATION.md "Coverage-enabled configurations").
-pub(crate) fn coverage_gap(what: &str) -> String {
-    format!(
-        "{what} in a configuration with --collect_code_coverage (set by a Starlark transition) is not implemented in the native profile (coverage instrumentation: --instrumentation_filter, --instrument_test_targets and --coverage_output_generator are not modelled)"
-    )
 }
 
 fn host_platform<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
@@ -1466,9 +1460,8 @@ fn member_names(kind: Kind) -> Vec<String> {
 
 /// The explicit failure of a fragment member whose value needs coverage
 /// instrumentation options (N47), reported instead of the generic message.
-fn coverage_member_gap(kind: Kind, surface: &CtxSurface, name: &str) -> Option<String> {
-    (kind == Kind::Coverage && name == "output_generator" && surface.coverage_enabled)
-        .then(|| coverage_gap("ctx.fragments.coverage.output_generator"))
+fn coverage_member_gap(_kind: Kind, _surface: &CtxSurface, _name: &str) -> Option<String> {
+    None
 }
 
 fn unknown_member(kind: Kind, name: &str) -> String {

@@ -300,37 +300,34 @@ fn invalid_option_values_fail_like_bazel() {
     }
 }
 
-/// Coverage instrumentation in a coverage-enabled configuration fails
-/// explicitly (paired capture G/*: genuine Bazel answers from
-/// `--instrumentation_filter` and CoverageOptions, which are not modelled).
+/// Coverage instrumentation in a configuration a Starlark transition
+/// enabled coverage in (docs/COVERAGE.md): the default
+/// `--instrumentation_filter` (`-/javatests[/:],-/test/java[/:]`) includes
+/// the non-test probes, `ctx.fragments.coverage.output_generator` is the
+/// default `--coverage_output_generator`, and a test rule, a late-bound
+/// coverage default and `coverage_common.instrumented_files_info` analyze.
 #[test]
-fn coverage_instrumentation_is_an_explicit_gap() {
+fn coverage_instrumentation_in_a_coverage_configuration() {
     let ws = fixture();
     // Offline: the test rule's toolchain resolution materializes the full
     // builtin closure (the large archives: the test mirror).
     seed_module_archives(&ws.path().join("private-cache"), TOOLCHAIN_CLOSURE_ARCHIVES);
     let profile = profile();
-    for (target, what) in [
-        ("cov_inst", "ctx.coverage_instrumented()"),
-        ("cov_gen", "ctx.fragments.coverage.output_generator"),
-    ] {
-        let label = [format!("//probe:{target}")];
-        let stderr = ws.rejected(&args(&profile, &[], &label));
-        assert!(
-            stderr.contains(&format!("{what} in a configuration with --collect_code_coverage (set by a Starlark transition) is not implemented in the native profile")),
-            "{stderr}"
-        );
-    }
-    // Outside a coverage configuration both answer Bazel's defaults.
     let targets = [
+        "//probe:cov_inst".to_owned(),
+        "//probe:cov_gen".to_owned(),
         "//probe:inst_plain".to_owned(),
         "//probe:gen_plain".to_owned(),
     ];
     let report = ws.report(&args(&profile, &[], &targets));
+    assert!(report.contains("  instrumented=True\n"), "{report}");
+    assert!(
+        report.contains("  output_generator=@@bazel_tools//tools/test:lcov_merger\n"),
+        "{report}"
+    );
+    // Outside a coverage configuration both answer Bazel's defaults.
     assert!(report.contains("  instrumented=False\n"), "{report}");
     assert!(report.contains("  output_generator=None\n"), "{report}");
-    // A test rule and a late-bound coverage default below a coverage
-    // transition fail before their dependencies.
     ws.file(
         "cov/defs.bzl",
         r#"load("//probe:defs.bzl", "cov_edge")
@@ -341,49 +338,39 @@ def _impl(ctx):
 t_test = rule(_impl, test = True)
 late = rule(_impl, executable = True, attrs = {"_gen": attr.label(default = configuration_field(fragment = "coverage", name = "output_generator"))})
 def _ifi(ctx):
-    return [coverage_common.instrumented_files_info(ctx, source_attributes = ["srcs"])]
+    info = coverage_common.instrumented_files_info(ctx, source_attributes = ["srcs"], extensions = ["txt"])
+    out = ctx.actions.declare_file(ctx.label.name + ".ifi")
+    ctx.actions.write(out, "files=%s\n" % [f.short_path for f in info.instrumented_files.to_list()])
+    return [info, DefaultInfo(files = depset([out]))]
 ifi = rule(_ifi, attrs = {"srcs": attr.label_list(allow_files = True)})
 "#,
     );
+    ws.file("cov/a.txt", "a");
+    ws.file("cov/b.md", "b");
     ws.file(
         "cov/BUILD.bazel",
         r#"load("//probe:defs.bzl", "cov_edge")
 load(":defs.bzl", "ifi", "late", "t_test")
 t_test(name = "t_test")
 late(name = "late")
-ifi(name = "ifi")
+ifi(name = "ifi", srcs = ["a.txt", "b.md"])
 cov_edge(name = "cov_ifi", dep = ":ifi", value = "@bool_true")
 cov_edge(name = "cov_test", dep = ":t_test", value = "@bool_true", testonly = True)
 cov_edge(name = "cov_late", dep = ":late", value = "@bool_true")
 "#,
     );
-    let stderr = ws.rejected(&args(&profile, &[], &["//cov:cov_test".to_owned()]));
-    assert!(
-        stderr.contains(
-            "analysis of test rule //cov:t_test in a configuration with --collect_code_coverage"
-        ),
-        "{stderr}"
-    );
-    let stderr = ws.rejected(&args(&profile, &[], &["//cov:cov_late".to_owned()]));
-    assert!(
-        stderr.contains("//cov:late: the late-bound attribute '_gen' (configuration_field(\"coverage\", ...)) in a configuration with --collect_code_coverage"),
-        "{stderr}"
-    );
-    // coverage_common.instrumented_files_info (N54, crate::instrumented_files)
-    // is InstrumentedFilesInfo.EMPTY only outside a coverage configuration.
-    let stderr = ws.rejected(&args(&profile, &[], &["//cov:cov_ifi".to_owned()]));
-    assert!(
-        stderr.contains("coverage_common.instrumented_files_info() in a configuration with --collect_code_coverage (set by a Starlark transition) is not implemented in the native profile"),
-        "{stderr}"
-    );
-    ws.report(&args(&profile, &[], &["//cov:ifi".to_owned()]));
-    // Without coverage both analyze (the test rule's implicit test-runner
-    // edges, N23g, reach rules_shell's sh_binary, analyzable since N50).
-    ws.report(&args(
+    let report = ws.report(&args(
         &profile,
         &[],
-        &["//cov:t_test".to_owned(), "//cov:late".to_owned()],
+        &[
+            "//cov:cov_ifi".to_owned(),
+            "//cov:ifi".to_owned(),
+            "//cov:cov_test".to_owned(),
+            "//cov:cov_late".to_owned(),
+        ],
     ));
+    assert!(report.contains("  files=[\"cov/a.txt\"]\n"), "{report}");
+    assert!(report.contains("  files=[]\n"), "{report}");
 }
 
 /// Args.validateMapEach accepts any global function (Args.java:366-385):

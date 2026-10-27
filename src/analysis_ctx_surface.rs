@@ -70,11 +70,9 @@ pub(crate) fn surface_properties(builder: &mut MethodsBuilder) {
         Ok(heap.alloc(rule.config.build_file_path.as_str()))
     }
     /// StarlarkRuleContext.instrumentCoverage (:760-774): false unless
-    /// coverage is enabled (InstrumentedFilesCollector.shouldIncludeLocalSources
-    /// returns false first, analysis/test/InstrumentedFilesCollector.java).
-    /// With `--collect_code_coverage` (set natively only by a Starlark
-    /// transition, N47) the answer needs `--instrumentation_filter` and
-    /// `--instrument_test_targets`, which are not modelled: explicit.
+    /// coverage is enabled; then InstrumentedFilesCollector.
+    /// shouldIncludeLocalSources of the rule, or of `target` when it has an
+    /// InstrumentedFilesInfo (analysis/test/InstrumentedFilesCollector.java:170-186).
     fn coverage_instrumented<'v>(
         this: Value<'v>,
         #[starlark(default = NoneType)] target: Value<'v>,
@@ -86,13 +84,22 @@ pub(crate) fn surface_properties(builder: &mut MethodsBuilder) {
                 target.get_type()
             );
         }
-        if rule.config.coverage_enabled {
-            bail!(
-                "{}",
-                crate::ctx_surface::coverage_gap("ctx.coverage_instrumented()")
+        let Some(instrumenting) = &rule.config.instrumenting else {
+            return Ok(false);
+        };
+        if target.is_none() {
+            return Ok(
+                instrumenting.includes(&rule.label.to_string(), rule.rule_class.ends_with("_test"))
             );
         }
-        Ok(false)
+        let Some(target) = crate::starlark_types::TargetValue::from_value(target) else {
+            return Ok(false);
+        };
+        let target = &target.0;
+        Ok(target
+            .providers
+            .contains_key(crate::instrumented_files::PROVIDER_ID)
+            && instrumenting.includes(&target.label.canonical_form(), target.runfiles.run.test))
     }
     // ctx.exec_groups is N35's StarlarkExecGroupCollection over the
     // ToolchainCollection (crate::analysis_ctx rule_properties,

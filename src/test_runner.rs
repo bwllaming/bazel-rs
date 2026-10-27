@@ -89,6 +89,8 @@ pub struct TestSpec {
     /// The `--run_under` target's executable by its runfiles path
     /// (LabelRunUnder; the target's runfiles hold it).
     pub run_under_executable: Option<String>,
+    /// A coverage test action's additions (docs/COVERAGE.md).
+    pub coverage: Option<crate::request::RunCoverage>,
 }
 
 impl TestSpec {
@@ -158,6 +160,7 @@ impl TestSpec {
             requirements,
             exclusive_sandboxed: true,
             run_under_executable: target.settings.run_under_executable.clone(),
+            coverage: target.coverage.clone(),
         })
     }
 
@@ -182,6 +185,10 @@ impl TestSpec {
 /// `args` and `--test_arg`s.
 pub fn test_arguments(spec: &TestSpec, options: &TestOptions) -> Vec<String> {
     let mut args = vec![SETUP_EXEC_PATH.to_owned()];
+    // A coverage test action runs collect_coverage.sh first (:219-226).
+    if let Some(coverage) = &spec.coverage {
+        args.push(coverage.script.clone());
+    }
     if let Some(run_under) = &options.run_under {
         args.extend(run_under.test_prefix(spec.run_under_executable.as_deref(), &options.shell));
     }
@@ -203,6 +210,27 @@ pub fn run_under_ready(spec: TestSpec, options: &TestOptions) -> Result<TestSpec
         }
         _ => Ok(spec),
     }
+}
+
+/// TestRunnerAction.getCoverageDirectory (:963-985): the
+/// `--experimental_fetch_all_coverage_outputs` tree `<base>/_coverage`, else
+/// `<testlogs>/_coverage/<pkg>/<dir>/test` (the test log's root-relative
+/// path without its extension).
+fn coverage_directory(spec: &TestSpec, paths: &Paths) -> String {
+    if crate::coverage::settings().fetch_all_outputs {
+        return format!("{}/_coverage", paths.base);
+    }
+    let root = spec
+        .testlogs_package
+        .split('/')
+        .take(3)
+        .collect::<Vec<_>>()
+        .join("/");
+    let relative = paths
+        .base
+        .strip_prefix(&format!("{root}/"))
+        .unwrap_or(&paths.base);
+    format!("{root}/_coverage/{relative}/test")
 }
 
 /// Label.print: `//pkg:name` or `@@repo//pkg:name`.
@@ -258,6 +286,12 @@ pub struct Outcome {
     /// `--notest_keep_going`: a test that did not pass aborted its action
     /// ([`TEST_FAILED_ABORTING`]).
     pub aborted: bool,
+    /// The coverage.dat exec paths of the coverage test actions that
+    /// reported a result (TestParams.getCoverageArtifacts), in test order.
+    pub coverage: Vec<String>,
+    /// The top-level targets' baseline coverage files (exec path,
+    /// published path).
+    pub baselines: Vec<(String, PathBuf)>,
 }
 
 /// The failure of a test action that did not pass under
@@ -711,6 +745,33 @@ impl<'a> Session<'a> {
             .enumerate()
             .map(|(test, summary)| summary.unwrap_or_else(|| self.aggregate(test, &results[test])))
             .collect();
+        let mut coverage = Vec::new();
+        let mut baselines = Vec::new();
+        for key in &self.units {
+            let Some(Ok(spec)) = self.specs[key.test].get() else {
+                continue;
+            };
+            let Some(spec_coverage) = &spec.coverage else {
+                continue;
+            };
+            if !results[key.test]
+                .iter()
+                .any(|outcome| matches!(outcome, UnitOutcome::Result(_)))
+            {
+                continue;
+            }
+            if baselines.is_empty() {
+                baselines = spec_coverage.baselines.clone();
+            }
+            let unit = Unit {
+                spec,
+                shard: key.shard,
+                shards: key.shards,
+                run: key.run,
+                runs: key.runs,
+            };
+            coverage.push(format!("{}/coverage.dat", self.runner.paths(&unit).base));
+        }
         let errors = results
             .into_iter()
             .flatten()
@@ -724,6 +785,8 @@ impl<'a> Session<'a> {
             .filter(|summary| summary.action_ran)
             .count();
         Outcome {
+            coverage,
+            baselines,
             summaries,
             completed,
             executed,
@@ -835,6 +898,41 @@ impl Runner<'_> {
 
     fn environment(&self, unit: &Unit<'_>, paths: &Paths) -> BTreeMap<String, String> {
         let spec = unit.spec;
+        let mut env = self.plain_environment(unit, paths);
+        if let Some(coverage) = &spec.coverage {
+            // TestRunnerAction.setupEnvVariables (:745-830): the coverage
+            // environment yields to every other value, then the coverage
+            // mode's variables.
+            for (name, value) in &coverage.env {
+                env.entry(name.clone()).or_insert_with(|| value.clone());
+            }
+            let settings = crate::coverage::settings();
+            env.insert("RUNTEST_PRESERVE_CWD".to_owned(), "1".to_owned());
+            env.insert(
+                "COVERAGE_MANIFEST".to_owned(),
+                coverage.manifest_exec.clone(),
+            );
+            env.insert("COVERAGE_DIR".to_owned(), coverage_directory(spec, paths));
+            env.insert(
+                "COVERAGE_OUTPUT_FILE".to_owned(),
+                format!("{}/coverage.dat", paths.base),
+            );
+            env.insert(
+                "SPLIT_COVERAGE_POST_PROCESSING".to_owned(),
+                if settings.split_postprocessing {
+                    "1"
+                } else {
+                    "0"
+                }
+                .to_owned(),
+            );
+            env.insert("IS_COVERAGE_SPAWN".to_owned(), "0".to_owned());
+        }
+        env
+    }
+
+    fn plain_environment(&self, unit: &Unit<'_>, paths: &Paths) -> BTreeMap<String, String> {
+        let spec = unit.spec;
         test_environment(&EnvInputs {
             action_env: &spec.action_env,
             test_env: &spec.test_env,
@@ -915,6 +1013,39 @@ impl Runner<'_> {
                 None => empty_files.push(destination),
             }
         }
+        // The coverage inputs at their exec paths, and the generated ones
+        // (the instrumented file manifest, reported_to_actual_sources.txt and
+        // the native LCOV_MERGER launcher) written into the execution root.
+        let mut generated: Vec<(String, Vec<u8>, bool)> = Vec::new();
+        if let Some(coverage) = &spec.coverage {
+            for (exec, published) in &coverage.inputs {
+                let destination = PathBuf::from(exec);
+                match read_content_source(self.cache, published)? {
+                    ContentSource::File(input) => inputs.push((input, destination)),
+                    ContentSource::Tree(files) => inputs.extend(
+                        files
+                            .into_iter()
+                            .map(|(name, input)| (input, destination.join(name))),
+                    ),
+                }
+            }
+            let mut manifest = String::new();
+            for line in &coverage.manifest {
+                manifest.push_str(line);
+                manifest.push('\n');
+            }
+            generated.push((coverage.manifest_exec.clone(), manifest.into_bytes(), false));
+            if let Some((path, content)) = &coverage.reported {
+                generated.push((path.clone(), content.clone().into_bytes(), false));
+            }
+            if coverage.native_merger {
+                generated.push((
+                    crate::coverage::LAUNCHER_EXEC_PATH.to_owned(),
+                    Vec::new(),
+                    true,
+                ));
+            }
+        }
         let execution_info = spec.execution_info();
         let mut hash = Sha256::new();
         frame(&mut hash, STATUS_FORMAT.as_bytes());
@@ -958,6 +1089,15 @@ impl Runner<'_> {
         for destination in &empty_trees {
             frame(&mut hash, destination.as_os_str().as_encoded_bytes());
             frame(&mut hash, b"empty-tree");
+        }
+        frame(&mut hash, b"coverage");
+        for (path, content, launcher) in &generated {
+            frame(&mut hash, path.as_bytes());
+            if *launcher {
+                frame(&mut hash, b"native-coverage-output-generator-v1");
+            } else {
+                frame(&mut hash, content);
+            }
         }
         // The output format decides whether test.xml is parsed (and stored).
         let parse_xml = matches!(
@@ -1076,8 +1216,32 @@ impl Runner<'_> {
             let path = execroot.join(destination);
             fs::create_dir_all(&path).map_err(|e| io("cannot create", &path, e))?;
         }
+        for (path, content, launcher) in &generated {
+            let path = execroot.join(path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|e| io("cannot create", parent, e))?;
+            }
+            let bytes = if *launcher {
+                let binary = std::env::current_exe()
+                    .map_err(|error| format!("cannot locate the bazel-rs binary: {error}"))?;
+                crate::coverage::launcher_script(&binary).into_bytes()
+            } else {
+                content.clone()
+            };
+            fs::write(&path, bytes).map_err(|e| io("cannot write", &path, e))?;
+            if *launcher {
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+                    .map_err(|e| io("cannot chmod", &path, e))?;
+            }
+        }
         // The remote executor's view of the inputs (docs/REMOTE_EXECUTION.md),
         // built once per action when `--remote_executor` is set.
+        if spec.coverage.is_some() && crate::sandbox::remote_executor() {
+            return Err(format!(
+                "{}: coverage test actions on a remote executor are not implemented in the native profile (docs/COVERAGE.md)",
+                spec.label
+            ));
+        }
         let remote_inputs = if crate::sandbox::remote_executor() {
             let mut remote = RemoteTestInputs {
                 spec: crate::remote_cache::SpawnSpec::default(),
@@ -2137,6 +2301,7 @@ mod tests {
             ],
             exclusive_sandboxed: true,
             run_under_executable: None,
+            coverage: None,
         };
         assert_eq!(
             spec.execution_info(),

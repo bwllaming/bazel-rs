@@ -127,8 +127,13 @@ pub(crate) fn split_generated_root(path: &str) -> Option<(&str, &str)> {
     {
         return None;
     }
-    let relative = rest.strip_prefix("bin/")?;
-    let root_length = "bazel-out/".len() + mnemonic.len() + "/bin".len();
+    // `testlogs` is the root of BaselineCoverageAction outputs
+    // (crate::instrumented_files, BuildConfigurationValue.getTestLogsDirectory).
+    let (relative, root) = match rest.strip_prefix("bin/") {
+        Some(relative) => (relative, "/bin"),
+        None => (rest.strip_prefix("testlogs/")?, "/testlogs"),
+    };
+    let root_length = "bazel-out/".len() + mnemonic.len() + root.len();
     Some((&path[..root_length], relative))
 }
 

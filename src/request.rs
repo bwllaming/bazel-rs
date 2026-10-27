@@ -74,6 +74,41 @@ pub struct PlannedRun {
     /// start once these are built (TestCompletionFunction.java:55 requests
     /// the target's completion first), PERF(TEST).
     pub completion: Vec<String>,
+    /// A test's coverage test action additions (docs/COVERAGE.md), in a
+    /// coverage configuration.
+    pub coverage: Option<PlannedCoverage>,
+}
+
+/// What a coverage test action adds (crate::runfiles::TestCoverage with
+/// the inputs' artifacts).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlannedCoverage {
+    /// The collect_coverage script's exec path.
+    pub script: String,
+    /// Inputs by exec path.
+    pub inputs: Vec<(String, Produced)>,
+    pub manifest_exec: String,
+    pub manifest: Vec<String>,
+    pub env: Vec<(String, String)>,
+    pub reported: Option<(String, String)>,
+    pub native_merger: bool,
+    /// The baseline coverage files of the request's top-level targets
+    /// (CoverageReportActionBuilder.getBaselineCoverageArtifacts), carried
+    /// by the first coverage test.
+    pub baselines: Vec<(String, Produced)>,
+}
+
+/// [`PlannedCoverage`] with the inputs at their published paths.
+#[derive(Clone, Debug)]
+pub struct RunCoverage {
+    pub script: String,
+    pub inputs: Vec<(String, PathBuf)>,
+    pub manifest_exec: String,
+    pub manifest: Vec<String>,
+    pub env: Vec<(String, String)>,
+    pub reported: Option<(String, String)>,
+    pub native_merger: bool,
+    pub baselines: Vec<(String, PathBuf)>,
 }
 
 impl PlannedRun {
@@ -91,6 +126,11 @@ impl PlannedRun {
                     .iter()
                     .flatten()
                     .filter_map(|(_, entry)| entry.as_ref()),
+            )
+            .chain(
+                self.coverage
+                    .iter()
+                    .flat_map(|coverage| coverage.inputs.iter().map(|(_, produced)| produced)),
             );
         let ids = self.completion.iter().map(String::as_str).chain(
             produced.filter_map(|produced| produced.producer.as_ref().map(|(id, _)| id.as_str())),
@@ -654,6 +694,24 @@ fn run_target(
         action_env: configuration.action_env.clone(),
         test_env: configuration.test_env.clone(),
         settings: plan.settings.clone(),
+        coverage: plan.coverage.as_ref().map(|coverage| RunCoverage {
+            script: coverage.script.clone(),
+            inputs: coverage
+                .inputs
+                .iter()
+                .map(|(exec, produced)| (exec.clone(), published(produced)))
+                .collect(),
+            manifest_exec: coverage.manifest_exec.clone(),
+            manifest: coverage.manifest.clone(),
+            env: coverage.env.clone(),
+            reported: coverage.reported.clone(),
+            native_merger: coverage.native_merger,
+            baselines: coverage
+                .baselines
+                .iter()
+                .map(|(exec, produced)| (exec.clone(), published(produced)))
+                .collect(),
+        }),
     })
 }
 
@@ -1378,6 +1436,7 @@ mod tests {
                 settings: crate::runfiles::RunSettings::default(),
                 configuration: 0,
                 completion: Vec::new(),
+                coverage: None,
             },
         )];
         request
@@ -1411,6 +1470,7 @@ mod tests {
                 settings: crate::runfiles::RunSettings::default(),
                 configuration: 0,
                 completion: Vec::new(),
+                coverage: None,
             },
         )];
         request

@@ -222,6 +222,11 @@ pub struct TestOptions {
     pub runner_fail_fast: bool,
     /// `--test_timeout`: seconds per TestTimeout (SHORT..ETERNAL).
     pub timeouts: [u64; 4],
+    /// Whether `--test_timeout` was given (CoverageCommand's computed
+    /// default applies only otherwise).
+    pub timeouts_explicit: bool,
+    /// The command's coverage options (crate::coverage::Settings).
+    pub coverage: crate::coverage::Settings,
     /// `--flaky_test_attempts` (TestAttemptsConverter, allowMultiple): the
     /// per-label values in order (a number is `.*@N`); empty is `default`.
     pub flaky_attempts: Vec<PerLabelOption>,
@@ -291,6 +296,8 @@ impl Default for TestOptions {
             filter: None,
             runner_fail_fast: false,
             timeouts: [60, 300, 900, 3600],
+            timeouts_explicit: false,
+            coverage: crate::coverage::Settings::default(),
             flaky_attempts: Vec::new(),
             runs_per_test: Vec::new(),
             sharding: ShardingStrategy::Explicit,
@@ -481,6 +488,9 @@ impl TestOptions {
     /// One test option: `Some(used_next)` when `arg` is one. Boolean options
     /// take `--NAME`, `--noNAME` and `--NAME=BOOL`.
     pub fn parse(&mut self, arg: &str, next: Option<&str>) -> Result<Option<bool>, String> {
+        if let Some(used) = self.coverage.parse(arg, next)? {
+            return Ok(Some(used));
+        }
         const BOOLEANS: [&str; 13] = [
             "build_tests_only",
             "incompatible_bazel_test_exec_run_under",
@@ -635,7 +645,10 @@ impl TestOptions {
             }
             "test_arg" => self.args.push(value.to_owned()),
             "test_filter" => self.filter = Some(value.to_owned()),
-            "test_timeout" => self.timeouts = parse_timeouts(flag, value)?,
+            "test_timeout" => {
+                self.timeouts = parse_timeouts(flag, value)?;
+                self.timeouts_explicit = true;
+            }
             "flaky_test_attempts" => {
                 self.flaky_attempts.push(
                     PerLabelOption::attempts(value).map_err(|e| parse_error(flag, value, &e))?,

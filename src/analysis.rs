@@ -313,15 +313,69 @@ fn transitive_validation(
     repositories: &RepositorySet,
 ) -> Vec<Arc<crate::starlark_types::DepsetNode>> {
     let mut members = Vec::new();
-    let mut collect = |target: &DependencyTarget| {
-        if let Some(group) = target
-            .providers
-            .get(crate::output_group_info::PROVIDER_ID)
-            .and_then(|info| crate::output_group_info::validation(info.value()))
-        {
-            members.push(crate::output_group_info::validation_member(group));
-        }
-    };
+    attribute_prerequisites(
+        rule,
+        invocation,
+        dependencies,
+        repositories,
+        false,
+        |target: &DependencyTarget| {
+            if let Some(group) = target
+                .providers
+                .get(crate::output_group_info::PROVIDER_ID)
+                .and_then(|info| crate::output_group_info::validation(info.value()))
+            {
+                members.push(crate::output_group_info::validation_member(group));
+            }
+        },
+    );
+    members
+}
+
+/// InstrumentedFilesCollector.forwardAll (analysis/test/InstrumentedFilesCollector.java:
+/// 64-76): the InstrumentedFilesInfo of every non-tool prerequisite
+/// (getAllNonToolPrerequisites :334-344: implicit attributes included),
+/// merged; RuleConfiguredTargetBuilder adds it to a rule of a coverage
+/// configuration that returns neither InstrumentedFilesInfo nor
+/// ToolchainInfo (:179-186).
+fn forward_all_instrumented(
+    rule: &Rule,
+    invocation: &crate::custom_rule::CustomInvocation,
+    dependencies: &BTreeMap<String, DependencyTarget>,
+    repositories: &RepositorySet,
+) -> crate::instrumented_files::Collected {
+    let mut builder = crate::instrumented_files::Builder::default();
+    attribute_prerequisites(
+        rule,
+        invocation,
+        dependencies,
+        repositories,
+        true,
+        |target: &DependencyTarget| {
+            builder.add_from(
+                target
+                    .providers
+                    .get(crate::instrumented_files::PROVIDER_ID)
+                    .and_then(|info| crate::instrumented_files::collected(info.value()))
+                    .as_deref(),
+            );
+        },
+    );
+    builder.build()
+}
+
+/// The prerequisites of the rule class's label-class (DEPENDENCY)
+/// attributes that are not tool dependencies, in attribute order, with
+/// (`all`: forwardAll) or without (the validation collection) the implicit
+/// and `skip_validations` attributes.
+fn attribute_prerequisites<'a>(
+    rule: &Rule,
+    invocation: &crate::custom_rule::CustomInvocation,
+    dependencies: &'a BTreeMap<String, DependencyTarget>,
+    repositories: &RepositorySet,
+    all: bool,
+    mut collect: impl FnMut(&'a DependencyTarget),
+) {
     for (name, tool) in BUILTIN_DEPENDENCY_ATTRIBUTES {
         // A `.tool()` built-in is walked and dropped, exactly like Bazel's
         // isToolDependency filter.
@@ -345,8 +399,7 @@ fn transitive_validation(
         let Some(spec) = invocation.schema.get(name) else {
             continue;
         };
-        if implicit_attribute(name, spec)
-            || spec.declaration.skip_validations
+        if (!all && (implicit_attribute(name, spec) || spec.declaration.skip_validations))
             || matches!(spec.declaration.cfg, crate::rule_declarations::Cfg::Exec(_))
         {
             continue;
@@ -390,7 +443,145 @@ fn transitive_validation(
             collect(target);
         }
     }
-    members
+}
+
+/// The coverage inputs, environment and manifest of a test rule's test
+/// action in a coverage configuration (TestActionBuilder.createTestAction,
+/// analysis/test/TestActionBuilder.java:268-372).
+fn test_coverage(
+    rule: &Rule,
+    invocation: &crate::custom_rule::CustomInvocation,
+    dependencies: &BTreeMap<String, DependencyTarget>,
+    output_root: &str,
+    info: Option<&crate::instrumented_files::Collected>,
+) -> anyhow::Result<crate::runfiles::TestCoverage> {
+    let tool = |label: &str| dependencies.get(&dependency_key(label, true));
+    let mut coverage = crate::runfiles::TestCoverage::default();
+    // `$collect_coverage_script` (StarlarkRuleClassFunctions.java:326-331).
+    let script = tool("@@bazel_tools//tools/test:collect_coverage").ok_or_else(|| {
+        anyhow!(
+            "{}: coverage needs the @bazel_tools test runner (--experimental-builtin-modules=false has none)",
+            rule.label
+        )
+    })?;
+    let files_to_run = script.runfiles.files_to_run(&script.files);
+    let executable = files_to_run
+        .executable()
+        .cloned()
+        .ok_or_else(|| anyhow!("@bazel_tools//tools/test:collect_coverage has no executable"))?;
+    coverage.inputs.push(executable.clone());
+    coverage.script = Some(executable);
+    if let Some(info) = info {
+        coverage
+            .inputs
+            .extend(info.support.flatten().into_iter().filter_map(item_file));
+        coverage
+            .inputs
+            .extend(info.metadata.flatten().into_iter().filter_map(item_file));
+    }
+    // `:coverage_support` (:332-341): its files and data runfiles.
+    if let Some(support) = tool("@@bazel_tools//tools/test:coverage_support") {
+        coverage.inputs.extend(support.files.iter().cloned());
+        coverage
+            .inputs
+            .extend(support.runfiles.data_runfiles().all_artifacts());
+    }
+    let mut env: BTreeMap<String, String> = BTreeMap::new();
+    // `$collect_cc_coverage` (a Starlark `_collect_cc_coverage`).
+    if let Some(spec) = invocation.schema.get("_collect_cc_coverage")
+        && let Some(AttrValue::Label(Some(label))) = invocation.attrs.get("_collect_cc_coverage")
+        && let Some(target) = dependencies.get(&attribute_dependency_key(
+            label,
+            "_collect_cc_coverage",
+            spec,
+        ))
+        && let Some(file) = target.files.first()
+    {
+        coverage.inputs.push(file.clone());
+        env.insert("CC_CODE_COVERAGE_SCRIPT".to_owned(), file.path.clone());
+    }
+    if let Some(info) = info {
+        let lines: Vec<String> = info
+            .reported_to_actual
+            .flatten()
+            .into_iter()
+            .filter_map(|item| match item {
+                crate::starlark_types::Item::Tuple(items) => Some(
+                    items
+                        .iter()
+                        .map(|item| match item {
+                            crate::starlark_types::Item::String(text) => text.clone(),
+                            crate::starlark_types::Item::File(file) => file.path.clone(),
+                            other => other.to_string(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(":"),
+                ),
+                _ => None,
+            })
+            .collect();
+        if !lines.is_empty() {
+            // RuleContext.getUniqueDirectoryArtifact("_coverage_helpers", ...).
+            let path = format!(
+                "{output_root}/{}/_coverage_helpers/{}/reported_to_actual_sources.txt",
+                rule.label.package_exec_path().display(),
+                rule.label.name
+            )
+            .replace("//", "/");
+            env.insert(
+                "COVERAGE_REPORTED_TO_ACTUAL_SOURCES_FILE".to_owned(),
+                path.clone(),
+            );
+            let mut content = lines.join("\n");
+            content.push('\n');
+            coverage.reported = Some((path, content));
+        }
+    }
+    env.insert("BAZEL_CC_COVERAGE_TOOL".to_owned(), "GCOV".to_owned());
+    // `:lcov_merger` (the late-bound `_lcov_merger` default): the native
+    // coverage output generator (crate::coverage).
+    if invocation.schema.contains_key("_lcov_merger") {
+        coverage.native_merger = true;
+        env.insert(
+            "LCOV_MERGER".to_owned(),
+            crate::coverage::LAUNCHER_EXEC_PATH.to_owned(),
+        );
+    }
+    // InstrumentedFileManifestAction.getInstrumentedFileManifest.
+    coverage.manifest_exec = format!(
+        "{output_root}/{}/{}.instrumented_files",
+        rule.label.package_exec_path().display(),
+        rule.label.name
+    )
+    .replace("//", "/");
+    if let Some(info) = info {
+        let mut manifest: Vec<String> = info
+            .instrumented
+            .flatten()
+            .into_iter()
+            .chain(info.metadata.flatten())
+            .filter_map(item_file)
+            .map(|file| file.path.clone())
+            .collect();
+        manifest.sort();
+        coverage.manifest = manifest;
+        for (key, value) in &info.environment {
+            env.insert(key.clone(), value.clone());
+        }
+    }
+    coverage.env = env.into_iter().collect();
+    let mut seen = BTreeSet::new();
+    coverage
+        .inputs
+        .retain(|file| seen.insert(file.path.clone()));
+    Ok(coverage)
+}
+
+fn item_file(item: &crate::starlark_types::Item) -> Option<File> {
+    match item {
+        crate::starlark_types::Item::File(file) => Some(file.clone()),
+        _ => None,
+    }
 }
 
 /// Whether `spec`'s `cfg` is a Starlark (non analysis-test) transition.
@@ -2903,6 +3094,33 @@ fn analyze_inner(
             // target has an OutputGroupInfo, the returned groups merged with
             // HIDDEN_TOP_LEVEL (the default runfiles' artifacts).
             let mut custom = custom;
+            // RuleConfiguredTargetBuilder.build (:179-186): forwardAll in a
+            // coverage configuration.
+            if surface.config.instrumenting.is_some()
+                && !custom.contains_key(crate::instrumented_files::PROVIDER_ID)
+                && !custom.contains_key(crate::toolchain_info::PROVIDER_ID)
+            {
+                let forwarded =
+                    forward_all_instrumented(rule, invocation, dependencies, &repositories);
+                custom.insert(
+                    crate::instrumented_files::PROVIDER_ID.to_owned(),
+                    crate::instrumented_files::alloc(module.heap(), forwarded),
+                );
+            }
+            // TestActionBuilder.createTestAction (:268-372): what a coverage
+            // test action reads of the test's analysis.
+            if kind.test && surface.config.instrumenting.is_some() {
+                let info = custom
+                    .get(crate::instrumented_files::PROVIDER_ID)
+                    .and_then(|info| crate::instrumented_files::collected(*info));
+                target_runfiles.test_coverage = Some(Arc::new(test_coverage(
+                    rule,
+                    invocation,
+                    dependencies,
+                    target.output_root,
+                    info.as_deref(),
+                )?));
+            }
             let mut groups = custom
                 .remove(crate::output_group_info::PROVIDER_ID)
                 .and_then(crate::output_group_info::groups)

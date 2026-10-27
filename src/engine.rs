@@ -696,7 +696,15 @@ struct RunPlan {
     /// The producers of the target's top-level artifacts
     /// (crate::request::PlannedRun::completion).
     completion: Vec<String>,
+    /// A test's coverage additions with their inputs' artifacts.
+    coverage: Option<PlannedTestCoverage>,
+    /// The top-level targets' baseline coverage files (the first coverage
+    /// test carries them, crate::request::PlannedCoverage::baselines).
+    baselines: Vec<(String, Artifact)>,
 }
+
+/// A test's coverage additions and its coverage inputs' artifacts by exec path.
+type PlannedTestCoverage = (Arc<crate::runfiles::TestCoverage>, Vec<(String, Artifact)>);
 
 /// RunCommand.isExecutable (runtime/commands/RunCommand.java:1186-1211):
 /// whether a target may be run before it is built.
@@ -738,6 +746,8 @@ pub struct RunTarget {
     pub action_env: crate::action_env::ActionEnvironment,
     /// The configuration's `--test_env` environment (N42), TestPolicy step 3.
     pub test_env: crate::action_env::ActionEnvironment,
+    /// A coverage test action's additions (docs/COVERAGE.md).
+    pub coverage: Option<crate::request::RunCoverage>,
 }
 
 /// What one request plans ([`Engine::plan_request`]).
@@ -2611,6 +2621,17 @@ impl Engine {
             .enable_root_warming(self.loading_phase_threads);
     }
 
+    /// `bazel coverage`'s computed `--instrumentation_filter` default
+    /// (InstrumentationFilterSupport): the top-level configuration with the
+    /// filter set, before analysis.
+    pub fn set_instrumentation_filter(&mut self, filter: String) {
+        let top = self.configurations.top_configuration();
+        let mut native = top.native.clone();
+        native.instrumentation.filter = Some(filter);
+        let configuration = Configuration::new(native, top.starlark.clone());
+        self.set_configuration(configuration);
+    }
+
     pub fn set_configuration(&mut self, configuration: Configuration) {
         self.configurations = Configurations::new(configuration);
         self.platforms.clear();
@@ -4045,7 +4066,6 @@ impl Engine {
             return Err(custom_gap_error(&rule, &custom.declaration.unanalyzed));
         }
         resolved_value_gate(&rule)?;
-        coverage_gate(&rule, &configuration)?;
         // An alias-like rule has one dependency, its (resolved) actual: the
         // `actual` attribute, or the late-bound `:alias` of label_flag /
         // label_setting (rules/LabelBuildSettings.java:62-83).
@@ -9336,6 +9356,9 @@ impl Engine {
             no_config: native.no_config,
             stamp: native.stamp,
             coverage_enabled: native.collect_code_coverage,
+            instrumenting: native
+                .collect_code_coverage
+                .then(|| Arc::new(crate::coverage::Instrumenting::of(&native.instrumentation))),
             platforms: if native.platforms.is_empty() {
                 vec![native.host_platform.clone()]
             } else {
@@ -9718,6 +9741,29 @@ impl Engine {
                     settings: plan.settings,
                     configuration,
                     completion: plan.completion,
+                    coverage: plan.coverage.as_ref().map(|(coverage, inputs)| {
+                        crate::request::PlannedCoverage {
+                            script: coverage
+                                .script
+                                .as_ref()
+                                .map(|file| file.path.clone())
+                                .unwrap_or_default(),
+                            inputs: inputs
+                                .iter()
+                                .map(|(exec, artifact)| (exec.clone(), produced(artifact)))
+                                .collect(),
+                            manifest_exec: coverage.manifest_exec.clone(),
+                            manifest: coverage.manifest.clone(),
+                            env: coverage.env.clone(),
+                            reported: coverage.reported.clone(),
+                            native_merger: coverage.native_merger,
+                            baselines: plan
+                                .baselines
+                                .iter()
+                                .map(|(exec, artifact)| (exec.clone(), produced(artifact)))
+                                .collect(),
+                        }
+                    }),
                 },
             ));
         }
@@ -10905,10 +10951,23 @@ impl Engine {
             Target::Source(_) => false,
         };
         if instrumented && !providers.contains_key(crate::instrumented_files::PROVIDER_ID) {
-            let info = if coverage {
-                crate::instrumented_files::coverage_gap_frozen(&actual.to_string())?
-            } else {
-                crate::instrumented_files::empty_frozen()?
+            // A coverage configuration's rules carry their collected (or
+            // forwarded) provider already (commit_native_target,
+            // crate::analysis); an output file answers with its
+            // generating rule's.
+            let generated = match &target {
+                Target::Output(generating, _) if coverage => custom_providers
+                    .get(&ConfiguredTargetKey::new(
+                        generating.label.clone(),
+                        edge_config,
+                    ))
+                    .and_then(|providers| providers.get(crate::instrumented_files::PROVIDER_ID))
+                    .cloned(),
+                _ => None,
+            };
+            let info = match generated {
+                Some(info) => info,
+                None => crate::instrumented_files::empty_frozen()?,
             };
             providers.insert(crate::instrumented_files::PROVIDER_ID.to_owned(), info);
         }
@@ -12640,14 +12699,96 @@ impl Engine {
             state,
             configured,
             rule,
-            key,
+            key.clone(),
             config,
             output_root,
             action_env,
             action_owner,
             exec_config,
             main_ignored,
-        )
+        )?;
+        self.commit_native_instrumented(state, rule, &key, config)
+    }
+
+    /// A native rule's InstrumentedFilesInfo in a coverage configuration
+    /// (docs/COVERAGE.md): filegroup collects from `srcs` and `data`
+    /// (Filegroup.java:63-81), genrule its `srcs` local sources
+    /// (GenRuleBase.java:236-238; no baseline coverage action natively),
+    /// every other rule forwardAll over its non-tool attribute edges
+    /// (RuleConfiguredTargetBuilder.java:179-186). An alias forwards its
+    /// actual's providers (commit_native_target).
+    fn commit_native_instrumented(
+        &mut self,
+        state: &mut ActionPlanning,
+        rule: &Rule,
+        key: &ConfiguredTargetKey,
+        config: ConfigId,
+    ) -> Result<(), String> {
+        let native = &self.configurations.get(config).native;
+        if !native.collect_code_coverage
+            || forwards(rule)
+            || matches!(rule.kind, RuleKind::PackageGroup(_))
+        {
+            return Ok(());
+        }
+        let instrumenting = crate::coverage::Instrumenting::of(&native.instrumentation);
+        if state.custom_providers.get(key).is_some_and(|providers| {
+            providers.contains_key(crate::instrumented_files::PROVIDER_ID)
+                || providers.contains_key(crate::toolchain_info::PROVIDER_ID)
+        }) {
+            return Ok(());
+        }
+        let attributes: Option<&[&str]> = match rule.kind {
+            RuleKind::Filegroup => Some(&["srcs", "data"]),
+            RuleKind::Genrule => Some(&[]),
+            _ => None,
+        };
+        let mut builder = crate::instrumented_files::Builder::default();
+        for edge in self.rule_edges(rule, config) {
+            if !matches!(edge.cfg, EdgeCfg::Target)
+                || attributes.is_some_and(|names| !names.contains(&edge.attribute.as_str()))
+            {
+                continue;
+            }
+            let Ok(label) = self.resolve_rule_src(rule, &edge.label) else {
+                continue;
+            };
+            let dep_key = match self.target(&label) {
+                Ok(Target::Output(generating, _)) => {
+                    ConfiguredTargetKey::new(generating.label.clone(), config)
+                }
+                _ => ConfiguredTargetKey::new(label, config),
+            };
+            let collected = state
+                .custom_providers
+                .get(&dep_key)
+                .and_then(|providers| providers.get(crate::instrumented_files::PROVIDER_ID))
+                .and_then(|info| crate::instrumented_files::collected(info.value()));
+            builder.add_from(collected.as_deref());
+        }
+        if matches!(rule.kind, RuleKind::Genrule)
+            && instrumenting.includes(&rule.label.to_string(), false)
+        {
+            let mut local = Vec::new();
+            for text in &rule.srcs {
+                let label = self.resolve_rule_src(rule, text)?;
+                let artifacts = self.artifacts(&label, config, &state.dry, &state.declared)?;
+                local.extend(
+                    artifacts
+                        .iter()
+                        .map(Artifact::file)
+                        .filter(|file| file.is_source || instrumenting.generated_files),
+                );
+            }
+            builder.set_local_sources(local);
+        }
+        let info = crate::instrumented_files::frozen(builder.build())?;
+        state
+            .custom_providers
+            .entry(key.clone())
+            .or_default()
+            .insert(crate::instrumented_files::PROVIDER_ID.to_owned(), info);
+        Ok(())
     }
 
     /// The commit of one custom rule (the tail of the split plan_target):
@@ -14790,6 +14931,7 @@ impl Engine {
                 .iter()
                 .map(|(owner, artifact)| (*owner, artifact.file())),
         );
+        let mut top_baselines: Vec<(String, Artifact)> = Vec::new();
         for label in labels {
             let key = self.configurations.top_key(label.clone());
             let actual = forwarded.get(&key).unwrap_or(label);
@@ -14816,6 +14958,34 @@ impl Engine {
             // or the input manifest, and the repository mapping manifest.
             // `run` always creates the tree (RunCommand.ensureRunfilesBuilt).
             let actual_key = self.configurations.top_key(actual.clone());
+            // CoverageReportActionBuilder.getBaselineCoverageArtifacts: the
+            // baseline coverage of every top-level target is built for the
+            // combined report.
+            if crate::coverage::settings().combined_report
+                && self.configurations.get(top).native.collect_code_coverage
+                && let Some(info) = custom_providers
+                    .get(&actual_key)
+                    .and_then(|providers| providers.get(crate::instrumented_files::PROVIDER_ID))
+                    .and_then(|info| crate::instrumented_files::collected(info.value()))
+            {
+                for item in info.baseline.flatten() {
+                    let crate::starlark_types::Item::File(file) = item else {
+                        continue;
+                    };
+                    let artifact = resolve(self, file)?.ok_or_else(|| {
+                        format!(
+                            "{label}: baseline coverage file has no declared artifact: {}",
+                            file.path
+                        )
+                    })?;
+                    if seen.insert((owner, artifact.file())) {
+                        hidden.push((owner, artifact.clone()));
+                    }
+                    if !top_baselines.iter().any(|(path, _)| *path == file.path) {
+                        top_baselines.push((file.path.clone(), artifact));
+                    }
+                }
+            }
             if let Some(support) = runfiles_nodes.get(&actual_key) {
                 let options = self.runfiles_options;
                 let running = self.run_requests.contains(label) && self.run_trees;
@@ -14893,9 +15063,40 @@ impl Engine {
                         .unwrap_or_default(),
                     config: top,
                     completion: Vec::new(),
+                    coverage: None,
+                    baselines: Vec::new(),
                 };
+                let mut plan = plan;
+                // A coverage test action's inputs are built with the test
+                // (TestActionBuilder.java:292-372).
+                if let Some(coverage) = runfiles_info
+                    .get(&actual_key)
+                    .and_then(|runfiles| runfiles.test_coverage.clone())
+                {
+                    let mut inputs = Vec::new();
+                    for file in &coverage.inputs {
+                        let artifact = resolve(self, file)?.ok_or_else(|| {
+                            format!(
+                                "{label}: coverage input has no declared artifact: {}",
+                                file.path
+                            )
+                        })?;
+                        if seen.insert((owner, artifact.file())) {
+                            hidden.push((owner, artifact.clone()));
+                        }
+                        inputs.push((file.path.clone(), artifact));
+                    }
+                    plan.coverage = Some((coverage, inputs));
+                }
                 self.run_plans.insert(label.clone(), plan);
             }
+        }
+        if let Some(plan) = self
+            .run_plans
+            .values_mut()
+            .find(|plan| plan.coverage.is_some())
+        {
+            plan.baselines = std::mem::take(&mut top_baselines);
         }
         // PERF(TEST): what each run target's completion builds — the
         // producers of its requested and hidden top-level artifacts
@@ -16995,49 +17196,6 @@ fn native_analysis_gate(rule: &Rule) -> Result<(), String> {
     Ok(())
 }
 
-/// N47: in a configuration a Starlark transition enabled
-/// `--collect_code_coverage` in, a test rule's coverage support
-/// (BaseRuleClasses' `:coverage_support`/`:lcov_merger` attributes and the
-/// coverage test action, analysis/test/TestActionBuilder.java) and a
-/// late-bound `configuration_field("coverage", "output_generator")` default
-/// (CoverageConfiguration.outputGenerator, analysis/test/CoverageConfiguration.java:76-95)
-/// are coverage instrumentation, which the native profile does not model:
-/// explicit before any dependency edge.
-fn coverage_gate(rule: &Rule, configuration: &Configuration) -> Result<(), String> {
-    if !configuration.native.collect_code_coverage {
-        return Ok(());
-    }
-    let Some(custom) = &rule.custom else {
-        return Ok(());
-    };
-    let what = if custom.declaration.builtin.kind.test {
-        Some(format!("analysis of test rule {}", rule.label))
-    } else {
-        custom
-            .schema
-            .iter()
-            .find(|(_, spec)| {
-                spec.declaration
-                    .configuration_field
-                    .as_ref()
-                    .is_some_and(|field| field.fragment == "coverage")
-            })
-            .map(|(name, _)| {
-                format!(
-                    "{}: the late-bound attribute '{name}' (configuration_field(\"coverage\", ...))",
-                    rule.label
-                )
-            })
-    };
-    match what {
-        Some(what) => Err(located(
-            rule.location.as_deref(),
-            crate::ctx_surface::coverage_gap(&what),
-        )),
-        None => Ok(()),
-    }
-}
-
 fn custom_gap_error(rule: &Rule, gaps: &[String]) -> String {
     format!(
         "analysis of {}: declared rule features {}: {}",
@@ -17655,7 +17813,10 @@ mod tests {
     #[test]
     fn verify_view_accepts_the_same_provider_values() {
         let set = crate::starlark_types::Depset::from_files(vec![generated_out_txt().file()]);
-        let committed = crate::instrumented_files::coverage_gap_frozen("//pkg:dep").unwrap();
+        let committed = crate::instrumented_files::frozen(
+            crate::instrumented_files::Builder::default().build(),
+        )
+        .unwrap();
         let (key, memoized) = view_with(BTreeMap::from([
             ("//pkg:defs.bzl%Info".to_owned(), committed),
             (
@@ -17679,12 +17840,18 @@ mod tests {
     fn verify_view_rejects_a_changed_provider_value() {
         let (key, memoized) = view_with(BTreeMap::from([(
             "//pkg:defs.bzl%Info".to_owned(),
-            crate::instrumented_files::coverage_gap_frozen("//pkg:dep").unwrap(),
+            crate::instrumented_files::frozen(
+                crate::instrumented_files::Builder::default().build(),
+            )
+            .unwrap(),
         )]));
         let mut rebuilt = memoized.clone();
         rebuilt.providers.insert(
             "//pkg:defs.bzl%Info".to_owned(),
-            crate::instrumented_files::coverage_gap_frozen("//pkg:dep").unwrap(),
+            crate::instrumented_files::frozen(
+                crate::instrumented_files::Builder::default().build(),
+            )
+            .unwrap(),
         );
         verify_view(&key, &memoized, Ok(rebuilt));
     }

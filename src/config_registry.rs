@@ -478,6 +478,7 @@ pub fn exec_transition(
         // Not in CoreOptions' propagate list (builtin_exec_platforms.bzl:231-275):
         // the CoreOptions default (CoreOptions.java:566-578).
         collect_code_coverage: defaults.collect_code_coverage,
+        instrumentation: defaults.instrumentation.clone(),
         // Not in CoreOptions' propagate list (builtin_exec_platforms.bzl:231-275).
         use_target_platform_for_tests: defaults.use_target_platform_for_tests,
         // In CoreOptions' propagate list (builtin_exec_platforms.bzl:246).

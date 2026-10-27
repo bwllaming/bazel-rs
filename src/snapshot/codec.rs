@@ -1479,6 +1479,7 @@ mod tests {
                     },
                     configuration: 0,
                     completion: vec!["write".into(), "tree".into()],
+                    coverage: None,
                 },
             )],
             configurations: vec![ConfigurationSummary {

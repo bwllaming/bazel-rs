@@ -262,6 +262,15 @@ impl Context {
         std::mem::take(&mut *self.declared.borrow_mut())
     }
 
+    /// BuildConfigurationValue.getTestLogsDirectory: the configuration's
+    /// `bazel-out/<mnemonic>/testlogs` (the output root's sibling of `bin`).
+    pub(crate) fn testlogs_root(&self) -> String {
+        match self.output_root.strip_suffix("/bin") {
+            Some(prefix) => format!("{prefix}/testlogs"),
+            None => format!("{}/testlogs", self.output_root),
+        }
+    }
+
     pub(crate) fn declare(&self, name: &str) -> anyhow::Result<File> {
         self.declare_kind(name, false)
     }

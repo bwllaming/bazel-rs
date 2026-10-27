@@ -1173,6 +1173,35 @@ pub struct TargetRunfiles {
     /// What `bazel run` needs of a rule target (RunfilesSupport.getArgs and
     /// getActionEnvironment, analysis/RunfilesSupport.java:546-652).
     pub run: RunSettings,
+    /// A test rule's coverage test action inputs in a coverage
+    /// configuration (crate::analysis::test_coverage).
+    pub test_coverage: Option<Arc<TestCoverage>>,
+}
+
+/// What a coverage test action adds to a test action
+/// (TestActionBuilder.createTestAction, analysis/test/TestActionBuilder.java:
+/// 268-372; TestRunnerAction.setupEnvVariables :745-830).
+#[derive(Clone, Debug, Default)]
+pub struct TestCoverage {
+    /// The `$collect_coverage_script` executable (TestStrategy.expandedArgsFromAction).
+    pub script: Option<File>,
+    /// The action inputs staged at their exec paths: the script, the
+    /// InstrumentedFilesInfo coverage support and metadata files,
+    /// `:coverage_support` and `$collect_cc_coverage`.
+    pub inputs: Vec<File>,
+    /// InstrumentedFileManifestAction: `<bin>/<pkg>/<name>.instrumented_files`
+    /// and its sorted lines (instrumented and metadata files' exec paths).
+    pub manifest_exec: String,
+    pub manifest: Vec<String>,
+    /// The coverage environment (`coverageTestEnv`, a TreeMap: sorted,
+    /// the InstrumentedFilesInfo environment put last).
+    pub env: Vec<(String, String)>,
+    /// `reported_to_actual_sources.txt` (exec path, content) when the
+    /// InstrumentedFilesInfo has entries.
+    pub reported: Option<(String, String)>,
+    /// The rule has an `:lcov_merger` (`_lcov_merger`): LCOV_MERGER is the
+    /// native coverage output generator (crate::coverage).
+    pub native_merger: bool,
 }
 
 /// The `run` command settings of a Starlark rule target.
@@ -1202,6 +1231,7 @@ impl TargetRunfiles {
         Self {
             provider: None,
             run: RunSettings::default(),
+            test_coverage: None,
             files_to_run: Some(FilesToRun {
                 fresh: true,
                 ..FilesToRun::single(file)
@@ -1277,6 +1307,7 @@ impl TargetRunfiles {
             }),
             files_to_run: Some(FilesToRun::create(outputs, false, None, executable)),
             run: RunSettings::default(),
+            test_coverage: None,
         })
     }
 
@@ -1312,6 +1343,7 @@ impl TargetRunfiles {
             }),
             files_to_run: Some(FilesToRun::create(files, false, None, executable)),
             run: RunSettings::default(),
+            test_coverage: None,
         })
     }
 }
@@ -1334,6 +1366,7 @@ impl TargetRunfiles {
             }),
             files_to_run: Some(FilesToRun::create(&[], false, None, None)),
             run: RunSettings::default(),
+            test_coverage: None,
         })
     }
 }
@@ -1957,6 +1990,7 @@ pub(crate) fn configure_target(
                     .and_then(|(_, executable)| executable.clone()),
                 ..RunSettings::default()
             },
+            test_coverage: None,
         },
     ))
 }

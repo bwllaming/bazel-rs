@@ -183,8 +183,8 @@ fn run() -> Result<(), String> {
             }
             Err(error) => fail_with(2, &error),
         },
-        "query" | "cquery" | "config" | "build" | "mod" | "run" | "test" | "info" | "clean"
-        | "fetch" | "gc" => {}
+        "query" | "cquery" | "config" | "build" | "mod" | "run" | "test" | "coverage" | "info"
+        | "clean" | "fetch" | "gc" => {}
         "vendor" => {
             return Err(
                 "the vendor command is not implemented in the native profile (Bazel 9.3 `vendor --vendor_dir=DIR` copies the fetched repositories into DIR for later builds to read); `bazel-rs fetch` materializes repositories into the shared repository store"
@@ -215,6 +215,16 @@ fn run() -> Result<(), String> {
     // An rc file's or `--config`'s error is a command-line error (exit 2).
     let options = evaluate_rc(&line, rc_command, &cwd, &root, &path_to_binary)
         .map_err(bazel_rs::exit_code::command_line)?;
+    // CoverageCommand extends TestCommand (runtime/commands/CoverageCommand.java):
+    // the `test` command with `--collect_code_coverage` required and the
+    // coverage timeouts as computed defaults (docs/COVERAGE.md); its rc
+    // options are `coverage`'s (inheriting `test`'s, above).
+    let coverage_command = command == "coverage";
+    let command = if coverage_command {
+        "test".to_owned()
+    } else {
+        command
+    };
     if command == "config" {
         return config_command(&line, &options, &cwd, &root);
     }
@@ -320,6 +330,17 @@ fn run() -> Result<(), String> {
                 return Err(bazel_rs::exit_code::command_line(error));
             }
         }
+        if coverage_command {
+            native.configuration.require_coverage();
+            // TestTimeout.COVERAGE_CMD_TIMEOUT at COMPUTED_DEFAULT priority.
+            if !native.test.timeouts_explicit {
+                native.test.timeouts = [300, 600, 1200, 3600];
+            }
+        }
+        if native.configuration.collects_coverage() {
+            native.test.coverage.check_native()?;
+        }
+        bazel_rs::coverage::install(native.test.coverage.clone());
         if native.resolver.registries.is_empty() {
             // Bazel's default registry list (N37); any explicit --registry
             // replaces it.
@@ -696,7 +717,9 @@ fn run() -> Result<(), String> {
     let mut snapshot = bazel_rs::snapshot::Scope::default();
     // `fetch` neither looks up nor saves an analysis snapshot: it must
     // materialize the repositories (a hit would skip them).
-    let snapshot_mode = if fetch_mode.is_some() {
+    // Nor does a coverage build (docs/COVERAGE.md): its instrumentation
+    // filter default and report are computed around planning.
+    let snapshot_mode = if fetch_mode.is_some() || configuration_options.collects_coverage() {
         bazel_rs::snapshot::Mode::Off
     } else {
         bazel_rs::snapshot::Mode::from_env()
@@ -1177,6 +1200,8 @@ fn run() -> Result<(), String> {
             patterns: &rest,
             relative_directory: &relative_directory,
             lockfile_gate: &lockfile_gate,
+            needs_instrumentation_filter: configuration_options.collects_coverage()
+                && !configuration_options.explicit_instrumentation_filter(),
             tail: TestTail {
                 cache: &cache,
                 jobs,
@@ -2454,6 +2479,10 @@ struct TestContext<'a> {
     relative_directory: &'a str,
     /// Opens the lockfile write once test-target loading succeeded.
     lockfile_gate: &'a LockfileGate,
+    /// `--collect_code_coverage` without an explicit
+    /// `--instrumentation_filter`: the filter is computed from the tests
+    /// (TestCommand.java:161-165, AnalysisPhaseRunner.java:115-133).
+    needs_instrumentation_filter: bool,
     tail: TestTail<'a>,
 }
 
@@ -2484,6 +2513,7 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
         patterns,
         relative_directory,
         lockfile_gate,
+        needs_instrumentation_filter,
         mut tail,
     } = context;
     let options = tail.options;
@@ -2509,6 +2539,19 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
     tail.pattern_failure = pattern_phase_failure(&selected);
     let build = selected.build;
     let tests = selected.tests.unwrap_or_default();
+    // InstrumentationFilterSupport.computeInstrumentationFilter over the
+    // tests to run, before analysis (AnalysisPhaseRunner.java:115-133).
+    if needs_instrumentation_filter {
+        let (filter, report) = bazel_rs::coverage::default_instrumentation_filter(
+            tests.iter().map(|label| label.package.as_str()),
+        );
+        if report {
+            for note in bazel_rs::coverage::default_filter_notes(&filter) {
+                bazel_rs::note!("{note}");
+            }
+        }
+        engine.set_instrumentation_filter(filter);
+    }
     let mut infos = std::collections::BTreeMap::new();
     for label in &tests {
         let (info, location) = engine
@@ -2751,6 +2794,28 @@ fn test_tail(
                 .collect(),
         );
     }
+    // `--combined_report=lcov` (BazelCoverageReportModule): the report of
+    // the coverage test actions that ran (docs/COVERAGE.md).
+    let mut coverage_failed = false;
+    if bazel_rs::coverage::settings().combined_report
+        && (!outcome.coverage.is_empty() || !outcome.baselines.is_empty())
+    {
+        match bazel_rs::coverage::combined_report(
+            &bazel_rs::output_tree::execution_root(cache),
+            &outcome.coverage,
+            &outcome.baselines,
+        ) {
+            Ok(notes) => {
+                for note in notes {
+                    bazel_rs::note!("{note}");
+                }
+            }
+            Err(error) => {
+                eprintln!("ERROR: {error}");
+                coverage_failed = true;
+            }
+        }
+    }
     let mut sorted: Vec<&bazel_rs::test_command::TestSummary> = outcome.summaries.iter().collect();
     sorted.sort_by(|a, b| a.compare(b));
     use std::io::Write;
@@ -2818,7 +2883,7 @@ fn test_tail(
     bazel_rs::loading::module_timings::report();
     bazel_rs::digest_memo::finish();
     exit(
-        if failed_to_build || build_failed || pattern_failure.is_some() {
+        if failed_to_build || build_failed || pattern_failure.is_some() || coverage_failed {
             1
         } else if passed {
             0
@@ -5020,6 +5085,17 @@ fn main() {
         .is_some_and(|arg| arg == bazel_rs::process_wrapper::ARG)
     {
         std::process::exit(bazel_rs::process_wrapper::main(&raw.collect::<Vec<_>>()));
+    }
+    // The native coverage output generator (crate::coverage): a coverage
+    // test action's LCOV_MERGER launcher starts this binary with it.
+    let mut raw = std::env::args().skip(1);
+    if raw
+        .next()
+        .is_some_and(|arg| arg == bazel_rs::coverage::OUTPUT_GENERATOR_ARG)
+    {
+        std::process::exit(bazel_rs::coverage::output_generator_main(
+            &raw.collect::<Vec<_>>(),
+        ));
     }
     bazel_rs::progress::process_start();
     // Ctrl-C exits 8 like Bazel's interrupted command (crate::signals).

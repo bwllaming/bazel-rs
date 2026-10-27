@@ -41,6 +41,7 @@ pub mod config_registry;
 pub mod config_setting;
 pub mod configuration;
 pub mod configured_attributes;
+pub mod coverage;
 pub mod cquery_proto;
 pub mod cquery_state;
 pub mod credentials;

@@ -1030,6 +1030,13 @@ pub struct NativeOptions {
     /// false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub collect_code_coverage: bool,
+    /// The instrumentation CoreOptions of a coverage configuration
+    /// (`--instrumentation_filter`, `--instrument_test_targets`,
+    /// `--experimental_collect_code_coverage_for_generated_files`). Not
+    /// propagated to exec configurations; omitted from the identity at the
+    /// defaults.
+    #[serde(skip_serializing_if = "Instrumentation::is_default")]
+    pub instrumentation: Instrumentation,
     /// `--java_runtime_version`, `--java_language_version`,
     /// `--tool_java_runtime_version`, `--tool_java_language_version`
     /// (JavaOptions.java:373-403). Serialized separately
@@ -1082,6 +1089,41 @@ pub struct NativeOptions {
     /// only (Configuration::untrimmed_id); recorded for a test command.
     #[serde(skip)]
     pub test_env: Vec<EnvVar>,
+}
+
+/// CoreOptions' instrumentation options (CoreOptions.java:358-389, 580-589).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Instrumentation {
+    /// `--instrumentation_filter` as given (`None`: the default
+    /// [`crate::coverage::DEFAULT_INSTRUMENTATION_FILTER`]); `bazel
+    /// coverage` replaces an unset value by InstrumentationFilterSupport's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+    /// `--instrument_test_targets`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub test_targets: bool,
+    /// `--experimental_collect_code_coverage_for_generated_files`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub generated_files: bool,
+}
+
+impl Instrumentation {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The configured filter (validated when parsed).
+    pub fn filter(&self) -> crate::coverage::RegexFilter {
+        crate::coverage::RegexFilter::parse(
+            self.filter
+                .as_deref()
+                .unwrap_or(crate::coverage::DEFAULT_INSTRUMENTATION_FILTER),
+        )
+        .unwrap_or_else(|_| {
+            crate::coverage::RegexFilter::parse(crate::coverage::DEFAULT_INSTRUMENTATION_FILTER)
+                .expect("the default filter parses")
+        })
+    }
 }
 
 /// The JavaOptions version strings (N28b).
@@ -1248,6 +1290,7 @@ impl Default for NativeOptions {
             crosstool_top: None,
             values: BTreeMap::new(),
             collect_code_coverage: false,
+            instrumentation: Instrumentation::default(),
             use_target_platform_for_tests: false,
             incompatible_auto_exec_groups: false,
             apple_sdk_versions: AppleSdkVersions::default(),
@@ -1585,6 +1628,15 @@ pub struct CommandLineOptions {
     env_vars: Vec<(&'static str, EnvVar)>,
     /// The last `--incompatible_strict_action_env` value.
     strict_action_env: Option<bool>,
+    /// The last `--[no]collect_code_coverage` value (CoreOptions.java:566-578).
+    collect_code_coverage: Option<bool>,
+    /// `--instrumentation_filter`, `--instrument_test_targets` and
+    /// `--experimental_collect_code_coverage_for_generated_files`
+    /// (CoreOptions.java:358-389, 580-589), the last values.
+    instrumentation: Instrumentation,
+    /// Whether `--instrumentation_filter` was given (TestCommand.java:161-165:
+    /// `bazel coverage` computes the default only otherwise).
+    explicit_instrumentation_filter: bool,
 }
 
 /// The repeatable EnvVarsConverter options (docs/ACTION_ENV.md): name and
@@ -1793,6 +1845,44 @@ impl CommandLineOptions {
                 self.env_vars.push((option, entry));
                 return Ok(Parsed::Consumed(used_next));
             }
+            // The coverage CoreOptions (docs/COVERAGE.md): command-line
+            // options of every building command; `query` accepts and
+            // ignores them (it never computes a configuration).
+            if let Some(result) = boolean_option(arg, "collect_code_coverage") {
+                self.collect_code_coverage = Some(result?);
+                return Ok(Parsed::Consumed(false));
+            }
+            if let Some(result) = boolean_option(arg, "instrument_test_targets") {
+                self.instrumentation.test_targets = result?;
+                return Ok(Parsed::Consumed(false));
+            }
+            if let Some(result) = boolean_option(
+                arg,
+                "experimental_collect_code_coverage_for_generated_files",
+            ) {
+                self.instrumentation.generated_files = result?;
+                return Ok(Parsed::Consumed(false));
+            }
+            if name == "instrumentation_filter" || name == "noinstrumentation_filter" {
+                if name == "noinstrumentation_filter" {
+                    return Err(invalid_argument(
+                        arg,
+                        format!("Illegal use of 'no' prefix on non-boolean option: {arg}"),
+                    ));
+                }
+                let (value, form, used_next) = match value {
+                    Some(value) => (value.to_owned(), arg.to_owned(), false),
+                    None => {
+                        let value = next.ok_or_else(|| format!("Expected value after {arg}"))?;
+                        (value.to_owned(), format!("{arg} {value}"), true)
+                    }
+                };
+                crate::coverage::RegexFilter::parse(&value)
+                    .map_err(|error| format!("While parsing option {form}: {error}"))?;
+                self.instrumentation.filter = Some(value);
+                self.explicit_instrumentation_filter = true;
+                return Ok(Parsed::Consumed(used_next));
+            }
             if let Some(result) = STRICT_ACTION_ENV
                 .iter()
                 .find_map(|option| boolean_option(arg, option))
@@ -1902,6 +1992,24 @@ impl CommandLineOptions {
             }
         }
         Ok(Parsed::Consumed(used_next))
+    }
+
+    /// CoverageCommand.editOptions (runtime/commands/CoverageCommand.java:
+    /// 48-63): `--collect_code_coverage` at SOFTWARE_REQUIREMENT priority,
+    /// over any command-line or rc value.
+    pub fn require_coverage(&mut self) {
+        self.collect_code_coverage = Some(true);
+    }
+
+    /// Whether the configuration collects coverage (`--collect_code_coverage`).
+    pub fn collects_coverage(&self) -> bool {
+        self.collect_code_coverage == Some(true)
+    }
+
+    /// Whether `--instrumentation_filter` was given explicitly
+    /// (OptionsParser.containsExplicitOption, TestCommand.java:161-165).
+    pub fn explicit_instrumentation_filter(&self) -> bool {
+        self.explicit_instrumentation_filter
     }
 
     /// The parser's warnings, printed as `WARNING: ...` once the native
@@ -2029,6 +2137,10 @@ impl CommandLineOptions {
         if let Some(strict) = self.strict_action_env {
             native.strict_action_env = strict;
         }
+        if let Some(coverage) = self.collect_code_coverage {
+            native.collect_code_coverage = coverage;
+        }
+        native.instrumentation = self.instrumentation.clone();
         // PlatformOptions.getNormalized keeps only the first entry (:189-200);
         // an empty list becomes [--host_platform] (PlatformMappingValue.computeMapping,
         // skyframe/config/PlatformMappingValue.java:154-158). The platforms are
@@ -2985,16 +3097,35 @@ mod tests {
     #[test]
     fn value_options_without_a_command_line_form_and_query() {
         let mut options = CommandLineOptions::default();
+        assert!(matches!(
+            options.parse("--apple_platform_type=ios", None),
+            Ok(Parsed::NotModelled)
+        ));
+        // The coverage CoreOptions are command-line options (docs/COVERAGE.md).
         for arg in [
             "--collect_code_coverage",
             "--nocollect_code_coverage",
-            "--apple_platform_type=ios",
+            "--collect_code_coverage=yes",
+            "--instrument_test_targets",
+            "--instrumentation_filter=^//a[/:],-b",
+            "--experimental_collect_code_coverage_for_generated_files",
         ] {
             assert!(
-                matches!(options.parse(arg, None), Ok(Parsed::NotModelled)),
+                matches!(options.parse(arg, None), Ok(Parsed::Consumed(false))),
                 "{arg}"
             );
         }
+        assert!(options.collects_coverage());
+        assert!(options.explicit_instrumentation_filter());
+        assert!(
+            options
+                .parse("--instrumentation_filter=(", None)
+                .err()
+                .unwrap()
+                .starts_with(
+                    "While parsing option --instrumentation_filter=(: Failed to build valid regular expression: "
+                )
+        );
         let mut query = CommandLineOptions::for_query();
         assert!(matches!(
             query.parse("--collect_code_coverage", None),
