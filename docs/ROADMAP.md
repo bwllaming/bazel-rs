@@ -322,11 +322,19 @@ a filegroup build is not a substitute for any of these gates.
 
 ### 5. Performance acceptance
 
-Status: bazel-rs has its own measured numbers on `~/code` (PLAN.md), but no
-like-for-like comparison against genuine Bazel on the same repository and cache
-states exists (genuine Bazel is not run on `~/code`). A comparison on a public or
-scratch benchmark repository is still open, as is a single-source-change /
-BUILD-change incremental benchmark.
+Status: bazel-rs has its own measured numbers on `~/code` (PLAN.md). The first
+like-for-like comparison against genuine Bazel 9.3 covers three public bzlmod
+repositories (Go, gazelle, Python + pip). It uses identical outputs, separate
+output bases, interleaved trials and median/p95, and is described in
+docs/BENCHMARKS.md (harness: `scripts/bench_genuine.py`).
+- **Warm commands.** No-op builds, cached tests and queries match genuine's warm
+  server and are 7–17× faster than genuine after `shutdown` or with `--batch`,
+  using 2–12× less memory.
+- **Open:** incremental re-analysis after a BUILD or watched-source edit (13.8 s
+  against 1.1 s on gazelle) and the cold fetch phase on larger repositories
+  (86 s against 49 s).
+- **Not yet covered:** configuration changes, remote cache/execution and
+  persistent workers.
 
 Measure identical inputs, configuration, outputs and cache states:
 
