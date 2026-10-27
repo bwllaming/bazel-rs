@@ -101,6 +101,15 @@ Done since the last increment recorded under "History", one line each:
       requesting rules, matching 8 genuine-schema edge matrices and 9 actual
       target-determinator mutation cases. First-instance selection across all
       split/parameter combinations is not exhaustively certified (docs/CQUERY.md).
+- [x] MODULE `flag_alias` metadata and typed configuration consumers, with genuine
+      ordering/precedence cases and explicit unsupported boundaries
+      (docs/MODULE_FLAG_ALIAS.md).
+- [x] Starlark tabs in token/continuation whitespace match Bazel; indentation
+      tabs remain rejected and string/source bytes are preserved. Existing
+      triple-string CRLF divergence is documented (docs/STARLARK_VENDOR.md).
+- [ ] Latest-code PR checkout: aliases and tabbed generated BUILD files now load;
+      the next loading gap is `native.subpackages`, used by rules_python 2.4.4's
+      `distribution_filegroup`. No complete default query/TD success claimed.
 
 ### Commands that are rejected today
 
