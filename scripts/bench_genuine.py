@@ -4,7 +4,9 @@ repositories (docs/BENCHMARKS.md describes the method and the results).
 
 usage: bench_genuine.py run --config CONFIG.json --work DIR --bazel GENUINE_ELF
                             --bazel-rs BAZEL_RS [--repo NAME ...]
-                            [--scenario NAME ...] [--reps N] [--jobs J]
+                            [--scenario NAME ...] [--reps N] [--cold-reps N]
+                            [--jobs J] [--timeout S]
+       bench_genuine.py verify --config CONFIG.json --work DIR
        bench_genuine.py report --work DIR [--out REPORT.md]
 
 `run` prepares each configured repository (a pinned public git commit plus
@@ -134,7 +136,17 @@ def relative_output_path(path, workspace):
     ws = workspace.rstrip("/") + "/"
     if path.startswith(ws):
         return path[len(ws) :]
+    # External source files: genuine `<output_base>/external/<repo>/<rest>`,
+    # bazel-rs `<cache>/repositories/[direct/|builtins/]trees/<hash>/<rest>`; the
+    # repository name is not recoverable from the bazel-rs path, so both map
+    # to `external/*/<rest>` (compared together with the content digest).
+    m = EXTERNAL_SOURCE.search(path)
+    if m:
+        return "external/*/" + m.group(1)
     return path
+
+
+EXTERNAL_SOURCE = re.compile(r"/(?:external|repositories/(?:[a-z]+/)?trees)/[^/]+/(.+)$")
 
 
 def parse_bep_outputs(lines):
@@ -510,21 +522,29 @@ class Repo:
     def verify_outputs(self):
         """Builds once more per side (genuine with a BEP file) and compares the
         top-level default outputs of gs/gb/rs by relative path and SHA-256."""
-        maps = {}
         for side in ("gs", "gb", "rs"):
             extra = list(self.build_args())
-            bep = os.path.join(self.root, f"verify-{side}.bep.json")
             if side != "rs":
-                extra = ["--build_event_json_file=" + bep] + extra
-            rec = self.execute("verify", side, 0, "build", extra, measured=False)
-            outdir = os.path.join(self.root, "runs", "verify")
+                extra = ["--build_event_json_file=" + self.bep_path(side)] + extra
+            self.execute("verify", side, 0, "build", extra, measured=False)
+        return self.compare_verify()
+
+    def bep_path(self, side):
+        return os.path.join(self.root, f"verify-{side}.bep.json")
+
+    def compare_verify(self):
+        """verify.json from the verification build's files (no runs)."""
+        maps = {}
+        outdir = os.path.join(self.root, "runs", "verify")
+        for side in ("gs", "gb", "rs"):
             if side == "rs":
-                text = read_text(os.path.join(outdir, rec["stem"] + ".out"))
-                raw = parse_rs_outputs(text)
+                raw = parse_rs_outputs(read_text(os.path.join(outdir, "rs-prime-0.out")))
             else:
-                raw = parse_bep_outputs(read_text(bep).splitlines())
+                raw = parse_bep_outputs(read_text(self.bep_path(side)).splitlines())
             files = {}
             for label, paths in raw.items():
+                if not paths:  # bazel-rs prints no line for a target without outputs
+                    continue
                 entry = files.setdefault(label, {})
                 for path in paths:
                     local = path[len("file://") :] if path.startswith("file://") else path
@@ -675,7 +695,7 @@ def run_repo(repo, scenarios, reps):
                     repo.reset_workspace(side)
             scenario_startup(repo, reps)
         if "cold" in scenarios:
-            scenario_cold(repo, repo.cfg.get("cold_reps", reps))
+            scenario_cold(repo, repo.args.cold_reps or reps)
         if set(scenarios) & {"noop", "source_edit", "build_edit", "query", "test"}:
             ensure_built(repo)
             repo.verify_outputs()
@@ -796,12 +816,22 @@ def main(argv=None):
     run.add_argument("--repo", action="append", default=[])
     run.add_argument("--scenario", action="append", default=[])
     run.add_argument("--reps", type=int, default=5)
+    run.add_argument("--cold-reps", type=int, default=0, help="repetitions of cold (default --reps)")
     run.add_argument("--jobs", type=int, default=16)
     run.add_argument("--timeout", type=int, default=3600)
+    ver = sub.add_parser("verify", help="recompute verify.json from a finished run (no builds)")
+    ver.add_argument("--config", required=True)
+    ver.add_argument("--work", required=True)
     rep = sub.add_parser("report")
     rep.add_argument("--work", required=True)
     rep.add_argument("--out")
     args = parser.parse_args(argv)
+    if args.cmd == "verify":
+        config = json.loads(read_text(require_abs(args.config, "--config")))
+        for cfg in config["repos"]:
+            if os.path.exists(os.path.join(require_abs(args.work, "--work"), cfg["name"], "verify.json")):
+                Repo(cfg, args.work, args).compare_verify()
+        return 0
     if args.cmd == "report":
         text = build_report(require_abs(args.work, "--work"))
         if args.out:

@@ -69,6 +69,18 @@ class PathTests(unittest.TestCase):
         )
         self.assertEqual(bg.relative_output_path("/w/ws-gs/pkg/main.py", ws), "pkg/main.py")
         self.assertEqual(bg.relative_output_path("/elsewhere/f", ws), "/elsewhere/f")
+        self.assertEqual(
+            bg.relative_output_path("/w/root/abc/external/bazel_skylib+/lib/paths.bzl", ws),
+            "external/*/lib/paths.bzl",
+        )
+        self.assertEqual(
+            bg.relative_output_path("/w/cache/repositories/trees/44ff/lib/paths.bzl", "/w/ws-rs"),
+            "external/*/lib/paths.bzl",
+        )
+        self.assertEqual(
+            bg.relative_output_path("/w/cache/repositories/direct/trees/44ff/x/y.go", "/w/ws-rs"),
+            "external/*/x/y.go",
+        )
 
 
 BEP = [
