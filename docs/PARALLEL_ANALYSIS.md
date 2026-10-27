@@ -1082,3 +1082,65 @@ published tree identities identical. Peak RSS unchanged (the high-water
 mark is set during pattern loading). The pattern-loading span (~80 s of
 bworker_env: extension evaluation, the interpreter download) is untouched:
 module extensions stay sequential.
+
+## Module roots and load batches fetched ahead (perf-cold-start)
+
+Bazel requests the `load()`s of a `.bzl` or BUILD file as one Skyframe batch
+(BzlLoadFunction.getLoadLabels → `env.getValuesAndExceptions`) and expands
+the registered toolchain patterns together (RegisteredToolchainsFunction), so
+the repositories behind them are fetched in parallel. The native loader
+demanded them one at a time. `BAZEL_RS_TIMING_TIMELINE=1` (spans
+`module-root`, `module-root-warm`, `package` added) showed on ~/code, cold:
+~15 s of registry module roots (download + extraction, 0.2–2.8 s each) one
+after another on the coordinator in bworker_env's pattern loading and
+toolchain registration, and in `//src/...`'s pattern phase 3,842
+aspect_rules_js repositories (the loads of `@npm//:defs.bzl`) executed one
+after another: ~175 s of 217 s.
+
+**Registry module roots** (`src/module_root_warm.rs`). At most 8 workers
+publish the trees of the registry modules named by the loads of every file
+the coordinator enters — following their `load()` statements transitively
+(each file parsed once, resolved with its module's base mapping) — and by
+the registered toolchain patterns (their packages' BUILD files, and the
+extension `.bzl` of a pattern repository's generating group) into the
+repository store. Only the store is warmed: no demand slot is filled, no
+registry file is recorded for the lockfile (`SessionHandle::peek_object`
+reads without memoizing or recording; the sequential read records it from
+the content-addressed cache the peek filled), nothing is observed. The
+demand materializes the root exactly as before; finding a tree this process
+published (materializer `WARMED`, checked and consumed under the tree's
+file lock) it replays what that cold materialization observed (download,
+taint) instead of the reuse check. A failed warm-up leaves nothing.
+
+**Load batches.** The loads of a file the coordinator enters request the
+speculation (`repository_speculation`, unchanged semantics) of their
+direct and extension-generated repositories — those of a group the batch's
+first load prepares once it is prepared. The target pattern phase runs its
+own speculation pool (phase 1 keeps its own), and a P2 worker that aborts on
+an unfetched repository requests it (or warms the registry root): the
+coordinator commits every pattern package, so it demands that repository
+next.
+
+**Non-blocking downloads.** `file()` of a path (not a label) commits only
+the pending downloads to it or into it, like `read()`. bazel-gazelle's
+go_deps (`internal/bzlmod/goproxy.bzl`) writes a `.info` file after each
+non-blocking `.mod` download; committing all of them there serialized ~150
+downloads.
+
+Off at `--loading_phase_threads=1` (the sequential engine);
+`BAZEL_RS_DEBUG_NO_ROOT_WARM` switches the warm-up off,
+`BAZEL_RS_DEBUG_NO_SPECULATION` the pools. Determinism:
+`tests/module_root_warm.rs` (cold builds at threads 1/8/32/8+jitter and
+without the warm-up byte-identical in exit, stdout, stderr, lockfile and the
+snapshot recording; transitive and registration warm-ups ran; a failing
+archive fails identically; a file's extension repositories execute on
+fetch workers during the pattern phase), `tests/parallel_download.rs`.
+
+**Not done** (measured, left): module extensions are still evaluated one
+after another (toolchain registration on bworker_env: ~6 s left, rules_rust's
+root 2.7 s + its extension); `zig_config` (13.5 s, the bworker_env critical
+path) extracts the same tarball twice because the rule calls
+`download_and_extract` twice (genuine does too; the xz decode, 2.9 s of each,
+is as fast as `xz -d`); select() conditions are still decided only by the
+coordinator's analysis (rules_python's wheel conditions need Starlark flag
+analysis; fetching every branch was rejected before).
