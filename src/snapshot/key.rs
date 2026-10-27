@@ -49,6 +49,7 @@ pub const FORMAT: u32 = 3;
 ///   `max_test_output_bytes`, `local_test_jobs`, `test_tmpdir`,
 ///   `test_strategy`, `verbose_test_summary`,
 ///   `test_verbose_timeout_warnings`, `test_runner_fail_fast`,
+///   `test_keep_going`, `test_result_expiration`, `allow_local_tests`,
 ///   `zip_undeclared_test_outputs`, `incompatible_check_sharding_support`.
 ///   The test filters (`test_tag_filters`, `test_size_filters`,
 ///   `test_timeout_filters`, `test_lang_filters`, `build_tests_only`) and
@@ -97,6 +98,9 @@ pub const EXCLUDED: &[&str] = &[
     "verbose_test_summary",
     "test_verbose_timeout_warnings",
     "test_runner_fail_fast",
+    "test_keep_going",
+    "test_result_expiration",
+    "allow_local_tests",
     "zip_undeclared_test_outputs",
     "incompatible_check_sharding_support",
     "script_path",

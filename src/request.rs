@@ -684,6 +684,7 @@ fn execute_tests(
     for test in 0..session.test_count() {
         plan_of(test)?;
     }
+    let planned_actions = nodes.len();
     let leaf_tests = session.leaf_tests();
     let dependencies = leaf_tests
         .iter()
@@ -726,6 +727,12 @@ fn execute_tests(
             errors: BTreeMap::new(),
         }
     };
+    // --notest_keep_going under --nokeep_going: a test that did not pass
+    // stopped the build before it completed (its failure is the command's,
+    // TestRunnerAction.executeAllAttempts); a complete build reports as usual.
+    if session.stopped_the_build() && outcome.results.len() < planned_actions {
+        return Err(crate::test_runner::TEST_FAILED_ABORTING.to_owned());
+    }
     let results = &outcome.results;
     // --keep_going: an exclusive test runs once its inputs are built.
     session.run_exclusive_built(

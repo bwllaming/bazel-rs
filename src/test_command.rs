@@ -222,9 +222,12 @@ pub struct TestOptions {
     pub runner_fail_fast: bool,
     /// `--test_timeout`: seconds per TestTimeout (SHORT..ETERNAL).
     pub timeouts: [u64; 4],
-    /// `--flaky_test_attempts` (a number; `None` is `default`).
-    pub flaky_attempts: Option<u32>,
-    pub runs_per_test: u32,
+    /// `--flaky_test_attempts` (TestAttemptsConverter, allowMultiple): the
+    /// per-label values in order (a number is `.*@N`); empty is `default`.
+    pub flaky_attempts: Vec<PerLabelOption>,
+    /// `--runs_per_test` (RunsPerTestConverter, allowMultiple): the
+    /// per-label values in order (a number is `.*@N`); empty is 1.
+    pub runs_per_test: Vec<PerLabelOption>,
     pub sharding: ShardingStrategy,
     pub tag_filters: Vec<String>,
     pub size_filters: Option<BTreeSet<TestSize>>,
@@ -246,6 +249,17 @@ pub struct TestOptions {
     pub test_tmpdir: Option<String>,
     /// `--test_strategy=exclusive`: every test runs alone.
     pub exclusive: bool,
+    /// `--test_strategy` as given (ExecutionOptions.testStrategy): an
+    /// identifier no TestActionContext registers fails the command once
+    /// its execution tool starts ([`TestOptions::strategy_error`]).
+    pub strategy: String,
+    /// `--[no]test_keep_going` (ExecutionOptions.testKeepGoing, default
+    /// true): when false a test that does not pass aborts its action
+    /// (`Test failed, aborting`, TestRunnerAction.executeAllAttempts).
+    pub test_keep_going: bool,
+    /// `--[no]incompatible_exclusive_test_sandboxed` (default true): when
+    /// false exclusive tests run locally (TestTargetProperties.java:91-108).
+    pub exclusive_test_sandboxed: bool,
     /// `--keep_going`/`-k` (KeepGoingOption): a failing test action does
     /// not stop the remaining tests.
     pub keep_going: bool,
@@ -261,8 +275,8 @@ impl Default for TestOptions {
             filter: None,
             runner_fail_fast: false,
             timeouts: [60, 300, 900, 3600],
-            flaky_attempts: None,
-            runs_per_test: 1,
+            flaky_attempts: Vec::new(),
+            runs_per_test: Vec::new(),
             sharding: ShardingStrategy::Explicit,
             tag_filters: Vec::new(),
             size_filters: None,
@@ -278,6 +292,9 @@ impl Default for TestOptions {
             local_test_jobs: 0,
             test_tmpdir: None,
             exclusive: false,
+            strategy: String::new(),
+            test_keep_going: true,
+            exclusive_test_sandboxed: true,
             keep_going: false,
         }
     }
@@ -444,8 +461,10 @@ impl TestOptions {
     /// One test option: `Some(used_next)` when `arg` is one. Boolean options
     /// take `--NAME`, `--noNAME` and `--NAME=BOOL`.
     pub fn parse(&mut self, arg: &str, next: Option<&str>) -> Result<Option<bool>, String> {
-        const BOOLEANS: [&str; 10] = [
+        const BOOLEANS: [&str; 12] = [
             "build_tests_only",
+            "incompatible_exclusive_test_sandboxed",
+            "allow_local_tests",
             "verbose_test_summary",
             "test_verbose_timeout_warnings",
             "test_runner_fail_fast",
@@ -467,13 +486,18 @@ impl TestOptions {
                     "test_runner_fail_fast" => self.runner_fail_fast = value,
                     "incompatible_check_sharding_support" => self.check_sharding_support = value,
                     "zip_undeclared_test_outputs" => self.zip_undeclared_outputs = value,
-                    // The native profile has no convenience symlinks and no
-                    // --notest_keep_going cancellation, and does not model
-                    // the up-to-date check.
+                    // The native profile has no convenience symlinks and
+                    // does not model the up-to-date check.
                     "print_relative_test_log_paths" | "check_tests_up_to_date" if value => {
                         return Err(unsupported(arg));
                     }
-                    "test_keep_going" if !value => return Err(unsupported(arg)),
+                    "test_keep_going" => self.test_keep_going = value,
+                    "incompatible_exclusive_test_sandboxed" => {
+                        self.exclusive_test_sandboxed = value;
+                    }
+                    // TestConfiguration.allowLocalTests: read by no Bazel 9.3
+                    // code path (TestRunnerAction.allowLocalTests has no
+                    // caller), so it has no effect.
                     _ => {}
                 }
                 return Ok(Some(false));
@@ -499,7 +523,9 @@ impl TestOptions {
         // `--test_env` is a configuration option (N42, TestConfiguration;
         // crate::configuration) and reaches the test through the
         // configuration's test ActionEnvironment (EnvInputs::test_env).
-        const VALUED: [&str; 17] = [
+        const VALUED: [&str; 19] = [
+            "test_result_expiration",
+            "experimental_cancel_concurrent_tests",
             "test_output",
             "test_summary",
             "cache_test_results",
@@ -588,44 +614,34 @@ impl TestOptions {
             "test_filter" => self.filter = Some(value.to_owned()),
             "test_timeout" => self.timeouts = parse_timeouts(flag, value)?,
             "flaky_test_attempts" => {
-                // TestAttemptsConverter (exec/ExecutionOptions.java:579-610): a
-                // regex@attempts form is a PerLabelOptions filter.
-                if value == "default" {
-                    self.flaky_attempts = None;
-                } else if let Ok(attempts) = value.parse::<i64>() {
-                    if attempts < 1 {
-                        return Err(parse_error(
-                            flag,
-                            value,
-                            &format!("'{value}' should be >= 1"),
-                        ));
-                    }
-                    if attempts > 10 {
-                        return Err(parse_error(
-                            flag,
-                            value,
-                            &format!("'{value}' should be <= 10"),
-                        ));
-                    }
-                    self.flaky_attempts = Some(attempts as u32);
-                } else {
-                    return Err(format!(
-                        "{flag}={value}: per-label (regex@attempts) flaky test attempts are not supported by the native profile; use a number or `default`"
-                    ));
-                }
+                self.flaky_attempts.push(
+                    PerLabelOption::attempts(value).map_err(|e| parse_error(flag, value, &e))?,
+                );
             }
-            "runs_per_test" => match value.parse::<i64>() {
-                Ok(runs) if runs >= 1 => self.runs_per_test = runs as u32,
-                Ok(_) => {
+            "runs_per_test" => {
+                self.runs_per_test
+                    .push(PerLabelOption::runs(value).map_err(|e| parse_error(flag, value, &e))?);
+            }
+            // TestOptions.testResultExpiration: deprecated, no effect (an int).
+            "test_result_expiration" => {
+                value
+                    .parse::<i32>()
+                    .map_err(|_| parse_error(flag, value, &format!("'{value}' is not an int")))?;
+            }
+            // CancelConcurrentTests.Converter (BoolOrEnumConverter: a boolean
+            // is on_passed/never): only `never` is modelled.
+            "experimental_cancel_concurrent_tests" => match value.to_ascii_lowercase().as_str() {
+                "never" | "false" | "0" | "no" | "n" | "f" => {}
+                "on_failed" | "on_passed" | "true" | "1" | "yes" | "y" | "t" => {
+                    return Err(unsupported(&format!("{flag}={value}")));
+                }
+                _ => {
                     return Err(parse_error(
                         flag,
                         value,
-                        &format!("'{value}' should be >= 1"),
-                    ));
-                }
-                Err(_) => {
-                    return Err(format!(
-                        "{flag}={value}: per-label (regex@runs) runs per test are not supported by the native profile; use a number"
+                        &format!(
+                            "Not a valid when to cancel concurrent tests: '{value}' (should be never, on_failed or on_passed)"
+                        ),
                     ));
                 }
             },
@@ -672,11 +688,12 @@ impl TestOptions {
                 };
             }
             "test_tmpdir" => self.test_tmpdir = Some(value.to_owned()),
-            "test_strategy" => match value {
-                "" | "standalone" | "local" => self.exclusive = false,
-                "exclusive" => self.exclusive = true,
-                _ => return Err(unsupported(&format!("{flag}={value}"))),
-            },
+            // Any string parses; BuildRequest.isRunningInExclusiveMode
+            // (buildtool/BuildRequest.java:413) reads `exclusive`.
+            "test_strategy" => {
+                self.strategy = value.to_owned();
+                self.exclusive = value == "exclusive";
+            }
             _ => unreachable!("every valued test option is handled"),
         }
         Ok(())
@@ -692,6 +709,160 @@ fn unsupported(arg: &str) -> String {
     format!(
         "unsupported test option {arg:?}: not modelled by the native profile (docs/TEST_COMMAND.md); options are never silently ignored"
     )
+}
+
+/// One value of a PerLabelOptions option (analysis/config/PerLabelOptions.java):
+/// a RegexFilter (util/RegexFilter.java: comma-separated regexes, `-` excludes,
+/// `+` includes, `\\,` escapes a comma; matched with `find`) and its one value.
+#[derive(Clone, Debug)]
+pub struct PerLabelOption {
+    include: Option<fancy_regex::Regex>,
+    exclude: Option<fancy_regex::Regex>,
+    pub value: String,
+}
+
+impl PerLabelOption {
+    /// The catch-all filter of a plain value (`.*`).
+    fn catch_all(value: &str) -> Self {
+        PerLabelOption {
+            include: None,
+            exclude: None,
+            value: value.to_owned(),
+        }
+    }
+
+    /// PerLabelOptionsConverter.convert with one value required (the
+    /// `has multiple runs for a single pattern` check of both converters).
+    fn regex(input: &str) -> Result<Self, String> {
+        let (filter, options) = match input.find('@') {
+            Some(at) => (&input[..at], Some(&input[at + 1..])),
+            None => (input, None),
+        };
+        if filter.starts_with("--") {
+            return Err(format!(
+                "Failed to build filter: value looks like another flag ({filter}). Either escape the value with \"\\-\\-\", or pass an explicit value to the flag."
+            ));
+        }
+        let mut values: Vec<String> = Vec::new();
+        if let Some(options) = options {
+            for option in split_unescaped(options) {
+                if !option.trim().is_empty() {
+                    values.push(option);
+                }
+            }
+        }
+        let mut include = std::collections::BTreeSet::new();
+        let mut exclude = std::collections::BTreeSet::new();
+        for piece in split_unescaped(filter) {
+            let (excluded, piece) = match piece.strip_prefix('-') {
+                Some(rest) => (true, rest.to_owned()),
+                None => (false, piece.strip_prefix('+').unwrap_or(&piece).to_owned()),
+            };
+            if !piece.is_empty() {
+                if excluded {
+                    exclude.insert(piece);
+                } else {
+                    include.insert(piece);
+                }
+            }
+        }
+        // RegexFilter.takeUnionOfRegexes: `(?:(?>r1)|(?>r2))`.
+        let union = |set: std::collections::BTreeSet<String>| -> Result<_, String> {
+            if set.is_empty() {
+                return Ok(None);
+            }
+            let joined: Vec<String> = set.into_iter().map(|r| format!("(?>{r})")).collect();
+            fancy_regex::Regex::new(&format!("(?:{})", joined.join("|")))
+                .map(Some)
+                .map_err(|error| format!("Failed to build valid regular expression: {error}"))
+        };
+        let option = PerLabelOption {
+            include: union(include)?,
+            exclude: union(exclude)?,
+            value: String::new(),
+        };
+        if values.len() != 1 {
+            return Err(format!("'{input}' has multiple runs for a single pattern"));
+        }
+        Ok(PerLabelOption {
+            value: values.remove(0),
+            ..option
+        })
+    }
+
+    /// TestAttemptsConverter (exec/ExecutionOptions.java:579-631).
+    fn attempts(input: &str) -> Result<Self, String> {
+        fn validate(value: &str) -> Result<bool, String> {
+            if value == "default" {
+                return Ok(true);
+            }
+            let Ok(number) = value.parse::<i32>() else {
+                return Ok(false);
+            };
+            if number < 1 {
+                return Err(format!("'{value}' should be >= 1"));
+            }
+            if number > 10 {
+                return Err(format!("'{value}' should be <= 10"));
+            }
+            Ok(true)
+        }
+        if validate(input)? {
+            return Ok(Self::catch_all(input));
+        }
+        let option = Self::regex(input)?;
+        if !validate(&option.value)? {
+            return Err(format!("'{input}' has a non-numeric value"));
+        }
+        Ok(option)
+    }
+
+    /// RunsPerTestConverter (analysis/test/TestConfiguration.java:534-571).
+    fn runs(input: &str) -> Result<Self, String> {
+        if let Ok(number) = input.parse::<i32>() {
+            if number <= 0 {
+                return Err(format!("'{input}' should be >= 1"));
+            }
+            return Ok(Self::catch_all(input));
+        }
+        let option = Self::regex(input)?;
+        match option.value.parse::<i32>() {
+            Ok(number) if number <= 0 => Err(format!("'{input}' has a value < 1")),
+            Ok(_) => Ok(option),
+            Err(_) => Err(format!("'{input}' has a non-numeric value")),
+        }
+    }
+
+    /// RegexFilter.isIncluded.
+    pub fn includes(&self, label: &str) -> bool {
+        let found = |regex: &fancy_regex::Regex| regex.is_match(label).unwrap_or(false);
+        if self.exclude.as_ref().is_some_and(found) {
+            return false;
+        }
+        self.include.as_ref().is_none_or(found)
+    }
+}
+
+/// `input.split("(?<!\\\\),")` with `\\,` turned into `,` (Java's split drops
+/// trailing empty strings).
+fn split_unescaped(input: &str) -> Vec<String> {
+    let mut pieces = vec![String::new()];
+    let mut previous = None;
+    for c in input.chars() {
+        if c == ',' && previous != Some('\\') {
+            pieces.push(String::new());
+        } else {
+            pieces.last_mut().expect("one piece").push(c);
+        }
+        previous = Some(c);
+    }
+    while pieces.len() > 1 && pieces.last().is_some_and(String::is_empty) {
+        pieces.pop();
+    }
+    pieces
+        .into_iter()
+        .map(|piece| piece.replace("\\,", ","))
+        .collect()
 }
 
 /// TestTimeout.TestTimeoutConverter (packages/TestTimeout.java:196-243).
@@ -926,13 +1097,47 @@ impl TestOptions {
         true
     }
 
-    /// TestStrategy.getTestAttempts (analysis/test/TestStrategy.java:236-265).
-    pub fn attempts(&self, info: &TestRuleInfo) -> u32 {
-        match self.flaky_attempts {
-            Some(attempts) => attempts,
-            None if info.flaky => 3,
-            None => 1,
+    /// TestStrategy.getTestAttempts (analysis/test/TestStrategy.java:236-265):
+    /// the last `--flaky_test_attempts` value whose filter includes the
+    /// test's label (`default`: 3 for a flaky test, else 1).
+    pub fn attempts(&self, label: &str, info: &TestRuleInfo) -> u32 {
+        let default = if info.flaky { 3 } else { 1 };
+        match self
+            .flaky_attempts
+            .iter()
+            .rev()
+            .find(|option| option.includes(label))
+        {
+            Some(option) if option.value != "default" => option.value.parse().unwrap_or(default),
+            _ => default,
         }
+    }
+
+    /// TestConfiguration.getRunsPerTestForLabel (analysis/test/TestConfiguration.java:
+    /// 484-491): the last `--runs_per_test` value whose filter includes the
+    /// label, else 1.
+    pub fn runs(&self, label: &str) -> u32 {
+        self.runs_per_test
+            .iter()
+            .rev()
+            .find(|option| option.includes(label))
+            .and_then(|option| option.value.parse().ok())
+            .unwrap_or(1)
+    }
+
+    /// ModuleActionContextRegistry.Builder.build (exec/ModuleActionContextRegistry.java:
+    /// 142-198): `--test_strategy` restricts the TestActionContext to the
+    /// identifiers StandaloneModule registers (`exclusive`, `standalone`;
+    /// standalone/StandaloneModule.java:68-73) or any (`""`); another value
+    /// is the command's failure (exit 2).
+    pub fn strategy_error(&self) -> Option<String> {
+        if matches!(self.strategy.as_str(), "" | "standalone" | "exclusive") {
+            return None;
+        }
+        Some(format!(
+            "No context of type TestActionContext registered for requested value '{}', available identifiers are: [exclusive, standalone]\nunused [interface com.google.devtools.build.lib.analysis.test.TestActionContext]",
+            self.strategy
+        ))
     }
 }
 
@@ -2005,6 +2210,125 @@ fn print_test_case(case: &TestCase, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parsed(args: &[&str]) -> Result<TestOptions, String> {
+        let mut options = TestOptions::default();
+        for arg in args {
+            assert_eq!(options.parse(arg, None)?, Some(false), "{arg}");
+        }
+        Ok(options)
+    }
+
+    fn rule(flaky: bool) -> TestRuleInfo {
+        TestRuleInfo {
+            rule_class: "x_test".into(),
+            size: TestSize::Medium,
+            timeout: TestTimeout::Moderate,
+            flaky,
+            shard_count: -1,
+            local: false,
+            tags: Vec::new(),
+        }
+    }
+
+    /// PerLabelOptions (RegexFilter `find`, `-` excludes, the last matching
+    /// value wins; genuine 9.3 capture tests/fixtures/cli_test_options).
+    #[test]
+    fn per_label_attempts_and_runs() {
+        let options = parsed(&[
+            "--flaky_test_attempts=fail_test@2",
+            "--runs_per_test=pass_a,-pass_b@2",
+            "--runs_per_test=//q:.*@4",
+        ])
+        .unwrap();
+        assert_eq!(options.attempts("//p:fail_test", &rule(false)), 2);
+        assert_eq!(options.attempts("//p:other_test", &rule(false)), 1);
+        assert_eq!(options.attempts("//p:other_test", &rule(true)), 3);
+        assert_eq!(options.runs("//p:pass_a_test"), 2);
+        assert_eq!(options.runs("//p:pass_b_test"), 1);
+        assert_eq!(options.runs("//q:t"), 4);
+        let later =
+            parsed(&["--flaky_test_attempts=4", "--flaky_test_attempts=x@default"]).unwrap();
+        assert_eq!(later.attempts("//x:t", &rule(true)), 3);
+        assert_eq!(later.attempts("//y:t", &rule(false)), 4);
+        let escaped = parsed(&["--runs_per_test=a\\,b@3"]).unwrap();
+        assert_eq!(escaped.runs("//p:a,b"), 3);
+        assert_eq!(escaped.runs("//p:a"), 1);
+        for (arg, error) in [
+            (
+                "--flaky_test_attempts=abc",
+                "'abc' has multiple runs for a single pattern",
+            ),
+            ("--flaky_test_attempts=x@0", "'0' should be >= 1"),
+            ("--flaky_test_attempts=11", "'11' should be <= 10"),
+            ("--flaky_test_attempts=x@y", "'x@y' has a non-numeric value"),
+            (
+                "--flaky_test_attempts=x@1,2",
+                "'x@1,2' has multiple runs for a single pattern",
+            ),
+            ("--runs_per_test=0", "'0' should be >= 1"),
+            ("--runs_per_test=x@0", "'x@0' has a value < 1"),
+            (
+                "--runs_per_test=x",
+                "'x' has multiple runs for a single pattern",
+            ),
+            (
+                "--runs_per_test=--x@2",
+                "Failed to build filter: value looks like another flag (--x). Either escape the value with \"\\-\\-\", or pass an explicit value to the flag.",
+            ),
+            ("--test_result_expiration=x", "'x' is not an int"),
+            (
+                "--experimental_cancel_concurrent_tests=bogus",
+                "Not a valid when to cancel concurrent tests: 'bogus' (should be never, on_failed or on_passed)",
+            ),
+        ] {
+            let (flag, value) = arg.split_once('=').unwrap();
+            assert_eq!(
+                parsed(&[arg]).unwrap_err(),
+                format!("While parsing option {flag}={value}: {error}")
+            );
+        }
+    }
+
+    /// ModuleActionContextRegistry: only `exclusive` and `standalone` (and
+    /// the empty default) name a TestActionContext.
+    #[test]
+    fn test_strategies_and_keep_going() {
+        for strategy in ["", "standalone", "exclusive"] {
+            let options = parsed(&[&format!("--test_strategy={strategy}")]).unwrap();
+            assert_eq!(options.strategy_error(), None);
+            assert_eq!(options.exclusive, strategy == "exclusive");
+        }
+        for strategy in ["local", "sandboxed", "remote"] {
+            let options = parsed(&[&format!("--test_strategy={strategy}")]).unwrap();
+            assert_eq!(
+                options.strategy_error().unwrap(),
+                format!(
+                    "No context of type TestActionContext registered for requested value '{strategy}', available identifiers are: [exclusive, standalone]\nunused [interface com.google.devtools.build.lib.analysis.test.TestActionContext]"
+                )
+            );
+        }
+        assert!(TestOptions::default().test_keep_going);
+        assert!(!parsed(&["--notest_keep_going"]).unwrap().test_keep_going);
+        assert!(
+            !parsed(&["--noincompatible_exclusive_test_sandboxed"])
+                .unwrap()
+                .exclusive_test_sandboxed
+        );
+        assert!(
+            parsed(&[
+                "--noallow_local_tests",
+                "--test_result_expiration=5",
+                "--experimental_cancel_concurrent_tests=never"
+            ])
+            .is_ok()
+        );
+        assert!(
+            parsed(&["--experimental_cancel_concurrent_tests=on_failed"])
+                .unwrap_err()
+                .contains("unsupported test option")
+        );
+    }
 
     #[test]
     fn tmp_dir_name_matches_bazel_fingerprint() {

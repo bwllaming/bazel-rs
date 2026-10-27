@@ -593,6 +593,22 @@ fn run() -> Result<(), String> {
         exit(2);
     }
     bazel_rs::sandbox::install(spawn_options);
+    // ExecutionTool's action context registry (ModuleActionContextRegistry
+    // .Builder.build): an unknown `--test_strategy` fails every building
+    // command before its execution phase, exit 2 (genuine 9.3 captures,
+    // tests/fixtures/cli_test_options).
+    if builds(&command)
+        && let Some(error) = test_options.strategy_error()
+    {
+        eprintln!("ERROR: {error}");
+        eprintln!("ERROR: Build did NOT complete successfully");
+        match command.as_str() {
+            "test" => eprintln!("ERROR: Couldn't start the build. Unable to run tests"),
+            "run" => eprintln!("ERROR: Build failed. Not running target"),
+            _ => {}
+        }
+        exit(2);
+    }
     // Persistent workers (crate::worker): stopped when the command ends.
     bazel_rs::worker::install(worker_options);
     // Option parser warnings (deprecated options) once the native options
@@ -2721,7 +2737,7 @@ fn test_tail(
                     label: summary.label.clone(),
                     status: summary.status,
                     total_run_count: (test.info.shard_count.max(1)
-                        * options.runs_per_test.max(1) as i32),
+                        * options.runs(&summary.label).max(1) as i32),
                     shard_count: test.info.shard_count.max(0),
                     num_cached: summary.num_cached as i32,
                     passed: summary.passed_logs.clone(),
@@ -2759,6 +2775,9 @@ fn test_tail(
     // Under --keep_going the build completes and repeats no error (M36).
     if let Some(error) = outcome.errors.first().filter(|_| !options.keep_going) {
         eprintln!("ERROR: {error}");
+    } else if outcome.aborted && !options.keep_going {
+        // --notest_keep_going: the failure of the test that did not pass.
+        eprintln!("ERROR: {}", bazel_rs::test_runner::TEST_FAILED_ABORTING);
     }
     // A target that failed to build (a test action error under
     // --keep_going) makes the build fail: exit 1, the more important code
@@ -2874,7 +2893,15 @@ fn test_build_failure(
     use bazel_rs::test_command::{
         TestStatus, TestSummary, TestTimeout, should_output_log, summary_text,
     };
-    eprintln!("bazel-rs: {error}");
+    // --notest_keep_going: a test that did not pass stopped the build; the
+    // command fails with that test failure (TESTS_FAILED, exit 3; genuine
+    // 9.3 capture tests/fixtures/cli_test_options).
+    let aborted = error == bazel_rs::test_runner::TEST_FAILED_ABORTING;
+    if aborted {
+        eprintln!("ERROR: {error}");
+    } else {
+        eprintln!("bazel-rs: {error}");
+    }
     let mentions = |label: &str| {
         error.match_indices(label).any(|(index, _)| {
             error[index + label.len()..]
@@ -2944,7 +2971,7 @@ fn test_build_failure(
     write_lockfile();
     bazel_rs::loading::module_timings::report();
     bazel_rs::digest_memo::finish();
-    exit(remote_or(1));
+    exit(remote_or(if aborted { 3 } else { 1 }));
 }
 
 struct RunTest<'a> {
@@ -2990,7 +3017,7 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
     let spec = bazel_rs::test_runner::TestSpec::new(label, planned.info, planned.location, target)?;
     // TestProvider.getTestStatusArtifacts must be a single action.
     let shards = test.sharding.shards(spec.info.shard_count).max(0) as u32;
-    if shards > 1 || test.runs_per_test > 1 {
+    if shards > 1 || test.runs(&spec.label) > 1 {
         return Err("Run command does not support tests with more than one shard or run (--runs_per_test and shard_count must be 1)".into());
     }
     if options.run_under.is_some() {

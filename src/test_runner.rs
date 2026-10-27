@@ -82,6 +82,10 @@ pub struct TestSpec {
     /// The requirements of the test rule's testing.ExecutionInfo
     /// (TestTargetProperties.java:115-118), empty without one.
     pub requirements: Vec<(String, String)>,
+    /// `--incompatible_exclusive_test_sandboxed` (default true): when false
+    /// an exclusive test's execution info gets `local`
+    /// (TestTargetProperties.java:91-108).
+    pub exclusive_sandboxed: bool,
 }
 
 impl TestSpec {
@@ -149,6 +153,7 @@ impl TestSpec {
             action_env: target.action_env.clone(),
             test_env: target.test_env.clone(),
             requirements,
+            exclusive_sandboxed: true,
         })
     }
 
@@ -158,6 +163,10 @@ impl TestSpec {
     /// ExecutionInfo requirements put over it.
     pub fn execution_info(&self) -> BTreeMap<String, String> {
         let mut info = self.info.execution_info();
+        if !self.exclusive_sandboxed && self.info.exclusive() {
+            info.remove("no-remote-exec");
+            info.insert("local".to_owned(), String::new());
+        }
         info.extend(self.requirements.iter().cloned());
         info
     }
@@ -213,7 +222,16 @@ pub struct Outcome {
     pub errors: Vec<String>,
     /// The first infrastructure failure of a test action (the command fails).
     pub failure: Option<String>,
+    /// `--notest_keep_going`: a test that did not pass aborted its action
+    /// ([`TEST_FAILED_ABORTING`]).
+    pub aborted: bool,
 }
+
+/// The failure of a test action that did not pass under
+/// `--notest_keep_going` (TestRunnerAction.executeAllAttempts,
+/// analysis/test/TestRunnerAction.java:1293-1310: TestExecException
+/// NO_KEEP_GOING_TEST_FAILURE, after the test's result was posted).
+pub const TEST_FAILED_ABORTING: &str = "Test failed, aborting";
 
 /// The persisted result of a test action (Bazel's test.cache_status holds
 /// TestResultData; this is the native equivalent, `status.json`).
@@ -294,6 +312,8 @@ pub struct Session<'a> {
     /// --nokeep_going: a test action error (TestExecException) stops the
     /// test actions not started yet (no result: NO STATUS).
     abort: std::sync::atomic::AtomicBool,
+    /// `--notest_keep_going`: a test that did not pass aborted its action.
+    aborted: std::sync::atomic::AtomicBool,
 }
 
 impl<'a> Session<'a> {
@@ -313,7 +333,7 @@ impl<'a> Session<'a> {
             } else {
                 options.sharding.shards(planned.info.shard_count).max(0) as u32
             };
-            let runs = options.runs_per_test;
+            let runs = options.runs(&label_print(&planned.label));
             // Exclusive tests run after the others, one at a time
             // (SkyframeBuildView.determineTestTypeImpl :1115-1156: `exclusive`,
             // `exclusive-if-local` and --test_strategy=exclusive, which
@@ -353,6 +373,7 @@ impl<'a> Session<'a> {
             printer: Mutex::new(()),
             failure: Mutex::new(None),
             abort: std::sync::atomic::AtomicBool::new(false),
+            aborted: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -439,6 +460,10 @@ impl<'a> Session<'a> {
                     planned.location.clone(),
                     &target,
                 )
+                .map(|spec| TestSpec {
+                    exclusive_sandboxed: self.runner.options.exclusive_test_sandboxed,
+                    ..spec
+                })
             })
         });
         let spec = match spec {
@@ -500,11 +525,55 @@ impl<'a> Session<'a> {
             );
         }
         match outcome {
-            Ok(Some(outcome)) => self.record(key.test, outcome),
+            Ok(Some(outcome)) => {
+                // --notest_keep_going: an executed attempt that did not pass
+                // throws once its result is posted (a cached result runs no
+                // attempt; a flaky pass is a pass).
+                let aborting = !self.runner.options.test_keep_going
+                    && matches!(&outcome, UnitOutcome::Result(result)
+                        if !result.cached && !result.status.passed());
+                self.record(key.test, outcome);
+                if aborting {
+                    self.abort_on_failure(&action, interrupt);
+                }
+            }
             // Interrupted: the build failed while it ran (no result).
             Ok(None) => {}
             Err(error) => self.fail(error),
         }
+    }
+
+    /// `--notest_keep_going`: the test action fails with
+    /// [`TEST_FAILED_ABORTING`] (`ERROR: LOCATION: Testing L failed: Test
+    /// failed, aborting`). Under `--nokeep_going` that is the build's first
+    /// failure: no test or build action starts after it and the test
+    /// actions in flight are interrupted (`interrupt` is the execution
+    /// graph's failure flag; NO STATUS), like any action failure; under
+    /// `--keep_going` everything else goes on.
+    fn abort_on_failure(&self, unit: &Unit<'_>, interrupt: &std::sync::atomic::AtomicBool) {
+        use std::sync::atomic::Ordering;
+        let spec = unit.spec;
+        let test_name = test_name(&spec.label, unit.shard, unit.shards, unit.run, unit.runs);
+        let location = spec
+            .location
+            .as_deref()
+            .map(|location| format!("{location}: "))
+            .unwrap_or_default();
+        {
+            let _guard = self.printer.lock().unwrap_or_else(|e| e.into_inner());
+            eprintln!("ERROR: {location}Testing {test_name} failed: {TEST_FAILED_ABORTING}");
+        }
+        self.aborted.store(true, Ordering::SeqCst);
+        if !self.runner.options.keep_going {
+            self.abort.store(true, Ordering::SeqCst);
+            interrupt.store(true, Ordering::Release);
+        }
+    }
+
+    /// Whether a test that did not pass stopped the build
+    /// (`--notest_keep_going` under `--nokeep_going`).
+    pub fn stopped_the_build(&self) -> bool {
+        !self.runner.options.keep_going && self.aborted.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// An infrastructure failure: the command fails (the first one is
@@ -626,6 +695,7 @@ impl<'a> Session<'a> {
             executed,
             errors,
             failure: self.failure.into_inner().unwrap_or_else(|e| e.into_inner()),
+            aborted: self.aborted.into_inner(),
         }
     }
 }
@@ -1002,7 +1072,7 @@ impl Runner<'_> {
         } else {
             None
         };
-        let max_attempts = options.attempts(&spec.info);
+        let max_attempts = options.attempts(&spec.label, &spec.info);
         let mut failed_attempts: Vec<Attempt> = Vec::new();
         let mut printed = Vec::new();
         let outcome = loop {
@@ -2026,6 +2096,7 @@ mod tests {
                 ("requires-network".into(), "1".into()),
                 ("no-sandbox".into(), String::new()),
             ],
+            exclusive_sandboxed: true,
         };
         assert_eq!(
             spec.execution_info(),
