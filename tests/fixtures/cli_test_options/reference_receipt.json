@@ -1,0 +1,558 @@
+{
+ "schema": "cli-test-options-reference-receipt/v1",
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of --target_pattern_file, --notest_keep_going, --test_strategy, per-label --runs_per_test/--flaky_test_attempts and --run_under (labels and commands; test, run, the test runfiles tree). Fixture: tests/cli_test_options.rs. Evidence only; not an input of any test.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private>",
+  "flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no --repository_cache=<private> --distdir=<seeded from verified local CAS>",
+  "env": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8, private HOME/TMPDIR, umask 022"
+ },
+ "native": {
+  "binary": "/home/coder/opencodetmp/w/bazel-cli-test-options-target/release/bazel-rs",
+  "sha256": "fd8e860229c22c0d66ffc2615410b925f86a146f0e061dd53614957cd68ff59b",
+  "flags": "--ignore_all_rc_files --cache-dir=<private> --registry=file://<same private registry> --incompatible_autoload_externally= --lockfile_mode=off (built-in profile, the same stubbed MODULE.bazel)"
+ },
+ "script": "/home/coder/opencodetmp/w/perf-research/cli-test-options-capture.py",
+ "script_sha256": "40791cb6dd769f8fb04570dbc05a97577878a051bd90554c2679719e8ced8d66",
+ "fixture_sha256": "62c371b69bda0261b6ac01ea13caeade54bbcd81fc41702fe81ed0548cf8c9a8",
+ "distdir_seeded_count": 19,
+ "comparison": "exit code; test/run stdout with paths (testlogs, output trees, workspace) and timings normalized; key stderr lines (ERROR:, FAIL:, the usage warning, Running command line; the native `bazel-rs: ` error prefix read as `ERROR: `); the runfiles MANIFEST of the test for ru_build_manifest. EXACT_MESSAGE: the same message, Bazel exit 2 vs native exit 1.",
+ "scratch_removed": true,
+ "counts": {
+  "EXACT": 25,
+  "EXACT_MESSAGE": 4,
+  "MISMATCH": 2
+ },
+ "rows": [
+  {
+   "case": "tpf_build",
+   "argv": [
+    "build",
+    "--target_pattern_file=pats.txt"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "stdout": "",
+   "stderr_key": []
+  },
+  {
+   "case": "tpf_with_residue",
+   "argv": [
+    "build",
+    "--target_pattern_file=pats.txt",
+    "//p:a"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 2,
+   "native_exit": 2,
+   "stdout": "",
+   "stderr_key": [
+    "ERROR: Command-line target pattern and --target_pattern_file cannot both be specified"
+   ]
+  },
+  {
+   "case": "tpf_missing",
+   "argv": [
+    "build",
+    "--target_pattern_file=missing.txt"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 2,
+   "native_exit": 2,
+   "stdout": "",
+   "stderr_key": [
+    "ERROR: I/O error reading from <WS>/missing.txt: <WS>/missing.txt (No such file or directory)"
+   ]
+  },
+  {
+   "case": "tpf_empty_build",
+   "argv": [
+    "build",
+    "--target_pattern_file=empty.txt"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "stdout": "",
+   "stderr_key": [
+    "WARNING: Usage: bazel build <options> <targets>."
+   ]
+  },
+  {
+   "case": "tpf_empty_test",
+   "argv": [
+    "test",
+    "--target_pattern_file=empty.txt"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 4,
+   "native_exit": 4,
+   "stdout": "",
+   "stderr_key": [
+    "ERROR: No test targets were found, yet testing was requested"
+   ]
+  },
+  {
+   "case": "tpf_run_ignores",
+   "argv": [
+    "run",
+    "--target_pattern_file=pats.txt"
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 2,
+   "native_exit": 1,
+   "stdout": "",
+   "stderr_key": [
+    "ERROR: Must specify a target to run"
+   ],
+   "diffs": [
+    "exit"
+   ],
+   "native_stdout": "",
+   "native_stderr_key": [
+    "ERROR: Must specify a target to run"
+   ]
+  },
+  {
+   "case": "tpf_query_unrecognized",
+   "argv": [
+    "query",
+    "--target_pattern_file=pats.txt",
+    "//p:a"
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 2,
+   "native_exit": 1,
+   "stdout": "",
+   "stderr_key": [
+    "ERROR: --target_pattern_file=pats.txt :: Unrecognized option: --target_pattern_file=pats.txt"
+   ],
+   "diffs": [
+    "exit"
+   ],
+   "native_stdout": "",
+   "native_stderr_key": [
+    "ERROR: --target_pattern_file=pats.txt :: Unrecognized option: --target_pattern_file=pats.txt"
+   ]
+  },
+  {
+   "case": "test_strategy_local",
+   "argv": [
+    "test",
+    "--test_strategy=local",
+    "//p:pass_a_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 2,
+   "native_exit": 2,
+   "stdout": "",
+   "stderr_key": [
+    "ERROR: No context of type TestActionContext registered for requested value 'local', available identifiers are: [exclusive, standalone]",
+    "ERROR: Build did NOT complete successfully",
+    "ERROR: Couldn't start the build. Unable to run tests"
+   ]
+  },
+  {
+   "case": "test_strategy_sandboxed",
+   "argv": [
+    "test",
+    "--test_strategy=sandboxed",
+    "//p:pass_a_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 2,
+   "native_exit": 2,
+   "stdout": "",
+   "stderr_key": [
+    "ERROR: No context of type TestActionContext registered for requested value 'sandboxed', available identifiers are: [exclusive, standalone]",
+    "ERROR: Build did NOT complete successfully",
+    "ERROR: Couldn't start the build. Unable to run tests"
+   ]
+  },
+  {
+   "case": "test_strategy_build",
+   "argv": [
+    "build",
+    "--test_strategy=remote",
+    "//p:a"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 2,
+   "native_exit": 2,
+   "stdout": "",
+   "stderr_key": [
+    "ERROR: No context of type TestActionContext registered for requested value 'remote', available identifiers are: [exclusive, standalone]",
+    "ERROR: Build did NOT complete successfully"
+   ]
+  },
+  {
+   "case": "test_strategy_standalone",
+   "argv": [
+    "test",
+    "--test_strategy=standalone",
+    "//p:pass_a_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "stdout": "//p:pass_a_test                                                          PASSED in T\n\nExecuted 1 out of 1 test: 1 test passes.\n",
+   "stderr_key": []
+  },
+  {
+   "case": "notkg_single",
+   "argv": [
+    "test",
+    "--notest_keep_going",
+    "//p:fail_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3,
+   "stdout": "//p:fail_test                                                            FAILED in T\n  <OUT>/bazel-out/k8-fastbuild/testlogs/p/fail_test/test.log\n\nExecuted 1 out of 1 test: 1 fails locally.\n",
+   "stderr_key": [
+    "FAIL: //p:fail_test (Exit 1) (see <OUT>/bazel-out/k8-fastbuild/testlogs/p/fail_test/test.log)",
+    "ERROR: <WS>/p/BUILD:8:13: Testing //p:fail_test failed: Test failed, aborting",
+    "ERROR: Test failed, aborting"
+   ]
+  },
+  {
+   "case": "notkg_interrupts",
+   "argv": [
+    "test",
+    "--notest_keep_going",
+    "//p:fail_test",
+    "//p:slow_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3,
+   "stdout": "//p:slow_test                                                         NO STATUS\n//p:fail_test                                                            FAILED in T\n  <OUT>/bazel-out/k8-fastbuild/testlogs/p/fail_test/test.log\n\nExecuted 1 out of 2 tests: 1 fails locally and 1 was skipped.\n",
+   "stderr_key": [
+    "FAIL: //p:fail_test (Exit 1) (see <OUT>/bazel-out/k8-fastbuild/testlogs/p/fail_test/test.log)",
+    "ERROR: <WS>/p/BUILD:8:13: Testing //p:fail_test failed: Test failed, aborting",
+    "ERROR: Test failed, aborting"
+   ]
+  },
+  {
+   "case": "notkg_exclusive",
+   "argv": [
+    "test",
+    "--notest_keep_going",
+    "//p:fail_test",
+    "//p:alone_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3,
+   "stdout": "//p:alone_test                                                        NO STATUS\n//p:fail_test                                                            FAILED in T\n  <OUT>/bazel-out/k8-fastbuild/testlogs/p/fail_test/test.log\n\nExecuted 1 out of 2 tests: 1 fails locally and 1 was skipped.\n",
+   "stderr_key": [
+    "FAIL: //p:fail_test (Exit 1) (see <OUT>/bazel-out/k8-fastbuild/testlogs/p/fail_test/test.log)",
+    "ERROR: <WS>/p/BUILD:8:13: Testing //p:fail_test failed: Test failed, aborting",
+    "ERROR: Test failed, aborting"
+   ]
+  },
+  {
+   "case": "notkg_keep_going",
+   "argv": [
+    "test",
+    "--notest_keep_going",
+    "--keep_going",
+    "//p:fail_test",
+    "//p:slow_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3,
+   "stdout": "//p:slow_test                                                            PASSED in T\n//p:fail_test                                                            FAILED in T\n  <OUT>/bazel-out/k8-fastbuild/testlogs/p/fail_test/test.log\n\nExecuted 2 out of 2 tests: 1 test passes and 1 fails locally.\n",
+   "stderr_key": [
+    "FAIL: //p:fail_test (Exit 1) (see <OUT>/bazel-out/k8-fastbuild/testlogs/p/fail_test/test.log)",
+    "ERROR: <WS>/p/BUILD:8:13: Testing //p:fail_test failed: Test failed, aborting"
+   ]
+  },
+  {
+   "case": "notkg_pass",
+   "argv": [
+    "test",
+    "--notest_keep_going",
+    "//p:pass_a_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "stdout": "//p:pass_a_test                                                          PASSED in T\n\nExecuted 1 out of 1 test: 1 test passes.\n",
+   "stderr_key": []
+  },
+  {
+   "case": "runs_per_label",
+   "argv": [
+    "test",
+    "--runs_per_test=pass_a,-pass_b@2",
+    "//p:pass_a_test",
+    "//p:pass_b_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "stdout": "//p:pass_b_test                                                          PASSED in T\n//p:pass_a_test                                                          PASSED in T\n  Stats over 2 runs: max = 0.0s, min = 0.0s, avg = 0.0s, dev = 0.0s\n\nExecuted 2 out of 2 tests: 2 tests pass.\n",
+   "stderr_key": []
+  },
+  {
+   "case": "flaky_per_label",
+   "argv": [
+    "test",
+    "--flaky_test_attempts=fail_test@2",
+    "//p:fail_test",
+    "//p:pass_a_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3,
+   "stdout": "//p:pass_a_test                                                          PASSED in T\n//p:fail_test                                                            FAILED in 2 out of 2 in T\n  Stats over 2 runs: max = 0.0s, min = 0.0s, avg = 0.0s, dev = 0.0s\n  <OUT>/bazel-out/k8-fastbuild/testlogs/p/fail_test/test.log\n  <OUT>/bazel-out/k8-fastbuild/testlogs/p/fail_test/test_attempts/attempt_1.log\n\nExecuted 2 out of 2 tests: 1 test passes and 1 fails locally.\n",
+   "stderr_key": [
+    "FAIL: //p:fail_test (Exit 1) (see <OUT>/bazel-out/k8-fastbuild/testlogs/p/fail_test/test_attempts/attempt_1.log)",
+    "FAIL: //p:fail_test (Exit 1) (see <OUT>/bazel-out/k8-fastbuild/testlogs/p/fail_test/test.log)"
+   ]
+  },
+  {
+   "case": "flaky_bad",
+   "argv": [
+    "test",
+    "--flaky_test_attempts=x@y",
+    "//p:pass_a_test"
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 2,
+   "native_exit": 1,
+   "stdout": "",
+   "stderr_key": [
+    "ERROR: While parsing option --flaky_test_attempts=x@y: 'x@y' has a non-numeric value"
+   ],
+   "diffs": [
+    "exit"
+   ],
+   "native_stdout": "",
+   "native_stderr_key": [
+    "ERROR: While parsing option --flaky_test_attempts=x@y: 'x@y' has a non-numeric value"
+   ]
+  },
+  {
+   "case": "runs_bad",
+   "argv": [
+    "test",
+    "--runs_per_test=x@0",
+    "//p:pass_a_test"
+   ],
+   "verdict": "EXACT_MESSAGE",
+   "reference_exit": 2,
+   "native_exit": 1,
+   "stdout": "",
+   "stderr_key": [
+    "ERROR: While parsing option --runs_per_test=x@0: 'x@0' has a value < 1"
+   ],
+   "diffs": [
+    "exit"
+   ],
+   "native_stdout": "",
+   "native_stderr_key": [
+    "ERROR: While parsing option --runs_per_test=x@0: 'x@0' has a value < 1"
+   ]
+  },
+  {
+   "case": "ru_test_label",
+   "argv": [
+    "test",
+    "--run_under=//p:runner",
+    "--test_output=all",
+    "//p:args_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "stdout": "==================== Test output for //p:args_test:\nrunner argv0=runner.sh args=p/args_test.sh\nrunner data: runner-data\nargs=\n================================================================================\n//p:args_test                                                            PASSED in T\n\nExecuted 1 out of 1 test: 1 test passes.\n",
+   "stderr_key": []
+  },
+  {
+   "case": "ru_test_label_target_cfg",
+   "argv": [
+    "test",
+    "--noincompatible_bazel_test_exec_run_under",
+    "--run_under=//p:runner",
+    "--test_output=all",
+    "//p:args_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "stdout": "==================== Test output for //p:args_test:\nrunner argv0=runner.sh args=p/args_test.sh\nrunner data: runner-data\nargs=\n================================================================================\n//p:args_test                                                            PASSED in T\n\nExecuted 1 out of 1 test: 1 test passes.\n",
+   "stderr_key": []
+  },
+  {
+   "case": "ru_test_shell",
+   "argv": [
+    "test",
+    "--run_under=echo pre",
+    "--test_output=all",
+    "//p:args_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "stdout": "==================== Test output for //p:args_test:\npre p/args_test.sh\n================================================================================\n//p:args_test                                                            PASSED in T\n\nExecuted 1 out of 1 test: 1 test passes.\n",
+   "stderr_key": []
+  },
+  {
+   "case": "ru_test_shell_path",
+   "argv": [
+    "test",
+    "--run_under=eval 'echo shell=$0'",
+    "--test_output=all",
+    "//p:args_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "stdout": "==================== Test output for //p:args_test:\nshell=/bin/bash p/args_test.sh\n================================================================================\n//p:args_test                                                            PASSED in T\n\nExecuted 1 out of 1 test: 1 test passes.\n",
+   "stderr_key": []
+  },
+  {
+   "case": "ru_test_absolute",
+   "argv": [
+    "test",
+    "--run_under=/usr/bin/env FOO=1",
+    "--test_output=all",
+    "//p:args_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "stdout": "==================== Test output for //p:args_test:\nargs=\n================================================================================\n//p:args_test                                                            PASSED in T\n\nExecuted 1 out of 1 test: 1 test passes.\n",
+   "stderr_key": []
+  },
+  {
+   "case": "ru_test_failing",
+   "argv": [
+    "test",
+    "--run_under=//p:runner",
+    "--test_output=all",
+    "//p:fail_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 3,
+   "native_exit": 3,
+   "stdout": "==================== Test output for //p:fail_test:\nrunner argv0=runner.sh args=p/fail_test.sh\nrunner data: runner-data\nfailing\n================================================================================\n//p:fail_test                                                            FAILED in T\n  <OUT>/bazel-out/k8-fastbuild/testlogs/p/fail_test/test.log\n\nExecuted 1 out of 1 test: 1 fails locally.\n",
+   "stderr_key": [
+    "FAIL: //p:fail_test (Exit 1) (see <OUT>/bazel-out/k8-fastbuild/testlogs/p/fail_test/test.log)"
+   ]
+  },
+  {
+   "case": "ru_run_binary",
+   "argv": [
+    "run",
+    "--run_under=//p:runner",
+    "//p:hello",
+    "--",
+    "x",
+    "y"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "stdout": "runner argv0=runner.sh args=bazel-bin/p/hello.sh x y\nrunner data: runner-data\nhello args=x y\n",
+   "stderr_key": [
+    "Running command line: bazel-bin/p/runner.sh bazel-bin/p/hello.sh <args omitted>"
+   ]
+  },
+  {
+   "case": "ru_run_test",
+   "argv": [
+    "run",
+    "--run_under=//p:runner",
+    "//p:args_test",
+    "--",
+    "r1"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "stdout": "exec ${PAGER:-/usr/bin/less} \"$0\" || exit 1\nExecuting tests from //p:args_test\n-----------------------------------------------------------------------------\nrunner argv0=runner.sh args=p/args_test.sh r1\nrunner data: runner-data\nargs=r1\n",
+   "stderr_key": [
+    "Running command line: external/bazel_tools/tools/test/test-setup.sh p/runner.sh p/args_test.sh <args omitted>"
+   ]
+  },
+  {
+   "case": "ru_run_not_executable",
+   "argv": [
+    "run",
+    "--run_under=//p:a",
+    "//p:hello"
+   ],
+   "verdict": "MISMATCH",
+   "reference_exit": 2,
+   "native_exit": 1,
+   "stdout": "",
+   "stderr_key": [
+    "ERROR: Cannot run target //p:a: Not executable",
+    "ERROR: Build did NOT complete successfully",
+    "ERROR: Build failed. Not running target"
+   ],
+   "diffs": [
+    "stderr_key",
+    "exit"
+   ],
+   "native_stdout": "",
+   "native_stderr_key": [
+    "ERROR: Cannot run target //p:a: Not executable"
+   ],
+   "explanation": "same message; the native CLI reports validation failures through its exit-1 `bazel-rs:` channel without Bazel's two follow-up lines (`Build did NOT complete successfully`, `Build failed. Not running target`), as for a non-executable run target (pre-existing convention)"
+  },
+  {
+   "case": "ru_test_not_executable",
+   "argv": [
+    "test",
+    "--run_under=//p:a",
+    "//p:args_test"
+   ],
+   "verdict": "MISMATCH",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "stdout": "",
+   "stderr_key": [
+    "ERROR: <WS>/p/BUILD:12:13: run_under target //p:a is not executable",
+    "ERROR: Analysis of target '//p:args_test' failed; build aborted",
+    "ERROR: Build did NOT complete successfully",
+    "ERROR: No test targets were found, yet testing was requested"
+   ],
+   "diffs": [
+    "stdout",
+    "stderr_key"
+   ],
+   "native_stdout": "//p:args_test                                                   FAILED TO BUILD\n\nExecuted 0 out of 1 test: 1 fails to build.\n",
+   "native_stderr_key": [
+    "ERROR: analysis of //p:args_test: run_under target //p:a is not executable"
+   ],
+   "explanation": "same analysis error text (`run_under target //p:a is not executable`); the native test command reports an analysis failure as FAILED TO BUILD in its summary instead of Bazel's `Analysis of target ... failed; build aborted` + `No test targets were found` (pre-existing handling of any analysis error of a test)"
+  },
+  {
+   "case": "ru_build_manifest",
+   "argv": [
+    "build",
+    "--run_under=//p:runner",
+    "//p:args_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "stdout": "",
+   "stderr_key": [],
+   "manifest": [
+    "_main/p/args_test.sh bazel-out/k8-fastbuild/bin/p/args_test.sh",
+    "_main/p/data.txt <WS>/p/data.txt",
+    "_main/p/runner.sh bazel-out/k8-opt-exec/bin/p/runner.sh",
+    "_main/p/runner_data.txt <WS>/p/runner_data.txt",
+    "_repo_mapping bazel-out/k8-fastbuild/bin/p/args_test.sh.repo_mapping"
+   ]
+  }
+ ]
+}
