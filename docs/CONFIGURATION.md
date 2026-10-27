@@ -148,7 +148,7 @@ replayed by `tests/value_options.rs`; `enable_runfiles` also by
 | `strict_proto_deps` | StrictDepsMode, `error` | yes | propagated | `ProtoConfiguration.java:113-123`, `:431` |
 | `strict_public_imports` | StrictDepsMode, `off` | yes | propagated | `ProtoConfiguration.java:125-135`, `:432` |
 | `enable_runfiles` | TriState (TriStateConverter: `auto` or a boolean spelling, stored as `YES`/`NO`/`AUTO`; boolean syntax), `auto` | yes (also read by the runfiles trees, crate::runfiles_tree, and `ctx.configuration.runfiles_enabled()`) | propagated | `CoreOptions.java:954-961`, `Converters.java:133-156`, `:237` |
-| `collect_code_coverage` | Bool, `false` (the typed field a Starlark transition sets, N47) | no (coverage instrumentation is not modelled) | default | `CoreOptions.java:566-578`, `:231-287` |
+| `collect_code_coverage` | Bool, `false` (the typed field a Starlark transition sets, N47) | yes (docs/COVERAGE.md) | default | `CoreOptions.java:566-578`, `:231-287` |
 | `apple_platform_type` | PlatformTypeConverter (ASCII lower case), `macos` | no (Apple rule transitions and `ctx.fragments.apple` are not modelled for other platform types) | set to `macos` | `rules/apple/AppleCommandLineOptions.java:194-203, 394-406`, `:185, 190` |
 
 They unblock protobuf 33.4's `bazel/private:native_bool_flag` settings
@@ -164,7 +164,7 @@ not the default; the three proto options reach exec tools while the roots
 stay `k8-fastbuild`/`k8-opt-exec`; a transition setting
 `collect_code_coverage` gives `k8-fastbuild-ST-0a6d1b0f07f2` on both sides and
 its exec tools are not covered; `query --collect_code_coverage` is accepted.
-Declared divergences: `--collect_code_coverage` and `--apple_platform_type`
+Declared divergences: `--apple_platform_type`
 on the command line and Starlark
 transitions on the rows (outside `MODELLED_NATIVE_OPTIONS`) are explicit
 errors. A new row needs only its `@Option` definition, the exec rule, a
@@ -855,15 +855,10 @@ null value`); part of the identity only when true; hashed as
 `//command_line_option:collect_code_coverage=true` into the ST- fragment;
 not propagated by the exec transition (builtin_exec_platforms.bzl:231-275,
 so a coverage configuration's exec tools are the plain exec configuration).
-The command-line option (and `bazel coverage`) stays unsupported. In a
-configuration with coverage enabled `ctx.configuration.coverage_enabled` is
-True; coverage instrumentation, which needs `--instrumentation_filter`,
-`--instrument_test_targets` and CoverageOptions (not modelled), fails
-explicitly: `ctx.coverage_instrumented()`,
-`ctx.fragments.coverage.output_generator`, a test rule's analysis and a
-late-bound `configuration_field("coverage", ...)` default (`... in a
-configuration with --collect_code_coverage (set by a Starlark transition) is
-not implemented in the native profile (coverage instrumentation: ...)`).
+The command-line option and `bazel coverage` set it too, with the
+instrumentation options (docs/COVERAGE.md): in a coverage configuration
+`ctx.coverage_instrumented()`, `ctx.fragments.coverage.output_generator`,
+`coverage_common.instrumented_files_info` and test rules follow Bazel.
 rules_cc's Starlark `configure_features` reads `coverage_enabled` itself.
 
 Paired capture (`artifacts/go_transitions-capture.py`, receipt

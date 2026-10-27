@@ -1,0 +1,3 @@
+bazel-out/k8-fastbuild/testlogs/lib/lib/baseline_coverage.dat
+bazel-out/k8-fastbuild/testlogs/lib/tests/t_test/coverage.dat
+bazel-out/k8-fastbuild/testlogs/lib/tests/plain_test/coverage.dat

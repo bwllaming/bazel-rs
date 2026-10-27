@@ -43,8 +43,8 @@ EnumFilterConverter, TriStateConverter):
 | `--test_result_expiration`, `--[no]allow_local_tests`, `--experimental_cancel_concurrent_tests=never` | no effect in Bazel 9.3 either (deprecated; no reader; the default) |
 | `--target_pattern_file=FILE` | `build`/`test`/`fetch` read their patterns from FILE (TargetPatternsHelper.readFrom): one per line, up to `#`, trimmed, empty lines dropped, negative patterns as on the command line; with command-line patterns `Command-line target pattern and --target_pattern_file cannot both be specified` (exit 2); an unreadable file `I/O error reading from PATH: PATH (No such file or directory)` (exit 2); `run`/`cquery` accept and ignore it, `query` does not know it (`Unrecognized option`); an empty list builds nothing (`build`: the usage warning, success; `test`: no test targets, exit 4) |
 
-Explicit failures: coverage (`--collect_code_coverage`, not parsed),
-`--check_tests_up_to_date`, `--print_relative_test_log_paths` (no
+`bazel coverage` and `--collect_code_coverage` are docs/COVERAGE.md.
+Explicit failures: `--check_tests_up_to_date`, `--print_relative_test_log_paths` (no
 convenience symlinks), `--experimental_cancel_concurrent_tests=on_failed|on_passed`,
 `--runs_per_test_detects_flakes`, `--[no]trim_test_configuration`,
 `--experimental_retain_test_configuration_across_testonly`,

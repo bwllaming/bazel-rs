@@ -127,15 +127,13 @@ impl PlannedRun {
                     .flatten()
                     .filter_map(|(_, entry)| entry.as_ref()),
             )
-            .chain(
-                self.coverage.iter().flat_map(|coverage| {
-                    coverage
-                        .inputs
-                        .iter()
-                        .chain(&coverage.baselines)
-                        .map(|(_, produced)| produced)
-                }),
-            );
+            .chain(self.coverage.iter().flat_map(|coverage| {
+                coverage
+                    .inputs
+                    .iter()
+                    .chain(&coverage.baselines)
+                    .map(|(_, produced)| produced)
+            }));
         let ids = self.completion.iter().map(String::as_str).chain(
             produced.filter_map(|produced| produced.producer.as_ref().map(|(id, _)| id.as_str())),
         );

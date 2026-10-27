@@ -1,0 +1,7 @@
+load("//:defs.bzl", "cov_library")
+
+cov_library(
+    name = "other",
+    srcs = ["o.txt"],
+    visibility = ["//visibility:public"],
+)

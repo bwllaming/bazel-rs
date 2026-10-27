@@ -389,10 +389,12 @@ struct SourceFile {
     function_executions: BTreeMap<String, i64>,
     /// Instrumented line to its execution count (DA).
     lines: BTreeMap<i32, i64>,
-    /// (line, block, branch) to its execution count (BRDA/BA).
-    branches: BTreeMap<(i32, String, String), i64>,
-    /// The lines with an evaluated branch (BranchCoverage.evaluatedData).
-    evaluated: BTreeSet<i32>,
+    /// (line, block, branch) to its execution count and whether it was
+    /// evaluated (BRDA/BA; the generator release Bazel 9.3 runs, v2.9,
+    /// keeps the evaluated flag per branch: an unevaluated branch next to
+    /// an evaluated one on the same line stays `-`, paired capture
+    /// tests/fixtures/coverage_command).
+    branches: BTreeMap<(i32, String, String), (i64, bool)>,
 }
 
 impl SourceFile {
@@ -411,23 +413,23 @@ impl SourceFile {
         for (name, count) in &other.function_executions {
             *self.function_executions.entry(name.clone()).or_default() += count;
         }
-        for (key, count) in &other.branches {
-            *self.branches.entry(key.clone()).or_default() += count;
+        for (key, (count, evaluated)) in &other.branches {
+            let entry = self.branches.entry(key.clone()).or_default();
+            entry.0 += count;
+            entry.1 |= evaluated;
         }
-        self.evaluated.extend(other.evaluated.iter().copied());
         for (line, count) in &other.lines {
             *self.lines.entry(*line).or_default() += count;
         }
     }
 
     fn add_branch(&mut self, line: i32, block: &str, branch: &str, evaluated: bool, count: i64) {
-        if evaluated {
-            self.evaluated.insert(line);
-        }
-        *self
+        let entry = self
             .branches
             .entry((line, block.to_owned(), branch.to_owned()))
-            .or_default() += count;
+            .or_default();
+        entry.0 += count;
+        entry.1 |= evaluated;
     }
 }
 
@@ -690,8 +692,8 @@ fn print_lcov(coverage: &Coverage, legacy_branches: bool) -> String {
                 .filter(|count| **count > 0)
                 .count()
         ));
-        for ((line, block, branch), count) in &file.branches {
-            let evaluated = file.evaluated.contains(line);
+        for ((line, block, branch), (count, evaluated)) in &file.branches {
+            let evaluated = *evaluated;
             if legacy_branches {
                 let value = match (evaluated, *count > 0) {
                     (false, _) => "0",
@@ -709,7 +711,10 @@ fn print_lcov(coverage: &Coverage, legacy_branches: bool) -> String {
             out.push_str(&format!("BRF:{}\n", file.branches.len()));
             out.push_str(&format!(
                 "BRH:{}\n",
-                file.branches.values().filter(|count| **count > 0).count()
+                file.branches
+                    .values()
+                    .filter(|(count, _)| *count > 0)
+                    .count()
             ));
         }
         for (line, count) in &file.lines {
@@ -1215,7 +1220,7 @@ mod tests {
         }
         assert_eq!(
             print_lcov(&coverage, false),
-            "SF:a.go\nFNF:0\nFNH:0\nDA:1,2\nLH:1\nLF:1\nend_of_record\nSF:b.go\nFN:3,f\nFN:7,g\nFNDA:1,f\nFNDA:0,g\nFNF:2\nFNH:1\nBRDA:3,0,0,1\nBRDA:3,0,1,0\nBRF:2\nBRH:1\nDA:3,1\nDA:4,2\nDA:5,0\nLH:2\nLF:3\nend_of_record\n"
+            "SF:a.go\nFNF:0\nFNH:0\nDA:1,2\nLH:1\nLF:1\nend_of_record\nSF:b.go\nFN:3,f\nFN:7,g\nFNDA:1,f\nFNDA:0,g\nFNF:2\nFNH:1\nBRDA:3,0,0,1\nBRDA:3,0,1,-\nBRF:2\nBRH:1\nDA:3,1\nDA:4,2\nDA:5,0\nLH:2\nLF:3\nend_of_record\n"
         );
     }
 

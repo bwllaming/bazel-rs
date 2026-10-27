@@ -1,6 +1,6 @@
-//! The analysis-time coverage API in configurations without
-//! `--collect_code_coverage` (N54): `coverage_common.instrumented_files_info`
-//! and the `InstrumentedFilesInfo` provider.
+//! The analysis-time coverage API (docs/COVERAGE.md):
+//! `coverage_common.instrumented_files_info` and the `InstrumentedFilesInfo`
+//! provider.
 //!
 //! Pinned source: `/tmp/opencode/bazel-9.3-reference` (e89755b, Release 9.3.0).
 //! Paths below are relative to `src/main/java/com/google/devtools/build/lib/`.
@@ -9,13 +9,13 @@
 //! validates its arguments and then InstrumentedFilesCollector.collect
 //! (analysis/test/InstrumentedFilesCollector.java:94-148) returns the shared
 //! `InstrumentedFilesInfo.EMPTY` (analysis/test/InstrumentedFilesInfo.java:34-41)
-//! whenever coverage is disabled — nothing is collected from the source or
-//! dependency attributes, which are not even looked up. Native rules that add
-//! the provider do so through the same collector (Filegroup.java:63-108,
-//! GenRuleBase.java:234-239), so they carry EMPTY too, and an output file
-//! target answers with its generating rule's provider or EMPTY
-//! (OutputFileConfiguredTarget.java:100-107). In a configuration a Starlark
-//! transition enabled coverage in (N47) the call fails explicitly.
+//! whenever coverage is disabled; in a coverage configuration it collects
+//! the dependency attributes' providers and the instrumented local sources
+//! ([`Builder`]), with a BaselineCoverageAction. Native rules add the
+//! provider through the same collector (Filegroup.java:63-108,
+//! GenRuleBase.java:234-239; crate::engine), an output file target answers
+//! with its generating rule's provider or EMPTY
+//! (OutputFileConfiguredTarget.java:100-107).
 use std::fmt;
 use std::hash::Hash;
 use std::sync::{Arc, OnceLock};

@@ -1,0 +1,11 @@
+==================== Test output for //lib/tests:t_test:
+manifest: lib/a.txt lib/b.txt 
+COVERAGE=1
+BULK_COVERAGE_RUN=1
+SPLIT_COVERAGE_POST_PROCESSING=0
+IS_COVERAGE_SPAWN=0
+BAZEL_CC_COVERAGE_TOOL=GCOV
+RUNTEST_PRESERVE_CWD=1
+dir=bazel-out/k8-fastbuild/testlogs/_coverage/lib/tests/t_test/test
+output=bazel-out/k8-fastbuild/testlogs/lib/tests/t_test/coverage.dat
+================================================================================

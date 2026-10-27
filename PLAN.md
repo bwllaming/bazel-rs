@@ -128,7 +128,7 @@ Done since the last increment recorded under "History", one line each:
       Starlark formatting/default TD compatibility filtering, full transition
       output and several query functions remain explicit errors.
 - [x] `fetch` (`sync` is not a 9.3 command; `vendor` fails explicitly: no vendor-directory read path or genuine marker files, docs/COMMANDS.md).
-- [ ] `coverage` (docs/COVERAGE.md).
+- [x] `coverage` (docs/COVERAGE.md; Go/sh/Starlark-rule lcov, native output generator, combined report; C++ gcov, split post-processing and other generators explicit).
 - [x] `mod`: every subcommand and option on the built-in profile
       (docs/MOD_COMMAND.md); `show_repo` proto outputs remain explicit errors.
 - [x] `help <command>`/`startup_options`/`target-syntax`/`info-keys`, `canonicalize-flags`

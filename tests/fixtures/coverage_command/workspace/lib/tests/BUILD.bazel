@@ -1,0 +1,46 @@
+load("//:defs.bzl", "cov_test", "plain_test")
+
+SCRIPT = """#!/bin/bash
+set -e
+echo "manifest: $(tr '\\n' ' ' < "$COVERAGE_MANIFEST")"
+for v in COVERAGE BULK_COVERAGE_RUN SPLIT_COVERAGE_POST_PROCESSING IS_COVERAGE_SPAWN BAZEL_CC_COVERAGE_TOOL RUNTEST_PRESERVE_CWD; do echo "$v=${!v-<unset>}"; done
+echo "dir=${COVERAGE_DIR#$ROOT/}"
+echo "output=${COVERAGE_OUTPUT_FILE#$ROOT/}"
+cat > "$COVERAGE_DIR/t.dat" <<LCOV
+SF:lib/a.txt
+FN:1,f
+FNDA:2,f
+DA:1,2
+DA:2,0
+BRDA:1,0,0,1
+BRDA:1,0,1,-
+end_of_record
+SF:/usr/lib/x.c
+DA:1,1
+end_of_record
+SF:unlisted.txt
+DA:1,1
+end_of_record
+LCOV
+cat > "$COVERAGE_DIR/u.dat" <<LCOV
+SF:lib/a.txt
+DA:2,3
+DA:3,0
+end_of_record
+SF:other/o.txt
+DA:1,1
+end_of_record
+LCOV
+"""
+
+cov_test(
+    name = "t_test",
+    size = "small",
+    deps = ["//lib"],
+    script = SCRIPT,
+)
+
+plain_test(
+    name = "plain_test",
+    size = "small",
+)

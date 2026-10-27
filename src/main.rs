@@ -117,7 +117,7 @@ Loading: local .bzl legacy macros, glob, package defaults and exports_files.
 Analysis: custom rules/attributes/providers, declared files, write/run/run_shell actions.
 No upstream fallback. Repository rules and module extensions have bounded native profiles.
 Test: bazel-rs test [BUILD OPTIONS...] [TEST OPTIONS...] TARGET... (local TestRunnerAction semantics;
-  docs/TEST_COMMAND.md); run also runs test targets. No coverage, complete repository/extension APIs, execution platforms,
+  docs/TEST_COMMAND.md); run also runs test targets; coverage (docs/COVERAGE.md). No complete repository/extension APIs, execution platforms,
 remote execution, sandbox, SkyQuery or xml/proto query output yet.
 Builds execute trusted shell commands locally; this is not a security sandbox.
 ";
@@ -1087,8 +1087,12 @@ fn run() -> Result<(), String> {
                 }
             })
         };
-        let (configuration_options, aliases) =
+        let (mut configuration_options, aliases) =
             resolve_flag_alias_options(&options, &repositories, &command, &labels)?;
+        // CoverageCommand.editOptions on the reparsed options too.
+        if coverage_command {
+            configuration_options.require_coverage();
+        }
         let mut native = configuration_options.configuration(&labels)?;
         native.native.flag_aliases = aliases;
         // Starlark build settings are parsed after the native options and

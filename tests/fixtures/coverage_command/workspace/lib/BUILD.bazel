@@ -1,0 +1,8 @@
+load("//:defs.bzl", "cov_library")
+
+cov_library(
+    name = "lib",
+    srcs = ["a.txt", "b.txt", "notes.md"],
+    deps = ["//other"],
+    visibility = ["//visibility:public"],
+)
