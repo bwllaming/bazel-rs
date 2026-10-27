@@ -1,0 +1,75 @@
+# Fast checks for pushes to and pull requests against main: formatting, clippy,
+# the library unit tests and a hermetic subset of the integration tests
+# (scripts/ci-integration-tests.txt: programs that need no network beyond
+# loopback, no genuine Bazel and no machine-specific paths). The full gate
+# (cargo test --locked, the Python validators, the release build) stays local:
+# scripts/check.sh.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Debug info makes the test binaries large and the cache slow to restore.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  check:
+    name: fmt, clippy, unit and hermetic integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install --no-self-update
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Scratch directories the tests expect
+        # Several tests create their fixtures under /tmp/opencode; the Python
+        # validators write reports under artifacts/.
+        run: mkdir -p /tmp/opencode artifacts
+
+      - name: cargo fmt
+        run: |
+          cargo fmt --all -- --check
+          rustfmt --edition 2024 --check tests/support/*.rs
+
+      - name: cargo clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Library unit tests
+        run: cargo test --locked --lib
+
+      - name: Hermetic integration tests
+        run: |
+          args=()
+          while read -r name; do
+            args+=(--test "$name")
+          done < scripts/ci-integration-tests.txt
+          cargo test --locked --no-fail-fast "${args[@]}"
+
+      - name: Release tooling tests
+        run: |
+          python3 -m unittest discover -s tests -p test_release.py
+          python3 -m unittest discover -s tests -p test_ci.py
