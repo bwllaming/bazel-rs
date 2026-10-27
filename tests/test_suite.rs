@@ -25,6 +25,7 @@ use base64::Engine as _;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 include!("support/explicit_modules.rs");
+include!("support/module_archives.rs");
 
 fn manifest() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -145,6 +146,9 @@ impl Workspace {
         );
         copy(&fixture(), ws.path());
         extract_platforms(&ws.path().join("platforms"));
+        // Use the same checksum-verified genuine archive mirror as the other
+        // built-in/toolchain fixtures, not fresh GitHub downloads in each case.
+        seed_module_archives(&ws.path().join("private-cache"), TOOLCHAIN_CLOSURE_ARCHIVES);
         ws
     }
 
