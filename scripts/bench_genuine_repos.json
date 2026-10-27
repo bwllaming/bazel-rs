@@ -22,25 +22,23 @@
     },
     {
       "name": "gazelle",
-      "description": "bazel-contrib/bazel-gazelle itself: ~250 packages, ~400 Go targets, 177 go_tests, go_deps; minus the targets bazel-rs cannot analyse yet (docs = stardoc/java_plugins_flag_alias, rules_testing analysis tests) and the go_bazel_test that runs Bazel",
+      "description": "bazel-contrib/bazel-gazelle itself: ~250 packages, ~400 Go targets, 177 go_tests, go_deps, skylib unittest/analysis_test tests; its .bazelrc's --check_direct_dependencies=off and --deleted_packages as flags; minus the targets bazel-rs cannot analyse yet (docs and tests/bzl_deps = stardoc's Java toolchain, java_common.expand_java_opts; the two expect_failure analysistest.make tests = analysis_test_transition with allow_analysis_failures) and, for test, the go_bazel_test that runs Bazel",
       "source": {
         "git": "https://github.com/bazel-contrib/bazel-gazelle",
         "commit": "5cc8299af468de4290cf40f93b3ef046e866446d",
         "subdir": ""
       },
-      "delete_named": [{"under": "vendor", "name": "BUILD.bazel"}],
-      "replace": [
-        {"file": "internal/env.bzl", "old": "for key in \"GONOPROXY\", \"GONOSUMDB\":", "new": "for key in (\"GONOPROXY\", \"GONOSUMDB\"):"}
-      ],
-      "build_targets": ["//...", "-//docs/...", "-//tests/bzlmod/...", "-//tests/cli/...", "-//tests/bzl_deps/...", "-//internal:gazelle_binary_test", "-//internal:gazelle_binary_test_test_0", "-//internal:gazelle_binary_test_test_1"],
-      "test_targets": ["//...", "-//docs/...", "-//tests/bzlmod/...", "-//tests/cli/...", "-//tests/bzl_deps/...", "-//internal:gazelle_binary_test", "-//internal:gazelle_binary_test_test_0", "-//internal:gazelle_binary_test_test_1", "-//internal:bazel_test"],
+      "flags": ["--check_direct_dependencies=off", "--deleted_packages=vendor/github.com/bazelbuild/rules_go/go/tools/internal/txtar,vendor/github.com/bazelbuild/rules_go/go/tools/bazel_testing,vendor/github.com/bazelbuild/rules_go/go/tools/bazel,vendor/github.com/bazelbuild/buildtools/build,vendor/github.com/bazelbuild/rules_go/go/runfiles,vendor/github.com/bazelbuild/buildtools/labels,vendor/github.com/bazelbuild/buildtools/tables"],
+      "build_targets": ["//...", "-//docs/...", "-//tests/bzl_deps/...", "-//tests/cli:env_variable_name_cant_be_empty", "-//tests/cli:env_variable_name_cant_start_with_numbers_test"],
+      "test_targets": ["//...", "-//docs/...", "-//tests/bzl_deps/...", "-//tests/cli:env_variable_name_cant_be_empty", "-//tests/cli:env_variable_name_cant_start_with_numbers_test", "-//internal:bazel_test"],
+      "query_flags": ["--check_direct_dependencies=off", "--deleted_packages=vendor/github.com/bazelbuild/rules_go/go/tools/internal/txtar,vendor/github.com/bazelbuild/rules_go/go/tools/bazel_testing,vendor/github.com/bazelbuild/rules_go/go/tools/bazel,vendor/github.com/bazelbuild/buildtools/build,vendor/github.com/bazelbuild/rules_go/go/runfiles,vendor/github.com/bazelbuild/buildtools/labels,vendor/github.com/bazelbuild/buildtools/tables"],
       "query": "//...",
       "source_edit": {"file": "rule/rule.go", "append": "\nvar benchEdit{n} = {n}\n"},
       "build_edit": {"file": "rule/BUILD.bazel", "append": "\nfilegroup(name = \"bench_edit_{n}\")\n"}
     },
     {
       "name": "pip_parse",
-      "description": "rules_python examples/pip_parse: hermetic CPython 3.14 + pip.parse hub (requests, sphinx, yamllint, s3cmd, libclang wheels), rules_python 1.7.0 from the BCR",
+      "description": "rules_python examples/pip_parse: hermetic CPython 3.14 + pip.parse hub (requests, sphinx, yamllint, s3cmd, libclang wheels), rules_python 1.7.0 from the BCR; //:pip_parse_test is built but not run (its test_data case expects a newer wheel layout and fails identically on both tools with 1.7.0)",
       "source": {
         "git": "https://github.com/bazel-contrib/rules_python",
         "commit": "9e587e8e0416f0b81143b9f6ff94547db49b05f6",
@@ -50,7 +48,7 @@
       "replace": [
         {"file": "MODULE.bazel", "old": "bazel_dep(name = \"rules_python\", version = \"0.0.0\")\nlocal_path_override(\n    module_name = \"rules_python\",\n    path = \"../..\",\n)", "new": "bazel_dep(name = \"rules_python\", version = \"1.7.0\")"}
       ],
-      "build_targets": ["//...", "-//:pip_parse_test"],
+      "build_targets": ["//..."],
       "test_targets": ["//...", "-//:pip_parse_test"],
       "query": "//...",
       "source_edit": {"file": "main.py", "append": "\n_BENCH_EDIT = {n}\n"},

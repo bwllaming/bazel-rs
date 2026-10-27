@@ -159,6 +159,25 @@ None of these changes outputs: every finding either rejects the command
 up front or blocks analysis of the affected targets. They are why the
 benchmark needed the patch and exclusions listed above.
 
+**Status (branch parity-bench-bugs).** Findings 1–3 are fixed, except the
+analysis-test transitions noted below, and the harness configuration
+(`scripts/bench_genuine_repos.json`) no longer patches `internal/env.bzl` or
+deletes the vendor BUILD files: gazelle passes its `.bazelrc`'s
+`--check_direct_dependencies=off` and `--deleted_packages` as flags to
+`build`, `test` and `query`. A verification run (`run --scenario query
+--scenario test --reps 1`, gazelle and pip_parse) found 0 output differences
+in 407 (gazelle) and 5 (pip_parse, now with `//:pip_parse_test`) labels,
+identical `query //...` (443 targets) and identical test results (gazelle 189
+tests, previously 177). Still excluded: `//docs/...` and `//tests/bzl_deps/...`
+(stardoc's Java toolchain: `java_common.expand_java_opts`), the two
+`expect_failure` tests of `//tests/cli` (`analysis_test_transition`,
+`--allow_analysis_failures` and `AnalysisFailureInfo`), `//internal:bazel_test`
+for `test`, and the pip_parse test run (its `test_data` case expects a newer
+wheel layout than rules_python 1.7.0 produces and fails identically on both
+tools). The "not sandboxed" note was not a divergence: both tools sandbox
+1,083 spawns and run the same 5 `//internal:bazel_test` spawns (`tags =
+["local"]`) unsandboxed; the summary now prints both counts.
+
 1. **Parser.** An unparenthesized tuple as a `for` iterable is rejected:
    `for key in "GONOPROXY", "GONOSUMDB":` fails with "Parse error: unexpected
    symbol ',', expected symbol ':'". Genuine accepts it (bazel-gazelle HEAD,
