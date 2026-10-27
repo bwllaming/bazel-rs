@@ -15794,10 +15794,13 @@ fn planted(artifact: &Artifact, main_ignored: &IgnoredSubdirectories) -> bool {
 
 /// Source (non-generated) input paths of an action, deduplicated in order.
 fn source_paths(inputs: &[Artifact]) -> Vec<PathBuf> {
-    let mut seen: HashSet<&Path> = HashSet::new();
+    let mut seen = crate::path_key::PathSet::default();
     inputs
         .iter()
-        .filter(|artifact| artifact.producer.is_none() && seen.insert(&artifact.real))
+        .filter(|artifact| {
+            artifact.producer.is_none()
+                && seen.insert(crate::path_key::PathKey(artifact.real.as_path()))
+        })
         .map(|artifact| artifact.real.to_path_buf())
         .collect()
 }
@@ -15874,13 +15877,13 @@ impl SourceInputs {
         match &self.own {
             Some(own) => own.iter().map(PathBuf::as_path).collect(),
             None => {
-                let mut seen: HashSet<&Path> = HashSet::new();
+                let mut seen = crate::path_key::PathSet::default();
                 planned
                     .action
                     .inputs
                     .iter()
                     .map(|(real, _)| real.as_path())
-                    .filter(|real| seen.insert(real))
+                    .filter(|real| seen.insert(crate::path_key::PathKey(real)))
                     .collect()
             }
         }
@@ -15893,10 +15896,13 @@ impl SourceInputs {
         if self.groups.is_empty() {
             return paths;
         }
-        let mut seen: HashSet<&Path> = paths.iter().copied().collect();
+        let mut seen: crate::path_key::PathSet = paths
+            .iter()
+            .map(|path| crate::path_key::PathKey(path))
+            .collect();
         for group in &self.groups {
             for path in &group.sources {
-                if seen.insert(path) {
+                if seen.insert(crate::path_key::PathKey(path)) {
                     paths.push(path);
                 }
             }
@@ -15909,13 +15915,13 @@ impl SourceInputs {
 /// in order: what [`source_paths`] gives for its inputs whenever every
 /// source is planted and no two sources share an execution path.
 fn planned_source_paths(planned: &PlannedAction) -> impl Iterator<Item = &Path> {
-    let mut seen: HashSet<&Path> = HashSet::new();
+    let mut seen = crate::path_key::PathSet::default();
     planned
         .action
         .inputs
         .iter()
         .map(|(real, _)| real.as_path())
-        .filter(move |real| seen.insert(real))
+        .filter(move |real| seen.insert(crate::path_key::PathKey(real)))
 }
 
 /// The artifacts of a tool's runfiles tree staged at their tree paths

@@ -101,6 +101,7 @@ pub mod package;
 pub mod package_specification;
 pub mod patch_inputs;
 pub mod patching;
+mod path_key;
 pub mod plan_timings;
 mod platform_providers;
 pub mod platforms;
