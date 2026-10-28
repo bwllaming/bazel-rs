@@ -2,8 +2,9 @@
 
 Native repository-rule and module-extension I/O follows Bazel 9.3's production
 model: bodies and archives stream to disk in constant memory, there are no
-artificial size or count caps, and only genuine Bazel limits and behaviors
-remain. Pinned source: Bazel 9.3 (`/tmp/opencode/bazel-9.3-reference`).
+artificial size or count caps, and timeouts and redirect bounds follow genuine
+Bazel. HTTP identity follows the native policy below. Pinned source: Bazel 9.3
+(`/tmp/opencode/bazel-9.3-reference`).
 
 ## Design
 
@@ -21,6 +22,21 @@ remain. Pinned source: Bazel 9.3 (`/tmp/opencode/bazel-9.3-reference`).
   redirect fails with `Redirect loop detected` (HttpConnector.java:57, 205-208).
   OS resource failures (`ENOSPC`, `EDQUOT`, ...) surface as completion failures
   carrying the OS reason, like Bazel's IOException.
+- **HTTP identity**. The shared download client defaults to
+  `User-Agent: bazel-rs/<CARGO_PKG_VERSION>` (currently `bazel-rs/0.1.0`),
+  including blocking/nonblocking repository and module downloads, retries,
+  mirrors and redirect hops. This is the native package version, not
+  `COMPATIBILITY_VERSION`; it does not impersonate Bazel or a browser. A
+  request's explicit caller or credential-helper User-Agent overrides the
+  default case-insensitively without an extra default value. Existing header
+  merging is unchanged: helper credentials replace static auth, credentials
+  replace common headers with the same spelling, and static auth is URL-scoped.
+  The existing case-sensitive common/credential merge is not normalized here.
+  This is intentionally **not full header parity**: genuine Bazel supplies
+  `Bazel/<release name>` (HttpConnectorMultiplexer.java:52-57) and overwrites
+  user-provided reserved base headers (:107-113) before merging credentials
+  (:133-150). Registry metadata, remote cache, BES and gRPC identities are
+  separate and unchanged; no cache identity or cache key changes are needed.
 - **download_and_extract / extract** (`src/repository_ctx.rs`). The archive
   streams into a private `.download-*` directory of the repository (Bazel:
   `<output>/temp<N>/<basename>`, StarlarkBaseExternalContext.java:1126; error

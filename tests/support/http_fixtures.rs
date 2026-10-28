@@ -83,6 +83,16 @@ pub(crate) fn response(status: u16, body: &[u8], headers: &str) -> Vec<u8> {
     out.extend_from_slice(body);
     out
 }
+pub(crate) fn header_values<'a>(request: &'a str, name: &str) -> Vec<&'a str> {
+    request
+        .lines()
+        .skip(1)
+        .take_while(|line| !line.is_empty())
+        .filter_map(|line| line.split_once(':'))
+        .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.trim())
+        .collect()
+}
 pub(crate) struct TlsServer {
     pub url: String,
     pub pem: Vec<u8>,

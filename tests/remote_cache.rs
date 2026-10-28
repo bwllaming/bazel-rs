@@ -700,6 +700,7 @@ fn ctx_downloads_prefer_the_credential_helper_over_auth() {
     let server = Server::new();
     server.serve("/helped", b"helped\n");
     server.serve("/static", b"static\n");
+    server.serve("/repo-default", b"repository\n");
     ws.file(
         "MODULE.bazel",
         "module(name = \"rc\")\next = use_extension(\"//:ext.bzl\", \"ext\")\nuse_repo(ext, \"dl\")\n",
@@ -708,6 +709,7 @@ fn ctx_downloads_prefer_the_credential_helper_over_auth() {
         "ext.bzl",
         &format!(
             r#"def _repo(rctx):
+    rctx.download("http://localhost:{port}/repo-default", "repo.txt", sha256 = "c522c0aef8fd4d1b056c3c00743aba37ab783d78fd2aaf762628ec4f6e888883")
     rctx.file("BUILD.bazel", "exports_files(['data.txt'])\n")
     rctx.file("data.txt", rctx.attr.text)
 repo = repository_rule(_repo, attrs = {{"text": attr.string()}})
@@ -726,7 +728,7 @@ ext = module_extension(_ext)
     ws.file("BUILD.bazel", "");
     let helper = ws.helper(
         "dl",
-        "echo '{\"headers\":{\"Authorization\":[\"Bearer helper\"],\"X-Token\":[\"helper\"]}}'",
+        "echo '{\"headers\":{\"Authorization\":[\"Bearer helper\"],\"X-Token\":[\"helper\"],\"uSeR-aGeNt\":[\"fixture-helper/1\"]}}'",
     );
     let output = ws.run(
         "c",
@@ -742,9 +744,20 @@ ext = module_extension(_ext)
     assert_eq!(helped.header("authorization"), ["Bearer helper"]);
     assert_eq!(helped.header("x-token"), ["helper"]);
     assert_eq!(helped.header("x-base"), ["base"]);
+    assert_eq!(helped.header("user-agent"), ["fixture-helper/1"]);
     // No helper for `localhost`: the static auth applies.
     let fallback = log.iter().find(|r| r.path == "/static").unwrap();
     assert_eq!(fallback.header("authorization"), ["Basic dXNlcjpwdw=="]);
+    assert_eq!(
+        fallback.header("user-agent"),
+        [concat!("bazel-rs/", env!("CARGO_PKG_VERSION"))]
+    );
+    let repository = log.iter().find(|r| r.path == "/repo-default").unwrap();
+    assert_eq!(
+        repository.header("user-agent"),
+        [concat!("bazel-rs/", env!("CARGO_PKG_VERSION"))]
+    );
+    assert!(repository.header("authorization").is_empty());
 }
 
 #[test]

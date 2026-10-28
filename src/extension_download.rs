@@ -342,6 +342,9 @@ fn client_builder() -> reqwest::blocking::ClientBuilder {
     // whole-transfer deadline. ProxyHelper over the command's repository
     // environment (crate::download_proxy; StarlarkBaseExternalContext.java:864-873).
     crate::download_proxy::configure(Client::builder().no_proxy())
+        // Truthful native identity, not the Bazel compatibility version.
+        // A caller/helper User-Agent overrides this client default.
+        .user_agent(concat!("bazel-rs/", env!("CARGO_PKG_VERSION")))
         .referer(false)
         .redirect(reqwest::redirect::Policy::none())
         .no_gzip()
@@ -909,9 +912,133 @@ pub(crate) mod tests {
             .expect("a released permit is granted");
         waiter.join().unwrap();
     }
-    use crate::extension_io::tests::{Server, response};
+    use crate::extension_io::tests::{Server, header_values, response};
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    #[test]
+    fn user_agent_default_and_case_insensitive_overrides_are_single_wire_values() {
+        for name in [
+            None,
+            Some("User-Agent"),
+            Some("user-agent"),
+            Some("uSeR-aGeNt"),
+        ] {
+            let server = Server::new(vec![response(200, b"body", "")]);
+            let headers = RequestHeaders {
+                common: name
+                    .map(|name| vec![(name.to_owned(), b"fixture-client/1".to_vec())])
+                    .unwrap_or_default(),
+                ..Default::default()
+            };
+            let mut reader = open_with_headers(
+                &client().unwrap(),
+                &Url::parse(&server.url).unwrap(),
+                &headers,
+            )
+            .map_err(|failure| failure.error)
+            .unwrap();
+            let mut body = Vec::new();
+            reader.read_to_end(&mut body).unwrap();
+            assert_eq!(body, b"body");
+            // Reqwest inserts client defaults when sending, not building a Request.
+            let requests = server.requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(
+                header_values(&requests[0], "User-Agent"),
+                [if name.is_some() {
+                    "fixture-client/1"
+                } else {
+                    concat!("bazel-rs/", env!("CARGO_PKG_VERSION"))
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn user_agent_survives_mirror_redirect_and_retry_without_leaking_url_auth() {
+        for custom in [false, true] {
+            let target = Server::new(vec![
+                response(503, b"", ""),
+                response(200, b"mirror body", ""),
+            ]);
+            let location = format!("Location: {}/final\r\n", target.url);
+            let origin = Server::new(vec![
+                response(404, b"", ""),
+                response(302, b"", &location),
+                response(302, b"", &location),
+            ]);
+            let urls = [
+                Url::parse(&format!("{}/missing", origin.url)).unwrap(),
+                Url::parse(&format!("{}/redirect", origin.url)).unwrap(),
+            ];
+            let headers = RequestHeaders {
+                common: if custom {
+                    vec![("uSeR-aGeNt".to_owned(), b"fixture-client/1".to_vec())]
+                } else {
+                    Vec::new()
+                },
+                auth: urls
+                    .iter()
+                    .map(|url| {
+                        (
+                            url.clone(),
+                            vec![
+                                ("Authorization".to_owned(), b"Bearer scoped".to_vec()),
+                                ("X-Token".to_owned(), b"scoped".to_vec()),
+                            ],
+                        )
+                    })
+                    .collect(),
+            };
+            let directory = tempfile::tempdir().unwrap();
+            let output = directory.path().join("download");
+            let mut failures = Vec::new();
+            let fetched = fetch_to_file(
+                &client().unwrap(),
+                &urls,
+                None,
+                false,
+                &headers,
+                &mut |_| output.clone(),
+                false,
+                &mut |url, _| failures.push(url.clone()),
+            )
+            .unwrap();
+            assert_eq!(failures, [urls[0].clone()]);
+            assert_eq!(fetched.size, 11);
+            assert_eq!(std::fs::read(output).unwrap(), b"mirror body");
+            let origins = origin.requests.lock().unwrap();
+            let targets = target.requests.lock().unwrap();
+            assert_eq!(
+                origins
+                    .iter()
+                    .map(|r| r.split_whitespace().nth(1).unwrap())
+                    .collect::<Vec<_>>(),
+                ["/missing", "/redirect", "/redirect"]
+            );
+            assert_eq!(targets.len(), 2);
+            for request in origins.iter().chain(targets.iter()) {
+                assert_eq!(
+                    header_values(request, "User-Agent"),
+                    [if custom {
+                        "fixture-client/1"
+                    } else {
+                        concat!("bazel-rs/", env!("CARGO_PKG_VERSION"))
+                    }]
+                );
+            }
+            for request in origins.iter() {
+                assert_eq!(header_values(request, "Authorization"), ["Bearer scoped"]);
+                assert_eq!(header_values(request, "X-Token"), ["scoped"]);
+            }
+            for request in targets.iter() {
+                assert!(request.starts_with("GET /final HTTP/1.1\r\n"));
+                assert!(header_values(request, "Authorization").is_empty());
+                assert!(header_values(request, "X-Token").is_empty());
+            }
+        }
+    }
 
     #[derive(Default, Debug)]
     pub(crate) struct ReadTrace {

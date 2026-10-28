@@ -2412,7 +2412,7 @@ return m
 
     #[test]
     fn module_download_real_signature_result_read_and_tuple_urls() {
-        use crate::extension_io::tests::{Server, response};
+        use crate::extension_io::tests::{Server, header_values, response};
         let body = b"{\"versions\": [\"1.99.1\"]}";
         let server = Server::new(vec![response(200, body, "")]);
         let sha = crate::extension_download::sha256(body);
@@ -2427,6 +2427,10 @@ ctx.download([], 'data', {sha:?}, allow_fail=True).success or fail('reuse failed
 r(name='actual', words=[ctx.read('data', watch='no')])
 "#, url=server.url, size=body.len()), "{}", &[]).unwrap();
         assert_eq!(server.count(), 1);
+        assert_eq!(
+            header_values(&server.requests.lock().unwrap()[0], "User-Agent"),
+            [concat!("bazel-rs/", env!("CARGO_PKG_VERSION"))]
+        );
         // Reads of the working directory are never recorded (java:1669-1676).
         assert!(result.inputs.files.is_empty());
         assert!(result.inputs.host_facilities.contains("download"));
@@ -2435,7 +2439,7 @@ r(name='actual', words=[ctx.read('data', watch='no')])
 
     #[test]
     fn module_download_block_false_wait_auth_headers_and_executable() {
-        use crate::extension_io::tests::{Server, response};
+        use crate::extension_io::tests::{Server, header_values, response};
         let body = b"#!/bin/sh\necho ok\n";
         let server = Server::new(vec![
             response(200, body, ""),
@@ -2471,6 +2475,10 @@ ctx.read('cached') == ctx.read('tool') or fail('cached bytes')
             )
             .unwrap();
         let requests = server.requests.lock().unwrap().clone();
+        assert_eq!(
+            header_values(&requests[0], "User-Agent"),
+            [concat!("bazel-rs/", env!("CARGO_PKG_VERSION"))]
+        );
         assert!(requests[0].contains("x-single: one\r\n"), "{}", requests[0]);
         assert!(requests[0].contains("x-multi: a\r\n"), "{}", requests[0]);
         assert!(requests[0].contains("x-multi: b\r\n"), "{}", requests[0]);
