@@ -153,8 +153,13 @@ Done since the last increment recorded under "History", one line each:
       producer; explicit-empty strip prefixes retain their distinct meaning.
       Worker-only/selected-remote errors, remote-only jdeps materialization and
       cache/snapshot/source/flag/excluded-jar invalidation are verified.
-- [ ] Targeted then bounded-full PR-clone cquery with the integrated JavaBuilder
-      candidate. Annotation processors and other documented branches remain
+- [x] Integrated JavaBuilder candidate passes the previously failing
+      rules_jvm_external Java-library cquery: 4.46s / 705MiB, 1,450,936 bytes,
+      clone canaries unchanged.
+- [ ] Full PR-clone deps(//...) now reaches the Java binary AddJarManifestEntry
+      and stops at java_common.get_runtime_classpath_for_archive (23.29s /
+      2,583MiB, no output). The dependent rules_python debugger select error
+      remains visible. Annotation processors and documented branches remain
       unsupported; no whole-workspace TD claim or changed select semantics.
 
 ### Commands that are rejected today

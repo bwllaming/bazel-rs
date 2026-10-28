@@ -52,7 +52,9 @@ Full JavaBuilder compilation enforces the strict-deps mode with the real tool.
   jars, additional processor outputs, extra Args, per-package toolchain data,
   JSpecify and Java coverage instrumentation fail explicitly in this slice.
   Ordinary dependent/sourcejar/empty library builds are proven; the application
-  rules_jvm_external target has not yet been probed with this implementation.
+  rules_jvm_external Java-library cquery passes with this implementation.
+  Full application analysis next stops at the separate Java-binary
+  `get_runtime_classpath_for_archive` API; no whole configured-graph claim.
 - Non-direct classpath headers, absent direct compiler, API-generating
   processors and tree/unresolved-symlink artifacts fail explicitly.
   Non-API-generating plugins are validated but do
@@ -87,6 +89,9 @@ outputs and buffered streams. All declared outputs are required before terminal
 publication. Nonzero exit, parser/setup/cleanup failure and cancellation never
 request fallback. Cancellation is checked between attempts, without claiming
 new running-process interruption parity.
+
+Successful fallback retains two spawn records and runner counts within one
+logical action completion. Native action cache hits report no new spawns.
 
 The proto2 decoder validates required dependency/location fields, skips unknown
 fields/groups, preserves repeated/default scalar behavior and includes every

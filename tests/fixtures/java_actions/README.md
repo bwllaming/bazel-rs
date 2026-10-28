@@ -107,3 +107,10 @@ from the initial reduced set invalidates the fallback-produced terminal result;
 and a toolchain javac flag edit invalidates the BUILD observation. The latter
 changes actual class major versions from 55 (`--release 11`) to 61 (`--release
 17`), recorded with output hashes in `invalidation-output-proof.json`.
+
+The final release's `release-final-proof.json` compares four real spawn records
+(two headers and the two-attempt JavaBuilder fallback) and all four JavaBuilder
+outputs against the saved edited genuine capture. The final ELF also passes the
+previously failing application Java-library cquery. Full application cquery
+advances to the separate Java-binary `get_runtime_classpath_for_archive` gap;
+receipts are `javabuilder/pr-{targeted,full}/receipt.json` under the capture root.
