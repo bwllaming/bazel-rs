@@ -18,8 +18,9 @@ scripts/release.py [--notes FILE] --watch  # tag v<version>, push only the tag, 
 ```
 
 `scripts/release.py [--version X.Y.Z] [--notes FILE [--replace-changelog]] [--watch]`,
-`scripts/release.py --dry-run [--target TRIPLE]... [--allow-dirty-for-test]`,
-`scripts/release.py --ci` (the workflow) — Python 3.11+, standard library only;
+`scripts/release.py --dry-run [--target TRIPLE]... [--allow-dirty-for-test] [--smoke-network]`,
+`scripts/release.py --ci [--stage build --target TRIPLE... | --stage publish --from DIR]`
+(the workflow) — Python 3.11+, standard library only;
 `--help` lists the rest. The tag flow needs `git` and an authenticated `gh`
 (`--gh PATH`, else `$GH`, else `gh` on PATH). `--dry-run` also needs Rust
 (`scripts/setup-rust.sh`; `rust-toolchain.toml` lists the musl targets) and zig
@@ -57,19 +58,52 @@ If tagging or pushing fails, the exact undo commands are printed
 `tag` input (re-runs: `gh workflow run release.yml -f tag=v<version>`; the
 build always uses the tag's sources and its `scripts/release.py`; the
 workflow definition comes from the ref the dispatch names, default `main`).
-One job on `ubuntu-24.04` (glibc 2.39, the glibc archive's requirement),
-timeout 60 minutes, `permissions: contents: write` only, one concurrency
-group per tag (never cancelled): check out the tag with full history
-(`fetch-depth: 0`, the changelog needs the previous tag); install the
-toolchain of `rust-toolchain.toml` with the musl target; zig via
-`scripts/setup-zig.sh` (cached on the script's hash); `Swatinem/rust-cache`
-(keyed on `Cargo.lock`, `rust-toolchain.toml` and the rustc version; caches
-of a tag ref are only visible to re-runs of that tag and the registry
-download); then `scripts/release.py --ci --version ${TAG#v} --work-dir
-$RUNNER_TEMP/release` with `GH_TOKEN=${{ github.token }}`; finally the
-archives, checksums and notes are kept as a workflow artifact for 14 days
-(also on failure). arm64 is not built in CI (opt-in locally: `--dry-run
---target aarch64-unknown-linux-musl`).
+One concurrency group per tag (never cancelled). Two stages:
+
+- **`build`**, a matrix with one job per runner — each target is built
+  natively on a machine of its platform, so its smoke test runs the binary
+  itself:
+
+  | Matrix entry | Runner | Targets |
+  |---|---|---|
+  | `linux-x86_64` | `ubuntu-24.04` (glibc 2.39, the glibc archive's requirement) | `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl` |
+  | `linux-arm64` | `ubuntu-24.04-arm` (GitHub-hosted arm64, also for private repositories) | `aarch64-unknown-linux-musl` |
+
+  `fail-fast`, timeout 75 minutes, `permissions: contents: read`: check out
+  the tag with full history (`fetch-depth: 0`); install the toolchain of
+  `rust-toolchain.toml` with the entry's targets (rustup itself if the image
+  lacks it); zig via `scripts/setup-zig.sh` (cached on the script's hash and
+  the runner's architecture); `Swatinem/rust-cache` (keyed per matrix entry on
+  `Cargo.lock`, `rust-toolchain.toml` and the rustc version); then
+  `scripts/release.py --ci --stage build --smoke-network --target … --version
+  ${TAG#v} --work-dir $RUNNER_TEMP/release` (`GH_TOKEN` only for the
+  preflight's "no such release yet" check). Its `dist/` — the archives, their
+  `.sha256` files and one build record each — becomes the artifact
+  `release-build-<entry>` (14 days).
+- **`publish`**, one job on `ubuntu-24.04` after every build job succeeded,
+  the only one with `permissions: contents: write`, timeout 30 minutes: check
+  out the tag (full history, for the changelog), download every
+  `release-build-*` artifact and run `scripts/release.py --ci --stage publish
+  --from $RUNNER_TEMP/built --version ${TAG#v} --work-dir
+  $RUNNER_TEMP/release` with `GH_TOKEN=${{ github.token }}`; it needs no Rust.
+  The archives, checksums and notes are kept as the artifact `release-<tag>`
+  for 14 days (also on failure).
+
+**Build records** (`<archive stem>.release.json`, schema 1): version, commit,
+compatibility target, rustc, and the archive's notes row (triple, platform,
+linkage, smoke test, sha256, …). The publish stage requires exactly one
+record per target of `--target` (default: every default target), for this
+version and commit, each next to its archive at the recorded sha256, and one
+compatibility target; it copies the archives, writes `SHA256SUMS` and the
+`.sha256` files again, and the notes. **Adding a platform** (e.g. macOS arm64
+on `macos-14`): a row in `TARGETS` of `scripts/release.py` (its `runner`,
+`cpu`, `bundle`, linkage rule) and an entry in the workflow matrix;
+`tests/test_release.py` checks that the matrix builds every default target on
+its runner exactly once.
+
+`--ci` without `--stage` (`all`) still does both on one machine (the CI
+rehearsal below; a host that cannot run arm64 binaries needs binfmt_misc or
+`--qemu-aarch64`, see Targets).
 
 `--ci` differs from the local flow only where it must:
 
@@ -84,6 +118,8 @@ archives, checksums and notes are kept as a workflow artifact for 14 days
 - **Build in place**: the checkout itself into its `./target` (the cached
   directory), not a temporary worktree. Everything else — build, checks,
   packaging, smoke test, notes (steps below) — is the same code as `--dry-run`.
+  Every stage runs the CI preflight (the publish stage too, before reading the
+  records).
 - **Notes** additionally get a `Built by` row linking the workflow run
   (`$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID`, plus
   `/attempts/N` on re-runs).
@@ -104,7 +140,7 @@ command): a CI rehearsal in a scratch clone (see Tests).
 |---|---|---|---|
 | `x86_64-unknown-linux-gnu` | yes | dynamic, glibc of the build host (≥ 2.39 when built on Ubuntu 24.04) | `cargo build --locked --release`, host `cc` |
 | `x86_64-unknown-linux-musl` | yes | static-pie: musl libc, jemalloc, no shared library | `--target x86_64-unknown-linux-musl`, C code by `zig cc -target x86_64-linux-musl`, linked by the host `cc` with Rust's self-contained musl runtime |
-| `aarch64-unknown-linux-musl` | no (`--target aarch64-unknown-linux-musl`) | static | as above with `zig cc -target aarch64-linux-musl`, linked by `rust-lld`, `JEMALLOC_SYS_WITH_LG_PAGE=16` (runs on 4/16/64 KiB page kernels) |
+| `aarch64-unknown-linux-musl` | yes | static | as above with `zig cc -target aarch64-linux-musl`, linked by `rust-lld`, `JEMALLOC_SYS_WITH_LG_PAGE=16` (runs on 4/16/64 KiB page kernels); in CI natively on `ubuntu-24.04-arm`, locally also cross-built on x86_64 |
 
 The static x86_64 binary is the portable one: it runs on any x86_64 Linux
 (no glibc version requirement; Rust's minimum kernel 3.2). It is the same code
@@ -140,16 +176,29 @@ alternating runs on a shared 64-core machine (seconds wall, peak RSS):
 The warm no-op's extra ~35 MB is jemalloc arena memory (it shrinks to ~8 MB
 with `MALLOC_CONF=narenas:8`), not seen at the full-analysis peak.
 
-The arm64 binary cross-compiles cleanly and runs a full build under QEMU
-user emulation, but bazel-rs itself is Linux x86_64-only today: the embedded
-`@bazel_tools` bundle and the repository host metadata (`ctx.os`) refuse other
-hosts, so most real workspaces fail. It is therefore opt-in and its notes row
-says so. Smoke-testing it needs a way to run arm64 binaries: natively, through
+**Linux arm64.** The arm64 binary embeds Bazel 9.3.0's linux-arm64
+`@bazel_tools` (`resources/bazel_tools/linux-arm64/`, its JDK and compiled
+helpers) and reports the host like genuine Bazel on arm64 (`ctx.os.arch`
+`aarch64`, `@platforms//cpu:aarch64`, `bazel-out/aarch64-fastbuild`;
+docs/HOST_OS.md). Its minimum kernel is Rust's 4.1. Smoke-testing it needs a
+way to run arm64 binaries: natively (the CI's `ubuntu-24.04-arm` job), through
 a binfmt_misc `qemu-aarch64` registration (full smoke test), or with
 `--qemu-aarch64 PATH` (qemu-user, e.g. from the `qemu-user-static` package;
 only `--version`, `version`, `help` and `query`, because actions are started
 through `/proc/self/exe`, which plain qemu-user cannot exec). `--allow-untested`
 ships it without a smoke test, labelled so in the notes.
+
+Without root, a private binfmt_misc registration works in a user+mount
+namespace (Linux 6.7 or newer; on Ubuntu 24.04 with
+`kernel.apparmor_restrict_unprivileged_userns=1` the namespace has to be
+created through `sudo`): mount `binfmt_misc` on `/proc/sys/fs/binfmt_misc`
+inside it and register `:qemu-aarch64:M::<ELF aarch64 magic>:<mask>:/path/qemu-aarch64-static:F`;
+the host's registrations stay untouched. Genuine `bazel-9.3.0-linux-arm64`
+(a glibc launcher plus an arm64 JVM) also runs that way when qemu gets an
+arm64 glibc sysroot (`QEMU_LD_PREFIX`, e.g. the `libc6`, `libstdc++6`,
+`libgcc-s1` and `zlib1g` arm64 packages unpacked, with a binfmt interpreter
+wrapper that sets it so the server's actions inherit it) — slowly (a tiny
+build: ~2 minutes) but enough for paired captures (docs/HOST_OS.md).
 
 ### Build steps (`--dry-run` and `--ci`)
 
@@ -189,13 +238,23 @@ ships it without a smoke test, labelled so in the notes.
    network): `--version` (must print the release version), `version`, `help`,
    then `query //:all` and `build //:upper` twice (the second all cache hits)
    with the explicit-module profile (`--experimental-builtin-modules=false`),
-   checking the output file (arm64: see Targets).
+   checking the output file (arm64: see Targets). With `--smoke-network` (the
+   workflow passes it) a second workspace builds in the default built-in
+   profile with network (`bazel_dep(name = "platforms", version = "1.0.0")`
+   from the Bazel Central Registry): it materializes the binary's embedded
+   `@bazel_tools` and resolves the default host platform; its genrule's
+   `$(TARGET_CPU)` and `@platforms//host`'s `HOST_CONSTRAINTS` must be
+   `<cpu> @platforms//cpu:<cpu>,@platforms//os:linux` for the target's CPU
+   (`x86_64`, `aarch64`).
 4. **Release notes** (`<work>/RELEASE_NOTES.md`): version, commit, compatibility
    target (from `--version`), toolchain, (CI) the workflow run; a downloads
    table (archive, platform, linking — static, or the minimum glibc —, how it
    was smoke-tested, sha256); requirements per archive (static: any
-   distribution; glibc: the version, e.g. Ubuntu 24.04 or newer; arm64: the
-   x86_64-only caveat); install instructions for the static x86_64 archive;
+   distribution of the platform with Rust's minimum kernel — 3.2 on x86_64,
+   4.1 on arm64; glibc: the version, e.g. Ubuntu 24.04 or newer); install
+   instructions for the static archive of the reader's machine
+   (`bazel-rs-<version>-$(uname -m)-unknown-linux-musl`, or the one static
+   archive's name);
    then the changes: for the first release the "Status" section of `PLAN.md`;
    afterwards `git log --no-merges <previous tag>..<commit>` grouped by
    subject prefix (`feat`, `parity`, `perf`, `fix`/`harden`, `docs`, `test`,
@@ -241,8 +300,10 @@ which stay as recorded. The registry client's user agent `bazel-rs/0.1`
 parsing, the preflight and the CI preflight with fake git/gh runners, the tag
 flow's command sequence (annotated tag, push of only the tag, run lookup,
 `--watch`, recovery output), the tag-message notes round trip through real
-git (a temporary bare `origin`), the run URL, the workflow's key settings,
-the target table, the zig
+git (a temporary bare `origin`), the run URL, the workflow's key settings and
+its build matrix (every default target exactly once, on its `runner`), the
+build records and the publish stage's checks and output, the network smoke
+step, the target table (every target's tools bundle is checked in), the zig
 wrappers and cross-build environment, ELF linkage checks, smoke-test
 planning, byte-identical tarballs, checksums, the license inventory (with the
 static runtime section), release notes and `bump_version.py`, all offline.
@@ -257,5 +318,8 @@ GITHUB_REPOSITORY=<owner/name> GITHUB_RUN_ID=1 scripts/release.py --ci
 --dry-run --version <version> --work-dir <empty dir>`: it runs the CI
 preflight, builds in place, smoke-tests, packages and writes the notes (with
 the run link and the tag's notes), then prints the `gh release create`
-command instead of running it. Workflow lint: `actionlint` (1.7.12, with
-`shellcheck` on PATH) over `.github/workflows/`.
+command instead of running it. The staged flow rehearses the same way:
+`--ci --dry-run --stage build --target …` per runner (a different
+`--work-dir` each), then `--ci --dry-run --stage publish --from <dir holding
+their dist/ directories> --work-dir <empty dir>`. Workflow lint: `actionlint`
+(1.7.12, with `shellcheck` on PATH) over `.github/workflows/`.

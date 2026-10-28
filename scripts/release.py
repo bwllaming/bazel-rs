@@ -13,10 +13,13 @@ builds, smoke-tests and packages locally, in a fresh temporary `git worktree`
 with its own CARGO_TARGET_DIR, without tagging. --ci (the workflow, on the
 tag push) builds the checked-out tag in place once per target (default:
 x86_64-unknown-linux-gnu, dynamically linked against the build host's glibc,
-and x86_64-unknown-linux-musl, static, C code compiled with `zig cc`),
-smoke-tests offline, packages deterministic tarballs, creates the GitHub
-release of the existing tag with `gh` and verifies it by download; it never
-creates or pushes tags. Python 3.11+ standard library only.
+and the static x86_64-unknown-linux-musl and aarch64-unknown-linux-musl, C
+code compiled with `zig cc`), smoke-tests, packages deterministic tarballs,
+creates the GitHub release of the existing tag with `gh` and verifies it by
+download; it never creates or pushes tags. The workflow splits --ci into
+`--stage build` (one job per runner of TARGETS, e.g. a native arm64 runner)
+and `--stage publish` (one job over all their archives). Python 3.11+
+standard library only.
 """
 
 from __future__ import annotations
@@ -47,10 +50,6 @@ BRANCH = "main"
 TARGET = "x86_64-unknown-linux-gnu"
 PACKAGE = "bazel-rs"
 EM_X86_64, EM_AARCH64 = 62, 183
-ARM64_CAVEAT = (
-    "experimental and opt-in: bazel-rs's embedded @bazel_tools and its repository host "
-    "metadata (ctx.os) support only Linux x86_64, so most workspaces fail on arm64"
-)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -65,21 +64,41 @@ class Target:
     zig: str | None
     static: bool
     default: bool
+    # The GitHub-hosted runner of the workflow's build job for this target
+    # (.github/workflows/release.yml matrix; native, so the smoke test runs
+    # the binary directly).
+    runner: str = "ubuntu-24.04"
+    # The `@platforms//cpu` value of a host running it (the network smoke
+    # test checks the detected host platform).
+    cpu: str = "x86_64"
+    # The embedded Bazel tools bundle it compiles in:
+    # resources/bazel_tools/<bundle>/ (Bazel's release platform name).
+    bundle: str = "linux-x86_64"
+    os_name: str = "Linux"  # as shown in the notes
+    kernel: str = "3.2"  # Rust's minimum Linux kernel for the target
     linker: str | None = None  # CARGO_TARGET_<TRIPLE>_LINKER
     env: tuple[tuple[str, str], ...] = ()
-    caveat: str | None = None
+    caveat: str | None = None  # a warning in the notes (none today)
+
+    @property
+    def platform(self) -> str:
+        return f"{self.os_name} {self.arch}"
 
 
 TARGETS = (
     Target(TARGET, "x86_64", EM_X86_64, None, static=False, default=True),
     Target("x86_64-unknown-linux-musl", "x86_64", EM_X86_64, "x86_64-linux-musl", static=True, default=True),
     # jemalloc fixes the page size at build time: 64 KiB covers 4/16/64 KiB
-    # kernels (README "Global allocator"). The host cc cannot link arm64, so
-    # the toolchain's rust-lld links it (static musl needs no C driver).
+    # kernels (README "Global allocator"). rust-lld links it (static musl
+    # needs no C driver), natively on the arm64 runner and when
+    # cross-building on x86_64 alike.
     Target(
-        "aarch64-unknown-linux-musl", "arm64", EM_AARCH64, "aarch64-linux-musl", static=True, default=False,
-        linker="rust-lld", env=(("JEMALLOC_SYS_WITH_LG_PAGE", "16"),), caveat=ARM64_CAVEAT,
+        "aarch64-unknown-linux-musl", "arm64", EM_AARCH64, "aarch64-linux-musl", static=True, default=True,
+        runner="ubuntu-24.04-arm", cpu="aarch64", bundle="linux-arm64", kernel="4.1",
+        linker="rust-lld", env=(("JEMALLOC_SYS_WITH_LG_PAGE", "16"),),
     ),
+    # macOS (e.g. aarch64-apple-darwin on macos-14) would be one more row
+    # with its runner, plus a smoke/linkage rule for Mach-O.
 )
 TARGETS_BY_TRIPLE = {t.triple: t for t in TARGETS}
 # Statically linked C runtime of the musl targets (licence texts from the zig
@@ -163,6 +182,17 @@ genrule(
 )
 """
 SMOKE_INPUT = "hello from a bazel-rs release\n"
+# The --smoke-network workspace: the built-in profile's host platform.
+NETWORK_SMOKE_MODULE = 'module(name = "release_smoke_network")\nbazel_dep(name = "platforms", version = "1.0.0")\n'
+NETWORK_SMOKE_BUILD = """\
+load("@platforms//host:constraints.bzl", "HOST_CONSTRAINTS")
+
+genrule(
+    name = "host",
+    outs = ["host.txt"],
+    cmd = "echo '$(TARGET_CPU) " + ",".join(HOST_CONSTRAINTS) + "' > $@",
+)
+"""
 # Any accidental network access of the smoke test fails fast on this proxy.
 DEAD_PROXY = "http://127.0.0.1:9"
 
@@ -669,8 +699,9 @@ def host_machine() -> int | None:
 # Smoke test
 
 
-def smoke_env(scratch: Path) -> dict:
-    return {
+def smoke_env(scratch: Path, network: bool = False) -> dict:
+    """The smoke test's environment; without `network` every proxy is dead."""
+    env = {
         "PATH": "/usr/bin:/bin",
         "HOME": str(scratch / "home"),
         "TMPDIR": str(scratch / "tmp"),
@@ -679,14 +710,20 @@ def smoke_env(scratch: Path) -> dict:
         "BAZEL_RS_PROGRESS": "0",
         # `label<TAB>path` result lines on stdout (off by default since 0.1.0).
         "BAZEL_RS_RESULT_LINES": "1",
-        "http_proxy": DEAD_PROXY,
-        "https_proxy": DEAD_PROXY,
-        "HTTP_PROXY": DEAD_PROXY,
-        "HTTPS_PROXY": DEAD_PROXY,
-        "ALL_PROXY": DEAD_PROXY,
-        "no_proxy": "",
-        "NO_PROXY": "",
     }
+    if not network:
+        env.update(
+            {
+                "http_proxy": DEAD_PROXY,
+                "https_proxy": DEAD_PROXY,
+                "HTTP_PROXY": DEAD_PROXY,
+                "HTTPS_PROXY": DEAD_PROXY,
+                "ALL_PROXY": DEAD_PROXY,
+                "no_proxy": "",
+                "NO_PROXY": "",
+            }
+        )
+    return env
 
 
 def check_version_output(text: str, version: str) -> str:
@@ -700,7 +737,13 @@ def check_version_output(text: str, version: str) -> str:
 
 
 def smoke_test(
-    run: Run, binary: Path, version: str, scratch: Path, prefix: Sequence[str] = (), execute: bool = True
+    run: Run,
+    binary: Path,
+    version: str,
+    scratch: Path,
+    prefix: Sequence[str] = (),
+    execute: bool = True,
+    host_cpu: str | None = None,
 ) -> str:
     """--version, version, help, and an offline query + build (twice).
 
@@ -709,6 +752,8 @@ def smoke_test(
     runs the binary through an emulator (qemu-aarch64); `execute=False` stops
     after the query: actions are started through the binary's own
     /proc/self/exe, which only a binfmt_misc registration can run under QEMU.
+    `host_cpu` (--smoke-network) adds the built-in profile build of
+    [`network_smoke_test`].
     """
     for sub in ("home", "tmp", "ws"):
         (scratch / sub).mkdir(parents=True, exist_ok=True)
@@ -744,7 +789,33 @@ def smoke_test(
         if output.read_text() != SMOKE_INPUT.upper():
             raise ReleaseError(f"wrong build output in {output}")
         outputs.append(output)
+    if host_cpu:
+        network_smoke_test(run, binary, scratch, prefix, host_cpu)
     return compat
+
+
+def network_smoke_test(run: Run, binary: Path, scratch: Path, prefix: Sequence[str], host_cpu: str) -> None:
+    """The built-in profile (the default) in a second workspace, with network.
+
+    Materializes the binary's embedded @bazel_tools (the per-platform bundle)
+    and resolves the host platform from the Bazel Central Registry's
+    `platforms`: the genrule records `$(TARGET_CPU)` and @platforms//host's
+    HOST_CONSTRAINTS, which must name `host_cpu` (the target's CPU).
+    """
+    ws = scratch / "ws-network"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "MODULE.bazel").write_text(NETWORK_SMOKE_MODULE)
+    (ws / "BUILD.bazel").write_text(NETWORK_SMOKE_BUILD)
+    env = smoke_env(scratch, network=True)
+    common = ["--ignore_all_rc_files", f"--cache-dir={scratch / 'cache-network'}"]
+    stdout = run([*prefix, str(binary), *common, "build", "//:host"], cwd=ws, env=env, echo=True).stdout
+    lines = [l for l in stdout.splitlines() if l.startswith("//:host\t")]
+    if len(lines) != 1:
+        raise ReleaseError(f"unexpected build output: {stdout!r}")
+    got = Path(lines[0].split("\t", 1)[1]).read_text().strip()
+    want = f"{host_cpu} @platforms//cpu:{host_cpu},@platforms//os:linux"
+    if got != want:
+        raise ReleaseError(f"host platform: the binary detected {got!r}, expected {want!r}")
 
 
 # --------------------------------------------------------------------------
@@ -834,6 +905,7 @@ def third_party_markdown(
     bundle_files: list[tuple[str, bytes]],
     target: str = TARGET,
     runtime_files: Sequence[tuple[str, bytes]] = (),
+    bundle: str = "linux-x86_64",
 ) -> str:
     out = [
         f"# Third-party licenses of bazel-rs {version}\n",
@@ -866,7 +938,7 @@ def third_party_markdown(
         out.append(f"{title}:\n")
         out.append(text_block(data))
 
-    out.append("## Bazel 9.3.0 embedded tools (in the binary as @bazel_tools)\n")
+    out.append(f"## Bazel 9.3.0 embedded tools, {bundle} (in the binary as @bazel_tools)\n")
     emit("`resources/bazel_tools/LICENSE`", bazel_license)
     for name, data in bundle_files:
         emit(f"`embedded_tools/{name}`", data)
@@ -911,6 +983,7 @@ def generate_third_party(
     commit: str,
     target: str = TARGET,
     runtime_files: Sequence[tuple[str, bytes]] = (),
+    bundle: str = "linux-x86_64",
 ) -> str:
     metadata = json.loads(
         run(
@@ -925,9 +998,10 @@ def generate_third_party(
         runtime_packages(metadata),
         lambda p: license_files(Path(p["manifest_path"]).parent),
         (src / "resources/bazel_tools/LICENSE").read_bytes(),
-        bundle_legal_files(src / "resources/bazel_tools/embedded_tools.tar.gz"),
+        bundle_legal_files(src / "resources/bazel_tools" / bundle / "embedded_tools.tar.gz"),
         target,
         runtime_files,
+        bundle,
     )
 
 
@@ -1044,6 +1118,11 @@ class AssetInfo:
     tested: str  # how it was smoke-tested
     static: bool = False
     caveat: str | None = None
+    platform: str = ""  # Target.platform ("Linux arm64"); default: Linux <arch>
+    kernel: str = "3.2"  # minimum kernel of a static archive
+
+    def __post_init__(self) -> None:
+        self.platform = self.platform or f"Linux {self.arch}"
 
 
 @dataclasses.dataclass
@@ -1063,6 +1142,29 @@ class NotesInfo:
 def recommended_asset(assets: list[AssetInfo]) -> AssetInfo:
     """The archive the install instructions use: static x86_64 first."""
     return min(assets, key=lambda a: (a.arch != "x86_64", not a.static, a.caveat is not None))
+
+
+def install_commands(info: NotesInfo, best: AssetInfo, stem: str) -> list[str]:
+    """Download, check and install the static archive of this machine
+    (`$(uname -m)`: every static Linux triple is `<uname -m>-unknown-linux-musl`),
+    or `best` when there is a single one."""
+    tag = tag_name(info.version)
+    linux_static = [a for a in info.assets if a.static and a.triple.endswith("-unknown-linux-musl")]
+    if len(linux_static) < 2:
+        return [
+            f"gh release download {tag} --repo {info.gh_repo} --pattern '{best.archive}*'",
+            f"sha256sum -c {best.archive}.sha256",
+            f"tar xzf {best.archive}",
+            f"install -m 0755 {stem}/bazel-rs ~/.local/bin/bazel-rs   # any directory on PATH",
+        ]
+    machines = " or ".join(a.triple.removesuffix("-unknown-linux-musl") for a in linux_static)
+    return [
+        f"stem=bazel-rs-{info.version}-$(uname -m)-unknown-linux-musl   # {machines}",
+        f"gh release download {tag} --repo {info.gh_repo} --pattern \"$stem.tar.gz*\"",
+        'sha256sum -c "$stem.tar.gz.sha256"',
+        'tar xzf "$stem.tar.gz"',
+        'install -m 0755 "$stem/bazel-rs" ~/.local/bin/bazel-rs   # any directory on PATH',
+    ]
 
 
 def render_notes(info: NotesInfo, changelog: str, prepend: str | None = None) -> str:
@@ -1093,13 +1195,13 @@ def render_notes(info: NotesInfo, changelog: str, prepend: str | None = None) ->
         "|---|---|---|---|---|",
     ]
     for a in info.assets:
-        out.append(f"| `{a.archive}` | Linux {a.arch} (`{a.triple}`) | {a.requirement} | {a.tested} | `{a.sha256}` |")
+        out.append(f"| `{a.archive}` | {a.platform} (`{a.triple}`) | {a.requirement} | {a.tested} | `{a.sha256}` |")
     out += ["", "## Requirements", ""]
     for a in info.assets:
         if a.static:
-            line = f"- `{a.triple}`: any Linux {a.arch} distribution (kernel 3.2 or newer); statically linked, no glibc needed."
+            line = f"- `{a.triple}`: any {a.platform} distribution (kernel {a.kernel} or newer); statically linked, no glibc needed."
         else:
-            line = f"- `{a.triple}`: Linux {a.arch} with {a.requirement} (e.g. Ubuntu 24.04 or newer)."
+            line = f"- `{a.triple}`: {a.platform} with {a.requirement} (e.g. Ubuntu 24.04 or newer)."
         if a.caveat:
             line += f" **Not for general use:** {a.caveat}."
         out.append(line)
@@ -1110,16 +1212,13 @@ def render_notes(info: NotesInfo, changelog: str, prepend: str | None = None) ->
         )
     out += [
         "- No JVM and no Bazel installation: the binary embeds Bazel "
-        f"{info.compatibility}'s `@bazel_tools`. Actions need the usual host tools "
+        f"{info.compatibility}'s `@bazel_tools` of its platform. Actions need the usual host tools "
         "(`/bin/sh`, coreutils; a C/C++ toolchain for cc rules).",
         "",
         "## Install",
         "",
         "```sh",
-        f"gh release download {tag} --repo {info.gh_repo} --pattern '{best.archive}*'",
-        f"sha256sum -c {best.archive}.sha256",
-        f"tar xzf {best.archive}",
-        f"install -m 0755 {stem}/bazel-rs ~/.local/bin/bazel-rs   # any directory on PATH",
+        *install_commands(info, best, stem),
         "bazel-rs --version",
         "```",
         "",
@@ -1366,6 +1465,7 @@ def select_targets(names: Sequence[str] | None) -> list[Target]:
 SMOKE_FULL = "query and two builds"
 SMOKE_QEMU = "under QEMU user emulation: version, help, query (no action execution)"
 SMOKE_NONE = "**not smoke-tested**"
+SMOKE_NETWORK = "; built-in profile build (embedded @bazel_tools, host platform)"
 
 
 def smoke_plan(
@@ -1390,9 +1490,115 @@ def smoke_plan(
 
 @dataclasses.dataclass
 class Built:
-    notes: Path
+    notes: Path | None  # None after --stage build (the publish stage writes them)
     assets: list[Path]
     archives: list[Path]
+
+
+# --stage build writes one record per archive next to it; --stage publish
+# reads them back (docs/RELEASING.md).
+RECORD_SUFFIX = ".release.json"
+RECORD_SCHEMA = 1
+
+
+def asset_record(info: AssetInfo, *, version: str, commit: str, compatibility: str, rustc: str) -> dict:
+    return {
+        "schema": RECORD_SCHEMA,
+        "version": version,
+        "commit": commit,
+        "compatibility": compatibility,
+        "rustc": rustc,
+        "asset": dataclasses.asdict(info),
+    }
+
+
+def load_records(
+    source: Path, *, version: str, commit: str, targets: list[Target]
+) -> tuple[list[tuple[AssetInfo, Path]], str, str]:
+    """--stage publish: the build stages' archives under `source`, checked.
+
+    Exactly one record per selected target, for this version and commit, with
+    its archive next to it at the recorded sha256, and one compatibility
+    target. Returns the (asset, archive) pairs in TARGETS order, the
+    compatibility target and the toolchain(s).
+    """
+    found: dict[str, tuple[dict, Path]] = {}
+    for path in sorted(source.rglob(f"*{RECORD_SUFFIX}")):
+        record = json.loads(path.read_text())
+        if record.get("schema") != RECORD_SCHEMA:
+            raise ReleaseError(f"{path}: unknown record schema {record.get('schema')!r}")
+        triple = record["asset"]["triple"]
+        if triple in found:
+            raise ReleaseError(f"two build records for {triple}: {found[triple][1]} and {path}")
+        found[triple] = (record, path)
+    wanted = [t.triple for t in targets]
+    missing = [t for t in wanted if t not in found]
+    extra = sorted(set(found) - set(wanted))
+    if missing or extra:
+        raise ReleaseError(
+            f"build records under {source}: missing {', '.join(missing) or 'none'}; unexpected {', '.join(extra) or 'none'}"
+        )
+    pairs, compat, rustc = [], set(), []
+    for triple in wanted:
+        record, path = found[triple]
+        if record["version"] != version or record["commit"] != commit:
+            raise ReleaseError(
+                f"{path}: built {record['version']} at {record['commit'][:12]}, publishing {version} at {commit[:12]}"
+            )
+        info = AssetInfo(**record["asset"])
+        archive = path.parent / info.archive
+        if not archive.is_file():
+            raise ReleaseError(f"{path}: archive {archive} is missing")
+        if sha256_file(archive) != info.sha256:
+            raise ReleaseError(f"{archive}: sha256 differs from its build record")
+        compat.add(record["compatibility"])
+        if record["rustc"] not in rustc:
+            rustc.append(record["rustc"])
+        pairs.append((info, archive))
+    if len(compat) != 1:
+        raise ReleaseError(f"the archives name different compatibility targets: {sorted(compat)}")
+    return pairs, compat.pop(), "; ".join(rustc)
+
+
+def write_notes(
+    run: Run,
+    *,
+    repo_dir: Path,
+    src: Path,
+    work: Path,
+    version: str,
+    commit: str,
+    compat: str,
+    rustc: str,
+    infos: list[AssetInfo],
+    gh_repo: str,
+    prerelease: bool,
+    prepend: str | None,
+    replace_changelog: bool,
+    build_url: str | None,
+) -> Path:
+    commit_date = git_out(run, repo_dir, "show", "-s", "--format=%cI", commit)
+    previous = previous_tag(run, repo_dir, commit, version)
+    if replace_changelog:
+        changelog = ""
+    elif previous:
+        log = run(["git", "-C", repo_dir, "log", "--no-merges", "--format=%H%x09%s", f"{previous}..{commit}"]).stdout
+        changelog = changelog_from_log([tuple(l.split("\t", 1)) for l in log.splitlines() if "\t" in l])
+    else:
+        changelog = first_release_summary((src / "PLAN.md").read_text())
+    info = NotesInfo(version, commit, commit_date, compat, rustc, infos, gh_repo, prerelease, previous, build_url)
+    notes = work / "RELEASE_NOTES.md"
+    notes.write_text(render_notes(info, changelog, prepend))
+    return notes
+
+
+def print_artifacts(paths: list[Path], infos: list[AssetInfo], compat: str) -> None:
+    print("\nartifacts:")
+    for path in paths:
+        print(f"  {path}")
+    for a in infos:
+        print(f"{a.archive}: sha256 {a.sha256}; {a.requirement}; smoke test: {a.tested}")
+    print(f"compatibility target Bazel {compat}")
 
 
 def build_release(
@@ -1412,12 +1618,16 @@ def build_release(
     prepend: str | None,
     replace_changelog: bool,
     build_url: str | None = None,
+    stage: str = "all",
+    smoke_network: bool = False,
 ) -> Built:
     """Build, package, smoke-test and write the notes into `work`.
 
     `in_place` (--ci): build the checkout itself (HEAD is the tag) into its
     ./target, which the workflow caches; otherwise a fresh detached worktree
-    of `commit` under `work` with its own target directory.
+    of `commit` under `work` with its own target directory. `stage="build"`
+    (--ci --stage build) stops after the smoke tests: `work/dist` then has the
+    archives, their `.sha256` files and build records for --stage publish.
     """
     work.mkdir(parents=True, exist_ok=True)
     if any(work.iterdir()):
@@ -1429,7 +1639,6 @@ def build_release(
     dist, scratch = work / "dist", work / "smoke"
     dist.mkdir()
     epoch = int(git_out(run, repo_dir, "show", "-s", "--format=%ct", commit))
-    commit_date = git_out(run, repo_dir, "show", "-s", "--format=%cI", commit)
     if not in_place:
         run(["git", "-C", repo_dir, "worktree", "add", "--detach", src, commit], echo=True)
     try:
@@ -1452,14 +1661,13 @@ def build_release(
                 binary = target_dir / "release" / PACKAGE
             requirement = check_linkage(run, t, binary)
             runtime = static_runtime_licenses(zig) if t.static else ()
-            third_party = generate_third_party(run, src, env, cargo, version, commit, t.triple, runtime)
+            third_party = generate_third_party(run, src, env, cargo, version, commit, t.triple, runtime, t.bundle)
             stem = archive_stem(version, t.triple)
             archive = dist / f"{stem}.tar.gz"
             files = [(PACKAGE, binary.read_bytes(), 0o755), (THIRD_PARTY, third_party.encode(), 0o644)]
             files += [(name, (src / name).read_bytes(), 0o644) for name in DOC_FILES]
             built.append((t, archive, deterministic_tarball(archive, stem, files, epoch), requirement))
         archives = [archive for _, archive, _, _ in built]
-        assets = [*archives, *write_checksums(dist, archives)]
 
         # Smoke-test each binary as shipped: extracted from its archive.
         compat, infos = None, []
@@ -1471,32 +1679,43 @@ def build_release(
                 with tarfile.open(archive) as tar:
                     tar.extractall(unpacked, filter="data")
                 shipped = unpacked / archive_stem(version, t.triple) / PACKAGE
-                found = smoke_test(run, shipped, version, scratch / t.triple, prefix, execute)
+                host_cpu = t.cpu if smoke_network and execute else None
+                found = smoke_test(run, shipped, version, scratch / t.triple, prefix, execute, host_cpu)
+                if host_cpu:
+                    tested += SMOKE_NETWORK
                 if compat and found != compat:
                     raise ReleaseError(f"{t.triple} says compatibility target {found}, others {compat}")
                 compat = found
-            infos.append(AssetInfo(t.triple, t.arch, archive.name, sha, requirement, tested, t.static, t.caveat))
+            infos.append(
+                AssetInfo(
+                    t.triple, t.arch, archive.name, sha, requirement, tested, t.static, t.caveat, t.platform, t.kernel
+                )
+            )
         if compat is None:
             raise ReleaseError("no archive could be smoke-tested")
 
-        previous = previous_tag(run, repo_dir, commit, version)
-        if replace_changelog:
-            changelog = ""
-        elif previous:
-            log = run(["git", "-C", repo_dir, "log", "--no-merges", "--format=%H%x09%s", f"{previous}..{commit}"]).stdout
-            changelog = changelog_from_log([tuple(l.split("\t", 1)) for l in log.splitlines() if "\t" in l])
-        else:
-            changelog = first_release_summary((src / "PLAN.md").read_text())
-        info = NotesInfo(version, commit, commit_date, compat, rustc, infos, gh_repo, prerelease, previous, build_url)
-        notes = work / "RELEASE_NOTES.md"
-        notes.write_text(render_notes(info, changelog, prepend))
+        if stage == "build":
+            assets = list(archives)
+            for info, archive in zip(infos, archives):
+                side = dist / f"{archive.name}.sha256"
+                side.write_text(f"{info.sha256}  {archive.name}\n")
+                record = dist / f"{archive.name.removesuffix('.tar.gz')}{RECORD_SUFFIX}"
+                record.write_text(
+                    json.dumps(asset_record(info, version=version, commit=commit, compatibility=compat, rustc=rustc), indent=2)
+                    + "\n"
+                )
+                assets += [side, record]
+            print_artifacts(assets, infos, compat)
+            print("build stage done: --stage publish collects these files")
+            return Built(None, assets, archives)
 
-        print("\nartifacts:")
-        for path in [*assets, notes]:
-            print(f"  {path}")
-        for a in infos:
-            print(f"{a.archive}: sha256 {a.sha256}; {a.requirement}; smoke test: {a.tested}")
-        print(f"compatibility target Bazel {compat}")
+        assets = [*archives, *write_checksums(dist, archives)]
+        notes = write_notes(
+            run, repo_dir=repo_dir, src=src, work=work, version=version, commit=commit, compat=compat, rustc=rustc,
+            infos=infos, gh_repo=gh_repo, prerelease=prerelease, prepend=prepend,
+            replace_changelog=replace_changelog, build_url=build_url,
+        )
+        print_artifacts([*assets, notes], infos, compat)
         return Built(notes, assets, archives)
     finally:
         if not in_place:
@@ -1507,6 +1726,45 @@ def build_release(
             f"work directory: {work}"
             + ("" if in_place or keep_build else " (build directory removed; --keep-build keeps it)")
         )
+
+
+def collect_release(
+    run: Run,
+    *,
+    repo_dir: Path,
+    version: str,
+    commit: str,
+    gh_repo: str,
+    prerelease: bool,
+    targets: list[Target],
+    source: Path,
+    work: Path,
+    prepend: str | None,
+    replace_changelog: bool,
+    build_url: str | None = None,
+) -> Built:
+    """--ci --stage publish: the build stages' archives (downloaded workflow
+    artifacts under `source`) become one release: checked against their
+    records, copied into `work/dist` with fresh checksums, plus the notes."""
+    work.mkdir(parents=True, exist_ok=True)
+    if any(work.iterdir()):
+        raise ReleaseError(f"--work-dir {work} is not empty")
+    pairs, compat, rustc = load_records(source, version=version, commit=commit, targets=targets)
+    dist = work / "dist"
+    dist.mkdir()
+    archives = []
+    for _, archive in pairs:
+        shutil.copyfile(archive, dist / archive.name)
+        archives.append(dist / archive.name)
+    assets = [*archives, *write_checksums(dist, archives)]
+    infos = [info for info, _ in pairs]
+    notes = write_notes(
+        run, repo_dir=repo_dir, src=repo_dir, work=work, version=version, commit=commit, compat=compat, rustc=rustc,
+        infos=infos, gh_repo=gh_repo, prerelease=prerelease, prepend=prepend,
+        replace_changelog=replace_changelog, build_url=build_url,
+    )
+    print_artifacts([*assets, notes], infos, compat)
+    return Built(notes, assets, archives)
 
 
 def report_problems(problems: list[str], dry_run: bool) -> None:
@@ -1530,13 +1788,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--target", action="append", choices=list(TARGETS_BY_TRIPLE), metavar="TRIPLE",
         help="with --dry-run/--ci: build this target (repeatable; default: " + ", ".join(t.triple for t in TARGETS if t.default)
-        + "; opt-in: " + ", ".join(t.triple for t in TARGETS if not t.default) + ")",
+        + "".join(f"; opt-in: {t.triple}" for t in TARGETS if not t.default) + ")",
     )
     parser.add_argument("--zig", help="zig for the musl targets' C code (default: $ZIG, .direnv/zig/zig, zig on PATH)")
     parser.add_argument("--qemu-aarch64", default=default_qemu_aarch64(), help="qemu-user for the arm64 smoke test (default: $QEMU_AARCH64 or on PATH)")
     parser.add_argument("--allow-untested", action="store_true", help="ship a target this host cannot run, labelled untested")
     parser.add_argument("--work-dir", type=Path, help="empty directory for the worktree, target and dist (default: a new directory under $TMPDIR)")
     parser.add_argument("--keep-build", action="store_true", help="keep the temporary worktree's CARGO_TARGET_DIR")
+    parser.add_argument(
+        "--stage", choices=("all", "build", "publish"), default="all",
+        help="with --ci: `build` builds, smoke-tests and packages the --target(s) of one runner (archives + build "
+        "records in <work-dir>/dist); `publish` releases the archives of every build stage found under --from "
+        "(default: all, one machine does everything)",
+    )
+    parser.add_argument("--from", dest="source", type=Path, help="with --stage publish: directory holding the build stages' dist files")
+    parser.add_argument(
+        "--smoke-network", action="store_true",
+        help="also smoke-test a built-in profile build (downloads `platforms` from the Bazel Central Registry)",
+    )
     args = parser.parse_args(argv)
     sys.stdout.reconfigure(line_buffering=True)
     run: Run = run_command
@@ -1548,8 +1817,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.watch and (args.ci or args.dry_run):
         parser.error("--watch only applies to the tag flow (no --ci, no --dry-run)")
     building = args.ci or args.dry_run
-    if not building and (args.target or args.allow_untested or args.work_dir or args.keep_build):
-        parser.error("--target/--allow-untested/--work-dir/--keep-build need --dry-run or --ci: the workflow builds the release")
+    if not building and (args.target or args.allow_untested or args.work_dir or args.keep_build or args.smoke_network):
+        parser.error(
+            "--target/--allow-untested/--work-dir/--keep-build/--smoke-network need --dry-run or --ci: "
+            "the workflow builds the release"
+        )
+    if args.stage != "all" and not args.ci:
+        parser.error("--stage is a --ci option (the workflow's build matrix and publish job)")
+    if (args.source is not None) != (args.stage == "publish"):
+        parser.error("--from goes with --stage publish (and only there)")
+    if args.stage == "publish" and (args.smoke_network or args.allow_untested or args.keep_build):
+        parser.error("--stage publish builds nothing: --smoke-network/--allow-untested/--keep-build do not apply")
 
     cargo_toml_head = git_out(run, repo_dir, "show", "HEAD:Cargo.toml")
     version = args.version or cargo_toml_version(cargo_toml_head)
@@ -1576,14 +1854,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     targets = select_targets(args.target)
-    print("targets: " + ", ".join(t.triple for t in targets))
+    print("targets: " + ", ".join(t.triple for t in targets) + ("" if args.stage == "all" else f" [stage {args.stage}]"))
     # Tools and smoke runners first: fail before the long build.
-    zig = None
-    if any(t.zig for t in targets):
-        zig = find_zig(args.zig, repo_dir, dict(os.environ))
-        if not zig:
-            raise ReleaseError("zig not found (compiles the musl targets' C code): run scripts/setup-zig.sh, set ZIG or pass --zig")
-    plans = {t.triple: smoke_plan(t, args.qemu_aarch64, args.allow_untested, host_machine()) for t in targets}
+    zig, plans = None, {}
+    if args.stage != "publish":
+        if any(t.zig for t in targets):
+            zig = find_zig(args.zig, repo_dir, dict(os.environ))
+            if not zig:
+                raise ReleaseError("zig not found (compiles the musl targets' C code): run scripts/setup-zig.sh, set ZIG or pass --zig")
+        plans = {t.triple: smoke_plan(t, args.qemu_aarch64, args.allow_untested, host_machine()) for t in targets}
 
     if args.ci:
         problems, commit, body = ci_preflight(run, version, repo_dir=repo_dir, gh=args.gh, gh_repo=gh_repo)
@@ -1611,11 +1890,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         root = default_temp_root(dict(os.environ))
         work = Path(tempfile.mkdtemp(prefix=f"bazel-rs-release-{version}-", dir=root))
-    built = build_release(
-        run, repo_dir=repo_dir, version=version, commit=commit, gh_repo=gh_repo, prerelease=prerelease,
-        targets=targets, plans=plans, zig=zig, work=work.resolve(), in_place=args.ci, keep_build=args.keep_build,
-        prepend=prepend, replace_changelog=replace_changelog, build_url=build_url,
-    )
+    if args.stage == "publish":
+        built = collect_release(
+            run, repo_dir=repo_dir, version=version, commit=commit, gh_repo=gh_repo, prerelease=prerelease,
+            targets=targets, source=args.source.resolve(), work=work.resolve(), prepend=prepend,
+            replace_changelog=replace_changelog, build_url=build_url,
+        )
+    else:
+        built = build_release(
+            run, repo_dir=repo_dir, version=version, commit=commit, gh_repo=gh_repo, prerelease=prerelease,
+            targets=targets, plans=plans, zig=zig, work=work.resolve(), in_place=args.ci, keep_build=args.keep_build,
+            prepend=prepend, replace_changelog=replace_changelog, build_url=build_url,
+            stage=args.stage, smoke_network=args.smoke_network,
+        )
+    if built.notes is None:  # --stage build: the publish job releases it
+        return 1 if problems else 0
     create = release_create_argv("gh", tag, gh_repo, version, built.notes, prerelease, built.assets)
     if args.dry_run:
         print("\nDRY RUN: a real release would now run:")

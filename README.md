@@ -55,12 +55,23 @@ affected.
 
 ## Releases and license
 
-Linux x86_64 binaries are published as GitHub releases of `bwllaming/bazel-rs`
-(`gh release download v<version> --repo bwllaming/bazel-rs`): a static
-`x86_64-unknown-linux-musl` build that runs on any distribution and a
-`x86_64-unknown-linux-gnu` build that needs the glibc it was built against
-(each release's notes give the checksums, requirements and install steps; from
-0.2.0 on). Install the
+Linux x86_64 and Linux arm64 (aarch64) binaries are published as GitHub
+releases of `bwllaming/bazel-rs`
+(`gh release download v<version> --repo bwllaming/bazel-rs`): static
+`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` builds that run on
+any distribution and a `x86_64-unknown-linux-gnu` build that needs the glibc it
+was built against (each release's notes give the checksums, requirements and
+install steps; from 0.2.0 on, arm64 after 0.2.0).
+
+Platform support: Linux x86_64 and Linux aarch64 (4, 16 or 64 KiB pages). Each
+binary embeds Bazel 9.3.0's `@bazel_tools` of its own platform
+(`resources/bazel_tools/<platform>/`, from the official
+`bazel-9.3.0-linux-x86_64` / `bazel-9.3.0-linux-arm64` release) and reports its
+host like genuine Bazel on that platform: `ctx.os.arch` `amd64` / `aarch64`,
+`@platforms//cpu:x86_64` / `@platforms//cpu:aarch64`, output roots
+`bazel-out/k8-*` / `bazel-out/aarch64-*` (docs/HOST_OS.md). Other systems
+(macOS, Windows) are not supported yet; the release tooling has room for more
+targets (docs/RELEASING.md). Install the
 `bazel-rs` binary anywhere on PATH and run it from a workspace like Bazel
 (`bazel-rs build //...`); it does not replace `bazel` or Bazelisk. Releases are
 built and published by GitHub Actions (`.github/workflows/release.yml`) when a
@@ -395,14 +406,15 @@ handling rather than the interpreter's incompatible generic serialization path.
 and dynamic named reads without exposing a fabricated OS environment dictionary.
 [Scalar string dictionaries](docs/STRING_DICT.md) preserve insertion order and
 snapshot semantics through rule, tag and repository attribute consumers.
-[Callback host metadata](docs/HOST_OS.md) provides the verified Linux/x86_64
-name/architecture view and explicit host-dependent repository fingerprints.
+[Callback host metadata](docs/HOST_OS.md) provides the verified Linux x86_64
+and aarch64 name/architecture view and explicit host-dependent repository fingerprints.
 [Resolved Label repository names](docs/LABEL_REPO_NAME.md) expose canonical
 identity without changing owner mappings or hiding invalid-label timing limits.
 [Label passthrough](docs/LABEL_PASSTHROUGH.md) preserves existing Label identity
 across lexical contexts while retaining explicit invalid-label timing limits.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are injected by default,
-like Bazel 9.3, using complete verified Linux x86-64 resources; the native-only
+like Bazel 9.3, using the complete verified Bazel 9.3.0 resources of the
+binary's platform (Linux x86-64 or arm64); the native-only
 `--experimental-builtin-modules=false` selects the explicit-module profile
 (no `@bazel_tools` contents). Load caching is per package evaluation,
 not a persistent incremental graph.

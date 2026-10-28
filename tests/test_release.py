@@ -276,7 +276,7 @@ class TargetsTest(unittest.TestCase):
     def test_target_table(self):
         self.assertEqual(
             [t.triple for t in release.select_targets(None)],
-            ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"],
+            ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"],
         )
         self.assertEqual(
             [t.triple for t in release.select_targets(["aarch64-unknown-linux-musl", "x86_64-unknown-linux-gnu"])],
@@ -285,8 +285,13 @@ class TargetsTest(unittest.TestCase):
         with self.assertRaises(release.ReleaseError):
             release.select_targets(["riscv64gc-unknown-linux-gnu"])
         arm = release.TARGETS_BY_TRIPLE["aarch64-unknown-linux-musl"]
-        self.assertTrue(arm.static and not arm.default and arm.caveat)
+        self.assertTrue(arm.static and arm.default and not arm.caveat)
+        self.assertEqual((arm.runner, arm.cpu, arm.bundle, arm.platform, arm.kernel),
+                         ("ubuntu-24.04-arm", "aarch64", "linux-arm64", "Linux arm64", "4.1"))
         self.assertIn(("JEMALLOC_SYS_WITH_LG_PAGE", "16"), arm.env)
+        for t in release.TARGETS:
+            # Every target's embedded tools bundle is checked in.
+            self.assertTrue((ROOT / "resources/bazel_tools" / t.bundle / "embedded_tools.tar.gz").is_file(), t.bundle)
         toolchain = (ROOT / "rust-toolchain.toml").read_text()
         for t in release.TARGETS:
             if t.zig:
@@ -381,6 +386,31 @@ class TargetsTest(unittest.TestCase):
         self.assertEqual(env["BAZEL_RS_RESULT_LINES"], "1")
         self.assertEqual(env["HOME"], "/s/home")
         self.assertEqual(env["https_proxy"], release.DEAD_PROXY)
+        online = release.smoke_env(Path("/s"), network=True)
+        self.assertFalse(any("proxy" in key.lower() for key in online))
+        self.assertEqual(online["HOME"], "/s/home")
+
+    def test_network_smoke_checks_the_host_platform(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            out = scratch / "host.txt"
+            calls = []
+
+            def runner(argv, **kwargs):
+                calls.append((list(map(str, argv)), kwargs))
+                return Result(0, f"//:host\t{out}\n")
+
+            out.write_text("aarch64 @platforms//cpu:aarch64,@platforms//os:linux\n")
+            release.network_smoke_test(runner, Path("/b/bazel-rs"), scratch, ["/q"], "aarch64")
+            argv, kwargs = calls[0]
+            self.assertEqual(argv[:2], ["/q", "/b/bazel-rs"])
+            self.assertIn("build", argv)
+            self.assertNotIn("--experimental-builtin-modules=false", argv)
+            self.assertNotIn("https_proxy", kwargs["env"])
+            self.assertIn('bazel_dep(name = "platforms"', (scratch / "ws-network" / "MODULE.bazel").read_text())
+            self.assertIn("HOST_CONSTRAINTS", (scratch / "ws-network" / "BUILD.bazel").read_text())
+            with self.assertRaisesRegex(release.ReleaseError, "detected 'aarch64 @platforms"):
+                release.network_smoke_test(runner, Path("/b/bazel-rs"), scratch, [], "x86_64")
 
     def test_default_temp_root(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -540,8 +570,8 @@ class NotesTest(unittest.TestCase):
     )
     ARM = dict(
         triple="aarch64-unknown-linux-musl", arch="arm64", archive="bazel-rs-0.2.0-aarch64-unknown-linux-musl.tar.gz",
-        sha256="d" * 64, requirement="statically linked", tested=release.SMOKE_QEMU, static=True,
-        caveat=release.ARM64_CAVEAT,
+        sha256="d" * 64, requirement="statically linked", tested=release.SMOKE_FULL, static=True,
+        platform="Linux arm64", kernel="4.1",
     )
 
     def info(self, *assets):
@@ -601,15 +631,22 @@ class NotesTest(unittest.TestCase):
             f"| `bazel-rs-0.2.0-x86_64-unknown-linux-musl.tar.gz` | Linux x86_64 (`x86_64-unknown-linux-musl`) |",
             "- `x86_64-unknown-linux-musl`: any Linux x86_64 distribution (kernel 3.2 or newer); statically linked, no glibc needed.",
             "- `x86_64-unknown-linux-gnu`: Linux x86_64 with glibc ≥ 2.39 (e.g. Ubuntu 24.04 or newer).",
-            f"- `aarch64-unknown-linux-musl`: any Linux arm64 distribution (kernel 3.2 or newer); statically linked, no glibc needed. **Not for general use:** {release.ARM64_CAVEAT}.",
-            release.SMOKE_QEMU,
+            f"| `bazel-rs-0.2.0-aarch64-unknown-linux-musl.tar.gz` | Linux arm64 (`aarch64-unknown-linux-musl`) | statically linked | {release.SMOKE_FULL} |",
+            "- `aarch64-unknown-linux-musl`: any Linux arm64 distribution (kernel 4.1 or newer); statically linked, no glibc needed.",
             "prefer the static one",
-            # The install steps use the static x86_64 archive.
-            "gh release download v0.2.0 --repo o/r --pattern 'bazel-rs-0.2.0-x86_64-unknown-linux-musl.tar.gz*'",
-            "install -m 0755 bazel-rs-0.2.0-x86_64-unknown-linux-musl/bazel-rs",
+            # The install steps pick this machine's static archive.
+            "stem=bazel-rs-0.2.0-$(uname -m)-unknown-linux-musl   # x86_64 or aarch64",
+            'gh release download v0.2.0 --repo o/r --pattern "$stem.tar.gz*"',
+            'sha256sum -c "$stem.tar.gz.sha256"',
+            'install -m 0755 "$stem/bazel-rs" ~/.local/bin/bazel-rs',
         ):
             self.assertIn(needle, text)
+        self.assertNotIn("Not for general use", text)
         self.assertEqual(release.recommended_asset(self.info(self.ARM, self.GNU).assets).triple, "x86_64-unknown-linux-gnu")
+        # One static archive: its explicit name.
+        text = release.render_notes(self.info(self.GNU, self.MUSL), "")
+        self.assertIn("gh release download v0.2.0 --repo o/r --pattern 'bazel-rs-0.2.0-x86_64-unknown-linux-musl.tar.gz*'", text)
+        self.assertNotIn("uname", text)
 
     def test_recovery_commands(self):
         self.assertEqual(release.recovery_commands("tagged", "v1.0.0", "o/r"), ["git tag -d v1.0.0"])
@@ -895,28 +932,120 @@ class TagNotesGitTest(unittest.TestCase):
             self.assertEqual(release.notes_from_tag_body(body), (notes, True))
 
 
+class StagesTest(unittest.TestCase):
+    """--ci --stage build records and --stage publish collection."""
+
+    def write_build(self, root, triple, *, version="1.2.3", commit=HEAD, compat="9.3.0", data=None):
+        t = release.TARGETS_BY_TRIPLE[triple]
+        root.mkdir(parents=True, exist_ok=True)
+        archive = root / f"{release.archive_stem(version, triple)}.tar.gz"
+        archive.write_bytes(data or triple.encode())
+        info = release.AssetInfo(
+            triple, t.arch, archive.name, release.sha256_file(archive), "req", release.SMOKE_FULL, t.static,
+            t.caveat, t.platform, t.kernel,
+        )
+        record = release.asset_record(info, version=version, commit=commit, compatibility=compat, rustc="rustc 1.99.0")
+        (root / f"{archive.name.removesuffix('.tar.gz')}{release.RECORD_SUFFIX}").write_text(json.dumps(record))
+        return archive
+
+    def test_records_round_trip_and_checks(self):
+        targets = release.select_targets(None)
+        with tempfile.TemporaryDirectory() as tmp:
+            built = Path(tmp) / "built"
+            self.write_build(built / "release-build-linux-x86_64", "x86_64-unknown-linux-gnu")
+            self.write_build(built / "release-build-linux-x86_64", "x86_64-unknown-linux-musl")
+            with self.assertRaisesRegex(release.ReleaseError, "missing aarch64-unknown-linux-musl"):
+                release.load_records(built, version="1.2.3", commit=HEAD, targets=targets)
+            arm = self.write_build(built / "release-build-linux-arm64", "aarch64-unknown-linux-musl")
+            pairs, compat, rustc = release.load_records(built, version="1.2.3", commit=HEAD, targets=targets)
+            self.assertEqual([info.triple for info, _ in pairs], [t.triple for t in targets])
+            self.assertEqual((compat, rustc), ("9.3.0", "rustc 1.99.0"))
+            self.assertEqual(pairs[2][0].platform, "Linux arm64")
+            self.assertEqual(pairs[2][0].kernel, "4.1")
+            # Only the selected targets may be present.
+            with self.assertRaisesRegex(release.ReleaseError, "unexpected aarch64-unknown-linux-musl"):
+                release.load_records(built, version="1.2.3", commit=HEAD, targets=targets[:2])
+            with self.assertRaisesRegex(release.ReleaseError, "publishing 1.2.4"):
+                release.load_records(built, version="1.2.4", commit=HEAD, targets=targets)
+            arm.write_bytes(b"tampered")
+            with self.assertRaisesRegex(release.ReleaseError, "sha256 differs"):
+                release.load_records(built, version="1.2.3", commit=HEAD, targets=targets)
+            self.write_build(built / "release-build-linux-arm64", "aarch64-unknown-linux-musl", compat="9.4.0")
+            with self.assertRaisesRegex(release.ReleaseError, "different compatibility targets"):
+                release.load_records(built, version="1.2.3", commit=HEAD, targets=targets)
+            self.write_build(built / "again", "aarch64-unknown-linux-musl")
+            with self.assertRaisesRegex(release.ReleaseError, "two build records"):
+                release.load_records(built, version="1.2.3", commit=HEAD, targets=targets)
+
+    def test_collect_release_writes_checksums_and_notes(self):
+        targets = release.select_targets(None)
+        runner = FakeRunner({
+            ("show", "-s", "--format=%cI", HEAD): Result(0, "2026-10-28T00:00:00+00:00\n"),
+            ("tag", "--merged", HEAD, "--list", "v[0-9]*"): Result(0, "v1.2.2\n"),
+            ("log", "--no-merges", "--format=%H%x09%s", f"v1.2.2..{HEAD}"): Result(0, f"{'b' * 40}\tport(arm64): x\n"),
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            built, work = Path(tmp) / "built", Path(tmp) / "work"
+            for t in targets:
+                self.write_build(built / t.runner, t.triple)
+            result = release.collect_release(
+                runner, repo_dir=Path("/repo"), version="1.2.3", commit=HEAD, gh_repo="o/r", prerelease=False,
+                targets=targets, source=built, work=work, prepend=None, replace_changelog=False,
+                build_url="https://github.com/o/r/actions/runs/1",
+            )
+            self.assertEqual([a.name for a in result.archives], [f"{release.archive_stem('1.2.3', t.triple)}.tar.gz" for t in targets])
+            sums = (work / "dist" / "SHA256SUMS").read_text().splitlines()
+            self.assertEqual(len(sums), 3)
+            notes = result.notes.read_text()
+            self.assertIn("Linux arm64 (`aarch64-unknown-linux-musl`)", notes)
+            self.assertIn("| Built by | [GitHub Actions run](https://github.com/o/r/actions/runs/1) |", notes)
+            self.assertIn("port(arm64): x", notes)
+            self.assertEqual(len(result.assets), 3 + 3 + 1)
+
+
 class WorkflowTest(unittest.TestCase):
     def test_release_workflow(self):
         text = (ROOT / ".github" / "workflows" / "release.yml").read_text()
         for needle in (
             'tags: ["v*"]',
             "workflow_dispatch:",
-            "runs-on: ubuntu-24.04",
+            "runs-on: ${{ matrix.runner }}",
+            "runs-on: ubuntu-24.04\n",
             "contents: write",
+            "contents: read",
             "fetch-depth: 0",
             "rustup toolchain install",
             "scripts/setup-zig.sh",
             "Swatinem/rust-cache",
             "GH_TOKEN: ${{ github.token }}",
-            'scripts/release.py --ci --version "${TAG#v}"',
+            'scripts/release.py --ci --stage build --smoke-network "${args[@]}"',
+            'scripts/release.py --ci --stage publish --from "$RUNNER_TEMP/built"',
+            '--version "${TAG#v}"',
+            "needs: build",
+            "pattern: release-build-*",
             "timeout-minutes:",
             "concurrency:",
         ):
             self.assertIn(needle, text)
+        # Only the publish job may write (create the release).
+        self.assertEqual(text.count("contents: write"), 1)
+        self.assertLess(text.index("publish:"), text.index("contents: write"))
         # The workflow never makes tags itself.
         self.assertNotIn("git tag", text.replace("# ", ""))
         self.assertNotIn("git push", text)
         self.assertEqual(release.WORKFLOW, "release.yml")
+
+    def test_build_matrix_covers_every_default_target_on_its_runner(self):
+        text = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+        import re
+        entries = re.findall(r"- name: (\S+)\n\s+runner: (\S+)\n\s+targets: ([^\n]+)", text)
+        self.assertGreaterEqual(len(entries), 2)
+        built = {}
+        for _, runner, targets in entries:
+            for triple in targets.split():
+                self.assertNotIn(triple, built)
+                built[triple] = runner
+        self.assertEqual(built, {t.triple: t.runner for t in release.TARGETS if t.default})
 
 
 class BumpVersionTest(unittest.TestCase):

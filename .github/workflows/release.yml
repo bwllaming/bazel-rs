@@ -1,12 +1,20 @@
 # Builds and publishes the GitHub release of a pushed v* tag
 # (docs/RELEASING.md). `scripts/release.py` on a developer machine only
 # creates and pushes the annotated tag (its message carries extra release
-# notes); this workflow checks out the tag and runs `scripts/release.py --ci`:
-# verify the tag (exists, is HEAD, matches Cargo.toml/Cargo.lock), build the
-# glibc and static musl binaries, smoke-test, package, write the notes,
-# `gh release create --verify-tag`, re-download and compare sha256. It never
-# creates or moves tags. Re-run a failed release with
-# `gh workflow run release.yml -f tag=vX.Y.Z` (after deleting a partial release).
+# notes); this workflow checks out the tag and runs `scripts/release.py --ci`
+# in two stages:
+#   build   — one job per runner (matrix below; every target is built natively
+#             on a machine of its platform, so the smoke test runs the binary
+#             itself): verify the tag (exists, is HEAD, matches
+#             Cargo.toml/Cargo.lock), build, smoke-test, package; the
+#             archives and their build records become a workflow artifact;
+#   publish — one job: collect every build job's archives, check them against
+#             their records, write SHA256SUMS and the notes,
+#             `gh release create --verify-tag`, re-download and compare sha256.
+# Adding a platform (e.g. macOS arm64 on macos-14) = a TARGETS row in
+# scripts/release.py plus a matrix entry here. It never creates or moves tags.
+# Re-run a failed release with `gh workflow run release.yml -f tag=vX.Y.Z`
+# (after deleting a partial release).
 name: Release
 
 on:
@@ -19,9 +27,8 @@ on:
         required: true
         type: string
 
-# gh release create/upload with GITHUB_TOKEN; nothing else.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ inputs.tag || github.ref_name }}
@@ -30,15 +37,25 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  release:
-    name: build and publish ${{ inputs.tag || github.ref_name }}
-    # glibc 2.39: the glibc archive needs the same or a newer glibc.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    env:
-      TAG: ${{ inputs.tag || github.ref_name }}
+  build:
+    name: build ${{ matrix.name }}
+    strategy:
+      # One failed platform fails the release: publish needs every archive.
+      fail-fast: true
+      matrix:
+        include:
+          # glibc 2.39: the glibc archive needs the same or a newer glibc.
+          - name: linux-x86_64
+            runner: ubuntu-24.04
+            targets: x86_64-unknown-linux-gnu x86_64-unknown-linux-musl
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            targets: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,11 +64,19 @@ jobs:
           fetch-depth: 0
 
       - name: Rust toolchain from rust-toolchain.toml
-        # Installs the pinned channel with its components and targets
-        # (x86_64-unknown-linux-musl among them).
+        # Installs the pinned channel with its components and the musl
+        # targets it lists.
+        env:
+          TARGETS: ${{ matrix.targets }}
         run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
           rustup toolchain install --no-self-update
-          rustup target add x86_64-unknown-linux-musl
+          for target in $TARGETS; do rustup target add "$target"; done
           rustc --version
           cargo --version
 
@@ -61,22 +86,63 @@ jobs:
           path: .direnv/zig
           key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/setup-zig.sh') }}
 
-      - name: zig (C compiler of the musl build)
+      - name: zig (C compiler of the musl builds)
         run: scripts/setup-zig.sh
 
       - name: Cargo cache
-        # Keyed on Cargo.lock, rust-toolchain.toml and the rustc version;
-        # caches ~/.cargo and ./target (release.py --ci builds in place).
+        # Keyed on Cargo.lock, rust-toolchain.toml, the rustc version and the
+        # runner's platform; caches ~/.cargo and ./target (release.py --ci
+        # builds in place).
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: v1-release
+          prefix-key: v1-release-${{ matrix.name }}
           cache-on-failure: true
 
-      - name: Build, smoke-test, package and publish
+      - name: Build, smoke-test and package
+        env:
+          # gh only checks that the release does not exist yet.
+          GH_TOKEN: ${{ github.token }}
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          args=()
+          for target in $TARGETS; do args+=(--target "$target"); done
+          python3 scripts/release.py --ci --stage build --smoke-network "${args[@]}" \
+            --version "${TAG#v}" --work-dir "$RUNNER_TEMP/release"
+
+      - name: Keep the archives for the publish job
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-build-${{ matrix.name }}
+          path: ${{ runner.temp }}/release/dist
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: publish ${{ inputs.tag || github.ref_name }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # gh release create/upload with GITHUB_TOKEN; nothing else.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          fetch-depth: 0
+
+      - name: Collect the build jobs' archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-build-*
+          path: ${{ runner.temp }}/built
+
+      - name: Notes, checksums, publish and verify
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/release.py --ci --version "${TAG#v}" --work-dir "$RUNNER_TEMP/release"
+          python3 scripts/release.py --ci --stage publish --from "$RUNNER_TEMP/built" \
+            --version "${TAG#v}" --work-dir "$RUNNER_TEMP/release"
 
       - name: Keep the release files
         if: always()
