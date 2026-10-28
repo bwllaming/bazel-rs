@@ -104,6 +104,8 @@ pub(super) struct Tracker {
     /// Keys whose analysis printed (`print()` in an implementation, an
     /// aspect or a transition while the key's frame was innermost).
     printed_keys: BTreeSet<u32>,
+    /// (key, aspect application) requests.
+    aspects: BTreeSet<(u32, String)>,
     roots: Vec<(u32, u32)>,
     requested: HashSet<Label>,
     /// Inside `analyze_requested`'s analysis of the requested label at
@@ -288,11 +290,30 @@ impl Engine {
         crate::ui::note(line);
     }
 
+    /// The innermost key's planning uses the aspect application `key`.
+    pub(super) fn track_aspect_application(&mut self, key: &crate::aspects::AspectApplicationKey) {
+        if let Some(tracker) = self.incremental.as_mut() {
+            let frame = tracker.frames.last().copied().unwrap_or(u32::MAX);
+            let base = &key.base;
+            let identity = format!(
+                "{}|{}|{}|{}|{}",
+                base.label,
+                base.config,
+                base.apply_rule_transition,
+                key.aspect,
+                key.bases.join(",")
+            );
+            tracker.aspects.insert((frame, identity));
+        }
+    }
+
     /// A package was committed; `printed`: its BUILD file printed.
     pub(super) fn track_package_printed(&mut self, package: &PackageId, printed: bool) {
         if let Some(tracker) = self.incremental.as_mut() {
             let id = tracker.package(package);
-            tracker.packages[id as usize].printed |= printed;
+            let record = &mut tracker.packages[id as usize];
+            record.printed |= printed;
+            record.pattern |= pattern();
         }
     }
 
@@ -395,6 +416,7 @@ impl Engine {
             roots: tracker.roots.clone(),
             shared: tracker.shared_keys.iter().copied().collect(),
             printed: tracker.printed_keys.iter().copied().collect(),
+            aspects: tracker.aspects.iter().cloned().collect(),
         })
     }
 
@@ -527,10 +549,19 @@ pub(crate) fn fingerprint(package: &Package) -> Fingerprint {
         );
         shared_kinds |= shared_kind(rule);
         let test_attributes = rule.native.as_ref().map(|native| {
-            ["size", "timeout", "flaky", "shard_count", "local", "tests"]
-                .iter()
-                .filter_map(|name| native.attrs.get(*name).map(|value| (*name, value)))
-                .collect::<Vec<_>>()
+            [
+                "size",
+                "timeout",
+                "flaky",
+                "shard_count",
+                "local",
+                "tests",
+                "deprecation",
+                "testonly",
+            ]
+            .iter()
+            .filter_map(|name| native.attrs.get(*name).map(|value| (*name, value)))
+            .collect::<Vec<_>>()
         });
         let custom_test_attributes = rule.custom.as_ref().map(|custom| {
             (

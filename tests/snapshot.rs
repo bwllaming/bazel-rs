@@ -3203,8 +3203,80 @@ fn fuzz_fixture() -> Twin {
     twin.write(".bazelrc", "");
     twin.write(".bazelignore", "");
     twin.write("REPO.bazel", "");
+    // Incremental analysis (docs/INCREMENTAL_ANALYSIS.md): a package whose
+    // edits splice, prune or fall back, and its consumer.
+    twin.write("incr/defs.bzl", INCR_RULES);
+    twin.write("incr/srcs/a.txt", "a\n");
+    twin.write("incr/b.txt", "b\n");
+    twin.write("incr/BUILD.bazel", &fuzz_incr_build(&FuzzState::default()));
+    twin.write("incr_use/BUILD.bazel", INCR_USE_BUILD);
     twin.workspace_rc.set(true);
     twin
+}
+
+/// A Starlark rule without prints for the incremental-analysis packages:
+/// its action concatenates its sources and its dependencies' files and
+/// appends `flag`.
+const INCR_RULES: &str = r#"def _chain(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    inputs = list(ctx.files.srcs)
+    for dep in ctx.attr.deps:
+        inputs.extend(dep[DefaultInfo].files.to_list())
+    ctx.actions.run_shell(
+        outputs = [out],
+        inputs = inputs,
+        command = "cat {} > {} && echo {} >> {}".format(" ".join([f.path for f in inputs]) or "/dev/null", out.path, ctx.attr.flag, out.path),
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+chain = rule(implementation = _chain, attrs = {
+    "srcs": attr.label_list(allow_files = True),
+    "deps": attr.label_list(),
+    "flag": attr.string(),
+})
+"#;
+
+const INCR_USE_BUILD: &str = "load('//incr:defs.bzl', 'chain')\nchain(name = 'u', deps = ['//incr:a'], flag = 'u')\nchain(name = 'v', flag = 'v', visibility = ['//visibility:public'])\n";
+
+/// `incr/BUILD.bazel` of the fuzz state: the flag of `:a` (an attribute
+/// edit: spliced), comments (pruned), a dependency on `//incr_use:v` (the
+/// graph changes: falls back), an extra target (the patterns' expansion
+/// changes: falls back), a print (falls back), `:b`'s deprecation (an
+/// analysis warning: falls back), `:a`'s visibility (an analysis error).
+fn fuzz_incr_build(state: &FuzzState) -> String {
+    let mut build = String::from("load(':defs.bzl', 'chain')\n");
+    if state.on("incr-print") {
+        build.push_str("print('incr loaded')\n");
+    }
+    build.push_str(&format!(
+        "chain(name = 'a', srcs = glob(['srcs/*.txt']), deps = [':b'{}], flag = 'f{}', visibility = ['{}'])\n",
+        if state.on("incr-dep") {
+            ", '//incr_use:v'"
+        } else {
+            ""
+        },
+        state.incr_flag,
+        if state.on("incr-private") {
+            "//visibility:private"
+        } else {
+            "//visibility:public"
+        },
+    ));
+    build.push_str(&format!(
+        "chain(name = 'b', srcs = ['b.txt'], flag = 'b'{})\n",
+        if state.on("incr-deprecated") {
+            ", deprecation = 'old'"
+        } else {
+            ""
+        }
+    ));
+    if state.on("incr-extra") {
+        build.push_str("chain(name = 'extra', flag = 'x')\n");
+    }
+    for comment in 0..state.incr_comments {
+        build.push_str(&format!("# comment {comment}\n"));
+    }
+    build
 }
 
 /// The published store tree of the generated repository, if fetched (by
@@ -3291,6 +3363,11 @@ struct FuzzState {
     /// tree leaves it damaged; later `on` hits would then differ by the
     /// documented deviation).
     tampered: Vec<(PathBuf, Vec<u8>, u32)>,
+    /// `incr/BUILD.bazel` (incremental analysis): `:a`'s flag, the
+    /// comments appended, the globbed files added.
+    incr_flag: usize,
+    incr_comments: usize,
+    incr_added: usize,
 }
 
 impl FuzzState {
@@ -3343,7 +3420,7 @@ enum Special {
 }
 
 /// The number of mutations of the catalogue ([`mutate`]).
-const MUTATIONS: usize = 56;
+const MUTATIONS: usize = 65;
 
 /// Apply one random mutation of the catalogue (the same to both copies);
 /// returns its name and what the step does besides its command.
@@ -3778,13 +3855,87 @@ fn mutate(twin: &Twin, rng: &mut Rng, state: &mut FuzzState, step: usize) -> (St
             twin.write("mapped/BUILD.bazel", &fuzz_mapped_build(q));
             name("edit a captured value of the map_each closures (mapped/BUILD.bazel)")
         }
+        // Incremental analysis (docs/INCREMENTAL_ANALYSIS.md): BUILD,
+        // `.bzl` and source edits of `incr/` that splice, prune or fall
+        // back; each step's output must equal the full analysis's.
+        56 => {
+            state.incr_flag = (state.incr_flag + 1) % 3;
+            twin.write("incr/BUILD.bazel", &fuzz_incr_build(state));
+            name("incr: an attribute edit (spliced)")
+        }
+        57 => {
+            state.incr_comments = (state.incr_comments + 1) % 4;
+            twin.write("incr/BUILD.bazel", &fuzz_incr_build(state));
+            name("incr: a comment edit (pruned)")
+        }
+        58 => {
+            state.toggle("incr-dep");
+            twin.write("incr/BUILD.bazel", &fuzz_incr_build(state));
+            name("incr: a dependency toggled (the graph changes)")
+        }
+        59 => {
+            state.toggle("incr-extra");
+            twin.write("incr/BUILD.bazel", &fuzz_incr_build(state));
+            name("incr: a target added or removed (the patterns change)")
+        }
+        60 => {
+            state.toggle("incr-print");
+            twin.write("incr/BUILD.bazel", &fuzz_incr_build(state));
+            name("incr: a BUILD print toggled")
+        }
+        61 => {
+            state.toggle(if step.is_multiple_of(2) {
+                "incr-deprecated"
+            } else {
+                "incr-private"
+            });
+            twin.write("incr/BUILD.bazel", &fuzz_incr_build(state));
+            name("incr: a deprecation or the visibility toggled")
+        }
+        62 => {
+            if step.is_multiple_of(3) && state.incr_added > 0 {
+                let added = state.incr_added;
+                twin.each(|root| {
+                    let _ = fs::remove_file(root.join(format!("ws/incr/srcs/f{added}.txt")));
+                });
+                state.incr_added -= 1;
+                name("incr: a globbed source removed")
+            } else {
+                state.incr_added += 1;
+                twin.write(&format!("incr/srcs/f{}.txt", state.incr_added), "f\n");
+                name("incr: a globbed source added")
+            }
+        }
+        63 => {
+            if state.toggle("incr-b-missing") {
+                twin.each(|root| {
+                    let _ = fs::remove_file(root.join("ws/incr/b.txt"));
+                });
+                name("incr: an explicit source deleted")
+            } else {
+                twin.write("incr/b.txt", "b\n");
+                name("incr: an explicit source restored")
+            }
+        }
+        64 => {
+            let edited = state.toggle("incr-bzl");
+            twin.write(
+                "incr/defs.bzl",
+                &if edited {
+                    INCR_RULES.replace("out.path, ctx.attr.flag", "out.path, ctx.attr.flag + '!'")
+                } else {
+                    INCR_RULES.to_owned()
+                },
+            );
+            name("incr: a .bzl edit")
+        }
         _ => name("no change"),
     };
     (name, special)
 }
 
 /// The commands of the fuzz ([`fuzz_command`]).
-const FUZZ_COMMANDS: usize = 12;
+const FUZZ_COMMANDS: usize = 14;
 /// The command consuming the generated repository's tool
 /// ([`Special::TamperOn`]).
 const TOOL_COMMAND: usize = 10;
@@ -3849,6 +4000,13 @@ fn fuzz_command(
             vec!["build".into(), ":l".into()]
         }
         11 => vec!["build".into(), "//mapped:m".into()],
+        12 => vec!["build".into(), "//incr_use:u".into(), "//incr:all".into()],
+        13 => vec![
+            "build".into(),
+            "--nobuild".into(),
+            "//incr/...".into(),
+            "//incr_use/...".into(),
+        ],
         _ => vec!["build".into(), "//swap:s".into(), "//pkgl:x".into()],
     };
     let mut options = Vec::new();
@@ -3891,6 +4049,19 @@ fn fuzz_outcome(pair: &Pair) -> &'static str {
         "verify mismatch"
     } else if pair.line("hit ").is_some() || perf("hit ") {
         "hit"
+    } else if pair
+        .explain()
+        .iter()
+        .any(|line| line.starts_with("incremental ") && line.contains(" re-analyzed;"))
+        || perf("incremental dirty=")
+    {
+        "miss, incremental"
+    } else if pair
+        .explain()
+        .iter()
+        .any(|line| line.starts_with("incremental") && !line.contains(" re-analyzed;"))
+    {
+        "miss, incremental fell back"
     } else if pair.line("saved ").is_some() {
         "miss, saved"
     } else if perf("miss ") {
@@ -4280,6 +4451,133 @@ fn mutation_fuzz() {
     println!("mutation fuzz: seed {seed}: {counts:?}");
 }
 
+/// Incremental analysis (docs/INCREMENTAL_ANALYSIS.md, tier A): a miss
+/// whose changed inputs lie inside main-repository packages reloads them; a
+/// comment keeps the saved plan, an attribute or a globbed or explicit
+/// source edit re-analyzes the requested targets reaching the package and
+/// splices them in; everything else falls back to the full analysis — the
+/// output always the snapshot-less run's, and the next run a hit.
+#[test]
+fn incremental_analysis_splices_prunes_and_falls_back() {
+    let twin = fixture();
+    let mut state = FuzzState::default();
+    twin.write("incr/defs.bzl", INCR_RULES);
+    twin.write("incr/srcs/a.txt", "a\n");
+    twin.write("incr/b.txt", "b\n");
+    twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
+    twin.write("incr_use/BUILD.bazel", INCR_USE_BUILD);
+    twin.write("pkg/BUILD.bazel", &fuzz_pkg_build(false));
+    twin.write("pkg/other.txt", "other\n");
+    twin.each(|root| std::os::unix::fs::symlink("in.txt", root.join("ws/pkg/link.txt")).unwrap());
+    let args = &["build", "//incr/...", "//incr_use/...", "//other:o"];
+    twin.save(args, &[]);
+    twin.same(args, &[]).assert_hit();
+    let incremental = |rerun: usize| {
+        let pair = twin.same(args, &[]);
+        pair.assert_miss("incr").assert_success();
+        let line = pair
+            .explain()
+            .into_iter()
+            .find(|line| line.starts_with("incremental ") && line.contains(" re-analyzed;"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected an incremental analysis:\n{}",
+                    pair.explain().join("\n")
+                )
+            });
+        assert!(
+            line.contains(&format!(" {rerun} requested target(s) re-analyzed")),
+            "{line}"
+        );
+        if pair.mode == VERIFY {
+            assert!(
+                pair.line("verified ").is_some(),
+                "{}",
+                pair.explain().join("\n")
+            );
+        } else {
+            pair.assert_saved();
+        }
+        twin.same(args, &[]).assert_hit().assert_success();
+        pair
+    };
+    let fallback = |reason: &str| {
+        let pair = twin.same(args, &[]);
+        pair.assert_miss("incr").assert_saved();
+        assert!(
+            pair.explain()
+                .iter()
+                .any(|line| line.starts_with("incremental")
+                    && !line.contains(" re-analyzed;")
+                    && line.contains(reason)),
+            "expected a fallback ({reason}):\n{}",
+            pair.explain().join("\n")
+        );
+        twin.same(args, &[]).assert_hit().assert_success();
+    };
+    // A comment: the saved plan stands.
+    state.incr_comments = 1;
+    twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
+    incremental(0);
+    // An attribute of //incr:a: it and //incr_use:u are re-analyzed (and
+    // :b, its package's other target).
+    state.incr_flag = 1;
+    twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
+    let spliced = incremental(3);
+    assert!(
+        spliced.stderr().contains("2 actions executed"),
+        "{}",
+        spliced.stderr()
+    );
+    // A globbed source added, then removed; an explicit source deleted and
+    // restored (the build then fails like the full analysis's).
+    twin.write("incr/srcs/new.txt", "new\n");
+    incremental(3);
+    twin.each(|root| fs::remove_file(root.join("ws/incr/srcs/new.txt")).unwrap());
+    incremental(3);
+    // Fallbacks, in this process before any analysis or in a fresh one.
+    state.toggle("incr-extra");
+    twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
+    fallback("expansion may change");
+    state.toggle("incr-dep");
+    twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
+    fallback("dependencies of //incr:a changed");
+    state.toggle("incr-print");
+    twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
+    fallback("prints while it loads");
+    state.toggle("incr-print");
+    state.toggle("incr-deprecated");
+    twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
+    fallback("");
+    state.toggle("incr-deprecated");
+    twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
+    fallback("");
+    twin.write("incr/defs.bzl", &format!("{INCR_RULES}\n# edited\n"));
+    fallback(".bzl file");
+    // A source an action reads: a hit (no analysis input changed).
+    twin.write("incr/b.txt", "b2\n");
+    twin.same(args, &[]).assert_hit().assert_success();
+    // Back to a splice; a package other targets' visibility checks read
+    // (a package group) falls back.
+    state.incr_flag = 2;
+    twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
+    // :a, :b, :extra and //incr_use:u.
+    incremental(4);
+    twin.write(
+        "incr_use/BUILD.bazel",
+        &format!("{INCR_USE_BUILD}package_group(name = 'friends', packages = ['//incr'])\n"),
+    );
+    fallback("");
+    // A deleted explicit source: the splice plans the missing input, the
+    // build fails like the full analysis's.
+    twin.each(|root| fs::remove_file(root.join("ws/incr/b.txt")).unwrap());
+    let failed = twin.same(args, &[]);
+    assert!(!failed.on.status.success());
+    twin.write("incr/b.txt", "b\n");
+    let restored = twin.same(args, &[]);
+    restored.assert_success();
+}
+
 /// Test suites (integration-21: parity-next's target pattern phase, ed8468a
 /// and 644a0b1, under L2-W5): explicit, implicit (`tests` empty: the
 /// package's non-manual tests) and nested suites, a suite of one test for
@@ -4524,6 +4822,11 @@ mod verify_mode {
     #[test]
     fn a_source_edit_hits_and_reruns_the_affected_action() {
         verified(super::a_source_edit_hits_and_reruns_the_affected_action);
+    }
+
+    #[test]
+    fn incremental_analysis_splices_prunes_and_falls_back() {
+        verified(super::incremental_analysis_splices_prunes_and_falls_back);
     }
 
     #[test]

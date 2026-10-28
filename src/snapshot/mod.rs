@@ -407,8 +407,9 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
                 Err(reason) => {
                     if explain && !reason.is_empty() {
                         observed_fs_diag(&format!(
-                            "incremental {}: not attempted: {reason}",
-                            key.short()
+                            "incremental {}: not attempted: {}",
+                            key.short(),
+                            incremental::one_line(&reason)
                         ));
                     }
                     Checked::Miss(Some(Box::new(save::start(key, explain, log))))

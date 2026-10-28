@@ -121,6 +121,11 @@ pub fn enabled() -> bool {
             .is_some_and(|value| value == "0" || value == "off" || value == "false")
 }
 
+/// `text` on one line (a diagnostics line: newlines escaped).
+pub fn one_line(text: &str) -> String {
+    text.replace('\n', "\\n")
+}
+
 /// A configured target (or, without a configuration, a source file) of the
 /// index.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -188,6 +193,9 @@ pub struct Index {
     /// Keys whose analysis printed (sorted): the window's lines are not
     /// attributed further, so such a key is never re-analyzed.
     pub printed: Vec<u32>,
+    /// (key, aspect application): the aspect applications each key's
+    /// planning requested (their distinct number is the window's count).
+    pub aspects: Vec<(u32, String)>,
     /// The recorded inputs of repositories and extensions
     /// (crate::observed_fs::note_repository_input): (path, a tree).
     pub repository_inputs: Vec<(PathBufWire, bool)>,
@@ -545,9 +553,9 @@ pub fn compare_package(
             "{shown} now defines toolchains, platforms, constraints, flags or package groups"
         ));
     }
-    if package.pattern
-        && (before.summary != now.summary || (strict_patterns && before.digest != now.digest))
-    {
+    // Whether the target pattern phase expanded the package is not
+    // tracked precisely: any change of what an expansion reads falls back.
+    if before.summary != now.summary || (strict_patterns && before.digest != now.digest) {
         return Err(format!(
             "{shown}: the target patterns' expansion may change (targets added, removed or retagged)"
         ));
@@ -789,6 +797,27 @@ pub fn check_graph(
                 sub.keys[*key as usize].label
             ));
         }
+    }
+    // The distinct aspect applications (the window's count) stay the same.
+    let before: BTreeSet<&str> = index
+        .aspects
+        .iter()
+        .map(|(_, application)| application.as_str())
+        .collect();
+    let mut after: BTreeSet<&str> = index
+        .aspects
+        .iter()
+        .filter(|(key, _)| !dirty.contains(key))
+        .map(|(_, application)| application.as_str())
+        .collect();
+    after.extend(
+        sub.aspects
+            .iter()
+            .filter(|(key, _)| dirty.contains(&mapped[*key as usize]))
+            .map(|(_, application)| application.as_str()),
+    );
+    if before != after {
+        return Err("the aspect applications changed".to_owned());
     }
     let loaded: BTreeSet<(&str, &str)> = index
         .packages
@@ -1126,8 +1155,80 @@ pub fn splice(
             }
         }
     }
-    // The requested labels' reported outputs are the saved ones.
+    // No output of a re-analyzed action is another action's, or lies
+    // below or above one (the full analysis reports such a conflict; the
+    // partial one cannot see the actions it did not plan).
+    let mut outputs: HashMap<&std::path::Path, &str> = HashMap::new();
+    let mut directories: HashSet<&std::path::Path> = HashSet::new();
+    for node in &nodes {
+        for output in &node.action.outputs {
+            if let Some(other) = outputs.insert(output.as_path(), node.action.id.as_str())
+                && other != node.action.id
+                && (owner(node).is_some_and(|(_, dirty)| dirty)
+                    || owner_of_action(other, &owners).is_some_and(|(_, dirty)| dirty))
+            {
+                return Err(format!(
+                    "actions '{other}' and '{}' both write {}",
+                    node.action.id,
+                    output.display()
+                ));
+            }
+            directories.extend(output.ancestors().skip(1));
+        }
+    }
+    for node in nodes
+        .iter()
+        .filter(|node| owner(node).is_some_and(|(_, dirty)| dirty))
+    {
+        for output in &node.action.outputs {
+            if directories.contains(output.as_path())
+                || output
+                    .ancestors()
+                    .skip(1)
+                    .any(|ancestor| outputs.contains_key(ancestor))
+            {
+                return Err(format!(
+                    "an output of action '{}' is a prefix of another output, or has one: {}",
+                    node.action.id,
+                    output.display()
+                ));
+            }
+        }
+    }
+    // The requested labels' reported outputs are the saved ones, and no
+    // other label reports one a re-analyzed action produces.
     let requested_labels: HashSet<&Label> = labels.iter().collect();
+    let produced_by_dirty = |produced: &crate::request::Produced| {
+        produced
+            .producer
+            .as_ref()
+            .is_some_and(|(id, _)| owner_of_action(id, &owners).is_some_and(|(_, dirty)| dirty))
+    };
+    let other_reports = full
+        .requested
+        .iter()
+        .filter(|(label, _)| !requested_labels.contains(label))
+        .map(|(_, produced)| produced)
+        .chain(
+            full.results
+                .iter()
+                .filter(|(label, _)| !requested_labels.contains(label))
+                .flat_map(|(_, produced)| produced),
+        )
+        .chain(
+            full.aspect_reports
+                .iter()
+                .filter(|(_, label, _)| !requested_labels.contains(label))
+                .flat_map(|(_, _, produced)| produced),
+        );
+    for produced in other_reports {
+        if produced_by_dirty(produced) {
+            return Err(format!(
+                "a target that was not re-analyzed reports {}, which a re-analyzed one produces",
+                produced.real.display()
+            ));
+        }
+    }
     let encoded = |value: &dyn erased::Encode| value.bytes();
     let full_requested: Vec<_> = full
         .requested
@@ -1247,6 +1348,7 @@ mod tests {
             roots: vec![(0, 0)],
             shared: Vec::new(),
             printed: Vec::new(),
+            aspects: vec![(0, "//a:b%x".to_owned())],
         };
         let stored = encode_index(&index).unwrap();
         assert_eq!(decode_index(stored).unwrap(), index);

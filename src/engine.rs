@@ -11354,6 +11354,7 @@ impl Engine {
                 aspect: aspect.descriptor.clone(),
                 bases: bases.clone(),
             };
+            self.track_aspect_application(&key);
             if state.aspect_providers.contains_key(&key) {
                 applications.push((
                     key.clone(),

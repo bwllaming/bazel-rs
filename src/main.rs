@@ -1272,7 +1272,8 @@ fn run() -> Result<(), String> {
                 // analysis continues here, its stderr forwarded again.
                 if bazel_rs::snapshot::explain() {
                     bazel_rs::observed_fs::diag(&format!(
-                        "incremental: the full analysis runs: {reason}"
+                        "incremental: the full analysis runs: {}",
+                        bazel_rs::snapshot::incremental::one_line(&reason)
                     ));
                 }
                 None
@@ -2042,16 +2043,20 @@ fn incremental_finish(
             record.details.first().map(String::as_str).unwrap_or("")
         ));
     }
-    for at in &changed_observations {
-        let (path, observation) = &inputs.recording.observations[*at];
-        if recorder.observed(path, &observation.op).is_none() {
-            return Err(format!(
-                "{} {} changed but was not observed again",
-                observation.op.name(),
-                bazel_rs::observed_fs::escape(path.as_os_str())
-            ));
-        }
-    }
+    // What changed is dropped from the saved recording: what this
+    // analysis observed again replaces it, and what it did not observe the
+    // full analysis would not either (every target observing inside a
+    // changed package was re-analyzed).
+    let mut inputs = inputs;
+    let changed_set: std::collections::HashSet<usize> =
+        changed_observations.iter().copied().collect();
+    let observations = std::mem::take(&mut inputs.recording.observations);
+    inputs.recording.observations = observations
+        .into_iter()
+        .enumerate()
+        .filter(|(at, _)| !changed_set.contains(at))
+        .map(|(_, observation)| observation)
+        .collect();
     context.lockfile_gate.open();
     let summary = format!(
         "incremental {key}: {} changed observation(s) in {} package(s), {} unchanged; {} configured target(s) dirty, {} requested target(s) re-analyzed; {:.1} ms (reload {:.1} ms)",
@@ -2117,7 +2122,8 @@ fn reexec_fallback(snapshot: &mut bazel_rs::snapshot::Scope, reason: &str) -> ! 
     }
     if bazel_rs::snapshot::explain() {
         bazel_rs::observed_fs::diag(&format!(
-            "incremental: falls back to the full analysis: {reason}"
+            "incremental: falls back to the full analysis: {}",
+            bazel_rs::snapshot::incremental::one_line(reason)
         ));
     }
     reexec(bazel_rs::snapshot::incremental::REEXEC_FALLBACK)
