@@ -724,10 +724,16 @@ pub fn dirty_labels(
             positions.insert(*position);
         }
     }
-    let labels = positions
+    let labels: Vec<Label> = positions
         .into_iter()
         .filter_map(|position| index.labels.get(position as usize).cloned())
         .collect();
+    if labels.is_empty() && !dirty.is_empty() {
+        return Err(format!(
+            "{} is dirty but reaches no requested target",
+            index.keys[*dirty.iter().next().expect("not empty") as usize].label
+        ));
+    }
     Ok((labels, dirty))
 }
 
@@ -1467,6 +1473,129 @@ mod erased {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn package(name: &str) -> IndexPackage {
+        IndexPackage {
+            repository: String::new(),
+            package: name.to_owned(),
+            global: false,
+            why: None,
+            pattern: true,
+            printed: false,
+            loaded: true,
+            fingerprint: Some(Fingerprint {
+                digest: [0; 32],
+                summary: [0; 32],
+                shared_kinds: false,
+            }),
+        }
+    }
+
+    fn observation(
+        path: &str,
+        op: crate::observed_fs::Op,
+    ) -> (PathBuf, crate::observed_fs::Observation) {
+        (
+            PathBuf::from(path),
+            crate::observed_fs::Observation {
+                op,
+                outcome: crate::observed_fs::Outcome::Error(2),
+            },
+        )
+    }
+
+    #[test]
+    fn changes_are_attributed_to_the_innermost_loaded_package_or_refused() {
+        use crate::observed_fs::{Op, Projection};
+        let mut index = Index {
+            main_root: PathBuf::from("/ws"),
+            packages: vec![package(""), package("a"), package("a/b")],
+            repository_inputs: vec![(PathBufWire(PathBuf::from("/ws/watched")), true)],
+            ..Index::default()
+        };
+        let recording = crate::observed_fs::Recording {
+            observations: vec![
+                observation("/ws/a/b/BUILD.bazel", Op::Read),
+                observation(
+                    "/ws/a/srcs",
+                    Op::ReadDir(Projection::Glob {
+                        pattern: "srcs/*".to_owned(),
+                        relative: "srcs".to_owned(),
+                    }),
+                ),
+                observation("/ws/a/b/c/x.go", Op::Lstat),
+                observation("/ws/a/defs.bzl", Op::Read),
+                observation("/ws/a/c/BUILD", Op::Stat),
+                observation("/ws/a", Op::ReadDir(Projection::Directories)),
+                observation("/ws/watched/x/BUILD", Op::Read),
+                observation("/cache/x", Op::Read),
+                observation("/elsewhere/x", Op::Stat),
+            ],
+            ..Default::default()
+        };
+        let cache = std::path::Path::new("/cache");
+        let (loaded, content) = classify(&index, &recording, &[0, 1, 2], cache).unwrap();
+        assert_eq!(loaded.into_iter().collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(content.into_iter().collect::<Vec<_>>(), [2]);
+        for (at, reason) in [
+            (3, ".bzl"),
+            (4, "package boundary"),
+            (5, "directory listing"),
+            (6, "recorded input of a repository"),
+            (7, "inside the cache"),
+            (8, "outside the main repository"),
+        ] {
+            let error = classify(&index, &recording, &[at], cache).unwrap_err();
+            assert!(error.contains(reason), "{at}: {error}");
+        }
+        index.packages[2].global = true;
+        assert!(
+            classify(&index, &recording, &[0], cache)
+                .unwrap_err()
+                .contains("shared computation")
+        );
+        index.packages[2].global = false;
+        index.packages[2].printed = true;
+        assert!(
+            classify(&index, &recording, &[0], cache)
+                .unwrap_err()
+                .contains("printed")
+        );
+    }
+
+    #[test]
+    fn actions_belong_to_the_longest_owner() {
+        let owners: std::collections::HashMap<String, bool> = [
+            ("//a:b".to_owned(), true),
+            ("//a:b#c".to_owned(), false),
+            ("//a:b[0011aabb]".to_owned(), false),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(owner_of_action("//a:b", &owners), Some(("//a:b", true)));
+        assert_eq!(owner_of_action("//a:b#0", &owners), Some(("//a:b", true)));
+        assert_eq!(
+            owner_of_action("//a:b#c#1", &owners),
+            Some(("//a:b#c", false))
+        );
+        assert_eq!(
+            owner_of_action("//a:b%//x:a.bzl%asp#0", &owners),
+            Some(("//a:b", true))
+        );
+        assert_eq!(
+            owner_of_action("//a:b[0011aabb]#2", &owners),
+            Some(("//a:b[0011aabb]", false))
+        );
+        assert_eq!(owner_of_action("status#stable", &owners), None);
+    }
+
+    #[test]
+    fn the_partial_window_must_print_nothing_new() {
+        let full = b"DEBUG: x\nINFO: Analyzed 9 targets (3 packages loaded, 9 targets configured).\nINFO: Found 9 targets...\n";
+        let partial = b"DEBUG: x\nINFO: Analyzed 2 targets (1 packages loaded, 2 targets configured).\nINFO: Found 2 targets...\n";
+        assert!(window_covers(full, partial).is_ok());
+        assert!(window_covers(full, b"WARNING: new\n").is_err());
+    }
 
     #[test]
     fn the_index_round_trips() {

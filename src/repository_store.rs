@@ -949,12 +949,7 @@ fn reuse_through(
     if carried(&destination) {
         // Still the tree's REPO record (its links decide which recorded
         // observations below it a hit validates).
-        crate::observed_fs::repository_tree(
-            "direct",
-            spec_key,
-            &destination,
-            Some(&manifest_path),
-        );
+        crate::observed_fs::repository_tree("direct", spec_key, &destination, Some(&manifest_path));
         settle_slot(cache, stage_key, &identity, existing.slot_class());
         timing::PHASES
             .reused
