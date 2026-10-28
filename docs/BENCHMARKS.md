@@ -137,9 +137,13 @@ Each repository was used as published, with only these modifications:
   `tools/releaser`: 4.4 s → 0.65 s for a comment, 3.0–3.3 s for an
   attribute), but not for this scenario's edit: it adds a target, and
   `rule/BUILD.bazel` is a watched input of `bazel_gazelle_go_repository_tools`,
-  whose re-run genuine shares — its 8.8 s in bazel-rs are a cold go build
-  cache, which bazel-rs's verified store trees cannot keep (§4, "What
-  genuine Bazel 9.3 does with a watched tree").
+  whose re-run genuine shares — its 8.8 s in bazel-rs were a cold go build
+  cache, which bazel-rs's verified store trees could not keep (§4, "What
+  genuine Bazel 9.3 does with a watched tree"). Since the go build cache
+  stays in the cache repository's mutable slot (docs/REPOSITORY_SLOTS.md,
+  "Written-into repository"), the edit takes 5.0–5.6 s and the no-op after
+  it 0.38–0.47 s (a snapshot hit; 4.7–5.7 s before), single runs on the
+  shared machine, not the table's harness medians.
   - BAZEL_RS_TIMING shows 12.6 s of planning on gazelle. About 9 s of it is
     repository re-validation after the snapshot miss:
     `PERF-REPO recorded_check=9.005s/71`, `execute=8.397s/55`, 139 MB of

@@ -39,6 +39,32 @@ was `-L../<32-hex stage>` (TEST-SURVEY L2).
   that the slot is complete. The manifest says `"self_ref": true`; `refs`
   lists other store trees the bytes name (a GOROOT, absolute links), for a
   future collector.
+* Written-into repository — another repository's `execute` names, in its
+  arguments or environment, a path below this ordinary repository's
+  published tree that the tree does not have (gazelle HEAD's relocatable
+  `go.env`: go_repository_tools runs `env -i GOCACHE=<dirname of the cache
+  repository's go.env>/gocache ... go build`, internal/env.bzl
+  resolve_go_env, internal/common.bzl env_execute). Genuine's repository is
+  a plain directory under `external/` that the tool writes into and that is
+  checked by its marker and recorded inputs only, never by its contents:
+  the go build cache survives, the next tools re-run is incremental (capture
+  `cache_dir_reuse`). Natively the tree must stay as published (every reuse
+  and the analysis snapshot verify it; before, the build cache written into
+  it made the next lookup miss and re-execute the repository empty). So
+  before the command runs, the slot becomes a mutable copy of the tree
+  (`restore_mutable`, exact: its marker must name this publication, else it
+  is made again) and every occurrence of the tree's root in the command's
+  arguments, environment and working directory is replaced by the slot's
+  path (genuine's `external/<name>`); the command holds the slot as a
+  reader. Later commands naming the tree are redirected the same way while
+  the marker names it; a re-execution of the repository replaces the slot
+  (`fresh`), as genuine's re-fetch does. The manifest is unchanged (class
+  ordinary): the slot is never an input, the repository is reused by its
+  tree and recorded inputs as before, and an unlocked `bind` never replaces
+  the marked directory. gazelle (docs/BENCHMARKS.md, `rule/BUILD.bazel`
+  edit): 12.7–14.1 s → 5.0–5.6 s, the following no-op 4.7–5.7 s (a miss) →
+  0.38–0.47 s (a hit). ~/code (gazelle 0.51.3, self-referencing `go.env`)
+  never takes this path.
 * `repository_ctx.path(Label(...))` still names the published tree (pinned,
   the analysis snapshot validates trees): a documented divergence from
   genuine's `<output_base>/external/<name>/...`.
@@ -103,6 +129,12 @@ store with their own pointers and stages.
 
 ## Limits
 
+* A tool that writes below another repository's tree through an EXISTING
+  path it was given (no missing path named, the slot not yet converted) or
+  through a path it learns at run time still writes into the tree; the
+  stat fingerprints catch that (the tree is republished). Conversely, a
+  command naming a missing path below another repository only to probe it
+  converts that repository (a copy of its tree; harmless otherwise).
 * A tool that learns a slot's path at run time (not from a label, its
   arguments, environment or working directory) and writes there later is not
   covered: into a mutable slot unlocked, or through an ordinary slot's link

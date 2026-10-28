@@ -432,18 +432,19 @@ ten `go_deps` repositories that `watch` the gazelle binary it builds: the
 binary's digest is unchanged, so their markers are up to date. bazel-rs
 does the same now (`PERF-REPO executed ... other=1:
 +non_module_deps+bazel_gazelle_go_repository_tools`; an earlier version
-re-ran the ten as well). The cost differs: genuine's re-run takes well under
-a second (1.05 s for the whole build), bazel-rs's 8.8 s, because the go
-build cache (`GOCACHE`) lives in `bazel_gazelle_go_repository_cache`'s
-directory. Genuine leaves that directory writable and never looks at it
-again; bazel-rs publishes it as a verified store tree, so the cache written
-into it by the tools' `go build` makes the next lookup miss
-(`INTEGRITY .../trees/<id>: lstat changed`) and the next full analysis
-re-execute the cache repository into a fresh, empty tree: every re-run of
-the tools compiles gazelle from scratch, and the run after it is a miss
-(4.6–4.9 s on gazelle). That is a repository-store matter (trees that rules
-use as mutable caches), not incremental analysis's; it is the bulk of the
-gazelle BUILD-edit gap (13.4 s against genuine's 1.05 s).
+re-ran the ten as well). The cost differed: genuine's re-run takes well
+under a second (1.05 s for the whole build), bazel-rs's took 8.8 s, because
+the go build cache (`GOCACHE`) lives in `bazel_gazelle_go_repository_cache`'s
+directory. Genuine leaves that directory writable and never looks at its
+contents again; bazel-rs published it as a verified store tree, so the cache
+written into it made the next lookup miss (`INTEGRITY .../trees/<id>: lstat
+changed`) and the next full analysis re-executed the cache repository into
+a fresh, empty tree: every re-run of the tools compiled gazelle from
+scratch, and the run after it was a miss (4.6–4.9 s). The repository store
+now redirects such a command to the repository's slot, a mutable copy of
+the tree (docs/REPOSITORY_SLOTS.md, "Written-into repository"): the edit
+costs 5.0–5.6 s (the tools' `go build` 0.5 s), and the no-op after it is a
+hit (0.38–0.47 s).
 
 ### Measured
 
