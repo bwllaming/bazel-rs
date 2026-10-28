@@ -119,10 +119,14 @@ fn outputs(summary: &BuildSummary, show_result: usize, text: &mut Vec<u8>) -> bo
             }
         }
     }
-    for _ in &summary.failed_targets {
+    for _ in summary
+        .failed_targets
+        .iter()
+        .chain(&summary.skipped_targets)
+    {
         budget -= 1;
         if budget < 0 {
-            return false;
+            return failed;
         }
     }
     for (_, _, paths) in &summary.aspects {
@@ -133,8 +137,14 @@ fn outputs(summary: &BuildSummary, show_result: usize, text: &mut Vec<u8>) -> bo
             }
         }
     }
-    let omit_nothing_to_build =
-        summary.results.len() + summary.failed_targets.len() + summary.aspects.len() > show_result;
+    let omit_nothing_to_build = summary.results.len()
+        + summary.failed_targets.len()
+        + summary.skipped_targets.len()
+        + summary.aspects.len()
+        > show_result;
+    for label in &summary.skipped_targets {
+        text.extend_from_slice(format!("Target {label} was skipped\n").as_bytes());
+    }
     for (label, paths) in &summary.results {
         if paths.is_empty() {
             if !omit_nothing_to_build {

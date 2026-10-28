@@ -22,8 +22,18 @@ pub struct BepConfiguration {
 }
 
 /// One requested top-level target.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Compatibility {
+    #[default]
+    Compatible,
+    Skipped,
+    Rejected,
+}
+
+/// One requested top-level target.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BepTarget {
+    pub compatibility: Compatibility,
     /// The label as Bazel prints it in events (`//pkg:name`, `@@repo//...`).
     pub label: String,
     /// TargetConfigured.target_kind (`genrule rule`, `source file`).

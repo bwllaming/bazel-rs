@@ -77,7 +77,8 @@ pub const MAGIC: &[u8; 8] = b"BZRSPLN1";
 /// (PA-1's shared input groups, integration-21). 3: portable Args
 /// `map_each` functions (crate::snapshot::mapper). 4: META carries the
 /// build event plan (crate::bep::plan).
-pub const FORMAT: u32 = 6;
+// 7: incompatible skipped roots and BEP compatibility decisions in META.
+pub const FORMAT: u32 = 7;
 /// Actions per NODES section (fixed: the encoding must not depend on the
 /// machine).
 pub const CHUNK: usize = 1024;
@@ -127,6 +128,7 @@ pub struct Stats {
 #[derive(Serialize)]
 struct Meta<'a> {
     command: &'a crate::request::RequestCommand,
+    skipped: &'a [crate::label::Label],
     keep_going: &'a Option<crate::request::KeepGoingPlan>,
     execute: bool,
     requested: &'a [(crate::label::Label, crate::request::Produced)],
@@ -143,6 +145,7 @@ struct Meta<'a> {
 #[derive(Deserialize)]
 struct MetaOwned {
     command: crate::request::RequestCommand,
+    skipped: Vec<crate::label::Label>,
     keep_going: Option<crate::request::KeepGoingPlan>,
     execute: bool,
     requested: Vec<(crate::label::Label, crate::request::Produced)>,
@@ -172,6 +175,7 @@ fn meta_of(request: &PlannedRequest) -> Meta<'_> {
     // chunks like `nodes`).
     let PlannedRequest {
         command,
+        skipped,
         keep_going,
         execute,
         nodes: _,
@@ -187,6 +191,7 @@ fn meta_of(request: &PlannedRequest) -> Meta<'_> {
     } = request;
     Meta {
         command,
+        skipped,
         keep_going,
         execute: *execute,
         requested,
@@ -704,6 +709,7 @@ pub fn decode_cancellable(bytes: &[u8], cancel: &AtomicBool) -> Result<PlannedRe
     drop(groups);
     Ok(PlannedRequest {
         command: meta.command,
+        skipped: meta.skipped,
         keep_going: meta.keep_going,
         execute: meta.execute,
         nodes,
@@ -1422,6 +1428,7 @@ mod tests {
             },
         ];
         PlannedRequest {
+            skipped: Vec::new(),
             keep_going: None,
             command: RequestCommand::Test {
                 build: vec![label("//pkg:t"), label("@@r+//x:y")],
@@ -1510,6 +1517,7 @@ mod tests {
                     is_tool: false,
                 }],
                 targets: vec![crate::bep::plan::BepTarget {
+                    compatibility: Default::default(),
                     label: "//pkg:t".into(),
                     kind: "sh_test rule".into(),
                     tags: vec!["unit".into()],

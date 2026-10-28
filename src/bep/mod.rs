@@ -944,6 +944,26 @@ pub fn planned(request: &crate::request::PlannedRequest) {
     });
 }
 
+/// Publish only known incompatible roots after fail-fast analysis. No ordinary
+/// target completion, output files or actions are fabricated for a failed plan.
+pub fn failed_compatibility(plan: plan::BepPlan) {
+    if !active() || plan.targets.is_empty() {
+        return;
+    }
+    with_state(|state| {
+        state.planned = Some(PlannedState {
+            plan,
+            requested: Vec::new(),
+            execute: false,
+            analysis_failed: Vec::new(),
+            actions_created: 0,
+            created_by_mnemonic: BTreeMap::new(),
+        });
+        post_planned(state);
+        state.streamer.flush();
+    });
+}
+
 fn post_planned(state: &mut State) {
     let Some(planned) = &state.planned else {
         return;
@@ -955,7 +975,11 @@ fn post_planned(state: &mut State) {
         .iter()
         .map(|target| target.label.clone())
         .collect();
-    labels.extend(planned.analysis_failed.iter().cloned());
+    for label in &planned.analysis_failed {
+        if !labels.contains(label) {
+            labels.push(label.clone());
+        }
+    }
     let mut events = vec![
         Event::new(id::pattern(&header.patterns), (6, "expanded", Msg::new())).children(
             labels
@@ -1505,6 +1529,36 @@ fn post_execution(state: &mut State, exit_code: i32) {
     for target in &planned.plan.targets {
         let configuration = configuration_of(target.configuration);
         let completed_id = id::target_completed(&target.label, &configuration);
+        match target.compatibility {
+            plan::Compatibility::Skipped => {
+                events.push(Event::new(
+                    completed_id,
+                    (
+                        4,
+                        "aborted",
+                        Msg::new().enumeration(1, "reason", (7, "SKIPPED")).str(
+                            2,
+                            "description",
+                            format!("Target {} build was skipped.", target.label),
+                        ),
+                    ),
+                ));
+                continue;
+            }
+            plan::Compatibility::Rejected => {
+                events.push(Event::new(
+                    id::target_configured(&target.label),
+                    (
+                        4,
+                        "aborted",
+                        Msg::new().enumeration(1, "reason", (6, "ANALYSIS_FAILURE")),
+                    ),
+                ));
+                events.push(Event::new(completed_id, (4, "aborted", Msg::new())));
+                continue;
+            }
+            plan::Compatibility::Compatible => {}
+        }
         if !planned.execute {
             continue;
         }

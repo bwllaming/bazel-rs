@@ -79,7 +79,7 @@ limitations still fail. Direct/indirect incompatible targets are actionless
 configured results included in queries; retained conditions project their
 attributes without ordinary dependency analysis. See
 [TARGET_COMPATIBILITY.md](TARGET_COMPATIBILITY.md) for formatter errors and the
-separate fail-closed build/test skipping boundary. Attribute split
+separate [build/test root policy](INCOMPATIBLE_BUILD_SKIP.md). Attribute split
 transitions now analyze every branch; see [SPLIT_TRANSITIONS.md](SPLIT_TRANSITIONS.md).
 There is no genuine-Bazel fallback and no special-case TD output rewriting.
 

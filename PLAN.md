@@ -162,8 +162,8 @@ Done since the last increment recorded under "History", one line each:
        included by cquery. Full PR-clone deps(//...) now passes: 218.20s / 8,033.4MiB,
        481,114,922 bytes; warm graph hit 2.94s / 1,633.6MiB, roots 2.44s / 1,634.5MiB.
        Official-schema decode verifies 265,121 results / 1,116,527 edges. The 8GiB
-       cap remains (158.6MiB headroom), canaries unchanged. Build/test skipping,
-       untrimmed flag-root identities and default TD filtering remain boundaries;
+       cap remains (158.6MiB headroom), canaries unchanged. Untrimmed flag-root
+       identities and default TD filtering remain boundaries;
        no whole-workspace TD claim (docs/TARGET_COMPATIBILITY.md).
 - [x] Share unchanged configured-rule data: equal-work full-query peak falls
       from 8,033.4 to 7,460.5 MiB, leaving 731.5 MiB under the unchanged 8 GiB cap.
@@ -172,6 +172,11 @@ Done since the last increment recorded under "History", one line each:
 - [x] Startup `--native-lockfile` protects TD's info/mod companions as well as
       cquery/config. Real pinned TD scratch comparisons and the combined 3,245-test
       gate pass. Full-PR clone/process-tree budget safeguards remain separate.
+- [x] Incompatible build/test root policy uses original positive SINGLE_TARGET
+       provenance, supports implicit/explicit-option skipping and keep-going
+       rejection, preserves SKIPPED summaries/BEP and binary request replay.
+       Genuine scratch exit cases include all-skipped/mixed tests, nobuild,
+       run, coverage and real failures (docs/INCOMPATIBLE_BUILD_SKIP.md).
 - [x] Runtime archive classpath filtering implements the genuine empty-exclusion
       identity shortcut and nonempty Artifact-identity subtraction/stable-order
       result, including the intentionally untyped exclusion set. A real

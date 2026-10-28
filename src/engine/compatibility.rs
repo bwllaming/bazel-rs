@@ -19,12 +19,9 @@ pub(super) enum Incompatibility {
 }
 
 impl Incompatibility {
-    // Phase two (original-pattern explicitness, skipped tests/BEP) is not yet
-    // modeled. Keep build and --nobuild fail-closed without misclassifying this
-    // successful configured result as a keep-going success.
-    pub(super) fn unsupported_build_error<'a>(&'a self, label: &'a Label) -> (&'a Label, String) {
+    fn reason(&self) -> String {
         match self {
-            Self::Dependencies(deps) => deps[0].1.unsupported_build_error(&deps[0].0.label),
+            Self::Dependencies(deps) => deps[0].1.reason(),
             Self::Direct {
                 platform,
                 constraints,
@@ -54,20 +51,110 @@ impl Incompatibility {
                         plural(settings)
                     ));
                 }
-                (
-                    label,
-                    format!(
-                        "{} is incompatible with its target platform:{}; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)",
-                        crate::rule_declarations::canonical_form(label),
-                        reasons.join(" and")
-                    ),
-                )
+                reasons.join(" and")
             }
         }
     }
 }
 
 impl Engine {
+    /// Original positive SINGLE_TARGET patterns, not expansion cardinality.
+    /// AnalysisPhaseRunner.getExplicitTargetPatterns (9.3:546-581).
+    pub(super) fn record_explicit_targets(&mut self, patterns: &[String], relative: &str) {
+        let mut explicit = BTreeSet::new();
+        for text in patterns {
+            let Ok(pattern) = crate::target_pattern::parse(text, relative) else {
+                continue;
+            };
+            if !pattern.negative
+                && let crate::target_pattern::Kind::SingleTarget { target } = &pattern.kind
+                && let Ok(label) = self.repositories.parse(&pattern.label_text(target), "", "")
+            {
+                explicit.insert(label);
+            }
+        }
+        self.explicit_targets = Some(explicit);
+    }
+
+    pub(super) fn check_requested_compatibility(
+        &mut self,
+        configured: &ConfiguredNodes,
+        label: &Label,
+        config: ConfigId,
+    ) -> Result<(), String> {
+        if self.cquery_capture.is_some() {
+            return Ok(());
+        }
+        let Some(cause) = self.target_incompatibility(configured, label, config)? else {
+            return Ok(());
+        };
+        let explicit = self
+            .explicit_targets
+            .as_ref()
+            .is_none_or(|targets| targets.contains(label));
+        if !explicit || self.skip_incompatible_explicit_targets {
+            self.skipped_incompatible.insert(label.clone());
+            return Ok(());
+        }
+        let mut message = format!(
+            "Target {} is incompatible and cannot be built, but was explicitly requested.\nDependency chain:",
+            crate::rule_declarations::canonical_form(label)
+        );
+        let mut key = ConfiguredTargetKey::new(label.clone(), config);
+        let mut cause = cause;
+        loop {
+            let actual = self
+                .forwarded_actual(configured, &key)
+                .unwrap_or_else(|| key.label.clone());
+            let target = self.target(&actual)?;
+            let owner = match &target {
+                Target::Output(rule, _) => rule.label.clone(),
+                _ => actual.clone(),
+            };
+            let config =
+                self.delegated_config(&ConfiguredTargetKey::new(owner, key.config), key.config);
+            message.push_str(&format!("\n    {} ({})", actual, &config.to_string()[..6]));
+            if let Incompatibility::Dependencies(deps) = cause.as_ref() {
+                // An indirectly incompatible output first depends on its
+                // generating rule; direct output replacement has no such edge.
+                if let Target::Output(rule, _) = target {
+                    message.push_str(&format!(
+                        "\n    {} ({})",
+                        rule.label,
+                        &config.to_string()[..6]
+                    ));
+                }
+                key = deps[0].0.clone();
+                cause = deps[0].1.clone();
+            } else {
+                message.push_str(&format!("   <--{}", cause.reason()));
+                break;
+            }
+        }
+        if self.keep_going {
+            self.incompatible_errors.insert(label.clone(), message);
+            self.keep_going_state
+                .failed_targets
+                .insert(label.clone(), false);
+            Ok(())
+        } else {
+            self.incompatible_errors
+                .insert(label.clone(), message.clone());
+            Err(format!(
+                "Analysis of target '{}' failed; build aborted: {message}",
+                crate::rule_declarations::canonical_form(label)
+            ))
+        }
+    }
+
+    /// Known actionless roots survive a later fail-fast analysis error. This
+    /// partial reporting data is never a successful request or a saved snapshot.
+    pub fn failed_compatibility_results(&mut self) -> (Vec<Label>, crate::bep::plan::BepPlan) {
+        self.bep_groups.clear();
+        let skipped = self.skipped_incompatible.iter().cloned().collect();
+        (skipped, self.bep_plan(&[]))
+    }
+
     pub(super) fn incompatible_dependency_view(
         &mut self,
         configured: &ConfiguredNodes,

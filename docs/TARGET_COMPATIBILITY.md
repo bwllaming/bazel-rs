@@ -62,14 +62,15 @@ format errors. Existing observed-input validation covers BUILD, implementation,
 platform, constraint and config-condition edits. Source presence is observed;
 source content remains TD's own hash input, as documented in CQUERY.md.
 
-## Remaining boundary
+## Build/test root policy and remaining boundaries
 
-Build/test, including `--nobuild`, still reject incompatible requested closures
-with the explicit unsupported-skipping diagnostic. Wildcard skipping, original
-positive SINGLE_TARGET explicitness, `--skip_incompatible_explicit_targets`, test
-SKIPPED state and BEP require the separate root-policy increment. Keep-going
-incompatibility is not converted into successful skipping. Ordinary compatible
-builds retain normal action-plan checks.
+Build/test root policy is implemented in
+[INCOMPATIBLE_BUILD_SKIP.md](INCOMPATIBLE_BUILD_SKIP.md): original positive
+SINGLE_TARGET provenance, implicit and opt-in explicit skipping, keep-going
+rejection, skipped test summaries/exits and BEP/request snapshot replay.
+Ordinary analysis failures remain failures, and compatible builds retain normal
+action-plan checks. Cquery's inclusion of incompatible targets is independent of
+the build/test policy.
 
 Cquery Starlark formatting/default TD incompatible filtering is still unsupported;
 **TD requires `-filter-incompatible-targets=false`**. Whole-repository TD success
@@ -92,8 +93,9 @@ Pinned `IncompatibleTargetChecker.java:145–174,257–311,328–359`,
 
 The independent genuine captures are indexed in
 `tests/fixtures/target_compatibility_cquery/REFERENCE.md`. Existing
-target_compatible_with's 13 matching and 11 build-policy divergence cases remain
-strict. New tests cover action/implementation/status sentinels, direct/indirect
+target_compatible_with's 13 original matches and 11 historical build-policy
+divergences now assert genuine root policy against the preserved captures.
+New tests cover action/implementation/status sentinels, direct/indirect
 edges, selects, aliases/outputs/flags, validation order, early flushes, aspects,
 selected/unselected toolchains, incoming/split/exec configurations, decoded proto
 and streamed_proto, binary snapshot reuse and strict verification.

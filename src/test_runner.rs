@@ -274,6 +274,7 @@ pub struct Runner<'a> {
 }
 
 /// The results of a `test` invocation.
+#[derive(Default)]
 pub struct Outcome {
     /// One per test, in the session's (planned) order.
     pub summaries: Vec<TestSummary>,

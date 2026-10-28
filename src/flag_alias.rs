@@ -99,6 +99,11 @@ fn configuration_option(name: &str) -> bool {
 }
 
 fn known_non_configuration_option(name: &str) -> bool {
+    // Root compatibility policy is keyed and reparsed after MODULE aliases;
+    // unlike bootstrap/execution options, it has no first-pass side effects.
+    if name == "skip_incompatible_explicit_targets" {
+        return false;
+    }
     crate::command_options::COMMAND_OPTIONS
         .iter()
         .any(|row| row.0 == name || !row.1.is_empty() && row.1 == name)

@@ -1048,6 +1048,7 @@ fn run() -> Result<(), String> {
     engine.set_workspace_status(workspace_status);
     engine.set_execute_build(!no_build && command != "cquery");
     engine.set_keep_going(test_options.keep_going && analyzes(&command));
+    engine.set_skip_incompatible_explicit_targets(test_options.skip_incompatible_explicit_targets);
     // --loading_phase_threads (LoadingPhaseThreadsOption.java, P2 of the
     // parallel-analysis program): both loaders' pattern expansion uses it
     // (Engine::expand_pattern; query resolves patterns through it too).
@@ -1089,8 +1090,12 @@ fn run() -> Result<(), String> {
                 }
             })
         };
-        let (mut configuration_options, aliases) =
+        let (mut configuration_options, aliases, skip_incompatible_explicit_targets) =
             resolve_flag_alias_options(&options, &repositories, &command, &labels)?;
+        // Root policy has no bootstrap side effects and is consumed only after
+        // MODULE aliases reparse the command. A shadowed first-pass flag must
+        // not silently enable skipping (genuine phase-two alias capture).
+        engine.set_skip_incompatible_explicit_targets(skip_incompatible_explicit_targets);
         // CoverageCommand.editOptions on the reparsed options too.
         if coverage_command {
             configuration_options.require_coverage();
@@ -1704,6 +1709,7 @@ struct Planned {
     request: Result<bazel_rs::request::PlannedRequest, String>,
     diagnostics: bazel_rs::request::Diagnostics,
     status: bazel_rs::request::StatusSource,
+    failed_skipped: Vec<bazel_rs::label::Label>,
 }
 
 /// The full-analysis path of `build`, `test` and `run` (L2-W4, PLAN-L2
@@ -1734,6 +1740,13 @@ fn plan_request(
         warnings: engine.take_warnings(),
         errors: engine.take_errors(),
     });
+    let failed_skipped = if request.is_err() {
+        let (skipped, plan) = engine.failed_compatibility_results();
+        bazel_rs::bep::failed_compatibility(plan);
+        skipped
+    } else {
+        Vec::new()
+    };
     release_engine(engine);
     if let Some(verify) = snapshot.verify.take() {
         // Compared before its diagnostics are taken (they are part of the
@@ -1762,6 +1775,7 @@ fn plan_request(
         request,
         diagnostics,
         status,
+        failed_skipped,
     }
 }
 
@@ -1785,6 +1799,7 @@ fn planned_hit(
     let mut request = hit.request;
     snapshot.hit = Some(hit.session);
     Planned {
+        failed_skipped: Vec::new(),
         diagnostics: printed_warnings(request.take_diagnostics()),
         status: bazel_rs::request::StatusSource::Planned(hit.status),
         request: Ok(request),
@@ -1869,7 +1884,10 @@ fn report_keep_going(result: &bazel_rs::request::KeepGoingResult, execute: bool)
             "errors encountered while analyzing target '{}', it will not be built.",
             label_print(label)
         );
-        if *dependency {
+        if let Some(reason) = result.plan.incompatible.get(label) {
+            message.push('\n');
+            message.push_str(reason);
+        } else if *dependency {
             message.push_str("\nAnalysis failed");
         }
         warn(&message);
@@ -2327,7 +2345,7 @@ fn run_tail(
         eprintln!("ERROR: {message}");
         return Err("Build failed. Not running target".into());
     }
-    if !execute {
+    if !execute || summary.skipped_targets.contains(label) {
         // --nobuild: analysis succeeded and 0 actions executed, but no
         // target was built to run (RunCommand.getBuiltTargets finds no
         // successful targets; genuine 9.3 scratch capture
@@ -2562,7 +2580,7 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
     let mut infos = std::collections::BTreeMap::new();
     for label in &tests {
         let (info, location) = engine
-            .test_rule_info(label)?
+            .test_selection_info(label)?
             .ok_or_else(|| format!("internal error: {label} is not a test rule"))?;
         infos.insert(label.clone(), (info, location));
     }
@@ -2622,6 +2640,14 @@ fn test_tail(
         Ok(request) => request.test_labels(),
         Err(_) => selected,
     };
+    let mut skipped: std::collections::BTreeSet<_> = planned
+        .request
+        .as_ref()
+        .ok()
+        .into_iter()
+        .flat_map(|request| request.skipped.iter().cloned())
+        .collect();
+    skipped.extend(planned.failed_skipped.iter().cloned());
     // PERF(TEST): the test actions run inside the execution phase, each as
     // soon as its test's inputs are built (crate::request::execute_with_tests,
     // like Bazel's TestRunnerActions in the build's one execution graph), so
@@ -2633,7 +2659,14 @@ fn test_tail(
         Ok(request) if request.execute => match &request.command {
             bazel_rs::request::RequestCommand::Test { tests, .. } if !tests.is_empty() => {
                 match bazel_rs::request::test_preflight(request) {
-                    Ok(()) => Some(tests.clone()),
+                    Ok(()) => {
+                        let tests: Vec<_> = tests
+                            .iter()
+                            .filter(|test| !skipped.contains(&test.label))
+                            .cloned()
+                            .collect();
+                        (!tests.is_empty()).then_some(tests)
+                    }
                     Err(error) => {
                         unspecified = Some(error);
                         None
@@ -2709,11 +2742,25 @@ fn test_tail(
     } = match result {
         Ok(executed) => executed,
         Err(error) => {
+            let tests = if !planned_ok
+                && (!skipped.is_empty()
+                    || error.contains(
+                        "is incompatible and cannot be built, but was explicitly requested",
+                    )) {
+                test_labels
+                    .iter()
+                    .filter(|label| skipped.contains(*label))
+                    .cloned()
+                    .collect()
+            } else {
+                test_labels
+            };
             return test_build_failure(
                 &error,
-                &test_labels,
+                &tests,
                 options,
                 session.map(bazel_rs::test_runner::Session::finish),
+                &skipped,
             );
         }
     };
@@ -2745,10 +2792,21 @@ fn test_tail(
         );
     }
     if planned_tests.is_empty() {
+        if let Some(result) = &keep_going {
+            if let Some(message) = keep_going_failure_detail(result, pattern_failure) {
+                eprintln!("ERROR: {message}");
+            }
+            bazel_rs::progress::failed_build_summary();
+            eprintln!("ERROR: Build did NOT complete successfully");
+        }
         eprintln!("ERROR: No test targets were found, yet testing was requested");
         write_lockfile();
         bazel_rs::digest_memo::finish();
-        exit(4);
+        exit(if build_failed || pattern_failure.is_some() {
+            1
+        } else {
+            4
+        });
     }
     if !execute {
         // --nobuild: the build succeeded with 0 actions but nothing was
@@ -2763,6 +2821,13 @@ fn test_tail(
     }
     let outcome = match session {
         Some(session) => session.finish(),
+        None if unspecified.is_none()
+            && planned_tests
+                .iter()
+                .all(|test| skipped.contains(&test.label)) =>
+        {
+            Default::default()
+        }
         None => {
             return Err(unspecified
                 .unwrap_or_else(|| "internal error: the planned tests did not run".to_owned()));
@@ -2775,7 +2840,11 @@ fn test_tail(
     // --keep_going: a test whose inputs failed to build never ran: FAILED
     // TO BUILD (AggregatingTestListener: targetFailure; genuine capture
     // tests/fixtures/keep_going).
-    for (summary, test) in outcome.summaries.iter_mut().zip(&planned_tests) {
+    let runnable_tests: Vec<_> = planned_tests
+        .iter()
+        .filter(|test| !skipped.contains(&test.label))
+        .collect();
+    for (summary, test) in outcome.summaries.iter_mut().zip(&runnable_tests) {
         if unbuilt.contains(&test.label) && summary.test_times.is_empty() {
             summary.status = bazel_rs::test_command::TestStatus::FailedToBuild;
         }
@@ -2785,7 +2854,7 @@ fn test_tail(
             outcome
                 .summaries
                 .iter()
-                .zip(&planned_tests)
+                .zip(&runnable_tests)
                 .map(|(summary, test)| bazel_rs::bep::TestSummaryRecord {
                     label: summary.label.clone(),
                     status: summary.status,
@@ -2798,6 +2867,22 @@ fn test_tail(
                 })
                 .collect(),
         );
+    }
+    // Skipped tests have no TestResult/TestSummary BEP events in Bazel 9.3;
+    // their TargetComplete ID carries Aborted(SKIPPED). Keep the terminal
+    // summary state separate from a test action's NO_STATUS result.
+    for test in planned_tests
+        .iter()
+        .filter(|test| skipped.contains(&test.label))
+    {
+        let mut summary = bazel_rs::test_command::TestSummary::aggregate(
+            &label_print(&test.label),
+            test.info.timeout,
+            &[],
+            false,
+        );
+        summary.skipped = true;
+        outcome.summaries.push(summary);
     }
     // `--combined_report=lcov` (BazelCoverageReportModule): the report of
     // the coverage test actions that ran (docs/COVERAGE.md).
@@ -2835,7 +2920,7 @@ fn test_tail(
     let passed = outcome
         .summaries
         .iter()
-        .all(|summary| summary.status.passed());
+        .all(|summary| summary.skipped || summary.status.passed());
     // BuildView.createAnalysisFailureDetail (analysis/BuildView.java:760-776):
     // a test suite's expansion error fails the build once it has run, and
     // passing tests say so (TestCommand.java:216-223).
@@ -2966,6 +3051,7 @@ fn test_build_failure(
     tests: &[bazel_rs::label::Label],
     options: &bazel_rs::test_command::TestOptions,
     outcome: Option<bazel_rs::test_runner::Outcome>,
+    skipped: &std::collections::BTreeSet<bazel_rs::label::Label>,
 ) -> Result<(), String> {
     use bazel_rs::test_command::{
         TestStatus, TestSummary, TestTimeout, should_output_log, summary_text,
@@ -2979,6 +3065,12 @@ fn test_build_failure(
     } else {
         eprintln!("bazel-rs: {error}");
     }
+    if tests.is_empty() {
+        eprintln!("ERROR: No test targets were found, yet testing was requested");
+        write_lockfile();
+        bazel_rs::digest_memo::finish();
+        exit(remote_or(1));
+    }
     let mentions = |label: &str| {
         error.match_indices(label).any(|(index, _)| {
             error[index + label.len()..]
@@ -2989,9 +3081,18 @@ fn test_build_failure(
     };
     let summaries: Vec<TestSummary> = tests
         .iter()
-        .enumerate()
-        .map(|(index, label)| {
+        .map(|label| {
+            let shown = label_print(label);
+            if skipped.contains(label) {
+                let mut summary = TestSummary::aggregate(&shown, TestTimeout::Moderate, &[], false);
+                summary.skipped = true;
+                return summary;
+            }
             let reported = outcome.as_ref().and_then(|outcome| {
+                let index = outcome
+                    .summaries
+                    .iter()
+                    .position(|summary| summary.label == shown)?;
                 Some((
                     outcome.summaries.get(index)?,
                     *outcome.completed.get(index)?,
@@ -3011,7 +3112,6 @@ fn test_build_failure(
                 }
                 _ => {}
             }
-            let shown = label_print(label);
             let mut summary = TestSummary::aggregate(&shown, TestTimeout::Moderate, &[], false);
             summary.status = if mentions(&shown) {
                 TestStatus::FailedToBuild
@@ -3037,7 +3137,11 @@ fn test_build_failure(
         .count();
     text.extend(summary_text(&summaries, executed, options).into_bytes());
     // TestCommand.java:216-223: every test passed, the build did not.
-    if !summaries.is_empty() && summaries.iter().all(|summary| summary.status.passed()) {
+    if !summaries.is_empty()
+        && summaries
+            .iter()
+            .all(|summary| summary.skipped || summary.status.passed())
+    {
         text.extend(b"All tests passed but there were other errors during the build.\n\n");
     }
     use std::io::Write;
@@ -4704,6 +4808,11 @@ fn check_alias_option_surface(command: &str, unit: &bazelrc::Unit) -> Result<(),
     let next = unit.value.as_ref().map(|v| v.text.as_str());
     let original = CommandLineOptions::default().parse(&unit.option.text, next);
     if matches!(original, Ok(Parsed::NotModelled))
+        && bazel_rs::configuration::boolean_option(
+            &unit.option.text,
+            "skip_incompatible_explicit_targets",
+        )
+        .is_none()
         && parse_command_option(
             &mut NativeOptions::new(command),
             &mut FetchOptions::default(),
@@ -4738,6 +4847,7 @@ fn resolve_flag_alias_options(
     (
         bazel_rs::configuration::CommandLineOptions,
         bazel_rs::flag_alias::Aliases,
+        bool,
     ),
     String,
 > {
@@ -4789,6 +4899,7 @@ fn resolve_flag_alias_options(
         rewritten.push((unit.clone(), mapped));
     }
     let mut result = CommandLineOptions::default();
+    let mut skip_incompatible_explicit_targets = false;
     for unit in &options.priority {
         if flag_alias::definition_value(unit).is_some() {
             continue;
@@ -4803,6 +4914,13 @@ fn resolve_flag_alias_options(
                 )
             })?;
         let (_, mapped) = rewritten.remove(index);
+        if let Some(value) = bazel_rs::configuration::boolean_option(
+            &mapped.option.text,
+            "skip_incompatible_explicit_targets",
+        ) {
+            skip_incompatible_explicit_targets =
+                value.map_err(bazel_rs::exit_code::command_line)?;
+        }
         result
             .parse(
                 &mapped.option.text,
@@ -4810,7 +4928,7 @@ fn resolve_flag_alias_options(
             )
             .map_err(bazel_rs::exit_code::command_line)?;
     }
-    Ok((result, aliases))
+    Ok((result, aliases, skip_incompatible_explicit_targets))
 }
 
 /// An `ERROR: message` failure with Bazel's exit code (the digest memo

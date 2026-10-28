@@ -284,6 +284,8 @@ pub struct TestOptions {
     /// `--keep_going`/`-k` (KeepGoingOption): a failing test action does
     /// not stop the remaining tests.
     pub keep_going: bool,
+    /// BuildRequestOptions: permit skipping explicitly requested incompatible roots.
+    pub skip_incompatible_explicit_targets: bool,
 }
 
 impl Default for TestOptions {
@@ -323,6 +325,7 @@ impl Default for TestOptions {
             shell: "/bin/bash".to_owned(),
             run_under_exec: true,
             keep_going: false,
+            skip_incompatible_explicit_targets: false,
         }
     }
 }
@@ -491,7 +494,8 @@ impl TestOptions {
         if let Some(used) = self.coverage.parse(arg, next)? {
             return Ok(Some(used));
         }
-        const BOOLEANS: [&str; 13] = [
+        const BOOLEANS: [&str; 14] = [
+            "skip_incompatible_explicit_targets",
             "build_tests_only",
             "incompatible_bazel_test_exec_run_under",
             "incompatible_exclusive_test_sandboxed",
@@ -510,6 +514,9 @@ impl TestOptions {
             if let Some(value) = crate::configuration::boolean_option(arg, name) {
                 let value = value?;
                 match name {
+                    "skip_incompatible_explicit_targets" => {
+                        self.skip_incompatible_explicit_targets = value
+                    }
                     "build_tests_only" => self.build_tests_only = value,
                     "expand_test_suites" => self.expand_test_suites = value,
                     "verbose_test_summary" => self.verbose_summary = value,
@@ -1483,6 +1490,8 @@ pub struct RunResult {
 pub struct TestSummary {
     pub label: String,
     pub status: TestStatus,
+    /// TestSummary.isSkipped, distinct from a test action that returned NO_STATUS.
+    pub skipped: bool,
     pub num_cached: usize,
     pub action_ran: bool,
     pub test_times: Vec<u64>,
@@ -1505,6 +1514,7 @@ impl TestSummary {
         let mut summary = TestSummary {
             label: label.to_owned(),
             status: TestStatus::NoStatus,
+            skipped: false,
             num_cached: 0,
             action_ran: false,
             test_times: Vec::new(),
@@ -1663,7 +1673,11 @@ fn print_summary_line(summary: &TestSummary, verbose: bool, show_cases: bool, ou
     let message = format!(
         "{}{}",
         cache_message(summary),
-        status.name().replace('_', " ")
+        if summary.skipped {
+            "SKIPPED".to_owned()
+        } else {
+            status.name().replace('_', " ")
+        }
     );
     let width = 78usize.saturating_sub(message.chars().count());
     let mut line = summary.label.clone();

@@ -1395,7 +1395,9 @@ fn test_rule_info_of(
             ),
         ));
     }
-    if let Some(AttrValue::Int(count)) = target.attrs.get("shard_count") {
+    if shard_select == ShardSelect::Reject
+        && let Some(AttrValue::Int(count)) = target.attrs.get("shard_count")
+    {
         let attribute_error = |message: &str| {
             located(
                 rule.location.as_deref(),
@@ -1764,6 +1766,8 @@ pub struct BuildSummary {
     pub results: Vec<(Label, Vec<PathBuf>)>,
     /// `Target LABEL failed to build` (--keep_going).
     pub failed_targets: Vec<Label>,
+    /// Successfully analyzed incompatible roots skipped by platform policy.
+    pub skipped_targets: Vec<Label>,
     /// `Aspect NAME of LABEL up-to-date:` reports (BuildResultPrinter
     /// .outputAspects, :312-332), in aspect order, with the displayed paths
     /// (in the output tree).
@@ -2101,6 +2105,12 @@ pub struct Engine {
     /// The keep-going outcome of the last planned build, taken by
     /// [`Self::plan_request`].
     keep_going_plan: Option<crate::request::KeepGoingPlan>,
+    /// None for the label-only API: supplied labels are explicit. CLI pattern
+    /// requests record positive SINGLE_TARGET provenance before expansion.
+    explicit_targets: Option<BTreeSet<Label>>,
+    skip_incompatible_explicit_targets: bool,
+    skipped_incompatible: BTreeSet<Label>,
+    incompatible_errors: BTreeMap<Label, String>,
     /// While a keep-going target pattern phase expands a wildcard: the
     /// loading errors of its packages, each skipped (`Some`), instead of
     /// failing the pattern (`None`).
@@ -2187,6 +2197,10 @@ impl Engine {
             keep_going: false,
             keep_going_state: keep_going::State::default(),
             keep_going_plan: None,
+            explicit_targets: None,
+            skip_incompatible_explicit_targets: false,
+            skipped_incompatible: BTreeSet::new(),
+            incompatible_errors: BTreeMap::new(),
             pattern_load_errors: None,
         }
     }
@@ -2275,6 +2289,10 @@ impl Engine {
     /// targets whose analysis fails.
     pub fn set_keep_going(&mut self, keep_going: bool) {
         self.keep_going = keep_going;
+    }
+
+    pub fn set_skip_incompatible_explicit_targets(&mut self, skip: bool) {
+        self.skip_incompatible_explicit_targets = skip;
     }
 
     /// Whether later builds execute (see `set_execute_build`).
@@ -9763,6 +9781,20 @@ impl Engine {
             build.retain(|label| !failed.contains(label));
             tests.retain(|test| !failed.contains(&test.label));
         }
+        if let crate::request::RequestCommand::Test { tests, .. } = &mut command {
+            for test in tests {
+                if self.skipped_incompatible.contains(&test.label) {
+                    continue;
+                }
+                // Incompatible tests never instantiate TestProvider or validate
+                // shard counts. Compatible tests still undergo the normal check.
+                let (info, location) = self
+                    .test_rule_info(&test.label)?
+                    .ok_or_else(|| format!("internal error: {} is not a test rule", test.label))?;
+                test.info = info;
+                test.location = location;
+            }
+        }
         let test_count = match &command {
             crate::request::RequestCommand::Test { tests, .. } => Some(tests.len()),
             _ => None,
@@ -9853,6 +9885,7 @@ impl Engine {
         let bep = self.bep_plan(&requested);
         let request = PlannedRequest {
             command,
+            skipped: self.skipped_incompatible.iter().cloned().collect(),
             keep_going,
             execute: self.execute_build,
             requested: requested
@@ -9919,7 +9952,13 @@ impl Engine {
         requested: &[(ConfiguredTargetKey, Artifact)],
     ) -> crate::bep::plan::BepPlan {
         use crate::bep::plan::{BepConfiguration, BepPlan, BepTarget};
-        let groups = std::mem::take(&mut self.bep_groups);
+        let mut groups = std::mem::take(&mut self.bep_groups);
+        groups.extend(
+            self.skipped_incompatible
+                .iter()
+                .chain(self.incompatible_errors.keys())
+                .map(|label| (label.clone(), String::new(), 0, 0)),
+        );
         let top = self.configurations.top();
         let configuration = |engine: &Self, id: String| {
             let native = &engine.configurations.get(top).native;
@@ -9996,6 +10035,13 @@ impl Engine {
                         1
                     };
                     targets.push(BepTarget {
+                        compatibility: if self.skipped_incompatible.contains(&label) {
+                            crate::bep::plan::Compatibility::Skipped
+                        } else if self.incompatible_errors.contains_key(&label) {
+                            crate::bep::plan::Compatibility::Rejected
+                        } else {
+                            Default::default()
+                        },
                         label: crate::test_runner::label_print(&label),
                         kind,
                         tags,
@@ -10383,6 +10429,18 @@ impl Engine {
         test_rule_info_of(label, &rule, ShardSelect::Reject)
     }
 
+    /// Loading/filter metadata only. TestProvider validation belongs after the
+    /// configured result has passed compatibility checking.
+    pub fn test_selection_info(
+        &mut self,
+        label: &Label,
+    ) -> Result<Option<(crate::test_command::TestRuleInfo, Option<String>)>, String> {
+        let Target::Rule(rule) = self.target(label)? else {
+            return Ok(None);
+        };
+        test_rule_info_of(label, &rule, ShardSelect::Ignore)
+    }
+
     /// [`Self::test_rule_info`] for the target pattern phase's filters
     /// (FilteringPolicies.FILTER_TESTS, TestFilter): a select() in
     /// `shard_count` is no error there; a `build` never runs the test.
@@ -10535,6 +10593,7 @@ impl Engine {
             }
         }
         let PatternFailures { loading, skipped } = failures;
+        self.record_explicit_targets(patterns, relative_directory);
         Ok(TargetPatternPhase {
             build: build.into_iter().collect(),
             tests: tests_to_run.map(|tests| tests.into_iter().collect()),
@@ -14315,19 +14374,7 @@ impl Engine {
             }
             let analyzed = self
                 .analyze(label, top, &mut active, configured, plan)
-                .and_then(|()| {
-                    if self.cquery_capture.is_none()
-                        && let Some(cause) = self.target_incompatibility(configured, label, top)?
-                    {
-                        let (origin, error) = cause.unsupported_build_error(label);
-                        let location = match self.target(origin)? {
-                            Target::Rule(rule) | Target::Output(rule, _) => rule.location.clone(),
-                            Target::Source(_) => None,
-                        };
-                        return Err(located(location.as_deref(), error));
-                    }
-                    Ok(())
-                });
+                .and_then(|()| self.check_requested_compatibility(configured, label, top));
             self.requested_trimmed_root = None;
             self.keep_going_state.current = None;
             let analyzed = analyzed.map_err(|error| match error.split_once(ANALYSIS_ABORTED) {
@@ -14538,6 +14585,8 @@ impl Engine {
         self.build_info_actions.clear();
         self.keep_going_state = keep_going::State::default();
         self.keep_going_plan = None;
+        self.skipped_incompatible.clear();
+        self.incompatible_errors.clear();
         // TargetPatternPhaseFunction.maybeReportDeprecation
         // (skyframe/TargetPatternPhaseFunction.java:255-275): every requested
         // rule whose `deprecation` is explicitly specified (package defaults
@@ -14744,16 +14793,20 @@ impl Engine {
         }
         // --keep_going: what follows serves the targets that analyzed.
         let all_labels = labels;
-        let analyzed_labels: Vec<Label> = if failed_labels.is_empty() {
-            Vec::new()
-        } else {
-            labels
-                .iter()
-                .filter(|label| !failed_labels.contains_key(*label))
-                .cloned()
-                .collect()
-        };
-        let labels: &[Label] = if failed_labels.is_empty() {
+        let analyzed_labels: Vec<Label> =
+            if failed_labels.is_empty() && self.skipped_incompatible.is_empty() {
+                Vec::new()
+            } else {
+                labels
+                    .iter()
+                    .filter(|label| {
+                        !failed_labels.contains_key(*label)
+                            && !self.skipped_incompatible.contains(*label)
+                    })
+                    .cloned()
+                    .collect()
+            };
+        let labels: &[Label] = if failed_labels.is_empty() && self.skipped_incompatible.is_empty() {
             labels
         } else {
             &analyzed_labels
@@ -15652,6 +15705,7 @@ impl Engine {
                 });
             }
             self.keep_going_plan = Some(crate::request::KeepGoingPlan {
+                incompatible: self.incompatible_errors.clone(),
                 top_level: all_labels.len(),
                 errors,
                 input_errors,

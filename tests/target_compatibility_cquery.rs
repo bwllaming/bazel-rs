@@ -260,7 +260,7 @@ fn incompatible_graph_snapshot_reuse_verification_and_constraint_invalidation() 
 }
 
 #[test]
-fn build_and_nobuild_retain_explicit_unsupported_skip_boundary() {
+fn build_and_nobuild_reject_explicit_incompatible_roots() {
     let ws = Workspace::new();
     for args in [
         vec!["//:indirect"],
@@ -270,7 +270,10 @@ fn build_and_nobuild_retain_explicit_unsupported_skip_boundary() {
         let out = ws.command("build").args(args).output().unwrap();
         assert!(!out.status.success());
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.contains("skipping incompatible targets"), "{stderr}");
+        assert!(
+            stderr.contains("incompatible and cannot be built, but was explicitly requested"),
+            "{stderr}"
+        );
         assert!(
             !stderr.contains("INCOMPATIBLE-IMPLEMENTATION-RAN"),
             "{stderr}"

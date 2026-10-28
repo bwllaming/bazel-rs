@@ -194,6 +194,9 @@ pub enum RequestCommand {
 /// requested target the actions its completion needs.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeepGoingPlan {
+    /// Explicit incompatible roots are genuine policy errors, with their cause
+    /// chains reported alongside the per-root warning, not as prerequisite errors.
+    pub incompatible: BTreeMap<Label, String>,
     /// The number of top-level targets (analyzed or not).
     pub top_level: usize,
     /// The root-cause analysis errors, in report order (each once).
@@ -219,6 +222,8 @@ pub struct KeepGoingPlan {
 #[derive(Debug)]
 pub struct PlannedRequest {
     pub command: RequestCommand,
+    /// Successful incompatible configured roots excluded from execution.
+    pub skipped: Vec<Label>,
     /// `--keep_going`: what the analysis skipped (`None` without it).
     pub keep_going: Option<KeepGoingPlan>,
     /// False under `--nobuild`: no execution phase.
@@ -588,6 +593,9 @@ pub fn test_preflight(request: &PlannedRequest) -> Result<(), String> {
         return Ok(());
     };
     for test in tests {
+        if request.skipped.contains(&test.label) {
+            continue;
+        }
         let plan = request
             .run_plans
             .iter()
@@ -894,6 +902,7 @@ pub fn execute_with_tests(
     dump_action_graph(&request.nodes);
     let PlannedRequest {
         command,
+        skipped,
         keep_going,
         execute,
         nodes,
@@ -966,6 +975,9 @@ pub fn execute_with_tests(
     crate::perf_mark("execute.end");
     crate::action::report_staging();
     let mut summary = BuildSummary::default();
+    if execute {
+        summary.skipped_targets = skipped;
+    }
     // `build` counts remote cache hits apart; the build part of `test` and
     // `run` counts them as executed (as before the split).
     let remote_hits_apart = matches!(command, RequestCommand::Build);
@@ -1312,6 +1324,7 @@ mod tests {
             producer: Some((STABLE_STATUS_ID.to_owned(), 0)),
         };
         PlannedRequest {
+            skipped: Vec::new(),
             command: RequestCommand::Build,
             keep_going: None,
             execute: true,

@@ -328,16 +328,17 @@ and referenced by '//:cv_missing'`) or select() key error.
   `flags` as the target
   platform; `required_settings` and select() in a target platform's tree;
   `platform_mappings` (a workspace file fails the build);
-  incompatible target skipping (an incompatible `target_compatible_with`
-  fails explicitly, below); `--experimental_platforms_api`.
+   `--experimental_platforms_api`. Incompatible target skipping is implemented
+   separately from configured query (docs/INCOMPATIBLE_BUILD_SKIP.md).
 
 ## target_compatible_with
 
 Direct and indirect incompatible configured results are now implemented for
 cquery. See [TARGET_COMPATIBILITY.md](TARGET_COMPATIBILITY.md) for actionless
 publication, graph/attribute projection, reference evidence and remaining
-configuration identity differences. Build/test root skipping remains fail-closed;
-the historical build diagnostics and capture below still apply to that boundary.
+configuration identity differences. Build/test root skipping follows original
+positive SINGLE_TARGET provenance; see INCOMPATIBLE_BUILD_SKIP.md for the option,
+keep-going, skipped tests and BEP/request replay contract.
 
 IncompatibleTargetChecker.IncompatibleTargetProducer
 (`analysis/constraints/IncompatibleTargetChecker.java:126-227`), run by
@@ -370,30 +371,19 @@ natively `Engine::check_target_compatibility`:
 * A compatible target is analyzed and built as usual (~/code's duckdb
   `cross_libs` cc_library targets and `//src/python/baseimage:image`'s
   select() of cpu constraints plus `os:linux`).
-* An incompatible build/test root fails explicitly after analysis, naming the target
-  platform, the unmet constraints and the non-matching config_settings with
-  Bazel's reason text (TopLevelConstraintSemantics.formatIncompatibilityReasons;
-  both lists sorted by label and deduplicated like
-  `IncompatiblePlatformProvider.incompatibleDueToConstraintsAndConfigSettings`,
-  `analysis/IncompatiblePlatformProvider.java:113-125`, so `[os:macos,
-  cpu:aarch64]` reads `constraints [@@platforms//cpu:aarch64,
-  @@platforms//os:osx]`): `//pkg:x is
-  incompatible with its target platform: target platform
-  (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64;
-  skipping incompatible targets (IncompatiblePlatformProvider) is not
-  implemented in the native profile (docs/PLATFORMS.md)`. Bazel instead makes
-  it an IncompatiblePlatformProvider target: an explicit request (directly or
-  through dependencies) fails with `Target L is incompatible and cannot be
-  built, but was explicitly requested.` and its dependency chain (exit 1 in
-  both), a wildcard pattern skips it (`Target L was skipped`, the build
-  succeeds), `--skip_incompatible_explicit_targets` and SKIPPED tests are not
-  modelled (step 2).
+* An incompatible configured target retains sorted/deduplicated direct causes
+  or shared prerequisite causes. Explicit build/test roots reject with
+  `Target L is incompatible and cannot be built, but was explicitly requested.`
+  and the configured dependency chain. Implicit roots skip (`Target L was
+  skipped`); `--skip_incompatible_explicit_targets` permits explicit skips too.
+  Both kinds remain present in cquery. The final chain reason preserves Bazel's
+  constraint/config-setting text (TopLevelConstraintSemantics:316–351).
 
 `tests/target_compatible_with.rs` replays the paired genuine capture
 `tests/fixtures/target_compatible_with/reference_receipt.json` (24 cases: 13
-MATCH, 11 declared divergences — the incompatible cases and the wildcard
-skip; every incompatible case's native message carries genuine's
-dependency-chain reason verbatim): besides the shapes above,
+original matches and 11 historical divergences now reclassified against genuine
+exit codes, root headings and cause chains, including wildcard skipping; the
+old receipt remains unchanged): besides the shapes above,
 `@platforms//:incompatible` directly and as the select() default (with a
 matching `[]` branch the target builds), an unmet constraint with a
 non-matching config_setting, constraints and config_settings in reverse

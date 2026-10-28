@@ -5,10 +5,10 @@
 //! DependencyContextProducerWithCompatibilityCheck.java:159-189): the
 //! configured labels' ConstraintValueInfo and config_setting results decide
 //! compatibility; a compatible target is analyzed and built as usual, an
-//! incompatible one is an actionless result whose build/test root policy still
-//! fails explicitly (skipping is not modelled). The 11 original divergences here
-//! are BUILD-policy evidence, not cquery failures; target_compatibility_cquery.rs
-//! verifies configured query's inclusion of these results independently.
+//! incompatible one is an actionless result whose root policy rejects explicit
+//! requests and skips wildcard roots. All 11 historical build divergences are
+//! now reclassified against the preserved genuine outputs; their old native
+//! diagnostics in the receipt remain historical evidence.
 //! Every case of tests/fixtures/target_compatible_with/reference_receipt.json
 //! — genuine Bazel 9.3.0 (`--batch --ignore_all_rc_files`, a removed scratch
 //! output user root) on the fixture workspace — runs natively here and is
@@ -209,21 +209,47 @@ fn check(name: &str, case: &Value) {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     assert!(!stderr.contains("panicked"), "{name}: {stderr}");
     if case["verdict"] == "DECLARED_DIVERGENCE" {
-        assert!(!output.status.success(), "{name}: {stderr}");
-        let message = case["native_message"].as_str().unwrap();
-        assert!(
-            stderr.contains(message),
-            "{name}: missing {message:?} in {stderr}"
+        assert_eq!(
+            output.status.code().map(i64::from),
+            case["genuine"]["exit"].as_i64(),
+            "{name}: {stderr}"
         );
-        // Genuine's incompatibility reason (the text after `<--` of its
-        // dependency chain, TopLevelConstraintSemantics
-        // .formatIncompatibilityReasons) is the native message's, verbatim.
-        if let Some(reason) = case["genuine_reason"].as_str() {
-            let expected = format!("is incompatible with its target platform:{reason};");
-            assert!(
-                stderr.contains(&expected),
-                "{name}: missing {expected:?} in {stderr}"
+        if output.status.success() {
+            assert_eq!(name, "wildcard");
+            assert_eq!(
+                outputs(&stdout),
+                [serde_json::json!([
+                    "//wildcard:kept",
+                    "bazel-out/k8-fastbuild/bin/wildcard/kept.txt",
+                    "kept\n"
+                ])]
             );
+        } else {
+            let genuine = case["genuine"]["stderr"].as_str().unwrap();
+            let reason = genuine
+                .lines()
+                .find(|line| line.contains("is incompatible and cannot be built"))
+                .unwrap();
+            let reason = &reason[reason.find("Target ").unwrap()..];
+            assert!(
+                stderr.contains(reason),
+                "{name}: missing {reason:?} in {stderr}"
+            );
+            let chain: Vec<_> = genuine
+                .lines()
+                .skip_while(|line| *line != "Dependency chain:")
+                .skip(1)
+                .take_while(|line| line.starts_with("    "))
+                .collect();
+            let hashes = fancy_regex::Regex::new(r"\([0-9a-f]{6}\)").unwrap();
+            let native = hashes.replace_all(&stderr, "(CONFIG)");
+            for line in chain {
+                let expected = hashes.replace_all(line, "(CONFIG)");
+                assert!(
+                    native.contains(expected.as_ref()),
+                    "{name}: missing {expected:?} in {native}"
+                );
+            }
         }
         return;
     }
@@ -343,6 +369,6 @@ fn validation_errors_match_bazel() {
 /// repository that are never analyzed (only the incompatibility is
 /// reported).
 #[test]
-fn incompatible_build_roots_retain_the_documented_skip_policy_boundary() {
+fn historical_build_divergences_now_match_genuine_root_policy() {
     check_group("declared");
 }
