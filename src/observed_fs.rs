@@ -2387,6 +2387,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn publication_receipts_survive_detached_capture_without_erasing_reads() {
+        use crate::repository_publication::{Origin, Receipt, Scope};
+        let temp = tempfile::tempdir().unwrap();
+        let pointer = temp.path().join("pointer");
+        fs::write(&pointer, "owned selection bytes").unwrap();
+        let receipt = Receipt {
+            canonical: "+maker+r".into(),
+            origin: Origin::DirectV2,
+            spec: "a".repeat(64),
+            publication: "b".repeat(64),
+            scope: Scope::Shared,
+            manifest_digest: [7; 32],
+        };
+        let window = record_this_thread();
+        let (_, captured) = capture_detached(|| {
+            read(&pointer).unwrap();
+            publication_selection(receipt.clone());
+        });
+        assert!(window.recorder.snapshot().selections.is_empty());
+        assert!(window.recorder.snapshot().observations.is_empty());
+        let captured = captured.unwrap();
+        let unit = unit_scope();
+        replay(&captured);
+        commit(unit.finish());
+        replay(&captured);
+        let recorded = window.recorder.snapshot();
+        assert_eq!(recorded.selections, [receipt]);
+        assert_eq!(recorded.observations.len(), 1);
+        assert_eq!(recorded.observations[0].0, pointer);
+        assert_eq!(recorded.observations[0].1.op, Op::Read);
+        assert!(recorded.taints.is_empty());
+        assert_eq!(window.recorder.take().selections, recorded.selections);
+    }
+
     /// A captured set lands in the recorder at most once, however many
     /// frames hold it and in whatever order they commit (a taint inside it
     /// counts once, as on one thread); replays into frames stay there.

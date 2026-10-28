@@ -1204,7 +1204,7 @@ mod tests {
             window_start_ns: 42,
             selections: vec![crate::repository_publication::Receipt {
                 canonical: "+repo+r".into(),
-                origin: crate::repository_publication::Origin::DirectV3,
+                origin: crate::repository_publication::Origin::DirectV2,
                 spec: "a".repeat(64),
                 publication: "b".repeat(64),
                 scope: crate::repository_publication::Scope::Workspace(b"/ws/\xff".to_vec()),

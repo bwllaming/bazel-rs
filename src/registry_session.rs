@@ -69,6 +69,8 @@ type FetchSlot = OnceLock<Result<Fetch, String>>;
 #[derive(Debug)]
 pub struct RegistrySession {
     mode: LockfileMode,
+    workspace: PathBuf,
+    target: LockfileTarget,
     lockfile: Lockfile,
     write_path: Option<PathBuf>,
     cas: Option<PathBuf>,
@@ -199,6 +201,8 @@ impl RegistrySession {
         };
         Ok(Self {
             mode,
+            workspace: workspace.to_path_buf(),
+            target: target.clone(),
             lockfile,
             write_path,
             cas: repository_cache
@@ -796,6 +800,31 @@ fn mentions(json: &lockfile::Json, named: &impl Fn(&str) -> bool) -> bool {
 }
 
 impl SessionHandle {
+    /// A private fresh lockfile view for non-materializing preparation. Reopen
+    /// the current overlay/workspace choice; never inherit evaluated extension
+    /// results, memoized registry reads or seeded historical hidden entries.
+    pub(crate) fn for_publication_proof(&self) -> Result<Self, String> {
+        let Some(session) = &self.0 else {
+            return Ok(Self::default());
+        };
+        if session.hidden_seeded {
+            return Err("publication proof does not support seeded hidden lockfiles".into());
+        }
+        let mut fresh = RegistrySession::open(
+            &session.workspace,
+            session.mode,
+            &session.target,
+            None,
+            session.allowed_yanked.clone(),
+        )?;
+        fresh.readonly = true;
+        fresh.spellings = session.spellings.clone();
+        if let Some((path, _)) = &session.hidden {
+            fresh = fresh.with_hidden_lockfile(path.clone());
+        }
+        Ok(Self::new(fresh))
+    }
+
     pub fn new(session: RegistrySession) -> Self {
         Self(Some(Arc::new(session)))
     }

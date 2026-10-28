@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// to the specification recipe, not the publication manifest format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Origin {
-    DirectV3,
+    DirectV2,
     ExtensionV3,
 }
 

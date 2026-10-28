@@ -361,6 +361,71 @@ pub(crate) fn record(
 /// Reobserve the recorded inputs against the current world. `Ok(false)` means
 /// the world changed (or cannot be confirmed unchanged): the store re-executes
 /// the repository rule, like Bazel refetching after a dependency change.
+/// The bounded historical proof subset: friendly workspace and stage paths
+/// only, with no symlink hops or arbitrary absolute derived paths. External
+/// roots need producer proof before this boundary can be widened.
+pub(crate) fn unchanged_for_proof(
+    repositories: &RepositorySet,
+    workspace: &Path,
+    tree: &Path,
+    recorded: &[u8],
+) -> Result<bool, String> {
+    let probes: RecordedInputs = serde_json::from_slice(recorded).map_err(|e| e.to_string())?;
+    if !matches!(probes.version, 2 | 3)
+        || probes
+            .files
+            .iter()
+            .any(|file| !matches!(file.kind.as_str(), "file" | "dirents" | "dirtree"))
+    {
+        return Ok(false);
+    }
+    let cache = repositories.source_cache_path()?;
+    for text in probes
+        .templates
+        .iter()
+        .map(|probe| probe.source.as_str())
+        .chain(probes.files.iter().map(|probe| probe.path.as_str()))
+    {
+        let (root, relative, stage) = if let Some(relative) = text.strip_prefix("stage:") {
+            (tree, relative, true)
+        } else if let Some(relative) = text.strip_prefix("@@//") {
+            (workspace, relative, false)
+        } else {
+            return Ok(false);
+        };
+        if !proof_path(root, relative, (!stage).then_some(cache)) {
+            return Ok(false);
+        }
+    }
+    unchanged(repositories, workspace, tree, recorded)
+}
+
+/// A path usable without another producer's proof. Missing paths are valid
+/// inputs too, but no ancestor can escape the root or enter the store.
+pub(crate) fn proof_path(root: &Path, relative: &str, blocked: Option<&Path>) -> bool {
+    let mut path = root.to_path_buf();
+    for component in Path::new(relative).components() {
+        if !matches!(
+            component,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        ) {
+            return false;
+        }
+        path.push(component);
+        if blocked.is_some_and(|blocked| path.starts_with(blocked)) {
+            return false;
+        }
+        match crate::observed_fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return false,
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return false,
+        }
+    }
+    true
+}
+
+/// Normal warm reuse uses the full current resolver (including external roots).
 pub(crate) fn unchanged(
     repositories: &RepositorySet,
     workspace: &Path,

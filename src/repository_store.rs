@@ -1084,12 +1084,14 @@ where
         )?;
         Some(manifest)
     };
+    let mut saw_pointer = false;
     for (name, scope) in [
         (receipt.spec.clone(), Scope::Shared),
         (workspace_pointer(&receipt.spec, &workspace_text), own),
     ] {
         let pointer = direct.join("specs").join(name);
         let identity = read_pointer_unobserved(&pointer).ok()?;
+        saw_pointer |= identity.is_some();
         if let Some(identity) = identity
             && let Some(manifest) = probe(&identity, &scope)
         {
@@ -1100,6 +1102,10 @@ where
                     receipt: receipt.clone(),
                 });
         }
+    }
+    // An evicted selection is a normal miss in this first proof slice.
+    if !saw_pointer {
+        return None;
     }
     let manifest = probe(&receipt.publication, &receipt.scope)?;
     (manifest.semantic_digest().ok()? == receipt.manifest_digest).then(|| Candidate {
@@ -1984,8 +1990,14 @@ fn read_pointer_with(path: &Path, observe: bool) -> Result<Option<String>, Strin
         identity: String,
     }
     // A missing pointer is a specification never published: no waiting.
-    let Ok(bytes) = read_published(path, false) else {
-        return Ok(None);
+    let bytes = match read_published(path, false) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            if !observe && optional_metadata(path)?.is_some() {
+                return Err(error);
+            }
+            return Ok(None);
+        }
     };
     if observe {
         crate::observed_fs::note_read(path, &bytes);
@@ -3488,7 +3500,7 @@ mod tests {
                 )
                 .unwrap();
                 let receipt =
-                    selection_receipt(&cache, "+rule+r", Origin::DirectV3, &spec, &root).unwrap();
+                    selection_receipt(&cache, "+rule+r", Origin::DirectV2, &spec, &root).unwrap();
                 (root, receipt)
             };
             let (a, receipt_a) = publish("A");
@@ -3598,6 +3610,63 @@ mod tests {
         refreshed = manifest;
         refreshed.files.get_mut("data").unwrap().sha256 = "f".repeat(64);
         assert_ne!(digest, refreshed.semantic_digest().unwrap());
+    }
+
+    #[test]
+    fn publication_probe_preserves_shared_workspace_precedence_and_scope() {
+        use crate::repository_publication::{Origin, Scope};
+        let temp = temp();
+        let cache = temp.path().join("store");
+        let workspace = crate::repository_warm::workspace_text(temp.path());
+        let spec = "e".repeat(64);
+        let publish = |recorded: Vec<u8>, inputs: &[u8]| {
+            materialize_lazy_in(
+                &cache,
+                "r",
+                &spec,
+                Some(&workspace),
+                || Ok(b"recipe".to_vec()),
+                |_, bytes| Ok(bytes == recorded),
+                |stage| {
+                    fs::write(stage.join("data"), b"same output").unwrap();
+                    Ok(Executed {
+                        inputs: inputs.to_vec(),
+                        recorded: recorded.clone(),
+                    })
+                },
+            )
+            .unwrap()
+            .0
+        };
+        let shared = publish(br#"{"version":2}"#.to_vec(), b"shared");
+        let shared = selection_receipt(&cache, "r", Origin::DirectV2, &spec, &shared).unwrap();
+        let own = publish(
+            serde_json::to_vec(&serde_json::json!({"version":3, "workspace":workspace})).unwrap(),
+            b"own",
+        );
+        let own = selection_receipt(&cache, "r", Origin::DirectV2, &spec, &own).unwrap();
+        assert_eq!(shared.scope, Scope::Shared);
+        assert_eq!(
+            own.scope,
+            Scope::Workspace(temp.path().as_os_str().as_encoded_bytes().to_vec())
+        );
+        assert!(probe_candidate(&cache, &shared, temp.path(), |_, _| Ok(true)).is_some());
+        assert!(probe_candidate(&cache, &own, temp.path(), |_, _| Ok(true)).is_none());
+        let only_own = |_: &Path, bytes: &[u8]| Ok(recorded_version(bytes) == Some(3));
+        assert!(probe_candidate(&cache, &own, temp.path(), only_own).is_some());
+        assert!(probe_candidate(&cache, &shared, temp.path(), only_own).is_none());
+        let mut promoted = own.clone();
+        promoted.scope = Scope::Shared;
+        assert!(probe_candidate(&cache, &promoted, temp.path(), only_own).is_none());
+        fs::remove_file(cache.join("direct/specs").join(&spec)).unwrap();
+        assert!(probe_candidate(&cache, &own, temp.path(), only_own).is_some());
+        fs::remove_file(
+            cache
+                .join("direct/specs")
+                .join(workspace_pointer(&spec, &workspace)),
+        )
+        .unwrap();
+        assert!(probe_candidate(&cache, &own, temp.path(), only_own).is_none());
     }
 
     /// Review R1 equivalence: the streamed digest-entry bytes are

@@ -83,6 +83,9 @@ pub fn marked(text: &str) -> Vec<u8> {
 /// planning prints, written marked into it (its reader forwards it
 /// filtered, a snapshot hit replays it filtered).
 pub fn note(text: &str) {
+    if suppress_note() {
+        return;
+    }
     if crate::snapshot::capture::is_active() {
         let bytes = marked(text);
         let _ = std::io::stderr().lock().write_all(&bytes);
@@ -98,6 +101,9 @@ pub fn emit(bytes: &[u8]) {
     if bytes.is_empty() {
         return;
     }
+    if suppress_note() {
+        return;
+    }
     let mut stderr = std::io::stderr().lock();
     if crate::snapshot::capture::is_active() {
         let _ = stderr.write_all(bytes);
@@ -105,6 +111,40 @@ pub fn emit(bytes: &[u8]) {
         let _ = stderr.write_all(&filtered(bytes));
     }
     let _ = stderr.flush();
+}
+
+thread_local! {
+    static PRIVATE_NOTES: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+fn suppress_note() -> bool {
+    PRIVATE_NOTES.with(|notes| match notes.get() {
+        Some(_) => {
+            notes.set(Some(true));
+            true
+        }
+        None => false,
+    })
+}
+
+/// Candidate preparation must neither print nor silently lose a replay
+/// obligation. Callers reject a candidate when `emitted()` is true.
+pub(crate) struct PrivateNotes(Option<bool>);
+
+impl PrivateNotes {
+    pub(crate) fn new() -> Self {
+        Self(PRIVATE_NOTES.with(|notes| notes.replace(Some(false))))
+    }
+
+    pub(crate) fn emitted(&self) -> bool {
+        PRIVATE_NOTES.with(|notes| notes.get().unwrap_or(false))
+    }
+}
+
+impl Drop for PrivateNotes {
+    fn drop(&mut self) {
+        PRIVATE_NOTES.with(|notes| notes.set(self.0));
+    }
 }
 
 /// `bytes` (whole, e.g. a snapshot's window stderr) as the console shows

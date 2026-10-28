@@ -199,6 +199,27 @@ pub struct RepositorySet {
     state: Arc<RepositoryState>,
 }
 
+/// Ephemeral, point-in-time current-intent proof. There is deliberately no
+/// deserializer, public constructor, adoption method or CARRIED conversion.
+/// Historical graph switching still requires guarded whole-candidate acceptance.
+#[derive(Debug)]
+pub struct ProvedPublication {
+    receipt: crate::repository_publication::Receipt,
+}
+
+impl ProvedPublication {
+    pub fn receipt(&self) -> &crate::repository_publication::Receipt {
+        &self.receipt
+    }
+}
+
+/// Minted only by current, isolated group preparation, never from a receipt,
+/// a persisted recipe, a pre-existing root or an invocation's prepared memo.
+struct CurrentSpec {
+    origin: crate::repository_publication::Origin,
+    key: String,
+}
+
 #[derive(Debug)]
 struct RepositoryState {
     runtime_id: u64,
@@ -249,6 +270,10 @@ struct RepositoryState {
     /// roots, mappings and the generated flag answer from recorded tables;
     /// the module graph is never resolved and anything else is refused.
     pinned: Option<Arc<crate::snapshot::replay::PinnedTables>>,
+    /// Isolated current-intent preparation, never exposed to an Engine. This
+    /// initial slice supports root-workspace definitions only; every external
+    /// producer demand fails before a root can be loaded or materialized.
+    publication_proof: bool,
     /// The record mode's replay capture: local executions become replay
     /// records, and `root()`/`mapping()` results inside replay scopes are
     /// pinned for them.
@@ -876,6 +901,7 @@ impl RepositorySet {
                 module_globals: OnceLock::new(),
                 build_globals: OnceLock::new(),
                 pinned: None,
+                publication_proof: false,
                 replay: crate::snapshot::replay::global(),
                 verified_trees: Arc::default(),
                 speculation: Default::default(),
@@ -1416,6 +1442,105 @@ impl RepositorySet {
             } else {
                 error
             }
+        })
+    }
+
+    /// Read-only proof of a batch of non-local publication hints. Groups share
+    /// one fresh preparation cache, which (including all Starlark heaps) is
+    /// released before return. Nothing is bound, published, refreshed or
+    /// recorded into the calling analysis. A failure is a conservative miss.
+    ///
+    /// Initial supported closure: explicit-module profile, no module deps,
+    /// definitions and runtime probes in the root workspace (or stage probes),
+    /// direct rules and ordinary extensions with a currently valid lock entry.
+    /// External producers, registry/Git/builtin roots, absolute runtime paths,
+    /// local rules and diagnostic-producing preparations are unsupported.
+    pub fn prove_publications(
+        &self,
+        receipts: &[crate::repository_publication::Receipt],
+    ) -> Option<Vec<ProvedPublication>> {
+        crate::observed_fs::discard(|| {
+            let notes = crate::ui::PrivateNotes::new();
+            let mut options = self.state.options.clone();
+            if options.builtin_profile != module_graph::BuiltinProfile::ExplicitModules {
+                return None;
+            }
+            options.registry_session = options.registry_session.for_publication_proof().ok()?;
+            let mut proof = Self::configured_environment(
+                self.state.root.clone(),
+                options,
+                self.state.source_cache.clone(),
+                Arc::new(self.state.environment.fresh()),
+                self.state.host.clone(),
+                false,
+            );
+            let state = Arc::get_mut(&mut proof.state)?;
+            state.publication_proof = true;
+            state.replay = None;
+            proof.validate_root_module().ok()?;
+            let root = proof.root_module().ok()?.module_file()?;
+            // Fail BEFORE the resolver could fetch, prefetch, invoke Git or
+            // inspect a derived MODULE. Even ignored/nodep deps are refused in
+            // this bounded first slice, rather than duplicating resolution.
+            if root.effective_dependencies().next().is_some() {
+                return None;
+            }
+            let workspace = crate::observed_fs::canonicalize(proof.main_root()).ok()?;
+            let cache = proof.source_cache_path().ok()?;
+            let mut proved = Vec::with_capacity(receipts.len());
+            for receipt in receipts {
+                let current = proof.prepare_publication_spec(&receipt.canonical).ok()?;
+                if current.origin != receipt.origin || current.key != receipt.spec {
+                    return None;
+                }
+                let candidate = crate::repository_store::probe_candidate(
+                    cache,
+                    receipt,
+                    &workspace,
+                    |tree, recorded| {
+                        crate::repository_warm::unchanged_for_proof(
+                            &proof, &workspace, tree, recorded,
+                        )
+                    },
+                )?;
+                proved.push(ProvedPublication {
+                    receipt: candidate.receipt().clone(),
+                });
+            }
+            (!notes.emitted()).then_some(proved)
+        })
+    }
+
+    fn prepare_publication_spec(&self, canonical: &str) -> Result<CurrentSpec, String> {
+        use crate::repository_publication::Origin;
+        if !self.state.publication_proof {
+            return Err("current publication specs require isolated proof preparation".into());
+        }
+        validate_repository_name(canonical)?;
+        let runtime = self.direct_runtime()?;
+        if let Some(entry) = runtime.catalog.repositories.get(canonical) {
+            let group = &runtime.catalog.groups[&entry.group_id];
+            let prepared = self.prepare_direct_group(&entry.group_id)?;
+            if prepared.definition.local {
+                return Err("local repository rules cannot prove non-local selection".into());
+            }
+            return Ok(CurrentSpec {
+                origin: Origin::DirectV2,
+                key: self.direct_spec_key(
+                    prepared,
+                    group,
+                    entry,
+                    &prepared.attributes[entry.declaration_index],
+                )?,
+            });
+        }
+        let (prepared, repository) = self.ordinary_repository(canonical)?;
+        if repository.definition.local {
+            return Err("local repository rules cannot prove non-local selection".into());
+        }
+        Ok(CurrentSpec {
+            origin: Origin::ExtensionV3,
+            key: prepared.spec_key(self, canonical, &repository.definition.environ)?,
         })
     }
 
@@ -2437,6 +2562,7 @@ impl RepositorySet {
         jitter_millis: u64,
     ) {
         if width <= 1
+            || self.state.publication_proof
             || self.state.pinned.is_some()
             || std::env::var_os("BAZEL_RS_DEBUG_NO_SPECULATION").is_some()
         {
@@ -2455,7 +2581,7 @@ impl RepositorySet {
     /// `width` workers (crate::module_root_warm; `width` <= 1: off). Never
     /// for a pinned set.
     pub(crate) fn enable_root_warming(&self, width: usize) {
-        let width = if self.state.pinned.is_some() {
+        let width = if self.state.pinned.is_some() || self.state.publication_proof {
             0
         } else {
             width
@@ -2474,7 +2600,7 @@ impl RepositorySet {
     /// module roots and, transitively, those of their loads
     /// (crate::module_root_warm). Never demands or records anything.
     pub(crate) fn warm_loads(&self, labels: &[Label]) {
-        if labels.is_empty() {
+        if labels.is_empty() || self.state.publication_proof {
             return;
         }
         // Direct and extension-generated repositories (of a prepared
@@ -3161,6 +3287,18 @@ impl RepositorySet {
     /// on when a worker's unit asks); [`Self::record_link_anchors`]
     /// records them once.
     pub fn link_policy(&self, repository: &str) -> crate::source_links::LinkPolicy {
+        if self.state.publication_proof {
+            // Retained store files reached through a symlink cannot prove
+            // their producer's current intent, even if their bytes verify.
+            return crate::source_links::LinkPolicy {
+                blocked: self
+                    .link_blocked_prefixes()
+                    .into_iter()
+                    .map(|path| crate::observed_fs::canonicalize(&path).unwrap_or(path))
+                    .collect(),
+                ..Default::default()
+            };
+        }
         let sequential = crate::observed_fs::recording()
             && crate::observed_fs::hook(crate::observed_fs::Hook::Link);
         let roots = if sequential {
@@ -3267,6 +3405,11 @@ impl RepositorySet {
 
     /// [`Self::root`] of a non-main repository of an unpinned set.
     fn external_root(&self, repository: &str) -> Result<&Path, String> {
+        if self.state.publication_proof {
+            return Err(format!(
+                "publication proof requires an unsupported producer @@{repository}"
+            ));
+        }
         let graph = self.resolve_graph()?;
         if repository == "bazel_tools"
             && self.state.options.builtin_profile == module_graph::BuiltinProfile::ExplicitModules
@@ -3643,7 +3786,7 @@ impl RepositorySet {
         if let Some(root) = &reused {
             self.record_publication(
                 canonical,
-                crate::repository_publication::Origin::DirectV3,
+                crate::repository_publication::Origin::DirectV2,
                 &spec_key,
                 root,
             );
@@ -3861,7 +4004,7 @@ impl RepositorySet {
         .map(|(root, _)| {
             self.record_publication(
                 canonical,
-                crate::repository_publication::Origin::DirectV3,
+                crate::repository_publication::Origin::DirectV2,
                 &spec_key,
                 &root,
             );
@@ -3933,6 +4076,9 @@ impl RepositorySet {
                     (recorded, metadata, None)
                 }
                 None => {
+                    if self.state.publication_proof {
+                        return Err("publication proof requires a currently valid extension lock entry".into());
+                    }
                     crate::observed_fs::taint(crate::observed_fs::Taint::ExtensionEvaluated, || {
                         format!("{}%{}", group.label, group.symbol)
                     });
@@ -5010,6 +5156,13 @@ impl RepositorySet {
         metadata: Option<&crate::extension_metadata::ExtensionMetadata>,
         specs: Vec<(String, crate::lockfile::Json)>,
     ) -> Result<(), String> {
+        if self.state.publication_proof {
+            return if reused.is_some() && execution.is_none() {
+                Ok(())
+            } else {
+                Err("publication proof cannot record an evaluated extension".into())
+            };
+        }
         use crate::lockfile::{Json, LockfileMode};
         use crate::lockfile_extensions as lx;
         let session = self
@@ -5183,6 +5336,19 @@ impl LockInputProbe<'_> {
         &self,
         path: &crate::lockfile_extensions::FriendlyPath,
     ) -> Result<PathBuf, String> {
+        if self.0.state.publication_proof {
+            let root =
+                crate::observed_fs::canonicalize(self.0.main_root()).map_err(|e| e.to_string())?;
+            if path.repository.as_deref() != Some("")
+                || !crate::repository_warm::proof_path(
+                    &root,
+                    &path.path,
+                    Some(self.0.source_cache_path()?),
+                )
+            {
+                return Err("publication proof requires an unsupported extension input".into());
+            }
+        }
         Ok(match path.repository.as_deref() {
             None => PathBuf::from(&path.path),
             Some("") => self.0.main_root().join(&path.path),
