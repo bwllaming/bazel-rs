@@ -292,6 +292,7 @@ impl PlannedRequest {
     pub fn empty() -> Self {
         Self {
             command: RequestCommand::Build,
+            skipped: Vec::new(),
             keep_going: None,
             execute: false,
             nodes: Vec::new(),

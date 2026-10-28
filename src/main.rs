@@ -2124,6 +2124,7 @@ fn incremental_finish(
         diagnostics: printed_warnings(request.take_diagnostics()),
         status: bazel_rs::request::StatusSource::Planned(status),
         request: Ok(request),
+        failed_skipped: Vec::new(),
     })
 }
 

@@ -1432,6 +1432,15 @@ pub fn splice(
     if encoded(&full_aspects) != encoded(&sub_aspects) {
         return Err("the requested targets' aspect outputs changed".to_owned());
     }
+    // The requested labels skipped as incompatible are the saved ones.
+    let full_skipped: Vec<&Label> = full
+        .skipped
+        .iter()
+        .filter(|label| requested_labels.contains(label))
+        .collect();
+    if full_skipped != sub.skipped.iter().collect::<Vec<_>>() {
+        return Err("the requested targets skipped as incompatible changed".to_owned());
+    }
     if !full.run_plans.is_empty() || !sub.run_plans.is_empty() {
         return Err("run plans".to_owned());
     }
