@@ -72,18 +72,14 @@ pub(crate) fn resolve(fragment: &str, name: &str) -> Option<Option<&'static str>
 
 /// The configured values of the resolvable late-bound attributes of a
 /// Starlark rule target, replacing their unconfigured (`None`) defaults.
-pub(crate) fn configure(
+pub(crate) fn configured_values(
     schema: &BTreeMap<String, AttrSpec>,
-    attrs: &mut BTreeMap<String, AttrValue>,
-) {
-    for (name, spec) in schema {
-        let Some(field) = &spec.declaration.configuration_field else {
-            continue;
-        };
-        if let Some(value) = resolve(&field.fragment, &field.name) {
-            attrs.insert(name.clone(), AttrValue::Label(value.map(str::to_owned)));
-        }
-    }
+) -> impl Iterator<Item = (&String, AttrValue)> {
+    schema.iter().filter_map(|(name, spec)| {
+        let field = spec.declaration.configuration_field.as_ref()?;
+        let value = resolve(&field.fragment, &field.name)?;
+        Some((name, AttrValue::Label(value.map(str::to_owned))))
+    })
 }
 
 /// A failed dependency edge whose label is the configured value of a

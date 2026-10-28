@@ -1,5 +1,76 @@
 # Configured-query retention and export
 
+## Default-universe headroom follow-up
+
+The completed default `deps(//...)` graph at `40ef505` is the equal-work baseline
+for this follow-up, with ELF SHA256
+`0591e3613ee7b78a8be18c512d0f543ad767ed879a824f2bdda10e9a0d084cbd`.
+The earlier failed 7,624 MiB analysis did less work and is not a baseline.
+
+One diagnostic pass of that exact ELF used the existing `BAZEL_RS_TIMING` and
+`BAZEL_RS_TIMING_ALLOC` counters. The retained plan owned about **872.6 MB**,
+beside **739.4 MB** of package rules, **985.4 MB** of frozen provider heaps,
+**394.4 MB** of dependency views and **310.1 MB** of configured nodes. These are
+allocation-census buckets, not independent RSS peaks. There were 200,845 planned
+rules, 57,326 loaded rules and zero lowered action nodes. Provider analysis was
+still the peak phase; engine release and export reduced memory. Diagnostic hooks
+conservatively bypass snapshots, so this pass's 235.24 s / 7,513.8 MiB is not
+substituted for the known plain analysis/save measurement.
+
+`configured_attributes::configure` now shares the loaded rule's `Arc` when
+configuration leaves its data unchanged. Selects are still resolved and validated
+in their original order. Changed native, custom and built-in attributes produce
+a private copy; late-bound defaults copy only when their values change. The
+engine likewise copies before changing an alias's actual, split dependencies or
+a build-setting value. Configured target keys, provider instances and analysis
+remain separate even when immutable rule data is shared. Tests pin sharing and
+isolation across selected configurations and late-bound null/label defaults.
+
+The final release is based on `c09c0cb` (only shared-action fixtures/docs changed
+since `40ef505`) and has SHA256
+`791b09ddaf79d6899ec72af485b40407fc0d949d97bc304fe0ddb46d6b121a70`.
+The same read-only PR clone at `0b29c533c060e5ccb9466bbd200d2b0510be01da`,
+existing private content cache and 8,192 MiB / 900 s limits were used. Fresh result
+directories and the new binary identity yielded a confirmed miss, full analysis
+and save, followed by one deps hit and one shared-universe roots hit:
+
+| Query | Baseline seconds / peak MiB | Candidate seconds / peak MiB |
+|---|---:|---:|
+| `deps(//...)`, analysis + save | 218.201 / 8,033.4 | 215.044 / 7,460.5 |
+| `deps(//...)`, graph hit | 2.936 / 1,633.6 | 2.297 / 1,636.9 |
+| `//...`, shared-graph hit | 2.445 / 1,634.5 | 1.816 / 1,636.7 |
+
+Peak falls **572.8 MiB**, leaving **731.5 MiB** headroom (previously 158.6 MiB).
+This meets the >=512 MiB headroom goal; <=6 GiB is not reached. Warm RSS is
+3.4 MiB / 2.2 MiB higher in these individual observations. Timings include fresh
+process startup; they are single shared-host measurements, not statistical
+speedup or broader startup claims.
+
+All three outputs compare byte-for-byte to their baseline counterparts. Deps is
+481,114,922 bytes, SHA256
+`ba4760e23df4d3a48e3dd0d9b2de3e02b82a5b1ee957bffb8733aa9036f58cbc`;
+roots is 139,683,706 bytes. Official-schema streaming decode again validates
+265,121 configured results, 1,116,527 edges, 34 configurations and 45,227 roots
+with identical configured records. Every edge endpoint and configuration checksum
+is valid, including the ARM64 host-incompatible constraint-only inputs.
+
+Compatibility causes remain compact, the engine is freed before encoding, and
+binary snapshot serialization remains bounded. No analysis/provider/attribute
+checks, ordinary prerequisites or graph records are omitted. Clone canaries are
+unchanged. Whole-repository TD remains unvalidated.
+
+Receipts and allocation output:
+`/home/coder/opencodetmp/cquery-memory-headroom/{baseline-profile,pr-full,pr-full-warm,pr-roots}`;
+official decode: `application-decoding.json`; gate details: `REPORT.md`.
+The single full suite reported 3,239 passed / 1 failed / 8 ignored: its source
+discipline test caught an unnecessary test-helper lint allowance. Removing that
+allowance passed strict Clippy, all 1,811 lib tests and both discipline tests.
+The full suite was not repeated; all its semantic programs, including snapshot
+verification, passed on their first run. The release was built once after this
+correction. The focused pre-commit gate passed 190 integration tests as well.
+
+## Earlier full-source retention and export work
+
 The full-source uncached query's fragile ~8 GiB peak was profiled **before**
 choosing the optimization. A retained allocation run and a separate phase-only
 snapshot run showed:

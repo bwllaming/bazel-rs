@@ -800,7 +800,12 @@ pub fn transition_attributes(
 /// in rule-class attribute order, the first failure winning. Derived
 /// dependency lists (`srcs`, genrule `cmd`) are recomputed from resolved
 /// values only; no unresolved select remains.
-pub fn configure(rule: &Rule, resolver: &Resolver<'_>) -> Result<Rule, String> {
+pub fn configure(
+    rule: &std::sync::Arc<Rule>,
+    resolver: &Resolver<'_>,
+) -> Result<std::sync::Arc<Rule>, String> {
+    use std::sync::Arc;
+
     let mut native_values = Vec::new();
     let mut builtin_values = Vec::new();
     let mut starlark_values = Vec::new();
@@ -830,37 +835,71 @@ pub fn configure(rule: &Rule, resolver: &Resolver<'_>) -> Result<Rule, String> {
             }
         }
     };
-    let mut configured = rule.clone();
+    // Configuration does not necessarily change a rule. Keep its declaration,
+    // attributes and derived dependency list shared with loading in that case;
+    // a different ConfiguredTargetKey still owns its own analysis/providers.
+    let mut configured = Arc::clone(rule);
     if let Some(native) = &rule.native {
         // Without select() values there is nothing to store: the configured
         // rule shares the declared native target (MEM4).
         let target = if native.configurable.is_empty() {
-            std::sync::Arc::clone(native)
+            Arc::clone(native)
         } else {
             let mut target = (**native).clone();
             store(&mut target, native_values);
-            std::sync::Arc::new(target)
+            Arc::new(target)
         };
         match configured.kind {
-            crate::package::RuleKind::Filegroup => configured.srcs = target.labels("srcs"),
-            crate::package::RuleKind::Genrule => {
-                configured.srcs = target.labels("srcs");
-                configured.cmd = target.string("cmd").map(str::to_owned);
+            crate::package::RuleKind::Filegroup | crate::package::RuleKind::Genrule => {
+                let srcs = target.labels("srcs");
+                if configured.srcs != srcs {
+                    Arc::make_mut(&mut configured).srcs = srcs;
+                }
+                if matches!(configured.kind, crate::package::RuleKind::Genrule) {
+                    let cmd = target.string("cmd").map(str::to_owned);
+                    if configured.cmd != cmd {
+                        Arc::make_mut(&mut configured).cmd = cmd;
+                    }
+                }
             }
             _ => {}
         }
-        configured.native = Some(target);
+        if !Arc::ptr_eq(native, &target) {
+            Arc::make_mut(&mut configured).native = Some(target);
+        }
     }
-    if let Some(custom) = configured.custom.as_mut() {
-        store(&mut custom.declaration.builtin.target, builtin_values);
-        custom.declaration.configurable.clear();
-        for (name, value) in starlark_values {
-            custom.attrs.insert(name, value);
+    if let Some(custom) = &configured.custom {
+        if !custom.declaration.builtin.target.configurable.is_empty()
+            || !custom.declaration.configurable.is_empty()
+        {
+            let custom = Arc::make_mut(&mut configured).custom.as_mut().unwrap();
+            store(&mut custom.declaration.builtin.target, builtin_values);
+            custom.declaration.configurable.clear();
+            for (name, value) in starlark_values {
+                custom.attrs.insert(name, value);
+            }
         }
         // Late-bound defaults take their configured value (LateBoundDefault
-        // resolution in ConfiguredAttributeMapper's configuration).
-        crate::late_bound::configure(&custom.schema, &mut custom.attrs);
-        configured.srcs = crate::package::custom_dependency_labels(&custom.attrs);
+        // resolution in ConfiguredAttributeMapper's configuration). Null values
+        // often already equal their loading default; only copy on a change.
+        let custom = configured.custom.as_ref().unwrap();
+        let late_bound: Vec<_> = crate::late_bound::configured_values(&custom.schema)
+            .filter(|(name, value)| custom.attrs.get(*name) != Some(value))
+            .map(|(name, value)| (name.clone(), value))
+            .collect();
+        if !late_bound.is_empty() {
+            Arc::make_mut(&mut configured)
+                .custom
+                .as_mut()
+                .unwrap()
+                .attrs
+                .extend(late_bound);
+        }
+        let srcs =
+            crate::package::custom_dependency_labels(&configured.custom.as_ref().unwrap().attrs);
+        if configured.srcs != srcs {
+            Arc::make_mut(&mut configured).srcs = srcs;
+        }
     }
     Ok(configured)
 }
@@ -932,6 +971,102 @@ fn native_target(rule: &Rule) -> Option<&crate::native_rules::NativeTarget> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sharing_fixture() -> crate::package::Package {
+        let root = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
+        std::fs::write(root.path().join("MODULE.bazel"), "").unwrap();
+        std::fs::write(
+            root.path().join("defs.bzl"),
+            r#"
+def _impl(ctx):
+    return []
+plain = rule(implementation = _impl, attrs = {"srcs": attr.label_list(allow_files = True)})
+late_null = rule(implementation = _impl, attrs = {"_tool": attr.label(default = configuration_field(fragment = "java", name = "launcher"))})
+late_label = rule(implementation = _impl, attrs = {"_tool": attr.label(default = configuration_field(fragment = "apple", name = "xcode_config_label"))})
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("BUILD.bazel"),
+            r#"
+load(":defs.bzl", "plain", "late_null", "late_label")
+filegroup(name = "files", srcs = ["one"])
+genrule(name = "gen", srcs = ["one"], outs = ["out"], cmd = "cp $< $@")
+alias(name = "forward", actual = ":files")
+plain(name = "plain", srcs = ["one"])
+late_null(name = "null")
+late_label(name = "label")
+plain(name = "selected", srcs = select({":choice": ["one"], "//conditions:default": ["two"]}), target_compatible_with = select({":choice": [":constraint"], "//conditions:default": []}))
+genrule(name = "selected_gen", srcs = select({":choice": ["one"], "//conditions:default": ["two"]}), outs = ["selected_out"], cmd = select({":choice": "one", "//conditions:default": "two"}))
+"#,
+        )
+        .unwrap();
+        crate::package::evaluate(root.path(), "").unwrap()
+    }
+
+    #[test]
+    fn configuration_shares_unchanged_rules_and_copies_late_bound_changes() {
+        use std::sync::Arc;
+        let package = sharing_fixture();
+        for name in ["files", "gen", "forward", "plain", "null"] {
+            let original = &package.rules[&label(&format!("//:{name}"))];
+            let configured =
+                configure(original, &resolver(&original.label, &BTreeMap::new())).unwrap();
+            assert!(Arc::ptr_eq(original, &configured), "{name}");
+        }
+        let original = &package.rules[&label("//:label")];
+        let configured = configure(original, &resolver(&original.label, &BTreeMap::new())).unwrap();
+        assert!(!Arc::ptr_eq(original, &configured));
+        assert_eq!(
+            original.custom.as_ref().unwrap().attrs["_tool"],
+            AttrValue::Label(None)
+        );
+        assert_eq!(
+            configured.custom.as_ref().unwrap().attrs["_tool"],
+            AttrValue::Label(Some("@@bazel_tools//tools/cpp:host_xcodes".into()))
+        );
+        assert_eq!(configured.srcs, ["@@bazel_tools//tools/cpp:host_xcodes"]);
+    }
+
+    #[test]
+    fn configured_copies_isolate_selected_native_custom_and_builtin_attributes() {
+        use std::sync::Arc;
+        let package = sharing_fixture();
+        for name in ["selected", "selected_gen"] {
+            let original = &package.rules[&label(&format!("//:{name}"))];
+            let before = format!("{original:?}");
+            let selected = |result| {
+                let conditions =
+                    BTreeMap::from([("//:choice".to_owned(), condition("choice", &[], result))]);
+                configure(original, &resolver(&original.label, &conditions)).unwrap()
+            };
+            let yes = selected(MatchResult::Match);
+            let no = selected(MatchResult::NoMatch(vec![]));
+            assert!(!Arc::ptr_eq(original, &yes));
+            assert!(!Arc::ptr_eq(&yes, &no));
+            assert!(yes.srcs[0].ends_with("one"), "{:?}", yes.srcs);
+            assert!(no.srcs[0].ends_with("two"), "{:?}", no.srcs);
+            if name == "selected" {
+                fn attrs(rule: &Rule) -> &crate::native_rules::NativeTarget {
+                    &rule.custom.as_ref().unwrap().declaration.builtin.target
+                }
+                assert!(attrs(&yes).labels("target_compatible_with")[0].ends_with("constraint"));
+                assert!(attrs(&no).labels("target_compatible_with").is_empty());
+                assert!(
+                    yes.custom
+                        .as_ref()
+                        .unwrap()
+                        .declaration
+                        .configurable
+                        .is_empty()
+                );
+            } else {
+                assert_eq!(yes.cmd.as_deref(), Some("one"));
+                assert_eq!(no.cmd.as_deref(), Some("two"));
+            }
+            assert_eq!(format!("{original:?}"), before);
+        }
+    }
 
     fn label(text: &str) -> Label {
         Label::parse_canonical(text).unwrap()

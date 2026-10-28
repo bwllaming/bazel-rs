@@ -130,3 +130,8 @@ checkout, application build/test, genuine Bazel or TD run was involved.
 Receipts: `/home/coder/opencodetmp/target-compatibility/pr-{arm64,full,full-warm,roots}`
 and `application-decoding.json`. Release SHA256:
 `0591e3613ee7b78a8be18c512d0f543ad767ed879a824f2bdda10e9a0d084cbd`.
+
+The subsequent [memory follow-up](CQUERY_MEMORY.md#default-universe-headroom-follow-up)
+uses this completed graph as its equal-work baseline. Sharing unchanged rule data
+reduces the full analysis/save peak to 7,460.5 MiB (731.5 MiB headroom) with the
+same output bytes, configured results and compatibility edges.

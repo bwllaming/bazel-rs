@@ -4087,7 +4087,10 @@ impl Engine {
         // label_setting (rules/LabelBuildSettings.java:62-83).
         let build_setting = self.build_setting_info(&rule)?;
         if forwards(&rule) {
-            rule.srcs = vec![self.alias_actual(&rule, &configuration, build_setting.as_ref())?];
+            let actual = self.alias_actual(&rule, &configuration, build_setting.as_ref())?;
+            if rule.srcs.as_slice() != [actual.as_str()] {
+                Arc::make_mut(&mut rule).srcs = vec![actual];
+            }
         }
         // Late-bound attributes skip the visibility check
         // (CommonPrerequisiteValidator.java:159-163); rules that can have any
@@ -4350,7 +4353,7 @@ impl Engine {
         {
             self.publish_incompatible(
                 key,
-                Arc::new(rule),
+                rule,
                 ordered,
                 Arc::new(compatibility::Incompatibility::Dependencies(
                     incompatible_deps.into_boxed_slice(),
@@ -4493,7 +4496,8 @@ impl Engine {
         }
         if !attribute_configs.is_empty() {
             let splits = self.split_attribute_dependencies(&rule, &attribute_configs)?;
-            if let Some(custom) = &mut rule.custom {
+            if rule.custom.is_some() {
+                let custom = Arc::make_mut(&mut rule).custom.as_mut().unwrap();
                 custom.split_dependencies = Arc::new(splits);
             }
             self.edge_configs.insert(key.clone(), attribute_configs);
@@ -4622,7 +4626,10 @@ impl Engine {
             actual = Some(target);
         }
         // ctx.build_setting_value of a Starlark build setting.
-        if let (Some(info), Some(custom)) = (&build_setting, rule.custom.as_mut()) {
+        if let Some(info) = &build_setting
+            && rule.custom.is_some()
+        {
+            let custom = Arc::make_mut(&mut rule).custom.as_mut().unwrap();
             custom.setting_value = Some(info.value(&configuration));
         }
         active.pop();
@@ -4647,7 +4654,6 @@ impl Engine {
                 feature_flag,
             },
         );
-        let rule = Arc::new(rule);
         if rule.custom.is_some() {
             self.configured_rules.insert(key.clone(), Arc::clone(&rule));
         }

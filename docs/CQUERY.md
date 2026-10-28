@@ -12,8 +12,11 @@ fixes the venv traversal hygiene and now passes the default `deps(//...)` univer
 after actionless incompatible-target support: 218.20 s / 8,033.4 MiB, followed by
 a 2.94 s / 1,633.6 MiB graph hit with identical output. See
 [TARGET_COMPATIBILITY.md](TARGET_COMPATIBILITY.md) for the exact clone, receipts,
-remaining 158.6 MiB cap headroom and build/test boundary. This is native query
-success, not a whole-repository TD revision comparison.
+the historical 158.6 MiB cap headroom and build/test boundary. The subsequent
+[default-universe memory follow-up](CQUERY_MEMORY.md#default-universe-headroom-follow-up)
+shares unchanged rule data: the same full graph takes 215.04 s / 7,460.5 MiB,
+leaving 731.5 MiB headroom, with byte-identical output and measured warm reuse.
+This is native query success, not a whole-repository TD revision comparison.
 
 The native `cquery` analyzes configured targets and executes Starlark rule and
 aspect implementations to produce their providers. It **does not execute build
