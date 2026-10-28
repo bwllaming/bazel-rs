@@ -53,9 +53,10 @@ Full JavaBuilder compilation enforces the strict-deps mode with the real tool.
   JSpecify and Java coverage instrumentation fail explicitly in this slice.
   Ordinary dependent/sourcejar/empty library builds are proven; the application
   rules_jvm_external Java-library cquery passes with this implementation.
-  Targeted Java-binary analysis next stops at the separate
-  `collect_native_deps_dirs` API after the subsequent runtime-classpath helper
-  increment (docs/JAVA_RUNTIME_CLASSPATH.md); no whole configured-graph claim.
+  Subsequent runtime-classpath and native-directory helpers also unblock the
+  AddJarManifestEntry Java-binary cquery (docs/JAVA_RUNTIME_CLASSPATH.md and
+  docs/JAVA_NATIVE_DEPS_DIRS.md). Full application analysis next stops at an
+  incompatible-platform handling boundary; no whole configured-graph claim.
 - Non-direct classpath headers, absent direct compiler, API-generating
   processors and tree/unresolved-symlink artifacts fail explicitly.
   Non-API-generating plugins are validated but do

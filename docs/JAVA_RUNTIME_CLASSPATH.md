@@ -63,9 +63,8 @@ edits. The actual rules_java `create_deploy_archive` function consumes the helpe
 result with genuine JavaInfo/JavaRuntimeClasspathInfo and real SingleJar; its
 jar and manifest match bytes, and `java -jar` prints `archive:kept`.
 
-Application follow-up on the readonly PR clone: the targeted AddJarManifestEntry
-cquery passes this helper and stops at `java_common.collect_native_deps_dirs`,
-`java_common_internal.bzl:452` via `java_binary_impl.bzl:162` (integrated candidate:
-2.565s,702.1MiB,
-no output, unchanged canaries). Full cquery was not repeated because this next
-binary API still blocks the target. No Java-binary/whole-graph/TD success claim.
+Application follow-up initially passed this helper and stopped at
+`collect_native_deps_dirs`; that subsequent increment is now implemented
+(docs/JAVA_NATIVE_DEPS_DIRS.md), and AddJarManifestEntry cquery passes. Full
+configured analysis next stops at DuckDB's incompatible ARM64 target. No whole
+configured-graph/TD success claim.

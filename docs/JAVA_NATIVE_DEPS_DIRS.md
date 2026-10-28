@@ -76,3 +76,10 @@ to a differently named real JNI library. Only that selected link is added to
 runfiles; the helper result supplies the JVM search path. Genuine and native both
 print `native:42`, with byte-identical directory/artifact reports. No fake JavaInfo,
 launcher API or constant-directory substitute is involved.
+
+Application follow-up: the readonly PR clone's AddJarManifestEntry cquery passes
+(5.436s,709.5MiB,1,491,974bytes). Full deps(//...) then stops at
+`//thirdparty/duckdb/cross_libs:cxx_runtime_linux_arm64`: host platform lacks
+`@@platforms//cpu:aarch64`, and native incompatible-target skipping/provider
+handling is not implemented (220.186s,7,624.4MiB,no output). Canaries are unchanged.
+No select heuristics were changed; no full configured-graph or TD claim.

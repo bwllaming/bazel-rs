@@ -156,23 +156,24 @@ Done since the last increment recorded under "History", one line each:
 - [x] Integrated JavaBuilder candidate passes the previously failing
       rules_jvm_external Java-library cquery: 4.46s / 705MiB, 1,450,936 bytes,
       clone canaries unchanged.
-- [ ] The PR-clone Java binary AddJarManifestEntry now passes runtime-classpath
-      filtering and stops at java_common.collect_native_deps_dirs (targeted
-      integrated cquery2.57s / 702MiB, no output). Full deps(//...) was not repeated
-      after that targeted failure. The prior full-query Python debugger select
-      diagnostic was not re-probed; no whole-workspace TD claim or select changes
-      in the runtime-classpath increment.
+- [x] PR-clone AddJarManifestEntry Java-binary cquery now passes after native
+      library-directory support:5.44s / 709.5MiB / 1,491,974bytes, canaries unchanged.
+- [ ] Full PR-clone deps(//...) advances to DuckDB's cxx_runtime_linux_arm64,
+      incompatible with host CPU (requires @@platforms//cpu:aarch64). Native
+      IncompatiblePlatformProvider/skip handling is still unsupported;220.19s /
+      7,624.4MiB / no output. No select heuristics changed or whole-workspace TD
+      success claimed.
 - [x] Runtime archive classpath filtering implements the genuine empty-exclusion
       identity shortcut and nonempty Artifact-identity subtraction/stable-order
       result, including the intentionally untyped exclusion set. A real
       rules_java deploy-archive action consumes it with byte-identical runnable
       output (docs/JAVA_RUNTIME_CLASSPATH.md). Targeted application analysis
-      advances to the separate native-library-directory API.
+      advanced to the native-library-directory API, implemented below.
 - [x] `java_common.collect_native_deps_dirs` selects genuine interface/dynamic
       artifacts, validates shared-library types, and returns ordered distinct
       runfiles directories as an immutable list. Real CcInfo/runfiles/JNI consumer
-      prints native:42 in both engines (docs/JAVA_NATIVE_DEPS_DIRS.md). Application
-      follow-up pending; unrelated Java-binary gaps remain separate.
+      prints native:42 in both engines (docs/JAVA_NATIVE_DEPS_DIRS.md). Targeted
+      Java-binary cquery passes; full-query platform boundary is recorded above.
 
 ### Commands that are rejected today
 
