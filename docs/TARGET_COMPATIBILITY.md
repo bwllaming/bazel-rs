@@ -97,3 +97,36 @@ strict. New tests cover action/implementation/status sentinels, direct/indirect
 edges, selects, aliases/outputs/flags, validation order, early flushes, aspects,
 selected/unselected toolchains, incoming/split/exec configurations, decoded proto
 and streamed_proto, binary snapshot reuse and strict verification.
+
+## Bounded application follow-up
+
+Native cquery only, on the isolated read-only PR clone at
+`0b29c533c060e5ccb9466bbd200d2b0510be01da`, private absolute state, all rc files
+ignored and remotes disabled. Every run retained 8,192 MiB / 900 seconds:
+
+| Query | Wall seconds | Peak RSS MiB | Output bytes |
+|---|---:|---:|---:|
+| DuckDB ARM64 runtime deps | 0.755 | 156.6 | 7,434 |
+| `deps(//...)`, analysis/save | 218.201 | 8,033.4 | 481,114,922 |
+| one repeated `deps(//...)`, graph hit | 2.936 | 1,633.6 | 481,114,922 |
+| `//...`, shared-graph hit | 2.445 | 1,634.5 | 139,683,706 |
+
+Full-query headroom is **158.6 MiB**, so the 8 GiB cap remains significant.
+The previous run stopped at DuckDB's host-incompatible ARM64 runtime after
+220.186 s / 7,624.4 MiB without output. The completed graph includes additional
+analysis; those two peak figures are not an equivalent-work memory comparison.
+
+Official-schema streaming decode validates 265,121 configured results,
+1,116,527 configured edges and 34 configurations. Every edge endpoint exists
+and every checksum agrees with its configuration table. The 45,227 root results
+are byte-equivalent configured records from the deps graph. Warm deps output is
+byte-identical (SHA256
+`ba4760e23df4d3a48e3dd0d9b2de3e02b82a5b1ee957bffb8733aa9036f58cbc`).
+The ARM64 target in the host configuration has only its two compatibility
+constraint inputs; other real configurations of that label remain distinct.
+
+Clone HEAD, lockfile and `.bazelignore` canaries are unchanged. No original
+checkout, application build/test, genuine Bazel or TD run was involved.
+Receipts: `/home/coder/opencodetmp/target-compatibility/pr-{arm64,full,full-warm,roots}`
+and `application-decoding.json`. Release SHA256:
+`0591e3613ee7b78a8be18c512d0f543ad767ed879a824f2bdda10e9a0d084cbd`.

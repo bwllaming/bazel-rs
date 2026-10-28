@@ -158,11 +158,13 @@ Done since the last increment recorded under "History", one line each:
       clone canaries unchanged.
 - [x] PR-clone AddJarManifestEntry Java-binary cquery now passes after native
       library-directory support:5.44s / 709.5MiB / 1,491,974bytes, canaries unchanged.
-- [ ] Full PR-clone deps(//...) advances to DuckDB's cxx_runtime_linux_arm64,
-      incompatible with host CPU (requires @@platforms//cpu:aarch64). Native
-      IncompatiblePlatformProvider/skip handling is still unsupported;220.19s /
-      7,624.4MiB / no output. No select heuristics changed or whole-workspace TD
-      success claimed.
+- [x] Direct/indirect incompatible configured targets are actionless results
+       included by cquery. Full PR-clone deps(//...) now passes: 218.20s / 8,033.4MiB,
+       481,114,922 bytes; warm graph hit 2.94s / 1,633.6MiB, roots 2.44s / 1,634.5MiB.
+       Official-schema decode verifies 265,121 results / 1,116,527 edges. The 8GiB
+       cap remains (158.6MiB headroom), canaries unchanged. Build/test skipping,
+       untrimmed flag-root identities and default TD filtering remain boundaries;
+       no whole-workspace TD claim (docs/TARGET_COMPATIBILITY.md).
 - [x] Runtime archive classpath filtering implements the genuine empty-exclusion
       identity shortcut and nonempty Artifact-identity subtraction/stable-order
       result, including the intentionally untyped exclusion set. A real

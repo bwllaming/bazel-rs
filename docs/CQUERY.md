@@ -7,10 +7,13 @@ in 2.04 seconds. See [CQUERY_ARTIFACTS.md](CQUERY_ARTIFACTS.md) for exact measur
 remaining memory headroom, support-file identities and validation boundaries.
 
 The [memory follow-up](CQUERY_MEMORY.md) reduces uncached peak from about 8,001 to
-7,549 MiB without changing full-source output bytes. **The actual TD default
-universe `//...` is a separate, blocked acceptance case**: its traversal reaches a
-venv pandas BUILD containing undefined `py_library`. Native `//src/...` success
-must not be described as default-universe or whole-repository TD success.
+7,549 MiB without changing full-source output bytes. The later isolated PR clone
+fixes the venv traversal hygiene and now passes the default `deps(//...)` universe
+after actionless incompatible-target support: 218.20 s / 8,033.4 MiB, followed by
+a 2.94 s / 1,633.6 MiB graph hit with identical output. See
+[TARGET_COMPATIBILITY.md](TARGET_COMPATIBILITY.md) for the exact clone, receipts,
+remaining 158.6 MiB cap headroom and build/test boundary. This is native query
+success, not a whole-repository TD revision comparison.
 
 The native `cquery` analyzes configured targets and executes Starlark rule and
 aspect implementations to produce their providers. It **does not execute build
