@@ -422,15 +422,27 @@ pub fn classify_attempt(
     cache: &std::path::Path,
     environment: &[(std::ffi::OsString, std::ffi::OsString)],
 ) -> Result<Classified, String> {
+    let started = std::time::Instant::now();
     let changed = crate::snapshot::validate::changed_observations(
         &inputs.recording,
         &crate::snapshot::validate::Environment::new(environment),
     )?;
+    let validated = started.elapsed();
     let index = reader
         .section(crate::snapshot::format::Section::Index)
         .and_then(decode_index)
         .map_err(|error| format!("no dependency index: {error}"))?;
+    let decoded = started.elapsed();
     let (loaded, content) = classify(&index, &inputs.recording, &changed, cache)?;
+    if crate::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING")) {
+        crate::snapshot::diag::line_fmt(format_args!(
+            "PERF-SNAPSHOT incremental classify validate_ms={:.3} index_ms={:.3} classify_ms={:.3} changed={}",
+            validated.as_secs_f64() * 1000.0,
+            (decoded - validated).as_secs_f64() * 1000.0,
+            (started.elapsed() - decoded).as_secs_f64() * 1000.0,
+            changed.len()
+        ));
+    }
     Ok(Classified {
         index,
         changed,

@@ -1051,33 +1051,56 @@ pub fn changed_observations(
             return Err(format!("ENV {}: value changed", escape(name)));
         }
     }
-    let verified = Mutex::new(BTreeSet::new());
-    let mut tally = Validated::default();
-    for (tree, repository) in recording.repositories.iter().enumerate() {
-        for entry in 0..repository.entries.len() {
-            check_for_hit(
-                recording,
-                &Item::Integrity(tree, entry),
-                &verified,
-                &mut tally,
-            )?;
-        }
-    }
-    let count = recording.observations.len();
+    let items: Vec<Item> = (0..recording.observations.len())
+        .map(Item::Observation)
+        .chain(
+            recording
+                .repositories
+                .iter()
+                .enumerate()
+                .flat_map(|(tree, repository)| {
+                    (0..repository.entries.len()).map(move |entry| Item::Integrity(tree, entry))
+                }),
+        )
+        .collect();
     let threads = threads_for(recording);
+    let verified = Mutex::new(BTreeSet::new());
     let changed: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    let failure: Mutex<Option<(usize, String)>> = Mutex::new(None);
     let cursor = AtomicUsize::new(0);
+    let stop = std::sync::atomic::AtomicBool::new(false);
     let worker = || {
         let mut found = Vec::new();
-        loop {
+        let mut tally = Validated::default();
+        'blocks: loop {
             let start = cursor.fetch_add(BLOCK, Ordering::Relaxed);
-            if start >= count {
+            if start >= items.len() || stop.load(Ordering::Relaxed) {
                 break;
             }
-            for index in start..(start + BLOCK).min(count) {
-                let (path, observation) = &recording.observations[index];
-                if check(path, observation).is_err() {
-                    found.push(index);
+            for (offset, item) in items[start..(start + BLOCK).min(items.len())]
+                .iter()
+                .enumerate()
+            {
+                match item {
+                    Item::Observation(index) => {
+                        let (path, observation) = &recording.observations[*index];
+                        if check(path, observation).is_err() {
+                            found.push(*index);
+                        }
+                    }
+                    Item::Integrity(..) => {
+                        if let Err(error) = check_for_hit(recording, item, &verified, &mut tally) {
+                            let mut failure = failure
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            let at = start + offset;
+                            if failure.as_ref().is_none_or(|(first, _)| at < *first) {
+                                *failure = Some((at, error));
+                            }
+                            stop.store(true, Ordering::Relaxed);
+                            break 'blocks;
+                        }
+                    }
                 }
             }
         }
@@ -1094,6 +1117,12 @@ pub fn changed_observations(
                 scope.spawn(worker);
             }
         });
+    }
+    if let Some((_, error)) = failure
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
+        return Err(error);
     }
     let mut changed = changed
         .into_inner()
