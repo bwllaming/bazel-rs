@@ -2,7 +2,8 @@
 
 `cache_dir` publishes only relocatable files. `cache_user` derives the cache
 directory from a label into it, as gazelle's resolve_go_env does for GOCACHE
-(`<dirname of go.env>/gocache`), and runs a tool that keeps a run counter there.
+(`<dirname of go.env>/gocache`), and runs a tool that keeps a run counter there,
+its environment spelled as `env -i` arguments like gazelle's env_execute.
 It reads `//:cache_stamp.txt`, so editing that file re-runs it, not `cache_dir`.
 """
 
@@ -17,9 +18,10 @@ _COUNT = 'mkdir -p "$TOOL_CACHE" && n=$(( $(cat "$TOOL_CACHE/runs" 2>/dev/null |
 def _cache_user_impl(rctx):
     rctx.read(rctx.attr.stamp)
     cache = str(rctx.path(rctx.attr.cache).dirname)
+    # As gazelle's env_execute (internal/common.bzl): the environment as
+    # `env -i NAME=value` arguments.
     result = rctx.execute(
-        ["/bin/sh", "-c", _COUNT],
-        environment = {"TOOL_CACHE": cache + "/toolcache"},
+        ["env", "-i", "PATH=/usr/bin:/bin", "TOOL_CACHE=" + cache + "/toolcache", "/bin/sh", "-c", _COUNT],
     )
     if result.return_code:
         fail(result.stderr)

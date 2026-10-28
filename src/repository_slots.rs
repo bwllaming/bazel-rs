@@ -679,11 +679,12 @@ pub fn names_path<'a>(root: &[u8], mut texts: impl Iterator<Item = &'a [u8]>) ->
     texts.any(|text| !occurrences(text, root).is_empty())
 }
 
-/// Whether one of `values` (an `execute`'s environment) names a path below
-/// the published tree `root` that the tree does not have: where the tool
-/// will write (gazelle's go_repository_tools runs `go build` with GOCACHE
-/// `<go_repository_cache>/gocache`, derived from a label into the cache
-/// repository, internal/env.bzl resolve_go_env). Genuine's repository is a
+/// Whether one of `values` (an `execute`'s arguments and environment)
+/// names a path below the published tree `root` that the tree does not
+/// have: where the tool will write (gazelle's go_repository_tools runs
+/// `env -i GOCACHE=<go_repository_cache>/gocache ... go build`, the
+/// directory derived from a label into the cache repository,
+/// internal/env.bzl resolve_go_env, internal/common.bzl env_execute). Genuine's repository is a
 /// plain directory under `external/` that the tool writes into; a published
 /// tree must never change, so that repository's slot becomes a mutable copy
 /// of the tree for the tool to use (crate::repository_ctx).

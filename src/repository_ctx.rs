@@ -1728,13 +1728,14 @@ impl Context {
     /// go_repository_tools, which reads `go.env` too).
     ///
     /// Written into: a resolved ordinary repository whose published tree
-    /// the environment names a missing path of (gazelle's relocatable
-    /// `go.env`: GOCACHE is `<dirname of the cache repository's go.env>/
-    /// gocache`, internal/env.bzl resolve_go_env), or whose slot is already
-    /// the mutable copy of that tree (its marker names it). Genuine leaves
-    /// that repository a plain writable directory under `external/` and
-    /// checks it by its marker alone, so the tool's cache survives across
-    /// commands; natively the tree stays immutable (the analysis snapshot
+    /// the arguments or environment name a missing path of (gazelle's
+    /// relocatable `go.env`: GOCACHE is `<dirname of the cache repository's
+    /// go.env>/gocache`, internal/env.bzl resolve_go_env, passed as an
+    /// `env -i` argument, internal/common.bzl env_execute), or whose slot
+    /// is already the mutable copy of that tree (its marker names it).
+    /// Genuine leaves that repository a plain writable directory under
+    /// `external/` and checks it by its marker alone, so the tool's cache
+    /// survives across commands; natively the tree stays immutable (the analysis snapshot
     /// and every reuse verify it) and the command is redirected to the
     /// repository's slot, made a mutable copy of the tree (marker, reader
     /// locks, re-made when the repository is re-executed): every path below
@@ -1795,7 +1796,9 @@ impl Context {
                     let written = [&tree, &root.to_path_buf()].iter().any(|tree| {
                         crate::repository_slots::written_into(
                             tree,
-                            environment.iter().map(|(_, value)| value.as_slice()),
+                            argv.iter()
+                                .map(Vec::as_slice)
+                                .chain(environment.iter().map(|(_, value)| value.as_slice())),
                         )
                     });
                     if !written
