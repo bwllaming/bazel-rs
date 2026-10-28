@@ -1134,11 +1134,14 @@ def render_notes(info: NotesInfo, changelog: str, prepend: str | None = None) ->
         f"Documentation: [README.md]({blob}/README.md) (implemented subset, behaviour",
         f"changes, limitations), [PLAN.md]({blob}/PLAN.md) (status and remaining work).",
         "",
-        "## Changes" + (f" since {info.previous_tag}" if info.previous_tag else ""),
-        "",
-        changelog.rstrip("\n"),
-        "",
     ]
+    if changelog.strip():  # --replace-changelog: the prepended notes say it all
+        out += [
+            "## Changes" + (f" since {info.previous_tag}" if info.previous_tag else ""),
+            "",
+            changelog.rstrip("\n"),
+            "",
+        ]
     return "\n".join(out)
 
 

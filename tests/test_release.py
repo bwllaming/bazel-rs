@@ -628,6 +628,7 @@ class NotesTest(unittest.TestCase):
     def test_build_url_row(self):
         info = self.info(self.MUSL)
         self.assertNotIn("Built by", release.render_notes(info, ""))
+        self.assertNotIn("## Changes", release.render_notes(info, ""))
         info.build_url = "https://github.com/o/r/actions/runs/42"
         self.assertIn("| Toolchain | rustc 1.99.0 |\n| Built by | [GitHub Actions run](https://github.com/o/r/actions/runs/42) |\n", release.render_notes(info, ""))
 
