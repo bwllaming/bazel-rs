@@ -1,0 +1,90 @@
+# Builds and publishes the GitHub release of a pushed v* tag
+# (docs/RELEASING.md). `scripts/release.py` on a developer machine only
+# creates and pushes the annotated tag (its message carries extra release
+# notes); this workflow checks out the tag and runs `scripts/release.py --ci`:
+# verify the tag (exists, is HEAD, matches Cargo.toml/Cargo.lock), build the
+# glibc and static musl binaries, smoke-test, package, write the notes,
+# `gh release create --verify-tag`, re-download and compare sha256. It never
+# creates or moves tags. Re-run a failed release with
+# `gh workflow run release.yml -f tag=vX.Y.Z` (after deleting a partial release).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and publish (e.g. v0.2.0)
+        required: true
+        type: string
+
+# gh release create/upload with GITHUB_TOKEN; nothing else.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  release:
+    name: build and publish ${{ inputs.tag || github.ref_name }}
+    # glibc 2.39: the glibc archive needs the same or a newer glibc.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          # All history and tags: the changelog starts at the previous tag.
+          fetch-depth: 0
+
+      - name: Rust toolchain from rust-toolchain.toml
+        # Installs the pinned channel with its components and targets
+        # (x86_64-unknown-linux-musl among them).
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add x86_64-unknown-linux-musl
+          rustc --version
+          cargo --version
+
+      - name: Cache zig
+        uses: actions/cache@v4
+        with:
+          path: .direnv/zig
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/setup-zig.sh') }}
+
+      - name: zig (C compiler of the musl build)
+        run: scripts/setup-zig.sh
+
+      - name: Cargo cache
+        # Keyed on Cargo.lock, rust-toolchain.toml and the rustc version;
+        # caches ~/.cargo and ./target (release.py --ci builds in place).
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-release
+          cache-on-failure: true
+
+      - name: Build, smoke-test, package and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/release.py --ci --version "${TAG#v}" --work-dir "$RUNNER_TEMP/release"
+
+      - name: Keep the release files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ env.TAG }}
+          path: |
+            ${{ runner.temp }}/release/dist
+            ${{ runner.temp }}/release/RELEASE_NOTES.md
+          if-no-files-found: ignore
+          retention-days: 14
