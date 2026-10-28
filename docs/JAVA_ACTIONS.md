@@ -25,7 +25,8 @@ same registration runs in build and cquery analysis; cquery never executes it.
 - Javac option depsets are reversed and tokenized as in `JavaHelper`; malformed
   quoting is passed to the compiler. Normal generic command-line splitting
   produces unquoted `<primary-output>-0.params` files when needed.
-- Configured action environment plus UTF-8 locale, propagated execution tags,
+- Configured action environment plus the resolved execution platform's UTF-8
+  locale (including inherited OS constraints), propagated execution tags,
   `supports-path-mapping` and the default `internal-inline-outputs` directive.
   `.jdeps` is a real on-disk output, available on local/cache/remote result paths.
   No in-memory jdeps cache is needed for the supported branch.
@@ -44,12 +45,13 @@ Strict-dependency enforcement by full Java compilation remains unsupported.
   rules_java `java_library`, including the rules_jvm_external target from the
   application receipt, is **not unblocked** by this increment.
 - Non-direct classpath headers, absent direct compiler, API-generating
-  processors, tree/unresolved-symlink artifacts and a custom host execution
-  platform fail explicitly. Non-API-generating plugins are validated but do
+  processors and tree/unresolved-symlink artifacts fail explicitly.
+  Non-API-generating plugins are validated but do
   not run during header compilation, matching Bazel.
-- Native toolchain resolution currently selects only the host execution
-  platform. This slice supports its default OS/locale; a custom host platform
-  needs OS constraints carried into the action-construction context first.
+- The chosen execution group, platform and exec properties use normal
+  resolution. Resolved constraints are shared into action construction by Arc;
+  the final environment is action-keyed. No global action/config rekey or
+  persisted format change is introduced.
 - Output-path stripping, changing in-memory jdeps mode and command-line limits
   remain outside the native option surface. No path stripping is performed.
 - Resources, resource jars, JSpecify, JavaBuilder workers, generated processor

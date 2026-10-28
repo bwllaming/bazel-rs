@@ -321,6 +321,59 @@ fn turbine_rejects_bad_bindings_provider_identities_and_unsupported_branches() {
     }
     f.write(&format!("{PACKAGE}/headers.bzl"), &DEFS.replace("ctx, tc, jar, jdeps", "ctx, tc, ctx.file.source_output, jdeps").replace("\"srcs\": attr", "\"source_output\": attr.label(default = ':Base.java', allow_single_file = True),\n        \"srcs\": attr"));
     f.rejected("is not declared by");
+    let wrong_identity = DEFS
+        .replace(
+            "Headers = provider",
+            "JavaToolchainInfo = provider()\n\nHeaders = provider",
+        )
+        .replace("ctx, tc, jar", "ctx, JavaToolchainInfo(), jar");
+    f.write(&format!("{PACKAGE}/headers.bzl"), &wrong_identity);
+    f.rejected("want 'JavaToolchainInfo' (rules_java provider identity)");
+    let undeclared = DEFS
+        .replace(
+            "tc = ctx.toolchains[\"@bazel_tools//tools/jdk:toolchain_type\"].java",
+            "tc = struct(_javacopts = depset())",
+        )
+        .replace(
+            "toolchains = [\"@bazel_tools//tools/jdk:toolchain_type\"]",
+            "toolchains = []",
+        );
+    f.write(&format!("{PACKAGE}/headers.bzl"), &undeclared);
+    f.rejected("must declare '@bazel_tools//tools/jdk:toolchain_type'");
+}
+
+#[test]
+fn turbine_locale_follows_selected_execution_platform_including_inherited_constraints() {
+    let f = Fixture::new();
+    let build = fs::read_to_string(f.path().join("BUILD.bazel")).unwrap();
+    f.write("BUILD.bazel", &(build + "\nplatform(name='mac',constraint_values=['@platforms//os:osx'])\nplatform(name='child',parents=[':mac'])\nplatform(name='linux',constraint_values=['@platforms//os:linux'])\n"));
+    let out = f.ok(
+        "build",
+        &[
+            "--nobuild",
+            "--extra_execution_platforms=//:child",
+            &format!("//{PACKAGE}:base"),
+        ],
+    );
+    assert!(
+        errors(&out).contains("env LC_CTYPE=en_US.UTF-8"),
+        "{}",
+        errors(&out)
+    );
+    let out = f.ok(
+        "build",
+        &[
+            "--nobuild",
+            "--platforms=//:mac",
+            "--extra_execution_platforms=//:linux",
+            &format!("//{PACKAGE}:base"),
+        ],
+    );
+    assert!(
+        errors(&out).contains("env LC_CTYPE=C.UTF-8"),
+        "{}",
+        errors(&out)
+    );
 }
 
 #[test]

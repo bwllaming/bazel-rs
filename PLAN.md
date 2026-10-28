@@ -140,7 +140,16 @@ Done since the last increment recorded under "History", one line each:
       binary in 10.04 s from an empty scratch cache and verified its checksum.
       Explicit caller/helper headers and authentication precedence are preserved.
 - [ ] Revalidate full PR-clone cquery after the downloader fix; no whole-query
-      or whole-repository target-determinator success claimed yet.
+       or whole-repository target-determinator success claimed yet.
+- [x] Real direct-Turbine header compilation actions, with pinned genuine/native
+      jar/jdeps byte equality, source jars, header dependencies, bootclasspath,
+      jar/executable tools and parameter files (docs/JAVA_ACTIONS.md).
+- [ ] Full JavaBuilder compilation: default BAZEL classpath reduction needs
+      execution-time jdeps consumption and conditional output/fallback state.
+      The tiny native java_library now reaches java_common_internal.bzl:279
+      and fails explicitly at create_compilation_action. Header-only increment;
+      application PR-clone configured-query follow-up deferred until both APIs
+      are implemented. No cquery-only placeholders or changed select semantics.
 
 ### Commands that are rejected today
 

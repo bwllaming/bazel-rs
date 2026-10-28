@@ -225,6 +225,9 @@ pub struct ActionExecution {
     pub exec_group: String,
     pub platform: Label,
     pub properties: Vec<(String, String)>,
+    /// Shared resolved constraints for native action construction (e.g. the
+    /// Java UTF-8 locale). The resulting environment is already action-keyed.
+    pub constraints: Option<Arc<crate::platforms::ConstraintCollection>>,
 }
 
 /// Exec properties in insertion order.

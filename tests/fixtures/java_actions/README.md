@@ -34,3 +34,38 @@ execution-free cquery, snapshot invalidation, params and rejection boundaries.
 Those tests do not purport to compile Java; the actual builds above provide
 that separate proof. Archives are checksum-verified using the shared module
 archive fixture support.
+
+## Executable/params and full-compilation boundary capture
+
+A second native/genuine pair uses the real Graal native Turbine ELF
+`e57dfd0321aec0edbf4718b22298de4107d23ee0ba23443887e3f11d10b95618`,
+an explicit bootclasspath jar extracted from the same JDK's `java.base.jmod`,
+additional rule/toolchain inputs and 400 distinct javac options to force a real
+unquoted params file. All three outputs are again byte-identical:
+
+| Output | SHA-256 |
+|---|---|
+| params-hjar.jar | `2ac4bdc471c73b15f505f38a2acf9f81a30db1fcf07b1f32fdbae5f73eb5a83a` |
+| params-tjar.jar | `9267d8fade2fe866efdbe21e39208a18848e12e38b6c10d4800efcfd975f6a0d` |
+| params-hjar.jdeps | `4e761e214736de220ca19406da7f7ebbfd00952eccd0b1e880c3913f8dd33a57` |
+
+Receipts: `logs/{genuine,native}-executable-params.*`,
+`logs/genuine-executable-actions.*`, `executable-output-comparison.json`.
+ZIP entry bytes and timestamps (2010-01-01) are recorded; no normalization.
+Real native reuse checks show:
+
+- warm: binary analysis snapshot hit, 0 executed / 1 action cache hit;
+- source field edit: snapshot hit, 1 executed, changed header bytes;
+- javac source/target edit: BUILD observation invalidates the snapshot and the
+  new flags select a different action result;
+- dependency constant edit: snapshot hit, all four affected header actions
+  execute (the params target and the three-library chain).
+
+`logs/genuine-full-library.*` and `genuine-full-actions.*` additionally capture
+**genuine-only** ordinary java_library builds: default reduced-classpath
+interdependent libraries, no-source library and resources-only library. These
+use real JavaBuilder, singlejar and the pinned default JVM flags. This is
+reference material for the next stage, not native full-compilation proof.
+`logs/native-full-boundary.*` shows the tiny native java_library passing header
+registration and failing at `java_common_internal.bzl:279` on the still-explicit
+`create_compilation_action` error. No application clone cquery was attempted.

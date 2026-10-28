@@ -206,15 +206,7 @@ fn execution_group<'v>(
     context: &Context,
     heap: Heap<'v>,
 ) -> starlark::Result<String> {
-    let surface = crate::analysis_ctx::current_surface(ctx).map_err(starlark::Error::new_other)?;
-    // The native executor currently selects only the host platform. Its
-    // user-defined replacement can have a different OS constraint, which
-    // this scope does not carry yet (BazelJavaSemantics.utf8Environment).
-    if surface.config.host_platform != crate::configuration::default_host_platform() {
-        return Err(unsupported(
-            "custom host execution-platform UTF-8 environment",
-        ));
-    }
+    crate::analysis_ctx::current_surface(ctx).map_err(starlark::Error::new_other)?;
     let toolchains = field(ctx, "toolchains", heap)?;
     let label = crate::label::Label::parse_canonical(TOOLCHAIN_TYPE).map_err(failure)?;
     let key = crate::starlark_types::alloc_label(heap, TOOLCHAIN_TYPE)
@@ -229,6 +221,35 @@ fn execution_group<'v>(
         .exec_groups
         .determine(None, &crate::exec_groups::ToolchainArgument::Label(label))
         .map_err(starlark::Error::new_other)
+}
+
+/// BazelJavaSemantics.utf8Environment / ConstraintConstants: the selected
+/// execution platform's OS constraint wins, including inherited constraints.
+/// Only a missing OS constraint falls back to the local OS.
+fn utf8_locale(context: &Context, group: &str) -> starlark::Result<&'static str> {
+    let setting = context
+        .repositories
+        .parse("@platforms//os:os", "bazel_tools", "")
+        .map_err(failure)?;
+    let os = context
+        .exec_groups
+        .executions
+        .iter()
+        .find(|execution| execution.exec_group == group)
+        .and_then(|execution| execution.constraints.as_ref())
+        .and_then(|constraints| {
+            constraints.get(&crate::platforms::ConstraintSettingInfo {
+                label: setting.clone(),
+                default_value: None,
+                refined: None,
+            })
+        });
+    let macos = os.map_or(cfg!(target_os = "macos"), |os| {
+        os.label.repository == setting.repository
+            && os.label.package == "os"
+            && matches!(os.label.name.as_str(), "osx" | "macos")
+    });
+    Ok(if macos { "en_US.UTF-8" } else { "C.UTF-8" })
 }
 
 pub(crate) fn create_header<'v>(
@@ -409,12 +430,7 @@ pub(crate) fn create_header<'v>(
         true,
         BTreeMap::from([(
             "LC_CTYPE".to_owned(),
-            if cfg!(target_os = "macos") {
-                "en_US.UTF-8"
-            } else {
-                "C.UTF-8"
-            }
-            .to_owned(),
+            utf8_locale(context, &exec_group)?.to_owned(),
         )]),
     );
     context

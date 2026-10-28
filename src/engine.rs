@@ -5524,25 +5524,25 @@ impl Engine {
         // The execution platform of a context; a context that needed no
         // platform runs on the host platform, whose properties are known
         // once it was resolved (the default host platform has none).
-        let platform_of =
-            |context: Option<&UnloadedToolchainContext>| -> (Label, Vec<(String, String)>) {
-                match context {
-                    Some(context) => (
-                        context.exec_platform.label.clone(),
-                        context.exec_platform.exec_properties.clone(),
-                    ),
-                    None => {
-                        let properties = match self
-                            .platforms
-                            .get(&ConfiguredTargetKey::new(host.clone(), config))
-                        {
-                            Some(Ok(info)) => info.exec_properties.clone(),
-                            _ => Vec::new(),
-                        };
-                        (host.clone(), properties)
+        let platform_of = |context: Option<&UnloadedToolchainContext>| match context {
+            Some(context) => (
+                context.exec_platform.label.clone(),
+                context.exec_platform.exec_properties.clone(),
+                Some(context.exec_platform.constraints.clone()),
+            ),
+            None => {
+                let (properties, constraints) = match self
+                    .platforms
+                    .get(&ConfiguredTargetKey::new(host.clone(), config))
+                {
+                    Some(Ok(info)) => {
+                        (info.exec_properties.clone(), Some(info.constraints.clone()))
                     }
-                }
-            };
+                    _ => (Vec::new(), None),
+                };
+                (host.clone(), properties, constraints)
+            }
+        };
         let mut platforms = Vec::new();
         if let Some(groups) = groups {
             platforms.push((
@@ -5556,7 +5556,7 @@ impl Engine {
         let collection = platforms
             .iter()
             .map(
-                |(name, (_, properties))| crate::exec_groups::GroupPlatform {
+                |(name, (_, properties, _))| crate::exec_groups::GroupPlatform {
                     name,
                     platform_properties: properties,
                 },
@@ -5571,14 +5571,14 @@ impl Engine {
         Ok(combined
             .into_iter()
             .map(|(name, properties)| {
-                let platform = platforms
-                    .iter()
-                    .find(|(group, _)| *group == name)
-                    .map_or_else(|| host.clone(), |(_, (label, _))| label.clone());
+                let execution = platforms.iter().find(|(group, _)| *group == name);
+                let platform =
+                    execution.map_or_else(|| host.clone(), |(_, (label, _, _))| label.clone());
                 crate::exec_groups::ActionExecution {
                     exec_group: name,
                     platform,
                     properties,
+                    constraints: execution.and_then(|(_, (_, _, constraints))| constraints.clone()),
                 }
             })
             .collect())
@@ -19521,6 +19521,7 @@ m = macro(implementation=emit)
                 exec_group: group.to_owned(),
                 platform: test_label("//p:linux"),
                 properties: pairs(properties),
+                constraints: execution(0).constraints.clone(),
             };
         assert_eq!(
             execution(0),
