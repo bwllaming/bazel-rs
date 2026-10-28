@@ -1856,6 +1856,14 @@ struct TestExpansions {
     events: Vec<String>,
 }
 
+/// A directory on a source file's path (`Engine::source_target`).
+#[derive(Clone, Debug)]
+enum SourceDirProbe {
+    Missing,
+    Error(String),
+    Dir { symlink: bool, boundary: bool },
+}
+
 pub struct Engine {
     repositories: Arc<RepositorySet>,
     packages: BTreeMap<PackageId, Package>,
@@ -2018,6 +2026,8 @@ pub struct Engine {
     /// Source directories used as file targets (path -> label).
     /// Several labels (a directory and links to it, N28d) may name one.
     source_directories: BTreeMap<PathBuf, BTreeSet<Label>>,
+    /// `source_target`'s probes of the directories on a source path.
+    source_dir_probes: HashMap<PathBuf, SourceDirProbe>,
     /// Request-only policy; tree/manifest/mode flags live in configurations.
     compact_repo_mapping: bool,
     /// A label `--run_under` (LabelRunUnder): the late-bound
@@ -2176,6 +2186,7 @@ impl Engine {
             toolchain_implementations: BTreeMap::new(),
             deferred_duplicates: BTreeMap::new(),
             source_directories: BTreeMap::new(),
+            source_dir_probes: HashMap::new(),
             compact_repo_mapping: true,
             run_under: None,
             output_selection: OutputSelection::default(),
@@ -3235,6 +3246,7 @@ impl Engine {
         let mut path = package_dir.clone();
         let mut relative = label.package.clone();
         let mut linked = false;
+        let mut last_metadata = None;
         let parts: Vec<_> = Path::new(&label.name).components().collect();
         if parts
             .iter()
@@ -3242,12 +3254,57 @@ impl Engine {
         {
             return Err(format!("unsafe source label {label}"));
         }
+        // Directories on the way are probed once per invocation (outside a
+        // recording, which observes every probe in its own frame): many
+        // source files share them.
+        let memo = !crate::observed_fs::recording();
         for (i, component) in parts.iter().enumerate() {
             path.push(component.as_os_str());
             if !relative.is_empty() {
                 relative.push('/');
             }
             relative.push_str(&component.as_os_str().to_string_lossy());
+            if memo && i + 1 < parts.len() {
+                let probe = match self.source_dir_probes.get(&path) {
+                    Some(probe) => probe.clone(),
+                    None => {
+                        let probe = match crate::observed_fs::symlink_metadata(&path) {
+                            Ok(metadata) => SourceDirProbe::Dir {
+                                symlink: metadata.file_type().is_symlink(),
+                                boundary: ignored.matching_entry(&relative).is_none()
+                                    && !crate::ignored::is_deleted_directory(&path)
+                                    && crate::label::is_valid_package_name(&relative)
+                                    && (crate::observed_fs::is_file(path.join("BUILD.bazel"))
+                                        || crate::observed_fs::is_file(path.join("BUILD"))),
+                            },
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                SourceDirProbe::Missing
+                            }
+                            Err(error) => SourceDirProbe::Error(error.to_string()),
+                        };
+                        self.source_dir_probes.insert(path.clone(), probe.clone());
+                        probe
+                    }
+                };
+                match probe {
+                    SourceDirProbe::Missing => {
+                        let full = package_dir.join(&label.name);
+                        self.missing_sources.insert(full.clone(), label.clone());
+                        return Ok((full, true));
+                    }
+                    SourceDirProbe::Error(error) => {
+                        return Err(format!("no target or source {label}: {error}"));
+                    }
+                    SourceDirProbe::Dir { boundary: true, .. } => {
+                        return Err(format!(
+                            "{label} crosses a package boundary at {}",
+                            path.display()
+                        ));
+                    }
+                    SourceDirProbe::Dir { symlink, .. } => linked |= symlink,
+                }
+                continue;
+            }
             let metadata = match crate::observed_fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
                 // A declared (assumed) input file is a target whether or not
@@ -3264,6 +3321,9 @@ impl Engine {
             // Bazel follows source symlinks (docs/ARCHIVE_SYMLINKS.md); package
             // boundaries below stay checked on the logical label path.
             linked |= metadata.file_type().is_symlink();
+            if i + 1 == parts.len() {
+                last_metadata = Some(metadata);
+            }
             // An invalid package name is no package (PackageLookupFunction
             // .java:91-96), so no boundary either.
             if i + 1 < parts.len()
@@ -3300,14 +3360,26 @@ impl Engine {
         // A source directory is an input file target too, matched by name
         // like any file (Package.java:893-920, RuleContext.java:1865); only
         // its use as an action input or requested output is not modelled.
-        if crate::observed_fs::is_dir(&path) {
+        // No link on the way: the last component's lstat is the stat
+        // `is_dir`/`is_file` would make (outside a recording, which
+        // observes those stats themselves).
+        let known = last_metadata.filter(|_| !linked && !crate::observed_fs::recording());
+        let is_dir = match &known {
+            Some(metadata) => metadata.is_dir(),
+            None => crate::observed_fs::is_dir(&path),
+        };
+        if is_dir {
             self.source_directories
                 .entry(path.clone())
                 .or_default()
                 .insert(label.clone());
             return Ok((path, !linked));
         }
-        if !crate::observed_fs::is_file(&path) {
+        let is_file = match &known {
+            Some(metadata) => metadata.is_file(),
+            None => crate::observed_fs::is_file(&path),
+        };
+        if !is_file {
             return Err(format!("source is not a regular file: {label}"));
         }
         Ok((path, !linked))
@@ -14603,6 +14675,41 @@ impl Engine {
             self.prefetch_followed.insert(rule.label.clone());
             prefetch.submit_rule(rule);
         }
+    }
+
+    /// Query loading (crate::engine::query): the package prefetch of a
+    /// `query` command's transitive visitations — the build's phase-1
+    /// prefetcher (same workers, same commit at the sequential demand
+    /// point, so output is the threads-1 one), seeded as the query
+    /// discovers targets ([`Self::prefetch_query_label`]).
+    pub(crate) fn start_query_prefetch(&mut self) {
+        if self.prefetch.is_none() {
+            self.start_prefetch(&[]);
+        }
+    }
+
+    pub(crate) fn stop_query_prefetch(&mut self) {
+        self.stop_prefetch();
+    }
+
+    /// Query prefetch: the targets the loaded rule `label` names are queued
+    /// (once per rule). Not a rule, or not loaded: nothing.
+    pub(crate) fn prefetch_query_label(&mut self, label: &Label) {
+        let Some(prefetch) = &self.prefetch else {
+            return;
+        };
+        if self.prefetch_followed.contains(label) {
+            return;
+        }
+        let Some(rule) = self
+            .packages
+            .get(&label.package_id())
+            .and_then(|package| package.rules.get(label))
+        else {
+            return;
+        };
+        self.prefetch_followed.insert(label.clone());
+        prefetch.submit_rule(rule);
     }
 
     /// The requested targets that print a build result and the artifacts

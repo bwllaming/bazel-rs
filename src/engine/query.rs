@@ -490,7 +490,7 @@ struct Env<'a> {
     universe: Set,
     universe_packages: HashSet<PackageId>,
     /// Reverse edges within the universe (allrdeps).
-    universe_parents: Option<HashMap<Label, Vec<Label>>>,
+    universe_parents: Option<Arc<HashMap<Label, Vec<Label>>>>,
     /// SkyQuery pattern failures, raised when the literal is evaluated.
     pattern_failures: HashMap<String, String>,
 }
@@ -636,6 +636,7 @@ impl Engine {
             pattern_failures: HashMap::new(),
         };
         let result = env.evaluate_query(&expr);
+        env.engine.stop_query_prefetch();
         let mut events = std::mem::take(&mut env.events);
         let result = match result {
             Ok(result) => result,
@@ -757,6 +758,9 @@ impl Env<'_> {
             }
         }
         let top = expr as *const Expr;
+        // Packages the evaluation demands next load ahead on the
+        // prefetch workers (committed at the sequential demand point).
+        self.engine.start_query_prefetch();
         match self.eval(expr, &mut Vec::new()) {
             Ok(result) => {
                 if self.has_errors && !self.options.keep_going {
@@ -1135,6 +1139,17 @@ impl Env<'_> {
                 break;
             }
             let mut pending = std::mem::take(&mut deferred);
+            // The packages of what this level reaches (and what those
+            // reach, ahead) load on the prefetch workers meanwhile.
+            for from in &frontier {
+                if self
+                    .kinds
+                    .get(from)
+                    .is_some_and(|kind| matches!(kind, Ok(Kind::Rule)))
+                {
+                    self.engine.prefetch_query_label(from);
+                }
+            }
             for from in &frontier {
                 for edge in self.edges(from)?.iter() {
                     pending.push((from.clone(), edge.label.clone(), edge.attribute));
@@ -1859,6 +1874,7 @@ impl Env<'_> {
             }
         }
         self.unfiltered = true;
+        self.engine.start_query_prefetch();
         let visited = self.visit(&roots, None);
         self.unfiltered = false;
         self.edges.clear();
@@ -1904,12 +1920,14 @@ impl Env<'_> {
         Ok(targets)
     }
 
-    fn universe_parents(&mut self) -> Eval<HashMap<Label, Vec<Label>>> {
+    fn universe_parents(&mut self) -> Eval<Arc<HashMap<Label, Vec<Label>>>> {
         if let Some(parents) = &self.universe_parents {
             return Ok(parents.clone());
         }
-        let universe = self.universe.clone();
-        let parents = self.parents_within(&universe)?;
+        let universe = std::mem::take(&mut self.universe);
+        let parents = self.parents_within(&universe);
+        self.universe = universe;
+        let parents = Arc::new(parents?);
         self.universe_parents = Some(parents.clone());
         Ok(parents)
     }
@@ -1976,13 +1994,14 @@ impl Env<'_> {
     /// Reverse edges among `closure` (PathLabelVisitor ALLPATHS parent map).
     fn parents_within(&mut self, closure: &Set) -> Eval<HashMap<Label, Vec<Label>>> {
         let mut parents: HashMap<Label, Vec<Label>> = HashMap::new();
+        // Each source is visited once (a Set): its distinct successors get
+        // it as a parent once, in first-parent order.
+        let mut distinct = HashSet::new();
         for from in &closure.items {
+            distinct.clear();
             for to in self.successors(from)? {
-                if closure.contains(&to) {
-                    let entry = parents.entry(to).or_default();
-                    if !entry.contains(from) {
-                        entry.push(from.clone());
-                    }
+                if closure.contains(&to) && distinct.insert(to.clone()) {
+                    parents.entry(to).or_default().push(from.clone());
                 }
             }
         }
@@ -2536,6 +2555,13 @@ impl Env<'_> {
     fn graph_output(&mut self, graph: &BTreeMap<Label, BTreeSet<Label>>) -> String {
         let terminator = self.options.line_terminator();
         let conditions = self.conditional_edges(graph);
+        let mut by_source: HashMap<&Label, Vec<(&Label, &Vec<Label>)>> = HashMap::new();
+        for ((source, destination), labels) in &conditions {
+            by_source
+                .entry(source)
+                .or_default()
+                .push((destination, labels));
+        }
         let mut out = format!("digraph mygraph {{{terminator}  node [shape=box];{terminator}");
         let condition_label = |from: &[Label], to: &[Label]| -> String {
             let limit = self.options.graph_conditional_edges_limit;
@@ -2545,11 +2571,17 @@ impl Env<'_> {
             let mut buffer = String::new();
             let mut annotated = HashSet::new();
             for source in from {
-                for destination in to {
-                    let Some(labels) = conditions.get(&(source.clone(), destination.clone()))
-                    else {
-                        continue;
-                    };
+                let Some(outgoing) = by_source.get(source) else {
+                    continue;
+                };
+                // The conditional successors of `source` among `to` (a
+                // sorted class), in `to`'s order.
+                let mut matched = outgoing
+                    .iter()
+                    .filter(|(destination, _)| to.binary_search(destination).is_ok())
+                    .collect::<Vec<_>>();
+                matched.sort_by(|a, b| a.0.cmp(b.0));
+                for (_, labels) in matched {
                     let take = if limit == -1 {
                         labels.len()
                     } else {
@@ -2619,14 +2651,16 @@ impl Env<'_> {
             .enumerate()
             .flat_map(|(index, class)| class.iter().map(move |label| (label.clone(), index)))
             .collect::<HashMap<_, _>>();
-        let mut class_graph: BTreeMap<Vec<Label>, BTreeSet<Vec<Label>>> = BTreeMap::new();
-        for class in &partition {
+        // Classes by their index in the sorted partition: index order is the
+        // classes' order, so the topological order is the same.
+        let mut class_graph: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+        for (index, class) in partition.iter().enumerate() {
             let successors = class
                 .iter()
                 .flat_map(|node| graph[node].iter())
-                .map(|successor| partition[class_of[successor]].clone())
+                .map(|successor| class_of[successor])
                 .collect::<BTreeSet<_>>();
-            class_graph.insert(class.clone(), successors);
+            class_graph.insert(index, successors);
         }
         let node_limit = self.options.graph_node_limit;
         let serialize = |class: &Vec<Label>| -> String {
@@ -2646,15 +2680,16 @@ impl Env<'_> {
             }
             buffer
         };
+        let names = partition.iter().map(serialize).collect::<Vec<_>>();
         for class in topological_order(&class_graph) {
-            let from = serialize(&class);
+            let from = &names[class];
             out.push_str(&format!("  \"{from}\"{terminator}"));
-            for successor in &class_graph[&class] {
+            for &successor in &class_graph[&class] {
                 out.push_str(&format!(
                     "  \"{from}\" -> \"{}\"{terminator}",
-                    serialize(successor)
+                    names[successor]
                 ));
-                let label = condition_label(&class, successor);
+                let label = condition_label(&partition[class], &partition[successor]);
                 if !label.is_empty() {
                     out.push_str(&format!("  [label=\"{label}\"];{terminator}"));
                 }
