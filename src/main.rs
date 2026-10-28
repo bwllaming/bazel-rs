@@ -1928,7 +1928,7 @@ enum IncrementalFallback {
 
 fn incremental_build(
     engine: &mut Engine,
-    candidate: bazel_rs::snapshot::incremental::Candidate,
+    mut candidate: bazel_rs::snapshot::incremental::Candidate,
     context: IncrementalContext<'_>,
     snapshot: &mut bazel_rs::snapshot::Scope,
 ) -> Result<Planned, IncrementalFallback> {
@@ -1953,6 +1953,32 @@ fn incremental_build(
             || pattern.ends_with(":all-targets")
             || pattern.ends_with(":all-targets/")
     });
+    // Edited `.bzl` modules whose code did not change (comments only):
+    // nothing they define or load changed. Read again (the merged INPUTS
+    // record what was read now).
+    if !candidate.edited.is_empty() {
+        let mut edited = candidate.edited.clone();
+        for id in &candidate.edited {
+            let module = &candidate.index.modules[*id as usize];
+            let path = candidate
+                .index
+                .main_root
+                .join(&module.label.package)
+                .join(&module.label.name);
+            if let (Some(code), Ok(bytes)) = (module.code, bazel_rs::observed_fs::read(&path))
+                && incremental::code_digest(&bytes) == code
+            {
+                edited.remove(id);
+            }
+        }
+        if edited != candidate.edited {
+            let (modules, bzl) = incremental::bzl_attribution(&candidate.index, &edited)
+                .map_err(|reason| early(reason))?;
+            candidate.modules = modules;
+            candidate.bzl = bzl;
+            candidate.edited = edited;
+        }
+    }
     let mut changed = incremental::Changed {
         packages: Default::default(),
         fingerprints: Default::default(),

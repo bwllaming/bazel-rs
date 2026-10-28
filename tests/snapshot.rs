@@ -4642,9 +4642,14 @@ fn incremental_analysis_splices_prunes_and_falls_back() {
     state.toggle("incr-deprecated");
     twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
     fallback("");
-    // The rules' `.bzl` file: every target of its rules (:a, :b, :extra,
-    // //incr_use:u and :v).
+    // The rules' `.bzl` file: a comment changes nothing; code re-analyzes
+    // every target of its rules (:a, :b, :extra, //incr_use:u and :v).
     twin.write("incr/defs.bzl", &format!("{INCR_RULES}\n# edited\n"));
+    incremental(0);
+    twin.write(
+        "incr/defs.bzl",
+        &INCR_RULES.replace("out.path, ctx.attr.flag", "out.path, ctx.attr.flag + '!'"),
+    );
     incremental(5);
     // A source an action reads: a hit (no analysis input changed).
     twin.write("incr/b.txt", "b2\n");
@@ -4748,9 +4753,12 @@ fn incremental_analysis_of_bzl_edits() {
         "{}",
         spliced.stderr()
     );
-    // The rules' module: a comment re-analyzes every target of its rules
-    // (their actions unchanged), a body edit re-runs them.
+    // The rules' module: a comment appended changes nothing; one inserted
+    // above the code moves it (every target of its rules re-analyzed,
+    // their actions unchanged); a body edit re-runs them.
     twin.write("incr/defs.bzl", &format!("{INCR_RULES}\n# edited\n"));
+    incremental(0);
+    twin.write("incr/defs.bzl", &format!("# edited\n{INCR_RULES}"));
     incremental(6);
     twin.write(
         "incr/defs.bzl",

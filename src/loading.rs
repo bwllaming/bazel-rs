@@ -1833,6 +1833,9 @@ impl<'a> Loader<'a> {
         let timing_read = std::time::Instant::now();
         let bytes = crate::observed_fs::read(&path)
             .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?;
+        if label.repository.is_empty() {
+            crate::snapshot::incremental::note_module_code(label, &bytes);
+        }
         let timing_parse = std::time::Instant::now();
         let source = std::str::from_utf8(&bytes)
             .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?;

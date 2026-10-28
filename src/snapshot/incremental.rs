@@ -187,6 +187,10 @@ pub struct IndexModule {
     /// Entered by a definition load (a repository rule, a module extension,
     /// an aspect's identity): its edits are not attributable.
     pub definition: bool,
+    /// The [`code_digest`] of what the analysis loaded (main-repository
+    /// modules read once, or with the same code): an edit leaving it is
+    /// one of comments only.
+    pub code: Option<[u8; 32]>,
 }
 
 /// The dependency index of one full analysis (the INDEX section).
@@ -227,6 +231,91 @@ pub struct Index {
     pub rule_modules: Vec<(u32, u32)>,
 }
 
+/// The digest of a `.bzl` file's code: its bytes with every comment's text
+/// removed (a `#` outside string literals up to the end of its line), all
+/// other bytes — whitespace and newlines included — in place, but the
+/// whitespace ending the file. Two files with equal code digests lex to the
+/// same tokens at the same positions: their evaluation is the same (an
+/// edit of comments only, or of blank lines after the code).
+pub fn code_digest(bytes: &[u8]) -> [u8; 32] {
+    let mut code: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    let mut start = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'#' => {
+                code.extend_from_slice(&bytes[start..at]);
+                while at < bytes.len() && bytes[at] != b'\n' {
+                    at += 1;
+                }
+                start = at;
+            }
+            quote @ (b'\'' | b'"') => {
+                let triple = bytes.get(at + 1) == Some(&quote) && bytes.get(at + 2) == Some(&quote);
+                at += if triple { 3 } else { 1 };
+                loop {
+                    match bytes.get(at) {
+                        None => break,
+                        Some(b'\\') => at += 2,
+                        Some(b'\n') if !triple => break,
+                        Some(byte) if *byte == quote => {
+                            if !triple {
+                                at += 1;
+                                break;
+                            }
+                            if bytes.get(at + 1) == Some(&quote)
+                                && bytes.get(at + 2) == Some(&quote)
+                            {
+                                at += 3;
+                                break;
+                            }
+                            at += 1;
+                        }
+                        Some(_) => at += 1,
+                    }
+                }
+                continue;
+            }
+            _ => at += 1,
+        }
+    }
+    code.extend_from_slice(&bytes[start.min(bytes.len())..]);
+    // Blank lines after the code move nothing.
+    while code.last().is_some_and(u8::is_ascii_whitespace) {
+        code.pop();
+    }
+    *blake3::hash(&code).as_bytes()
+}
+
+/// The code digests of the main-repository modules this process read
+/// ([`code_digest`]); `None`: read twice with different code.
+static MODULE_CODE: std::sync::Mutex<Option<std::collections::HashMap<Label, Option<[u8; 32]>>>> =
+    std::sync::Mutex::new(None);
+
+/// The loader read the main-repository module `label`.
+pub fn note_module_code(label: &Label, bytes: &[u8]) {
+    let digest = code_digest(bytes);
+    let mut code = MODULE_CODE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entry = code
+        .get_or_insert_with(Default::default)
+        .entry(label.clone())
+        .or_insert(Some(digest));
+    if *entry != Some(digest) {
+        *entry = None;
+    }
+}
+
+/// The code digests of the modules this process read.
+pub fn module_code() -> std::collections::HashMap<Label, Option<[u8; 32]>> {
+    MODULE_CODE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+        .unwrap_or_default()
+}
+
 /// The stand-in module of a rule whose defining modules are unknown: an
 /// index naming it attributes no `.bzl` edit.
 pub fn unattributed_module() -> Label {
@@ -245,6 +334,9 @@ pub struct ModuleGraph {
     pub loads: std::collections::HashMap<Label, Vec<Label>>,
     /// Modules a definition load entered.
     pub definitions: std::collections::HashSet<Label>,
+    /// The code digests of the main-repository modules read
+    /// ([`module_code`]).
+    pub code: std::collections::HashMap<Label, Option<[u8; 32]>>,
 }
 
 /// Store `graph` in `index`: the main-repository modules and those loading
@@ -307,6 +399,7 @@ pub fn set_modules(
                 .map(|loads| id_list(loads))
                 .unwrap_or_default(),
             definition: graph.definitions.contains(*label),
+            code: graph.code.get(*label).copied().flatten(),
         })
         .collect();
     for package in &mut index.packages {
@@ -342,6 +435,9 @@ pub fn refresh_modules(
         graph.loads.insert(module.clone(), loads.clone());
     }
     graph.definitions.extend(now.definitions.iter().cloned());
+    for (module, code) in &now.code {
+        graph.code.insert(module.clone(), *code);
+    }
     let label = |id: &u32| index.modules[*id as usize].label.clone();
     let mut loads: BTreeMap<u32, Vec<Label>> = index
         .packages
@@ -396,6 +492,11 @@ pub fn module_graph(index: &Index) -> ModuleGraph {
             .iter()
             .filter(|module| module.definition)
             .map(|module| module.label.clone())
+            .collect(),
+        code: index
+            .modules
+            .iter()
+            .map(|module| (module.label.clone(), module.code))
             .collect(),
     }
 }
@@ -632,6 +733,8 @@ pub struct Attribution {
     /// Packages loading one of `modules`: loaded again, their fingerprint
     /// decides.
     pub bzl: std::collections::BTreeSet<u32>,
+    /// The edited modules themselves.
+    pub edited: std::collections::BTreeSet<u32>,
 }
 
 /// While a lookup misses (crate::snapshot::hit): every changed observation
@@ -691,6 +794,8 @@ pub struct Candidate {
     pub modules: std::collections::BTreeSet<u32>,
     /// Packages loading one of `modules`: loaded again.
     pub bzl: std::collections::BTreeSet<u32>,
+    /// The edited modules themselves.
+    pub edited: std::collections::BTreeSet<u32>,
     /// The snapshot's short key (diagnostics).
     pub key: String,
     pub started: std::time::Instant,
@@ -714,6 +819,7 @@ impl Candidate {
                     content,
                     modules,
                     bzl,
+                    edited,
                 },
         } = classified?;
         Ok(Self {
@@ -726,6 +832,7 @@ impl Candidate {
             content,
             modules,
             bzl,
+            edited,
             key,
             started: std::time::Instant::now(),
         })
@@ -869,6 +976,7 @@ pub fn classify(
         content,
         modules,
         bzl,
+        edited,
     })
 }
 
@@ -878,7 +986,7 @@ pub fn classify(
 /// of another repository or one not loaded loads one, a rule's defining
 /// modules are unknown).
 #[allow(clippy::type_complexity)]
-fn bzl_attribution(
+pub fn bzl_attribution(
     index: &Index,
     edited: &std::collections::BTreeSet<u32>,
 ) -> Result<
@@ -2146,6 +2254,7 @@ mod tests {
             .into_iter()
             .collect(),
             definitions: Default::default(),
+            code: Default::default(),
         };
         set_modules(
             &mut index,
@@ -2211,6 +2320,38 @@ mod tests {
                 .unwrap_err()
                 .contains("@@ext+//")
         );
+    }
+
+    #[test]
+    fn code_digests_ignore_comments_only() {
+        let base = code_digest(
+            b"x = 1  # one\ny = '#a' # b\nz = \"\"\"q\n# not a comment \\\" \"\"\" # c\n",
+        );
+        assert_eq!(
+            base,
+            code_digest(
+                b"x = 1  # uno\ny = '#a' #\nz = \"\"\"q\n# not a comment \\\" \"\"\" # comment\n"
+            )
+        );
+        for changed in [
+            &b"x = 1  # one\ny = '#b' # b\nz = \"\"\"q\n# not a comment \\\" \"\"\" # c\n"[..],
+            b"x = 1  # one\ny = '#a' # b\nz = \"\"\"q\n# not a kommentar \\\" \"\"\" # c\n",
+            b"x = 1   # one\ny = '#a' # b\nz = \"\"\"q\n# not a comment \\\" \"\"\" # c\n",
+            b"x = 1  # one\n\ny = '#a' # b\nz = \"\"\"q\n# not a comment \\\" \"\"\" # c\n",
+            b"x = 2  # one\ny = '#a' # b\nz = \"\"\"q\n# not a comment \\\" \"\"\" # c\n",
+        ] {
+            assert_ne!(
+                base,
+                code_digest(changed),
+                "{}",
+                String::from_utf8_lossy(changed)
+            );
+        }
+        // An appended comment line.
+        // Comment lines appended after the code; one inserted above it moves
+        // the code.
+        assert_eq!(code_digest(b"a = 1\n"), code_digest(b"a = 1\n# edit\n\n"));
+        assert_ne!(code_digest(b"a = 1\n"), code_digest(b"# edit\na = 1\n"));
     }
 
     #[test]
@@ -2284,6 +2425,7 @@ mod tests {
                 label: Label::parse_canonical("//a:defs.bzl").unwrap(),
                 loads: Vec::new(),
                 definition: false,
+                code: Some([4; 32]),
             }],
             rule_modules: vec![(0, 0)],
         };

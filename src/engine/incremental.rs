@@ -662,6 +662,7 @@ fn module_graph(
         }
     }
     graph.definitions = crate::loading::definition_modules().into_iter().collect();
+    graph.code = crate::snapshot::incremental::module_code();
     graph
 }
 
