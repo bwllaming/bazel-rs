@@ -105,7 +105,7 @@ const JAVA_INTERNAL_METHODS: [(&str, &str, Behavior); 11] = [
     (
         "get_runtime_classpath_for_archive",
         "get_runtime_classpath_for_archive",
-        Behavior::Unimplemented(Domain::Java),
+        Behavior::JavaRuntimeClasspath,
     ),
     (
         "google_legacy_api_enabled",

@@ -1,0 +1,5 @@
+load(":archive.bzl", "archive", "prebuilt")
+prebuilt(name = "keep", jar = "keep_input.jar")
+prebuilt(name = "environment", jar = "extra_input.jar", poison = True)
+prebuilt(name = "neverlink", jar = "extra_input.jar", poison = True, neverlink = True)
+archive(name = "archive", main = "main_input.jar", deps = [":keep", ":environment", ":neverlink"], deploy_env = [":environment"])

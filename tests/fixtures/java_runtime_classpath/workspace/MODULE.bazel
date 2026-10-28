@@ -1,0 +1,3 @@
+module(name = "runtime_classpath_fixture")
+bazel_dep(name = "classpath_dep", version = "1.0", repo_name = "cp_alias")
+local_path_override(module_name = "classpath_dep", path = "dep")

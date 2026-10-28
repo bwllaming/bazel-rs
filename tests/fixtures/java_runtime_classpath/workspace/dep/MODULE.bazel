@@ -1,0 +1,1 @@
+module(name = "classpath_dep", version = "1.0")

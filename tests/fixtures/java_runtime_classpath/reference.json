@@ -1,0 +1,372 @@
+{
+  "bazel_elf_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "bazel_source": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+  "errors": {
+    "extra": "get_runtime_classpath_for_archive() accepts no more than 2 positional arguments but got 3",
+    "int_runtime": "got a depset of 'int', expected a depset of 'File'",
+    "list_excluded": "in call to get_runtime_classpath_for_archive(), parameter 'excluded_jars' got value of type 'list', want 'depset'",
+    "list_jars": "in call to get_runtime_classpath_for_archive(), parameter 'jars' got value of type 'list', want 'depset'",
+    "missing": "get_runtime_classpath_for_archive() missing 1 required positional argument: excluded_jars",
+    "named": "get_runtime_classpath_for_archive() got named argument for positional-only parameter 'jars'",
+    "none_excluded": "in call to get_runtime_classpath_for_archive(), parameter 'excluded_jars' got value of type 'NoneType', want 'depset'",
+    "none_jars": "in call to get_runtime_classpath_for_archive(), parameter 'jars' got value of type 'NoneType', want 'depset'",
+    "string_runtime": "got a depset of 'string', expected a depset of 'File'"
+  },
+  "manifest": "alpha\ngenerated\n",
+  "outputs": {
+    "artifact_kinds": [
+      "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/report.tree",
+      "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/report.link",
+      "bazel_internal/test_rules/runtime_classpath/c.txt"
+    ],
+    "default:all": {
+      "paths": [],
+      "repeated_equal": true,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "default:empty": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar",
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar"
+      ],
+      "repeated_equal": true,
+      "same": true,
+      "stable": true,
+      "type": "depset"
+    },
+    "default:label": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar",
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "default:none": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar",
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "default:remove": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar",
+        "bazel_internal/test_rules/runtime_classpath/a.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "default:string": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar",
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "default:struct": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar",
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "empty_runtime": [
+      true,
+      true,
+      true,
+      true
+    ],
+    "external_identity": [
+      true,
+      true
+    ],
+    "loading": [
+      true,
+      [
+        "unchecked"
+      ],
+      true
+    ],
+    "postorder:all": {
+      "paths": [],
+      "repeated_equal": true,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "postorder:empty": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar",
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar"
+      ],
+      "repeated_equal": true,
+      "same": true,
+      "stable": false,
+      "type": "depset"
+    },
+    "postorder:label": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar",
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "postorder:none": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar",
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "postorder:remove": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar",
+        "bazel_internal/test_rules/runtime_classpath/a.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "postorder:string": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar",
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "postorder:struct": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar",
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "preorder:all": {
+      "paths": [],
+      "repeated_equal": true,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "preorder:empty": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar",
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar"
+      ],
+      "repeated_equal": true,
+      "same": true,
+      "stable": false,
+      "type": "depset"
+    },
+    "preorder:label": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar",
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "preorder:none": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar",
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "preorder:remove": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "preorder:string": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar",
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "preorder:struct": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar",
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "topological:all": {
+      "paths": [],
+      "repeated_equal": true,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "topological:empty": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar",
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar"
+      ],
+      "repeated_equal": true,
+      "same": true,
+      "stable": false,
+      "type": "depset"
+    },
+    "topological:label": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar",
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "topological:none": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar",
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "topological:remove": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "topological:string": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar",
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    },
+    "topological:struct": {
+      "paths": [
+        "bazel_internal/test_rules/runtime_classpath/a.jar",
+        "external/classpath_dep+/external.jar",
+        "bazel_internal/test_rules/runtime_classpath/b.jar",
+        "bazel_internal/test_rules/runtime_classpath/c.txt",
+        "bazel-out/k8-fastbuild/bin/bazel_internal/test_rules/runtime_classpath/generated.jar"
+      ],
+      "repeated_equal": false,
+      "same": false,
+      "stable": true,
+      "type": "depset"
+    }
+  }
+}

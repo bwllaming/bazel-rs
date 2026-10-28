@@ -161,6 +161,11 @@ Done since the last increment recorded under "History", one line each:
       2,583MiB, no output). The dependent rules_python debugger select error
       remains visible. Annotation processors and documented branches remain
       unsupported; no whole-workspace TD claim or changed select semantics.
+- [x] Runtime archive classpath filtering implements the genuine empty-exclusion
+      identity shortcut and nonempty Artifact-identity subtraction/stable-order
+      result, including the intentionally untyped exclusion set. A real
+      rules_java deploy-archive action consumes it with byte-identical runnable
+      output (docs/JAVA_RUNTIME_CLASSPATH.md). Application follow-up pending.
 
 ### Commands that are rejected today
 

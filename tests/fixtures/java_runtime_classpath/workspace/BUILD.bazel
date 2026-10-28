@@ -1,0 +1,3 @@
+load(":denied.bzl", "denied")
+platform(name = "host")
+denied(name = "denied")

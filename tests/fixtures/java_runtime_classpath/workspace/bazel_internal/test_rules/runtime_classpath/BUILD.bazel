@@ -1,0 +1,20 @@
+load(":defs.bzl", "bad", "consume", "generated", "identity", "report")
+
+generated(name = "generated")
+generated(name = "poison", poison = True)
+report(
+    name = "report",
+    srcs = ["a.jar", "b.jar", "c.txt"],
+    generated = ":generated",
+    poison = ":poison",
+    external = "@cp_alias//:external.jar",
+    canonical = "@@classpath_dep+//:external.jar",
+)
+consume(name = "consume", dep = ":report")
+alias(name = "source_alias", actual = "a.jar")
+identity(name = "identity", source = "a.jar", alias = ":source_alias", external = "@cp_alias//:a.jar")
+
+[bad(name = "bad_" + case, mode = case) for case in [
+    "missing", "extra", "named", "list_jars", "list_excluded", "none_jars",
+    "none_excluded", "string_runtime", "int_runtime",
+]]
