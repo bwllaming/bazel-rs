@@ -31,7 +31,9 @@ use std::path::Path;
 /// the PLAN section is stored compressed (crate::snapshot::format::
 /// compress_plan). 4: INPUTS also carries advisory typed non-local publication
 /// receipts; raw selection-pointer observations are still required.
-pub const FORMAT: u32 = 4;
+/// 5: selection-owned pointer read/absence operations are distinct from ordinary
+/// observations and can be discharged only by current guarded acceptance proof.
+pub const FORMAT: u32 = 5;
 
 /// Options left out of G (PLAN-L2 §1a "Options left out of G"), by name
 /// (an `--[no]name` boolean's `no` form matches too). Each was traced to

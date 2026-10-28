@@ -893,6 +893,12 @@ pub fn classify(
             .get(at)
             .ok_or("internal error: a changed observation out of range")?;
         let what = format!("{} {}", observation.op.name(), escaped(path));
+        if matches!(
+            observation.op,
+            Op::SelectionRead(_) | Op::SelectionAbsent(_)
+        ) {
+            return Err(format!("{what}: repository publication selection"));
+        }
         if path.starts_with(cache) {
             return Err(format!("{what}: inside the cache"));
         }

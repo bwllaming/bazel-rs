@@ -336,6 +336,8 @@ enum OpWire<'a> {
     ReadDir(#[serde(borrow)] ProjectionWire<'a>),
     Canon,
     ReadLink,
+    SelectionRead(&'a str),
+    SelectionAbsent(&'a str),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -847,6 +849,8 @@ pub fn encode_inputs(
                 }),
                 Op::Canon => OpWire::Canon,
                 Op::ReadLink => OpWire::ReadLink,
+                Op::SelectionRead(owner) => OpWire::SelectionRead(owner),
+                Op::SelectionAbsent(owner) => OpWire::SelectionAbsent(owner),
             },
             outcome: match &observation.outcome {
                 Outcome::Error(errno) => OutcomeWire::Error(*errno),
@@ -1002,6 +1006,8 @@ pub fn decode_inputs(bytes: &[u8]) -> Result<Inputs, String> {
             }),
             OpWire::Canon => Op::Canon,
             OpWire::ReadLink => Op::ReadLink,
+            OpWire::SelectionRead(owner) => Op::SelectionRead((*owner).to_owned()),
+            OpWire::SelectionAbsent(owner) => Op::SelectionAbsent((*owner).to_owned()),
         };
         let outcome = match &observation.outcome {
             OutcomeWire::Error(errno) => Outcome::Error(*errno),

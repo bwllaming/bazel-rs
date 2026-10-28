@@ -884,7 +884,7 @@ where
         (_, None) => Ok(None),
         (reuse, Some(workspace)) => {
             if reuse == Reuse::NoPointer {
-                let _ = crate::observed_fs::symlink_metadata(&shared);
+                crate::observed_fs::note_selection_absent(&shared, stage_key);
             }
             let own = direct
                 .join("specs")
@@ -943,7 +943,7 @@ fn reuse_through(
     validate: Validate<'_>,
 ) -> Result<Reuse, String> {
     let direct = &cache.join("direct");
-    let Some(identity) = read_pointer(pointer)? else {
+    let Some(identity) = read_pointer_with(pointer, Some(stage_key))? else {
         return Ok(Reuse::NoPointer);
     };
     let destination = direct.join("trees").join(&identity);
@@ -1202,6 +1202,102 @@ fn settle_slot(
         let _ = crate::repository_slots::bind(cache, stage_key, identity);
     }
     crate::repository_slots::note(cache, stage_key, identity, class);
+}
+
+/// All guards are acquired without waiting and before any selection mutation.
+/// Slot locks exclude normal publishers, reuse binders, withdrawal and mutable
+/// conversion. Existing identity locks exclude manifest refresh/republish/GC.
+/// Dependencies are never evaluated while acquiring locks.
+pub(crate) struct AdoptionGuard {
+    cache: PathBuf,
+    receipts: Vec<crate::repository_publication::Receipt>,
+    slots: Vec<crate::repository_slots::SlotWriter>,
+    identities: Vec<File>,
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FAIL_ADOPTION_BIND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+impl AdoptionGuard {
+    pub(crate) fn acquire(
+        cache: &Path,
+        receipts: &[crate::repository_publication::Receipt],
+    ) -> Result<Self, String> {
+        let mut receipts = receipts.to_vec();
+        receipts.sort_by_key(|receipt| crate::repository_slots::slug(&receipt.canonical));
+        let mut guard = Self {
+            cache: cache.to_path_buf(),
+            receipts,
+            slots: Vec::new(),
+            identities: Vec::new(),
+        };
+        for receipt in &guard.receipts {
+            let slot = crate::repository_slots::SlotWriter::try_acquire(cache, &receipt.canonical)?
+                .ok_or("repository publisher or binder is busy")?;
+            if !slot.immutable() || read_pointer_unobserved(&receipt.pointer(cache))?.is_none() {
+                return Err("publication selection or immutable slot is unavailable".into());
+            }
+            guard.slots.push(slot);
+        }
+        let ids: std::collections::BTreeSet<_> = guard
+            .receipts
+            .iter()
+            .map(|receipt| &receipt.publication)
+            .collect();
+        for id in ids {
+            let mut options = OpenOptions::new();
+            options.read(true).write(true);
+            no_follow(&mut options);
+            let lock = options
+                .open(cache.join("direct/locks").join(id))
+                .map_err(|e| e.to_string())?;
+            regular_metadata(&lock.metadata().map_err(|e| e.to_string())?)?;
+            FileExt::try_lock_shared(&lock)
+                .map_err(|_| "publication is being refreshed, published or evicted")?;
+            guard.identities.push(lock);
+        }
+        Ok(guard)
+    }
+
+    /// All fallible candidate checks precede this method. An error here may
+    /// follow a partial commit and MUST terminate the command, never try the
+    /// next graph. On restart pointer/view mismatch fails closed and normal
+    /// analysis or a fully revalidated adoption repairs the view.
+    pub(crate) fn install(&self) -> Result<(), String> {
+        let specs = self.cache.join("direct/specs");
+        for (receipt, slot) in self.receipts.iter().zip(&self.slots) {
+            publish_pointer(&specs, &receipt.pointer(&self.cache), &receipt.publication)?;
+            #[cfg(test)]
+            if FAIL_ADOPTION_BIND.with(|flag| flag.replace(false)) {
+                return Err("injected failure after pointer commit".into());
+            }
+            slot.bind_immutable(&receipt.publication)?;
+        }
+        for (receipt, slot) in self.receipts.iter().zip(&self.slots) {
+            if read_pointer_unobserved(&receipt.pointer(&self.cache))?.as_deref()
+                != Some(&receipt.publication)
+                || !slot.immutable()
+                || fs::read_link(slot.path()).ok()
+                    != Some(crate::repository_slots::link_target(&receipt.publication))
+            {
+                return Err(format!(
+                    "adopted selection @@{} did not verify",
+                    receipt.canonical
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for AdoptionGuard {
+    fn drop(&mut self) {
+        for lock in &self.identities {
+            let _ = FileExt::unlock(lock);
+        }
+    }
 }
 
 /// [`materialize`] with the caller-computed specification pointer identity:
@@ -1613,7 +1709,7 @@ impl ExecutedTaint {
         {
             return;
         }
-        observed_fs::supersede(pointer);
+        observed_fs::supersede_selection(pointer, stage_key);
         if matches!(
             try_reuse_in(cache, stage_key, spec_key, workspace, validate),
             Ok(Some(found)) if found == destination
@@ -1968,12 +2064,8 @@ fn publish_pointer(specs: &Path, pointer: &Path, identity: &str) -> Result<(), S
 /// identity and revalidates recorded inputs and tree before any reuse. A
 /// newer binary's additive pointer field therefore cannot change what is
 /// reused, where rejecting it would fail this binary's builds outright.
-fn read_pointer(path: &Path) -> Result<Option<String>, String> {
-    read_pointer_with(path, true)
-}
-
 fn read_pointer_unobserved(path: &Path) -> Result<Option<String>, String> {
-    read_pointer_with(path, false)
+    read_pointer_with(path, None)
 }
 
 fn hex_identity(identity: &str) -> bool {
@@ -1983,7 +2075,7 @@ fn hex_identity(identity: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-fn read_pointer_with(path: &Path, observe: bool) -> Result<Option<String>, String> {
+fn read_pointer_with(path: &Path, owner: Option<&str>) -> Result<Option<String>, String> {
     #[derive(Deserialize)]
     struct Pointer {
         format: u32,
@@ -1993,14 +2085,14 @@ fn read_pointer_with(path: &Path, observe: bool) -> Result<Option<String>, Strin
     let bytes = match read_published(path, false) {
         Ok(bytes) => bytes,
         Err(error) => {
-            if !observe && optional_metadata(path)?.is_some() {
+            if owner.is_none() && optional_metadata(path)?.is_some() {
                 return Err(error);
             }
             return Ok(None);
         }
     };
-    if observe {
-        crate::observed_fs::note_read(path, &bytes);
+    if let Some(canonical) = owner {
+        crate::observed_fs::note_selection_read(path, &bytes, canonical);
     }
     let pointer: Pointer = serde_json::from_slice(&bytes).map_err(|e| {
         format!(

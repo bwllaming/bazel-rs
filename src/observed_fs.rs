@@ -99,6 +99,40 @@ static RECORDER: OnceLock<Recorder> = OnceLock::new();
 /// The window is a verify shadow ([`mark_shadow_window`]).
 static SHADOW: AtomicBool = AtomicBool::new(false);
 
+thread_local! {
+    static PRIVATE_RECORDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A thread-private proof recording. A stateless facade routes every event to
+/// this thread's frame; its lifetime is static, but no proof data is retained
+/// globally. Nested memo captures stay inside the private frame. No worker may
+/// be spawned by the proof closure.
+pub(crate) fn record_private<R>(f: impl FnOnce() -> R) -> (R, Recording) {
+    struct Scope(bool);
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            PRIVATE_RECORDING.with(|flag| flag.set(self.0));
+        }
+    }
+    let scope = Scope(PRIVATE_RECORDING.with(|flag| flag.replace(true)));
+    let frame = FrameGuard::open().expect("private recording is active");
+    let value = f();
+    let events = frame.close();
+    drop(scope);
+    let recorder = Recorder::new(0);
+    recorder.apply_events(events);
+    let mut recording = recorder.take();
+    // The facade has no per-proof start time. Revalidate all content, including
+    // memo answers, rather than granting any stat-only trust to a proof.
+    for (_, observation) in &mut recording.observations {
+        match &mut observation.outcome {
+            Outcome::Read { racy, .. } | Outcome::Listing { racy, .. } => *racy = true,
+            _ => {}
+        }
+    }
+    (value, recording)
+}
+
 #[cfg(test)]
 thread_local! {
     /// Unit tests: a window of this thread only ([`tests_support::record_this_thread`]),
@@ -111,6 +145,14 @@ thread_local! {
 /// The recorder while the window is open.
 #[inline]
 fn active() -> Option<&'static Recorder> {
+    if PRIVATE_RECORDING.with(std::cell::Cell::get) {
+        static FACADE: OnceLock<Recorder> = OnceLock::new();
+        return Some(FACADE.get_or_init(|| {
+            let mut recorder = Recorder::new(0);
+            recorder.framed = true;
+            recorder
+        }));
+    }
     #[cfg(test)]
     if let Some(recorder) = THREAD_RECORDER.with(std::cell::Cell::get) {
         return Some(recorder);
@@ -174,6 +216,9 @@ pub fn supersede(path: &Path) {
 /// Whether the recording window is open.
 #[inline]
 pub fn recording() -> bool {
+    if PRIVATE_RECORDING.with(std::cell::Cell::get) {
+        return true;
+    }
     #[cfg(test)]
     if THREAD_RECORDER.with(std::cell::Cell::get).is_some() {
         return true;
@@ -322,6 +367,11 @@ pub enum Op {
     Canon,
     /// `read_link`: the target.
     ReadLink,
+    /// Read owned by one repository selection, not an ordinary file consumer.
+    /// Only a current proof of this canonical selection can replace its guard.
+    SelectionRead(String),
+    /// The shared pointer was absent before selecting a workspace pointer.
+    SelectionAbsent(String),
 }
 
 impl Op {
@@ -333,6 +383,8 @@ impl Op {
             Self::ReadDir(_) => "READDIR",
             Self::Canon => "CANON",
             Self::ReadLink => "READLINK",
+            Self::SelectionRead(_) => "SELECTION_READ",
+            Self::SelectionAbsent(_) => "SELECTION_ABSENT",
         }
     }
 }
@@ -739,6 +791,15 @@ impl Recorder {
     /// [`supersede`] in the recorder itself.
     fn store_supersede(&self, path: &Path) {
         lock(&self.shards[shard_of(path)]).remove(path);
+    }
+
+    fn store_supersede_selection(&self, path: &Path, canonical: &str) {
+        if let Some(observations) = lock(&self.shards[shard_of(path)]).get_mut(path) {
+            observations.retain(|observation| {
+                !matches!(&observation.op,
+                Op::SelectionRead(owner) | Op::SelectionAbsent(owner) if owner == canonical)
+            });
+        }
     }
 
     fn taint(&self, kind: Taint, detail: String) {
@@ -1297,6 +1358,9 @@ impl Recorder {
             Event::Claim(claim) => self.apply_claim(claim),
             Event::Supersede(path) => self.store_supersede(&path),
             Event::Selection(receipt) => self.store_selection(receipt),
+            Event::SupersedeSelection(path, canonical) => {
+                self.store_supersede_selection(&path, &canonical)
+            }
         }
     }
 
@@ -1444,6 +1508,7 @@ enum Event {
     /// [`supersede`].
     Supersede(PathBuf),
     Selection(crate::repository_publication::Receipt),
+    SupersedeSelection(PathBuf, String),
 }
 
 /// A repository tree claim observed inside a frame ([`Recorder::claim_tree`]).
@@ -1949,6 +2014,46 @@ pub fn read_dir_projected(
 /// with the key of an lstat taken now. A change between that read and this
 /// lstat is within the window, hence racy and content-checked on validation.
 pub fn note_read(path: &Path, bytes: &[u8]) {
+    note_read_as(path, bytes, Op::Read);
+}
+
+pub(crate) fn note_selection_read(path: &Path, bytes: &[u8], canonical: &str) {
+    note_read_as(path, bytes, Op::SelectionRead(canonical.to_owned()));
+}
+
+pub(crate) fn note_selection_absent(path: &Path, canonical: &str) {
+    if let Some(recorder) = active() {
+        let outcome = match fs::symlink_metadata(path) {
+            Err(error) => Outcome::Error(errno(&error)),
+            Ok(metadata) => {
+                recorder.taint(
+                    Taint::Unstable,
+                    format!(
+                        "selection pointer {} appeared while choosing @@{canonical}",
+                        escape(path.as_os_str())
+                    ),
+                );
+                Outcome::Kind(FileKind::of(metadata.file_type()))
+            }
+        };
+        recorder.observe(path, Op::SelectionAbsent(canonical.to_owned()), outcome);
+    }
+}
+
+pub(crate) fn supersede_selection(path: &Path, canonical: &str) {
+    if let Some(recorder) = active() {
+        if recorder.redirected() {
+            push_event(Event::SupersedeSelection(
+                path.to_path_buf(),
+                canonical.to_owned(),
+            ));
+        } else {
+            recorder.store_supersede_selection(path, canonical);
+        }
+    }
+}
+
+fn note_read_as(path: &Path, bytes: &[u8], op: Op) {
     let Some(recorder) = active() else {
         return;
     };
@@ -1958,7 +2063,7 @@ pub fn note_read(path: &Path, bytes: &[u8]) {
         .unwrap_or_default();
     recorder.observe(
         path,
-        Op::Read,
+        op,
         Outcome::Read {
             sha256: sha256(bytes),
             key,
@@ -2420,6 +2525,28 @@ mod tests {
         assert_eq!(recorded.observations[0].1.op, Op::Read);
         assert!(recorded.taints.is_empty());
         assert_eq!(window.recorder.take().selections, recorded.selections);
+    }
+
+    #[test]
+    fn selection_reprobe_supersedes_only_its_own_operations() {
+        let temp = tempfile::tempdir().unwrap();
+        let pointer = temp.path().join("pointer");
+        fs::write(&pointer, "old").unwrap();
+        let window = record_this_thread();
+        note_read(&pointer, b"old");
+        note_selection_read(&pointer, b"old", "r");
+        let unit = unit_scope();
+        fs::write(&pointer, "new").unwrap();
+        supersede_selection(&pointer, "r");
+        note_selection_read(&pointer, b"new", "r");
+        commit(unit.finish());
+        let recording = window.recorder.snapshot();
+        assert_eq!(recording.observations.len(), 2);
+        assert!(recording.observations.iter().any(|(_, observation)| matches!(&observation.outcome,
+            Outcome::Read { sha256: digest, .. } if observation.op == Op::Read && *digest == sha256(b"old"))));
+        assert!(recording.observations.iter().any(|(_, observation)| matches!(&observation.outcome,
+            Outcome::Read { sha256: digest, .. } if observation.op == Op::SelectionRead("r".into()) && *digest == sha256(b"new"))));
+        assert!(recording.taints.is_empty());
     }
 
     /// A captured set lands in the recorder at most once, however many

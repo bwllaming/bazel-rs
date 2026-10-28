@@ -737,6 +737,38 @@ fn run() -> Result<(), String> {
     } else {
         None
     };
+    // Both full analysis and historical candidate proof open the current
+    // lockfile choice through this factory. No pre-window frozen lock result
+    // substitutes for the reads collected during private acceptance proof.
+    let open_registry_session = || -> Result<bazel_rs::registry_session::SessionHandle, String> {
+        Ok(bazel_rs::registry_session::SessionHandle::new(
+            bazel_rs::registry_session::RegistrySession::open(
+                &root,
+                lockfile_mode,
+                &lockfile_target,
+                Some(cache.join("repositories")),
+                allowed_yanked.clone(),
+            )?
+            .with_seeded_hidden_lockfile(
+                bazel_rs::registry_session::hidden_lockfile_path(&cache, &root),
+                &bazel_rs::worktree::hidden_lockfile_seeds(
+                    &cache,
+                    &layout,
+                    bazel_rs::lockfile::LOCKFILE_NAME,
+                    |workspace| {
+                        bazel_rs::registry_session::legacy_hidden_lockfile_path(&cache, workspace)
+                    },
+                ),
+            )
+            .with_spellings(
+                resolver_options
+                    .registries
+                    .iter()
+                    .cloned()
+                    .zip(raw_registries.iter().cloned()),
+            ),
+        ))
+    };
     let mut cquery_session = None;
     if let Some(expression) = &cquery_expression {
         let patterns = cquery_options.universe(expression);
@@ -761,6 +793,16 @@ fn run() -> Result<(), String> {
                 options: resolver_options.clone(),
                 environment: repository_environment.clone(),
                 downloads_enabled: repository_downloads_enabled,
+            },
+            &|| {
+                let mut options = resolver_options.clone();
+                options.registry_session = open_registry_session()?;
+                Ok(
+                    bazel_rs::repository::RepositorySet::with_options(root.clone(), options)
+                        .with_source_cache(cache.join("repositories"))
+                        .with_repository_downloads_enabled(false)
+                        .with_repository_environment(repository_environment.clone()),
+                )
             },
         )?;
         cquery_session = started.session;
@@ -885,33 +927,7 @@ fn run() -> Result<(), String> {
         }
         _ => {}
     }
-    let session = bazel_rs::registry_session::SessionHandle::new(
-        bazel_rs::registry_session::RegistrySession::open(
-            &root,
-            lockfile_mode,
-            &lockfile_target,
-            Some(cache.join("repositories")),
-            allowed_yanked,
-        )?
-        .with_seeded_hidden_lockfile(
-            bazel_rs::registry_session::hidden_lockfile_path(&cache, &root),
-            &bazel_rs::worktree::hidden_lockfile_seeds(
-                &cache,
-                &layout,
-                bazel_rs::lockfile::LOCKFILE_NAME,
-                |workspace| {
-                    bazel_rs::registry_session::legacy_hidden_lockfile_path(&cache, workspace)
-                },
-            ),
-        )
-        .with_spellings(
-            resolver_options
-                .registries
-                .iter()
-                .cloned()
-                .zip(raw_registries.iter().cloned()),
-        ),
-    );
+    let session = open_registry_session()?;
     resolver_options.registry_session = session.clone();
     snapshot.set_registry_session(session.clone());
     let _lockfile_writer = LockfileWriter::new(session);

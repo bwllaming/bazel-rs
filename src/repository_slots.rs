@@ -314,6 +314,39 @@ impl SlotWriter {
     pub fn unmark(&self) -> Result<(), String> {
         remove_marker(&self.store, &self.canonical)
     }
+
+    /// Historical adoption may replace only an unmarked link (or a missing
+    /// link), never repair or replace a real mutable/in-progress root.
+    pub(crate) fn immutable(&self) -> bool {
+        fs::symlink_metadata(marker_path(&self.store, &self.canonical))
+            .is_err_and(|error| error.kind() == ErrorKind::NotFound)
+            && match fs::symlink_metadata(&self.slot) {
+                Ok(metadata) => metadata.file_type().is_symlink(),
+                Err(error) => error.kind() == ErrorKind::NotFound,
+            }
+    }
+
+    pub(crate) fn bind_immutable(&self, identity: &str) -> Result<(), String> {
+        if !self.immutable() {
+            return Err(format!(
+                "repository @@{} is no longer an immutable slot",
+                self.canonical
+            ));
+        }
+        self.bind(identity)?;
+        let expected = fs::canonicalize(self.store.join("direct/trees").join(identity))
+            .map_err(|error| format!("adopted publication disappeared: {error}"))?;
+        if fs::read_link(&self.slot).is_ok_and(|target| target == link_target(identity))
+            && fs::canonicalize(&self.slot).ok() == Some(expected)
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "repository @@{} binding did not verify",
+                self.canonical
+            ))
+        }
+    }
 }
 
 /// The writer's directory at its slot until it is published, bound or kept

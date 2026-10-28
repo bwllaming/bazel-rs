@@ -42,6 +42,7 @@ fn presentation(option: &crate::bazelrc::Unit) -> bool {
 pub fn start(
     inputs: key::Inputs<'_>,
     replay: snapshot::hit::ReplayInputs,
+    publication_repositories: crate::repository_publication::Factory<'_>,
 ) -> Result<Started, String> {
     let miss = || Started {
         hit: None,
@@ -67,7 +68,7 @@ pub fn start(
         ..inputs
     };
     let key = key::compute(&filtered, binary);
-    let found = read(inputs.cache, &key, &replay)?;
+    let found = read(inputs.cache, &key, &replay, publication_repositories)?;
     let verify = match found {
         Some((graph, reader, events)) if mode != snapshot::Mode::Verify => {
             use std::io::Write;
@@ -106,15 +107,20 @@ fn read(
     cache: &Path,
     key: &key::Key,
     replay: &snapshot::hit::ReplayInputs,
+    publication_repositories: crate::repository_publication::Factory<'_>,
 ) -> Result<Option<(Graph, store::Reader, Vec<u8>)>, String> {
     let mut reason = "no configured graph snapshot".to_owned();
     for candidate in history::candidates(cache, key) {
         let result = candidate.and_then(|reader| {
-            read_candidate(&reader, replay).map(|(graph, events)| (graph, reader, events))
+            read_candidate(&reader, replay, publication_repositories)
+                .map(|(graph, events)| (graph, reader, events))
         });
         match result {
             Ok(selected) => return Ok(Some(selected)),
             Err(error) if error == snapshot::replay::CANCELLED => return Err(error),
+            Err(error) if error.starts_with(crate::repository_publication::COMMIT_ERROR) => {
+                return Err(error);
+            }
             Err(error) => reason = error,
         }
         // Candidate INPUTS, replay heaps, and any corrupt graph are dropped
@@ -127,6 +133,7 @@ fn read(
 fn read_candidate(
     reader: &store::Reader,
     replay: &snapshot::hit::ReplayInputs,
+    publication_repositories: crate::repository_publication::Factory<'_>,
 ) -> Result<(Graph, Vec<u8>), String> {
     let _version = history::section(reader, format::Section::Stats)?;
     let mut inputs = format::decode_inputs(&history::section(reader, format::Section::Inputs)?)?;
@@ -134,13 +141,31 @@ fn read_candidate(
         return Err("configured graph recorded workspace status execution".into());
     }
     let environment = snapshot::validate::Environment::new(&replay.environment);
-    snapshot::validate::validate_for_hit(&inputs.recording, &environment)?;
-    if !inputs.replay.is_empty() {
-        let cancel = AtomicBool::new(false);
-        snapshot::hit::replay_records(inputs.tables.take(), replay, &inputs.replay, &cancel)?;
-        snapshot::hit::check_local_trees(&inputs.replay, &cancel, false)?;
-    }
-    drop(inputs);
+    let strict = snapshot::validate::validate_for_hit(&inputs.recording, &environment);
+    let adoption = if strict.is_err()
+        || crate::repository_publication::needs_view_adoption(&inputs.recording)
+    {
+        if !inputs.replay.is_empty() {
+            return Err(
+                "historical publication adoption with local repository replay is unsupported"
+                    .into(),
+            );
+        }
+        drop(inputs.tables.take());
+        let prepared = crate::repository_publication::Prepared::prepare(
+            publication_repositories,
+            &mut inputs.recording,
+            &environment,
+        )?;
+        Some((prepared, inputs.recording))
+    } else {
+        if !inputs.replay.is_empty() {
+            let cancel = AtomicBool::new(false);
+            snapshot::hit::replay_records(inputs.tables.take(), replay, &inputs.replay, &cancel)?;
+            snapshot::hit::check_local_trees(&inputs.replay, &cancel, false)?;
+        }
+        None
+    };
     let events = format::decode_events(&history::section(reader, format::Section::Events)?)?;
     let bytes = history::section(reader, format::Section::Plan)?;
     let graph: Graph =
@@ -164,6 +189,9 @@ fn read_candidate(
         .any(|id| *id as usize >= graph.nodes.len())
     {
         return Err("invalid configured graph pattern index".into());
+    }
+    if let Some((prepared, recording)) = adoption {
+        prepared.commit(publication_repositories, &recording, &environment)?;
     }
     Ok((graph, events))
 }
@@ -386,5 +414,47 @@ mod tests {
             assert_eq!(streamed, format::compress_plan(&raw));
             assert_eq!(format::decompress_plan(streamed).unwrap(), raw);
         }
+    }
+
+    #[test]
+    fn late_invalid_graph_indices_do_not_adopt_a_proved_publication() {
+        let fixture = crate::repository_publication::tests::Fixture::new();
+        let before = fixture.state();
+        let graph = Graph {
+            nodes: Vec::new(),
+            configurations: Vec::new(),
+            top_checksum: String::new(),
+            patterns: [("//:bad".to_owned(), vec![1])].into_iter().collect(),
+            repository_mapping: Default::default(),
+        };
+        let key = key::Key {
+            g: [13; 32],
+            binary: [29; 32],
+        };
+        history::save(
+            fixture.temp.path(),
+            &key,
+            format::encode_inputs(&fixture.a, &[], None, false),
+            format::encode_events(b""),
+            encode_graph(&graph).unwrap(),
+            None,
+        )
+        .unwrap();
+        let reader = history::candidates(fixture.temp.path(), &key)
+            .into_iter()
+            .next()
+            .unwrap()
+            .unwrap();
+        let replay = snapshot::hit::ReplayInputs {
+            options: Default::default(),
+            environment: Vec::new(),
+            downloads_enabled: false,
+        };
+        let error = read_candidate(&reader, &replay, &|| fixture.repositories()).unwrap_err();
+        assert!(
+            error.contains("invalid configured graph pattern index"),
+            "{error}"
+        );
+        assert_eq!(fixture.state(), before);
     }
 }

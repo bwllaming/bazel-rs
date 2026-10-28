@@ -1,6 +1,6 @@
 //! The completed tiny watched-ignore baseline, with owned execution counters.
-//! This milestone proves selection only: the CLI must still miss rather than
-//! accept a retained graph while its external view is bound to another tree.
+//! Pure probes leave public views alone; accepted historical CLI hits must
+//! install their exact pointer and external view without executing generators.
 #![allow(clippy::disallowed_methods)]
 include!("support/temp_root.rs");
 
@@ -69,6 +69,10 @@ gen = module_extension(implementation = _ext)
     }
 
     fn query(&self) -> String {
+        self.query_full().0
+    }
+
+    fn query_full(&self) -> (String, Vec<u8>) {
         let out = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .current_dir(&self.root)
             .env("BAZEL_RS_SNAPSHOT", "on")
@@ -91,7 +95,7 @@ gen = module_extension(implementation = _ext)
             .unwrap();
         let stderr = String::from_utf8(out.stderr).unwrap();
         assert!(out.status.success(), "{stderr}");
-        stderr
+        (stderr, out.stdout)
     }
 
     fn prime(&self) -> Receipt {
@@ -119,14 +123,18 @@ gen = module_extension(implementation = _ext)
                     serde_json::from_slice(&fs::read(self.pointer(receipt)).unwrap()).unwrap();
                 pointer["identity"] == receipt.publication
             }) {
-                // Advisory receipts have NOT replaced the intentional READ.
+                // The guard is explicitly selection-owned, never a generic
+                // exemption for all READs of this path.
                 assert!(
                     inputs
                         .recording
                         .observations
                         .iter()
                         .any(|(path, observation)| path == &self.pointer(&receipt)
-                            && observation.op == bazel_rs::observed_fs::Op::Read)
+                            && observation.op
+                                == bazel_rs::observed_fs::Op::SelectionRead(
+                                    receipt.canonical.clone()
+                                ))
                 );
                 return receipt;
             }
@@ -245,27 +253,50 @@ fn current_spec_and_runtime_proofs_preserve_pointer_and_view_without_reexecution
                     .is_none()
             );
             assert_eq!(f.executions(), 2);
-            // Explicit fail-closed boundary: a proof is not a historical graph
-            // hit. Normal full analysis still repoints and rebinds A.
-            f.write(".bazelignore", "unused-a\n");
-            let restored = f.query();
-            assert!(
-                restored.contains("bazel-rs-cquery-snapshot: miss"),
-                "{restored}"
-            );
-            assert!(
-                restored.contains("bazel-rs-cquery-snapshot: saved"),
-                "{restored}"
-            );
-            assert_eq!(f.executions(), 3);
-            assert_eq!(
-                fs::read_to_string(slot.join("data")).unwrap(),
-                if changing {
-                    "unused-a\n"
-                } else {
-                    "constant data\n"
-                }
-            );
+        }
+    }
+}
+
+#[test]
+fn accepted_historical_cli_hits_adopt_exact_pointer_and_external_bytes() {
+    for extension in [false, true] {
+        for changing in [false, true] {
+            let f = Fixture::new(extension, changing);
+            let a = f.prime();
+            let (_, graph_a) = f.query_full();
+            f.write(".bazelignore", "unused-b\n");
+            let b = f.prime();
+            let (_, graph_b) = f.query_full();
+            assert_eq!(a.spec, b.spec);
+            assert_ne!(a.publication, b.publication);
+            let slot = f.cache.join("repositories/external").join(&a.canonical);
+            for (intent, receipt, graph) in [
+                ("unused-a\n", &a, &graph_a),
+                ("unused-b\n", &b, &graph_b),
+                ("unused-a\n", &a, &graph_a),
+                ("unused-b\n", &b, &graph_b),
+            ] {
+                f.write(".bazelignore", intent);
+                let (stderr, actual) = f.query_full();
+                assert!(stderr.contains("bazel-rs-cquery-snapshot: hit"), "{stderr}");
+                assert!(
+                    !stderr.contains("bazel-rs-cquery-snapshot: saved"),
+                    "{stderr}"
+                );
+                assert_eq!(&actual, graph);
+                let pointer: serde_json::Value =
+                    serde_json::from_slice(&fs::read(f.pointer(receipt)).unwrap()).unwrap();
+                assert_eq!(pointer["identity"], receipt.publication);
+                assert_eq!(
+                    fs::read_link(&slot).unwrap(),
+                    bazel_rs::repository_slots::link_target(&receipt.publication)
+                );
+                assert_eq!(
+                    fs::read_to_string(slot.join("data")).unwrap(),
+                    if changing { intent } else { "constant data\n" }
+                );
+                assert_eq!(f.executions(), 2);
+            }
         }
     }
 }

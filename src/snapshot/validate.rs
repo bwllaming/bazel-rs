@@ -214,7 +214,7 @@ fn check(path: &Path, observation: &Observation) -> Result<Checked, String> {
             };
             same(path, op, expected, got)
         }
-        (Op::Lstat, expected) => {
+        (Op::Lstat | Op::SelectionAbsent(_), expected) => {
             let got = match fs::symlink_metadata(path) {
                 Ok(metadata) if metadata.file_type().is_symlink() => match fs::read_link(path) {
                     Ok(target) => Outcome::Link(target),
@@ -239,7 +239,7 @@ fn check(path: &Path, observation: &Observation) -> Result<Checked, String> {
             };
             same(path, op, expected, got)
         }
-        (Op::Read, Outcome::Error(code)) => match fs::read(path) {
+        (Op::Read | Op::SelectionRead(_), Outcome::Error(code)) => match fs::read(path) {
             Err(error) if errno(&error) == *code => Ok(Checked::Plain),
             Err(error) => Err(format!(
                 "READ {}: recorded error:{code}, now {error}",
@@ -250,7 +250,7 @@ fn check(path: &Path, observation: &Observation) -> Result<Checked, String> {
                 shown()
             )),
         },
-        (Op::Read, Outcome::Read { sha256, key, racy }) => {
+        (Op::Read | Op::SelectionRead(_), Outcome::Read { sha256, key, racy }) => {
             let metadata =
                 read_key_metadata(path).map_err(|error| format!("READ {}: {error}", shown()))?;
             if !metadata.is_file() {

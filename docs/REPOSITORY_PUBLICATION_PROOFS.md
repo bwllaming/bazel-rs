@@ -1,4 +1,4 @@
-# Historical repository publication proofs (staged implementation)
+# Historical repository publication selection (staged implementation)
 
 One repository specification may have multiple retained publications. Watched
 runtime inputs participate in publication identity separately from the recipe's
@@ -14,11 +14,13 @@ covers format/profile, identity/specification, recorded runtime probes, slot
 classification and inventory. Refreshable stat hints and informational GC
 references are excluded. Workspace paths retain raw bytes.
 
-Receipts travel through detached observation captures, INPUTS format 4, history
-versioning, incremental recording merges, refresh and verify. All existing
-pointer READs, source/environment observations and REPO/INTEGRITY obligations
+Receipts travel through detached observation captures, INPUTS format 5, history
+versioning, incremental recording merges, refresh and verify. Selection-owned
+pointer reads/absence checks are distinct operations; ordinary READs of the same
+path remain independent guards. Source/environment and REPO/INTEGRITY obligations
 remain in force. Receipts neither grant CARRIED authority nor classify repository
-changes as package-only changes.
+changes as package-only changes. Build/incremental snapshots currently validate
+the typed pointer operations strictly; historical adoption is cquery-only.
 
 `RepositorySet::prove_publications` creates a fresh, private preparation set from
 current invocation options/environment/host inputs. It reopens the current
@@ -51,24 +53,40 @@ pointers are not reusable. Missing selections, malformed pointers, unknown/legac
 probes, force-fetch, missing/tampered data and mutable slots miss. It never scans
 publication history, refreshes manifests, changes pointers/slots, or uses CARRIED.
 
-## Disabled boundary
+## Guarded cquery adoption
 
-**Historical graph switching and adoption are not implemented.** No CLI hit path
-calls the proof API. A proof does not validate the complete graph or authorize
-adoption. It is a point-in-time result; it carries no lock lease or acceptance
-token, and there is no public bind/commit method on it.
+For the supported closure, cquery can accept the graph's historical publication.
+Only explicitly selection-owned operations, backed by the matching receipt and
+REPO record, are discharged by proof. A generic READ of precisely the same path
+still has to match. Re-probing after execution supersedes only that selection's
+own operations, preserving unrelated consumers.
 
-Completion requires operation-owned pointer observations (not prefix filtering),
-all ordinary checks/replays/events/plan/index acceptance, consistent locks shared
-by normal publishers and binders, revalidation under those locks, and exact
-pointer plus store/output-base view installation before reporting a hit. Failed
-partial commits must roll back or fail the command. Ordinary slot binding is
-currently unlocked, and local replay can mutate a slot before graph acceptance.
-Neither behavior was changed by this proof-only increment. Mutable-slot
-write-detection remains intact.
+Candidate proof uses a thread-private recording of current preparation/runtime
+inputs. Ordinary observations, EVENTS, PLAN and all graph indices must validate
+before adoption. Historical candidates requiring local repository replay are
+refused before replay; the established strict-pointer replay path is retained.
 
-The small regression asserts this boundary explicitly: A/B/A/B proofs do not
-re-execute generators and leave the B view untouched; the CLI still misses when
-A is restored, performs normal analysis and rebinds A. Both constant-output and
-output-changing direct/valid-lock extension cases are covered. This milestone
-does not unblock the stopped application/TD cross-checkout probe.
+Adoption takes the existing per-canonical slot writer locks and publication
+identity locks without waiting. Busy acquisition releases all held guards and
+misses before mutation. Normal publishers, ordinary reuse binders, mutable-slot
+conversion and speculative pointer withdrawal participate in the same slot
+protocol. Binders do not wait while a dependent repository might hold another
+lock. Identity locks exclude refresh/republish and normal GC. No new persistent
+lock namespace or history index is added.
+
+Under these locks acceptance recomputes current intent and pointer preference,
+checks the manifest/runtime/inventory again, and revalidates ordinary and both
+private proof recordings. Only then does it install the exact scoped pointer and
+immutable native external slot. Marked or real mutable roots are never replaced.
+The link and selected pointer are checked before reporting a hit. Any error once
+installation starts is terminal for the command, never another candidate's miss.
+Multi-file crash atomicity is not claimed: a pointer/view mismatch on restart
+refuses the strict fast path and requires full revalidation/repair.
+
+The pure API's A/B/A/B tests still prove no public mutation. Separate CLI tests
+now require four historical hits, exactly two generator executions, and matching
+pointer, graph and actual external bytes for constant and changing output, direct
+and valid-lock extension cases. Late invalid graph indices, changed input/winner,
+mutable markers, busy publishers, missing data and partial-commit recovery are
+covered. Broader producer closure remains unsupported; no application/TD unblock
+is implied by root-only adoption.

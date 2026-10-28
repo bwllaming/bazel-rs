@@ -1459,7 +1459,16 @@ impl RepositorySet {
         &self,
         receipts: &[crate::repository_publication::Receipt],
     ) -> Option<Vec<ProvedPublication>> {
-        crate::observed_fs::discard(|| {
+        crate::observed_fs::discard(|| self.prove_publications_current(receipts))
+    }
+
+    /// Only used inside a private recording by candidate acceptance. The
+    /// public inspection API discards these observations instead.
+    pub(crate) fn prove_publications_current(
+        &self,
+        receipts: &[crate::repository_publication::Receipt],
+    ) -> Option<Vec<ProvedPublication>> {
+        (|| {
             let notes = crate::ui::PrivateNotes::new();
             let mut options = self.state.options.clone();
             if options.builtin_profile != module_graph::BuiltinProfile::ExplicitModules {
@@ -1508,7 +1517,7 @@ impl RepositorySet {
                 });
             }
             (!notes.emitted()).then_some(proved)
-        })
+        })()
     }
 
     fn prepare_publication_spec(&self, canonical: &str) -> Result<CurrentSpec, String> {
