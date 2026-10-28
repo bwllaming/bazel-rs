@@ -50,7 +50,7 @@ pub(super) fn run(
     cas: &Path,
     root: &Path,
     strategy: crate::sandbox::Strategy,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let spec = logical
         .extra
         .java_compile
@@ -168,7 +168,7 @@ pub(super) fn run(
             })?;
         }
         replay_logs(&logical.id, &result.stdout, &result.stderr);
-        return Ok(());
+        return Ok(fallback);
     }
     unreachable!("fallback attempt is terminal")
 }
@@ -380,9 +380,12 @@ if [ "$CASE" = second_fallback ]; then printf '\050\001' >> out/result.jdeps; fi
             let mut f = Fixture::new(case);
             let first = f.execute().unwrap();
             assert!(!first.cache_hit);
+            assert_eq!(usize::from(first.additional_spawns), count - 1);
             assert_eq!(first.outputs.len(), 4);
             assert_eq!(f.trace().lines().count(), count);
-            assert!(f.execute().unwrap().cache_hit);
+            let warm = f.execute().unwrap();
+            assert!(warm.cache_hit);
+            assert_eq!(warm.additional_spawns, 0);
             assert_eq!(f.trace().lines().count(), count);
             if count == 2 {
                 assert!(

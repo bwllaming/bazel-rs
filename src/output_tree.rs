@@ -718,6 +718,7 @@ mod tests {
             remote_hit: false,
             remote_executed: false,
             runner: None,
+            additional_spawns: 0,
             critical: std::time::Duration::ZERO,
             trees: BTreeMap::new(),
         }

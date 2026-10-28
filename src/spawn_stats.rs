@@ -172,6 +172,13 @@ mod tests {
             text(stats),
             "3 processes: 1 remote cache hit, 1 linux-sandbox, 1 local."
         );
+        stats = Stats {
+            actions: 1,
+            with_spawns: 1,
+            ..Stats::default()
+        };
+        stats.runners.insert("local", 2);
+        assert_eq!(text(stats), "1 process: 2 local.");
         *STATS.lock().unwrap() = Stats::default();
     }
 }

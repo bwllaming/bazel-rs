@@ -658,6 +658,10 @@ pub struct ActionResult {
     /// hit`; `None` for an action that ran no spawn (a write, a native
     /// transform: Bazel's `internal`) and for a cache hit.
     pub runner: Option<&'static str>,
+    /// Additional spawns with the same runner within this logical action
+    /// (JavaBuilder's successful reduced-classpath fallback). Cache hits have
+    /// none. Kept separate from the one logical completion/result.
+    pub additional_spawns: u8,
     /// The critical path up to and including this action
     /// (CriticalPathComputer): its execution time plus the longest of its
     /// producers'; set by crate::scheduler.
@@ -6843,6 +6847,7 @@ pub fn execute_with_remote(
             remote_hit,
             remote_executed: false,
             runner: None,
+            additional_spawns: 0,
             critical: std::time::Duration::ZERO,
             trees: action
                 .outputs
@@ -7175,6 +7180,7 @@ pub fn execute_with_remote(
     // The spawn's runner name (SpawnResult.getRunnerName); none for a write
     // or a native transform.
     let mut runner: Option<&'static str> = None;
+    let mut additional_spawns = 0;
     // Whether the spawn ran in a sandboxed worker (`--worker_sandboxing`).
     let worker_sandboxed = worker.as_ref().is_some_and(|(lease, _)| lease.sandboxed());
     if let Some(write) = &action.write {
@@ -7234,9 +7240,10 @@ pub fn execute_with_remote(
             action, &prepared, &work.0, &execroot, &tmp, cas, root, strategy,
         );
         match outcome {
-            Ok(()) => {
+            Ok(fallback) => {
                 sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
                 runner = Some(strategy.runner_name());
+                additional_spawns = u8::from(fallback);
             }
             Err(error) => {
                 if strategy == crate::sandbox::Strategy::Sandboxed && crate::sandbox::debug() {
@@ -7767,6 +7774,7 @@ pub fn execute_with_remote(
     }
     let mut done = result(listings, false, false);
     done.runner = runner;
+    done.additional_spawns = additional_spawns;
     Ok(done)
 }
 

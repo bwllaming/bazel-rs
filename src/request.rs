@@ -988,6 +988,11 @@ pub fn execute_with_tests(
             crate::spawn_stats::action_cache_hit();
         } else {
             crate::spawn_stats::action_completed(result.runner.as_slice());
+            if let Some(runner) = result.runner {
+                for _ in 0..result.additional_spawns {
+                    crate::spawn_stats::spawn(runner);
+                }
+            }
         }
     }
     for (id, result) in &results {
@@ -1256,6 +1261,7 @@ mod tests {
                 remote_hit: false,
                 remote_executed: false,
                 runner: None,
+                additional_spawns: 0,
                 critical: std::time::Duration::ZERO,
                 trees: BTreeMap::new(),
             },
