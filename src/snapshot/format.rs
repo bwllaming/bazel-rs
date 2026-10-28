@@ -69,14 +69,19 @@ pub enum Section {
     Events = 2,
     Plan = 3,
     Stats = 4,
+    /// The dependency index of incremental analysis
+    /// (crate::snapshot::incremental, compressed like the plan); a hit
+    /// never reads it.
+    Index = 5,
 }
 
 impl Section {
-    pub const ALL: [Section; 4] = [
+    pub const ALL: [Section; 5] = [
         Section::Inputs,
         Section::Events,
         Section::Plan,
         Section::Stats,
+        Section::Index,
     ];
 
     pub fn name(self) -> &'static str {
@@ -85,6 +90,7 @@ impl Section {
             Self::Events => "EVENTS",
             Self::Plan => "PLAN",
             Self::Stats => "STATS",
+            Self::Index => "INDEX",
         }
     }
 }

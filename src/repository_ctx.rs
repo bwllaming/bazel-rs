@@ -815,6 +815,7 @@ fn file_state(host: &Path) -> anyhow::Result<String> {
 /// read — and every answer is recorded as the READ of `host` it stands for
 /// ([`FileDigestMemo::observed_sha256`]).
 pub(crate) fn recorded_file_state(host: &Path) -> Option<String> {
+    crate::observed_fs::note_repository_input(host, false);
     Some(match crate::observed_fs::metadata(host) {
         Err(_) => "missing".to_owned(),
         Ok(metadata) if metadata.is_dir() => "directory".to_owned(),
@@ -1087,6 +1088,7 @@ impl FileDigestMemo {
 /// digest of the sorted entry names, each NUL-terminated. `None` when the
 /// directory cannot be observed.
 pub(crate) fn recorded_dirents_state(host: &Path) -> Option<String> {
+    crate::observed_fs::note_repository_input(host, true);
     let mut names: Vec<Vec<u8>> =
         crate::observed_fs::read_dir_projected(host, &crate::observed_fs::Projection::All)
             .ok()?
@@ -1109,6 +1111,7 @@ pub(crate) fn recorded_dirents_state(host: &Path) -> Option<String> {
 /// StarlarkRepositoryContext.watch_tree's recorded state (SRC:568-609): the
 /// recursive tree digest. `None` when the tree cannot be observed.
 pub(crate) fn recorded_dirtree_state(host: &Path) -> Option<String> {
+    crate::observed_fs::note_repository_input(host, true);
     observed_tree_digest(host)
         .ok()
         .map(|digest| format!("dirtree:{digest}"))

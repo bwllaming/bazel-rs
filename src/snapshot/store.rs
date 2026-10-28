@@ -185,7 +185,7 @@ impl Reader {
     /// section inflated (P3, format::decompress_plan).
     pub fn section(&self, kind: Section) -> Result<Vec<u8>, String> {
         let stored = self.stored_section(kind)?;
-        if kind == Section::Plan {
+        if matches!(kind, Section::Plan | Section::Index) {
             format::decompress_plan(stored)
         } else {
             Ok(stored)

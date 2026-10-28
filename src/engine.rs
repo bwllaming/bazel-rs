@@ -31,6 +31,7 @@ use std::sync::Arc;
 mod alloc_report;
 mod compatibility;
 pub mod cquery;
+mod incremental;
 mod keep_going;
 pub mod query;
 mod query_attrs;
@@ -2115,6 +2116,9 @@ pub struct Engine {
     /// loading errors of its packages, each skipped (`Some`), instead of
     /// failing the pattern (`None`).
     pattern_load_errors: Option<Vec<String>>,
+    /// Dependency tracking for incremental analysis (crate::engine's
+    /// `incremental` module), on while the analysis snapshot saves.
+    incremental: Option<Box<incremental::Tracker>>,
 }
 
 impl Engine {
@@ -2202,6 +2206,7 @@ impl Engine {
             skipped_incompatible: BTreeSet::new(),
             incompatible_errors: BTreeMap::new(),
             pattern_load_errors: None,
+            incremental: None,
         }
     }
 
@@ -2444,6 +2449,7 @@ impl Engine {
     fn top_level_aspects_list(
         &mut self,
     ) -> Result<Vec<std::sync::Arc<crate::aspects::AspectDefinition>>, String> {
+        let _shared = incremental::SharedScope::enter("top_level_aspects_list");
         let mut list = crate::rule_declarations::AspectsListBuilder::default();
         for identity in self.effective_aspects() {
             if identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
@@ -2785,6 +2791,10 @@ impl Engine {
                     crate::observed_fs::commit(std::mem::take(&mut retried.observations));
                     return match retried.result {
                         Ok(rules) => {
+                            let printed = retried.prints.iter().any(|event| {
+                                matches!(event, crate::loading::LoadPrintEvent::Build(_))
+                            });
+                            self.track_package_printed(package, printed);
                             self.emit_load_prints(retried.prints);
                             self.commit_loaded_package(package, rules)
                         }
@@ -2812,6 +2822,10 @@ impl Engine {
                 return Err(error);
             }
         };
+        let printed = prints
+            .iter()
+            .any(|event| matches!(event, crate::loading::LoadPrintEvent::Build(_)));
+        self.track_package_printed(package, printed);
         self.emit_load_prints(prints);
         self.commit_loaded_package(package, rules)
     }
@@ -3171,6 +3185,9 @@ impl Engine {
     }
 
     fn target(&mut self, label: &Label) -> Result<Target, String> {
+        if self.incremental.is_some() {
+            self.track_access(label);
+        }
         // Loaded packages are immutable: a label resolved as a source file
         // stays one (its rule, output and filesystem facts are fixed).
         if let Some(path) = self.source_targets.get(label) {
@@ -3717,6 +3734,7 @@ impl Engine {
         label: &Label,
         active: &mut Vec<Label>,
     ) -> Result<Arc<GroupNode>, String> {
+        let _shared = incremental::SharedScope::enter("resolve_group");
         let package = label.package_id();
         self.load_package(&package)?;
         let Some(rule) = self.packages[&package].get(label) else {
@@ -3853,11 +3871,37 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
     ) -> Result<(), String> {
+        // Incremental analysis: the frame `analyze_key_body` pushes for the
+        // key it analyzes ends with it.
+        let depth = self.track_depth();
+        let result = self.analyze_key_body(
+            label,
+            config,
+            apply_rule_transition,
+            active,
+            configured,
+            plan,
+        );
+        self.track_restore(depth);
+        result
+    }
+
+    fn analyze_key_body(
+        &mut self,
+        label: &Label,
+        config: ConfigId,
+        apply_rule_transition: bool,
+        active: &mut Vec<ConfiguredTargetKey>,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Plan,
+    ) -> Result<(), String> {
         if self.analyzed_sources.contains(label) {
+            self.track_source(label);
             return Ok(());
         }
         let rule = match self.target(label)? {
             Target::Source(_) => {
+                self.track_source(label);
                 self.visible(&self.source_visibility(label), &label.package_id(), None)?;
                 self.analyzed_sources.insert(label.clone());
                 return Ok(());
@@ -3887,12 +3931,14 @@ impl Engine {
             config,
             apply_rule_transition,
         };
+        let tracked = self.track_key(&key);
         if self.keep_going {
             self.keep_going_state.record_edge(active.last(), &key);
         }
         if configured.contains_key(&key) {
             return Ok(());
         }
+        self.track_enter(tracked);
         self.prefetch_rule(&rule);
         if let Some(start) = active.iter().position(|active| *active == key) {
             return Err(self.cycle_error(&rule, &active[..start], &active[start..]));
@@ -5214,6 +5260,7 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
     ) -> Result<Arc<AspectToolchains>, String> {
+        let _shared = incremental::SharedScope::enter("aspect_toolchain_contexts");
         let memo = (config, aspect.identity.clone());
         if let Some(found) = self.aspect_toolchains.get(&memo) {
             return Ok(found.clone());
@@ -5712,6 +5759,7 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
     ) -> Result<ConfigId, String> {
+        let _shared = incremental::SharedScope::enter("exec_configuration");
         let platform = match context {
             Some(context) => context.exec_platform.label.clone(),
             None => {
@@ -5819,6 +5867,7 @@ impl Engine {
         &mut self,
         def: &crate::starlark_transitions::TransitionDef,
     ) -> Result<TransitionDetails, String> {
+        let _shared = incremental::SharedScope::enter("transition_details");
         let settings = def.starlark_settings();
         if let Some(details) = self.transition_details.get(&settings) {
             return details.clone();
@@ -5965,10 +6014,11 @@ impl Engine {
         // application prints, also the IdempotencyChecker's and a
         // delegate's re-application (RuleTransitionApplier).
         if let Some((id, printed)) = self.transition_cache.get(&cache_key) {
-            for line in printed {
-                crate::ui::note(line);
+            let (id, printed) = (Arc::clone(id), printed.clone());
+            for line in &printed {
+                self.note_analysis_print(line);
             }
-            return Ok(Arc::clone(id));
+            return Ok(id);
         }
         let configuration = self.configurations.get(from).clone();
         let mapped = def.with_flag_aliases(&configuration.native.flag_aliases);
@@ -5986,7 +6036,7 @@ impl Engine {
             },
         )?;
         for line in &applied.printed {
-            crate::ui::note(line);
+            self.note_analysis_print(line);
         }
         let target_scoped = self.target_scoped_flags(from).map_err(failure)?;
         let id: TransitionConfigurations = applied
@@ -6023,6 +6073,7 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
     ) -> Result<Option<ConfiguredTargetKey>, String> {
+        let _shared = incremental::SharedScope::enter("rule_transition");
         let Some(def) = Self::transition_def(rule, "")? else {
             return Ok(None);
         };
@@ -6081,6 +6132,7 @@ impl Engine {
         attribute: &str,
         dependency: &Label,
     ) -> Result<TransitionConfigurations, String> {
+        let _shared = incremental::SharedScope::enter("attribute_transition");
         let def = Self::transition_def(rule, attribute)?.ok_or_else(|| {
             format!(
                 "{}: attribute '{attribute}' declares a Starlark transition that the native profile did not retain (a lifted subrule attribute); {}",
@@ -7320,6 +7372,7 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
     ) -> Result<Arc<PlatformInfo>, String> {
+        let _shared = incremental::SharedScope::enter("target_platform");
         let label = self
             .configurations
             .get(config)
@@ -7348,6 +7401,7 @@ impl Engine {
         &mut self,
         resolve: bool,
     ) -> Result<Vec<(String, String)>, String> {
+        let _shared = incremental::SharedScope::enter("module_execution_platforms");
         if let Some(found) = &self.module_execution_platforms {
             return found.clone();
         }
@@ -7459,6 +7513,7 @@ impl Engine {
         config: ConfigId,
         exec_platform: &Label,
     ) -> Result<(), String> {
+        let _shared = incremental::SharedScope::enter("toolchain_implementation");
         let key = ConfiguredTargetKey::new(implementation.clone(), config);
         match self.toolchain_implementations.get(&key) {
             Some(existing) if existing != exec_platform => Err(format!(
@@ -7770,6 +7825,7 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
     ) -> Result<Option<UnloadedToolchainContext>, String> {
+        let _shared = incremental::SharedScope::enter("resolve_toolchains");
         let configuration = self.configurations.get(config).clone();
         let host = configuration.native.host_platform.clone();
         let target_label = configuration.native.target_platform().clone();
@@ -8088,6 +8144,7 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
     ) -> Result<ExecutionPlatforms, String> {
+        let _shared = incremental::SharedScope::enter("execution_platforms");
         if let Some(cached) = self.registered_execution_platforms.get(&config) {
             return cached
                 .clone()
@@ -8230,6 +8287,7 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
     ) -> Result<Arc<RegisteredToolchains>, ResolutionError> {
+        let _shared = incremental::SharedScope::enter("registered_toolchains");
         if let Some(cached) = self.registered_toolchains.get(&config) {
             return cached.clone();
         }
@@ -8408,6 +8466,7 @@ impl Engine {
         patterns: &[(String, String)],
         kind: Registration,
     ) -> Result<Vec<Label>, ResolutionError> {
+        let _shared = incremental::SharedScope::enter("expand_registration_patterns");
         let mut labels: Vec<Label> = Vec::new();
         // The labels already in `labels`: first-copy dedupe in O(1) per
         // label (a linear `labels.contains` was quadratic in the number of
@@ -8735,6 +8794,7 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
     ) -> Result<Arc<PlatformInfo>, PlatformError> {
+        let _shared = incremental::SharedScope::enter("platform_info");
         let key = ConfiguredTargetKey::new(label.clone(), config);
         if let Some(cached) = self.platforms.get(&key) {
             return cached.clone();
@@ -9936,6 +9996,10 @@ impl Engine {
             crate::note!("WARNING: {}", crate::location_printer::located(warning));
         }
         crate::progress::analysis_report(spec.build, test_count);
+        if self.tracking() {
+            let index = self.incremental_index(spec.build);
+            crate::snapshot::incremental::set_planned_index(index);
+        }
         crate::perf_mark("plan.end");
         Ok(request)
     }
@@ -10480,7 +10544,9 @@ impl Engine {
         // sequential demand (`RepositorySet::warm_loads`), as Bazel fetches
         // a file's loads as one batch. Phase 1 starts its own pool.
         let speculating = self.start_pattern_speculation();
+        let pattern = incremental::PatternScope::enter();
         let result = self.target_pattern_phase_loaded(patterns, relative_directory, options);
+        drop(pattern);
         if speculating {
             self.repositories.stop_speculation();
         }
@@ -11900,7 +11966,7 @@ impl Engine {
         };
         let (analyzed, printed) = analysis::analyze_aspect_buffered(&application, &outputs);
         for line in printed {
-            crate::ui::note(&line);
+            self.note_analysis_print(&line);
         }
         let analyzed = analyzed?;
         if self.cquery_capture.is_some() {
@@ -13049,7 +13115,7 @@ impl Engine {
         };
         let ComputeOutcome { analyzed, printed } = outcome;
         for line in printed {
-            crate::ui::note(&line);
+            self.note_analysis_print(&line);
         }
         let mut analyzed = analyzed?;
         restricted_to_error(rule)?;
@@ -14213,6 +14279,21 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         index: u64,
     ) -> Result<(), String> {
+        let depth = self.track_depth();
+        self.track_planning(key);
+        let result = self.plan_one_target_body(state, key, rule, configured, index);
+        self.track_restore(depth);
+        result
+    }
+
+    fn plan_one_target_body(
+        &mut self,
+        state: &mut ActionPlanning,
+        key: &ConfiguredTargetKey,
+        rule: &Arc<Rule>,
+        configured: &mut ConfiguredNodes,
+        index: u64,
+    ) -> Result<(), String> {
         use crate::plan_timings::{PlanStage, StageTimer};
         if configured
             .get(key)
@@ -14354,7 +14435,7 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
     ) -> Result<(), String> {
-        for label in labels {
+        for (position, label) in labels.iter().enumerate() {
             // A requested non-alias rule is first keyed in the untrimmed
             // top-level configuration, then in its test-trimmed one
             // (TestTrimmingTransitionFactory.create,
@@ -14372,9 +14453,11 @@ impl Engine {
             if self.keep_going {
                 self.keep_going_state.current = Some(label.clone());
             }
-            let analyzed = self
-                .analyze(label, top, &mut active, configured, plan)
-                .and_then(|()| self.check_requested_compatibility(configured, label, top));
+            self.track_root_analysis(Some(position));
+            let analyzed = self.analyze(label, top, &mut active, configured, plan);
+            self.track_root_analysis(None);
+            let analyzed =
+                analyzed.and_then(|()| self.check_requested_compatibility(configured, label, top));
             self.requested_trimmed_root = None;
             self.keep_going_state.current = None;
             let analyzed = analyzed.map_err(|error| match error.split_once(ANALYSIS_ABORTED) {
@@ -14591,6 +14674,7 @@ impl Engine {
         // (skyframe/TargetPatternPhaseFunction.java:255-275): every requested
         // rule whose `deprecation` is explicitly specified (package defaults
         // excluded, "" included), before analysis.
+        self.track_requested(labels);
         for label in labels {
             self.report_pattern_deprecation(label);
         }

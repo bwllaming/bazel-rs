@@ -1632,6 +1632,14 @@ impl fmt::Display for SettingValue {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ConfigId([u8; 32]);
 
+impl ConfigId {
+    /// The identity's bytes (stable across processes: a digest of the
+    /// configuration's canonical serialization).
+    pub fn bytes(&self) -> [u8; 32] {
+        self.0
+    }
+}
+
 impl fmt::Display for ConfigId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for byte in self.0 {

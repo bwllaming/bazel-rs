@@ -198,6 +198,13 @@ pub(crate) fn analysis_report(labels: &[crate::label::Label], tests: Option<usiz
     SUMMARY.store(true, Ordering::Relaxed);
 }
 
+/// Arm the build summary as [`analysis_report`] does (an incremental
+/// analysis that kept the saved plan prints the saved report instead,
+/// crate::snapshot::incremental).
+pub fn arm_summary() {
+    SUMMARY.store(true, Ordering::Relaxed);
+}
+
 /// Whether the build summary is due (and now taken: printed once).
 fn take_summary() -> bool {
     SUMMARY.swap(false, Ordering::Relaxed)

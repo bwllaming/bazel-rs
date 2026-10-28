@@ -56,11 +56,36 @@ pub struct Save {
     finished: bool,
     /// The event log's context (a save and a run not saved are logged).
     log: telemetry::Context,
+    /// Incremental analysis (crate::snapshot::incremental): the previous
+    /// snapshot's parts this save merges with what the partial analysis
+    /// recorded.
+    seed: Option<Box<Seed>>,
+}
+
+/// What an incremental analysis's save takes from the snapshot it started
+/// from (crate::snapshot::incremental).
+pub struct Seed {
+    /// The previous INPUTS: the observations it did not make again are
+    /// still valid (the lookup validated them) and are kept; what it
+    /// observed now replaces them.
+    pub inputs: format::Inputs,
+    /// What the full analysis prints while planning (the previous window:
+    /// the partial analysis's own bytes were kept apart).
+    pub window: Vec<u8>,
+    /// The merged dependency index.
+    pub index: crate::snapshot::incremental::Index,
 }
 
 /// Start recording at the snapshot check point (`log`: the cache, mode,
 /// command and target patterns of the event log).
 pub fn start(key: Key, explain: bool, log: telemetry::Context) -> Save {
+    start_with(key, explain, log, capture::Mode::Tee)
+}
+
+/// [`start`] with the stderr capture `mode`: [`capture::Mode::Shadow`] for
+/// an incremental analysis, whose partial analysis prints nothing (the
+/// previous window is printed instead, or the run falls back).
+pub fn start_with(key: Key, explain: bool, log: telemetry::Context, mode: capture::Mode) -> Save {
     let mut save = Save {
         key,
         cache: log.cache.clone(),
@@ -75,13 +100,14 @@ pub fn start(key: Key, explain: bool, log: telemetry::Context) -> Save {
         saved_counts: String::new(),
         finished: false,
         log,
+        seed: None,
     };
     if !observed_fs::open_window() {
         save.skipped = Some("the recording window was already open".to_owned());
         return save;
     }
     crate::snapshot::replay::install();
-    match capture::start(capture::Mode::Tee) {
+    match capture::start(mode) {
         Ok(capture) => save.capture = Some(capture),
         Err(error) => save.skipped = Some(format!("cannot capture stderr: {error}")),
     }
@@ -102,6 +128,27 @@ impl Save {
         if let Some(capture) = self.capture.take() {
             self.window = Some(capture.stop(CAPTURE_BOUND));
         }
+    }
+
+    /// Merge this save with `seed` (an incremental analysis).
+    pub fn seed(&mut self, seed: Seed) {
+        self.seed = Some(Box::new(seed));
+    }
+
+    /// Stop the capture now and return what it kept (an incremental
+    /// analysis that falls back: the bytes are not printed).
+    pub fn stop_capture(&mut self) -> Option<Captured> {
+        observed_fs::close_window();
+        self.capture
+            .take()
+            .map(|capture| capture.stop(CAPTURE_BOUND))
+    }
+
+    /// The bytes the capture kept so far (the window is closed and the
+    /// capture stopped).
+    pub fn window(&mut self) -> Option<&Captured> {
+        self.end_window();
+        self.window.as_ref()
     }
 
     fn skip(&mut self, reason: String) {
@@ -132,10 +179,17 @@ impl Save {
         workspace_status: bool,
     ) -> Result<store::Pending, String> {
         let started = Instant::now();
-        let window = self
+        let mut window = self
             .window
             .take()
             .ok_or("planning printed outside the capture")?;
+        let seed = self.seed.take();
+        if let Some(seed) = &seed {
+            // The partial analysis printed into a shadow capture; the
+            // window is the full analysis's (crate::snapshot::incremental
+            // checked that it prints the same).
+            window.bytes = seed.window.clone();
+        }
         // An early end first: its capture is incomplete too, but no child
         // holds the pipe (L2-W5h: a caught panic was reported as one).
         if window.ended_early || capture::broken() {
@@ -200,6 +254,10 @@ impl Save {
         if !records.is_empty() && tables.is_none() {
             return Err("local repository replay records without pinned tables".to_owned());
         }
+        let index = match &seed {
+            Some(seed) => Some(seed.index.clone()),
+            None => crate::snapshot::incremental::take_planned_index(),
+        };
         let checked_at = started.elapsed();
         // The plan's parts are compressed as they are encoded, on the
         // encoding threads: a plan of GBs is never held uncompressed while
@@ -235,6 +293,30 @@ impl Save {
             let started = Instant::now();
             let recording = recorder.take();
             let policy = Policy::current();
+            // An incremental save merges two recordings the policy selected
+            // already (selecting again would drop what lies below the old
+            // trees' links: their selected entries keep no link).
+            let merged = seed.is_some();
+            let (recording, records, tables, workspace_status) = match seed {
+                None => (recording, records, tables, workspace_status),
+                Some(seed) => {
+                    let seed = *seed;
+                    let merged = crate::snapshot::incremental::merge_recordings(
+                        policy.select_owned(recording),
+                        seed.inputs.recording,
+                    );
+                    let records =
+                        crate::snapshot::incremental::merge_replay(records, seed.inputs.replay);
+                    let tables =
+                        crate::snapshot::incremental::merge_tables(tables, seed.inputs.tables);
+                    (
+                        merged,
+                        records,
+                        tables,
+                        workspace_status || seed.inputs.workspace_status,
+                    )
+                }
+            };
             let window_us = recording
                 .window
                 .map_or(0, |window| window.as_micros() as u64);
@@ -244,7 +326,11 @@ impl Save {
                 .iter()
                 .map(|repository| repository.entries.len())
                 .sum();
-            let selected = policy.select_owned(recording);
+            let selected = if merged {
+                recording
+            } else {
+                policy.select_owned(recording)
+            };
             let inputs =
                 format::encode_inputs(&selected, &records, tables.as_ref(), workspace_status);
             let stats = Stats {
@@ -277,15 +363,19 @@ impl Save {
                 stored.len(),
                 compressed_ms,
             );
-            Ok((
-                vec![
-                    (Section::Inputs, inputs),
-                    (Section::Events, events),
-                    (Section::Plan, stored),
-                    (Section::Stats, format::encode_stats(&stats)),
-                ],
-                note,
-            ))
+            let mut sections = vec![
+                (Section::Inputs, inputs),
+                (Section::Events, events),
+                (Section::Plan, stored),
+                (Section::Stats, format::encode_stats(&stats)),
+            ];
+            if let Some(index) = index
+                .as_ref()
+                .and_then(|index| crate::snapshot::incremental::encode_index(index).ok())
+            {
+                sections.push((Section::Index, index));
+            }
+            Ok((sections, note))
         }))
     }
 

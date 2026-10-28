@@ -717,6 +717,9 @@ fn run() -> Result<(), String> {
     // plan_request compares with the hit before the hit executes
     // (crate::snapshot::verify).
     let mut snapshot = bazel_rs::snapshot::Scope::default();
+    // A miss that may continue as an incremental analysis
+    // (crate::snapshot::incremental).
+    let mut incremental_candidate: Option<Box<bazel_rs::snapshot::incremental::Candidate>> = None;
     // `fetch` neither looks up nor saves an analysis snapshot: it must
     // materialize the repositories (a hit would skip them).
     // Nor does a coverage build (docs/COVERAGE.md): its instrumentation
@@ -726,6 +729,9 @@ fn run() -> Result<(), String> {
     } else {
         bazel_rs::snapshot::Mode::from_env()
     };
+    // A re-executed incremental fallback prints from here on (it printed
+    // everything before, in its first process).
+    bazel_rs::snapshot::incremental::restore_after_check_point();
     let cquery_expression = if command == "cquery" {
         Some(cquery_options.expression(&rest[0])?)
     } else {
@@ -815,6 +821,12 @@ fn run() -> Result<(), String> {
                         workspace_status: workspace_status.clone(),
                         workspace: &root,
                         verify,
+                        // `build` only (docs/INCREMENTAL_ANALYSIS.md): no
+                        // --keep_going plans, no top-level aspects.
+                        incremental: command == "build"
+                            && !test_options.keep_going
+                            && aspects.is_empty()
+                            && aspects_parameters.is_empty(),
                     }) {
                         bazel_rs::snapshot::Checked::Hit(hit) if verify => {
                             // The full analysis runs below, in the hit's
@@ -908,6 +920,10 @@ fn run() -> Result<(), String> {
                             };
                         }
                         bazel_rs::snapshot::Checked::Miss(save) => snapshot.save = save,
+                        bazel_rs::snapshot::Checked::Incremental(save, candidate) => {
+                            snapshot.save = Some(save);
+                            incremental_candidate = Some(candidate);
+                        }
                     }
                 }
             }
@@ -1027,6 +1043,10 @@ fn run() -> Result<(), String> {
     let _root_warming = RootWarmingGuard::new(&repositories);
     let mut engine = std::mem::ManuallyDrop::new(Engine::with_repositories(repositories.clone()));
     engine.set_skip_teardown(true);
+    // The dependency index of incremental analysis rides with the saved
+    // snapshot of a build (crate::snapshot::incremental).
+    engine.set_incremental_tracking(command == "build" && snapshot.save.is_some());
+    let status_options = workspace_status.clone();
     engine.set_compact_repo_mapping(runfiles_options.compact_repo_mapping);
     // A LabelRunUnder: every test rule's late-bound run_under prerequisite
     // (the label converts with the main repository's mapping, LabelConverter).
@@ -1223,6 +1243,58 @@ fn run() -> Result<(), String> {
                 snapshot,
             },
         });
+    }
+    if let Some(candidate) = incremental_candidate.take() {
+        // An incremental analysis instead of the target pattern phase and
+        // the full analysis; any failure from here on runs the full
+        // analysis in a fresh process.
+        let loading_threads = loading_threads_for_report(
+            &command,
+            loading_phase_threads,
+            &query_options,
+            memory_limit_mb,
+        );
+        let planned = match incremental_build(
+            &mut engine,
+            *candidate,
+            IncrementalContext {
+                patterns: &rest,
+                lockfile_gate: &lockfile_gate,
+                status: &status_options,
+                workspace: &root,
+            },
+            &mut snapshot,
+        ) {
+            Ok(planned) => Some(planned),
+            Err(IncrementalFallback::Reexec(reason)) => reexec_fallback(&mut snapshot, &reason),
+            Err(IncrementalFallback::InProcess(reason)) => {
+                // Nothing analyzed and nothing printed yet: the full
+                // analysis continues here, its stderr forwarded again.
+                if bazel_rs::snapshot::explain() {
+                    bazel_rs::observed_fs::diag(&format!(
+                        "incremental: the full analysis runs: {reason}"
+                    ));
+                }
+                None
+            }
+        };
+        if let Some(planned) = planned {
+            return build_tail(
+                planned,
+                BuildTail {
+                    cache: &cache,
+                    jobs,
+                    action_dump: action_dump.as_deref(),
+                    remote_enabled,
+                    loading_threads,
+                    memory_limit_mb,
+                    pattern_failure: None,
+                    snapshot,
+                    keep_going: test_options.keep_going,
+                    run: false,
+                },
+            );
+        }
     }
     bazel_rs::perf_mark("select.start");
     let accepts = |info: &bazel_rs::test_command::TestRuleInfo| test_options.accepts(info);
@@ -1777,6 +1849,299 @@ fn plan_request(
         status,
         failed_skipped,
     }
+}
+
+/// What an incremental analysis reads from the command besides the
+/// engine (crate::snapshot::incremental).
+struct IncrementalContext<'a> {
+    patterns: &'a [String],
+    lockfile_gate: &'a LockfileGate,
+    status: &'a bazel_rs::workspace_status::WorkspaceStatusOptions,
+    workspace: &'a Path,
+}
+
+/// The incremental analysis of a missed `build` (docs/INCREMENTAL_ANALYSIS.md,
+/// tier A; crate::snapshot::incremental): reload the packages whose inputs
+/// changed; when their targets changed, analyze the requested targets that
+/// reach them (in this engine, its stderr kept apart) and splice the result
+/// into the saved plan; save the merged snapshot; print what the full
+/// analysis prints while planning. `Err` names why the full analysis must
+/// run instead (the caller executes it in a fresh process).
+/// Why an incremental analysis did not finish.
+enum IncrementalFallback {
+    /// Before any analysis, with nothing printed: the full analysis runs
+    /// on in this process.
+    InProcess(String),
+    /// After the partial analysis (or a print): in a fresh process.
+    Reexec(String),
+}
+
+fn incremental_build(
+    engine: &mut Engine,
+    candidate: bazel_rs::snapshot::incremental::Candidate,
+    context: IncrementalContext<'_>,
+    snapshot: &mut bazel_rs::snapshot::Scope,
+) -> Result<Planned, IncrementalFallback> {
+    use bazel_rs::snapshot::incremental;
+    let kept_before = bazel_rs::snapshot::capture::kept_len();
+    // Before the partial analysis: a failure continues in this process
+    // when the reload printed nothing (its capture then forwards again).
+    let early = |reason: String| {
+        if bazel_rs::snapshot::capture::kept_len() == kept_before
+            && bazel_rs::snapshot::capture::promote_to_tee()
+        {
+            IncrementalFallback::InProcess(reason)
+        } else {
+            IncrementalFallback::Reexec(reason)
+        }
+    };
+    let started = std::time::Instant::now();
+    let explain = bazel_rs::snapshot::explain();
+    let timing = bazel_rs::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING"));
+    let strict_patterns = context.patterns.iter().any(|pattern| {
+        pattern.ends_with(":*")
+            || pattern.ends_with(":all-targets")
+            || pattern.ends_with(":all-targets/")
+    });
+    let mut changed = incremental::Changed {
+        packages: Default::default(),
+        fingerprints: Default::default(),
+        pruned: 0,
+    };
+    let reloaded: Vec<u32> = candidate
+        .loaded
+        .iter()
+        .chain(candidate.content.iter())
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    for id in reloaded {
+        let package = bazel_rs::label::PackageId {
+            repository: String::new(),
+            package: candidate.base.index.packages[id as usize].package.clone(),
+        };
+        let (fingerprint, printed) = engine.package_fingerprint(&package).map_err(|error| {
+            IncrementalFallback::Reexec(format!(
+                "package //{} does not load: {error}",
+                package.package
+            ))
+        })?;
+        incremental::compare_package(
+            &candidate,
+            id,
+            fingerprint,
+            printed,
+            strict_patterns,
+            &mut changed,
+        )
+        .map_err(early)?;
+    }
+    let reloaded_at = started.elapsed();
+    let (labels, dirty) =
+        incremental::dirty_labels(&candidate.base.index, &changed.packages).map_err(early)?;
+    incremental_finish(
+        engine,
+        candidate,
+        context,
+        snapshot,
+        IncrementalPlan {
+            started,
+            reloaded_at,
+            changed,
+            labels,
+            dirty,
+            explain,
+            timing,
+        },
+    )
+    .map_err(IncrementalFallback::Reexec)
+}
+
+/// What [`incremental_build`] decided before its partial analysis.
+struct IncrementalPlan {
+    started: std::time::Instant,
+    reloaded_at: std::time::Duration,
+    changed: bazel_rs::snapshot::incremental::Changed,
+    labels: Vec<bazel_rs::label::Label>,
+    dirty: std::collections::BTreeSet<u32>,
+    explain: bool,
+    timing: bool,
+}
+
+/// The partial analysis, the splice and the save of [`incremental_build`].
+fn incremental_finish(
+    engine: &mut Engine,
+    candidate: bazel_rs::snapshot::incremental::Candidate,
+    context: IncrementalContext<'_>,
+    snapshot: &mut bazel_rs::snapshot::Scope,
+    plan: IncrementalPlan,
+) -> Result<Planned, String> {
+    use bazel_rs::snapshot::incremental;
+    let IncrementalPlan {
+        started,
+        reloaded_at,
+        changed,
+        labels,
+        dirty,
+        explain,
+        timing,
+    } = plan;
+    let key = candidate.key.clone();
+    let base = *candidate.base;
+    let incremental::Base {
+        inputs,
+        window,
+        request: full,
+        index,
+        changed: changed_observations,
+    } = base;
+    let (request, merged, status) = if labels.is_empty() {
+        // Nothing the request analyzes changed (a comment, an unused
+        // target): the saved plan stands.
+        let needs_status = inputs.workspace_status || full.has_status_placeholders();
+        let status =
+            bazel_rs::snapshot::hit::quiet_status(context.status, context.workspace, needs_status)?;
+        bazel_rs::progress::arm_summary();
+        let merged = incremental::merge_index(index, &dirty, None, &changed.fingerprints);
+        (full, merged, status)
+    } else {
+        let sub = engine.plan_request(bazel_rs::engine::RequestSpec::build(&labels))?;
+        let sub = bazel_rs::snapshot::codec::hand_over(sub)?;
+        let status = engine.take_workspace_status();
+        let sub_index =
+            incremental::take_planned_index().ok_or("the partial analysis recorded no index")?;
+        let mut index = index;
+        let mapped = incremental::check_graph(&mut index, &dirty, &sub_index)?;
+        let spliced = incremental::splice(full, &index, &labels, &dirty, sub)?;
+        let merged = incremental::merge_index(
+            index,
+            &dirty,
+            Some((&sub_index, &mapped)),
+            &changed.fingerprints,
+        );
+        (spliced, merged, status)
+    };
+    let save = snapshot
+        .save
+        .as_mut()
+        .ok_or("internal error: an incremental analysis without a save session")?;
+    let captured = save
+        .window()
+        .ok_or("the partial analysis's stderr capture did not start")?;
+    if captured.forwarded || !captured.complete || captured.overflowed {
+        return Err("the partial analysis's stderr capture is incomplete".to_owned());
+    }
+    incremental::window_covers(&window, &captured.bytes)?;
+    let recorder = bazel_rs::observed_fs::recorder().ok_or("nothing was recorded")?;
+    let taints = recorder.taints();
+    if let Some((taint, record)) = taints.iter().next() {
+        return Err(format!(
+            "the partial analysis is tainted ({}: {})",
+            taint.name(),
+            record.details.first().map(String::as_str).unwrap_or("")
+        ));
+    }
+    for at in &changed_observations {
+        let (path, observation) = &inputs.recording.observations[*at];
+        if recorder.observed(path, &observation.op).is_none() {
+            return Err(format!(
+                "{} {} changed but was not observed again",
+                observation.op.name(),
+                bazel_rs::observed_fs::escape(path.as_os_str())
+            ));
+        }
+    }
+    context.lockfile_gate.open();
+    let summary = format!(
+        "incremental {key}: {} changed observation(s) in {} package(s), {} unchanged; {} configured target(s) dirty, {} requested target(s) re-analyzed; {:.1} ms (reload {:.1} ms)",
+        changed_observations.len(),
+        changed.packages.len(),
+        changed.pruned,
+        dirty.len(),
+        labels.len(),
+        started.elapsed().as_secs_f64() * 1000.0,
+        reloaded_at.as_secs_f64() * 1000.0,
+    );
+    if explain {
+        bazel_rs::observed_fs::diag(&summary);
+    }
+    if timing {
+        bazel_rs::snapshot::diag::line_fmt(format_args!(
+            "PERF-SNAPSHOT incremental dirty={} labels={} pruned={} ms={:.3}",
+            dirty.len(),
+            labels.len(),
+            changed.pruned,
+            started.elapsed().as_secs_f64() * 1000.0
+        ));
+    }
+    let status_computed = status.is_some();
+    save.seed(bazel_rs::snapshot::save::Seed {
+        inputs,
+        window: window.clone(),
+        index: merged,
+    });
+    bazel_rs::perf_mark("plan.end");
+    let mut request = request;
+    snapshot.planned(&request, status_computed);
+    if bazel_rs::snapshot::Mode::from_env() == bazel_rs::snapshot::Mode::Verify {
+        // Verify mode: the spliced snapshot is saved now and a fresh
+        // process looks it up — a hit, checked against a full analysis
+        // (crate::snapshot::verify) — and executes it.
+        if let Some(save) = snapshot.save.take() {
+            (*save).finish();
+        }
+        reexec(bazel_rs::snapshot::incremental::REEXEC_VERIFY);
+    }
+    {
+        use std::io::Write as _;
+        let mut stderr = std::io::stderr().lock();
+        let _ = stderr
+            .write_all(&bazel_rs::ui::filtered(&window))
+            .and_then(|()| stderr.flush());
+    }
+    Ok(Planned {
+        diagnostics: printed_warnings(request.take_diagnostics()),
+        status: bazel_rs::request::StatusSource::Planned(status),
+        request: Ok(request),
+    })
+}
+
+/// An incremental analysis that cannot finish: the full analysis runs in
+/// a fresh process (nothing the partial analysis printed, cached or
+/// counted leaks into it). Never returns.
+fn reexec_fallback(snapshot: &mut bazel_rs::snapshot::Scope, reason: &str) -> ! {
+    if let Some(save) = snapshot.save.as_mut() {
+        // What the partial analysis printed is dropped.
+        let _ = save.stop_capture();
+    }
+    if bazel_rs::snapshot::explain() {
+        bazel_rs::observed_fs::diag(&format!(
+            "incremental: falls back to the full analysis: {reason}"
+        ));
+    }
+    reexec(bazel_rs::snapshot::incremental::REEXEC_FALLBACK)
+}
+
+/// Execute this binary again with the same arguments and the marker
+/// `mode` (crate::snapshot::incremental::REEXEC_VAR). Never returns.
+fn reexec(mode: &str) -> ! {
+    use std::io::Write as _;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    let mut args = std::env::args_os();
+    let argv0 = args.next().unwrap_or_default();
+    let mut command = std::process::Command::new("/proc/self/exe");
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.arg0(argv0);
+    }
+    command
+        .args(args)
+        .env(bazel_rs::snapshot::incremental::REEXEC_VAR, mode);
+    let error = bazel_rs::spawn_lock::exec(&mut command);
+    eprintln!("bazel-rs: cannot execute itself again for the full analysis: {error}");
+    exit(1)
 }
 
 /// A snapshot hit's planned request (crate::snapshot::hit): what planning
@@ -5260,6 +5625,10 @@ fn main() {
         let args: Vec<String> = raw.map(|arg| arg.to_string_lossy().into_owned()).collect();
         std::process::exit(bazel_rs::coverage::output_generator_main(&args));
     }
+    // Incremental analysis's fallback executes this binary again
+    // (crate::snapshot::incremental): its marker, read before any thread.
+    bazel_rs::snapshot::incremental::take_reexec_marker();
+    bazel_rs::snapshot::incremental::silence_until_check_point();
     bazel_rs::progress::process_start();
     // Ctrl-C exits 8 like Bazel's interrupted command (crate::signals).
     bazel_rs::signals::exit_on_interrupt();
@@ -5270,6 +5639,7 @@ fn main() {
     // is in the display's pipe by then).
     let _progress = ProgressGuard;
     let result = run();
+    bazel_rs::snapshot::incremental::restore_after_check_point();
     // Persistent workers live for this command only (no server).
     bazel_rs::worker::shutdown();
     // BAZEL_RS_SNAPSHOT=verify: a hit whose shadow full analysis ended

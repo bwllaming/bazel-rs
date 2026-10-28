@@ -1037,6 +1037,71 @@ pub fn validate_for_hit(
     Ok(validated)
 }
 
+/// Every observation of `recording` that does not hold now (indices into
+/// `recording.observations`, sorted), for incremental analysis
+/// (crate::snapshot::incremental): a changed environment digest or tree
+/// integrity entry, or a racy tree that no longer verifies, is a change it
+/// cannot attribute to a package — the error, naming it.
+pub fn changed_observations(
+    recording: &Recording,
+    environment: &Environment<'_>,
+) -> Result<Vec<usize>, String> {
+    for (name, observation) in &recording.env {
+        if environment.digest(name) != observation.digest {
+            return Err(format!("ENV {}: value changed", escape(name)));
+        }
+    }
+    let verified = Mutex::new(BTreeSet::new());
+    let mut tally = Validated::default();
+    for (tree, repository) in recording.repositories.iter().enumerate() {
+        for entry in 0..repository.entries.len() {
+            check_for_hit(
+                recording,
+                &Item::Integrity(tree, entry),
+                &verified,
+                &mut tally,
+            )?;
+        }
+    }
+    let count = recording.observations.len();
+    let threads = threads_for(recording);
+    let changed: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    let cursor = AtomicUsize::new(0);
+    let worker = || {
+        let mut found = Vec::new();
+        loop {
+            let start = cursor.fetch_add(BLOCK, Ordering::Relaxed);
+            if start >= count {
+                break;
+            }
+            for index in start..(start + BLOCK).min(count) {
+                let (path, observation) = &recording.observations[index];
+                if check(path, observation).is_err() {
+                    found.push(index);
+                }
+            }
+        }
+        changed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(found);
+    };
+    if threads <= 1 {
+        worker();
+    } else {
+        std::thread::scope(|scope| {
+            for _ in 0..threads {
+                scope.spawn(worker);
+            }
+        });
+    }
+    let mut changed = changed
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    changed.sort_unstable();
+    Ok(changed)
+}
+
 /// Apply settled keys to the recording (a racy observation or entry that a
 /// hit's content check confirmed becomes trusted by stat).
 pub fn apply_refresh(recording: &mut Recording, refresh: &[Refresh]) {

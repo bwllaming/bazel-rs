@@ -73,6 +73,11 @@ pub struct Attempt<'a> {
     /// The event log's context (a healed hit is logged there,
     /// crate::snapshot::telemetry).
     pub log: crate::snapshot::telemetry::Context,
+    /// Incremental analysis may follow a miss (crate::snapshot::incremental):
+    /// a failing validation does not cancel the replay and the plan's
+    /// decode, and a miss whose only failures are changed observations
+    /// keeps the decoded snapshot ([`attempt`]'s second result).
+    pub incremental: bool,
 }
 
 /// What verify mode compares a hit's shadow full analysis with
@@ -127,8 +132,23 @@ fn miss(reason: impl Into<String>) -> Result<Box<Hit>, Miss> {
     Err(reason.into())
 }
 
-/// Try the snapshot of `attempt.key`.
-pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
+/// Try the snapshot of `attempt.key`. A miss with
+/// [`Attempt::incremental`] whose only failing checks are observations
+/// keeps the decoded snapshot and the changed observations.
+pub fn attempt(
+    attempt: Attempt<'_>,
+) -> Result<Box<Hit>, (Miss, Option<Box<crate::snapshot::incremental::Base>>)> {
+    let mut base = None;
+    match attempt_keeping(attempt, &mut base) {
+        Ok(hit) => Ok(hit),
+        Err(miss) => Err((miss, base)),
+    }
+}
+
+fn attempt_keeping(
+    attempt: Attempt<'_>,
+    base: &mut Option<Box<crate::snapshot::incremental::Base>>,
+) -> Result<Box<Hit>, Miss> {
     let started = Instant::now();
     let reader = match Reader::open(attempt.cache, &attempt.key) {
         Ok(Some(reader)) => reader,
@@ -178,6 +198,7 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
     let tables = inputs.tables.clone();
     let tables_for_mappers = inputs.tables.clone();
     let keep_plan = attempt.verify;
+    let incremental = attempt.incremental;
     // The first failure cancels what the others have not started yet (the
     // replay's definition loads and executions, the plan's chunks; L2-W5f
     // review F7): a miss's full analysis starts without waiting for the
@@ -253,7 +274,7 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
                 &inputs.recording,
                 &validate::Environment::new(&attempt.replay.environment),
             );
-            failed(validation.is_err());
+            failed(validation.is_err() && !incremental);
             let plan = plan
                 .join()
                 .unwrap_or_else(|_| Err("the plan decoder panicked".to_owned()));
@@ -292,6 +313,26 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
         Ok(validated) if failures.is_empty() => validated,
         Ok(_) => return miss(failures.join("; and ")),
         Err(first) => {
+            let cancelled =
+                |result: &Option<Result<(usize, Duration), String>>| matches!(result, Some(Err(_)));
+            if incremental && failures.is_empty() && !cancelled(&replay) && !cancelled(&local) {
+                // Only observations failed: keep what incremental analysis
+                // starts from (crate::snapshot::incremental).
+                if let Ok((request, _, _, _, _)) = plan {
+                    let index = reader
+                        .section(Section::Index)
+                        .and_then(crate::snapshot::incremental::decode_index);
+                    if let Ok(index) = index {
+                        *base = Some(Box::new(crate::snapshot::incremental::Base {
+                            inputs,
+                            window: window_stderr,
+                            request,
+                            index,
+                            changed: Vec::new(),
+                        }));
+                    }
+                }
+            }
             return miss(
                 std::iter::once(first)
                     .chain(failures)
@@ -329,13 +370,7 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
     // the window (a status command that wrote to stderr kept the run from
     // being saved): one that writes now is a miss, never a misplaced print.
     let status_started = Instant::now();
-    let needs_status = inputs.workspace_status
-        || request.nodes.iter().any(|node| {
-            matches!(
-                node.action.extra.transform,
-                Some(crate::action::Transform::WorkspaceStatus { .. })
-            )
-        });
+    let needs_status = inputs.workspace_status || request.has_status_placeholders();
     let status = if needs_status {
         let client = crate::action_env::client_environment();
         let (computed, stderr) = crate::workspace_status::compute_quiet(
@@ -440,6 +475,37 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
         summary,
         timings,
         evidence,
+    }))
+}
+
+/// The workspace status of a saved plan computed now, quietly, when
+/// `needed` (a hit, or an incremental analysis that kept the saved plan): a
+/// status command that writes to stderr is an error (the full analysis
+/// prints it while planning and never saves such a run).
+pub fn quiet_status(
+    options: &WorkspaceStatusOptions,
+    workspace: &Path,
+    needed: bool,
+) -> Result<Option<ComputedWorkspaceStatus>, String> {
+    if !needed {
+        return Ok(None);
+    }
+    let client = crate::action_env::client_environment();
+    let (computed, stderr) = crate::workspace_status::compute_quiet(
+        options,
+        workspace,
+        &client,
+        crate::workspace_status::current_time_millis(&client),
+    );
+    if !stderr.is_empty() {
+        return Err(format!(
+            "the workspace status command wrote {} bytes to stderr",
+            stderr.len()
+        ));
+    }
+    Ok(Some(match computed {
+        Ok(status) => ComputedWorkspaceStatus::Ok(status),
+        Err(error) => ComputedWorkspaceStatus::Failed(error),
     }))
 }
 
@@ -639,10 +705,15 @@ fn refresh_in_background(
                 inputs.workspace_status,
             ),
         )];
-        for kind in [Section::Events, Section::Plan, Section::Stats] {
+        for kind in [
+            Section::Events,
+            Section::Plan,
+            Section::Stats,
+            Section::Index,
+        ] {
             match reader.stored_section(kind) {
                 Ok(bytes) => sections.push((kind, bytes)),
-                Err(_) if kind == Section::Stats => {}
+                Err(_) if matches!(kind, Section::Stats | Section::Index) => {}
                 Err(_) => return,
             }
         }

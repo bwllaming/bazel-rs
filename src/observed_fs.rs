@@ -55,7 +55,7 @@
 
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
@@ -718,6 +718,17 @@ impl Recorder {
         if let Some(conflict) = conflict {
             self.store_taint(Taint::Unstable, conflict);
         }
+    }
+
+    /// The outcome recorded so far for `op` of `path` (frames not yet
+    /// committed aside): incremental analysis checks that what changed
+    /// was observed again (crate::snapshot::incremental).
+    pub fn observed(&self, path: &Path, op: &Op) -> Option<Outcome> {
+        lock(&self.shards[shard_of(path)])
+            .get(path)?
+            .iter()
+            .find(|seen| seen.op == *op)
+            .map(|seen| seen.outcome.clone())
     }
 
     /// [`supersede`] in the recorder itself.
@@ -1712,6 +1723,26 @@ pub fn open_window() -> bool {
     let _ = fs::symlink_metadata(MARKER_OPEN);
     RECORDING.store(true, Ordering::SeqCst);
     true
+}
+
+/// The paths a repository's or a module extension's recorded inputs named
+/// while the window was open (crate::repository_ctx's recorded states):
+/// (path, its tree: a `watch_tree` directory, everything below counts).
+/// Incremental analysis (crate::snapshot::incremental) never attributes a
+/// change of one of them to a package: the repository may change.
+static REPOSITORY_INPUTS: Mutex<BTreeSet<(PathBuf, bool)>> = Mutex::new(BTreeSet::new());
+
+/// A recorded input of a repository or extension was observed (see
+/// [`REPOSITORY_INPUTS`]); outside the window nothing is kept.
+pub fn note_repository_input(path: &Path, tree: bool) {
+    if recording() {
+        lock(&REPOSITORY_INPUTS).insert((path.to_path_buf(), tree));
+    }
+}
+
+/// The repository inputs noted so far (see [`note_repository_input`]).
+pub fn repository_inputs() -> Vec<(PathBuf, bool)> {
+    lock(&REPOSITORY_INPUTS).iter().cloned().collect()
 }
 
 /// Close the window (idempotent): planning ended. Later calls record nothing.

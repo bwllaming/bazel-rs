@@ -102,6 +102,9 @@ struct DrainState {
     /// notes are stripped, under `--quiet` the notes too); the kept bytes
     /// keep them.
     filter: Option<crate::ui::Filter>,
+    /// A [`Mode::Shadow`] capture promoted to a [`Mode::Tee`] one
+    /// ([`promote_to_tee`]): later bytes are kept and forwarded.
+    tee: bool,
 }
 
 impl DrainState {
@@ -245,10 +248,10 @@ fn spawn_reader(
                                 true
                             } else if state.bytes.len() + count <= limit {
                                 state.bytes.extend_from_slice(chunk);
-                                mode == Mode::Tee
+                                mode == Mode::Tee || state.tee
                             } else {
                                 state.overflowed = true;
-                                if mode == Mode::Shadow {
+                                if mode == Mode::Shadow && !state.tee {
                                     // Never comparable now (a mismatch):
                                     // what the shadow analysis prints is
                                     // the output — the kept bytes first.
@@ -257,7 +260,7 @@ fn spawn_reader(
                                     state.pending.extend_from_slice(&kept);
                                     true
                                 } else {
-                                    mode == Mode::Tee
+                                    mode == Mode::Tee || state.tee
                                 }
                             };
                             if forward {
@@ -457,9 +460,50 @@ fn collect(
         bytes,
         complete,
         overflowed: state.overflowed,
-        forwarded: mode == Mode::Tee || state.forwarding,
+        forwarded: mode == Mode::Tee || state.forwarding || state.tee,
         ended_early: early,
     }
+}
+
+/// How many bytes the active capture kept so far.
+pub fn kept_len() -> Option<usize> {
+    active()
+        .as_ref()
+        .map(|active| active.drained.lock().bytes.len())
+}
+
+/// Turn the active [`Mode::Shadow`] capture into a [`Mode::Tee`] one: what
+/// it kept goes to the original stderr now, and every later byte is kept
+/// and forwarded (an incremental analysis that falls back to the full
+/// analysis in this process, crate::snapshot::incremental). Whether the
+/// active capture is a [`Mode::Tee`] one now.
+pub fn promote_to_tee() -> bool {
+    let mut slot = active();
+    let Some(active) = slot.as_mut() else {
+        return false;
+    };
+    match active.mode {
+        Mode::Tee => return true,
+        Mode::Discard => return false,
+        Mode::Shadow => {}
+    }
+    let order = crate::snapshot::diag::ORDER
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let kept = {
+        let mut state = active.drained.lock();
+        if state.forwarding {
+            return false;
+        }
+        state.tee = true;
+        let kept = state.bytes.clone();
+        state.console(&kept)
+    };
+    let mut original = &*active.original;
+    let _ = original.write_all(&kept).and_then(|()| original.flush());
+    drop(order);
+    active.mode = Mode::Tee;
+    true
 }
 
 /// Whether a capture holds file descriptor 2 now (crate::ui writes notes

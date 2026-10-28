@@ -288,6 +288,17 @@ pub enum StatusSource {
 }
 
 impl PlannedRequest {
+    /// Whether the plan holds the workspace status placeholders (an
+    /// executing build: the status is computed for them).
+    pub fn has_status_placeholders(&self) -> bool {
+        self.nodes.iter().any(|node| {
+            matches!(
+                node.action.extra.transform,
+                Some(crate::action::Transform::WorkspaceStatus { .. })
+            )
+        })
+    }
+
     /// The snapshot blockers among the planned actions: build-info
     /// callbacks (their substitutions are this run's workspace status) and
     /// deferred command lines whose `map_each` is a Starlark function

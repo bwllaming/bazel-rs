@@ -47,6 +47,7 @@ pub mod diag;
 pub mod exe_id;
 pub mod format;
 pub mod hit;
+pub mod incremental;
 pub mod key;
 pub(crate) mod mapper;
 pub mod record;
@@ -242,6 +243,10 @@ pub enum Checked {
     Hit(Box<hit::Hit>),
     /// Run the full analysis; save it when the session is `Some`.
     Miss(Option<Box<save::Save>>),
+    /// Try an incremental analysis (crate::snapshot::incremental): the
+    /// session saves it, its capture keeps what the partial analysis
+    /// prints apart ([`capture::Mode::Shadow`]).
+    Incremental(Box<save::Save>, Box<incremental::Candidate>),
 }
 
 /// The check point's inputs.
@@ -256,6 +261,9 @@ pub struct CheckInputs<'a> {
     /// `BAZEL_RS_SNAPSHOT=verify`: a hit keeps what its shadow full
     /// analysis is compared with (crate::snapshot::verify).
     pub verify: bool,
+    /// A miss may continue as an incremental analysis
+    /// (crate::snapshot::incremental; `build` only).
+    pub incremental: bool,
 }
 
 /// The snapshot check point of `BAZEL_RS_SNAPSHOT=on` (PLAN-L2 §1a): compute
@@ -302,6 +310,18 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
         command: inputs.key.command.to_owned(),
         targets: inputs.key.targets.to_vec(),
     };
+    if incremental::reexec() == incremental::Reexec::Fallback {
+        // An incremental analysis of this very command fell back after its
+        // partial analysis: the lookup missed already (and was logged).
+        if explain {
+            observed_fs_diag(&format!(
+                "incremental {}: the full analysis runs again in a fresh process",
+                key.short()
+            ));
+        }
+        return Checked::Miss(Some(Box::new(save::start(key, explain, log))));
+    }
+    let environment = inputs.replay.environment.clone();
     let outcome = hit::attempt(hit::Attempt {
         cache: inputs.cache,
         key,
@@ -310,6 +330,7 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
         workspace: inputs.workspace,
         verify: inputs.verify,
         log: log.clone(),
+        incremental: inputs.incremental && incremental::enabled(),
     });
     let timing = crate::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING"));
     let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
@@ -350,7 +371,7 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
             }
             Checked::Hit(hit)
         }
-        Err(reason) => {
+        Err((reason, base)) => {
             log.log_miss(&key.short(), &reason, wall);
             if explain {
                 observed_fs_diag(&format!("miss {}: {reason}", key.short()));
@@ -361,7 +382,38 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
                     ms(key_time),
                 ));
             }
-            Checked::Miss(Some(Box::new(save::start(key, explain, log))))
+            let classified = base.ok_or_else(String::new).and_then(|mut base| {
+                let started = Instant::now();
+                base.changed = validate::changed_observations(
+                    &base.inputs.recording,
+                    &validate::Environment::new(&environment),
+                )?;
+                let candidate = incremental::classify(base, inputs.cache, key.short())?;
+                if timing {
+                    diag::line_fmt(format_args!(
+                        "PERF-SNAPSHOT incremental classify_ms={:.3} loaded={} content={}",
+                        ms(started.elapsed()),
+                        candidate.loaded.len(),
+                        candidate.content.len(),
+                    ));
+                }
+                Ok(candidate)
+            });
+            match classified {
+                Ok(candidate) => Checked::Incremental(
+                    Box::new(save::start_with(key, explain, log, capture::Mode::Shadow)),
+                    Box::new(candidate),
+                ),
+                Err(reason) => {
+                    if explain && !reason.is_empty() {
+                        observed_fs_diag(&format!(
+                            "incremental {}: not attempted: {reason}",
+                            key.short()
+                        ));
+                    }
+                    Checked::Miss(Some(Box::new(save::start(key, explain, log))))
+                }
+            }
         }
     }
 }

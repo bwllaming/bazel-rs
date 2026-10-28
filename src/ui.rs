@@ -49,6 +49,24 @@ const START: &[u8] = b"\x1b_bazel-rs:note\x1b\\";
 /// The mark closing a note.
 const END: &[u8] = b"\x1b_bazel-rs:end\x1b\\";
 
+/// `bytes` without the note marks (every note kept, also under `--quiet`):
+/// what was printed, for comparisons (crate::snapshot::incremental).
+pub fn unmarked(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        if rest.starts_with(START) {
+            rest = &rest[START.len()..];
+        } else if rest.starts_with(END) {
+            rest = &rest[END.len()..];
+        } else {
+            out.push(rest[0]);
+            rest = &rest[1..];
+        }
+    }
+    out
+}
+
 /// `text` and its newline as a marked note (see the module documentation).
 pub fn marked(text: &str) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(START.len() + text.len() + 1 + END.len());
