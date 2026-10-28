@@ -918,7 +918,11 @@ pub fn check_graph(
     after.extend(
         sub.aspects
             .iter()
-            .filter(|(key, _)| dirty.contains(&mapped[*key as usize]))
+            .filter(|(key, _)| {
+                mapped
+                    .get(*key as usize)
+                    .is_some_and(|key| dirty.contains(key))
+            })
             .map(|(_, application)| application.as_str()),
     );
     if before != after {
@@ -1074,6 +1078,20 @@ pub fn merge_index(
         }
     }
     index.accesses = accesses.into_iter().collect();
+    // The re-analyzed keys' aspect applications are the re-analysis's.
+    let mut aspects: BTreeSet<(u32, String)> = index
+        .aspects
+        .iter()
+        .filter(|(key, _)| !dirty.contains(key))
+        .cloned()
+        .collect();
+    for (key, application) in &sub.aspects {
+        let key = mapped.get(*key as usize).copied().unwrap_or(u32::MAX);
+        if dirty.contains(&key) {
+            aspects.insert((key, application.clone()));
+        }
+    }
+    index.aspects = aspects.into_iter().collect();
     let mut shared: BTreeSet<u32> = index.shared.iter().copied().collect();
     shared.extend(sub.shared.iter().map(|key| mapped[*key as usize]));
     index.shared = shared.into_iter().collect();
