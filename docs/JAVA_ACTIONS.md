@@ -1,7 +1,7 @@
 # Native Java compilation actions
 
 `create_compilation_action` registers real JavaBuilder compilation for ordinary
-sources/source jars and empty libraries, without annotation processors. The
+sources/source jars, empty libraries and resource jars, without annotation processors. The
 default advertised classpath mode remains **BAZEL**: dependency producers finish,
 binary jdeps select an ordered reduced classpath, and the real compiler runs
 `BAZEL_REDUCED`. Only its decoded fallback bit requests one `BAZEL_FALLBACK`
@@ -48,7 +48,7 @@ Full JavaBuilder compilation enforces the strict-deps mode with the real tool.
 
 ## Explicit boundaries
 
-- JavaBuilder resource packaging, annotation processors/generated processor
+- Annotation processors/generated processor
   jars, additional processor outputs, extra Args, per-package toolchain data,
   JSpecify and Java coverage instrumentation fail explicitly in this slice.
   Ordinary dependent/sourcejar/empty library builds are proven; the application
@@ -103,6 +103,21 @@ continues through rules_java's own SingleJar action. Its optional manifest
 fields stringify None as `None`, as shown by the saved genuine argv. The
 `target_kind` bridge consumes actual rule-class metadata through aliases and
 aspects; no JavaInfo or rule-class guesses are introduced.
+
+## Resources
+
+When resources, resource jars or classpath resources are present, JavaBuilder
+writes the derived `-class.jar`, retaining the declared native-header, manifest
+and jdeps outputs. A separate real SingleJar action merges that class jar and
+the resource inputs into the requested output. It carries the tool's normal
+FilesToRun/runfiles dependencies and the configured shell environment.
+
+Resource entry names follow Bazel's Maven/Java source-root heuristics or the
+explicit `resource_strip_prefix`. An explicitly empty prefix retains the whole
+repository-relative path; it is distinct from an omitted prefix. Duplicate
+resource destinations use the last artifact without reordering the entry.
+An invalid prefix fails analysis. Resource output artifacts outside the declaring
+package and tree/unresolved-symlink resources remain explicit boundaries.
 
 ## Evidence
 

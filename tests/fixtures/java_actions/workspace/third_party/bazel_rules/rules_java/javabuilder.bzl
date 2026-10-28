@@ -12,8 +12,10 @@ def _compile_impl(ctx):
         deps = [dep[JavaInfo] for dep in ctx.attr.deps],
         strict_deps = ctx.attr.strict,
         resources = ctx.files.resources,
+        resource_jars = ctx.files.resource_jars,
+        classpath_resources = ctx.files.classpath_resources,
     )
-    return [DefaultInfo(files = depset([output])), info]
+    return [DefaultInfo(files = depset([output] + (info.source_jars if ctx.attr.expose_sources else []))), info]
 
 compile_fixture = rule(
     implementation = _compile_impl,
@@ -23,6 +25,9 @@ compile_fixture = rule(
         "deps": attr.label_list(providers = [JavaInfo]),
         "strict": attr.string(default = "ERROR"),
         "resources": attr.label_list(allow_files = True),
+        "resource_jars": attr.label_list(allow_files = True),
+        "classpath_resources": attr.label_list(allow_files = True),
+        "expose_sources": attr.bool(),
     },
     toolchains = ["@bazel_tools//tools/jdk:toolchain_type"],
     fragments = ["java"],

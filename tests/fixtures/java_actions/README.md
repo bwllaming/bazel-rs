@@ -92,3 +92,18 @@ dependent and empty java_library targets against the saved genuine outputs,
 without repeating that genuine capture. Source-jar action registration also
 exercised the literal None Args conversion and dependency classification via
 the real `target_kind` bridge.
+
+`native-resource-variants.*` / `genuine-resource-variants.*` cover a source
+library with Maven resources, a resource jar and a classpath resource, plus
+explicit-empty and explicit-nonempty strip prefixes. All four requested jars
+(including the actual source-jar action) match byte-for-byte; jar entry lists
+are recorded in `resource-variants-byte-comparison.json`. The saved original
+resources-only java_library also matches without a new genuine capture.
+
+JavaBuilder invalidation receipts (`warm-2`, `source-edit`, `excluded-jar-edit`,
+`flag-edit`) show a warm binary-snapshot hit with 0 executions/5 action hits;
+a source body edit retains the snapshot but recompiles; a changed jar excluded
+from the initial reduced set invalidates the fallback-produced terminal result;
+and a toolchain javac flag edit invalidates the BUILD observation. The latter
+changes actual class major versions from 55 (`--release 11`) to 61 (`--release
+17`), recorded with output hashes in `invalidation-output-proof.json`.

@@ -115,7 +115,7 @@ pub(crate) fn create_compilation<'v>(
         "java/common/rules:java_toolchain.bzl",
         "JavaToolchainInfo",
     )?;
-    let output = file(value(2), "output")?;
+    let mut output = file(value(2), "output")?;
     let manifest = file(value(3), "manifest_proto")?;
     let plugin_info = value(4);
     provider(plugin_info, "java/private:java_info.bzl", "JavaPluginInfo")?;
@@ -253,9 +253,6 @@ pub(crate) fn create_compilation<'v>(
             return Err(unsupported("extra_args"));
         }
     }
-    if !resources.is_empty() || !resource_jars.is_empty() || !classpath_resources.is_empty() {
-        return Err(unsupported("resource jar packaging"));
-    }
     if jspecify && !field(toolchain, "_jspecify_info", heap)?.is_none() {
         return Err(unsupported("JSpecify toolchain processors"));
     }
@@ -296,6 +293,20 @@ pub(crate) fn create_compilation<'v>(
         return Err(failure("JavaToolchainInfo has no JavaBuilder tool".into()));
     }
     let (launcher, tool_inputs) = launcher_with_flags(COMPILE, tool, toolchain, &jvm_flags, heap)?;
+    if !resources.is_empty() || !resource_jars.is_empty() || !classpath_resources.is_empty() {
+        output = super::resources::register(
+            context,
+            value(0),
+            toolchain,
+            &output,
+            &resources,
+            &resource_jars,
+            &classpath_resources,
+            &additional,
+            &group,
+            heap,
+        )?;
+    }
     let mandatory = unique(
         plugin_jars
             .iter()
@@ -424,7 +435,7 @@ pub(crate) fn create_compilation<'v>(
                 mnemonic: "Javac".into(),
                 inherited_environment: environment.inherited,
                 execution_info,
-                java_compile: Some(JavaCompileSpec {
+                java_compile: Some(Box::new(JavaCompileSpec {
                     mode,
                     flags,
                     classpath: paths(&classpath),
@@ -432,7 +443,7 @@ pub(crate) fn create_compilation<'v>(
                     dependency_jdeps: paths(&dependency_jdeps),
                     mandatory_inputs: paths(&mandatory),
                     output_jdeps: jdeps.map(|f| f.path.clone().into()),
-                }),
+                })),
                 ..Default::default()
             },
             shell_pad: false,

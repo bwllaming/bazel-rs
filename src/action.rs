@@ -447,7 +447,7 @@ pub struct ActionExtra {
     #[serde(with = "crate::snapshot::codec::paths")]
     pub constant_metadata: Vec<PathBuf>,
     /// JavaBuilder's semantic intent, distinct from either staged attempt.
-    pub java_compile: Option<crate::java_compile::JavaCompileSpec>,
+    pub java_compile: Option<Box<crate::java_compile::JavaCompileSpec>>,
 }
 
 /// A runfiles mapping: each runfiles path with its input's execution path

@@ -223,6 +223,9 @@ pub struct RuleSurface {
     pub target_description: String,
     /// The rule defines an `alwayslink` attribute (ObjcConfiguration.targetShouldAlwayslink).
     pub has_alwayslink_attribute: bool,
+    /// JavaHelper distinguishes explicitly empty resource_strip_prefix from
+    /// an omitted/default value.
+    pub explicit_resource_strip_prefix: bool,
     /// A rule attribute uses a Starlark transition (`ctx.split_attr`).
     pub split_transition_attribute: bool,
     /// `rule(_skylark_testable=True)` (`ctx.created_actions()`).

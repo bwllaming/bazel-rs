@@ -1106,6 +1106,10 @@ fn rule_surface(
         declared_fragments: invocation.declaration.fragments.clone(),
         target_description: format!("{} rule {label}", invocation.declaration.rule_class),
         has_alwayslink_attribute: invocation.schema.contains_key("alwayslink"),
+        explicit_resource_strip_prefix: invocation
+            .declaration
+            .explicit
+            .contains("resource_strip_prefix"),
         split_transition_attribute: invocation.schema.values().any(|spec| {
             matches!(
                 spec.declaration.cfg,

@@ -355,7 +355,7 @@ if [ "$CASE" = second_fallback ]; then printf '\050\001' >> out/result.jdeps; fi
                     .push((dir.path().join(name).into(), name.into()));
             }
             action.extra.mnemonic = "Javac".into();
-            action.extra.java_compile = Some(JavaCompileSpec {
+            action.extra.java_compile = Some(Box::new(JavaCompileSpec {
                 mode: ClasspathMode::Bazel,
                 flags: vec!["--fake-compiler".into()],
                 classpath: vec!["a.jar".into(), "b.jar".into()],
@@ -363,7 +363,7 @@ if [ "$CASE" = second_fallback ]; then printf '\050\001' >> out/result.jdeps; fi
                 dependency_jdeps: vec!["input.jdeps".into()],
                 mandatory_inputs: vec!["compiler.sh".into(), "source".into()],
                 output_jdeps: Some("out/result.jdeps".into()),
-            });
+            }));
             Self { dir, action }
         }
         fn execute(&self) -> Result<ActionResult, String> {
@@ -506,5 +506,157 @@ if [ "$CASE" = second_fallback ]; then printf '\050\001' >> out/result.jdeps; fi
         let text = String::from_utf8_lossy(&combined);
         assert!(text.contains("terminal-stderr"), "{text}");
         assert!(!text.contains("discarded-attempt-"), "{text}");
+    }
+
+    #[test]
+    fn remote_only_dependency_jdeps_materialize_with_limits_and_lost_input_errors() {
+        const CHILD: &str = "BAZEL_RS_TEST_JAVA_REMOTE_DEPS_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let home = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "action::java::tests::remote_only_dependency_jdeps_materialize_with_limits_and_lost_input_errors", "--nocapture"])
+                .env(CHILD, "1").env("HOME", home.path()).env_remove("NETRC")
+                .env_remove("HTTP_PROXY").env_remove("HTTPS_PROXY").env_remove("ALL_PROXY")
+                .env_remove("http_proxy").env_remove("https_proxy").env_remove("all_proxy")
+                .env("NO_PROXY", "*").output().unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&out.stderr)
+                    .contains("spawn-cache lookup/upload is unsupported")
+            );
+            return;
+        }
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let options = crate::remote_cache::RemoteOptions {
+            cache: format!("http://{}", listener.local_addr().unwrap()),
+            upload_local_results: false,
+            retries: 0,
+            ..Default::default()
+        };
+        crate::remote_cache::install(crate::remote_cache::setup(&options, None).unwrap().unwrap());
+        let valid = vec![24, 1];
+        let invalid = vec![0];
+        let valid_hash = digest(&valid).hex();
+        let invalid_hash = digest(&invalid).hex();
+        std::thread::scope(|scope| {
+            let server = scope.spawn(|| {
+                let mut requests = 0;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while requests < 3 && std::time::Instant::now() < deadline {
+                    let (mut stream, _) = match listener.accept() {
+                        Ok(stream) => stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                            continue;
+                        }
+                        Err(error) => panic!("{error}"),
+                    };
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                        .unwrap();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut request = String::new();
+                    reader.read_line(&mut request).unwrap();
+                    assert!(
+                        request.starts_with("GET /cas/"),
+                        "unexpected Java spawn-cache request: {request}"
+                    );
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        assert_ne!(
+                            reader.read_line(&mut line).unwrap(),
+                            0,
+                            "incomplete HTTP request"
+                        );
+                        if line == "\r\n" {
+                            break;
+                        }
+                    }
+                    let (status, body) = if request.contains(&valid_hash) {
+                        ("200 OK", valid.as_slice())
+                    } else if request.contains(&invalid_hash) {
+                        ("200 OK", invalid.as_slice())
+                    } else {
+                        ("404 Not Found", &[][..])
+                    };
+                    write!(
+                        stream,
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .unwrap();
+                    stream.write_all(body).unwrap();
+                    requests += 1;
+                }
+                assert_eq!(requests, 3);
+            });
+            for (hash, size, expected) in [
+                (valid_hash.clone(), valid.len() as u64, None),
+                (
+                    invalid_hash.clone(),
+                    invalid.len() as u64,
+                    Some("invalid Java .jdeps"),
+                ),
+                (
+                    digest(b"lost").hex(),
+                    4,
+                    Some("Lost inputs no longer available remotely"),
+                ),
+                (
+                    digest(b"oversized").hex(),
+                    crate::java_deps::MAX_BYTES as u64 + 1,
+                    Some("exceeds 16 MiB"),
+                ),
+            ] {
+                let mut f = Fixture::new("success");
+                let entry = f.dir.path().join("cache/actions").join("c".repeat(64));
+                fs::create_dir_all(&entry).unwrap();
+                fs::write(entry.join("manifest.json"), "producer").unwrap();
+                let path = entry.join("outputs/input.jdeps");
+                crate::remote_outputs::register(
+                    path.clone(),
+                    "input.jdeps".into(),
+                    crate::remote_outputs::RemoteFile { hash, size },
+                );
+                f.action
+                    .inputs
+                    .iter_mut()
+                    .find(|(_, dest)| dest.as_path() == Path::new("input.jdeps"))
+                    .unwrap()
+                    .0 = path.clone().into();
+                let result = execute_with_remote(
+                    &f.dir.path().join("cache"),
+                    &f.action,
+                    crate::remote_cache::active(),
+                );
+                if let Some(expected) = expected {
+                    assert!(result.unwrap_err().contains(expected), "{expected}");
+                    assert!(f.trace().is_empty());
+                    if expected.starts_with("Lost inputs") {
+                        assert!(!entry.join("manifest.json").exists());
+                    }
+                } else {
+                    assert!(!result.unwrap().cache_hit);
+                    assert_eq!(fs::read(path).unwrap(), valid);
+                    assert!(
+                        execute_with_remote(
+                            &f.dir.path().join("cache"),
+                            &f.action,
+                            crate::remote_cache::active()
+                        )
+                        .unwrap()
+                        .cache_hit
+                    );
+                }
+            }
+            server.join().unwrap();
+        });
     }
 }

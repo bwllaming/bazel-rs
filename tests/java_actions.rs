@@ -497,3 +497,97 @@ kinds = rule(implementation=_impl, attrs={'deps':attr.label_list(allow_files=Tru
         ])
     );
 }
+
+#[test]
+fn javabuilder_worker_only_and_selected_remote_fail_before_tool_execution() {
+    let f = Fixture::new();
+    let target = format!("//{PACKAGE}:real_empty");
+    let worker = f.run("build", &["--strategy=Javac=worker", &target]);
+    assert!(!worker.status.success());
+    assert!(
+        errors(&worker).contains(
+            "Javac spawn cannot be executed with any of the available strategies: [worker]"
+        ),
+        "{}",
+        errors(&worker)
+    );
+    let remote = f.run(
+        "build",
+        &[
+            "--strategy=Javac=remote",
+            "--remote_executor=grpc://127.0.0.1:9",
+            "--remote_retries=0",
+            &target,
+        ],
+    );
+    assert!(!remote.status.success());
+    assert!(
+        errors(&remote)
+            .contains("JavaBuilder reduced/fallback remote execution is not implemented"),
+        "{}",
+        errors(&remote)
+    );
+    assert!(!errors(&worker).contains("unexpectedly-executed"));
+    assert!(!errors(&remote).contains("unexpectedly-executed"));
+}
+
+#[test]
+fn resource_jar_action_keeps_class_producer_and_explicit_prefix_semantics() {
+    let f = Fixture::new();
+    let out = f.ok(
+        "build",
+        &[
+            "--nobuild",
+            &format!("//{PACKAGE}:real_resources"),
+            &format!("//{PACKAGE}:resource_prefix_empty"),
+        ],
+    );
+    let dump = errors(&out);
+    assert!(dump.contains("--resources\u{1}third_party/bazel_rules/rules_java/src/main/resources/info.txt:info.txt"), "{dump}");
+    let empty = dump
+        .split("ACTION //third_party/bazel_rules/rules_java:resource_prefix_empty#0")
+        .nth(1)
+        .unwrap()
+        .split("ACTION ")
+        .next()
+        .unwrap();
+    assert!(
+        empty.contains(
+            "--resources\u{1}third_party/bazel_rules/rules_java/src/main/resources/info.txt\n"
+        ),
+        "{empty}"
+    );
+    assert!(dump.contains("generated //third_party/bazel_rules/rules_java:real_resources#1[0] -> bazel-out/k8-fastbuild/bin/third_party/bazel_rules/rules_java/libreal_resources-class.jar"), "{dump}");
+    let bad = f.run("cquery", &[&format!("//{PACKAGE}:resource_prefix_bad")]);
+    assert!(!bad.status.success());
+    assert!(
+        errors(&bad).contains("not under the specified prefix to strip"),
+        "{}",
+        errors(&bad)
+    );
+}
+
+#[test]
+fn javabuilder_annotation_processors_fail_explicitly_after_header_registration() {
+    let f = Fixture::new();
+    f.write(
+        &format!("{PACKAGE}/processor.bzl"),
+        r#"
+load("@rules_java//java/private:java_info.bzl", "JavaPluginInfo")
+def _impl(ctx):
+    return [JavaPluginInfo(runtime_deps=[],processor_class='Processor',generates_api=False)]
+processor = rule(implementation=_impl)
+"#,
+    );
+    let build = fs::read_to_string(f.path().join(format!("{PACKAGE}/BUILD.bazel"))).unwrap();
+    f.write(&format!("{PACKAGE}/BUILD.bazel"), &("load(':processor.bzl','processor')\n".to_owned()+&build+"\nprocessor(name='processor')\njava_library(name='with_processor',srcs=['Base.java'],plugins=[':processor'])\n"));
+    let out = f.run("cquery", &[&format!("//{PACKAGE}:with_processor")]);
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty());
+    assert!(
+        errors(&out)
+            .contains("create_compilation_action: annotation processors is not implemented"),
+        "{}",
+        errors(&out)
+    );
+}

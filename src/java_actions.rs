@@ -508,6 +508,7 @@ pub(crate) fn create_header<'v>(
 }
 
 mod compilation;
+mod resources;
 pub(crate) use compilation::create_compilation;
 
 #[cfg(test)]

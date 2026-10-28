@@ -149,10 +149,13 @@ Done since the last increment recorded under "History", one line each:
       single terminal cache transaction. Real dependent/empty libraries and
       sourcejar/OFF/fallback cases match genuine jar/jdeps/native-header/manifest
       bytes. Actual JavaInfo assembly remains in rules_java (docs/JAVA_ACTIONS.md).
-- [ ] Complete Java resource packaging and the remaining JavaBuilder capability
-      boundary tests before the targeted then bounded-full PR-clone cquery.
-      Annotation processors and other documented branches remain unsupported;
-      no whole-workspace TD claim, placeholders or changed select semantics.
+- [x] Java resource packaging uses the real SingleJar tool and a real -class.jar
+      producer; explicit-empty strip prefixes retain their distinct meaning.
+      Worker-only/selected-remote errors, remote-only jdeps materialization and
+      cache/snapshot/source/flag/excluded-jar invalidation are verified.
+- [ ] Targeted then bounded-full PR-clone cquery with the integrated JavaBuilder
+      candidate. Annotation processors and other documented branches remain
+      unsupported; no whole-workspace TD claim or changed select semantics.
 
 ### Commands that are rejected today
 

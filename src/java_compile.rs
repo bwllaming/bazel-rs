@@ -235,13 +235,13 @@ mod tests {
             output_jdeps: Some("result.jdeps".into()),
         };
         let mut action = Action::default();
-        action.extra.java_compile = Some(spec.clone());
+        action.extra.java_compile = Some(Box::new(spec.clone()));
         action.execution_cancel = Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
             true,
         )));
         let bytes = postcard::to_stdvec(&action).unwrap();
         let decoded: Action = postcard::from_bytes(&bytes).unwrap();
-        assert_eq!(decoded.extra.java_compile, Some(spec));
+        assert_eq!(decoded.extra.java_compile, Some(Box::new(spec)));
         assert!(decoded.execution_cancel.is_none());
     }
 }
