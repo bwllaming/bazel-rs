@@ -619,9 +619,22 @@ pub(crate) fn fingerprint(package: &Package) -> Fingerprint {
             .filter_map(|name| native.attrs.get(*name).map(|value| (*name, value)))
             .collect::<Vec<_>>()
         });
+        // The built-in attributes but the generator's location (it moves
+        // with every line inserted above the macro call; the digest has it).
         let custom_test_attributes = rule.custom.as_ref().map(|custom| {
+            let builtin = &custom.declaration.builtin;
             (
-                &custom.declaration.builtin,
+                (
+                    &builtin.kind,
+                    &builtin.target,
+                    &builtin.visibility,
+                    builtin.testonly,
+                    &builtin.deprecation,
+                    builtin
+                        .generator
+                        .as_ref()
+                        .map(|generator| (&generator.name, &generator.function)),
+                ),
                 custom.declaration.rule_class.as_str(),
             )
         });
