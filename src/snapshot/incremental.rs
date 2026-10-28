@@ -114,11 +114,16 @@ pub fn reexec() -> Reexec {
     REEXEC.get().copied().unwrap_or(Reexec::None)
 }
 
+/// Whether incremental analysis is switched on ([`SWITCH_VAR`]): full
+/// analyses record the dependency index.
+pub fn switched_on() -> bool {
+    !std::env::var_os(SWITCH_VAR)
+        .is_some_and(|value| value == "0" || value == "off" || value == "false")
+}
+
 /// Whether incremental analysis may run in this process.
 pub fn enabled() -> bool {
-    reexec() == Reexec::None
-        && !std::env::var_os(SWITCH_VAR)
-            .is_some_and(|value| value == "0" || value == "off" || value == "false")
+    reexec() == Reexec::None && switched_on()
 }
 
 /// `text` on one line (a diagnostics line: newlines escaped).

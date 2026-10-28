@@ -893,6 +893,29 @@ enum Reuse {
     Invalid,
 }
 
+/// The published trees whose reuse an analysis snapshot's validation
+/// confirmed in this process (incremental analysis carries the verdict
+/// across the miss, crate::snapshot::incremental): their warm check — the
+/// recorded inputs, the tree against its manifest — and their REPO record
+/// are skipped; the snapshot the run saves keeps the validated records.
+static CARRIED: std::sync::RwLock<Option<std::collections::HashSet<PathBuf>>> =
+    std::sync::RwLock::new(None);
+
+/// Carry the snapshot's verdict on `roots` (see [`CARRIED`]).
+pub fn carry_verified_trees(roots: impl IntoIterator<Item = PathBuf>) {
+    *CARRIED
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(roots.into_iter().collect());
+}
+
+fn carried(root: &Path) -> bool {
+    CARRIED
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|roots| roots.contains(root))
+}
+
 /// Follow the specification pointer at `pointer` (of `spec_key`) to a
 /// reusable publication of repository `stage_key` ([`try_reuse_in`]).
 fn reuse_through(
@@ -922,6 +945,13 @@ fn reuse_through(
     };
     if existing.identity != identity || existing.recorded.is_none() {
         return Ok(Reuse::Invalid);
+    }
+    if carried(&destination) {
+        settle_slot(cache, stage_key, &identity, existing.slot_class());
+        timing::PHASES
+            .reused
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return Ok(Reuse::Found(destination));
     }
     let recorded_ok = {
         let _m = timing::mark(&timing::PHASES.recorded_check);

@@ -1045,7 +1045,11 @@ fn run() -> Result<(), String> {
     engine.set_skip_teardown(true);
     // The dependency index of incremental analysis rides with the saved
     // snapshot of a build (crate::snapshot::incremental).
-    engine.set_incremental_tracking(command == "build" && snapshot.save.is_some());
+    engine.set_incremental_tracking(
+        command == "build"
+            && snapshot.save.is_some()
+            && bazel_rs::snapshot::incremental::switched_on(),
+    );
     let status_options = workspace_status.clone();
     engine.set_compact_repo_mapping(runfiles_options.compact_repo_mapping);
     // A LabelRunUnder: every test rule's late-bound run_under prerequisite
@@ -1997,6 +2001,17 @@ fn incremental_finish(
         index,
         changed: changed_observations,
     } = base;
+    // The lookup validated every repository tree the saved analysis
+    // reused, and no recorded input of a repository changed: their warm
+    // checks are not run again (docs/INCREMENTAL_ANALYSIS.md).
+    bazel_rs::repository_store::carry_verified_trees(
+        inputs
+            .recording
+            .repositories
+            .iter()
+            .filter(|tree| tree.kind == "direct")
+            .map(|tree| tree.root.clone()),
+    );
     let (request, merged, status) = if labels.is_empty() {
         // Nothing the request analyzes changed (a comment, an unused
         // target): the saved plan stands.

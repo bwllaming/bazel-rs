@@ -3263,7 +3263,7 @@ fn fuzz_incr_build(state: &FuzzState) -> String {
         },
     ));
     build.push_str(&format!(
-        "chain(name = 'b', srcs = ['b.txt'], flag = 'b'{})\n",
+        "chain(name = 'b', srcs = ['b.txt', '@genrepo//:sub/data.txt'], flag = 'b'{})\n",
         if state.on("incr-deprecated") {
             ", deprecation = 'old'"
         } else {
@@ -4138,6 +4138,14 @@ fn mutation_fuzz() {
     let mut log: Vec<String> = Vec::new();
     let mut counts = std::collections::BTreeMap::<&str, usize>::new();
     let mut previous: Option<usize> = None;
+    let only_commands: Vec<usize> = std::env::var("BAZEL_RS_SNAPSHOT_FUZZ_COMMANDS")
+        .map(|list| {
+            list.split(',')
+                .filter_map(|n| n.trim().parse().ok())
+                .filter(|n| *n < FUZZ_COMMANDS)
+                .collect()
+        })
+        .unwrap_or_default();
     for step in 0..steps {
         // Mostly a mutation, sometimes none; the command mostly the previous
         // one (hits need a repeated command), sometimes another.
@@ -4154,6 +4162,9 @@ fn mutation_fuzz() {
             // The tool's consumer (L2-W5h).
             _ if special == Special::TamperOn => TOOL_COMMAND,
             Some(command) if rng.percent(55) => command,
+            // `BAZEL_RS_SNAPSHOT_FUZZ_COMMANDS=12,13`: only these (a
+            // debugging aid, like the mutations').
+            _ if !only_commands.is_empty() => only_commands[rng.below(only_commands.len())],
             _ => rng.below(FUZZ_COMMANDS),
         };
         previous = Some(command);
@@ -4391,11 +4402,7 @@ fn mutation_fuzz() {
             );
             // A tampered tree under verify mode: a hit's shadow full
             // analysis repairs it, which must be logged as a taint.
-            if special == Special::Tamper
-                && fuzz_outcome(&pair) != "miss"
-                && fuzz_outcome(&pair) != "miss, saved"
-                && fuzz_outcome(&pair) != "miss (no EXPLAIN)"
-            {
+            if special == Special::Tamper && !fuzz_outcome(&pair).starts_with("miss") {
                 let lines = verify_log(&twin);
                 assert_eq!(lines.len(), verify_lines + 1, "{argv:?}: {lines:?}");
                 assert!(
@@ -4461,6 +4468,10 @@ fn mutation_fuzz() {
 fn incremental_analysis_splices_prunes_and_falls_back() {
     let twin = fixture();
     let mut state = FuzzState::default();
+    // The generated repository's store tree is an input of //incr:b (its
+    // reuse is carried across the miss, not checked again).
+    twin.write("repos.bzl", FUZZ_REPOS);
+    twin.write("BUILD.bazel", &fuzz_build(false, false));
     twin.write("incr/defs.bzl", INCR_RULES);
     twin.write("incr/srcs/a.txt", "a\n");
     twin.write("incr/b.txt", "b\n");
