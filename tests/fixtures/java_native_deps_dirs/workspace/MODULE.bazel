@@ -1,0 +1,5 @@
+module(name = "native_dirs_fixture")
+bazel_dep(name = "native_dep_a", version = "1.0", repo_name = "a")
+bazel_dep(name = "native_dep_b", version = "1.0", repo_name = "b")
+local_path_override(module_name = "native_dep_a", path = "dep_a")
+local_path_override(module_name = "native_dep_b", path = "dep_b")

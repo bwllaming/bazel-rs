@@ -1,0 +1,4 @@
+load(":defs.bzl", "bad", "consume", "report")
+report(name = "report", srcs = ["lib/liba.so", "lib/libb.so", "real/libresolved.so", "iface/libinterface.ifso", "interface_real/libinterface.so", "static/libstatic.a"])
+consume(name = "consume", dep = ":report")
+[bad(name = "bad_" + mode, mode = mode) for mode in ["missing", "extra", "named", "none", "list", "string", "file", "mutate_empty", "mutate_nonempty", "invalid_dynamic", "invalid_interface"]]

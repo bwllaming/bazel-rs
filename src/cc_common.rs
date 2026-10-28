@@ -85,7 +85,7 @@ const JAVA_INTERNAL_METHODS: [(&str, &str, Behavior); 11] = [
     (
         "collect_native_deps_dirs",
         "collect_native_deps_dirs",
-        Behavior::Unimplemented(Domain::Java),
+        Behavior::JavaNativeDepsDirs,
     ),
     (
         "create_compilation_action",

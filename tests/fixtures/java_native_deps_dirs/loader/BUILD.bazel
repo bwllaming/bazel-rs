@@ -1,0 +1,3 @@
+load(":loader.bzl", "library", "loader")
+library(name = "library", actual = "inputs/libactual.so")
+loader(name = "probe", library = ":library", jar = "inputs/probe.jar", java = "JDK_JAVA")

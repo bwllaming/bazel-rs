@@ -1,0 +1,102 @@
+{
+  "bazel_elf_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "bazel_source": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+  "errors": {
+    "extra": "collect_native_deps_dirs() accepts no more than 1 positional argument but got 2",
+    "file": "got a depset of 'File', expected a depset of 'struct'",
+    "list": "in call to collect_native_deps_dirs(), parameter 'libraries' got value of type 'list', want 'depset'",
+    "missing": "collect_native_deps_dirs() missing 1 required positional argument: libraries",
+    "mutate_empty": "trying to mutate a frozen list value",
+    "mutate_nonempty": "trying to mutate a frozen list value",
+    "named": "collect_native_deps_dirs() got named argument for positional-only parameter 'libraries'",
+    "none": "in call to collect_native_deps_dirs(), parameter 'libraries' got value of type 'NoneType', want 'depset'",
+    "string": "got a depset of 'string', expected a depset of 'struct'"
+  },
+  "invalid_selection": {
+    "genuine_exit": 37,
+    "message": "not a shared library :bazel_internal/test_rules/native_deps_dirs/static/libstatic.a"
+  },
+  "manifest": "../native_dep_a+/same:bazel_internal/test_rules/native_deps_dirs/links:bazel_internal/test_rules/native_deps_dirs/lib\nexternal a fixture\nresolved fixture\ngenerated\n",
+  "outputs": {
+    "alias_equal": true,
+    "artifact_kinds": [
+      "bazel_internal/test_rules/native_deps_dirs/trees",
+      "bazel_internal/test_rules/native_deps_dirs/unresolved"
+    ],
+    "default": [
+      "../native_dep_a+/same",
+      "bazel_internal/test_rules/native_deps_dirs/lib",
+      "bazel_internal/test_rules/native_deps_dirs/links",
+      ""
+    ],
+    "dynamic": [
+      "bazel_internal/test_rules/native_deps_dirs/lib"
+    ],
+    "empty": [],
+    "equal_dirnames": [
+      "bazel_internal/test_rules/native_deps_dirs/lib"
+    ],
+    "extensions": [
+      "bazel_internal/test_rules/native_deps_dirs/extensions/0",
+      "bazel_internal/test_rules/native_deps_dirs/extensions/1",
+      "bazel_internal/test_rules/native_deps_dirs/extensions/2",
+      "bazel_internal/test_rules/native_deps_dirs/extensions/3",
+      "bazel_internal/test_rules/native_deps_dirs/extensions/4",
+      "bazel_internal/test_rules/native_deps_dirs/extensions/5",
+      "bazel_internal/test_rules/native_deps_dirs/extensions/6",
+      "bazel_internal/test_rules/native_deps_dirs/extensions/7",
+      "bazel_internal/test_rules/native_deps_dirs/extensions/8"
+    ],
+    "external": [
+      "../native_dep_a+/same",
+      "../native_dep_b+/same"
+    ],
+    "generic_provider": [
+      "bazel_internal/test_rules/native_deps_dirs/lib"
+    ],
+    "interface_solib": [
+      "bazel_internal/test_rules/native_deps_dirs/interface_links"
+    ],
+    "interface_wins": [],
+    "loading": [],
+    "missing": [],
+    "objects": [],
+    "postorder": [
+      "../native_dep_a+/same",
+      "bazel_internal/test_rules/native_deps_dirs/lib",
+      "bazel_internal/test_rules/native_deps_dirs/links",
+      ""
+    ],
+    "preorder": [
+      "",
+      "../native_dep_a+/same",
+      "bazel_internal/test_rules/native_deps_dirs/lib",
+      "bazel_internal/test_rules/native_deps_dirs/links"
+    ],
+    "resolved_only": [],
+    "root_directory": [
+      ""
+    ],
+    "shared_interface_wins": [
+      "bazel_internal/test_rules/native_deps_dirs/interface_real"
+    ],
+    "solib": [
+      "bazel_internal/test_rules/native_deps_dirs/links"
+    ],
+    "static": [],
+    "static_and_dynamic": [
+      "bazel_internal/test_rules/native_deps_dirs/lib"
+    ],
+    "topological": [
+      "",
+      "bazel_internal/test_rules/native_deps_dirs/lib",
+      "bazel_internal/test_rules/native_deps_dirs/links",
+      "../native_dep_a+/same"
+    ],
+    "type": "list",
+    "wrong_dynamic_type": [],
+    "wrong_interface_type": [
+      "bazel_internal/test_rules/native_deps_dirs/lib"
+    ]
+  }
+}

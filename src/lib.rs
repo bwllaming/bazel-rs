@@ -81,6 +81,7 @@ mod java_actions;
 mod java_classpath;
 pub mod java_compile;
 mod java_deps;
+mod java_native_deps;
 mod java_plugins;
 mod json;
 pub mod label;

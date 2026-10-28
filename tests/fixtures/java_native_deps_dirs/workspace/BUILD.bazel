@@ -1,0 +1,4 @@
+load(":denied.bzl", "denied")
+platform(name = "host")
+exports_files(["root.so"])
+denied(name = "denied")

@@ -390,7 +390,7 @@ impl File {
     /// (Artifact.java:773-775), a derived artifact's path below its output
     /// root (Artifact.java:307-309), so external generated files keep the
     /// `external/<repo>/` prefix of the non-sibling layout.
-    fn root_relative_path(&self) -> String {
+    pub(crate) fn root_relative_path(&self) -> String {
         match self.short_path.strip_prefix("../") {
             Some(external) if self.is_source => external
                 .split_once('/')

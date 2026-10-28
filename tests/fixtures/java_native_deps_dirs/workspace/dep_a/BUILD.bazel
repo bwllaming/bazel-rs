@@ -1,0 +1,3 @@
+load(":defs.bzl", "generated")
+exports_files(["same/libexternal.so"])
+generated(name = "generated", visibility = ["//visibility:public"])

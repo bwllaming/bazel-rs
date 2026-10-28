@@ -1,0 +1,1 @@
+exports_files(["same/libexternal.so"])

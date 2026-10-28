@@ -1,0 +1,1 @@
+module(name = "native_dep_a", version = "1.0")

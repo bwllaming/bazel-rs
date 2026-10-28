@@ -86,6 +86,7 @@ pub(crate) enum Behavior {
     JavaCompilation,
     JavaTargetKind,
     JavaRuntimeClasspath,
+    JavaNativeDepsDirs,
     /// The Starlark-semantics getters of JavaStarlarkCommon
     /// (rules/java/JavaStarlarkCommon.java:383-402).
     JavaSemanticsFlag(JavaFlag),
@@ -1282,6 +1283,7 @@ fn call<'v>(
         Behavior::JavaCompilation => crate::java_actions::create_compilation(args, eval),
         Behavior::JavaTargetKind => crate::cc_common::java_target_kind(args, eval),
         Behavior::JavaRuntimeClasspath => crate::java_classpath::for_archive(args, eval),
+        Behavior::JavaNativeDepsDirs => crate::java_native_deps::collect(args, eval),
         Behavior::CheckPrivateApi => crate::cc_common::check_private_api_call(args, eval),
         Behavior::CreateHeaderInfo => crate::cc_common::create_header_info(args, eval),
         Behavior::CreateHeaderInfoWithDeps => {

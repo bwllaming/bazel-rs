@@ -168,6 +168,11 @@ Done since the last increment recorded under "History", one line each:
       rules_java deploy-archive action consumes it with byte-identical runnable
       output (docs/JAVA_RUNTIME_CLASSPATH.md). Targeted application analysis
       advances to the separate native-library-directory API.
+- [x] `java_common.collect_native_deps_dirs` selects genuine interface/dynamic
+      artifacts, validates shared-library types, and returns ordered distinct
+      runfiles directories as an immutable list. Real CcInfo/runfiles/JNI consumer
+      prints native:42 in both engines (docs/JAVA_NATIVE_DEPS_DIRS.md). Application
+      follow-up pending; unrelated Java-binary gaps remain separate.
 
 ### Commands that are rejected today
 
