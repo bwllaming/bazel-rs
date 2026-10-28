@@ -144,12 +144,15 @@ Done since the last increment recorded under "History", one line each:
 - [x] Real direct-Turbine header compilation actions, with pinned genuine/native
       jar/jdeps byte equality, source jars, header dependencies, bootclasspath,
       jar/executable tools and parameter files (docs/JAVA_ACTIONS.md).
-- [ ] Full JavaBuilder compilation: default BAZEL classpath reduction needs
-      execution-time jdeps consumption and conditional output/fallback state.
-      The tiny native java_library now reaches java_common_internal.bzl:279
-      and fails explicitly at create_compilation_action. Header-only increment;
-      application PR-clone configured-query follow-up deferred until both APIs
-      are implemented. No cquery-only placeholders or changed select semantics.
+- [x] Local JavaBuilder default-BAZEL compilation uses bounded binary jdeps,
+      ordered reduced staging and one unpublished fallback attempt within a
+      single terminal cache transaction. Real dependent/empty libraries and
+      sourcejar/OFF/fallback cases match genuine jar/jdeps/native-header/manifest
+      bytes. Actual JavaInfo assembly remains in rules_java (docs/JAVA_ACTIONS.md).
+- [ ] Complete Java resource packaging and the remaining JavaBuilder capability
+      boundary tests before the targeted then bounded-full PR-clone cquery.
+      Annotation processors and other documented branches remain unsupported;
+      no whole-workspace TD claim, placeholders or changed select semantics.
 
 ### Commands that are rejected today
 

@@ -92,6 +92,10 @@ pub struct CtxSurface {
     pub option_values: std::collections::BTreeMap<&'static str, crate::configuration::OptionValue>,
 }
 
+/// The currently supported Java classpath option. The fragment and native
+/// compilation factory share it so the factory cannot silently change modes.
+pub(crate) const JAVA_CLASSPATH_MODE: &str = "BAZEL";
+
 impl CtxSurface {
     /// The configured value of the table-driven option `name`
     /// (crate::configuration::VALUE_OPTIONS).
@@ -1341,7 +1345,7 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
                 "reduce_java_classpath",
                 Method {
                     private: true,
-                    value: V::Str("BAZEL"),
+                    value: V::Str(JAVA_CLASSPATH_MODE),
                 },
             ),
             ("run_android_lint", Field(V::Bool(false))),

@@ -83,6 +83,8 @@ pub(crate) enum Behavior {
     JavaCheckProviderInstances,
     JavaExpandOpts,
     JavaHeaderCompilation,
+    JavaCompilation,
+    JavaTargetKind,
     /// The Starlark-semantics getters of JavaStarlarkCommon
     /// (rules/java/JavaStarlarkCommon.java:383-402).
     JavaSemanticsFlag(JavaFlag),
@@ -1254,6 +1256,8 @@ fn call<'v>(
         }
         Behavior::JavaExpandOpts => crate::cc_common::java_expand_opts(args, eval),
         Behavior::JavaHeaderCompilation => crate::java_actions::create_header(args, eval),
+        Behavior::JavaCompilation => crate::java_actions::create_compilation(args, eval),
+        Behavior::JavaTargetKind => crate::cc_common::java_target_kind(args, eval),
         Behavior::CheckPrivateApi => crate::cc_common::check_private_api_call(args, eval),
         Behavior::CreateHeaderInfo => crate::cc_common::create_header_info(args, eval),
         Behavior::CreateHeaderInfoWithDeps => {

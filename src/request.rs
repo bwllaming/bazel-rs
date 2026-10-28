@@ -1174,6 +1174,25 @@ pub fn dump_action_graph(nodes: &[PlannedAction]) {
         if !action.arguments.is_empty() {
             eprintln!("  arguments {}", action.arguments.join("\u{1}"));
         }
+        if let Some(java) = &action.extra.java_compile {
+            eprintln!("  java-mode {:?}", java.mode);
+            eprintln!("  java-flags {}", java.flags.join("\u{1}"));
+            for (name, paths) in [
+                ("classpath", &java.classpath),
+                ("direct", &java.direct_jars),
+                ("jdeps", &java.dependency_jdeps),
+                ("mandatory", &java.mandatory_inputs),
+            ] {
+                eprintln!(
+                    "  java-{name} {}",
+                    paths
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join("\u{1}")
+                );
+            }
+        }
         if !action.command.is_empty() {
             eprintln!("  command {}", action.command);
         }

@@ -237,6 +237,9 @@ mod owned {
         pub providers: BTreeMap<String, OwnedFrozenValue>,
         #[allocative(skip)]
         pub kind: TargetKind,
+        /// Actual rule class, after alias/aspect unwrapping, for native
+        /// consumers such as JavaStarlarkCommon.getTargetKind.
+        pub rule_class: Option<String>,
         /// Display names of the declared providers a rule target returned,
         /// in return order (RuleConfiguredTarget.debugPrint).
         pub provider_keys: Vec<String>,
@@ -1976,6 +1979,10 @@ impl fmt::Display for TargetValue {
 }
 
 impl Target {
+    pub(crate) fn with_rule_class(mut self, rule_class: Option<&str>) -> Self {
+        self.rule_class = rule_class.map(str::to_owned);
+        self
+    }
     /// A rule configured target (directly or through an alias), which always
     /// has an OutputGroupInfo.
     fn is_rule(&self) -> bool {
@@ -2290,6 +2297,7 @@ pub(crate) fn target_of_kind(
         files,
         providers,
         kind,
+        rule_class: None,
         provider_keys,
         runfiles,
     }
@@ -2299,6 +2307,10 @@ pub(crate) fn target_of_kind(
 /// (a cheap handle: the `Arc<Target>` identity is unchanged).
 pub(crate) fn alloc_shared_target<'v>(heap: Heap<'v>, shared: &Arc<Target>) -> Value<'v> {
     heap.alloc(TargetValue(shared.clone()))
+}
+
+pub(crate) fn target_rule_class(value: Value<'_>) -> Option<&str> {
+    TargetValue::from_value(value)?.0.rule_class.as_deref()
 }
 
 /// StarlarkRuleContext.makeLabelMap (analysis/starlark/StarlarkRuleContext.java:1284-1313)

@@ -4,6 +4,7 @@ load("@rules_java//java/common/rules:java_runtime.bzl", "java_runtime")
 java_runtime(name = "runtime", srcs = glob(["jdk/**"]), java = "jdk/bin/java", version = 25)
 java_toolchain(
     name = "compiler",
+    visibility = ["//visibility:public"],
     java_runtime = ":runtime",
     header_compiler = "turbine.jar",
     header_compiler_direct = "turbine.jar",

@@ -11031,7 +11031,10 @@ impl Engine {
                         &providers,
                         &provider_keys,
                         &runfiles,
-                    )))
+                    ).with_rule_class(match &target {
+                        Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)) => Some(rule.rule_class_name()),
+                        _ => None,
+                    })))
                     .clone()
             }
         };
@@ -11178,18 +11181,21 @@ impl Engine {
                 collection.descriptors(),
             ))
             .or_insert_with(|| {
-                std::sync::Arc::new(analysis::dependency_target_data(
-                    &label.to_string(),
-                    &base.label,
-                    &base.files,
-                    base.is_source,
-                    base.is_rule,
-                    base.is_package_group,
-                    base.is_filegroup,
-                    &base.providers,
-                    &base.provider_keys,
-                    &base.runfiles,
-                ))
+                std::sync::Arc::new(
+                    analysis::dependency_target_data(
+                        &label.to_string(),
+                        &base.label,
+                        &base.files,
+                        base.is_source,
+                        base.is_rule,
+                        base.is_package_group,
+                        base.is_filegroup,
+                        &base.providers,
+                        &base.provider_keys,
+                        &base.runfiles,
+                    )
+                    .with_rule_class(base.rule_class.as_deref()),
+                )
             })
             .clone();
         base.identity = identity;

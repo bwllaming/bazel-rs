@@ -70,7 +70,7 @@ cc_functions!(
 /// java_common.bzl `_internal_exports()` struct (java_common.bzl:26-38):
 /// (field, Java method name, behaviour). The three semantics-flag getters and
 /// constructor-time check_provider_instances and the bounded direct header
-/// compiler are implemented. Full JavaBuilder compilation fails explicitly.
+/// compiler and bounded JavaBuilder compilation are implemented.
 const JAVA_INTERNAL_METHODS: [(&str, &str, Behavior); 11] = [
     (
         "check_java_toolchain_is_declared_on_rule",
@@ -90,7 +90,7 @@ const JAVA_INTERNAL_METHODS: [(&str, &str, Behavior); 11] = [
     (
         "create_compilation_action",
         "create_compilation_action",
-        Behavior::Unimplemented(Domain::Java),
+        Behavior::JavaCompilation,
     ),
     (
         "create_header_compilation_action",
@@ -122,14 +122,26 @@ const JAVA_INTERNAL_METHODS: [(&str, &str, Behavior); 11] = [
         "_incompatible_java_info_merge_runtime_module_flags",
         Behavior::JavaSemanticsFlag(JavaFlag::MergeRuntimeModuleFlags),
     ),
-    (
-        "target_kind",
-        "target_kind",
-        Behavior::Unimplemented(Domain::Java),
-    ),
+    ("target_kind", "target_kind", Behavior::JavaTargetKind),
 ];
 
 static NEXT_HEADER_INFO: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn java_target_kind<'v>(
+    args: &Arguments<'v, '_>,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> starlark::Result<Value<'v>> {
+    let bound = bind(
+        "target_kind",
+        &[param("target", true, false, true)],
+        args,
+        eval.heap(),
+    )?;
+    crate::subrule_fragments::private_api(eval)?;
+    Ok(eval
+        .heap()
+        .alloc(crate::starlark_types::target_rule_class(bound[0].expect("required")).unwrap_or("")))
+}
 
 /// JavaCommonApi.expandJavaOpts / JavaStarlarkCommon.expandJavaOpts (Bazel 9.3).
 /// This expands a configured string-list attribute, not a passed list or the
@@ -1182,10 +1194,14 @@ j = get_internal_java_common()
 (repr(j.google_legacy_api_enabled) == "<built-in method _google_legacy_api_enabled of java_common value>") or fail("repr")
 "#,
         );
-        fails(
+        pass(
             "@@rules_java+//java/private:native.bzl",
+            "(java_common.internal_DO_NOT_USE().target_kind(None) == '') or fail('non-target kind')",
+        );
+        fails(
+            "@@rules_java+//other:native.bzl",
             "java_common.internal_DO_NOT_USE().target_kind(None)",
-            "java_common.target_kind is not implemented in the native profile (analysis-time Java API)",
+            "cannot use private API",
         );
         fails(
             "@@rules_cc+//cc:x.bzl",

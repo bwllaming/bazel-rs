@@ -1,5 +1,12 @@
 # Native Java compilation actions
 
+`create_compilation_action` registers real JavaBuilder compilation for ordinary
+sources/source jars and empty libraries, without annotation processors. The
+default advertised classpath mode remains **BAZEL**: dependency producers finish,
+binary jdeps select an ordered reduced classpath, and the real compiler runs
+`BAZEL_REDUCED`. Only its decoded fallback bit requests one `BAZEL_FALLBACK`
+attempt with the full classpath. Ordinary rules_java constructs the JavaInfo.
+
 `java_common.internal_DO_NOT_USE().create_header_compilation_action` implements
 the **direct compiler, direct classpath, no API-generating processors** slice of
 Bazel 9.3. It registers an ordinary `Turbine` spawn. The selected real compiler
@@ -37,13 +44,15 @@ strict-deps flags or input jdeps to Turbine. It uses header direct dependencies
 when present; otherwise it uses the supplied ordered compilation classpath.
 It passes `--reduce_classpath_mode NONE` in both cases. This is the genuine
 header optimization, independent of JavaBuilder's BAZEL reduced-classpath mode.
-Strict-dependency enforcement by full Java compilation remains unsupported.
+Full JavaBuilder compilation enforces the strict-deps mode with the real tool.
 
 ## Explicit boundaries
 
-- `create_compilation_action` remains unimplemented. Consequently an ordinary
-  rules_java `java_library`, including the rules_jvm_external target from the
-  application receipt, is **not unblocked** by this increment.
+- JavaBuilder resource packaging, annotation processors/generated processor
+  jars, additional processor outputs, extra Args, per-package toolchain data,
+  JSpecify and Java coverage instrumentation fail explicitly in this slice.
+  Ordinary dependent/sourcejar/empty library builds are proven; the application
+  rules_jvm_external target has not yet been probed with this implementation.
 - Non-direct classpath headers, absent direct compiler, API-generating
   processors and tree/unresolved-symlink artifacts fail explicitly.
   Non-API-generating plugins are validated but do
@@ -54,11 +63,14 @@ Strict-dependency enforcement by full Java compilation remains unsupported.
   persisted format change is introduced.
 - Output-path stripping, changing in-memory jdeps mode and command-line limits
   remain outside the native option surface. No path stripping is performed.
-- Resources, resource jars, JSpecify, JavaBuilder workers, generated processor
-  outputs and source-jar packaging belong to full Java compilation, not this
-  header API. They are not claimed or silently handled by this implementation.
+- JavaBuilder executes locally (standalone/process-wrapper/sandboxed). Actual
+  toolchain worker directives are retained, but this action policy is worker-
+  incapable: default strategy selection can choose local; worker-only requests
+  fail. Selected remote execution fails before submission. Remote spawn-cache
+  lookup/upload is explicitly reported as skipped for JavaBuilder; native
+  terminal caching and remote-only prerequisite materialization still work.
 
-## Why JavaBuilder is a separate stage
+## JavaBuilder transaction
 
 `JavaCompileAction.java:257-281,306-398,408-510` computes a reduced classpath
 **after dependency producers finish**, using binary `.jdeps` contents. It stages
@@ -66,12 +78,31 @@ only selected jars, runs `BAZEL_REDUCED`, and initially requires only the jdeps
 output. If the proto requests fallback it deletes partial outputs, resets
 metadata/stdout/stderr, and executes again with `BAZEL_FALLBACK` and all outputs
 required. Cache hits, workers, remote execution, path mapping and persistent
-plans must preserve that protocol. The current generic action contract has
-tree/Args deferral but no jdeps consumer or conditional output/fallback state.
+plans preserve that protocol using an optional typed JavaCompileSpec inside
+ActionExtra. One logical key/lock covers the full semantic intent and all
+potential input content identities; only the attempt's mandatory inputs and
+selected jars are staged. Excluded-jar edits invalidate fallback-produced cache
+entries. Both attempts remain unpublished; checked cleanup discards partial
+outputs and buffered streams. All declared outputs are required before terminal
+publication. Nonzero exit, parser/setup/cleanup failure and cancellation never
+request fallback. Cancellation is checked between attempts, without claiming
+new running-process interruption parity.
 
-Replacing this with a full classpath or `JAVABUILDER` reduction would change the
-advertised default `BAZEL` semantics. This stage keeps the full-compilation
-error rather than registering an incomplete action or a cquery-only success.
+The proto2 decoder validates required dependency/location fields, skips unknown
+fields/groups, preserves repeated/default scalar behavior and includes every
+dependency kind. Limits: 16 MiB per proto, 64 MiB input metadata per compilation,
+100,000 dependency records, 1,000,000 fields, nesting 100. Paths are selection
+strings, never filesystem authority. Invalid UTF-8 dependency paths fail closed
+(genuine Java replaces malformed bytes). No decoded metadata is memoized or
+persisted. Binary snapshot format 6 stores intent only, with raw-path codecs.
+
+Strict OFF or an absent output jdeps selects effective OFF exactly as the
+genuine builder does. The CLI's other unmodelled classpath modes remain errors;
+the fragment and factory share the advertised default. Source-jar packaging
+continues through rules_java's own SingleJar action. Its optional manifest
+fields stringify None as `None`, as shown by the saved genuine argv. The
+`target_kind` bridge consumes actual rule-class metadata through aliases and
+aspects; no JavaInfo or rule-class guesses are introduced.
 
 ## Evidence
 

@@ -123,6 +123,7 @@ impl Fixture {
         // Restrict public exports to the actual java_import implementation
         // used by @bazel_tools' otherwise unrelated TestRunner declaration.
         f.write("rules_java/java/defs.bzl", "load('//java/bazel/rules:bazel_java_import.bzl', _import='java_import')\njava_import=_import\n");
+        f.write("rules_java/toolchains/BUILD", "alias(name='current_java_toolchain',actual='@@//:compiler',visibility=['//visibility:public'])\n");
         let cc = fs::read_to_string(f.path().join("rules_cc/cc/extensions.bzl")).unwrap();
         let symbols = cc
             .split_once("\"symbols.bzl\",")
@@ -405,4 +406,94 @@ fn turbine_executable_tool_omits_runtime_and_toolchain_jvm_flags_and_spills_para
     let out = f.ok("build", &["--nobuild", &format!("//{PACKAGE}:base")]);
     let dump = errors(&out);
     assert!(dump.contains("base-hjar.jar-0.params"), "{dump}");
+}
+
+#[test]
+fn javabuilder_registers_real_library_default_bazel_and_empty_off_with_full_output_schema() {
+    let f = Fixture::new();
+    let out = f.ok(
+        "build",
+        &[
+            "--nobuild",
+            &format!("//{PACKAGE}:real_middle"),
+            &format!("//{PACKAGE}:real_empty"),
+        ],
+    );
+    let dump = errors(&out);
+    assert!(dump.contains("java-mode Bazel"), "{dump}");
+    assert!(dump.contains("java-mode Off"), "{dump}");
+    assert!(dump.contains("--native_header_output\u{1}bazel-out/k8-fastbuild/bin/third_party/bazel_rules/rules_java/libreal_middle-native-header.jar"));
+    assert!(dump.contains("--output_manifest_proto\u{1}bazel-out/k8-fastbuild/bin/third_party/bazel_rules/rules_java/libreal_middle.jar_manifest_proto"));
+    assert!(dump.contains("--strict_java_deps\u{1}ERROR"));
+    assert!(dump.contains("java-jdeps bazel-out/k8-fastbuild/bin/third_party/bazel_rules/rules_java/libreal_base-hjar.jdeps"));
+    let query = format!("deps(//{PACKAGE}:real_middle)");
+    f.ok("cquery", &[&query]);
+    let warm = f.ok("cquery", &[&query]);
+    assert!(errors(&warm).contains("hit"));
+    // Neither generated dependency metadata nor the fail-if-executed compiler
+    // is read during cquery. A status command is also execution-only.
+    let marker = f.path().join("status-must-not-run");
+    let status = format!("--workspace_status_command=touch {}", marker.display());
+    f.ok("cquery", &[&status, &query]);
+    assert!(!marker.exists());
+    f.ok(
+        "build",
+        &[
+            "--nobuild",
+            &format!("//{PACKAGE}:full_off"),
+            &format!("//{PACKAGE}:full_sourcejar"),
+            &format!("//{PACKAGE}:fb_warn"),
+        ],
+    );
+}
+
+#[test]
+fn java_target_kind_uses_actual_rule_metadata_through_aliases_and_files() {
+    let f = Fixture::new();
+    f.write(
+        &format!("{PACKAGE}/kinds.bzl"),
+        r#"
+load("@rules_java//java/private:java_common_internal.bzl", "target_kind")
+def _impl(ctx):
+    result = [target_kind(dep) for dep in ctx.attr.deps]
+    result += [target_kind(None), target_kind(42), target_kind(struct())]
+    out = ctx.actions.declare_file(ctx.label.name + '.json')
+    ctx.actions.write(out, json.encode(result))
+    return [DefaultInfo(files=depset([out]))]
+kinds = rule(implementation=_impl, attrs={'deps':attr.label_list(allow_files=True)})
+"#,
+    );
+    let build = fs::read_to_string(f.path().join(format!("{PACKAGE}/BUILD.bazel"))).unwrap();
+    f.write(&format!("{PACKAGE}/BUILD.bazel"), &("load(':kinds.bzl', 'kinds')\n".to_owned() + &build + "\nalias(name='alias_base',actual=':real_base')\nfilegroup(name='files',srcs=['Base.java'])\ngenrule(name='generate',outs=['generated.txt'],cmd='touch $@')\nkinds(name='kind_probe',deps=[':real_base',':alias_base','Base.java',':generated.txt',':files',':generate'])\n"));
+    let out = f.ok(
+        "build",
+        &[&format!("//{PACKAGE}:kind_probe"), "--show_result=10"],
+    );
+    // The regular result presentation contains the output path on stderr.
+    let cache = f.path().join("cache/actions");
+    let file = fs::read_dir(cache)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| {
+            entry.path().join(format!(
+                "outputs/bazel-out/k8-fastbuild/bin/{PACKAGE}/kind_probe.json"
+            ))
+        })
+        .find(|path| path.exists())
+        .unwrap_or_else(|| panic!("{}", errors(&out)));
+    let result: serde_json::Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+    assert_eq!(
+        result,
+        serde_json::json!([
+            "java_library",
+            "java_library",
+            "",
+            "",
+            "filegroup",
+            "genrule",
+            "",
+            "",
+            ""
+        ])
+    );
 }

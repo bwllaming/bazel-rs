@@ -1,8 +1,8 @@
-//! Source-based Java header compilation (Bazel 9.3 JavaHeaderCompileAction).
+//! Native Java action factories (Bazel 9.3 JavaStarlarkCommon).
 //!
 //! The direct-classpath branch is an ordinary spawn: Turbine produces the
-//! header jars and dependency proto. JavaBuilder's execution-time reduced
-//! classpath/fallback protocol is a separate, deliberately unsupported branch.
+//! header jars and dependency proto. JavaBuilder's factory constructs the
+//! typed execution-time reduced-classpath/fallback policy in `java_compile`.
 use std::collections::{BTreeMap, HashSet};
 
 use starlark::eval::{Arguments, Evaluator};
@@ -17,8 +17,12 @@ const HEADER: &str = "create_header_compilation_action";
 const TOOLCHAIN_TYPE: &str = "@@bazel_tools//tools/jdk:toolchain_type";
 
 fn unsupported(branch: &str) -> starlark::Error {
+    unsupported_for(HEADER, branch)
+}
+
+fn unsupported_for(function: &str, branch: &str) -> starlark::Error {
     failure(format!(
-        "java_common.{HEADER}: {branch} is not implemented in the native profile (docs/JAVA_ACTIONS.md)"
+        "java_common.{function}: {branch} is not implemented in the native profile (docs/JAVA_ACTIONS.md)"
     ))
 }
 
@@ -43,29 +47,43 @@ fn provider(value: Value<'_>, path: &str, name: &str) -> starlark::Result<()> {
 }
 
 fn files(value: Value<'_>, name: &str, depset: bool) -> starlark::Result<Vec<File>> {
+    files_for(HEADER, value, name, depset)
+}
+
+fn files_for(
+    function: &str,
+    value: Value<'_>,
+    name: &str,
+    depset: bool,
+) -> starlark::Result<Vec<File>> {
     if depset {
         if value.downcast_ref::<Depset>().is_none() {
-            return Err(type_error(HEADER, name, value, "depset"));
+            return Err(type_error(function, name, value, "depset"));
         }
     } else {
-        sequence(HEADER, name, value)?;
+        sequence(function, name, value)?;
     }
     let files = file_list(value).map_err(starlark::Error::new_other)?;
     if files
         .iter()
         .any(|file| file.is_directory || file.is_symlink)
     {
-        return Err(unsupported(&format!(
-            "tree or unresolved symlink artifacts in {name}"
-        )));
+        return Err(unsupported_for(
+            function,
+            &format!("tree or unresolved symlink artifacts in {name}"),
+        ));
     }
     Ok(files)
 }
 
 fn strings(value: Value<'_>, name: &str) -> starlark::Result<Vec<String>> {
+    strings_for(HEADER, value, name)
+}
+
+fn strings_for(function: &str, value: Value<'_>, name: &str) -> starlark::Result<Vec<String>> {
     let set = value
         .downcast_ref::<Depset>()
-        .ok_or_else(|| type_error(HEADER, name, value, "depset"))?;
+        .ok_or_else(|| type_error(function, name, value, "depset"))?;
     set.flatten()
         .into_iter()
         .map(|item| match item {
@@ -76,11 +94,16 @@ fn strings(value: Value<'_>, name: &str) -> starlark::Result<Vec<String>> {
 }
 
 fn file(value: Value<'_>, name: &str) -> starlark::Result<File> {
+    file_for(HEADER, value, name)
+}
+
+fn file_for(function: &str, value: Value<'_>, name: &str) -> starlark::Result<File> {
     let file = unpack_file(value).map_err(starlark::Error::new_other)?;
     if file.is_directory || file.is_symlink {
-        return Err(unsupported(&format!(
-            "tree or unresolved symlink artifact in {name}"
-        )));
+        return Err(unsupported_for(
+            function,
+            &format!("tree or unresolved symlink artifact in {name}"),
+        ));
     }
     Ok(file)
 }
@@ -160,16 +183,31 @@ fn launcher<'v>(
     toolchain: Value<'v>,
     heap: Heap<'v>,
 ) -> starlark::Result<(Vec<String>, Vec<File>)> {
+    launcher_with_flags(HEADER, tool, toolchain, &[], heap)
+}
+
+fn launcher_with_flags<'v>(
+    function: &str,
+    tool: Value<'v>,
+    toolchain: Value<'v>,
+    extra_options: &[String],
+    heap: Heap<'v>,
+) -> starlark::Result<(Vec<String>, Vec<File>)> {
     let runner = field(tool, "tool", heap)?;
     let runner = runner
         .downcast_ref::<crate::runfiles::FilesToRun>()
-        .ok_or_else(|| type_error(HEADER, "tool", runner, "FilesToRunProvider"))?;
+        .ok_or_else(|| type_error(function, "tool", runner, "FilesToRunProvider"))?;
     let executable = runner
         .executable()
         .ok_or_else(|| failure("Java compiler tool has no executable".into()))?;
-    let mut inputs = files(field(tool, "data", heap)?, "data", true)?;
+    let mut inputs = files_for(function, field(tool, "data", heap)?, "data", true)?;
     inputs.push(executable.clone());
-    let options = strings(field(tool, "jvm_opts", heap)?, "jvm_opts")?;
+    let mut options = strings_for(function, field(tool, "jvm_opts", heap)?, "jvm_opts")?;
+    for option in extra_options {
+        if !options.contains(option) {
+            options.push(option.clone());
+        }
+    }
     let mut command;
     if executable.path.ends_with(".jar") {
         let runtime = field(toolchain, "java_runtime", heap)?;
@@ -178,7 +216,8 @@ fn launcher<'v>(
             "java/common/rules:java_runtime.bzl",
             "JavaRuntimeInfo",
         )?;
-        inputs.extend(files(
+        inputs.extend(files_for(
+            function,
             field(runtime, "files", heap)?,
             "JavaRuntimeInfo.files",
             true,
@@ -186,9 +225,13 @@ fn launcher<'v>(
         let java = field(runtime, "java_executable_exec_path", heap)?;
         let java = java
             .unpack_str()
-            .ok_or_else(|| type_error(HEADER, "java_executable_exec_path", java, "string"))?;
+            .ok_or_else(|| type_error(function, "java_executable_exec_path", java, "string"))?;
         command = vec![java.to_owned()];
-        command.extend(strings(field(toolchain, "jvm_opt", heap)?, "jvm_opt")?);
+        command.extend(strings_for(
+            function,
+            field(toolchain, "jvm_opt", heap)?,
+            "jvm_opt",
+        )?);
         command.extend(options);
         command.push("-jar".to_owned());
         command.push(executable.path.clone());
@@ -463,6 +506,9 @@ pub(crate) fn create_header<'v>(
         .map_err(starlark::Error::new_other)?;
     Ok(Value::new_none())
 }
+
+mod compilation;
+pub(crate) use compilation::create_compilation;
 
 #[cfg(test)]
 mod tests {

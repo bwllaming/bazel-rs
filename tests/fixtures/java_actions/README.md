@@ -69,3 +69,26 @@ reference material for the next stage, not native full-compilation proof.
 `logs/native-full-boundary.*` shows the tiny native java_library passing header
 registration and failing at `java_common_internal.bzl:279` on the still-explicit
 `create_compilation_action` error. No application clone cquery was attempted.
+
+## JavaBuilder follow-up
+
+New evidence lives under the capture root's `javabuilder/` subdirectory; the
+header evidence above is preserved. The `compile_fixture` calls unchanged
+rules_java `compile` and returns its actual JavaInfo. `fb_direct` references
+`Transitive` only in a method body, so its header jdeps omits that jar. The
+consumer does the same: WARN forces real reduced failure followed by successful
+full-classpath fallback; ERROR terminates on strict-deps diagnostics.
+
+`genuine-fallback.exec.json` and `native-fallback.exec.json` each contain two
+Javac records for `fb_warn`, with different reduced/full classpath input sets
+and params-file digests. Corresponding argv, environment, input paths/digests,
+output schemas and output digests match. All 12 declared outputs of fallback,
+sourcejar and strict-OFF targets are byte-identical. The existing native
+execution-log `isTool` annotation remains false for Java tool files; this is
+reported separately rather than hidden by an input-equality claim.
+
+`real-library-byte-comparison.json` checks seven JavaBuilder outputs from ordinary
+dependent and empty java_library targets against the saved genuine outputs,
+without repeating that genuine capture. Source-jar action registration also
+exercised the literal None Args conversion and dependency classification via
+the real `target_kind` bridge.

@@ -321,11 +321,14 @@ fn string_value(value: Value<'_>, eval: &Evaluator<'_, '_, '_>) -> anyhow::Resul
         // Label.getDisplayForm with the main repository mapping
         // (StarlarkCustomCommandLine.java:967-978): `@dep//pkg:x`, not `@@dep+//pkg:x`.
         Ok(label)
-    } else if matches!(value.get_type(), "int" | "bool") {
+    } else if value.is_none() || matches!(value.get_type(), "int" | "bool") {
+        // CommandLineItem.expandToCommandLine uses Starlark.str for None.
+        // rules_java's source-jar action passes optional manifest fields this
+        // way (the genuine singlejar argv contains the literal "None").
         Ok(value.to_str())
     } else {
         bail!(
-            "Args value must be a string, File, Label, int, or bool; got {}",
+            "Args value must be a string, File, Label, int, bool, or None; got {}",
             value.get_type()
         )
     }
@@ -898,8 +901,8 @@ serialized(a) == "--k=v w\n--many=x y\npos\np=q\n" and expanded([a]) == ["--k=v 
     fn add_converts_supported_scalars_formats_and_chains() {
         pass(
             r#"
-a.add("--flag").add("--file", file, format="pre:%s:%%:post").add(Label("//pkg:rule")).add(42).add(True).add("雪 $HOME", format=None)
-expanded(["before", a, "after"]) == ["before", "--flag", "--file", "pre:pkg/file with $ spaces:%:post", "//pkg:rule", "42", "True", "雪 $HOME", "after"]
+a.add("--flag").add("--file", file, format="pre:%s:%%:post").add(Label("//pkg:rule")).add(42).add(True).add("雪 $HOME", format=None).add("--none", None)
+expanded(["before", a, "after"]) == ["before", "--flag", "--file", "pre:pkg/file with $ spaces:%:post", "//pkg:rule", "42", "True", "雪 $HOME", "--none", "None", "after"]
 "#,
         );
     }
@@ -988,7 +991,7 @@ expanded([a]) == ["1", "2", "\"x\""]
 
     #[test]
     fn invalid_values_formats_callbacks_and_param_files_fail_explicitly() {
-        for value in ["[]", "()", "{}", "depset([])", "None", "1.5"] {
+        for value in ["[]", "()", "{}", "depset([])", "1.5"] {
             fail(&format!("a.add({value})"), "Args value must be");
         }
         for format in ["plain", "%d", "%s%s", "%", "%%"] {
