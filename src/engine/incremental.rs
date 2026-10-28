@@ -82,6 +82,10 @@ fn shared() -> bool {
     SHARED_DEPTH.with(Cell::get) > 0
 }
 
+fn shared_depth() -> u32 {
+    SHARED_DEPTH.with(Cell::get)
+}
+
 fn pattern() -> bool {
     PATTERN_DEPTH.with(Cell::get) > 0
 }
@@ -93,8 +97,12 @@ type KeyIdentity = (Label, Option<ConfigId>, bool);
 pub(super) struct Tracker {
     keys: Vec<KeyIdentity>,
     key_ids: HashMap<KeyIdentity, u32>,
-    /// The configured targets being analyzed or planned, innermost last.
-    frames: Vec<u32>,
+    /// The configured targets being analyzed or planned, innermost last,
+    /// with the shared-computation depth their frame began at: a lookup
+    /// in a frame is the frame's own unless a shared computation began
+    /// inside it (a key analyzed by a shared computation, or a pending
+    /// target planned while one runs, owns its lookups).
+    frames: Vec<(u32, u32)>,
     edges: Vec<(u32, u32)>,
     edge_set: HashSet<(u32, u32)>,
     accesses: HashSet<(u32, u32)>,
@@ -169,16 +177,19 @@ impl Tracker {
     fn reach(&mut self, identity: KeyIdentity) -> u32 {
         let package = identity.0.package_id();
         let id = self.key(identity);
-        if shared() {
+        let inner = self.frames.last().copied();
+        if let Some((parent, depth)) = inner
+            && depth == shared_depth()
+        {
+            if parent != id {
+                self.edge(parent, id);
+            }
+        } else if shared() {
             self.shared_keys.insert(id);
             let package = self.package(&package);
             let label = &self.keys[id as usize].0;
             let why = format!("{} reached by {}", label, SHARED_NAME.with(Cell::get));
             self.make_global(package, || why);
-        } else if let Some(parent) = self.frames.last().copied() {
-            if parent != id {
-                self.edge(parent, id);
-            }
         } else if let Some(position) = self.root_analysis
             && !self.root_reached
         {
@@ -196,14 +207,17 @@ impl Tracker {
     fn access(&mut self, label: &Label) {
         let package = label.package_id();
         let id = self.package(&package);
+        let inner = self.frames.last().copied();
         if pattern() {
             self.packages[id as usize].pattern = true;
+        } else if let Some((frame, depth)) = inner
+            && depth == shared_depth()
+        {
+            self.accesses.insert((frame, id));
         } else if shared() {
             self.make_global(id, || {
                 format!("{label} looked up by {}", SHARED_NAME.with(Cell::get))
             });
-        } else if let Some(frame) = self.frames.last().copied() {
-            self.accesses.insert((frame, id));
         } else if !self.requested.contains(label) {
             self.make_global(id, || format!("{label} looked up outside every target"));
         }
@@ -243,7 +257,7 @@ impl Engine {
     /// The analysis or planning of a configured target begins (its frame).
     pub(super) fn track_enter(&mut self, id: Option<u32>) {
         if let (Some(tracker), Some(id)) = (self.incremental.as_mut(), id) {
-            tracker.frames.push(id);
+            tracker.frames.push((id, shared_depth()));
         }
     }
 
@@ -268,7 +282,7 @@ impl Engine {
                 Some(key.config),
                 key.apply_rule_transition,
             ));
-            tracker.frames.push(id);
+            tracker.frames.push((id, shared_depth()));
         }
     }
 
@@ -283,7 +297,7 @@ impl Engine {
     /// target whose frame is innermost.
     pub(super) fn note_analysis_print(&mut self, line: &str) {
         if let Some(tracker) = self.incremental.as_mut()
-            && let Some(frame) = tracker.frames.last().copied()
+            && let Some((frame, _)) = tracker.frames.last().copied()
         {
             tracker.printed_keys.insert(frame);
         }
@@ -293,7 +307,7 @@ impl Engine {
     /// The innermost key's planning uses the aspect application `key`.
     pub(super) fn track_aspect_application(&mut self, key: &crate::aspects::AspectApplicationKey) {
         if let Some(tracker) = self.incremental.as_mut() {
-            let frame = tracker.frames.last().copied().unwrap_or(u32::MAX);
+            let frame = tracker.frames.last().map_or(u32::MAX, |(frame, _)| *frame);
             let base = &key.base;
             let identity = format!(
                 "{}|{}|{}|{}|{}",
