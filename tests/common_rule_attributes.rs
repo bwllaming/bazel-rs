@@ -524,9 +524,17 @@ fn unmodeled_builtin_values_fail_analysis_explicitly() {
             "tags=[]\ntestonly=False\ndeprecation=None\nfeatures=[]\nvisibility=[]\nexec_properties={}\nexpect_failure=\"\"\ndependency_lists=[[], [], [], [], [], [<target //:v>], [], [], []]\nfiles=[[], [], []]\nabsent=[False, False, False, False, False, False]\ndeps=[]\n"
         ]
     );
+    // Root-policy support closes this historical native diagnostic divergence:
+    // retain both the genuine explicit-request heading and the constraint cause.
+    let incompatible = builtin("//:incompatible");
     rejected(
-        &builtin("//:incompatible"),
-        "//:incompatible is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraint //:w;",
+        &incompatible,
+        "Target //:incompatible is incompatible and cannot be built, but was explicitly requested.",
+    );
+    assert!(errors(&incompatible).contains("Dependency chain:"));
+    assert!(
+        errors(&incompatible)
+            .contains("target platform (@@platforms//host:host) didn't satisfy constraint //:w")
     );
     // Package metadata (explicit, the applicable_licenses alias, or the
     // package default) is analyzed in the no-config configuration (N28c,
