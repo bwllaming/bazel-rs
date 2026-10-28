@@ -165,7 +165,7 @@ class PackagingTests(unittest.TestCase):
                              ("total_size", 999), ("module_sha256", "0" * 64)):
             with self.subTest(field=field):
                 expected = dict(trust, **{field: value})
-                def miniature(blob):
+                def miniature(blob, **_):
                     return packaging._build_bundle_original(blob, expected=expected)
                 with mock.patch.object(packaging, "_build_bundle_original",
                                        packaging._build_bundle, create=True), \
@@ -187,6 +187,25 @@ class PackagingTests(unittest.TestCase):
                 packaging.main(["--expected-sha256", "0" * 64])
         self.assertEqual(caught.exception.code, 2)
         self.assertFalse(output.exists())
+
+    def test_platform_pins_and_per_platform_defaults(self):
+        self.assertEqual(sorted(packaging.PLATFORMS), ["linux-arm64", "linux-x86_64"])
+        for platform, pinned in packaging.PLATFORMS.items():
+            self.assertEqual(pinned["platform"], platform)
+            self.assertTrue(pinned["distribution_url"].endswith(f"/bazel-9.3.0-{platform}"))
+            manifest = json.loads((packaging.ROOT / "resources/bazel_tools" / platform
+                                   / packaging.MANIFEST).read_text())
+            for key in ("bazel_version", "platform", "source_revision", "distribution_url",
+                        "distribution_sha256", "file_count", "total_size"):
+                self.assertEqual(manifest[key], pinned[key], (platform, key))
+        self.assertEqual(packaging.PLATFORMS["linux-arm64"]["module_sha256"],
+                         packaging.PINNED["module_sha256"])
+        with mock.patch.object(Path, "read_bytes", autospec=True,
+                               side_effect=OSError("absent")) as read, \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(packaging.main(["--platform", "linux-arm64", "--check"]), 1)
+        self.assertEqual(read.call_args_list[0].args[0],
+                         packaging.ROOT / ".direnv/reference/bazel-9.3.0-linux-arm64")
 
     def test_stage_write_failure_preserves_previous_outputs(self):
         root = self.temporary()

@@ -1,15 +1,26 @@
 # Official Bazel tools resource bundle
 
-This directory retains the complete, unmodified `embedded_tools/` file tree from
-the official **Bazel 9.3.0, Linux x86-64** distribution. It is a development-time
-static resource import, not a runtime fallback to the Java Bazel engine.
+This directory retains the complete, unmodified `embedded_tools/` file trees from
+the official **Bazel 9.3.0** distributions of each supported host platform, one
+subdirectory per platform (Bazel's release names): `linux-x86_64/` and
+`linux-arm64/`, each holding `embedded_tools.tar.gz`, `manifest.json` and the
+`MODULE.bazel` sidecar. A bazel-rs binary compiles in only the bundle of its
+compile target (`src/builtin_tools.rs`: x86_64 → `linux-x86_64`, aarch64 →
+`linux-arm64`). They are development-time static resource imports, not a
+runtime fallback to the Java Bazel engine. `LICENSE` and this document are
+shared.
 
 ## Pinned authorities
 
-- Distribution: <https://releases.bazel.build/9.3.0/release/bazel-9.3.0-linux-x86_64>
-- Distribution SHA-256:
-  `d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8`
-- Embedded `build-label.txt`: exactly `9.3.0`.
+- Distributions and SHA-256 (each also equal to the official `.sha256` file of
+  the GitHub release `bazelbuild/bazel` 9.3.0):
+  - linux-x86_64: <https://releases.bazel.build/9.3.0/release/bazel-9.3.0-linux-x86_64>,
+    `d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8`
+  - linux-arm64: <https://releases.bazel.build/9.3.0/release/bazel-9.3.0-linux-arm64>
+    (= <https://github.com/bazelbuild/bazel/releases/download/9.3.0/bazel-9.3.0-linux-arm64>),
+    `615cc2509819047e4930fe6643c5f01ebd705ccadf75e8f0b85f9b83cc6a6ca0`
+    (checked 2026-10-28 against both `bazel-9.3.0-linux-arm64.sha256` files)
+- Embedded `build-label.txt`: exactly `9.3.0` in both.
 - Upstream source revision:
   `e89755babf3e941bc1e9d8120b1cd48854ab9dfa`
 - `MODULE.bazel` is byte-identical to the embedded file and upstream
@@ -23,14 +34,18 @@ static resource import, not a runtime fallback to the Java Bazel engine.
 
 ## Complete installed tree
 
-`embedded_tools.tar.gz` contains exactly **421 regular files**, totaling
-**73,326,972 uncompressed content bytes**. Directories are implicit. Only the
+linux-x86_64: `embedded_tools.tar.gz` contains exactly **421 regular files**,
+totaling **73,326,972 uncompressed content bytes**. linux-arm64: **420 regular
+files**, **71,909,364 bytes** (the arm64 JDK has no `lib/libsimdsort.so`). The
+two trees have the same paths otherwise and byte-identical `MODULE.bazel`,
+Starlark, BUILD and script files; only 25 JDK files and the three compiled
+helpers below differ. Directories are implicit. Only the
 `embedded_tools/` prefix is removed; names and contents otherwise remain exactly
 as officially packaged, including already-renamed repository BUILD files.
 There are no synthetic BUILD files, provider shims, or omitted JDK files.
 
-The JDK subtree contains 108 files / 71,311,548 bytes, including upstream legal
-materials. The other 313 files include the Linux x86-64 compiled helpers
+The x86-64 JDK subtree contains 108 files / 71,311,548 bytes, including upstream
+legal materials. The other 313 files include the platform's compiled helpers
 `tools/cpp/modules_tools/aggregate-ddi`,
 `tools/cpp/modules_tools/generate-modmap`, and `tools/zip/zipper/zipper`.
 These are ordinary tool resources, not the Java Bazel engine. The distribution's
@@ -46,13 +61,18 @@ metadata is normalized to uid/gid/mtime zero and empty user/group names.
 
 ## Reproduction and schema
 
-From the repository root, with the pinned distribution already available:
+From the repository root, with the pinned distribution already available
+(default `.direnv/reference/bazel-9.3.0-<platform>`):
 
 ```sh
-python3 scripts/package_builtin_tools.py
+python3 scripts/package_builtin_tools.py                          # linux-x86_64
 python3 scripts/package_builtin_tools.py --check
+curl -fLO https://github.com/bazelbuild/bazel/releases/download/9.3.0/bazel-9.3.0-linux-arm64
+python3 scripts/package_builtin_tools.py --platform linux-arm64 --distribution bazel-9.3.0-linux-arm64 [--check]
 ```
 
+`--platform` selects one of the pinned distributions (`linux-x86_64`, the
+default, or `linux-arm64`; its outputs go to `resources/bazel_tools/<platform>/`).
 `--distribution PATH` and `--output-dir PATH` change locations only; neither can
 override the pinned version, platform, hashes, file count, or content size.
 `--verify` aliases `--check`: regenerate all generated outputs in memory and
@@ -91,5 +111,8 @@ Bazel's upstream license is Apache-2.0 with the notices retained in `LICENSE`.
 Bundled third-party/JDK materials retain their own notices and licenses inside
 the unchanged tree; the JDK is not relicensed under Apache-2.0. Redistributors
 must comply with those component-specific terms, including any applicable source
-availability requirements. This bundle is specifically the Linux x86-64 release:
+availability requirements. Each bundle is specifically its platform's release:
 its compiled helpers and JDK are not portable substitutes for other platforms.
+A new platform (e.g. darwin-arm64) is one more `PLATFORMS` pin in
+`scripts/package_builtin_tools.py`, its generated subdirectory, and a `pinned!`
+entry in `src/builtin_tools.rs`.

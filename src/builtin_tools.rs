@@ -20,11 +20,96 @@ pub enum BuiltinId {
 }
 
 pub const VERSION: &str = crate::COMPATIBILITY_VERSION;
-const ARCHIVE: &[u8] = include_bytes!("../resources/bazel_tools/embedded_tools.tar.gz");
-const MANIFEST: &[u8] = include_bytes!("../resources/bazel_tools/manifest.json");
 const MODULE_SHA256: &str = "a0fab7d7a9314cfba6d73f33c50643ba26dac9be28700ff35e88306dbd69fecd";
-const FILE_COUNT: usize = 421;
-const TOTAL_SIZE: u64 = 73_326_972;
+const SOURCE_REVISION: &str = "e89755babf3e941bc1e9d8120b1cd48854ab9dfa";
+
+/// The official Bazel 9.3.0 distribution whose `embedded_tools/` tree is
+/// compiled in: one per supported host, selected by the compile target
+/// (resources/bazel_tools/<platform>/, scripts/package_builtin_tools.py).
+struct Pinned {
+    /// Bazel's release platform name (`bazel-9.3.0-<platform>`).
+    platform: &'static str,
+    distribution_url: &'static str,
+    distribution_sha256: &'static str,
+    file_count: usize,
+    total_size: u64,
+    archive: &'static [u8],
+    manifest: &'static [u8],
+    module: &'static [u8],
+}
+
+macro_rules! pinned {
+    ($platform:literal, $sha256:literal, $files:literal, $size:literal) => {
+        Pinned {
+            platform: $platform,
+            distribution_url: concat!(
+                "https://releases.bazel.build/9.3.0/release/bazel-9.3.0-",
+                $platform
+            ),
+            distribution_sha256: $sha256,
+            file_count: $files,
+            total_size: $size,
+            archive: include_bytes!(concat!(
+                "../resources/bazel_tools/",
+                $platform,
+                "/embedded_tools.tar.gz"
+            )),
+            manifest: include_bytes!(concat!(
+                "../resources/bazel_tools/",
+                $platform,
+                "/manifest.json"
+            )),
+            module: include_bytes!(concat!(
+                "../resources/bazel_tools/",
+                $platform,
+                "/MODULE.bazel"
+            )),
+        }
+    };
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const PINNED: Option<Pinned> = Some(pinned!(
+    "linux-x86_64",
+    "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+    421,
+    73_326_972
+));
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const PINNED: Option<Pinned> = Some(pinned!(
+    "linux-arm64",
+    "615cc2509819047e4930fe6643c5f01ebd705ccadf75e8f0b85f9b83cc6a6ca0",
+    420,
+    71_909_364
+));
+/// Other compile targets have no bundle: the built-in @bazel_tools
+/// repository is unavailable there (materialize fails).
+#[cfg(not(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+)))]
+const PINNED: Option<Pinned> = None;
+
+const UNSUPPORTED: &str =
+    "embedded bazel_tools 9.3.0 supports only linux-x86_64 and linux-arm64 hosts";
+const ARCHIVE: &[u8] = match &PINNED {
+    Some(pinned) => pinned.archive,
+    None => &[],
+};
+const MANIFEST: &[u8] = match &PINNED {
+    Some(pinned) => pinned.manifest,
+    None => &[],
+};
+#[cfg(test)]
+const FILE_COUNT: usize = match &PINNED {
+    Some(pinned) => pinned.file_count,
+    None => 0,
+};
+#[cfg(test)]
+const TOTAL_SIZE: u64 = match &PINNED {
+    Some(pinned) => pinned.total_size,
+    None => 0,
+};
 
 /// `@bazel_tools//tools/genrule:genrule-setup.sh`, the `$genrule_setup`
 /// input every bash genrule sources (BazelGenRuleRule.java:31,
@@ -40,7 +125,11 @@ pub const GENRULE_SETUP_EXEC_PATH: &str = "external/bazel_tools/tools/genrule/ge
 
 /// The original MODULE.bazel, available without extracting the tools tree.
 pub fn module_bytes() -> &'static [u8] {
-    include_bytes!("../resources/bazel_tools/MODULE.bazel")
+    match &PINNED {
+        Some(pinned) => pinned.module,
+        // The platform-independent file (both bundles carry the same bytes).
+        None => include_bytes!("../resources/bazel_tools/linux-x86_64/MODULE.bazel"),
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -84,18 +173,17 @@ fn valid_hash(value: &str) -> bool {
 }
 
 fn validate_manifest(manifest: &Manifest) -> Result<(), String> {
+    let pinned = PINNED.as_ref().ok_or(UNSUPPORTED)?;
     if manifest.schema_version != 1
         || manifest.bazel_version != VERSION
-        || manifest.platform != "linux-x86_64"
-        || manifest.source_revision != "e89755babf3e941bc1e9d8120b1cd48854ab9dfa"
-        || manifest.distribution_url
-            != "https://releases.bazel.build/9.3.0/release/bazel-9.3.0-linux-x86_64"
-        || manifest.distribution_sha256
-            != "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8"
+        || manifest.platform != pinned.platform
+        || manifest.source_revision != SOURCE_REVISION
+        || manifest.distribution_url != pinned.distribution_url
+        || manifest.distribution_sha256 != pinned.distribution_sha256
         || !valid_hash(&manifest.archive_sha256)
-        || manifest.file_count != FILE_COUNT
-        || manifest.files.len() != FILE_COUNT
-        || manifest.total_size != TOTAL_SIZE
+        || manifest.file_count != pinned.file_count
+        || manifest.files.len() != pinned.file_count
+        || manifest.total_size != pinned.total_size
     {
         return Err("invalid embedded bazel_tools manifest identity or totals".into());
     }
@@ -177,10 +265,10 @@ pub fn bundle_identity() -> Result<String, String> {
 }
 
 /// Publish/reuse a fully verified native tools tree under an absolute cache root.
-/// Only the Linux x86-64 distribution is currently bundled.
+/// The Linux x86-64 and arm64 distributions are bundled (one per binary).
 pub fn materialize(cache: &Path) -> Result<PathBuf, String> {
-    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        return Err("embedded bazel_tools 9.3.0 supports only linux-x86_64".into());
+    if PINNED.is_none() {
+        return Err(UNSUPPORTED.into());
     }
     if !cache.is_absolute() {
         return Err("embedded bazel_tools cache root must be absolute".into());
@@ -485,6 +573,71 @@ mod tests {
         );
     }
 
+    /// Both bundled platforms' manifests (whichever one this binary embeds):
+    /// same release, same platform-independent Starlark/MODULE files; only
+    /// the compiled helpers and the JDK differ.
+    #[test]
+    fn every_bundled_platform_manifest_matches_its_pins() {
+        let manifests: [(&str, &str, usize, u64, &[u8]); 2] = [
+            (
+                "linux-x86_64",
+                "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+                421,
+                73_326_972,
+                include_bytes!("../resources/bazel_tools/linux-x86_64/manifest.json"),
+            ),
+            (
+                "linux-arm64",
+                "615cc2509819047e4930fe6643c5f01ebd705ccadf75e8f0b85f9b83cc6a6ca0",
+                420,
+                71_909_364,
+                include_bytes!("../resources/bazel_tools/linux-arm64/manifest.json"),
+            ),
+        ];
+        let parsed: Vec<Manifest> = manifests
+            .iter()
+            .map(|(platform, sha256, files, size, bytes)| {
+                let manifest: Manifest = serde_json::from_slice(bytes).unwrap();
+                assert_eq!(manifest.platform, *platform);
+                assert_eq!(manifest.distribution_sha256, *sha256);
+                assert_eq!(
+                    manifest.distribution_url,
+                    format!("https://releases.bazel.build/9.3.0/release/bazel-9.3.0-{platform}")
+                );
+                assert_eq!(manifest.source_revision, SOURCE_REVISION);
+                assert_eq!(manifest.bazel_version, VERSION);
+                assert_eq!((manifest.file_count, manifest.total_size), (*files, *size));
+                manifest
+            })
+            .collect();
+        let digests = |manifest: &Manifest| -> BTreeMap<String, String> {
+            manifest
+                .files
+                .iter()
+                .map(|entry| (entry.path.clone(), entry.sha256.clone()))
+                .collect()
+        };
+        let (x86, arm) = (digests(&parsed[0]), digests(&parsed[1]));
+        let mut differing: Vec<&str> = x86
+            .iter()
+            .filter(|(path, sha256)| arm.get(*path) != Some(*sha256))
+            .map(|(path, _)| path.as_str())
+            .filter(|path| !path.starts_with("jdk/"))
+            .collect();
+        differing.sort_unstable();
+        assert_eq!(
+            differing,
+            [
+                "tools/cpp/modules_tools/aggregate-ddi",
+                "tools/cpp/modules_tools/generate-modmap",
+                "tools/zip/zipper/zipper",
+            ]
+        );
+        assert!(arm.keys().all(|path| x86.contains_key(path)));
+        assert_eq!(x86["MODULE.bazel"], MODULE_SHA256);
+        assert_eq!(arm["MODULE.bazel"], MODULE_SHA256);
+    }
+
     #[test]
     fn manifest_rejects_paths_duplicates_conflicts_hashes_modes_and_totals() {
         let valid: Manifest = serde_json::from_slice(MANIFEST).unwrap();
@@ -544,7 +697,10 @@ mod tests {
         );
     }
 
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
     #[test]
     fn genuine_bundle_cold_warm_and_corruption_repair() {
         use std::os::unix::fs::PermissionsExt;
@@ -623,7 +779,10 @@ mod tests {
         );
     }
 
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
     #[test]
     fn concurrent_publishers_share_one_verified_tree() {
         let temp = tempfile::tempdir().unwrap();
@@ -641,7 +800,10 @@ mod tests {
         assert_eq!(fs::read_dir(cache.join("trees")).unwrap().count(), 2);
     }
 
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
     #[test]
     fn synthetic_tree_exactness_and_failed_stages_are_cleaned() {
         use std::os::unix::fs::PermissionsExt;
@@ -700,7 +862,10 @@ mod tests {
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
     }
 
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
     #[test]
     fn hostile_cache_symlinks_never_mutate_external_targets() {
         use std::os::unix::fs::symlink;

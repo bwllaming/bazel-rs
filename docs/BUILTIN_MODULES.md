@@ -118,9 +118,14 @@ from `@bazel_tools` fails explicitly.
 
 ## Complete static resources, native extraction
 
-The Linux x86-64 resource bundle contains the complete official Bazel 9.3.0
-installed `embedded_tools` tree: 421 regular files totaling 73,326,972 bytes.
-This includes the bundled JDK, legal notices and compiled helper tools. The
+Each platform's resource bundle contains the complete official Bazel 9.3.0
+installed `embedded_tools` tree of that platform's release: Linux x86-64 421
+regular files totaling 73,326,972 bytes (`resources/bazel_tools/linux-x86_64/`),
+Linux arm64 420 files, 71,909,364 bytes (`resources/bazel_tools/linux-arm64/`;
+no `jdk/lib/libsimdsort.so`). This includes the bundled JDK, legal notices and
+compiled helper tools. A binary embeds only its compile target's bundle;
+`MODULE.bazel` and every Starlark/BUILD file are byte-identical across the two,
+only the JDK and the three compiled helpers differ. The
 packaging script reads the SHA256-verified official distribution as static
 archive data during development. The runtime embeds these resources and neither
 looks up nor executes the upstream Bazel executable or Java build engine.

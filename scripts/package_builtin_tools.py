@@ -20,22 +20,44 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PINNED = {
-    "bazel_version": "9.3.0",
-    "platform": "linux-x86_64",
-    "source_revision": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
-    "distribution_url": (
-        "https://releases.bazel.build/9.3.0/release/bazel-9.3.0-linux-x86_64"
-    ),
-    "distribution_sha256": (
-        "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8"
-    ),
-    "module_sha256": (
-        "a0fab7d7a9314cfba6d73f33c50643ba26dac9be28700ff35e88306dbd69fecd"
-    ),
-    "file_count": 421,
-    "total_size": 73326972,
+# One pinned official distribution per bundled host platform (Bazel's release
+# names). Each platform's outputs live in resources/bazel_tools/<platform>/.
+PLATFORMS = {
+    "linux-x86_64": {
+        "bazel_version": "9.3.0",
+        "platform": "linux-x86_64",
+        "source_revision": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+        "distribution_url": (
+            "https://releases.bazel.build/9.3.0/release/bazel-9.3.0-linux-x86_64"
+        ),
+        "distribution_sha256": (
+            "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8"
+        ),
+        "module_sha256": (
+            "a0fab7d7a9314cfba6d73f33c50643ba26dac9be28700ff35e88306dbd69fecd"
+        ),
+        "file_count": 421,
+        "total_size": 73326972,
+    },
+    "linux-arm64": {
+        "bazel_version": "9.3.0",
+        "platform": "linux-arm64",
+        "source_revision": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+        "distribution_url": (
+            "https://releases.bazel.build/9.3.0/release/bazel-9.3.0-linux-arm64"
+        ),
+        "distribution_sha256": (
+            "615cc2509819047e4930fe6643c5f01ebd705ccadf75e8f0b85f9b83cc6a6ca0"
+        ),
+        "module_sha256": (
+            "a0fab7d7a9314cfba6d73f33c50643ba26dac9be28700ff35e88306dbd69fecd"
+        ),
+        "file_count": 420,
+        "total_size": 71909364,
+    },
 }
+DEFAULT_PLATFORM = "linux-x86_64"
+PINNED = PLATFORMS[DEFAULT_PLATFORM]
 ARCHIVE = "embedded_tools.tar.gz"
 MANIFEST = "manifest.json"
 MODULE = "MODULE.bazel"
@@ -180,14 +202,24 @@ def _check(output_dir, bundle):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--distribution", type=Path, default=(
-        ROOT / ".direnv/reference/bazel-9.3.0-linux-x86_64"))
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "resources/bazel_tools")
+    parser.add_argument("--platform", choices=sorted(PLATFORMS), default=DEFAULT_PLATFORM,
+                        help="pinned distribution to package (default: %(default)s)")
+    parser.add_argument("--distribution", type=Path,
+                        help="the official binary (default: "
+                             ".direnv/reference/bazel-9.3.0-<platform>)")
+    parser.add_argument("--output-dir", type=Path,
+                        help="default: resources/bazel_tools/<platform>")
     parser.add_argument("--check", "--verify", action="store_true",
                         help="regenerate in memory and compare, without writing")
     args = parser.parse_args(argv)
+    pinned = PLATFORMS[args.platform]
+    if args.distribution is None:
+        args.distribution = (ROOT / ".direnv/reference"
+                             / f"bazel-{pinned['bazel_version']}-{args.platform}")
+    if args.output_dir is None:
+        args.output_dir = ROOT / "resources/bazel_tools" / args.platform
     try:
-        bundle = _build_bundle(args.distribution.read_bytes())
+        bundle = _build_bundle(args.distribution.read_bytes(), expected=pinned)
         if args.check:
             _check(args.output_dir, bundle)
         else:

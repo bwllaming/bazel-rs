@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # `FILE.rs#LINE` for a Rust string literal starting on LINE.
 ALLOWLIST = {
     ('tests/no_recursion.rs', '*'): 'intentional recursion probes of the N48 CLI tests',
-    ('resources/bazel_tools/embedded_tools.tar.gz!tools/build_defs/cc/cc_import.bzl', 'cc_import'):
+    ('resources/bazel_tools/linux-x86_64/embedded_tools.tar.gz!tools/build_defs/cc/cc_import.bzl', 'cc_import'):
         "upstream Bazel 9.3 @bazel_tools file: a def named like the loaded rules_cc symbol it forwards to",
     ('tests/fixtures/build_settings/bazel-skylib-1.8.2.tar.gz!lib/selects.bzl', '_config_setting_or_group'):
         'third-party bazel-skylib 1.8.2 (fixture): static mutual reference only, it never recurses at run time',
@@ -90,8 +90,8 @@ def rust_sources(path, rel, out):
 
 def collect():
     out = {}
-    archive_sources(ROOT / 'resources/bazel_tools/embedded_tools.tar.gz',
-                    'resources/bazel_tools/embedded_tools.tar.gz', out)
+    archive_sources(ROOT / 'resources/bazel_tools/linux-x86_64/embedded_tools.tar.gz',
+                    'resources/bazel_tools/linux-x86_64/embedded_tools.tar.gz', out)
     for path in sorted((ROOT / 'resources').rglob('*')):
         if path.is_file() and is_starlark(path.name):
             out[path.relative_to(ROOT).as_posix()] = path.read_text()
@@ -206,7 +206,7 @@ class NativeStarlarkRecursionTest(unittest.TestCase):
                 else:
                     violations.append(f'{source}: {function}')
         # The scan must actually cover the shipped and test Starlark.
-        self.assertGreater(sum(1 for s in sources if s.startswith('resources/bazel_tools/embedded_tools.tar.gz!')), 100)
+        self.assertGreater(sum(1 for s in sources if s.startswith('resources/bazel_tools/linux-x86_64/embedded_tools.tar.gz!')), 100)
         self.assertGreater(sum(1 for s in sources if '.rs#' in s), 400)
         self.assertGreater(parsed, 1000)
         self.assertLess(unparsable, parsed // 10, 'too many sources could not be parsed')

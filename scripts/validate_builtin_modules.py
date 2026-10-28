@@ -28,7 +28,7 @@ from validate_repository_rules import (RecordingRunner, evidence, valid_evidence
 
 
 FIXTURE = ROOT / 'tests/fixtures/builtin_modules'
-RESOURCES = ROOT / 'resources/bazel_tools'
+RESOURCES = ROOT / 'resources/bazel_tools/linux-x86_64'
 TARGET = '@bazel_tools//tools/build_defs/repo:utils.bzl'
 CANONICAL = '@' + TARGET
 HELPER = 'tools/build_defs/repo/utils.bzl'
