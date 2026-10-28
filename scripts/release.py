@@ -677,6 +677,8 @@ def smoke_env(scratch: Path) -> dict:
         "LANG": "C.UTF-8",
         "BAZEL_RS_MAX_MEMORY_MB": "2048",
         "BAZEL_RS_PROGRESS": "0",
+        # `label<TAB>path` result lines on stdout (off by default since 0.1.0).
+        "BAZEL_RS_RESULT_LINES": "1",
         "http_proxy": DEAD_PROXY,
         "https_proxy": DEAD_PROXY,
         "HTTP_PROXY": DEAD_PROXY,

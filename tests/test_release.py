@@ -375,6 +375,13 @@ class TargetsTest(unittest.TestCase):
             (root / "qemu-aarch64").write_text("disabled\nmagic 7f454c460201010000000000000000000200b700\n")
             self.assertFalse(release.binfmt_runs(release.EM_AARCH64, root))
 
+    def test_smoke_env(self):
+        env = release.smoke_env(Path("/s"))
+        # The smoke build reads the output path from the result line.
+        self.assertEqual(env["BAZEL_RS_RESULT_LINES"], "1")
+        self.assertEqual(env["HOME"], "/s/home")
+        self.assertEqual(env["https_proxy"], release.DEAD_PROXY)
+
     def test_default_temp_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
