@@ -169,13 +169,14 @@ fn cquery_records_selected_aspect_edges_and_reuses_and_verifies_the_graph() {
 #[test]
 fn configured_selection_and_source_and_bzl_changes_do_not_reuse_stale_aspect_edges() {
     let ws = Workspace::new();
-    ws.ok("cquery", &[DEPS]);
+    let original = ws.ok("cquery", &[DEPS]);
     fs::remove_file(ws.path().join("selected.txt")).unwrap();
     let removed = ws.ok("cquery", &[DEPS]);
     assert!(String::from_utf8_lossy(&removed.stderr).contains("cquery-snapshot: miss"));
     fs::write(ws.path().join("selected.txt"), "restored\n").unwrap();
     let restored = ws.ok("cquery", &[DEPS]);
-    assert!(String::from_utf8_lossy(&restored.stderr).contains("cquery-snapshot: miss"));
+    assert!(String::from_utf8_lossy(&restored.stderr).contains("cquery-snapshot: hit"));
+    assert_eq!(restored.stdout, original.stdout);
     let path = ws.path().join("defs.bzl");
     let source = fs::read_to_string(&path).unwrap();
     fs::write(path, source.replace("//:witness.txt", "//:alternative.txt")).unwrap();

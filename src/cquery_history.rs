@@ -163,6 +163,7 @@ fn lock(cache: &Path) -> Result<File, String> {
 }
 
 fn current(reader: &store::Reader) -> bool {
+    // snapshot-unrecorded: cache generation identity, never an analysis input.
     fs::symlink_metadata(&reader.path).is_ok_and(|m| (m.dev(), m.ino()) == reader.identity())
 }
 
@@ -177,7 +178,7 @@ pub(super) fn remove(cache: &Path, reader: &store::Reader) -> Result<(), String>
 }
 
 #[cfg(test)]
-#[path = "cquery_history_tests.rs"]
+#[path = "cquery_history/tests.rs"]
 mod tests;
 
 pub(super) fn save(
