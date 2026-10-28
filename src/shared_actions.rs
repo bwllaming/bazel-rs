@@ -368,6 +368,7 @@ impl Fingerprint {
             embedded_inputs,
             remote_unsupported: _,
             remote_platform: _,
+            execution_cancel: _,
         } = action;
         self.str(command);
         self.count(inputs.len());
@@ -462,6 +463,7 @@ impl Fingerprint {
             mnemonic,
             transform,
             constant_metadata,
+            java_compile,
         } = extra;
         self.paths(tree_outputs.iter());
         self.paths(tree_inputs.iter());
@@ -498,6 +500,10 @@ impl Fingerprint {
         if !symlink_inputs.is_empty() {
             self.tag(11);
             self.paths(symlink_inputs.iter());
+        }
+        if let Some(java) = java_compile {
+            self.str("java-compile-v1");
+            self.bytes(&postcard::to_stdvec(java).expect("plain Java compilation intent"));
         }
     }
 

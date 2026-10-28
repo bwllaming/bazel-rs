@@ -777,7 +777,7 @@ fn run_leaf(
 fn run_job<F>(
     job: Job,
     cache: &Path,
-    failed: &AtomicBool,
+    failed: &Arc<AtomicBool>,
     keep_going: bool,
     execute: &F,
 ) -> Completion
@@ -848,6 +848,9 @@ where
             list_empty_files(&mut node.action, &groups);
         }
         let clock = std::time::Instant::now();
+        if node.action.extra.java_compile.is_some() {
+            node.action.execution_cancel = Some(Arc::clone(failed));
+        }
         let mut result = execute(cache, &node.action)?;
         // The critical path through this action (CriticalPathComputer): a
         // cache hit adds nothing of its own.
@@ -1044,7 +1047,7 @@ where
     // Infrastructure failures (worker spawn, panics) of a keep-going run.
     let mut fatal: Vec<String> = Vec::new();
     let mut lane = LeafState::new(leaves, &graph, keep_going)?;
-    let failed = AtomicBool::new(false);
+    let failed = Arc::new(AtomicBool::new(false));
     let mut results: BTreeMap<String, Arc<ActionResult>> = BTreeMap::new();
     let mut errors = BTreeMap::new();
     let (job_sender, job_receiver) = mpsc::channel::<Work>();

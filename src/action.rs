@@ -226,6 +226,10 @@ pub struct Action {
     /// crate::remote_execution::platform_properties). Not part of the
     /// native key.
     pub remote_platform: crate::remote_execution::SpawnPlatform,
+    /// Invocation-local cancellation at Java attempt boundaries. Never keyed
+    /// or persisted; the scheduler installs its existing failure flag.
+    #[serde(skip)]
+    pub execution_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// The process argv, exactly as Bazel's spawn has it
@@ -442,6 +446,8 @@ pub struct ActionExtra {
     /// rebuild the consumer (ActionKeyComputer skips constant metadata).
     #[serde(with = "crate::snapshot::codec::paths")]
     pub constant_metadata: Vec<PathBuf>,
+    /// JavaBuilder's semantic intent, distinct from either staged attempt.
+    pub java_compile: Option<crate::java_compile::JavaCompileSpec>,
 }
 
 /// A runfiles mapping: each runfiles path with its input's execution path
@@ -3229,6 +3235,9 @@ fn namespace_may_overlap(action: &Action) -> bool {
 }
 
 pub fn validate_structure(action: &Action) -> Result<(), String> {
+    if let Some(java) = &action.extra.java_compile {
+        java.validate(action)?;
+    }
     if action.write.is_some()
         && (!action.command.is_empty()
             || action.program.is_some()
@@ -4007,6 +4016,13 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
         for name in &extra.symlink_outputs {
             frame(&mut hash, name.as_os_str().as_bytes());
         }
+    }
+    if let Some(java) = &extra.java_compile {
+        frame(&mut hash, b"java-compile-v1");
+        frame(
+            &mut hash,
+            &postcard::to_stdvec(java).map_err(|e| e.to_string())?,
+        );
     }
     let key = hex(&hash.finalize());
     Ok(PreparedAction {
@@ -6762,6 +6778,30 @@ pub fn execute_with_remote(
     action: &Action,
     remote: Option<&crate::remote_cache::RemoteCache>,
 ) -> Result<ActionResult, String> {
+    // Java protocol capability selection precedes terminal cache lookup too:
+    // an explicitly requested unsupported backend must not appear supported
+    // merely because a previous local invocation populated the cache.
+    let java_strategy = if action.extra.java_compile.is_some() {
+        let mut info = action.execution_info.clone();
+        info.extend(action.extra.execution_info.keys().cloned());
+        let strategy = crate::sandbox::resolve(&action.extra.mnemonic, &info, false)?;
+        if strategy == crate::sandbox::Strategy::Remote {
+            return Err("JavaBuilder reduced/fallback remote execution is not implemented in the native profile".into());
+        }
+        if remote.is_some() {
+            crate::note!(
+                "JavaBuilder protocol spawn-cache lookup/upload is unsupported; using the native terminal action cache"
+            );
+        }
+        Some(strategy)
+    } else {
+        None
+    };
+    let remote = if java_strategy.is_some() {
+        None
+    } else {
+        remote
+    };
     let embedded;
     let action = if action.embedded_inputs.is_empty() {
         action
@@ -6909,6 +6949,7 @@ pub fn execute_with_remote(
     // and the remote cache serves the other strategies' spawns
     // (RemoteSpawnCache).
     let can_worker = process
+        && java_strategy.is_none()
         && crate::worker::can_exec(
             &action.extra.mnemonic,
             &action.extra.execution_info,
@@ -7070,6 +7111,7 @@ pub fn execute_with_remote(
         let strategy = match early_strategy {
             _ if fallback => crate::sandbox::Strategy::Standalone,
             Some(strategy) => strategy,
+            None if java_strategy.is_some() => java_strategy.expect("checked Java strategy"),
             None => crate::sandbox::resolve(&action.extra.mnemonic, &execution_info, can_worker)
                 .map_err(|error| format!("action '{}': {error}", action.id))?,
         };
@@ -7107,7 +7149,7 @@ pub fn execute_with_remote(
     // Only a process reads its inputs through the execution root; native
     // writes and transforms read the verified input files directly, and a
     // remote hit runs nothing.
-    let staged = if process && remote_hit.is_none() {
+    let staged = if process && remote_hit.is_none() && java_strategy.is_none() {
         stage_inputs(cas, root, inputs, &execroot)?
     } else {
         Vec::new()
@@ -7186,6 +7228,26 @@ pub fn execute_with_remote(
                 hit.cached,
                 (started, clock.elapsed()),
             );
+        }
+    } else if let Some(strategy) = java_strategy {
+        let outcome = java::run(
+            action, &prepared, &work.0, &execroot, &tmp, cas, root, strategy,
+        );
+        match outcome {
+            Ok(()) => {
+                sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
+                runner = Some(strategy.runner_name());
+            }
+            Err(error) => {
+                if strategy == crate::sandbox::Strategy::Sandboxed && crate::sandbox::debug() {
+                    let path = work.0.display().to_string();
+                    std::mem::forget(work);
+                    return Err(format!(
+                        "{error}\n\n(sandbox build root retained at '{path}')"
+                    ));
+                }
+                return Err(error);
+            }
         }
     } else if let Some((lease, flag_files)) = worker.as_mut() {
         // A persistent worker (crate::worker, WorkerSpawnRunner.exec): the
@@ -7708,6 +7770,7 @@ pub fn execute_with_remote(
     Ok(done)
 }
 
+mod java;
 mod tree_stamps;
 
 #[cfg(test)]

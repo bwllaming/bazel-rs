@@ -70,7 +70,19 @@ pub fn has_lone_bytes(text: &str) -> bool {
 pub fn platform_action(action: &crate::action::Action) -> Cow<'_, crate::action::Action> {
     let changes = |text: &str| matches!(platform(text), Cow::Owned(_));
     let path_changes = |path: &Path| matches!(internal_path(path), Cow::Owned(_));
-    if !changes(&action.command)
+    let java_changes = action.extra.java_compile.as_ref().is_some_and(|java| {
+        java.flags.iter().any(|flag| changes(flag))
+            || java
+                .classpath
+                .iter()
+                .chain(&java.direct_jars)
+                .chain(&java.dependency_jdeps)
+                .chain(&java.mandatory_inputs)
+                .chain(java.output_jdeps.iter())
+                .any(|path| path_changes(path))
+    });
+    if !java_changes
+        && !changes(&action.command)
         && !action
             .inputs
             .iter()
@@ -116,6 +128,21 @@ pub fn platform_action(action: &crate::action::Action) -> Cow<'_, crate::action:
         .iter()
         .map(|(key, value)| (platform(key).into_owned(), platform(value).into_owned()))
         .collect();
+    if let Some(java) = &mut converted.extra.java_compile {
+        java.flags
+            .iter_mut()
+            .for_each(|flag| *flag = platform(flag).into_owned());
+        for path in java
+            .classpath
+            .iter_mut()
+            .chain(&mut java.direct_jars)
+            .chain(&mut java.dependency_jdeps)
+            .chain(&mut java.mandatory_inputs)
+            .chain(java.output_jdeps.iter_mut())
+        {
+            *path = internal_path(path).into_owned();
+        }
+    }
     Cow::Owned(converted)
 }
 

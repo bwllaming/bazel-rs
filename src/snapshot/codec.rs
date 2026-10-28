@@ -77,7 +77,7 @@ pub const MAGIC: &[u8; 8] = b"BZRSPLN1";
 /// (PA-1's shared input groups, integration-21). 3: portable Args
 /// `map_each` functions (crate::snapshot::mapper). 4: META carries the
 /// build event plan (crate::bep::plan).
-pub const FORMAT: u32 = 5;
+pub const FORMAT: u32 = 6;
 /// Actions per NODES section (fixed: the encoding must not depend on the
 /// machine).
 pub const CHUNK: usize = 1024;
@@ -1292,6 +1292,7 @@ mod tests {
                 mnemonic: "Genrule".into(),
                 transform: None,
                 constant_metadata: vec!["bazel-out/volatile-status.txt".into()],
+                java_compile: None,
             },
             shell_pad: true,
             executable_file: false,
@@ -1309,6 +1310,7 @@ mod tests {
             },
             program: None,
             write: None,
+            execution_cancel: None,
         };
         let transform = |id: &str, transform: Transform| PlannedAction {
             action: Action {
