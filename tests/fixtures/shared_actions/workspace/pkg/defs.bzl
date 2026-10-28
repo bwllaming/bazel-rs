@@ -287,3 +287,38 @@ def _expand_impl(ctx):
 
 # Two targets writing Args content that expands a (shared) tree artifact.
 expand = rule(implementation = _expand_impl)
+
+def _chdir_impl(ctx):
+    # rules_js's js_binary/js_test with chdir (js/private/js_helpers.bzl
+    # gather_runfiles): every source data file is copied to its
+    # workspace-relative path under the bin directory through
+    # aspect_bazel_lib's copy_file_to_bin_action (lib/private/copy_file.bzl
+    # copy_file_action: coreutils cp with COPY_EXECUTION_REQUIREMENTS
+    # {"no-sandbox": "1"}, mnemonic CopyFile), so every chdir target of one
+    # package registers one copy per shared source file.
+    outs = []
+    for src in ctx.files.data:
+        if not src.is_source:
+            outs.append(src)
+            continue
+        dst = ctx.actions.declare_file(src.basename, sibling = src)
+        ctx.actions.run_shell(
+            inputs = [src],
+            outputs = [dst],
+            command = "%s %s %s" % (ctx.attr.cp, src.path, dst.path),
+            mnemonic = "CopyFile",
+            use_default_shell_env = True,
+            execution_requirements = {"no-sandbox": "1"},
+        )
+        outs.append(dst)
+    return [DefaultInfo(files = depset(outs))]
+
+# The chdir copy-to-bin pattern; `cp` differs for a genuinely different
+# action over the same files.
+chdir = rule(
+    implementation = _chdir_impl,
+    attrs = {
+        "data": attr.label_list(allow_files = True),
+        "cp": attr.string(default = "cp"),
+    },
+)

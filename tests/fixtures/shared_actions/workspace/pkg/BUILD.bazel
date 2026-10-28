@@ -1,6 +1,7 @@
 load(
     ":defs.bzl",
     "aspect_consumer",
+    "chdir",
     "compile",
     "consumer",
     "expand",
@@ -225,3 +226,57 @@ runner(
 expand(name = "expand_a")
 
 expand(name = "expand_b")
+
+# rules_js chdir shape: every target copies the package's shared source
+# files to their bin paths. Targets without an execution-requirement tag
+# share the copies; a cpu: tag (PR #12989's vitest) does not.
+chdir(
+    name = "chdir_a",
+    data = [
+        "components.json",
+        "manifest.json",
+    ],
+)
+
+chdir(
+    name = "chdir_b",
+    data = [
+        "components.json",
+        "manifest.json",
+    ],
+)
+
+chdir(
+    name = "chdir_c",
+    data = [
+        "components.json",
+        "manifest.json",
+    ],
+)
+
+chdir(
+    name = "chdir_cpu",
+    data = [
+        "components.json",
+    ],
+    tags = ["cpu:6"],
+)
+
+chdir(
+    name = "chdir_cpu_manual",
+    data = [
+        "components.json",
+    ],
+    tags = [
+        "cpu:6",
+        "manual",
+    ],
+)
+
+chdir(
+    name = "chdir_update",
+    cp = "cp -u",
+    data = [
+        "components.json",
+    ],
+)

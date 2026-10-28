@@ -57,6 +57,8 @@ const GROUPS: &[(&str, &[&str])] = &[
             "run_shared",
             "shared_tag_requirement",
             "shared_illegal_requirement",
+            "chdir_shared",
+            "chdir_cpu_shared",
         ],
     ),
     (
@@ -74,6 +76,9 @@ const GROUPS: &[(&str, &[&str])] = &[
             "groups_props",
             "conflict_requirement_value",
             "prefix",
+            "chdir_cpu_conflict",
+            "chdir_cpu_conflict_nobuild",
+            "chdir_variant_conflict",
         ],
     ),
     ("declared", &["aspect_conflict", "expand_shared"]),

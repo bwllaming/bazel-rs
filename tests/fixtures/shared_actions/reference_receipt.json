@@ -1,7 +1,7 @@
 {
  "schema": "shared-actions-reference-receipt/v1",
  "fixture": "shared_actions",
- "purpose": "Actions.canBeShared between configured targets (MapBasedActionGraph.registerAction, actions/MapBasedActionGraph.java:46-63; Actions.canBeShared, actions/Actions.java:85-115): two targets' actions generating one output are one action when the mnemonic, the action key (ActionKeyComputer.getKey: command lines by exec path, mnemonic, environment, execution info with the propagated tags, execution platform and exec properties) and the mandatory inputs and outputs without owner are equal; it runs once, each target keeps its own Artifact (File.owner) and a consumer may take both Files as inputs (also as runfiles, built and `run`). The same holds for two aspect applications and for tree artifacts. Any compared difference is Bazel's action conflict, an output below another target's output is Bazel's prefix conflict. Motivation: `build --nobuild //src/beyondwork.ai/tools/...` on ~/code stopped at `overlapping output paths: .../rules_pkg+/pkg/private/__pycache__/__init__.cpython-312.pyc from @@rules_pkg+//pkg/private:archive conflicts with ... from @@rules_pkg+//pkg/private:helpers` (two py_library targets precompiling one __init__.py, shared by genuine Bazel).",
+ "purpose": "Actions.canBeShared between configured targets (MapBasedActionGraph.registerAction, actions/MapBasedActionGraph.java:46-63; Actions.canBeShared, actions/Actions.java:85-115): two targets' actions generating one output are one action when the mnemonic, the action key (ActionKeyComputer.getKey: command lines by exec path, mnemonic, environment, execution info with the propagated tags, execution platform and exec properties) and the mandatory inputs and outputs without owner are equal; it runs once, each target keeps its own Artifact (File.owner) and a consumer may take both Files as inputs (also as runfiles, built and `run`). The same holds for two aspect applications and for tree artifacts. Any compared difference is Bazel's action conflict, an output below another target's output is Bazel's prefix conflict. Motivation: `build --nobuild //src/beyondwork.ai/tools/...` on ~/code stopped at `overlapping output paths: .../rules_pkg+/pkg/private/__pycache__/__init__.cpython-312.pyc from @@rules_pkg+//pkg/private:archive conflicts with ... from @@rules_pkg+//pkg/private:helpers` (two py_library targets precompiling one __init__.py, shared by genuine Bazel). The neui chdir shape (copy_file_to_bin_action per shared package source, cpu: execution-requirement tag) pins that the tag is a compared difference in genuine 9.3 as well.",
  "reference": {
   "binary": "bazel-9.3.0-linux-x86_64",
   "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
@@ -11,7 +11,7 @@
  },
  "native": {
   "binary": "target/debug/bazel-rs",
-  "sha256": "831b5da434c5d1670a9017e140532de7e22c4de22557f3034489711b6cd2948d",
+  "sha256": "546908cae1e4e09e275e0c4e404032f4b68ddba6e6f37371eb333da143e75b27",
   "argv": "--ignore_all_rc_files --cache-dir=<private> build --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
  },
  "script": {
@@ -23,12 +23,14 @@
  },
  "fixture_files_sha256": {
   "MODULE.bazel": "1b2c35cff71552c808d660ee2b6babbcea8f2259e258ed64bf716a608bc914d5",
-  "pkg/BUILD.bazel": "c2a4e4ec011f6d9d71602c7558bf11057a92ea6003b2c6884f3109aecaf434e9",
+  "pkg/BUILD.bazel": "82f69da2734cabe8aa210bcda97443e96f201abcfa23f3207180adf50c8ccf74",
   "pkg/__init__.py": "0b268daa68a744a124fe511c96998bf3c1fd8252a8d4d77493c203c44d34261d",
   "pkg/a.py": "1c1c4ac5a0421f0eb043064dd07909ff116df495957319bebd4787936a23d090",
   "pkg/b.py": "cce35b3fdb31c5b952816c9578332b9275ca2c65edd647c63c1f1f8ea8231300",
-  "pkg/defs.bzl": "3d17cc4bb30bd42e228ac503c95c1b48e3552b587cafd204de88490e85da3b18",
-  "pkg/extra.txt": "b81938cbfb6d98eea556c531be47632d264fd7f1f3a0433c67a0f7d52be2690d"
+  "pkg/components.json": "0899a42fda1a3fe4ed91a4c189afc279cb5b2350bae21c9e2462f0bd51f53818",
+  "pkg/defs.bzl": "33bc615c0f21d42332b56525dd7c685f2784a59726ed63f4e631d44835e5f175",
+  "pkg/extra.txt": "b81938cbfb6d98eea556c531be47632d264fd7f1f3a0433c67a0f7d52be2690d",
+  "pkg/manifest.json": "d68c656c752359c5a08f794d44bbd34f9890a0c9a41d7e8f7971b1796a7b198e"
  },
  "normalization": "<WS> = the case's workspace copy. Outputs: genuine --show_result's (label, bazel-bin path as bazel-out/k8-fastbuild/bin/...) pairs with the file contents; native the LABEL<TAB>PATH result lines with the path below the published action's outputs/ directory and its contents.",
  "comparison (tests/shared_actions.rs, live)": "success equal (genuine exit 0 <=> native exit 0); a failing case's first conflict line is in native stderr and its `Label:` line names the same set of labels (a prefix conflict: genuine's first ERROR line is in native stderr) (genuine orders them by analysis timing: attempted, previous; natively the second target in commit order is the attempted one); built cases (not --nobuild): the top-level outputs with their contents are equal; `run` cases: the program's stdout is equal; a declared divergence's native message is in native stderr.",
@@ -42,7 +44,8 @@
   "Aspects: two applications of one aspect registering the same spawn on one path (below the base targets' package) share it, although the base targets have different exec_properties (an aspect's RuleContext takes no exec_properties of its base target: ConfiguredTargetFactory.createAspect setExecProperties(ImmutableMap.of()), analysis/ConfiguredTargetFactory.java:702); a consumer of both applications' Files sees two Files with one path and the base targets as owners (depset 2). Different spawn arguments conflict with Bazel's lines naming both base targets (`Label: //pkg:aspect_base_x, //pkg:aspect_base_z` / `Aspects: [//pkg:defs.bzl%shared_aspect]`).",
   "A tree artifact (declare_directory) declared by two targets with one identical spawn is shared; a consumer of both Files (is_directory, depset 2) reads its files once per File.",
   "A shared output consumed as a runfile of an executable that depends on both owners: `build` creates its runfiles tree and `run` executes it, the program reading both precompiled files through the runfiles tree.",
-  "Two targets writing identical Args content that expands a (shared) tree artifact share the write (both report bazel-bin/pkg/expand.args, contents `bazel-out/k8-fastbuild/bin/pkg/expand_tree/x.txt`)."
+  "Two targets writing identical Args content that expands a (shared) tree artifact share the write (both report bazel-bin/pkg/expand.args, contents `bazel-out/k8-fastbuild/bin/pkg/expand_tree/x.txt`).",
+  "The neui chdir copy-to-bin pattern (rules_js js_binary/js_test with chdir over aspect_bazel_lib copy_file_to_bin_action: one `cp` with {no-sandbox: 1} per shared package source file, ~/code PR #12989): three targets' identical copies share (two files each, one action per path), and `tags = [\"cpu:6\"]` on one target only is a conflict in genuine too \u2014 the tag is an execution requirement (TargetUtils.legalExecInfoKeys' `cpu:` prefix) and lands in the action key as `cpu:6=` beside `no-sandbox=1` (describeKey), so `build --nobuild //src/...` after PR #12989 fails in genuine Bazel 9.3 the same way; two targets both tagged cpu:6 share (a `manual` tag is not keyed), and a different command over the same files (`cp -u`) conflicts. `--noincompatible_allow_tags_propagation` (default true) removes the tag from the key and shares."
  ],
  "known_divergences": [
   "Native error reporting: the first conflict aborts the native build with Bazel's first two lines (`file '...' is generated by these conflicting actions:` / `Label: ...`); genuine reports every conflicting target with Bazel's further action-description lines.",
@@ -50,7 +53,7 @@
   "Identical actions with a part the native key does not cover (command lines or contents expanding tree artifacts) are an explicit native error across targets too; genuine shares them."
  ],
  "counts": {
-  "MATCH": 26,
+  "MATCH": 31,
   "DECLARED_DIVERGENCE": 2
  },
  "scratch_removed": true,
@@ -663,7 +666,7 @@
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:194:16: file 'pkg/aspect_shared.txt' is generated by these conflicting actions:\nLabel: //pkg:aspect_base_z, //pkg:aspect_base_x\n"
    },
    "declared_divergence": "both fail (exit 1) on two applications of one aspect writing different contents to one path, with Bazel's conflict lines naming both base targets (`file 'pkg/aspect_shared.txt' is generated by these conflicting actions:` / `Label: ...`); natively the line is prefixed with the consuming rule's location, which every error of an aspect-applied dependency takes (MergedConfiguredTarget's MergingException location), genuine reports the conflict without a location",
-   "native_message": "BUILD.bazel:194:16: file 'pkg/aspect_shared.txt' is generated by these conflicting actions:\nLabel: //pkg:aspect_base_z, //pkg:aspect_base_x",
+   "native_message": "BUILD.bazel:195:16: file 'pkg/aspect_shared.txt' is generated by these conflicting actions:\nLabel: //pkg:aspect_base_z, //pkg:aspect_base_x",
    "verdict": "DECLARED_DIVERGENCE"
   },
   "tree_shared": {
@@ -856,6 +859,167 @@
    "expected_labels": [
     "//pkg:c_req_value",
     "//pkg:c_tags"
+   ],
+   "verdict": "MATCH"
+  },
+  "chdir_shared": {
+   "argv": [
+    "build",
+    "//pkg:chdir_a",
+    "//pkg:chdir_b",
+    "//pkg:chdir_c"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.116,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 3 targets (5 packages loaded, 11 targets configured).\nINFO: Found 3 targets...\nTarget //pkg:chdir_a up-to-date:\n  bazel-bin/pkg/components.json\n  bazel-bin/pkg/manifest.json\nTarget //pkg:chdir_b up-to-date:\n  bazel-bin/pkg/components.json\n  bazel-bin/pkg/manifest.json\nTarget //pkg:chdir_c up-to-date:\n  bazel-bin/pkg/components.json\n  bazel-bin/pkg/manifest.json\nINFO: Elapsed time: 8.232s, Critical Path: 0.03s\nINFO: 3 processes: 1 internal, 2 local.\nINFO: Build completed successfully, 3 total actions\n"
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.434,
+    "stdout": "//pkg:chdir_a\t/home/coder/opencodetmp/w/sop-capture/cache-chdir_shared/actions/dee0a84cf7777a1de367c921a77badb331edb4344f0605c9e828c3496e26cf62/outputs/bazel-out/k8-fastbuild/bin/pkg/components.json\n//pkg:chdir_a\t/home/coder/opencodetmp/w/sop-capture/cache-chdir_shared/actions/2356c92a72ad25ce1a5c0c22848ec479bd5359643e021174821eea11fa48bb9b/outputs/bazel-out/k8-fastbuild/bin/pkg/manifest.json\n//pkg:chdir_b\t/home/coder/opencodetmp/w/sop-capture/cache-chdir_shared/actions/dee0a84cf7777a1de367c921a77badb331edb4344f0605c9e828c3496e26cf62/outputs/bazel-out/k8-fastbuild/bin/pkg/components.json\n//pkg:chdir_b\t/home/coder/opencodetmp/w/sop-capture/cache-chdir_shared/actions/2356c92a72ad25ce1a5c0c22848ec479bd5359643e021174821eea11fa48bb9b/outputs/bazel-out/k8-fastbuild/bin/pkg/manifest.json\n//pkg:chdir_c\t/home/coder/opencodetmp/w/sop-capture/cache-chdir_shared/actions/dee0a84cf7777a1de367c921a77badb331edb4344f0605c9e828c3496e26cf62/outputs/bazel-out/k8-fastbuild/bin/pkg/components.json\n//pkg:chdir_c\t/home/coder/opencodetmp/w/sop-capture/cache-chdir_shared/actions/2356c92a72ad25ce1a5c0c22848ec479bd5359643e021174821eea11fa48bb9b/outputs/bazel-out/k8-fastbuild/bin/pkg/manifest.json\n",
+    "stderr": "bazel-rs: memory limit defaulted to 16384 MB (the 16 GB default cap; at most 50% of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nINFO: Analyzed 3 targets (1 packages loaded, 3 targets configured).\nINFO: Found 3 targets...\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\nINFO: Elapsed time: 0.419s, Critical Path: 0.02s\nINFO: 3 processes: 1 internal, 2 local.\nINFO: Build completed successfully, 3 total actions\n"
+   },
+   "outputs": [
+    [
+     "//pkg:chdir_a",
+     "bazel-out/k8-fastbuild/bin/pkg/components.json",
+     "{ \"$schema\": \"https://ui.shadcn.com/schema.json\" }\n"
+    ],
+    [
+     "//pkg:chdir_a",
+     "bazel-out/k8-fastbuild/bin/pkg/manifest.json",
+     "neui fixture manifest\n"
+    ],
+    [
+     "//pkg:chdir_b",
+     "bazel-out/k8-fastbuild/bin/pkg/components.json",
+     "{ \"$schema\": \"https://ui.shadcn.com/schema.json\" }\n"
+    ],
+    [
+     "//pkg:chdir_b",
+     "bazel-out/k8-fastbuild/bin/pkg/manifest.json",
+     "neui fixture manifest\n"
+    ],
+    [
+     "//pkg:chdir_c",
+     "bazel-out/k8-fastbuild/bin/pkg/components.json",
+     "{ \"$schema\": \"https://ui.shadcn.com/schema.json\" }\n"
+    ],
+    [
+     "//pkg:chdir_c",
+     "bazel-out/k8-fastbuild/bin/pkg/manifest.json",
+     "neui fixture manifest\n"
+    ]
+   ],
+   "verdict": "MATCH"
+  },
+  "chdir_cpu_conflict": {
+   "argv": [
+    "build",
+    "//pkg:chdir_a",
+    "//pkg:chdir_cpu"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 9.929,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 10 targets configured).\nERROR: file 'pkg/components.json' is generated by these conflicting actions:\nLabel: //pkg:chdir_a, //pkg:chdir_cpu\nRuleClass: chdir rule\nJavaActionClass: class com.google.devtools.build.lib.analysis.actions.StarlarkAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: CopyFile\nIsShareable: true\nAction key: 7da678f86b35777ea82a8406615a9f7381462b6451cd02b4f184ec8bc563dcda, 7b21bb614bd9aa23703767538e873b6fc0e0ccf5f77df3aca68b308fe1805b7a\nProgress message: CopyFile pkg/components.json\nAction describeKey: CopyFile pkg/components.json\n  Environment variable: PATH=/bin:/usr/bin:/usr/local/bin\n  Execution info: no-sandbox=1\n  Argument: /bin/bash\n  Argument: -c\n  Argument: 'cp pkg/components.json bazel-out/k8-fastbuild/bin/pkg/components.json'\n  Output paths mode: OFF\n, CopyFile pkg/components.json\n  Environment variable: PATH=/bin:/usr/bin:/usr/local/bin\n  Execution info: cpu:6=\n  Execution info: no-sandbox=1\n  Argument: /bin/bash\n  Argument: -c\n  Argument: 'cp pkg/components.json bazel-out/k8-fastbuild/bin/pkg/components.json'\n  Output paths mode: OFF\n\nPrimaryInput: File:[<WS>[source]]pkg/components.json\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]pkg/components.json\nOwner information: ConfiguredTargetKey{label=//pkg:chdir_a, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}, ConfiguredTargetKey{label=//pkg:chdir_cpu, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nWARNING: errors encountered while analyzing target '//pkg:chdir_a': it will not be built\nINFO: Build succeeded for only 1 of 2 top-level targets\nINFO: Found 2 targets...\nTarget //pkg:chdir_cpu up-to-date:\n  bazel-bin/pkg/components.json\nTarget //pkg:chdir_a failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: command succeeded, but not all targets were analyzed\nINFO: Elapsed time: 9.023s, Critical Path: 0.04s\nINFO: 2 processes: 1 internal, 1 local.\nERROR: Build did NOT complete successfully\n"
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.402,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 16384 MB (the 16 GB default cap; at most 50% of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'pkg/components.json' is generated by these conflicting actions:\nLabel: //pkg:chdir_cpu, //pkg:chdir_a\n"
+   },
+   "expected_message": "file 'pkg/components.json' is generated by these conflicting actions:",
+   "expected_labels": [
+    "//pkg:chdir_a",
+    "//pkg:chdir_cpu"
+   ],
+   "verdict": "MATCH"
+  },
+  "chdir_cpu_conflict_nobuild": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "//pkg:chdir_a",
+    "//pkg:chdir_cpu"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 9.351,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: file 'pkg/components.json' is generated by these conflicting actions:\nLabel: //pkg:chdir_a, //pkg:chdir_cpu\nRuleClass: chdir rule\nJavaActionClass: class com.google.devtools.build.lib.analysis.actions.StarlarkAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: CopyFile\nIsShareable: true\nAction key: 7da678f86b35777ea82a8406615a9f7381462b6451cd02b4f184ec8bc563dcda, 7b21bb614bd9aa23703767538e873b6fc0e0ccf5f77df3aca68b308fe1805b7a\nProgress message: CopyFile pkg/components.json\nAction describeKey: CopyFile pkg/components.json\n  Environment variable: PATH=/bin:/usr/bin:/usr/local/bin\n  Execution info: no-sandbox=1\n  Argument: /bin/bash\n  Argument: -c\n  Argument: 'cp pkg/components.json bazel-out/k8-fastbuild/bin/pkg/components.json'\n  Output paths mode: OFF\n, CopyFile pkg/components.json\n  Environment variable: PATH=/bin:/usr/bin:/usr/local/bin\n  Execution info: cpu:6=\n  Execution info: no-sandbox=1\n  Argument: /bin/bash\n  Argument: -c\n  Argument: 'cp pkg/components.json bazel-out/k8-fastbuild/bin/pkg/components.json'\n  Output paths mode: OFF\n\nPrimaryInput: File:[<WS>[source]]pkg/components.json\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]pkg/components.json\nOwner information: ConfiguredTargetKey{label=//pkg:chdir_a, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}, ConfiguredTargetKey{label=//pkg:chdir_cpu, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nWARNING: errors encountered while analyzing target '//pkg:chdir_a': it will not be built\nINFO: Analysis succeeded for only 1 of 2 top-level targets\nINFO: Analyzed 2 targets (5 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nERROR: command succeeded, but not all targets were analyzed\nINFO: Elapsed time: 8.365s, Critical Path: 0.00s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n"
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.392,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 16384 MB (the 16 GB default cap; at most 50% of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'pkg/components.json' is generated by these conflicting actions:\nLabel: //pkg:chdir_cpu, //pkg:chdir_a\n"
+   },
+   "expected_message": "file 'pkg/components.json' is generated by these conflicting actions:",
+   "expected_labels": [
+    "//pkg:chdir_a",
+    "//pkg:chdir_cpu"
+   ],
+   "verdict": "MATCH"
+  },
+  "chdir_variant_conflict": {
+   "argv": [
+    "build",
+    "//pkg:chdir_a",
+    "//pkg:chdir_update"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 9.845,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 10 targets configured).\nERROR: file 'pkg/components.json' is generated by these conflicting actions:\nLabel: //pkg:chdir_update, //pkg:chdir_a\nRuleClass: chdir rule\nJavaActionClass: class com.google.devtools.build.lib.analysis.actions.StarlarkAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: CopyFile\nIsShareable: true\nAction key: e16223410ded0fb406a14757327ee2ba0f79a13c1549940ac370987c650f630e, 7da678f86b35777ea82a8406615a9f7381462b6451cd02b4f184ec8bc563dcda\nProgress message: CopyFile pkg/components.json\nAction describeKey: CopyFile pkg/components.json\n  Environment variable: PATH=/bin:/usr/bin:/usr/local/bin\n  Execution info: no-sandbox=1\n  Argument: /bin/bash\n  Argument: -c\n  Argument: 'cp -u pkg/components.json bazel-out/k8-fastbuild/bin/pkg/components.json'\n  Output paths mode: OFF\n, CopyFile pkg/components.json\n  Environment variable: PATH=/bin:/usr/bin:/usr/local/bin\n  Execution info: no-sandbox=1\n  Argument: /bin/bash\n  Argument: -c\n  Argument: 'cp pkg/components.json bazel-out/k8-fastbuild/bin/pkg/components.json'\n  Output paths mode: OFF\n\nPrimaryInput: File:[<WS>[source]]pkg/components.json\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]pkg/components.json\nOwner information: ConfiguredTargetKey{label=//pkg:chdir_update, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}, ConfiguredTargetKey{label=//pkg:chdir_a, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nWARNING: errors encountered while analyzing target '//pkg:chdir_update': it will not be built\nINFO: Build succeeded for only 1 of 2 top-level targets\nINFO: Found 2 targets...\nTarget //pkg:chdir_a up-to-date:\n  bazel-bin/pkg/components.json\n  bazel-bin/pkg/manifest.json\nTarget //pkg:chdir_update failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: command succeeded, but not all targets were analyzed\nINFO: Elapsed time: 8.873s, Critical Path: 0.03s\nINFO: 3 processes: 1 internal, 2 local.\nERROR: Build did NOT complete successfully\n"
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.392,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 16384 MB (the 16 GB default cap; at most 50% of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'pkg/components.json' is generated by these conflicting actions:\nLabel: //pkg:chdir_update, //pkg:chdir_a\n"
+   },
+   "expected_message": "file 'pkg/components.json' is generated by these conflicting actions:",
+   "expected_labels": [
+    "//pkg:chdir_a",
+    "//pkg:chdir_update"
+   ],
+   "verdict": "MATCH"
+  },
+  "chdir_cpu_shared": {
+   "argv": [
+    "build",
+    "//pkg:chdir_cpu",
+    "//pkg:chdir_cpu_manual"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.351,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 9 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:chdir_cpu_manual up-to-date:\n  bazel-bin/pkg/components.json\nTarget //pkg:chdir_cpu up-to-date:\n  bazel-bin/pkg/components.json\nINFO: Elapsed time: 8.374s, Critical Path: 0.02s\nINFO: 2 processes: 1 internal, 1 local.\nINFO: Build completed successfully, 2 total actions\n"
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.445,
+    "stdout": "//pkg:chdir_cpu\t/home/coder/opencodetmp/w/sop-capture/cache-chird_cpu_shared/actions/dee0a84cf7777a1de367c921a77badb331edb4344f0605c9e828c3496e26cf62/outputs/bazel-out/k8-fastbuild/bin/pkg/components.json\n//pkg:chdir_cpu_manual\t/home/coder/opencodetmp/w/sop-capture/cache-chird_cpu_shared/actions/dee0a84cf7777a1de367c921a77badb331edb4344f0605c9e828c3496e26cf62/outputs/bazel-out/k8-fastbuild/bin/pkg/components.json\n",
+    "stderr": "bazel-rs: memory limit defaulted to 16384 MB (the 16 GB default cap; at most 50% of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nINFO: Analyzed 2 targets (1 packages loaded, 2 targets configured).\nINFO: Found 2 targets...\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\nINFO: Elapsed time: 0.430s, Critical Path: 0.02s\nINFO: 2 processes: 1 internal, 1 local.\nINFO: Build completed successfully, 2 total actions\n"
+   },
+   "outputs": [
+    [
+     "//pkg:chdir_cpu",
+     "bazel-out/k8-fastbuild/bin/pkg/components.json",
+     "{ \"$schema\": \"https://ui.shadcn.com/schema.json\" }\n"
+    ],
+    [
+     "//pkg:chdir_cpu_manual",
+     "bazel-out/k8-fastbuild/bin/pkg/components.json",
+     "{ \"$schema\": \"https://ui.shadcn.com/schema.json\" }\n"
+    ]
    ],
    "verdict": "MATCH"
   }
