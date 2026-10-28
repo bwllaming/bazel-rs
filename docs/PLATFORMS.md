@@ -331,7 +331,13 @@ and referenced by '//:cv_missing'`) or select() key error.
   incompatible target skipping (an incompatible `target_compatible_with`
   fails explicitly, below); `--experimental_platforms_api`.
 
-## target_compatible_with (step 1: compatible targets)
+## target_compatible_with
+
+Direct and indirect incompatible configured results are now implemented for
+cquery. See [TARGET_COMPATIBILITY.md](TARGET_COMPATIBILITY.md) for actionless
+publication, graph/attribute projection, reference evidence and remaining
+configuration identity differences. Build/test root skipping remains fail-closed;
+the historical build diagnostics and capture below still apply to that boundary.
 
 IncompatibleTargetChecker.IncompatibleTargetProducer
 (`analysis/constraints/IncompatibleTargetChecker.java:126-227`), run by
@@ -364,7 +370,7 @@ natively `Engine::check_target_compatibility`:
 * A compatible target is analyzed and built as usual (~/code's duckdb
   `cross_libs` cc_library targets and `//src/python/baseimage:image`'s
   select() of cpu constraints plus `os:linux`).
-* An incompatible target fails explicitly at its analysis, naming the target
+* An incompatible build/test root fails explicitly after analysis, naming the target
   platform, the unmet constraints and the non-matching config_settings with
   Bazel's reason text (TopLevelConstraintSemantics.formatIncompatibilityReasons;
   both lists sorted by label and deduplicated like

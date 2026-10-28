@@ -56,7 +56,7 @@ pub fn start(inputs: key::Inputs<'_>, replay: snapshot::hit::ReplayInputs) -> St
         .cloned()
         .collect::<Vec<_>>();
     let filtered = key::Inputs {
-        command: "cquery-graph-v1",
+        command: "cquery-graph-v2",
         options: &options,
         ..inputs
     };

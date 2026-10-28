@@ -865,6 +865,28 @@ pub fn configure(rule: &Rule, resolver: &Resolver<'_>) -> Result<Rule, String> {
     Ok(configured)
 }
 
+/// One retained select for cquery's formatter. Direct incompatibility bypasses
+/// ordinary attribute validation, but the formatter still uses ConfigConditions
+/// with the declared rule. A failure is a formatting error, not an analysis
+/// failure (ProtoOutputFormatterCallback.java:342-375).
+pub(crate) fn query_value(
+    rule: &Rule,
+    resolver: &Resolver<'_>,
+    name: &str,
+) -> Result<Option<AttrValue>, String> {
+    for (source, parts) in configurable_attributes(rule) {
+        let info = source.info();
+        if info.name == name {
+            let resolved = resolver.resolve_attribute(&info, parts)?;
+            return Ok(resolved.value.or(info.default));
+        }
+    }
+    Err(format!(
+        "missing configurable attribute {name} of {}",
+        rule.label
+    ))
+}
+
 /// The configured value of the built-in (native) attribute `name` of
 /// `rule`, without configuring its other attributes: its select() resolved
 /// as [`configure`] resolves it (a non-explicit result is the unset

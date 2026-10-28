@@ -29,6 +29,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 mod alloc_report;
+mod compatibility;
 pub mod cquery;
 mod keep_going;
 pub mod query;
@@ -817,6 +818,9 @@ struct RunfilesNodes {
 /// An analyzed rule target in its configuration.
 #[derive(Clone, Debug, Default)]
 struct ConfiguredNode {
+    /// Actionless configured result, distinct from an analysis failure.
+    /// Causes share a DAG and never retain prerequisite provider heaps.
+    incompatible: Option<Arc<compatibility::Incompatibility>>,
     /// ConfigMatchingProvider of an analyzed `config_setting` (forwarded by
     /// aliases).
     matching: Option<ConfigMatching>,
@@ -1195,13 +1199,6 @@ fn has_platform_info(rule: &Rule) -> bool {
             rule.kind,
             RuleKind::Native("platform" | "alias" | "label_flag" | "label_setting")
         )
-}
-
-/// The mandatory-provider error of the first `target_compatible_with`
-/// label without a ConstraintValueInfo or ConfigMatchingProvider, if any
-/// (Engine::check_target_compatibility).
-fn unprovided_error(label: Option<&Label>, error: impl Fn(&Label) -> String) -> Result<(), String> {
-    label.map_or(Ok(()), |label| Err(error(label)))
 }
 
 /// Rules whose configured target is an AliasConfiguredTarget: `alias`
@@ -3856,7 +3853,6 @@ impl Engine {
         // Check the requested target and its generator before memoization, but
         // never scan unrelated outputs or impose this analysis gate on query.
         check_macro_namespace(&rule, &rule.label)?;
-        self.visible(&rule.visibility, &rule_authority(&rule), None)?;
         if matches!(rule.kind, RuleKind::PackageGroup(_)) {
             self.resolve_group(&rule.label, &mut Vec::new())?;
         }
@@ -3970,7 +3966,6 @@ impl Engine {
             let platform = configuration.native.target_platform().clone();
             self.platform_info(&platform, config, configured, plan)
                 .map_err(|e| e.target_text())?;
-            self.capture_cquery_edge(&key, platform, config, "$target_platform", true, false);
         }
         // The exec groups (ToolchainContextUtil.getUnloadedToolchainContextsInputs,
         // RuleTransitionApplier): before the target platform.
@@ -4000,7 +3995,7 @@ impl Engine {
         // Platform compatibility after the target platform and the select()
         // conditions, before toolchain resolution and every other dependency
         // (DependencyContextProducerWithCompatibilityCheck.java:159-189).
-        self.check_target_compatibility(
+        let compatibility = self.check_target_compatibility(
             &rule,
             config,
             &ordered,
@@ -4009,6 +4004,21 @@ impl Engine {
             configured,
             plan,
         )?;
+        if let Some(incompatible) = compatibility.incompatible {
+            self.publish_incompatible(key, rule, ordered, incompatible, configured, plan);
+            active.pop();
+            return Ok(());
+        }
+        if self.cquery_capture.is_some() && uses_toolchains {
+            self.capture_cquery_edge(
+                &key,
+                configuration.native.target_platform().clone(),
+                config,
+                "$target_platform",
+                true,
+                false,
+            );
+        }
         if let Some(custom) = &rule.custom
             && !custom.declaration.toolchain_gaps.is_empty()
         {
@@ -4059,7 +4069,6 @@ impl Engine {
                 });
             }
         }
-        native_analysis_gate(&rule)?;
         let conditions = ordered.iter().cloned().collect::<BTreeMap<_, _>>();
         let resolver = configured_attributes::Resolver {
             target: &rule.label,
@@ -4073,12 +4082,6 @@ impl Engine {
         let duplicate_errors =
             configured_attributes::concatenated_duplicate_errors(&rule, &configured_rule);
         let mut rule = configured_rule;
-        if let Some(custom) = &rule.custom
-            && !custom.declaration.unanalyzed.is_empty()
-        {
-            return Err(custom_gap_error(&rule, &custom.declaration.unanalyzed));
-        }
-        resolved_value_gate(&rule)?;
         // An alias-like rule has one dependency, its (resolved) actual: the
         // `actual` attribute, or the late-bound `:alias` of label_flag /
         // label_setting (rules/LabelBuildSettings.java:62-83).
@@ -4172,6 +4175,8 @@ impl Engine {
         // The exec configurations of named exec groups
         // (config.exec(exec_group = NAME)): the group's execution platform.
         let mut group_configs: BTreeMap<String, ConfigId> = BTreeMap::new();
+        let mut prerequisites = Vec::new();
+        let mut incompatible_deps = compatibility.dependencies;
         for edge in edges {
             let dep_configs = match &edge.cfg {
                 EdgeCfg::Target => EdgeConfigurations::One(config),
@@ -4274,111 +4279,26 @@ impl Engine {
                         error
                     }
                 })?;
-                let is_source = matches!(target, Target::Source(_));
-                let forwarding = matches!(&target, Target::Rule(dep) if forwards(dep));
-                // CommonPrerequisiteValidator.validateDirectPrerequisiteVisibility
-                // (analysis/CommonPrerequisiteValidator.java:181-221): an implicit
-                // (private, `_x`) attribute of a Starlark rule - subrule-lifted
-                // attributes included - is checked against the package of the
-                // `.bzl` that defines the rule class first, then against the
-                // consumer; a failure names that `.bzl` (:384-386). That `.bzl`
-                // is the rule class's definition environment label
-                // (getOwnerDefinitionBzl, :133-143): the module being initialized
-                // when rule() ran, not a helper `.bzl` that called rule().
-                let implicit_owner = rule
-                    .custom
-                    .as_ref()
-                    .filter(|_| edge.attribute.starts_with('_') && !late_bound)
-                    .and_then(|custom| {
-                        Label::parse_canonical(&custom.declaration.definition_environment_label)
-                            .ok()
-                    });
-                let (dep_visibility, dep_declaring) = match &target {
-                    Target::Rule(dep) | Target::Output(dep, _) => {
-                        (dep.visibility.clone(), rule_authority(dep))
-                    }
-                    Target::Source(_) => {
-                        (self.source_visibility(&dependency), dependency.package_id())
-                    }
-                };
-                let owner_visible = match &implicit_owner {
-                    Some(owner) => {
-                        self.visible(&dep_visibility, &dep_declaring, Some(&owner.package_id()))?
-                    }
-                    None => false,
-                };
-                let visible_from = implicit_owner.as_ref();
-                let visible = owner_visible
-                    || match target {
-                        Target::Rule(dep) | Target::Output(dep, _) => {
-                            check_macro_namespace(&dep, &dependency)?;
-                            check_macro_namespace(&dep, &dep.label)?;
-                            if matches!(dep.kind, RuleKind::PackageGroup(_))
-                                && !matches!(rule.kind, RuleKind::Custom)
-                            {
-                                return Err(format!(
-                                    "{}: package group '{dependency}' is misplaced in {}",
-                                    rule.label, edge.attribute
-                                ));
-                            }
-                            late_bound
-                                || self.visible(
-                                    &dep.visibility,
-                                    &rule_authority(&dep),
-                                    Some(&requesting_package),
-                                )?
-                        }
-                        Target::Source(_) => {
-                            late_bound
-                                || self.visible(
-                                    &self.source_visibility(&dependency),
-                                    &dependency.package_id(),
-                                    Some(&requesting_package),
-                                )?
-                        }
-                    };
-                if !forwarding {
-                    if !visible {
-                        return Err(visibility_error(
-                            &rule,
-                            &describe_with_aliases(&[], &dependency, "target"),
-                            is_source,
-                            visible_from,
-                        ));
-                    }
-                    self.validate_prerequisite(
-                        &rule,
-                        &dependency,
-                        &|| describe_with_aliases(&[], &dependency, "target"),
-                        skip_testonly,
-                    )?;
-                    self.analyze(&dependency, dep_config, active, configured, plan)?;
-                    continue;
-                }
-                // The configured alias (its actual's label and kind) is needed to
-                // describe and validate the edge (AliasProvider.describeTargetWithAliases).
                 self.analyze(&dependency, dep_config, active, configured, plan)?;
-                let (chain, actual) = self.alias_chain(configured, dep_config, &dependency);
-                // Formatted only for a reported error.
-                let description = || describe_with_aliases(&chain, &actual, "target");
-                if !visible {
-                    let is_source = matches!(self.target(&actual)?, Target::Source(_));
-                    return Err(visibility_error(
-                        &rule,
-                        &description(),
-                        is_source,
-                        visible_from,
+                if let Some(cause) =
+                    self.target_incompatibility(configured, &dependency, dep_config)?
+                {
+                    incompatible_deps.push((
+                        ConfiguredTargetKey::new(dependency.clone(), dep_config),
+                        cause,
                     ));
                 }
-                self.validate_prerequisite(&rule, &actual, &description, skip_testonly)?;
+                prerequisites.push((
+                    edge.attribute.clone(),
+                    dependency,
+                    dep_config,
+                    late_bound,
+                    target,
+                ));
             }
         }
-        // The resolved toolchain implementations are dependencies after the
-        // attribute dependencies (DependencyResolutionHelpers.java:358-373),
-        // analyzed in the parent's configuration (DependencyProducer.java:160-175,
-        // DependencyResolver.java:835-866), each once.
-        // Every exec group's toolchains are dependencies too, in
-        // ToolchainCollection order (default first; :358-373).
+        // Selected toolchain implementations are prerequisites; registration
+        // candidates do not propagate incompatibility to this consumer.
         for context in std::iter::once(&toolchain_context)
             .chain(exec_groups.groups.iter().map(|group| &group.context))
             .flatten()
@@ -4393,8 +4313,158 @@ impl Engine {
                 self.target(&implementation)
                     .map_err(|error| self.missing_edge_error(&rule, &implementation, error))?;
                 self.analyze(&implementation, config, active, configured, plan)?;
+                if let Some(cause) =
+                    self.target_incompatibility(configured, &implementation, config)?
+                {
+                    incompatible_deps.push((
+                        ConfiguredTargetKey::new(implementation.clone(), config),
+                        cause,
+                    ));
+                }
                 self.capture_cquery_edge(&key, implementation, config, "$toolchains", true, false);
             }
+        }
+        let platform_attributes = platform_prerequisite_attributes(&rule);
+        let platform_prerequisites = self.resolve_native_prerequisites(
+            &rule,
+            config,
+            &platform_attributes,
+            active,
+            configured,
+            plan,
+        )?;
+        for dependency in platform_prerequisites.iter().flatten() {
+            if let Some(cause) = self.target_incompatibility(configured, dependency, config)? {
+                incompatible_deps
+                    .push((ConfiguredTargetKey::new(dependency.clone(), config), cause));
+            }
+        }
+        // IncompatibleTargetChecker.java:277-311 runs on the resolved
+        // prerequisite map, before RuleContext/factory validation. These are
+        // the exact exemptions, independent of toolchain-resolution mode.
+        if !incompatible_deps.is_empty()
+            && !matches!(
+                rule.kind,
+                RuleKind::Native("toolchain" | "config_setting" | "label_flag")
+            )
+        {
+            self.publish_incompatible(
+                key,
+                Arc::new(rule),
+                ordered,
+                Arc::new(compatibility::Incompatibility::Dependencies(
+                    incompatible_deps.into_boxed_slice(),
+                )),
+                configured,
+                plan,
+            );
+            active.pop();
+            return Ok(());
+        }
+        if let Some(error) = compatibility.provider_error {
+            return Err(error);
+        }
+        native_analysis_gate(&rule)?;
+        if let Some(custom) = &rule.custom
+            && !custom.declaration.unanalyzed.is_empty()
+        {
+            return Err(custom_gap_error(&rule, &custom.declaration.unanalyzed));
+        }
+        resolved_value_gate(&rule)?;
+        self.visible(&rule.visibility, &rule_authority(&rule), None)?;
+        for (attribute, dependency, dep_config, late_bound, target) in prerequisites {
+            let is_source = matches!(target, Target::Source(_));
+            let forwarding = matches!(&target, Target::Rule(dep) if forwards(dep));
+            // CommonPrerequisiteValidator.validateDirectPrerequisiteVisibility
+            // (analysis/CommonPrerequisiteValidator.java:181-221): an implicit
+            // (private, `_x`) attribute of a Starlark rule - subrule-lifted
+            // attributes included - is checked against the package of the
+            // `.bzl` that defines the rule class first, then against the
+            // consumer; a failure names that `.bzl` (:384-386). That `.bzl`
+            // is the rule class's definition environment label
+            // (getOwnerDefinitionBzl, :133-143): the module being initialized
+            // when rule() ran, not a helper `.bzl` that called rule().
+            let implicit_owner = rule
+                .custom
+                .as_ref()
+                .filter(|_| attribute.starts_with('_') && !late_bound)
+                .and_then(|custom| {
+                    Label::parse_canonical(&custom.declaration.definition_environment_label).ok()
+                });
+            let (dep_visibility, dep_declaring) = match &target {
+                Target::Rule(dep) | Target::Output(dep, _) => {
+                    (dep.visibility.clone(), rule_authority(dep))
+                }
+                Target::Source(_) => (self.source_visibility(&dependency), dependency.package_id()),
+            };
+            let owner_visible = match &implicit_owner {
+                Some(owner) => {
+                    self.visible(&dep_visibility, &dep_declaring, Some(&owner.package_id()))?
+                }
+                None => false,
+            };
+            let visible_from = implicit_owner.as_ref();
+            let visible = owner_visible
+                || match target {
+                    Target::Rule(dep) | Target::Output(dep, _) => {
+                        check_macro_namespace(&dep, &dependency)?;
+                        check_macro_namespace(&dep, &dep.label)?;
+                        if matches!(dep.kind, RuleKind::PackageGroup(_))
+                            && !matches!(rule.kind, RuleKind::Custom)
+                        {
+                            return Err(format!(
+                                "{}: package group '{dependency}' is misplaced in {}",
+                                rule.label, attribute
+                            ));
+                        }
+                        late_bound
+                            || self.visible(
+                                &dep.visibility,
+                                &rule_authority(&dep),
+                                Some(&requesting_package),
+                            )?
+                    }
+                    Target::Source(_) => {
+                        late_bound
+                            || self.visible(
+                                &self.source_visibility(&dependency),
+                                &dependency.package_id(),
+                                Some(&requesting_package),
+                            )?
+                    }
+                };
+            if !forwarding {
+                if !visible {
+                    return Err(visibility_error(
+                        &rule,
+                        &describe_with_aliases(&[], &dependency, "target"),
+                        is_source,
+                        visible_from,
+                    ));
+                }
+                self.validate_prerequisite(
+                    &rule,
+                    &dependency,
+                    &|| describe_with_aliases(&[], &dependency, "target"),
+                    skip_testonly,
+                )?;
+                continue;
+            }
+            // The configured alias (its actual's label and kind) is needed to
+            // describe and validate the edge (AliasProvider.describeTargetWithAliases).
+            let (chain, actual) = self.alias_chain(configured, dep_config, &dependency);
+            // Formatted only for a reported error.
+            let description = || describe_with_aliases(&chain, &actual, "target");
+            if !visible {
+                let is_source = matches!(self.target(&actual)?, Target::Source(_));
+                return Err(visibility_error(
+                    &rule,
+                    &description(),
+                    is_source,
+                    visible_from,
+                ));
+            }
+            self.validate_prerequisite(&rule, &actual, &description, skip_testonly)?;
         }
         // Starlark rules: prerequisite errors need the analyzed prerequisites'
         // files and providers, so they are reported before the implementation
@@ -4433,8 +4503,13 @@ impl Engine {
         // (RuleContext.Builder, analysis/RuleContext.java:1700-1745, 1845-1880, 2165-2172).
         let (flag_prerequisites, constraint_prerequisites) =
             self.config_setting_prerequisites(&rule, config, active, configured, plan)?;
-        let platform_prerequisites =
-            self.platform_rule_prerequisites(&rule, config, active, configured, plan)?;
+        self.validate_native_prerequisites(
+            &rule,
+            config,
+            &platform_attributes,
+            &platform_prerequisites,
+            configured,
+        )?;
         // RuleContext.Builder.validateExtraPrerequisites first checks resolved
         // label lists for duplicates (analysis/RuleContext.java:2110-2113,
         // 1553-1568), attribute errors at the rule's location.
@@ -4525,6 +4600,7 @@ impl Engine {
         // AliasConfiguredTarget forwards the actual's providers; label_flag and
         // label_setting override BuildSettingProvider (LateBoundAlias.java:58-79).
         let mut actual = None;
+        let mut incompatible = None;
         let mut build_setting = build_setting;
         if forwards(&rule) {
             let target = self.resolve_rule_src(&rule, &rule.srcs[0])?;
@@ -4533,6 +4609,7 @@ impl Engine {
                 .cloned()
                 .unwrap_or_default();
             matching = forwarded.matching;
+            incompatible = forwarded.incompatible;
             if build_setting.is_none() {
                 build_setting = forwarded.build_setting;
             }
@@ -4558,6 +4635,7 @@ impl Engine {
         configured.insert(
             key.clone(),
             ConfiguredNode {
+                incompatible,
                 matching,
                 build_setting,
                 actual,
@@ -4575,6 +4653,12 @@ impl Engine {
         }
         self.analyze_aspect_edges(&rule, &key, active, configured, plan)?;
         if let Some(capture) = &mut self.cquery_capture {
+            if configured
+                .get(&key)
+                .is_some_and(|node| node.incompatible.is_some())
+            {
+                capture.incompatible.insert(key.clone(), ordered);
+            }
             capture.rules.insert(key.clone(), Arc::clone(&rule));
         }
         plan.push((key, rule));
@@ -4654,6 +4738,12 @@ impl Engine {
         seen: &mut BTreeSet<(ConfiguredTargetKey, Vec<String>)>,
     ) -> Result<Vec<u32>, String> {
         let key = ConfiguredTargetKey::new(label.clone(), config);
+        if self
+            .target_incompatibility(configured, label, config)?
+            .is_some()
+        {
+            return Ok(Vec::new());
+        }
         // The application's configuration is the base configured target's,
         // after a rule transition's delegation (AspectKeyCreator over the
         // ConfiguredTargetKey; as Self::plan_aspect_collection).
@@ -6930,33 +7020,13 @@ impl Engine {
         Ok((flags, constraints))
     }
 
-    /// The label attributes of `constraint_setting`
-    /// (ConstraintSettingRule.java:84-89), `constraint_value`
-    /// (ConstraintValueRule.java:56-63) and `platform` (PlatformRule.java:75-89,
-    /// 149-152), in rule-class attribute order, analyzed and validated (the
-    /// resolved labels per attribute).
-    fn platform_rule_prerequisites(
-        &mut self,
-        rule: &Rule,
-        config: ConfigId,
-        active: &mut Vec<ConfiguredTargetKey>,
-        configured: &mut ConfiguredNodes,
-        plan: &mut Plan,
-    ) -> Result<Vec<Vec<Label>>, String> {
-        let attributes = platform_prerequisite_attributes(rule);
-        if attributes.is_empty() {
-            return Ok(Vec::new());
-        }
-        self.native_prerequisites(rule, config, &attributes, active, configured, plan)
-    }
-
     /// RuleContext.Builder.createTargetMap for native label attributes
     /// (analysis/RuleContext.java:1708-1745, 2165-2172): every prerequisite is
     /// analyzed, then validated in attribute order — validateRuleDependency
     /// for rules (allowed rule classes, else mandatory providers, :2002-2093),
     /// the no-files check for files (:1845-1880), then visibility, testonly
     /// and deprecation. All errors are reported at the rule's location.
-    fn native_prerequisites(
+    fn resolve_native_prerequisites(
         &mut self,
         rule: &Rule,
         config: ConfigId,
@@ -6987,11 +7057,22 @@ impl Engine {
             }
             resolved.push(labels);
         }
+        Ok(resolved)
+    }
+
+    fn validate_native_prerequisites(
+        &mut self,
+        rule: &Rule,
+        config: ConfigId,
+        attributes: &[PrerequisiteAttribute],
+        resolved: &[Vec<Label>],
+        configured: &ConfiguredNodes,
+    ) -> Result<(), String> {
         let shown = crate::rule_declarations::canonical_form(&rule.label);
         let class = rule.rule_class_name().to_owned();
         let requesting_package = rule_authority(rule);
         let mut errors = Vec::new();
-        for (attribute, labels) in attributes.iter().zip(&resolved) {
+        for (attribute, labels) in attributes.iter().zip(resolved) {
             let prefix = crate::rule_errors::RuleEvents {
                 rule_class: &class,
                 label: &shown,
@@ -7043,7 +7124,7 @@ impl Engine {
                 .collect::<Vec<_>>()
                 .join("\n"));
         }
-        Ok(resolved)
+        Ok(())
     }
 
     /// The providers of `constraint_setting` (rules/platform/ConstraintSetting.java:227-304),
@@ -8996,16 +9077,11 @@ impl Engine {
     /// setting (ConstraintCollection.hasConstraintValue) and each
     /// config_setting must match; duplicate constraint settings
     /// (ConstraintCollection.validateConstraints) and config_setting errors
-    /// are validation errors at the rule's location. A compatible target is
-    /// analyzed as usual; an incompatible one fails explicitly, naming the
-    /// target platform, the unmet constraints and the non-matching
-    /// config_settings (each sorted and deduplicated like
-    /// IncompatiblePlatformProvider) in Bazel's words
-    /// (TopLevelConstraintSemantics.formatIncompatibilityReasons): Bazel
-    /// makes it an IncompatiblePlatformProvider target that wildcard patterns
-    /// skip and an explicit request rejects, which the native profile does
-    /// not model (docs/PLATFORMS.md). An incompatible target never reaches
-    /// the mandatory-provider check (its dependencies are not analyzed).
+    /// are validation errors at the rule's location. An incompatible result
+    /// carries sorted/deduplicated causes and replaces normal rule analysis.
+    /// Mandatory-provider errors are deferred until after indirect replacement,
+    /// just like RuleContext validation. Build/test root skip policy is a separate
+    /// fail-closed boundary; cquery includes these results (TARGET_COMPATIBILITY.md).
     #[allow(clippy::too_many_arguments)]
     fn check_target_compatibility(
         &mut self,
@@ -9016,15 +9092,15 @@ impl Engine {
         active: &mut Vec<ConfiguredTargetKey>,
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
-    ) -> Result<(), String> {
+    ) -> Result<compatibility::DirectCheck, String> {
         // The toolchain rule's own target_compatible_with is a toolchain
         // resolution input (platform_prerequisite_attributes).
         if matches!(rule.kind, RuleKind::Native("toolchain")) {
-            return Ok(());
+            return Ok(Default::default());
         }
         // Most targets do not set the attribute: no condition map for them.
         if !configured_attributes::has_native_value(rule, "target_compatible_with") {
-            return Ok(());
+            return Ok(Default::default());
         }
         let conditions = conditions.iter().cloned().collect::<BTreeMap<_, _>>();
         let resolver = configured_attributes::Resolver {
@@ -9040,11 +9116,12 @@ impl Engine {
         .map_err(|error| located(rule.location.as_deref(), error))?
         {
             Some(crate::custom_rule::AttrValue::Labels(labels)) if !labels.is_empty() => labels,
-            _ => return Ok(()),
+            _ => return Ok(Default::default()),
         };
         let mut constraints = Vec::new();
         let mut settings = Vec::new();
         let mut unprovided = None;
+        let mut dependencies = Vec::new();
         for text in &labels {
             let label = self.resolve_rule_src(rule, text)?;
             self.analyze(&label, config, active, configured, plan)?;
@@ -9064,6 +9141,9 @@ impl Engine {
                 .unwrap_or_default();
             if node.constraint_value.is_none() && node.matching.is_none() {
                 unprovided.get_or_insert(label.clone());
+            }
+            if let Some(cause) = node.incompatible {
+                dependencies.push((ConfiguredTargetKey::new(label.clone(), config), cause));
             }
             if let Some(value) = node.constraint_value {
                 constraints.push(value);
@@ -9085,7 +9165,11 @@ impl Engine {
             )
         };
         if !checked {
-            return unprovided_error(unprovided.as_ref(), provider_error);
+            return Ok(compatibility::DirectCheck {
+                incompatible: None,
+                provider_error: unprovided.map(|label| provider_error(&label)),
+                dependencies,
+            });
         }
         crate::platforms::validate_constraints(&constraints)
             .map_err(|error| located(rule.location.as_deref(), error))?;
@@ -9127,7 +9211,11 @@ impl Engine {
                 .collect::<Vec<_>>()
         });
         if unmet.is_empty() && not_matching.is_empty() {
-            return unprovided_error(unprovided.as_ref(), provider_error);
+            return Ok(compatibility::DirectCheck {
+                incompatible: None,
+                provider_error: unprovided.map(|label| provider_error(&label)),
+                dependencies,
+            });
         }
         // IncompatiblePlatformProvider.incompatibleDueToConstraintsAndConfigSettings
         // (analysis/IncompatiblePlatformProvider.java:113-125): the unmet
@@ -9140,45 +9228,14 @@ impl Engine {
         unmet.dedup();
         not_matching.sort();
         not_matching.dedup();
-        // TopLevelConstraintSemantics.formatIncompatibilityReasons (:316-351).
-        let mut reasons = Vec::new();
-        if let Some(platform) = platform.as_ref().filter(|_| !unmet.is_empty()) {
-            let mut reason = format!(
-                " target platform ({}) didn't satisfy constraint",
-                platform.label
-            );
-            match unmet.as_slice() {
-                [only] => reason.push_str(&format!(" {}", only.label)),
-                many => reason.push_str(&format!(
-                    "s [{}]",
-                    many.iter()
-                        .map(|value| value.label.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
-            }
-            reasons.push(reason);
-        }
-        if !not_matching.is_empty() {
-            reasons.push(match not_matching.as_slice() {
-                [only] => format!(" target configuration didn't match config_setting {only}"),
-                many => format!(
-                    " target configuration didn't match config_settings [{}]",
-                    many.iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            });
-        }
-        Err(located(
-            rule.location.as_deref(),
-            format!(
-                "{} is incompatible with its target platform:{}; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)",
-                crate::rule_declarations::canonical_form(&rule.label),
-                reasons.join(" and")
-            ),
-        ))
+        Ok(compatibility::DirectCheck {
+            incompatible: Some(Arc::new(compatibility::Incompatibility::Direct {
+                platform: platform.as_ref().map(|platform| platform.label.clone()),
+                constraints: unmet.iter().map(|value| value.label.clone()).collect(),
+                settings: not_matching.into_iter().cloned().collect(),
+            })),
+            ..Default::default()
+        })
     }
 
     /// ConfigConditionsProducer (analysis/producers/ConfigConditionsProducer.java:91-172):
@@ -10877,6 +10934,17 @@ impl Engine {
         label: &Label,
         edge_config: ConfigId,
     ) -> Result<DependencyTarget, String> {
+        if self
+            .target_incompatibility(configured, label, edge_config)?
+            .is_some()
+        {
+            return self.incompatible_dependency_view(
+                configured,
+                target_identities,
+                label,
+                edge_config,
+            );
+        }
         let artifacts = self.shared_artifacts(label, edge_config, dry, declared)?;
         let files = artifacts.iter().map(Artifact::file).collect::<Vec<_>>();
         for artifact in artifacts.iter() {
@@ -11109,6 +11177,12 @@ impl Engine {
                 edge_config,
             )?
         };
+        if self
+            .target_incompatibility(configured, label, edge_config)?
+            .is_some()
+        {
+            return Ok((base, Vec::new()));
+        }
         // The application target: the alias chain's end in the edge's
         // configuration, with a rule transition's delegation applied
         // (AspectKeyCreator over ConfiguredTargetKey); an output-file edge
@@ -11906,7 +11980,11 @@ impl Engine {
         edge_config: ConfigId,
         mut aspects: Vec<std::sync::Arc<crate::aspects::AspectDefinition>>,
     ) -> Result<(DependencyTarget, AspectApplications), String> {
-        if aspects.is_empty() {
+        if aspects.is_empty()
+            || self
+                .target_incompatibility(configured, label, edge_config)?
+                .is_some()
+        {
             let PlanState {
                 dry,
                 custom_providers,
@@ -14071,6 +14149,18 @@ impl Engine {
         index: u64,
     ) -> Result<(), String> {
         use crate::plan_timings::{PlanStage, StageTimer};
+        if configured
+            .get(key)
+            .is_some_and(|node| node.incompatible.is_some())
+        {
+            // Includes plan_pending's early flushes. No prepare, implementation,
+            // normal provider synthesis, action lowering or runfiles rendering.
+            state.dry.insert(key.clone(), Arc::new(Vec::new()));
+            state
+                .runfiles_info
+                .insert(key.clone(), Arc::new(Default::default()));
+            return Ok(());
+        }
         // --profile (crate::profile): the target's analysis on this thread.
         let profiled = crate::profile::active().then(std::time::Instant::now);
         {
@@ -14217,7 +14307,21 @@ impl Engine {
             if self.keep_going {
                 self.keep_going_state.current = Some(label.clone());
             }
-            let analyzed = self.analyze(label, top, &mut active, configured, plan);
+            let analyzed = self
+                .analyze(label, top, &mut active, configured, plan)
+                .and_then(|()| {
+                    if self.cquery_capture.is_none()
+                        && let Some(cause) = self.target_incompatibility(configured, label, top)?
+                    {
+                        let (origin, error) = cause.unsupported_build_error(label);
+                        let location = match self.target(origin)? {
+                            Target::Rule(rule) | Target::Output(rule, _) => rule.location.clone(),
+                            Target::Source(_) => None,
+                        };
+                        return Err(located(location.as_deref(), error));
+                    }
+                    Ok(())
+                });
             self.requested_trimmed_root = None;
             self.keep_going_state.current = None;
             let analyzed = analyzed.map_err(|error| match error.split_once(ANALYSIS_ABORTED) {

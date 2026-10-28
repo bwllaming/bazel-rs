@@ -5,7 +5,10 @@
 //! DependencyContextProducerWithCompatibilityCheck.java:159-189): the
 //! configured labels' ConstraintValueInfo and config_setting results decide
 //! compatibility; a compatible target is analyzed and built as usual, an
-//! incompatible one is an explicit native error (skipping is not modelled).
+//! incompatible one is an actionless result whose build/test root policy still
+//! fails explicitly (skipping is not modelled). The 11 original divergences here
+//! are BUILD-policy evidence, not cquery failures; target_compatibility_cquery.rs
+//! verifies configured query's inclusion of these results independently.
 //! Every case of tests/fixtures/target_compatible_with/reference_receipt.json
 //! — genuine Bazel 9.3.0 (`--batch --ignore_all_rc_files`, a removed scratch
 //! output user root) on the fixture workspace — runs natively here and is
@@ -340,6 +343,6 @@ fn validation_errors_match_bazel() {
 /// repository that are never analyzed (only the incompatibility is
 /// reported).
 #[test]
-fn incompatible_targets_are_explicit_errors() {
+fn incompatible_build_roots_retain_the_documented_skip_policy_boundary() {
     check_group("declared");
 }

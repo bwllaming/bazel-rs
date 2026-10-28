@@ -240,6 +240,9 @@ mod owned {
         /// Actual rule class, after alias/aspect unwrapping, for native
         /// consumers such as JavaStarlarkCommon.getTargetKind.
         pub rule_class: Option<String>,
+        /// IncompatibleTargetChecker's special actionless RuleConfiguredTarget
+        /// has DefaultInfo but no implicit OutputGroupInfo.
+        pub incompatible: bool,
         /// Display names of the declared providers a rule target returned,
         /// in return order (RuleConfiguredTarget.debugPrint).
         pub provider_keys: Vec<String>,
@@ -2037,7 +2040,11 @@ impl<'v> StarlarkValue<'v> for TargetValue {
             collector.push_str(key);
             collector.push_str(", ");
         }
-        collector.push_str("OutputGroupInfo]>");
+        collector.push_str(if target.incompatible {
+            "]>"
+        } else {
+            "OutputGroupInfo]>"
+        });
     }
 
     /// Configured targets are immutable Starlark values, hence hashable
@@ -2116,6 +2123,7 @@ impl<'v> StarlarkValue<'v> for TargetValue {
         if identity == crate::output_group_info::PROVIDER_ID
             && !self.0.providers.contains_key(&identity)
             && self.0.is_rule()
+            && !self.0.incompatible
         {
             return Ok(heap.alloc(crate::output_group_info::merged(
                 Vec::new(),
@@ -2141,7 +2149,9 @@ impl<'v> StarlarkValue<'v> for TargetValue {
             ))
         })?;
         Ok(self.0.providers.contains_key(&identity)
-            || (identity == crate::output_group_info::PROVIDER_ID && self.0.is_rule()))
+            || (identity == crate::output_group_info::PROVIDER_ID
+                && self.0.is_rule()
+                && !self.0.incompatible))
     }
 }
 
@@ -2298,6 +2308,7 @@ pub(crate) fn target_of_kind(
         providers,
         kind,
         rule_class: None,
+        incompatible: false,
         provider_keys,
         runfiles,
     }

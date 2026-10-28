@@ -9,6 +9,8 @@ use std::io::Write;
 #[derive(Default)]
 pub(super) struct Capture {
     pub rules: BTreeMap<ConfiguredTargetKey, Arc<Rule>>,
+    pub incompatible: BTreeMap<ConfiguredTargetKey, Vec<(String, ConfigMatching)>>,
+    pub direct_incompatible: BTreeSet<ConfiguredTargetKey>,
     edges: Vec<CapturedEdge>,
     target_ids: BTreeMap<Arc<ConfiguredTargetKey>, u32>,
     target_keys: Vec<Arc<ConfiguredTargetKey>>,
@@ -183,6 +185,10 @@ pub struct Node {
     pub target: wire::Target,
     pub configuration: Option<u32>,
     pub edges: Vec<GraphEdge>,
+    pub incompatible: bool,
+    /// Only failed select projections. Label output never inspects ordinary
+    /// attributes; proto/attr() fail explicitly rather than inventing values.
+    pub attribute_errors: Option<Box<BTreeMap<String, String>>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -510,6 +516,13 @@ impl Graph {
                                 Function::Kind => node.kind(),
                                 Function::Filter => node.label().to_owned(),
                                 _ => {
+                                    if let Some(error) = node
+                                        .attribute_errors
+                                        .as_ref()
+                                        .and_then(|errors| errors.get(word(0)))
+                                    {
+                                        return Err(error.clone());
+                                    }
                                     let wire::Target::Rule(rule) = &node.target else {
                                         continue;
                                     };
@@ -617,6 +630,13 @@ impl Graph {
             }
             return destination.flush().map_err(|e| e.to_string());
         }
+        for id in &ids {
+            if let Some(errors) = &self.nodes[*id as usize].attribute_errors
+                && let Some(error) = errors.values().next()
+            {
+                return Err(error.clone());
+            }
+        }
         let format = if options.common.output == "proto" {
             wire::OutputFormat::Proto
         } else {
@@ -637,7 +657,9 @@ impl Graph {
                             continue;
                         }
                         let target = &self.nodes[edge.to as usize];
-                        rule.rule_inputs.push(target.label().to_owned());
+                        if !node.incompatible {
+                            rule.rule_inputs.push(target.label().to_owned());
+                        }
                         rule.configured_rule_inputs.push(wire::ConfiguredRuleInput {
                             label: target.label().to_owned(),
                             configuration_checksum: target
@@ -984,6 +1006,22 @@ impl Engine {
             }
         }
         for ((label, config), _) in ordered {
+            let mut attribute_errors = BTreeMap::new();
+            let owner = match self.target(label)? {
+                Target::Output(rule, _) => rule.label.clone(),
+                _ => label.clone(),
+            };
+            let captured_key = config.map(|id| {
+                let key = ConfiguredTargetKey::new(owner.clone(), id);
+                if capture.rules.contains_key(&key) {
+                    key
+                } else {
+                    ConfiguredTargetKey::without_rule_transition(owner.clone(), id)
+                }
+            });
+            let incompatible = captured_key
+                .as_ref()
+                .is_some_and(|key| capture.incompatible.contains_key(key));
             let target = match self.target(label)? {
                 Target::Source(path) => wire::Target::SourceFile(wire::SourceFile {
                     name: label.to_string(),
@@ -1009,7 +1047,7 @@ impl Engine {
                             .collect(),
                     })
                 }
-                Target::Rule(_) => {
+                Target::Rule(declaration) => {
                     let config = config.ok_or("rule has null configuration")?;
                     let key = ConfiguredTargetKey::new(label.clone(), config);
                     let rule = capture
@@ -1028,10 +1066,46 @@ impl Engine {
                         .packages
                         .get(&label.package_id())
                         .ok_or("cquery missing loaded package")?;
-                    let mut attributes = query_attrs::rule_attributes(rule, package)
-                        .into_iter()
-                        .map(|attribute| configured_attribute(attribute, rule))
-                        .collect::<Result<Vec<_>, _>>()?;
+                    let retained = captured_key
+                        .as_ref()
+                        .and_then(|key| capture.incompatible.get(key))
+                        .map(|conditions| conditions.iter().cloned().collect());
+                    let resolver =
+                        retained
+                            .as_ref()
+                            .map(|conditions| configured_attributes::Resolver {
+                                target: label,
+                                conditions,
+                                config_hash: config.to_string(),
+                            });
+                    let mut attributes = Vec::new();
+                    for mut attribute in query_attrs::rule_attributes(rule, package) {
+                        if attribute.select.is_some()
+                            && let Some(resolver) = &resolver
+                        {
+                            match configured_attributes::query_value(
+                                rule,
+                                resolver,
+                                &attribute.public_name,
+                            ) {
+                                Ok(value) => {
+                                    attribute.value = value;
+                                    attribute.select = None;
+                                }
+                                Err(error) => {
+                                    attribute_errors.insert(
+                                        attribute.name.clone(),
+                                        format!(
+                                            "cquery cannot format attribute {} of {}: {error}",
+                                            attribute.name, label
+                                        ),
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
+                        attributes.push(configured_attribute(attribute, rule)?);
+                    }
                     attributes.push(wire::Attribute::new(
                         "name",
                         wire::AttributeValue::String(label.name.clone()),
@@ -1109,6 +1183,16 @@ impl Engine {
                         rule_class: rule.rule_class_name().to_owned(),
                         location: rule.location.clone(),
                         attributes,
+                        rule_inputs: if incompatible {
+                            query_attrs::rule_attributes(&declaration, package)
+                                .iter()
+                                .flat_map(query_attrs::QueryAttribute::labels)
+                                .collect::<BTreeSet<_>>()
+                                .into_iter()
+                                .collect()
+                        } else {
+                            Vec::new()
+                        },
                         rule_outputs: rule
                             .outs
                             .iter()
@@ -1122,6 +1206,9 @@ impl Engine {
                 target,
                 configuration: config.map(|id| config_ids[&id]),
                 edges: Vec::new(),
+                incompatible,
+                attribute_errors: (!attribute_errors.is_empty())
+                    .then(|| Box::new(attribute_errors)),
             });
         }
         crate::perf_mark("cquery.graph_vertices_ready");
@@ -1212,6 +1299,22 @@ impl Engine {
         // identity. It never impersonates that rule or drops its owner edge.
         for ((label, config), id) in &ids {
             if let Target::Output(rule, _) = self.target(label)? {
+                if config.is_some_and(|config| {
+                    capture
+                        .direct_incompatible
+                        .contains(&ConfiguredTargetKey::new(rule.label.clone(), config))
+                        || capture.direct_incompatible.contains(
+                            &ConfiguredTargetKey::without_rule_transition(
+                                rule.label.clone(),
+                                config,
+                            ),
+                        )
+                }) {
+                    // Direct output replacement happens from its associated
+                    // rule before the generating-rule prerequisite. The proto
+                    // generating_rule string is metadata, not an analyzed edge.
+                    continue;
+                }
                 let to = ids
                     .get(&(rule.label.clone(), *config))
                     .ok_or("cquery output has no generating rule")?;
@@ -1354,6 +1457,10 @@ fn configured_attribute(
     // query_attrs models loading defaults; use the actual configured value of
     // late-bound Starlark attributes instead of the loading-time annotation.
     if let Some(custom) = &rule.custom
+        && !custom
+            .declaration
+            .configurable
+            .contains_key(&attribute.public_name)
         && let Some(actual) = custom.attrs.get(&attribute.public_name)
     {
         value = Some(actual.clone());

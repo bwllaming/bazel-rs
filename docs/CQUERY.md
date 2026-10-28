@@ -69,7 +69,11 @@ fail explicitly. In particular: Starlark formatting and incompatible-target
 filtering, keep-going partial results, transitions=full, full aspect metadata
 formatting, relative path-as-target literals outside the recorded patterns,
 and attr() over License values are not implemented. Existing native analysis
-limitations (including incompatible targets) still fail. Attribute split
+limitations still fail. Direct/indirect incompatible targets are actionless
+configured results included in queries; retained conditions project their
+attributes without ordinary dependency analysis. See
+[TARGET_COMPATIBILITY.md](TARGET_COMPATIBILITY.md) for formatter errors and the
+separate fail-closed build/test skipping boundary. Attribute split
 transitions now analyze every branch; see [SPLIT_TRANSITIONS.md](SPLIT_TRANSITIONS.md).
 There is no genuine-Bazel fallback and no special-case TD output rewriting.
 
