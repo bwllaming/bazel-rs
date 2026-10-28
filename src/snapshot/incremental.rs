@@ -172,6 +172,21 @@ pub struct IndexPackage {
     pub loaded: bool,
     /// Main-repository packages only.
     pub fingerprint: Option<Fingerprint>,
+    /// Its BUILD file's direct loads among [`Index::modules`].
+    pub loads: Vec<u32>,
+}
+
+/// A `.bzl` module of the index: a main-repository module, or one loading
+/// one (transitively). Edits of main-repository modules dirty the packages
+/// loading them and the targets whose rules they define.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexModule {
+    pub label: Label,
+    /// Its direct loads among [`Index::modules`].
+    pub loads: Vec<u32>,
+    /// Entered by a definition load (a repository rule, a module extension,
+    /// an aspect's identity): its edits are not attributable.
+    pub definition: bool,
 }
 
 /// The dependency index of one full analysis (the INDEX section).
@@ -204,6 +219,185 @@ pub struct Index {
     /// The recorded inputs of repositories and extensions
     /// (crate::observed_fs::note_repository_input): (path, a tree).
     pub repository_inputs: Vec<(PathBufWire, bool)>,
+    /// The `.bzl` modules edits of which incremental analysis attributes
+    /// ([`IndexModule`]).
+    pub modules: Vec<IndexModule>,
+    /// (key, module): the modules defining a configured target's rule
+    /// (the `.bzl` calling `rule()` and the one being initialized).
+    pub rule_modules: Vec<(u32, u32)>,
+}
+
+/// The stand-in module of a rule whose defining modules are unknown: an
+/// index naming it attributes no `.bzl` edit.
+pub fn unattributed_module() -> Label {
+    Label {
+        repository: String::new(),
+        package: String::new(),
+        name: "<unattributed>".to_owned(),
+    }
+}
+
+/// The module graph as labels (crate::engine builds it from the loaded
+/// packages' load graphs; [`set_modules`] stores it).
+#[derive(Clone, Debug, Default)]
+pub struct ModuleGraph {
+    /// Every module's direct loads.
+    pub loads: std::collections::HashMap<Label, Vec<Label>>,
+    /// Modules a definition load entered.
+    pub definitions: std::collections::HashSet<Label>,
+}
+
+/// Store `graph` in `index`: the main-repository modules and those loading
+/// them (transitively), `package_loads` each package's direct loads (by
+/// its position in `index.packages`), `rules` each key's rule modules.
+pub fn set_modules(
+    index: &mut Index,
+    graph: &ModuleGraph,
+    package_loads: &[(u32, Vec<Label>)],
+    rules: &[(u32, Vec<Label>)],
+) {
+    use std::collections::{BTreeSet, HashMap};
+    // Relevant: main-repository modules, and modules reaching one.
+    let mut parents: HashMap<&Label, Vec<&Label>> = HashMap::new();
+    let mut all: BTreeSet<&Label> = BTreeSet::new();
+    for (module, loads) in &graph.loads {
+        all.insert(module);
+        for load in loads {
+            all.insert(load);
+            parents.entry(load).or_default().push(module);
+        }
+    }
+    all.extend(graph.definitions.iter());
+    for (_, loads) in package_loads.iter().chain(rules) {
+        all.extend(loads.iter());
+    }
+    let mut relevant: BTreeSet<&Label> = all
+        .iter()
+        .copied()
+        .filter(|label| label.repository.is_empty())
+        .collect();
+    let mut todo: Vec<&Label> = relevant.iter().copied().collect();
+    while let Some(module) = todo.pop() {
+        for parent in parents.get(module).into_iter().flatten() {
+            if relevant.insert(parent) {
+                todo.push(parent);
+            }
+        }
+    }
+    let ids: HashMap<&Label, u32> = relevant
+        .iter()
+        .enumerate()
+        .map(|(id, label)| (*label, id as u32))
+        .collect();
+    let id_list = |loads: &[Label]| -> Vec<u32> {
+        let mut seen = BTreeSet::new();
+        loads
+            .iter()
+            .filter_map(|load| ids.get(load).copied())
+            .filter(|id| seen.insert(*id))
+            .collect()
+    };
+    index.modules = relevant
+        .iter()
+        .map(|label| IndexModule {
+            label: (*label).clone(),
+            loads: graph
+                .loads
+                .get(*label)
+                .map(|loads| id_list(loads))
+                .unwrap_or_default(),
+            definition: graph.definitions.contains(*label),
+        })
+        .collect();
+    for package in &mut index.packages {
+        package.loads.clear();
+    }
+    for (package, loads) in package_loads {
+        if let Some(package) = index.packages.get_mut(*package as usize) {
+            package.loads = id_list(loads);
+        }
+    }
+    let mut rule_modules: BTreeSet<(u32, u32)> = BTreeSet::new();
+    for (key, modules) in rules {
+        for module in id_list(modules) {
+            rule_modules.insert((*key, module));
+        }
+    }
+    index.rule_modules = rule_modules.into_iter().collect();
+}
+
+/// Refresh the modules of `index` (an incremental save's, after
+/// [`merge_index`]) with what this run loaded: `now`'s modules' loads and
+/// definitions, the direct loads of the packages it loaded, the rule
+/// modules of the keys it re-analyzed.
+pub fn refresh_modules(
+    index: &mut Index,
+    now: &ModuleGraph,
+    package_loads: &[(crate::label::PackageId, Vec<Label>)],
+    rules: &[(u32, Vec<Label>)],
+) {
+    use std::collections::{BTreeMap, HashMap};
+    let mut graph = module_graph(index);
+    for (module, loads) in &now.loads {
+        graph.loads.insert(module.clone(), loads.clone());
+    }
+    graph.definitions.extend(now.definitions.iter().cloned());
+    let label = |id: &u32| index.modules[*id as usize].label.clone();
+    let mut loads: BTreeMap<u32, Vec<Label>> = index
+        .packages
+        .iter()
+        .enumerate()
+        .map(|(id, package)| (id as u32, package.loads.iter().map(label).collect()))
+        .collect();
+    let positions: HashMap<(&str, &str), u32> = index
+        .packages
+        .iter()
+        .enumerate()
+        .map(|(id, package)| {
+            (
+                (package.repository.as_str(), package.package.as_str()),
+                id as u32,
+            )
+        })
+        .collect();
+    for (package, direct) in package_loads {
+        if let Some(id) = positions.get(&(package.repository.as_str(), package.package.as_str())) {
+            loads.insert(*id, direct.clone());
+        }
+    }
+    let mut rule_modules: BTreeMap<u32, Vec<Label>> = BTreeMap::new();
+    for (key, module) in &index.rule_modules {
+        rule_modules.entry(*key).or_default().push(label(module));
+    }
+    for (key, modules) in rules {
+        rule_modules.insert(*key, modules.clone());
+    }
+    let loads: Vec<(u32, Vec<Label>)> = loads.into_iter().collect();
+    let rules: Vec<(u32, Vec<Label>)> = rule_modules.into_iter().collect();
+    set_modules(index, &graph, &loads, &rules);
+}
+
+/// The module graph `index` stores, as labels.
+pub fn module_graph(index: &Index) -> ModuleGraph {
+    let label = |id: &u32| index.modules[*id as usize].label.clone();
+    ModuleGraph {
+        loads: index
+            .modules
+            .iter()
+            .map(|module| {
+                (
+                    module.label.clone(),
+                    module.loads.iter().map(label).collect(),
+                )
+            })
+            .collect(),
+        definitions: index
+            .modules
+            .iter()
+            .filter(|module| module.definition)
+            .map(|module| module.label.clone())
+            .collect(),
+    }
 }
 
 /// A path as raw bytes on the wire (non-UTF-8 survives).
@@ -422,8 +616,22 @@ pub struct Classified {
     pub index: Index,
     /// Indices into the INPUTS' observations.
     pub changed: Vec<usize>,
+    pub attribution: Attribution,
+}
+
+/// Where the changed observations of a miss lie ([`classify`]).
+#[derive(Debug, Default)]
+pub struct Attribution {
+    /// Packages whose BUILD file or glob listings changed.
     pub loaded: std::collections::BTreeSet<u32>,
+    /// Packages whose other observations changed.
     pub content: std::collections::BTreeSet<u32>,
+    /// The edited `.bzl` modules and every module loading one
+    /// (transitively), index module ids.
+    pub modules: std::collections::BTreeSet<u32>,
+    /// Packages loading one of `modules`: loaded again, their fingerprint
+    /// decides.
+    pub bzl: std::collections::BTreeSet<u32>,
 }
 
 /// While a lookup misses (crate::snapshot::hit): every changed observation
@@ -447,7 +655,7 @@ pub fn classify_attempt(
         .and_then(decode_index)
         .map_err(|error| format!("no dependency index: {error}"))?;
     let decoded = started.elapsed();
-    let (loaded, content) = classify(&index, &inputs.recording, &changed, cache)?;
+    let attribution = classify(&index, &inputs.recording, &changed, cache)?;
     if crate::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING")) {
         crate::snapshot::diag::line_fmt(format_args!(
             "PERF-SNAPSHOT incremental classify validate_ms={:.3} index_ms={:.3} classify_ms={:.3} changed={}",
@@ -460,8 +668,7 @@ pub fn classify_attempt(
     Ok(Classified {
         index,
         changed,
-        loaded,
-        content,
+        attribution,
     })
 }
 
@@ -480,6 +687,10 @@ pub struct Candidate {
     /// Packages whose other observations changed (a source file's
     /// existence, type or link): their targets are re-analyzed.
     pub content: std::collections::BTreeSet<u32>,
+    /// The edited `.bzl` modules and those loading them ([`Attribution`]).
+    pub modules: std::collections::BTreeSet<u32>,
+    /// Packages loading one of `modules`: loaded again.
+    pub bzl: std::collections::BTreeSet<u32>,
     /// The snapshot's short key (diagnostics).
     pub key: String,
     pub started: std::time::Instant,
@@ -497,8 +708,13 @@ impl Candidate {
         let Classified {
             index,
             changed,
-            loaded,
-            content,
+            attribution:
+                Attribution {
+                    loaded,
+                    content,
+                    modules,
+                    bzl,
+                },
         } = classified?;
         Ok(Self {
             inputs,
@@ -508,6 +724,8 @@ impl Candidate {
             changed,
             loaded,
             content,
+            modules,
+            bzl,
             key,
             started: std::time::Instant::now(),
         })
@@ -523,24 +741,33 @@ fn escaped(path: &std::path::Path) -> String {
 /// (in the cache, a repository's or extension's recorded input, a `.bzl`
 /// file, a listing of the target patterns, a package boundary, a package
 /// shared computations read or whose BUILD file printed).
-#[allow(clippy::type_complexity)]
 pub fn classify(
     index: &Index,
     recording: &crate::observed_fs::Recording,
     changed: &[usize],
     cache: &std::path::Path,
-) -> Result<
-    (
-        std::collections::BTreeSet<u32>,
-        std::collections::BTreeSet<u32>,
-    ),
-    String,
-> {
+) -> Result<Attribution, String> {
     use crate::observed_fs::{Op, Projection};
     use std::collections::{BTreeSet, HashMap};
     if changed.is_empty() {
         return Err("no observation changed".to_owned());
     }
+    let module_paths: HashMap<PathBuf, u32> = index
+        .modules
+        .iter()
+        .enumerate()
+        .filter(|(_, module)| module.label.repository.is_empty())
+        .map(|(id, module)| {
+            (
+                index
+                    .main_root
+                    .join(&module.label.package)
+                    .join(&module.label.name),
+                id as u32,
+            )
+        })
+        .collect();
+    let mut edited: BTreeSet<u32> = BTreeSet::new();
     let mut packages: HashMap<&str, u32> = HashMap::new();
     for (id, package) in index.packages.iter().enumerate() {
         if package.repository.is_empty() && package.loaded && package.fingerprint.is_some() {
@@ -568,6 +795,14 @@ pub fn classify(
         let relative = path
             .strip_prefix(&index.main_root)
             .map_err(|_| format!("{what}: outside the main repository"))?;
+        // A main-repository `.bzl` module of the index: the packages
+        // loading it and the targets whose rules it defines (below).
+        if let Some(module) = module_paths.get(path) {
+            edited.insert(*module);
+            if observation.op == Op::Read {
+                continue;
+            }
+        }
         let name = relative.file_name().and_then(|name| name.to_str());
         let build_file = matches!(name, Some("BUILD" | "BUILD.bazel"));
         let directory = match observation.op {
@@ -607,6 +842,7 @@ pub fn classify(
             }
         }
     }
+    let (modules, bzl) = bzl_attribution(index, &edited)?;
     for &id in loaded.iter().chain(content.iter()) {
         let package = &index.packages[id as usize];
         let shown = format!("package //{}", package.package);
@@ -628,7 +864,89 @@ pub fn classify(
             ));
         }
     }
-    Ok((loaded, content))
+    Ok(Attribution {
+        loaded,
+        content,
+        modules,
+        bzl,
+    })
+}
+
+/// The modules an edit of `edited` affects (they and every module loading
+/// one) and the packages loading them; the error names why the edit is not
+/// attributable (a definition load entered an affected module, a package
+/// of another repository or one not loaded loads one, a rule's defining
+/// modules are unknown).
+#[allow(clippy::type_complexity)]
+fn bzl_attribution(
+    index: &Index,
+    edited: &std::collections::BTreeSet<u32>,
+) -> Result<
+    (
+        std::collections::BTreeSet<u32>,
+        std::collections::BTreeSet<u32>,
+    ),
+    String,
+> {
+    use std::collections::{BTreeSet, HashMap};
+    if edited.is_empty() {
+        return Ok(Default::default());
+    }
+    let unattributed = unattributed_module();
+    if let Some((key, _)) = index
+        .rule_modules
+        .iter()
+        .find(|(_, module)| index.modules[*module as usize].label == unattributed)
+    {
+        return Err(format!(
+            "the rule of {} has no known defining module",
+            index.keys[*key as usize].label
+        ));
+    }
+    let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (id, module) in index.modules.iter().enumerate() {
+        for load in &module.loads {
+            parents.entry(*load).or_default().push(id as u32);
+        }
+    }
+    let mut affected: BTreeSet<u32> = edited.clone();
+    let mut todo: Vec<u32> = edited.iter().copied().collect();
+    while let Some(module) = todo.pop() {
+        for parent in parents.get(&module).into_iter().flatten() {
+            if affected.insert(*parent) {
+                todo.push(*parent);
+            }
+        }
+    }
+    for id in &affected {
+        let module = &index.modules[*id as usize];
+        if module.definition {
+            return Err(format!(
+                "{} is loaded by a repository rule, a module extension or an aspect's definition",
+                module.label
+            ));
+        }
+    }
+    let mut packages = BTreeSet::new();
+    for (id, package) in index.packages.iter().enumerate() {
+        if !package.loads.iter().any(|load| affected.contains(load)) {
+            continue;
+        }
+        if !package.repository.is_empty() || !package.loaded || package.fingerprint.is_none() {
+            return Err(format!(
+                "package @@{}//{} loads an edited .bzl file",
+                package.repository, package.package
+            ));
+        }
+        if package.printed {
+            return Err(format!(
+                "package //{} loads an edited .bzl file and printed while it loaded",
+                package.package
+            ));
+        }
+        packages.insert(id as u32);
+    }
+    Ok((affected, packages))
 }
 
 /// The packages whose targets an incremental analysis re-analyzes, after
@@ -661,9 +979,18 @@ pub fn compare_package(
     if printed {
         return Err(format!("{shown} prints while it loads"));
     }
-    if now.shared_kinds {
+    let unchanged = before.digest == now.digest && !candidate.content.contains(&id);
+    // A package reloaded for a `.bzl` edit may be read by shared
+    // computations or define shared kinds while it does not change.
+    if now.shared_kinds && !unchanged {
         return Err(format!(
-            "{shown} now defines toolchains, platforms, constraints, flags or package groups"
+            "{shown} defines toolchains, platforms, constraints, flags or package groups"
+        ));
+    }
+    if package.global && !unchanged {
+        return Err(format!(
+            "{shown} is read by a shared computation (toolchains, platforms, transitions, visibility or the command line): {}",
+            package.why.as_deref().unwrap_or("-")
         ));
     }
     // Whether the target pattern phase expanded the package is not
@@ -674,7 +1001,7 @@ pub fn compare_package(
         ));
     }
     changed.fingerprints.insert(id, now);
-    if before.digest == now.digest && !candidate.content.contains(&id) {
+    if unchanged {
         changed.pruned += 1;
     } else {
         changed.packages.insert(id);
@@ -688,6 +1015,7 @@ pub fn compare_package(
 pub fn dirty_labels(
     index: &Index,
     packages: &std::collections::BTreeSet<u32>,
+    modules: &std::collections::BTreeSet<u32>,
 ) -> Result<(Vec<Label>, std::collections::BTreeSet<u32>), String> {
     use std::collections::{BTreeSet, HashMap};
     let mut by_package: HashMap<(&str, &str), u32> = HashMap::new();
@@ -705,6 +1033,12 @@ pub fn dirty_labels(
     }
     for (key, package) in &index.accesses {
         if packages.contains(package) {
+            dirty.insert(*key);
+        }
+    }
+    // The targets whose rules an edited module defines.
+    for (key, module) in &index.rule_modules {
+        if modules.contains(module) {
             dirty.insert(*key);
         }
     }
@@ -748,7 +1082,35 @@ pub fn dirty_labels(
             index.keys[*dirty.iter().next().expect("not empty") as usize].label
         ));
     }
+    // A large dirty set is analyzed no faster than the whole request.
+    let configured = index.keys.iter().filter(|key| key.config.is_some()).count();
+    let dirty_configured = dirty
+        .iter()
+        .filter(|key| index.keys[**key as usize].config.is_some())
+        .count();
+    let (limit, minimum) = max_dirty_percent();
+    if configured >= minimum && dirty_configured * 100 > configured * limit {
+        return Err(format!(
+            "{dirty_configured} of {configured} configured targets are dirty (more than {limit}%)"
+        ));
+    }
     Ok((labels, dirty))
+}
+
+/// `BAZEL_RS_INCREMENTAL_MAX_DIRTY_PERCENT`: above this share of the saved
+/// analysis's configured targets dirty, the full analysis runs (default 25,
+/// for analyses of 500 configured targets or more; set, for any).
+pub const MAX_DIRTY_VAR: &str = "BAZEL_RS_INCREMENTAL_MAX_DIRTY_PERCENT";
+
+/// The dirty share's limit (percent) and the analysis size it applies from.
+fn max_dirty_percent() -> (usize, usize) {
+    match std::env::var(MAX_DIRTY_VAR)
+        .ok()
+        .and_then(|value| value.parse().ok())
+    {
+        Some(limit) => (limit, 0),
+        None => (25, 500),
+    }
 }
 
 /// Every line the partial analysis printed — but its own `INFO: Analyzed`
@@ -1675,6 +2037,7 @@ mod tests {
                 summary: [0; 32],
                 shared_kinds: false,
             }),
+            loads: Vec::new(),
         }
     }
 
@@ -1721,9 +2084,9 @@ mod tests {
             ..Default::default()
         };
         let cache = std::path::Path::new("/cache");
-        let (loaded, content) = classify(&index, &recording, &[0, 1, 2], cache).unwrap();
-        assert_eq!(loaded.into_iter().collect::<Vec<_>>(), [1, 2]);
-        assert_eq!(content.into_iter().collect::<Vec<_>>(), [2]);
+        let attribution = classify(&index, &recording, &[0, 1, 2], cache).unwrap();
+        assert_eq!(attribution.loaded.into_iter().collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(attribution.content.into_iter().collect::<Vec<_>>(), [2]);
         for (at, reason) in [
             (3, ".bzl"),
             (4, "package boundary"),
@@ -1747,6 +2110,106 @@ mod tests {
             classify(&index, &recording, &[0], cache)
                 .unwrap_err()
                 .contains("printed")
+        );
+    }
+
+    #[test]
+    fn bzl_edits_reach_the_packages_and_rules_loading_them_or_are_refused() {
+        use crate::observed_fs::Op;
+        let label = |text: &str| Label::parse_canonical(text).unwrap();
+        let mut index = Index {
+            main_root: PathBuf::from("/ws"),
+            packages: vec![package("a"), package("b"), package("c")],
+            keys: vec![
+                IndexKey {
+                    label: label("//a:x"),
+                    config: Some([1; 32]),
+                    apply: true,
+                },
+                IndexKey {
+                    label: label("//c:y"),
+                    config: Some([1; 32]),
+                    apply: true,
+                },
+            ],
+            labels: vec![label("//a:x"), label("//c:y")],
+            roots: vec![(0, 0), (1, 1)],
+            ..Index::default()
+        };
+        let graph = ModuleGraph {
+            loads: [
+                (label("//a:defs.bzl"), vec![label("//lib:util.bzl")]),
+                (label("//lib:util.bzl"), Vec::new()),
+                (label("//c:other.bzl"), vec![label("@@ext+//:x.bzl")]),
+                (label("@@ext+//:x.bzl"), Vec::new()),
+            ]
+            .into_iter()
+            .collect(),
+            definitions: Default::default(),
+        };
+        set_modules(
+            &mut index,
+            &graph,
+            &[
+                (0, vec![label("//a:defs.bzl")]),
+                (2, vec![label("//c:other.bzl")]),
+            ],
+            &[
+                (0, vec![label("//a:defs.bzl")]),
+                (1, vec![label("//c:other.bzl")]),
+            ],
+        );
+        // The external module loads no main-repository module: not kept.
+        assert!(
+            index
+                .modules
+                .iter()
+                .all(|module| module.label.repository.is_empty())
+        );
+        let recording = crate::observed_fs::Recording {
+            observations: vec![
+                observation("/ws/lib/util.bzl", Op::Read),
+                observation("/ws/c/other.bzl", Op::Read),
+            ],
+            ..Default::default()
+        };
+        let cache = std::path::Path::new("/cache");
+        let attribution = classify(&index, &recording, &[0], cache).unwrap();
+        assert_eq!(attribution.bzl.iter().copied().collect::<Vec<_>>(), [0]);
+        assert!(attribution.loaded.is_empty() && attribution.content.is_empty());
+        let (labels, dirty) =
+            dirty_labels(&index, &Default::default(), &attribution.modules).unwrap();
+        assert_eq!(dirty.into_iter().collect::<Vec<_>>(), [0]);
+        assert_eq!(labels, [label("//a:x")]);
+        // A definition load entered it: refused.
+        let mut defined = graph.clone();
+        defined.definitions.insert(label("//lib:util.bzl"));
+        set_modules(
+            &mut index,
+            &defined,
+            &[(0, vec![label("//a:defs.bzl")])],
+            &[(0, vec![label("//a:defs.bzl")])],
+        );
+        assert!(
+            classify(&index, &recording, &[0], cache)
+                .unwrap_err()
+                .contains("repository rule")
+        );
+        // An external package loading an edited module: refused.
+        index.packages.push(IndexPackage {
+            repository: "ext+".to_owned(),
+            ..package("")
+        });
+        set_modules(
+            &mut index,
+            &graph,
+            &[(3, vec![label("//c:other.bzl")])],
+            &[],
+        );
+        assert!(
+            classify(&index, &recording, &[1], cache)
+                .unwrap_err()
+                .contains("@@ext+//")
         );
     }
 
@@ -1811,11 +2274,18 @@ mod tests {
                     summary: [3; 32],
                     shared_kinds: false,
                 }),
+                loads: vec![0],
             }],
             roots: vec![(0, 0)],
             shared: Vec::new(),
             printed: Vec::new(),
             aspects: vec![(0, "//a:b%x".to_owned())],
+            modules: vec![IndexModule {
+                label: Label::parse_canonical("//a:defs.bzl").unwrap(),
+                loads: Vec::new(),
+                definition: false,
+            }],
+            rule_modules: vec![(0, 0)],
         };
         let stored = encode_index(&index).unwrap();
         assert_eq!(decode_index(stored).unwrap(), index);

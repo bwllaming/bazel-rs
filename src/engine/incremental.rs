@@ -389,6 +389,7 @@ impl Engine {
                     printed: record.printed,
                     loaded: false,
                     fingerprint: None,
+                    loads: Vec::new(),
                 }
             })
             .collect();
@@ -407,7 +408,25 @@ impl Engine {
             .root("")
             .map(Path::to_path_buf)
             .unwrap_or_default();
-        Some(Index {
+        let package_loads: Vec<(u32, Vec<Label>)> = tracker
+            .packages
+            .iter()
+            .enumerate()
+            .filter_map(|(index, record)| {
+                let package = self.packages.get(record.id.as_ref()?)?;
+                Some((index as u32, package.direct_loads.clone()))
+            })
+            .collect();
+        let keys: Vec<(u32, Label)> = tracker
+            .keys
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, config, _))| config.is_some())
+            .map(|(index, (label, _, _))| (index as u32, label.clone()))
+            .collect();
+        let graph = module_graph(&self.packages);
+        let rules = rule_modules(&self.packages, &keys);
+        let mut index = Index {
             main_root,
             repository_inputs: crate::observed_fs::repository_inputs()
                 .into_iter()
@@ -431,7 +450,30 @@ impl Engine {
             shared: tracker.shared_keys.iter().copied().collect(),
             printed: tracker.printed_keys.iter().copied().collect(),
             aspects: tracker.aspects.iter().cloned().collect(),
-        })
+            modules: Vec::new(),
+            rule_modules: Vec::new(),
+        };
+        crate::snapshot::incremental::set_modules(&mut index, &graph, &package_loads, &rules);
+        Some(index)
+    }
+
+    /// The `.bzl` load graph of every loaded package, and the modules
+    /// definition loads entered (crate::snapshot::incremental::ModuleGraph).
+    pub fn module_graph(&self) -> crate::snapshot::incremental::ModuleGraph {
+        module_graph(&self.packages)
+    }
+
+    /// The modules defining the rules of `keys` (see [`rule_modules`]).
+    pub fn rule_modules(&self, keys: &[(u32, Label)]) -> Vec<(u32, Vec<Label>)> {
+        rule_modules(&self.packages, keys)
+    }
+
+    /// The direct loads of every loaded package.
+    pub fn package_loads(&self) -> Vec<(PackageId, Vec<Label>)> {
+        self.packages
+            .iter()
+            .map(|(id, package)| (id.clone(), package.direct_loads.clone()))
+            .collect()
     }
 
     /// Load `package` (if it is not yet) and return its fingerprint, and
@@ -599,4 +641,53 @@ pub(crate) fn fingerprint(package: &Package) -> Fingerprint {
         summary: *blake3::hash(rules_summary.as_bytes()).as_bytes(),
         shared_kinds,
     }
+}
+
+/// The `.bzl` load graph of every loaded package, and the modules
+/// definition loads entered (crate::snapshot::incremental::ModuleGraph).
+fn module_graph(
+    packages: &BTreeMap<PackageId, Package>,
+) -> crate::snapshot::incremental::ModuleGraph {
+    let mut graph = crate::snapshot::incremental::ModuleGraph::default();
+    let mut seen: HashSet<*const crate::loading::LoadGraph> = HashSet::new();
+    for package in packages.values() {
+        if !seen.insert(Arc::as_ptr(&package.load_graph)) {
+            continue;
+        }
+        for (module, loads) in package.load_graph.iter() {
+            graph
+                .loads
+                .entry(module.clone())
+                .or_insert_with(|| loads.clone());
+        }
+    }
+    graph.definitions = crate::loading::definition_modules().into_iter().collect();
+    graph
+}
+
+/// The modules defining the rules of `keys` (loaded packages only): the
+/// `.bzl` that called `rule()` and the one being initialized then.
+fn rule_modules(
+    packages: &BTreeMap<PackageId, Package>,
+    keys: &[(u32, Label)],
+) -> Vec<(u32, Vec<Label>)> {
+    keys.iter()
+        .filter_map(|(key, label)| {
+            let rule = packages.get(&label.package_id())?.rules.get(label)?;
+            let custom = rule.custom.as_ref()?;
+            let modules = [
+                &custom.declaration.definition_label,
+                &custom.declaration.definition_environment_label,
+            ]
+            .into_iter()
+            .map(|text| {
+                // Unparsable: no module edit is attributable (the index
+                // says so, crate::snapshot::incremental::UNATTRIBUTED).
+                Label::parse_canonical(text)
+                    .unwrap_or_else(|_| crate::snapshot::incremental::unattributed_module())
+            })
+            .collect();
+            Some((*key, modules))
+        })
+        .collect()
 }

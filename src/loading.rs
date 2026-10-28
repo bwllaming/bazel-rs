@@ -431,6 +431,37 @@ pub(crate) fn record_label_repo_mapping(eval: &Evaluator<'_, '_, '_>, text: &str
     }
 }
 
+/// The `.bzl` modules a definition load entered (a repository rule's, a
+/// module extension's or an aspect's defining file and its loads): their
+/// edits are never attributed to packages by incremental analysis
+/// (crate::snapshot::incremental). Process-wide, in first-seen order.
+static DEFINITION_MODULES: std::sync::Mutex<Option<std::collections::BTreeSet<Label>>> =
+    std::sync::Mutex::new(None);
+
+fn note_definition_modules(loader: &Loader<'_>, label: &Label) {
+    let mut modules = DEFINITION_MODULES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let modules = modules.get_or_insert_with(Default::default);
+    modules.insert(label.clone());
+    modules.extend(loader.cache.keys().cloned());
+    modules.extend(loader.load_graph.keys().cloned());
+    for loads in loader.load_graph.values() {
+        modules.extend(loads.iter().cloned());
+    }
+}
+
+/// Every module a definition load of this process entered
+/// ([`note_definition_modules`]).
+pub fn definition_modules() -> Vec<Label> {
+    DEFINITION_MODULES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map(|modules| modules.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
 /// Load a public export directly from a canonical `.bzl` label, without a BUILD
 /// shim. Unlike ordinary package loading, this demanded definition snapshots
 /// repository mappings and therefore may resolve the module graph.
@@ -507,7 +538,9 @@ fn load_frozen_export_with(
     }
     let mut loader = Loader::new(repositories, globals, true);
     loader.definitions = shared_definitions;
-    loader.load(label.clone())?;
+    let loaded = loader.load(label.clone());
+    note_definition_modules(&loader, label);
+    loaded?;
     let module = loader
         .cache
         .get(label)
@@ -581,7 +614,9 @@ pub(crate) fn load_shared_definition_any_in(
         return Err(format!("load {label} requires a .bzl suffix"));
     }
     let mut loader = Loader::shared_build_phase(repositories, globals, prints);
-    loader.load(label.clone()).map_err(|error| {
+    let loaded = loader.load(label.clone());
+    note_definition_modules(&loader, label);
+    loaded.map_err(|error| {
         // A parallel wait-cycle abort escaping a definition load has no
         // commit unit above it to re-run inline: it is a genuine
         // re-entrant demand (an extension loading the very module being

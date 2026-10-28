@@ -3211,6 +3211,8 @@ fn fuzz_fixture() -> Twin {
     twin.write("incr/BUILD.bazel", &fuzz_incr_build(&FuzzState::default()));
     twin.write("incr_use/BUILD.bazel", INCR_USE_BUILD);
     twin.write("incr_t/BUILD.bazel", &incr_t_build(0, 0));
+    twin.write("incr_m/macros.bzl", &incr_macros("one", false));
+    twin.write("incr_m/BUILD.bazel", INCR_M_BUILD);
     twin.workspace_rc.set(true);
     twin
 }
@@ -3386,6 +3388,8 @@ struct FuzzState {
     /// `incr_t/BUILD.bazel`: the flag and the comments.
     incr_t_flag: usize,
     incr_t_comments: usize,
+    /// `incr_m/macros.bzl`: the macro's flag.
+    incr_m_flag: usize,
 }
 
 impl FuzzState {
@@ -3438,7 +3442,7 @@ enum Special {
 }
 
 /// The number of mutations of the catalogue ([`mutate`]).
-const MUTATIONS: usize = 66;
+const MUTATIONS: usize = 67;
 
 /// Apply one random mutation of the catalogue (the same to both copies);
 /// returns its name and what the step does besides its command.
@@ -3964,6 +3968,24 @@ fn mutate(twin: &Twin, rng: &mut Rng, state: &mut FuzzState, step: usize) -> (St
                 name("incr_t: a comment (pruned)")
             }
         }
+        66 => {
+            let flags = ["one", "uno", "eins"];
+            if rng.percent(50) {
+                state.incr_m_flag = (state.incr_m_flag + 1) % flags.len();
+                twin.write(
+                    "incr_m/macros.bzl",
+                    &incr_macros(flags[state.incr_m_flag], state.on("incr-m-comment")),
+                );
+                name("incr_m: the macro's body (its package changes)")
+            } else {
+                let comment = state.toggle("incr-m-comment");
+                twin.write(
+                    "incr_m/macros.bzl",
+                    &incr_macros(flags[state.incr_m_flag], comment),
+                );
+                name("incr_m: a comment in the macro's .bzl (pruned)")
+            }
+        }
         _ => name("no change"),
     };
     (name, special)
@@ -4041,6 +4063,7 @@ fn fuzz_command(
             "--nobuild".into(),
             "//incr/...".into(),
             "//incr_use/...".into(),
+            "//incr_m/...".into(),
         ],
         14 => vec![
             "test".into(),
@@ -4486,6 +4509,14 @@ fn mutation_fuzz() {
                 let what = fuzz_outcome(&pair);
                 *counts.entry(what).or_default() += 1;
                 log.last_mut().unwrap().push_str(&format!(" -> {what}"));
+                if what == "miss, incremental fell back"
+                    && let Some(reason) = pair
+                        .explain()
+                        .into_iter()
+                        .find(|line| line.starts_with("incremental"))
+                {
+                    log.last_mut().unwrap().push_str(&format!(" [{reason}]"));
+                }
                 if !note.get().is_empty() {
                     *counts.entry(note.get()).or_default() += 1;
                     log.last_mut()
@@ -4611,8 +4642,10 @@ fn incremental_analysis_splices_prunes_and_falls_back() {
     state.toggle("incr-deprecated");
     twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
     fallback("");
+    // The rules' `.bzl` file: every target of its rules (:a, :b, :extra,
+    // //incr_use:u and :v).
     twin.write("incr/defs.bzl", &format!("{INCR_RULES}\n# edited\n"));
-    fallback(".bzl file");
+    incremental(5);
     // A source an action reads: a hit (no analysis input changed).
     twin.write("incr/b.txt", "b2\n");
     twin.same(args, &[]).assert_hit().assert_success();
@@ -4635,6 +4668,107 @@ fn incremental_analysis_splices_prunes_and_falls_back() {
     twin.write("incr/b.txt", "b\n");
     let restored = twin.same(args, &[]);
     restored.assert_success();
+}
+
+/// A macro module loaded by `incr_m/BUILD.bazel` only.
+fn incr_macros(flag: &str, comment: bool) -> String {
+    format!(
+        "load('//incr:defs.bzl', 'chain')\n\ndef pair(name, deps = []):\n    chain(name = name + '_1', deps = deps, flag = '{flag}')\n    chain(name = name + '_2', flag = 'two')\n{}",
+        if comment { "# a comment\n" } else { "" }
+    )
+}
+
+const INCR_M_BUILD: &str = "load(':macros.bzl', 'pair')\npair(name = 'p', deps = ['//incr:a'])\n";
+
+/// Incremental analysis of `.bzl` edits (docs/INCREMENTAL_ANALYSIS.md):
+/// the packages loading an edited module are loaded again (a macro's
+/// edit changes their targets, a comment nothing), the targets whose
+/// rules it defines are re-analyzed with what reaches them; a module a
+/// repository rule loads falls back.
+#[test]
+fn incremental_analysis_of_bzl_edits() {
+    let twin = fixture();
+    let state = FuzzState::default();
+    twin.write("repos.bzl", FUZZ_REPOS);
+    twin.write("BUILD.bazel", &fuzz_build(false, false));
+    twin.write("incr/defs.bzl", INCR_RULES);
+    twin.write("incr/srcs/a.txt", "a\n");
+    twin.write("incr/b.txt", "b\n");
+    twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
+    twin.write("incr_use/BUILD.bazel", INCR_USE_BUILD);
+    twin.write("incr_m/macros.bzl", &incr_macros("one", false));
+    twin.write("incr_m/BUILD.bazel", INCR_M_BUILD);
+    let args = &[
+        "build",
+        "//incr/...",
+        "//incr_use/...",
+        "//incr_m/...",
+        "//other:o",
+    ];
+    twin.save(args, &[]);
+    twin.same(args, &[]).assert_hit();
+    let incremental = |rerun: usize| {
+        let pair = twin.same(args, &[]);
+        pair.assert_miss("").assert_success();
+        let line = pair
+            .explain()
+            .into_iter()
+            .find(|line| line.starts_with("incremental ") && line.contains(" re-analyzed;"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected an incremental analysis:\n{}",
+                    pair.explain().join("\n")
+                )
+            });
+        assert!(
+            line.contains(&format!(" {rerun} requested target(s) re-analyzed")),
+            "{line}"
+        );
+        if pair.mode == VERIFY {
+            assert!(
+                pair.line("verified ").is_some(),
+                "{}",
+                pair.explain().join("\n")
+            );
+        } else {
+            pair.assert_saved();
+        }
+        twin.same(args, &[]).assert_hit().assert_success();
+        pair
+    };
+    // The macro's comment: its package's targets stay.
+    twin.write("incr_m/macros.bzl", &incr_macros("one", true));
+    incremental(0);
+    // The macro's body: its package's targets change.
+    twin.write("incr_m/macros.bzl", &incr_macros("uno", true));
+    let spliced = incremental(2);
+    assert!(
+        spliced.stderr().contains("1 action executed")
+            || spliced.stderr().contains("1 actions executed"),
+        "{}",
+        spliced.stderr()
+    );
+    // The rules' module: a comment re-analyzes every target of its rules
+    // (their actions unchanged), a body edit re-runs them.
+    twin.write("incr/defs.bzl", &format!("{INCR_RULES}\n# edited\n"));
+    incremental(6);
+    twin.write(
+        "incr/defs.bzl",
+        &INCR_RULES.replace("out.path, ctx.attr.flag", "out.path, ctx.attr.flag + '!'"),
+    );
+    incremental(6);
+    // A module a repository rule loads: the full analysis.
+    twin.write("repos.bzl", &format!("{FUZZ_REPOS}\n# edited\n"));
+    let pair = twin.same(args, &[]);
+    pair.assert_miss("").assert_success();
+    assert!(
+        pair.explain()
+            .iter()
+            .any(|line| line.starts_with("incremental") && !line.contains(" re-analyzed;")),
+        "{}",
+        pair.explain().join("\n")
+    );
+    twin.same(args, &[]).assert_hit().assert_success();
 }
 
 /// `incr_t/BUILD.bazel`: two tests and a tool, `:t` and `:tool` reaching
@@ -4984,6 +5118,11 @@ mod verify_mode {
     #[test]
     fn incremental_analysis_of_test_and_run() {
         verified(super::incremental_analysis_of_test_and_run);
+    }
+
+    #[test]
+    fn incremental_analysis_of_bzl_edits() {
+        verified(super::incremental_analysis_of_bzl_edits);
     }
 
     #[test]

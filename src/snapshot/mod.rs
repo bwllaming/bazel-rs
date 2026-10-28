@@ -386,9 +386,11 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
                 .and_then(|base| incremental::Candidate::of(*base, key.short()));
             if timing && let Ok(candidate) = &classified {
                 diag::line_fmt(format_args!(
-                    "PERF-SNAPSHOT incremental loaded={} content={} changed={}",
+                    "PERF-SNAPSHOT incremental loaded={} content={} bzl={} modules={} changed={}",
                     candidate.loaded.len(),
                     candidate.content.len(),
+                    candidate.bzl.len(),
+                    candidate.modules.len(),
                     candidate.changed.len(),
                 ));
             }

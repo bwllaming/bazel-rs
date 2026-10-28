@@ -1962,6 +1962,7 @@ fn incremental_build(
         .loaded
         .iter()
         .chain(candidate.content.iter())
+        .chain(candidate.bzl.iter())
         .copied()
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
@@ -1989,7 +1990,8 @@ fn incremental_build(
     }
     let reloaded_at = started.elapsed();
     let (labels, dirty) =
-        incremental::dirty_labels(&candidate.index, &changed.packages).map_err(early)?;
+        incremental::dirty_labels(&candidate.index, &changed.packages, &candidate.modules)
+            .map_err(early)?;
     incremental_finish(
         engine,
         candidate,
@@ -2139,6 +2141,24 @@ fn incremental_finish(
         );
         (spliced, merged, status)
     };
+    // The modules: what this run loaded replaces what the saved index
+    // knew of them (a `.bzl` edit may change a module's loads, a BUILD
+    // edit a package's, a re-analyzed target's rule its modules).
+    let mut merged = merged;
+    {
+        let keys: Vec<(u32, bazel_rs::label::Label)> = dirty
+            .iter()
+            .filter(|key| merged.keys[**key as usize].config.is_some())
+            .map(|key| (*key, merged.keys[*key as usize].label.clone()))
+            .collect();
+        let rules = engine.rule_modules(&keys);
+        incremental::refresh_modules(
+            &mut merged,
+            &engine.module_graph(),
+            &engine.package_loads(),
+            &rules,
+        );
+    }
     let save = snapshot
         .save
         .as_mut()
