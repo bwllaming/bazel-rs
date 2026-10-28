@@ -26,7 +26,7 @@ a build-setting value. Configured target keys, provider instances and analysis
 remain separate even when immutable rule data is shared. Tests pin sharing and
 isolation across selected configurations and late-bound null/label defaults.
 
-The final release is based on `c09c0cb` (only shared-action fixtures/docs changed
+The measured release is based on `c09c0cb` (only shared-action fixtures/docs changed
 since `40ef505`) and has SHA256
 `791b09ddaf79d6899ec72af485b40407fc0d949d97bc304fe0ddb46d6b121a70`.
 The same read-only PR clone at `0b29c533c060e5ccb9466bbd200d2b0510be01da`,
@@ -68,6 +68,16 @@ allowance passed strict Clippy, all 1,811 lib tests and both discipline tests.
 The full suite was not repeated; all its semantic programs, including snapshot
 verification, passed on their first run. The release was built once after this
 correction. The focused pre-commit gate passed 190 integration tests as well.
+
+The subsequent integration rebased the unchanged memory implementation over the
+native startup lockfile control. Its combined full gate passed **3,245 tests,
+zero failures, 8 ignored**, with formatting and strict Clippy clean. The earlier
+failed verdict remains recorded; it was not relabeled as passing. The combined
+release also passed the real pinned TD scratch source-edit, repeated-edit and
+unchanged cases through a transparent launcher, with every companion protected
+by the startup private lockfile. This is not a full-repository TD comparison.
+No large application probe was repeated solely for this CLI-control integration;
+the performance table above remains bound to the explicitly named measured ELF.
 
 ## Earlier full-source retention and export work
 

@@ -94,9 +94,9 @@ Done since the last increment recorded under "History", one line each:
 - [x] Intern cquery capture endpoints/attribute names and bound snapshot encoding
       to 4 MiB buffers: peak 8,001 -> 7,548 MiB, headroom 191 -> 644 MiB, outputs
       unchanged (docs/CQUERY_MEMORY.md). The <=6 GiB stretch goal is not met.
-- [ ] Resolve the default `//...` loading failure under root `venv/`, separately
-      from the successful `//src/...` query, without silently excluding packages
-      or skipping unsupported analysis.
+- [x] Resolve the root `venv/` traversal issue in the isolated approved PR clone
+      through its explicit `.bazelignore` change (PR 12974), without altering the
+      original checkout or silently changing native package traversal.
 - [x] Cquery aspect dependency projection places implicit aspect edges on
       requesting rules, matching 8 genuine-schema edge matrices and 9 actual
       target-determinator mutation cases. First-instance selection across all
@@ -128,9 +128,9 @@ Done since the last increment recorded under "History", one line each:
 - [x] Invocation-owned module-root warmers stop/cancel/join before normal exit;
       a deterministic test covers cleanup of an unpublished extraction stage.
       Cooperative filesystem/CPU and abrupt-termination limits remain documented.
-- [ ] Revalidate the latest-code configured query with runfiles transitions and
-      the singleton helper together. Whole-repository target-determinator
-      revision comparison remains unperformed.
+- [x] Revalidate the latest-code PR-clone configured query with runfiles
+      transitions and the singleton helper together; the complete default graph
+      now succeeds. Whole-repository TD revision comparison remains unperformed.
 - [x] `java_common.expand_java_opts` expands configured string-list attributes,
       Make/location/toolchain variables and optional tokenization; the Java 11
       toolchain query now passes.
@@ -139,8 +139,8 @@ Done since the last increment recorded under "History", one line each:
       succeed. The fixed repository downloader fetched the exact pinned AMD64
       binary in 10.04 s from an empty scratch cache and verified its checksum.
       Explicit caller/helper headers and authentication precedence are preserved.
-- [ ] Revalidate full PR-clone cquery after the downloader fix; no whole-query
-       or whole-repository target-determinator success claimed yet.
+- [x] Revalidate full PR-clone cquery after the downloader and later analysis
+      fixes. Full native graph success is distinct from whole-repository TD.
 - [x] Real direct-Turbine header compilation actions, with pinned genuine/native
       jar/jdeps byte equality, source jars, header dependencies, bootclasspath,
       jar/executable tools and parameter files (docs/JAVA_ACTIONS.md).
@@ -165,6 +165,13 @@ Done since the last increment recorded under "History", one line each:
        cap remains (158.6MiB headroom), canaries unchanged. Build/test skipping,
        untrimmed flag-root identities and default TD filtering remain boundaries;
        no whole-workspace TD claim (docs/TARGET_COMPATIBILITY.md).
+- [x] Share unchanged configured-rule data: equal-work full-query peak falls
+      from 8,033.4 to 7,460.5 MiB, leaving 731.5 MiB under the unchanged 8 GiB cap.
+      All graph bytes match; single shared-host observations, not statistical
+      timing claims. The <=6 GiB stretch remains unmet (docs/CQUERY_MEMORY.md).
+- [x] Startup `--native-lockfile` protects TD's info/mod companions as well as
+      cquery/config. Real pinned TD scratch comparisons and the combined 3,245-test
+      gate pass. Full-PR clone/process-tree budget safeguards remain separate.
 - [x] Runtime archive classpath filtering implements the genuine empty-exclusion
       identity shortcut and nonempty Artifact-identity subtraction/stable-order
       result, including the intentionally untyped exclusion set. A real
