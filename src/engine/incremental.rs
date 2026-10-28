@@ -116,6 +116,8 @@ pub(super) struct Tracker {
     aspects: BTreeSet<(u32, String)>,
     roots: Vec<(u32, u32)>,
     requested: HashSet<Label>,
+    /// (key, plan length when its analysis began, its plan position).
+    planned: HashMap<u32, (u32, u32)>,
     /// Inside `analyze_requested`'s analysis of the requested label at
     /// this position (its first key is a root, not a shared one).
     root_analysis: Option<u32>,
@@ -258,6 +260,26 @@ impl Engine {
     pub(super) fn track_enter(&mut self, id: Option<u32>) {
         if let (Some(tracker), Some(id)) = (self.incremental.as_mut(), id) {
             tracker.frames.push((id, shared_depth()));
+        }
+    }
+
+    /// The analysis of `id` begins with `plan_len` targets planned.
+    pub(super) fn track_entry(&mut self, id: Option<u32>, plan_len: usize) {
+        if let (Some(tracker), Some(id)) = (self.incremental.as_mut(), id) {
+            tracker
+                .planned
+                .entry(id)
+                .or_insert((plan_len as u32, u32::MAX));
+        }
+    }
+
+    /// `id` is planned at `position` (phase 1's post-order).
+    pub(super) fn track_position(&mut self, id: Option<u32>, position: usize) {
+        if let (Some(tracker), Some(id)) = (self.incremental.as_mut(), id)
+            && let Some(planned) = tracker.planned.get_mut(&id)
+            && planned.1 == u32::MAX
+        {
+            planned.1 = position as u32;
         }
     }
 
@@ -452,6 +474,16 @@ impl Engine {
             aspects: tracker.aspects.iter().cloned().collect(),
             modules: Vec::new(),
             rule_modules: Vec::new(),
+            planned: {
+                let mut planned: Vec<(u32, u32, u32)> = tracker
+                    .planned
+                    .iter()
+                    .filter(|(_, (_, position))| *position != u32::MAX)
+                    .map(|(key, (entry, position))| (*key, *entry, *position))
+                    .collect();
+                planned.sort_unstable();
+                planned
+            },
         };
         crate::snapshot::incremental::set_modules(&mut index, &graph, &package_loads, &rules);
         Some(index)

@@ -3442,7 +3442,7 @@ enum Special {
 }
 
 /// The number of mutations of the catalogue ([`mutate`]).
-const MUTATIONS: usize = 67;
+const MUTATIONS: usize = 68;
 
 /// Apply one random mutation of the catalogue (the same to both copies);
 /// returns its name and what the step does besides its command.
@@ -3985,6 +3985,18 @@ fn mutate(twin: &Twin, rng: &mut Rng, state: &mut FuzzState, step: usize) -> (St
                 );
                 name("incr_m: a comment in the macro's .bzl (pruned)")
             }
+        }
+        67 => {
+            // //incr_use:v's dependencies: //incr:a (planned before :v's
+            // analysis begins: spliced; removed: falls back) or :u's
+            // order (:v before //incr:a: falls back).
+            let build = match rng.below(3) {
+                0 => INCR_USE_BUILD.replace("flag = 'v',", "deps = ['//incr:a'], flag = 'v',"),
+                1 => INCR_USE_BUILD.replace("deps = ['//incr:a']", "deps = [':v', '//incr:a']"),
+                _ => INCR_USE_BUILD.to_owned(),
+            };
+            twin.write("incr_use/BUILD.bazel", &build);
+            name("incr_use: dependencies added, reordered or restored")
         }
         _ => name("no change"),
     };
@@ -4779,6 +4791,95 @@ fn incremental_analysis_of_bzl_edits() {
     twin.same(args, &[]).assert_hit().assert_success();
 }
 
+/// `ro/BUILD.bazel`: `:top` depends on `deps` (by default `:x` then
+/// `:y`); `:x` on `:x2` and `x_extra`, `:y` on `:y2` and `y_extra`.
+fn ro_build(top: &[&str], x_extra: &[&str], y_extra: &[&str]) -> String {
+    let list = |deps: &[&str]| {
+        deps.iter()
+            .map(|dep| format!("'{dep}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let with = |first: &str, extra: &[&str]| {
+        let mut deps = vec![first];
+        deps.extend_from_slice(extra);
+        list(&deps)
+    };
+    format!(
+        "load('//incr:defs.bzl', 'chain')\nchain(name = 'top', deps = [{}], flag = 't')\nchain(name = 'x', deps = [{}], flag = 'x')\nchain(name = 'x2', flag = 'x2')\nchain(name = 'y', deps = [{}], flag = 'y')\nchain(name = 'y2', flag = 'y2')\n",
+        list(top),
+        with("':x2'", x_extra).replace("''", "'"),
+        with("':y2'", y_extra).replace("''", "'"),
+    )
+}
+
+/// Incremental analysis of dependency changes (docs/INCREMENTAL_ANALYSIS.md):
+/// a dependency added on a target planned before the dependant's analysis
+/// began keeps the plan's order and is spliced; a reordered dependency, one
+/// on a target planned later, or one removed whose actions were consumed
+/// falls back to the full analysis.
+#[test]
+fn incremental_analysis_of_dependency_changes() {
+    let twin = fixture();
+    twin.write("incr/defs.bzl", INCR_RULES);
+    twin.write("incr/BUILD.bazel", "");
+    twin.write(
+        "lib/BUILD.bazel",
+        "load('//incr:defs.bzl', 'chain')\nchain(name = 'l', flag = 'l', visibility = ['//visibility:public'])\n",
+    );
+    twin.write("ro/BUILD.bazel", &ro_build(&[":x", ":y"], &[], &[]));
+    let args = &["build", "//lib:all", "//ro:all"];
+    twin.save(args, &[]);
+    twin.same(args, &[]).assert_hit();
+    let step = |build: String, expected: Result<usize, &str>| {
+        twin.write("ro/BUILD.bazel", &build);
+        let pair = twin.same(args, &[]);
+        pair.assert_miss("").assert_success();
+        let explain = pair.explain();
+        match expected {
+            Ok(rerun) => {
+                assert!(
+                    explain.iter().any(|line| line.starts_with("incremental ")
+                        && line.contains(&format!(" {rerun} requested target(s) re-analyzed"))),
+                    "{}",
+                    explain.join("\n")
+                );
+                if pair.mode == VERIFY {
+                    assert!(pair.line("verified ").is_some(), "{}", explain.join("\n"));
+                }
+            }
+            Err(reason) => assert!(
+                explain.iter().any(|line| line.starts_with("incremental")
+                    && !line.contains(" re-analyzed;")
+                    && line.contains(reason)),
+                "expected a fallback ({reason}):\n{}",
+                explain.join("\n")
+            ),
+        }
+        twin.same(args, &[]).assert_hit().assert_success();
+    };
+    // //lib:l is planned before //ro:top's analysis begins.
+    step(ro_build(&[":x", ":y", "//lib:l"], &[], &[]), Ok(5));
+    // :y's analysis begins after :x and :x2 are planned; removed again
+    // (:x2 is re-analyzed too: its actions are the re-analysis's).
+    step(ro_build(&[":x", ":y", "//lib:l"], &[], &[":x2"]), Ok(5));
+    step(ro_build(&[":x", ":y", "//lib:l"], &[], &[]), Ok(5));
+    // Removed: //lib:l's action is no longer consumed by a re-analyzed one
+    // (it might not be needed any more).
+    step(ro_build(&[":x", ":y"], &[], &[]), Err("no longer depend"));
+    // Reordered: :y and :y2 would be planned first.
+    step(
+        ro_build(&[":y", ":x"], &[], &[]),
+        Err("dependencies of //ro:top changed"),
+    );
+    // Now :y2 is planned before :x's analysis begins, :x2 after :y's.
+    step(ro_build(&[":y", ":x"], &[":y2"], &[]), Ok(5));
+    step(
+        ro_build(&[":y", ":x"], &[":y2"], &[":x2"]),
+        Err("dependencies of //ro:y changed"),
+    );
+}
+
 /// `incr_t/BUILD.bazel`: two tests and a tool, `:t` and `:tool` reaching
 /// `//incr:a`; `flag` the tests' and tool's flag, `comments` comments.
 fn incr_t_build(flag: usize, comments: usize) -> String {
@@ -5131,6 +5232,11 @@ mod verify_mode {
     #[test]
     fn incremental_analysis_of_bzl_edits() {
         verified(super::incremental_analysis_of_bzl_edits);
+    }
+
+    #[test]
+    fn incremental_analysis_of_dependency_changes() {
+        verified(super::incremental_analysis_of_dependency_changes);
     }
 
     #[test]

@@ -4011,6 +4011,7 @@ impl Engine {
             return Ok(());
         }
         self.track_enter(tracked);
+        self.track_entry(tracked, plan.len());
         self.prefetch_rule(&rule);
         if let Some(start) = active.iter().position(|active| *active == key) {
             return Err(self.cycle_error(&rule, &active[..start], &active[start..]));
@@ -4803,6 +4804,7 @@ impl Engine {
             }
             capture.rules.insert(key.clone(), Arc::clone(&rule));
         }
+        self.track_position(tracked, plan.len());
         plan.push((key, rule));
         Ok(())
     }

@@ -229,6 +229,10 @@ pub struct Index {
     /// (key, module): the modules defining a configured target's rule
     /// (the `.bzl` calling `rule()` and the one being initialized).
     pub rule_modules: Vec<(u32, u32)>,
+    /// (key, entry, position): the targets phase 1 planned, with the number
+    /// of targets planned when their analysis began and their position in
+    /// the plan (its post-order).
+    pub planned: Vec<(u32, u32, u32)>,
 }
 
 /// The digest of a `.bzl` file's code: its bytes with every comment's text
@@ -1330,27 +1334,37 @@ pub fn check_graph(
         }
     }
     let configured = |index: &Index, key: u32| index.keys[key as usize].config.is_some();
-    let mut base_children: HashMap<u32, BTreeSet<u32>> = HashMap::new();
+    // The configured dependencies of each dirty target, in the order its
+    // analysis reached them (phase 1's depth-first order).
+    let mut base_children: HashMap<u32, Vec<u32>> = HashMap::new();
     for (parent, child) in &index.edges {
         if dirty.contains(parent) && configured(index, *child) {
-            base_children.entry(*parent).or_default().insert(*child);
+            base_children.entry(*parent).or_default().push(*child);
         }
     }
-    let mut sub_children: HashMap<u32, BTreeSet<u32>> = HashMap::new();
-    let mut sub_sources: Vec<(u32, u32)> = Vec::new();
+    let mut sub_children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut sub_edges: Vec<(u32, u32)> = Vec::new();
     let mut reached: BTreeSet<u32> = BTreeSet::new();
     for (parent, child) in &sub.edges {
         let (parent, child) = (mapped[*parent as usize], mapped[*child as usize]);
         reached.insert(parent);
         reached.insert(child);
         if dirty.contains(&parent) {
+            sub_edges.push((parent, child));
             if configured(index, child) {
-                sub_children.entry(parent).or_default().insert(child);
-            } else {
-                sub_sources.push((parent, child));
+                let children = sub_children.entry(parent).or_default();
+                if !children.contains(&child) {
+                    children.push(child);
+                }
             }
         }
     }
+    // Phase 1's plan: when each target's analysis began and its position.
+    let planned: HashMap<u32, (u32, u32)> = index
+        .planned
+        .iter()
+        .map(|(key, entry, position)| (*key, (*entry, *position)))
+        .collect();
     for (_, root) in &sub.roots {
         reached.insert(mapped[*root as usize]);
     }
@@ -1364,11 +1378,31 @@ pub fn check_graph(
                 index.keys[*key as usize].label
             ));
         }
-        if base_children.get(key) != sub_children.get(key) {
-            return Err(format!(
-                "the dependencies of {} changed",
-                index.keys[*key as usize].label
-            ));
+        let empty = Vec::new();
+        let (before, after) = (
+            base_children.get(key).unwrap_or(&empty),
+            sub_children.get(key).unwrap_or(&empty),
+        );
+        if before != after {
+            // Dependencies planned before this target's analysis began are
+            // memo hits wherever they are reached: adding or removing one
+            // changes neither the plan's order nor its targets; any other
+            // dependency must be reached in the same order.
+            let changed = || {
+                format!(
+                    "the dependencies of {} changed",
+                    index.keys[*key as usize].label
+                )
+            };
+            let (entry, _) = planned.get(key).ok_or_else(changed)?;
+            let late = |child: &&u32| {
+                planned
+                    .get(*child)
+                    .is_none_or(|(_, position)| position >= entry)
+            };
+            if !before.iter().filter(late).eq(after.iter().filter(late)) {
+                return Err(changed());
+            }
         }
     }
     for key in &sub.printed {
@@ -1478,15 +1512,16 @@ pub fn check_graph(
             ));
         }
     }
-    // The dirty targets' source edges are the re-analysis's.
+    // The dirty targets' edges are the re-analysis's (each target's in
+    // the order it reached them).
     let mut edges: Vec<(u32, u32)> = index
         .edges
         .iter()
-        .filter(|(parent, child)| !(dirty.contains(parent) && !configured(index, *child)))
+        .filter(|(parent, _)| !dirty.contains(parent))
         .copied()
         .collect();
     let mut seen: std::collections::HashSet<(u32, u32)> = edges.iter().copied().collect();
-    for edge in sub_sources {
+    for edge in sub_edges {
         if seen.insert(edge) {
             edges.push(edge);
         }
@@ -1816,11 +1851,13 @@ pub fn splice(
             }
         }
     }
-    if added_dependencies != removed_dependencies {
-        return Err(
-            "the re-analyzed actions depend on other actions of other targets than before"
-                .to_owned(),
-        );
+    // New dependencies on other targets' actions must be planned (below);
+    // one no longer depended upon might no longer be needed at all (the
+    // full analysis would not plan it).
+    if let Some(dropped) = removed_dependencies.difference(&added_dependencies).next() {
+        return Err(format!(
+            "the re-analyzed actions no longer depend on '{dropped}' of a target that was not re-analyzed"
+        ));
     }
     // Assemble: each re-analyzed run where the saved one was.
     let mut by_name: HashMap<String, Vec<PlannedAction>> = runs.into_iter().collect();
@@ -2031,10 +2068,10 @@ pub fn splice(
     if !newer_runs.is_empty() {
         return Err("the re-analysis planned other run targets".to_owned());
     }
-    if needed_before != needed_after {
-        return Err(
-            "the re-analyzed run plans need other actions of other targets than before".to_owned(),
-        );
+    if let Some(dropped) = needed_before.difference(&needed_after).next() {
+        return Err(format!(
+            "the re-analyzed run plans no longer need '{dropped}' of a target that was not re-analyzed"
+        ));
     }
     let planned_ids: HashSet<&str> = nodes.iter().map(|node| node.action.id.as_str()).collect();
     for (label, plan) in &run_plans {
