@@ -131,7 +131,15 @@ Each repository was used as published, with only these modifications:
 - **Incremental analysis is the gap.** A BUILD edit costs bazel-rs a full
   re-analysis: 1.8 s (pip_parse), 2.3 s (basic_gazelle), 13.8 s (gazelle),
   against 0.3–1.1 s for genuine's warm server. On gazelle bazel-rs is slower
-  than even genuine `--batch` (5.1 s).
+  than even genuine `--batch` (5.1 s). Tier A incremental analysis
+  (docs/INCREMENTAL_ANALYSIS.md §4) keeps or splices the saved plan for
+  BUILD edits that leave the configured graph unchanged (gazelle's
+  `tools/releaser`: 4.4 s → 0.65 s for a comment, 3.0–3.3 s for an
+  attribute), but not for this scenario's edit: it adds a target, and
+  `rule/BUILD.bazel` is a watched input of `bazel_gazelle_go_repository_tools`,
+  whose re-run genuine shares — its 8.8 s in bazel-rs are a cold go build
+  cache, which bazel-rs's verified store trees cannot keep (§4, "What
+  genuine Bazel 9.3 does with a watched tree").
   - BAZEL_RS_TIMING shows 12.6 s of planning on gazelle. About 9 s of it is
     repository re-validation after the snapshot miss:
     `PERF-REPO recorded_check=9.005s/71`, `execute=8.397s/55`, 139 MB of

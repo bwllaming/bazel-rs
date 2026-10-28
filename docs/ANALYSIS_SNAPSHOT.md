@@ -733,6 +733,13 @@ mkdir).
 
 ## What is saved, and when
 
+(A `build` miss whose changed inputs lie inside main-repository packages is
+first attempted as an incremental analysis: docs/INCREMENTAL_ANALYSIS.md
+§4. It saves like a full analysis, with INPUTS merged from the partial
+analysis and the missed snapshot, the missed snapshot's window and the
+spliced plan; whatever it cannot handle runs the full analysis described
+here.)
+
 On a miss (`snapshot::save`), the check point opens the recording window
 (crate::observed_fs), installs the replay capture and redirects file
 descriptor 2 into a **tee capture** (`snapshot::capture`: `dup2` into a
@@ -933,6 +940,7 @@ fixed-width fields; no JSON):
 | EVENTS | the window's stderr bytes |
 | PLAN | the planned request (docs/PLANNED_REQUEST.md), stored compressed (P3, format 3): magic `BZRSPZ01`, the frame count, per frame its plan and stored sizes, then independent deflate frames of 4 MiB of plan (fastest level), compressed on the writer thread and inflated on up to 8 threads by the hit's plan thread before the decode; the same plan always gives the same bytes |
 | STATS | counts, sizes and times (diagnostics; a hit does not read it) |
+| INDEX | `build` only: the dependency index of incremental analysis (docs/INCREMENTAL_ANALYSIS.md §4: configured targets, edges, lookups, shared and printing targets, aspect applications, repository inputs, package fingerprints), postcard compressed like the plan; a hit does not read it, a miss reads it to attempt an incremental analysis, a refresh copies it |
 
 Rules: a different format or binary identity reads as absent; a damaged
 header or section (a torn write: no fsync) is a miss; writers use a
@@ -1091,7 +1099,9 @@ unit test drives the healing check on real publications (intact trees
 keep the snapshot).
 
 **Mutation fuzz** (`tests/snapshot.rs::mutation_fuzz`, L2-W5f, extended
-by L2-W5g and L2-W5h): random sequences over a catalogue of 51 mutations (sources —
+by L2-W5g, L2-W5h and incremental analysis — an `incr/` package's
+attribute, comment, dependency, target, print, deprecation, visibility,
+source and `.bzl` edits, docs/INCREMENTAL_ANALYSIS.md §4): random sequences over a catalogue of 51 mutations (sources —
 same-size, mtime-restoring, future-stamped and backdated edits —,
 glob-matching and swap files, BUILD and `.bzl` edits, new and removed
 packages, `.go` files, symlink retargets and swaps of a package directory,
