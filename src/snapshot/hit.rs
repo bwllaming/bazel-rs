@@ -274,7 +274,25 @@ fn attempt_keeping(
                 &inputs.recording,
                 &validate::Environment::new(&attempt.replay.environment),
             );
-            failed(validation.is_err() && !incremental);
+            // Incremental analysis: what changed, and whether it lies in
+            // packages (decided while the plan decodes and the replay
+            // runs; a change it cannot attribute cancels them as before).
+            let classified = match &validation {
+                Err(_) if incremental => {
+                    let classified = crate::snapshot::incremental::classify_attempt(
+                        &inputs,
+                        &reader,
+                        attempt.cache,
+                        &attempt.replay.environment,
+                    );
+                    failed(classified.is_err());
+                    Some(classified)
+                }
+                _ => {
+                    failed(validation.is_err());
+                    None
+                }
+            };
             let plan = plan
                 .join()
                 .unwrap_or_else(|_| Err("the plan decoder panicked".to_owned()));
@@ -289,11 +307,11 @@ fn attempt_keeping(
                 })
             });
             let _ = warm.join();
-            (validation, plan, replay, local)
+            (validation, plan, replay, local, classified)
         })
     }));
     let captured = capture.map(|capture| capture.stop(Duration::from_millis(200)));
-    let (validation, plan, replay, local) = match parallel {
+    let (validation, plan, replay, local, classified) = match parallel {
         Ok(results) => results,
         Err(_) => return miss("the validation panicked"),
     };
@@ -315,23 +333,35 @@ fn attempt_keeping(
         Err(first) => {
             let cancelled =
                 |result: &Option<Result<(usize, Duration), String>>| matches!(result, Some(Err(_)));
-            if incremental && failures.is_empty() && !cancelled(&replay) && !cancelled(&local) {
-                // Only observations failed: keep what incremental analysis
-                // starts from (crate::snapshot::incremental).
-                if let Ok((request, _, _, _, _)) = plan {
-                    let index = reader
-                        .section(Section::Index)
-                        .and_then(crate::snapshot::incremental::decode_index);
-                    if let Ok(index) = index {
-                        *base = Some(Box::new(crate::snapshot::incremental::Base {
-                            inputs,
-                            window: window_stderr,
-                            request,
-                            index,
-                            changed: Vec::new(),
-                        }));
+            match classified {
+                Some(Ok(classified))
+                    if failures.is_empty() && !cancelled(&replay) && !cancelled(&local) =>
+                {
+                    // Only observations inside packages changed: keep what
+                    // incremental analysis starts from.
+                    match plan {
+                        Ok((request, _, _, _, _)) => {
+                            *base = Some(Box::new(crate::snapshot::incremental::Base {
+                                inputs,
+                                window: window_stderr,
+                                request,
+                                classified: Ok(classified),
+                            }));
+                        }
+                        Err(error) => {
+                            *base = Some(Box::new(crate::snapshot::incremental::Base::refused(
+                                plan_miss(error),
+                            )));
+                        }
                     }
                 }
+                Some(Ok(_)) => {}
+                Some(Err(reason)) => {
+                    *base = Some(Box::new(crate::snapshot::incremental::Base::refused(
+                        reason,
+                    )));
+                }
+                None => {}
             }
             return miss(
                 std::iter::once(first)

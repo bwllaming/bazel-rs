@@ -321,7 +321,6 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
         }
         return Checked::Miss(Some(Box::new(save::start(key, explain, log))));
     }
-    let environment = inputs.replay.environment.clone();
     let outcome = hit::attempt(hit::Attempt {
         cache: inputs.cache,
         key,
@@ -382,23 +381,17 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
                     ms(key_time),
                 ));
             }
-            let classified = base.ok_or_else(String::new).and_then(|mut base| {
-                let started = Instant::now();
-                base.changed = validate::changed_observations(
-                    &base.inputs.recording,
-                    &validate::Environment::new(&environment),
-                )?;
-                let candidate = incremental::classify(base, inputs.cache, key.short())?;
-                if timing {
-                    diag::line_fmt(format_args!(
-                        "PERF-SNAPSHOT incremental classify_ms={:.3} loaded={} content={}",
-                        ms(started.elapsed()),
-                        candidate.loaded.len(),
-                        candidate.content.len(),
-                    ));
-                }
-                Ok(candidate)
-            });
+            let classified = base
+                .ok_or_else(String::new)
+                .and_then(|base| incremental::Candidate::of(*base, key.short()));
+            if timing && let Ok(candidate) = &classified {
+                diag::line_fmt(format_args!(
+                    "PERF-SNAPSHOT incremental loaded={} content={} changed={}",
+                    candidate.loaded.len(),
+                    candidate.content.len(),
+                    candidate.changed.len(),
+                ));
+            }
             match classified {
                 Ok(candidate) => Checked::Incremental(
                     Box::new(save::start_with(key, explain, log, capture::Mode::Shadow)),

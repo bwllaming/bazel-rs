@@ -385,15 +385,69 @@ pub struct Base {
     pub inputs: crate::snapshot::format::Inputs,
     pub window: Vec<u8>,
     pub request: crate::request::PlannedRequest,
+    /// What changed, and where ([`classify_attempt`]); the error says why
+    /// incremental analysis cannot handle this miss (the base's other
+    /// parts are then empty).
+    pub classified: Result<Classified, String>,
+}
+
+impl Base {
+    /// A miss incremental analysis cannot handle, for `reason`.
+    pub fn refused(reason: String) -> Self {
+        Self {
+            inputs: crate::snapshot::format::Inputs::default(),
+            window: Vec::new(),
+            request: crate::request::PlannedRequest::empty(),
+            classified: Err(reason),
+        }
+    }
+}
+
+/// The changed observations of a miss attributed to packages.
+pub struct Classified {
     pub index: Index,
-    /// Indices into `inputs.recording.observations`.
+    /// Indices into the INPUTS' observations.
     pub changed: Vec<usize>,
+    pub loaded: std::collections::BTreeSet<u32>,
+    pub content: std::collections::BTreeSet<u32>,
+}
+
+/// While a lookup misses (crate::snapshot::hit): every changed observation
+/// of `inputs`, the snapshot's INDEX, and their attribution to packages
+/// ([`classify`]); the error names why incremental analysis cannot handle
+/// the miss.
+pub fn classify_attempt(
+    inputs: &crate::snapshot::format::Inputs,
+    reader: &crate::snapshot::store::Reader,
+    cache: &std::path::Path,
+    environment: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Result<Classified, String> {
+    let changed = crate::snapshot::validate::changed_observations(
+        &inputs.recording,
+        &crate::snapshot::validate::Environment::new(environment),
+    )?;
+    let index = reader
+        .section(crate::snapshot::format::Section::Index)
+        .and_then(decode_index)
+        .map_err(|error| format!("no dependency index: {error}"))?;
+    let (loaded, content) = classify(&index, &inputs.recording, &changed, cache)?;
+    Ok(Classified {
+        index,
+        changed,
+        loaded,
+        content,
+    })
 }
 
 /// A miss incremental analysis may handle: the packages whose recorded
 /// inputs changed.
 pub struct Candidate {
-    pub base: Box<Base>,
+    pub inputs: crate::snapshot::format::Inputs,
+    pub window: Vec<u8>,
+    pub request: crate::request::PlannedRequest,
+    pub index: Index,
+    /// Indices into `inputs.recording.observations`.
+    pub changed: Vec<usize>,
     /// Packages (index ids) whose BUILD file or glob listings changed:
     /// their fingerprint decides whether their targets changed.
     pub loaded: std::collections::BTreeSet<u32>,
@@ -405,6 +459,35 @@ pub struct Candidate {
     pub started: std::time::Instant,
 }
 
+impl Candidate {
+    /// The candidate of a classified miss (`Err`: why there is none).
+    pub fn of(base: Base, key: String) -> Result<Self, String> {
+        let Base {
+            inputs,
+            window,
+            request,
+            classified,
+        } = base;
+        let Classified {
+            index,
+            changed,
+            loaded,
+            content,
+        } = classified?;
+        Ok(Self {
+            inputs,
+            window,
+            request,
+            index,
+            changed,
+            loaded,
+            content,
+            key,
+            started: std::time::Instant::now(),
+        })
+    }
+}
+
 fn escaped(path: &std::path::Path) -> String {
     crate::observed_fs::escape(path.as_os_str())
 }
@@ -414,15 +497,22 @@ fn escaped(path: &std::path::Path) -> String {
 /// (in the cache, a repository's or extension's recorded input, a `.bzl`
 /// file, a listing of the target patterns, a package boundary, a package
 /// shared computations read or whose BUILD file printed).
+#[allow(clippy::type_complexity)]
 pub fn classify(
-    base: Box<Base>,
+    index: &Index,
+    recording: &crate::observed_fs::Recording,
+    changed: &[usize],
     cache: &std::path::Path,
-    key: String,
-) -> Result<Candidate, String> {
+) -> Result<
+    (
+        std::collections::BTreeSet<u32>,
+        std::collections::BTreeSet<u32>,
+    ),
+    String,
+> {
     use crate::observed_fs::{Op, Projection};
     use std::collections::{BTreeSet, HashMap};
-    let index = &base.index;
-    if base.changed.is_empty() {
+    if changed.is_empty() {
         return Err("no observation changed".to_owned());
     }
     let mut packages: HashMap<&str, u32> = HashMap::new();
@@ -433,10 +523,8 @@ pub fn classify(
     }
     let mut loaded = BTreeSet::new();
     let mut content = BTreeSet::new();
-    for &at in &base.changed {
-        let (path, observation) = base
-            .inputs
-            .recording
+    for &at in changed {
+        let (path, observation) = recording
             .observations
             .get(at)
             .ok_or("internal error: a changed observation out of range")?;
@@ -514,13 +602,7 @@ pub fn classify(
             ));
         }
     }
-    Ok(Candidate {
-        base,
-        loaded,
-        content,
-        key,
-        started: std::time::Instant::now(),
-    })
+    Ok((loaded, content))
 }
 
 /// The packages whose targets an incremental analysis re-analyzes, after
@@ -545,7 +627,7 @@ pub fn compare_package(
     strict_patterns: bool,
     changed: &mut Changed,
 ) -> Result<(), String> {
-    let package = &candidate.base.index.packages[id as usize];
+    let package = &candidate.index.packages[id as usize];
     let shown = format!("package //{}", package.package);
     let before = package
         .fingerprint
@@ -837,6 +919,58 @@ pub fn check_graph(
             "the re-analysis loaded package @@{}//{}, which the saved analysis did not",
             package.repository, package.package
         ));
+    }
+    // A package only re-analyzed targets looked up before, and none now,
+    // may no longer be loaded (the window's count would change) unless
+    // something else loads it.
+    let by_identity: std::collections::HashMap<(&str, &str), u32> = index
+        .packages
+        .iter()
+        .enumerate()
+        .map(|(id, package)| {
+            (
+                (package.repository.as_str(), package.package.as_str()),
+                id as u32,
+            )
+        })
+        .collect();
+    let mut still: BTreeSet<u32> = BTreeSet::new();
+    for (key, package) in &sub.accesses {
+        if dirty.contains(&mapped[*key as usize]) {
+            let package = &sub.packages[*package as usize];
+            if let Some(id) =
+                by_identity.get(&(package.repository.as_str(), package.package.as_str()))
+            {
+                still.insert(*id);
+            }
+        }
+    }
+    let mut elsewhere: BTreeSet<u32> = BTreeSet::new();
+    for (key, package) in &index.accesses {
+        if !dirty.contains(key) {
+            elsewhere.insert(*package);
+        }
+    }
+    for key in index.keys.iter() {
+        if let Some(id) =
+            by_identity.get(&(key.label.repository.as_str(), key.label.package.as_str()))
+        {
+            elsewhere.insert(*id);
+        }
+    }
+    for (key, package) in &index.accesses {
+        if dirty.contains(key)
+            && !still.contains(package)
+            && !elsewhere.contains(package)
+            && !index.packages[*package as usize].pattern
+            && !index.packages[*package as usize].global
+        {
+            let package = &index.packages[*package as usize];
+            return Err(format!(
+                "package @@{}//{} may no longer be loaded",
+                package.repository, package.package
+            ));
+        }
     }
     // The dirty targets' source edges are the re-analysis's.
     let mut edges: Vec<(u32, u32)> = index

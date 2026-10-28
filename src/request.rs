@@ -288,6 +288,25 @@ pub enum StatusSource {
 }
 
 impl PlannedRequest {
+    /// A request of nothing (a placeholder).
+    pub fn empty() -> Self {
+        Self {
+            command: RequestCommand::Build,
+            keep_going: None,
+            execute: false,
+            nodes: Vec::new(),
+            requested: Vec::new(),
+            aspect_reports: Vec::new(),
+            results: Vec::new(),
+            run_plans: Vec::new(),
+            configurations: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            build_info: Vec::new(),
+            bep: Default::default(),
+        }
+    }
+
     /// Whether the plan holds the workspace status placeholders (an
     /// executing build: the status is computed for them).
     pub fn has_status_placeholders(&self) -> bool {

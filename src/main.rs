@@ -1924,7 +1924,7 @@ fn incremental_build(
     for id in reloaded {
         let package = bazel_rs::label::PackageId {
             repository: String::new(),
-            package: candidate.base.index.packages[id as usize].package.clone(),
+            package: candidate.index.packages[id as usize].package.clone(),
         };
         let (fingerprint, printed) = engine.package_fingerprint(&package).map_err(|error| {
             IncrementalFallback::Reexec(format!(
@@ -1944,7 +1944,7 @@ fn incremental_build(
     }
     let reloaded_at = started.elapsed();
     let (labels, dirty) =
-        incremental::dirty_labels(&candidate.base.index, &changed.packages).map_err(early)?;
+        incremental::dirty_labels(&candidate.index, &changed.packages).map_err(early)?;
     incremental_finish(
         engine,
         candidate,
@@ -1992,15 +1992,15 @@ fn incremental_finish(
         explain,
         timing,
     } = plan;
-    let key = candidate.key.clone();
-    let base = *candidate.base;
-    let incremental::Base {
+    let incremental::Candidate {
         inputs,
         window,
         request: full,
         index,
         changed: changed_observations,
-    } = base;
+        key,
+        ..
+    } = candidate;
     // The lookup validated every repository tree the saved analysis
     // reused, and no recorded input of a repository changed: their warm
     // checks are not run again (docs/INCREMENTAL_ANALYSIS.md).
