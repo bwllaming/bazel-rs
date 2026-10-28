@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """Build, package and publish a bazel-rs binary release (docs/RELEASING.md).
 
-    scripts/release.py [--version X.Y.Z] [--dry-run] [--notes FILE]
+    scripts/release.py [--version X.Y.Z] [--notes FILE [--replace-changelog]] [--watch]
+    scripts/release.py --dry-run [--target TRIPLE]...
+    scripts/release.py --ci [--version X.Y.Z]        (.github/workflows/release.yml)
 
-The release is built from the released commit in a fresh temporary `git
-worktree` with its own CARGO_TARGET_DIR (never the caller's tree), once per
-target (default: x86_64-unknown-linux-gnu, dynamically linked against the
-build host's glibc, and x86_64-unknown-linux-musl, static, C code compiled
-with `zig cc`), smoke-tested offline, packaged as deterministic tarballs and,
-unless --dry-run, published: an annotated tag `v<version>` is pushed (only the
-tag; never a branch) and a GitHub release with the archives and their
-checksums is created with `gh`, then downloaded again and verified. Python
-3.11+ standard library only.
+Releases are built and published by GitHub Actions. Locally (default) the
+script checks that HEAD is a releasable origin/main, creates the annotated
+tag `v<version>` (its message body carries --notes), pushes only the tag and
+prints the workflow run it started (--watch waits for it). --dry-run instead
+builds, smoke-tests and packages locally, in a fresh temporary `git worktree`
+with its own CARGO_TARGET_DIR, without tagging. --ci (the workflow, on the
+tag push) builds the checked-out tag in place once per target (default:
+x86_64-unknown-linux-gnu, dynamically linked against the build host's glibc,
+and x86_64-unknown-linux-musl, static, C code compiled with `zig cc`),
+smoke-tests offline, packages deterministic tarballs, creates the GitHub
+release of the existing tag with `gh` and verifies it by download; it never
+creates or pushes tags. Python 3.11+ standard library only.
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import tomllib
 from typing import Callable, Iterable, Sequence
 
@@ -331,24 +337,7 @@ def preflight(
             "release.py never pushes branches"
         )
 
-    if head:
-        for name, reader in (
-            ("Cargo.toml", cargo_toml_version),
-            ("Cargo.lock", cargo_lock_version),
-        ):
-            shown = git("show", f"{head}:{name}")
-            try:
-                found = reader(shown.stdout) if shown.returncode == 0 else None
-            except (ReleaseError, tomllib.TOMLDecodeError, KeyError) as error:
-                found = None
-                problems.append(f"cannot read the version from {name}: {error}")
-            if shown.returncode != 0:
-                problems.append(f"cannot read {name} at HEAD")
-            elif found is not None and found != version:
-                problems.append(
-                    f"{name} says {found}, releasing {version}: "
-                    f"run scripts/bump_version.py {version} and commit"
-                )
+    problems += version_problems(git, head, version)
 
     if git("rev-parse", "--quiet", "--verify", f"refs/tags/{tag}").returncode == 0:
         problems.append(f"tag {tag} already exists locally (`git tag -d {tag}` if stale)")
@@ -358,25 +347,140 @@ def preflight(
     elif remote_tag.stdout.strip():
         problems.append(f"tag {tag} already exists on {REMOTE}")
 
-    if not gh:
-        problems.append("gh (GitHub CLI) not found: pass --gh PATH or set GH")
-    else:
-        auth = run([gh, "auth", "status", "--hostname", "github.com"], check=False)
-        if auth.returncode != 0:
-            problems.append(f"gh is not authenticated: {auth.stderr.strip()} (run `gh auth login`)")
-        else:
-            view = run(
-                [gh, "release", "view", tag, "--repo", gh_repo, "--json", "tagName"],
-                check=False,
-            )
-            if view.returncode == 0:
-                problems.append(f"GitHub release {tag} already exists in {gh_repo}")
-            elif "not found" not in (view.stderr + view.stdout).lower():
-                problems.append(
-                    f"cannot check for an existing release {tag} in {gh_repo}: "
-                    f"{view.stderr.strip()}"
-                )
+    problems += gh_problems(run, gh, gh_repo, tag)
     return problems, head
+
+
+def version_problems(git: Callable[..., Result], head: str, version: str) -> list[str]:
+    """Cargo.toml and Cargo.lock at `head` must say `version`."""
+    problems: list[str] = []
+    if not head:
+        return problems
+    for name, reader in (
+        ("Cargo.toml", cargo_toml_version),
+        ("Cargo.lock", cargo_lock_version),
+    ):
+        shown = git("show", f"{head}:{name}")
+        try:
+            found = reader(shown.stdout) if shown.returncode == 0 else None
+        except (ReleaseError, tomllib.TOMLDecodeError, KeyError) as error:
+            found = None
+            problems.append(f"cannot read the version from {name}: {error}")
+        if shown.returncode != 0:
+            problems.append(f"cannot read {name} at HEAD")
+        elif found is not None and found != version:
+            problems.append(
+                f"{name} says {found}, releasing {version}: "
+                f"run scripts/bump_version.py {version} and commit"
+            )
+    return problems
+
+
+def gh_problems(run: Run, gh: str | None, gh_repo: str, tag: str) -> list[str]:
+    """gh must be authenticated and the repository must have no release `tag` yet."""
+    if not gh:
+        return ["gh (GitHub CLI) not found: pass --gh PATH or set GH"]
+    auth = run([gh, "auth", "status", "--hostname", "github.com"], check=False)
+    if auth.returncode != 0:
+        return [f"gh is not authenticated: {auth.stderr.strip()} (run `gh auth login`)"]
+    view = run([gh, "release", "view", tag, "--repo", gh_repo, "--json", "tagName"], check=False)
+    if view.returncode == 0:
+        return [f"GitHub release {tag} already exists in {gh_repo}"]
+    if "not found" not in (view.stderr + view.stdout).lower():
+        return [f"cannot check for an existing release {tag} in {gh_repo}: {view.stderr.strip()}"]
+    return []
+
+
+def ci_preflight(
+    run: Run,
+    version: str,
+    *,
+    repo_dir: Path,
+    gh: str | None,
+    gh_repo: str,
+) -> tuple[list[str], str, str]:
+    """--ci: every reason not to build and publish, the commit, the tag message body.
+
+    The checkout is the tag's commit (detached HEAD, built in place), so
+    there is no branch or pushed-ness check; instead the tag must exist on
+    `origin` (it is fetched again, so an annotated tag is not replaced by a
+    lightweight one) and point at HEAD. Never creates, moves or pushes a tag.
+    """
+    problems: list[str] = []
+    tag = tag_name(version)
+
+    def git(*args: str) -> Result:
+        return run(["git", "-C", str(repo_dir), *args], check=False)
+
+    try:
+        parse_version(version)
+    except ReleaseError as error:
+        problems.append(str(error))
+
+    fetch = git("fetch", "--quiet", "--force", "--no-tags", REMOTE, f"+refs/tags/{tag}:refs/tags/{tag}")
+    if fetch.returncode != 0:
+        problems.append(f"cannot fetch tag {tag} from {REMOTE}: {fetch.stderr.strip()}")
+    head = git("rev-parse", "--verify", "HEAD^{commit}").stdout.strip()
+    if not head:
+        problems.append("cannot resolve HEAD")
+    tagged = git("rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}").stdout.strip()
+    if not tagged:
+        problems.append(f"tag {tag} does not exist; release.py --ci never creates tags (push it with scripts/release.py)")
+    elif head and tagged != head:
+        problems.append(f"tag {tag} is commit {tagged[:12]}, HEAD is {head[:12]}: check out the tag")
+
+    # Built in place: uncommitted changes would end up in the binary.
+    status = git("status", "--porcelain", "--untracked-files=normal")
+    dirty = [line for line in status.stdout.splitlines() if line.strip()]
+    if status.returncode != 0:
+        problems.append(f"git status failed: {status.stderr.strip()}")
+    elif dirty:
+        shown = "; ".join(dirty[:5]) + (" ..." if len(dirty) > 5 else "")
+        problems.append(f"checkout is not clean ({len(dirty)} entries: {shown})")
+
+    problems += version_problems(git, head, version)
+
+    body = ""
+    if tagged:
+        if git("cat-file", "-t", f"refs/tags/{tag}").stdout.strip() == "tag":
+            body = git("for-each-ref", "--format=%(contents:body)", f"refs/tags/{tag}").stdout
+        else:
+            print(f"note: {tag} is a lightweight tag: no extra release notes", file=sys.stderr)
+    problems += gh_problems(run, gh, gh_repo, tag)
+    return problems, head, body
+
+
+# Tag annotation line: the notes in the tag replace the generated changelog
+# (--replace-changelog). An HTML comment, so it is invisible if shown.
+REPLACE_CHANGELOG_MARKER = "<!-- release.py: replace-changelog -->"
+
+
+def tag_message(version: str, notes: str | None = None, replace_changelog: bool = False) -> str:
+    """The annotated tag's message: subject `bazel-rs <version>`, body = --notes."""
+    body = []
+    if replace_changelog:
+        body.append(REPLACE_CHANGELOG_MARKER)
+    if notes and notes.strip():
+        body.append(notes.strip("\n"))
+    return f"bazel-rs {version}\n" + ("\n" + "\n".join(body) + "\n" if body else "")
+
+
+def notes_from_tag_body(body: str) -> tuple[str | None, bool]:
+    """(notes to prepend or None, replace the changelog) from a tag message body."""
+    lines = body.splitlines()
+    replace = any(line.strip() == REPLACE_CHANGELOG_MARKER for line in lines)
+    text = "\n".join(line for line in lines if line.strip() != REPLACE_CHANGELOG_MARKER).strip("\n")
+    return (text + "\n" if text.strip() else None), replace
+
+
+def ci_run_url(env: dict) -> str | None:
+    """The GitHub Actions run building this release (None outside Actions)."""
+    server, repo, run_id = (env.get(k) for k in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"))
+    if not (server and repo and run_id):
+        return None
+    url = f"{server.rstrip('/')}/{repo}/actions/runs/{run_id}"
+    attempt = env.get("GITHUB_RUN_ATTEMPT")
+    return f"{url}/attempts/{attempt}" if attempt and attempt != "1" else url
 
 
 # --------------------------------------------------------------------------
@@ -951,6 +1055,7 @@ class NotesInfo:
     gh_repo: str
     prerelease: bool
     previous_tag: str | None
+    build_url: str | None = None  # the GitHub Actions run that built it
 
 
 def recommended_asset(assets: list[AssetInfo]) -> AssetInfo:
@@ -978,6 +1083,7 @@ def render_notes(info: NotesInfo, changelog: str, prepend: str | None = None) ->
         f"| Commit | `{info.commit}` ({info.commit_date}) |",
         f"| Compatibility target | Bazel {info.compatibility} |",
         f"| Toolchain | {info.rustc} |",
+        *([f"| Built by | [GitHub Actions run]({info.build_url}) |"] if info.build_url else []),
         "",
         "## Downloads",
         "",
@@ -1035,48 +1141,61 @@ def render_notes(info: NotesInfo, changelog: str, prepend: str | None = None) ->
 
 
 # --------------------------------------------------------------------------
-# Publishing
+# Publishing (CI) and the tag flow (developer machine)
+
+WORKFLOW = "release.yml"
 
 
-def recovery_commands(stage: str, tag: str, gh_repo: str, remote: str = REMOTE) -> list[str]:
-    """Commands that undo a partly published release (printed, never run)."""
+def recovery_commands(stage: str, tag: str, gh_repo: str, remote: str = REMOTE, ci: bool = False) -> list[str]:
+    """Commands that undo a partly done release (printed, never run).
+
+    Locally (`ci=False`) the stages are "tagged" and "pushed"; in CI the tag
+    is never touched, only a "released" GitHub release is undone.
+    """
     commands = []
-    if stage in ("released",):
+    if stage == "released":
         commands.append(f"gh release delete {tag} --repo {gh_repo} --yes")
+    if ci:
+        return commands
     if stage in ("pushed", "released"):
         commands.append(f"git push {remote} :refs/tags/{tag}")
     commands.append(f"git tag -d {tag}")
     return commands
 
 
+def rerun_hint(tag: str, gh_repo: str) -> str:
+    return f"gh workflow run {WORKFLOW} --repo {gh_repo} -f tag={tag}"
+
+
+def release_create_argv(gh: str, tag: str, gh_repo: str, version: str, notes: Path, prerelease: bool, assets: Sequence[Path]) -> list[str]:
+    return [
+        gh, "release", "create", tag, "--repo", gh_repo, "--verify-tag",
+        "--title", f"bazel-rs {version}", "--notes-file", str(notes),
+        "--prerelease" if prerelease else "--latest",
+        *map(str, assets),
+    ]
+
+
 def publish(
     run: Run,
     *,
-    repo_dir: Path,
     gh: str,
     gh_repo: str,
     version: str,
-    commit: str,
     notes: Path,
     assets: list[Path],
     archives: list[Path],
     prerelease: bool,
     download_dir: Path,
 ) -> None:
+    """--ci: create the GitHub release of the existing tag, then verify it by download.
+
+    Never creates or pushes the tag (`--verify-tag` fails if it is missing).
+    """
     tag = tag_name(version)
     stage = "none"
     try:
-        run(["git", "-C", repo_dir, "tag", "-a", tag, "-m", f"bazel-rs {version}", commit], echo=True)
-        stage = "tagged"
-        run(["git", "-C", repo_dir, "push", REMOTE, f"refs/tags/{tag}:refs/tags/{tag}"], echo=True)
-        stage = "pushed"
-        create = [
-            gh, "release", "create", tag, "--repo", gh_repo, "--verify-tag",
-            "--title", f"bazel-rs {version}", "--notes-file", str(notes),
-            "--prerelease" if prerelease else "--latest",
-            *map(str, assets),
-        ]
-        run(create, echo=True)
+        run(release_create_argv(gh, tag, gh_repo, version, notes, prerelease, assets), echo=True)
         stage = "released"
         view = json.loads(
             run([gh, "release", "view", tag, "--repo", gh_repo, "--json", "tagName,isPrerelease,assets,url"]).stdout
@@ -1097,18 +1216,110 @@ def publish(
             print(f"verified by download: {archive.name} sha256 {want}")
         print(f"published {view.get('url')}")
     except BaseException as error:
+        print(f"\nRELEASE FAILED (stage: {stage}): {error}", file=sys.stderr)
+        print(f"The tag {tag} is kept. Nothing was rolled back.", file=sys.stderr)
+        commands = recovery_commands(stage, tag, gh_repo, ci=True)
+        if commands:
+            print("To undo the release, run:", file=sys.stderr)
+            for command in commands:
+                print(f"    {command}", file=sys.stderr)
+            print(
+                f"or keep it and re-upload: gh release upload {tag} --repo {gh_repo} --clobber "
+                + " ".join(shlex.quote(a.name) for a in assets),
+                file=sys.stderr,
+            )
+        print(f"Then re-run the workflow: {rerun_hint(tag, gh_repo)}", file=sys.stderr)
+        raise
+
+
+def find_run(
+    run: Run,
+    gh: str,
+    gh_repo: str,
+    tag: str,
+    commit: str,
+    *,
+    attempts: int = 12,
+    delay: float = 5.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict | None:
+    """The release workflow run the tag push started (polls ~1 minute)."""
+    argv = [
+        gh, "run", "list", "--repo", gh_repo, "--workflow", WORKFLOW, "--event", "push",
+        "--branch", tag, "--limit", "1", "--json", "databaseId,url,headSha,status",
+    ]
+    for attempt in range(attempts):
+        if attempt:
+            sleep(delay)
+        result = run(argv, check=False)
+        if result.returncode != 0:
+            continue
+        try:
+            runs = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError:
+            continue
+        for entry in runs:
+            if entry.get("headSha") == commit:
+                return entry
+    return None
+
+
+def push_tag(
+    run: Run,
+    *,
+    repo_dir: Path,
+    gh: str,
+    gh_repo: str,
+    version: str,
+    commit: str,
+    message: str,
+    watch: bool = False,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """Local release: annotated tag (message = notes), push only the tag, show the CI run."""
+    tag = tag_name(version)
+    stage = "none"
+    try:
+        # verbatim: the default cleanup would drop markdown `#` headings as comments.
+        run(["git", "-C", str(repo_dir), "tag", "-a", "--cleanup=verbatim", "-m", message, tag, commit], echo=True)
+        stage = "tagged"
+        run(["git", "-C", str(repo_dir), "push", REMOTE, f"refs/tags/{tag}:refs/tags/{tag}"], echo=True)
+        stage = "pushed"
+    except BaseException as error:
         if stage != "none":
             print(f"\nRELEASE FAILED after the tag was created (stage: {stage}): {error}", file=sys.stderr)
             print("Nothing was rolled back. To undo, run:", file=sys.stderr)
             for command in recovery_commands(stage, tag, gh_repo):
                 print(f"    {command}", file=sys.stderr)
-            if stage == "released":
-                print(
-                    f"or keep the release and re-upload: gh release upload {tag} --repo {gh_repo} --clobber "
-                    + " ".join(shlex.quote(str(a)) for a in assets),
-                    file=sys.stderr,
-                )
         raise
+    print(f"pushed tag {tag} ({commit[:12]}); the {WORKFLOW} workflow builds and publishes the release")
+    found = find_run(run, gh, gh_repo, tag, commit, sleep=sleep)
+    if not found:
+        print(
+            f"no workflow run for {tag} found yet; see https://github.com/{gh_repo}/actions/workflows/{WORKFLOW} "
+            f"or `gh run list --repo {gh_repo} --workflow {WORKFLOW} --branch {tag}`",
+            file=sys.stderr,
+        )
+        return 1 if watch else 0
+    run_id = str(found.get("databaseId"))
+    print(f"workflow run: {found.get('url')}")
+    if not watch:
+        print(f"follow it with: gh run watch {run_id} --repo {gh_repo} --exit-status")
+        return 0
+    watched = run([gh, "run", "watch", run_id, "--repo", gh_repo, "--exit-status", "--interval", "30"], check=False, capture=False)
+    if watched.returncode != 0:
+        print(
+            f"workflow run failed: {found.get('url')} (the tag {tag} stays). Retry: `gh run rerun {run_id} "
+            f"--repo {gh_repo} --failed` or, after fixing the workflow on {BRANCH}, `{rerun_hint(tag, gh_repo)}`",
+            file=sys.stderr,
+        )
+        return watched.returncode or 1
+    view = run([gh, "release", "view", tag, "--repo", gh_repo, "--json", "url"], check=False)
+    try:
+        print(f"published {json.loads(view.stdout)['url']}")
+    except (json.JSONDecodeError, KeyError, TypeError):
+        print(f"workflow succeeded; `gh release view {tag} --repo {gh_repo}`")
+    return 0
 
 
 # --------------------------------------------------------------------------
@@ -1172,82 +1383,50 @@ def smoke_plan(
     )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--version", help="release version X.Y.Z (default: Cargo.toml's at HEAD)")
-    parser.add_argument("--dry-run", action="store_true", help="build, test, package and write notes; no tag, push or release")
-    parser.add_argument("--notes", type=Path, help="markdown prepended to the generated release notes")
-    parser.add_argument("--replace-changelog", action="store_true", help="with --notes: drop the generated changelog")
-    parser.add_argument("--latest", action="store_true", help="publish a 0.x/-pre version as a full release marked latest")
-    parser.add_argument("--allow-dirty-for-test", action="store_true", help="skip the clean-tree check (the build uses the commit anyway)")
-    parser.add_argument("--gh", default=default_gh(), help="GitHub CLI binary (default: $GH or gh on PATH)")
-    parser.add_argument("--repo", help="GitHub owner/name (default: Cargo.toml repository)")
-    parser.add_argument(
-        "--target", action="append", choices=list(TARGETS_BY_TRIPLE), metavar="TRIPLE",
-        help="build this target (repeatable; default: " + ", ".join(t.triple for t in TARGETS if t.default)
-        + "; opt-in: " + ", ".join(t.triple for t in TARGETS if not t.default) + ")",
-    )
-    parser.add_argument("--zig", help="zig for the musl targets' C code (default: $ZIG, .direnv/zig/zig, zig on PATH)")
-    parser.add_argument("--qemu-aarch64", default=default_qemu_aarch64(), help="qemu-user for the arm64 smoke test (default: $QEMU_AARCH64 or on PATH)")
-    parser.add_argument("--allow-untested", action="store_true", help="ship a target this host cannot run, labelled untested")
-    parser.add_argument("--work-dir", type=Path, help="empty directory for the worktree, target and dist (default: a new directory under $TMPDIR)")
-    parser.add_argument("--keep-build", action="store_true", help="keep the temporary worktree's CARGO_TARGET_DIR")
-    args = parser.parse_args(argv)
-    sys.stdout.reconfigure(line_buffering=True)
-    run: Run = run_command
-    repo_dir = Path(git_out(run, ROOT, "rev-parse", "--show-toplevel"))
-    if args.replace_changelog and not args.notes:
-        parser.error("--replace-changelog needs --notes")
+@dataclasses.dataclass
+class Built:
+    notes: Path
+    assets: list[Path]
+    archives: list[Path]
 
-    cargo_toml_head = git_out(run, repo_dir, "show", "HEAD:Cargo.toml")
-    version = args.version or cargo_toml_version(cargo_toml_head)
-    parse_version(version)
-    tag = tag_name(version)
-    gh_repo = args.repo or repository_slug(cargo_toml_head)
-    prerelease = is_prerelease(version, args.latest)
-    prepend = args.notes.read_text() if args.notes else None
-    targets = select_targets(args.target)
-    print(
-        f"release {tag} of {gh_repo} ({'prerelease' if prerelease else 'latest'}) for "
-        + ", ".join(t.triple for t in targets) + (" [dry run]" if args.dry_run else "")
-    )
-    # Tools and smoke runners first: fail before the long build.
-    zig = None
-    if any(t.zig for t in targets):
-        zig = find_zig(args.zig, repo_dir, dict(os.environ))
-        if not zig:
-            raise ReleaseError("zig not found (compiles the musl targets' C code): run scripts/setup-zig.sh, set ZIG or pass --zig")
-    plans = {t.triple: smoke_plan(t, args.qemu_aarch64, args.allow_untested, host_machine()) for t in targets}
 
-    problems, commit = preflight(
-        run, version, repo_dir=repo_dir, gh=args.gh, gh_repo=gh_repo, allow_dirty=args.allow_dirty_for_test
-    )
-    if problems:
-        heading = "preflight would stop a real release:" if args.dry_run else "preflight failed:"
-        print(heading, file=sys.stderr)
-        for problem in problems:
-            print(f"  - {problem}", file=sys.stderr)
-        if not args.dry_run:
-            return 2
-    if not commit:
-        raise ReleaseError("no commit to release")
-    if args.allow_dirty_for_test:
-        print("note: --allow-dirty-for-test; uncommitted changes are NOT part of the release", file=sys.stderr)
+def build_release(
+    run: Run,
+    *,
+    repo_dir: Path,
+    version: str,
+    commit: str,
+    gh_repo: str,
+    prerelease: bool,
+    targets: list[Target],
+    plans: dict,
+    zig: str | None,
+    work: Path,
+    in_place: bool,
+    keep_build: bool,
+    prepend: str | None,
+    replace_changelog: bool,
+    build_url: str | None = None,
+) -> Built:
+    """Build, package, smoke-test and write the notes into `work`.
 
-    if args.work_dir:
-        work = args.work_dir
-    else:
-        root = default_temp_root(dict(os.environ))
-        work = Path(tempfile.mkdtemp(prefix=f"bazel-rs-release-{version}-", dir=root))
-    work = work.resolve()
+    `in_place` (--ci): build the checkout itself (HEAD is the tag) into its
+    ./target, which the workflow caches; otherwise a fresh detached worktree
+    of `commit` under `work` with its own target directory.
+    """
     work.mkdir(parents=True, exist_ok=True)
     if any(work.iterdir()):
         raise ReleaseError(f"--work-dir {work} is not empty")
-    src, target_dir, dist, scratch = work / "src", work / "target", work / "dist", work / "smoke"
+    if in_place:
+        src, target_dir = repo_dir, repo_dir / "target"
+    else:
+        src, target_dir = work / "src", work / "target"
+    dist, scratch = work / "dist", work / "smoke"
     dist.mkdir()
     epoch = int(git_out(run, repo_dir, "show", "-s", "--format=%ct", commit))
     commit_date = git_out(run, repo_dir, "show", "-s", "--format=%cI", commit)
-    run(["git", "-C", repo_dir, "worktree", "add", "--detach", src, commit], echo=True)
+    if not in_place:
+        run(["git", "-C", repo_dir, "worktree", "add", "--detach", src, commit], echo=True)
     try:
         env = build_env(dict(os.environ), repo_dir, src, target_dir, epoch)
         cargo = find_cargo(env)
@@ -1296,14 +1475,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ReleaseError("no archive could be smoke-tested")
 
         previous = previous_tag(run, repo_dir, commit, version)
-        if args.replace_changelog:
+        if replace_changelog:
             changelog = ""
         elif previous:
             log = run(["git", "-C", repo_dir, "log", "--no-merges", "--format=%H%x09%s", f"{previous}..{commit}"]).stdout
             changelog = changelog_from_log([tuple(l.split("\t", 1)) for l in log.splitlines() if "\t" in l])
         else:
             changelog = first_release_summary((src / "PLAN.md").read_text())
-        info = NotesInfo(version, commit, commit_date, compat, rustc, infos, gh_repo, prerelease, previous)
+        info = NotesInfo(version, commit, commit_date, compat, rustc, infos, gh_repo, prerelease, previous, build_url)
         notes = work / "RELEASE_NOTES.md"
         notes.write_text(render_notes(info, changelog, prepend))
 
@@ -1313,35 +1492,142 @@ def main(argv: Sequence[str] | None = None) -> int:
         for a in infos:
             print(f"{a.archive}: sha256 {a.sha256}; {a.requirement}; smoke test: {a.tested}")
         print(f"compatibility target Bazel {compat}")
-        create = [
-            "gh", "release", "create", tag, "--repo", gh_repo, "--verify-tag", "--title", f"bazel-rs {version}",
-            "--notes-file", str(notes), "--prerelease" if prerelease else "--latest", *map(str, assets),
-        ]
-        if args.dry_run:
-            print("\nDRY RUN: a real release would now run:")
-            print(f"  git tag -a {tag} -m 'bazel-rs {version}' {commit}")
-            print(f"  git push {REMOTE} refs/tags/{tag}:refs/tags/{tag}")
-            print("  " + shlex.join(create))
-            print("  then verify with gh release view / gh release download (sha256 of every archive)")
-            return 1 if problems else 0
-        # The build took a while: re-check the tag, the release and origin/main.
-        problems, again = preflight(
+        return Built(notes, assets, archives)
+    finally:
+        if not in_place:
+            run(["git", "-C", repo_dir, "worktree", "remove", "--force", src], check=False, echo=True)
+            if not keep_build:
+                shutil.rmtree(target_dir, ignore_errors=True)
+        print(
+            f"work directory: {work}"
+            + ("" if in_place or keep_build else " (build directory removed; --keep-build keeps it)")
+        )
+
+
+def report_problems(problems: list[str], dry_run: bool) -> None:
+    print("preflight would stop a real release:" if dry_run else "preflight failed:", file=sys.stderr)
+    for problem in problems:
+        print(f"  - {problem}", file=sys.stderr)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--version", help="release version X.Y.Z (default: Cargo.toml's at HEAD)")
+    parser.add_argument("--dry-run", action="store_true", help="build, test, package and write notes; no tag, push or release")
+    parser.add_argument("--ci", action="store_true", help="the release workflow: build the checked-out tag in place and publish it")
+    parser.add_argument("--watch", action="store_true", help="after pushing the tag, wait for the workflow run (gh run watch)")
+    parser.add_argument("--notes", type=Path, help="markdown prepended to the generated release notes (stored in the tag message)")
+    parser.add_argument("--replace-changelog", action="store_true", help="with --notes: drop the generated changelog")
+    parser.add_argument("--latest", action="store_true", help="publish a 0.x/-pre version as a full release marked latest")
+    parser.add_argument("--allow-dirty-for-test", action="store_true", help="skip the clean-tree check (the build uses the commit anyway)")
+    parser.add_argument("--gh", default=default_gh(), help="GitHub CLI binary (default: $GH or gh on PATH)")
+    parser.add_argument("--repo", help="GitHub owner/name (default: Cargo.toml repository)")
+    parser.add_argument(
+        "--target", action="append", choices=list(TARGETS_BY_TRIPLE), metavar="TRIPLE",
+        help="with --dry-run/--ci: build this target (repeatable; default: " + ", ".join(t.triple for t in TARGETS if t.default)
+        + "; opt-in: " + ", ".join(t.triple for t in TARGETS if not t.default) + ")",
+    )
+    parser.add_argument("--zig", help="zig for the musl targets' C code (default: $ZIG, .direnv/zig/zig, zig on PATH)")
+    parser.add_argument("--qemu-aarch64", default=default_qemu_aarch64(), help="qemu-user for the arm64 smoke test (default: $QEMU_AARCH64 or on PATH)")
+    parser.add_argument("--allow-untested", action="store_true", help="ship a target this host cannot run, labelled untested")
+    parser.add_argument("--work-dir", type=Path, help="empty directory for the worktree, target and dist (default: a new directory under $TMPDIR)")
+    parser.add_argument("--keep-build", action="store_true", help="keep the temporary worktree's CARGO_TARGET_DIR")
+    args = parser.parse_args(argv)
+    sys.stdout.reconfigure(line_buffering=True)
+    run: Run = run_command
+    repo_dir = Path(git_out(run, ROOT, "rev-parse", "--show-toplevel"))
+    if args.replace_changelog and not args.notes and not args.ci:
+        parser.error("--replace-changelog needs --notes")
+    if args.ci and (args.notes or args.replace_changelog):
+        parser.error("--ci reads the extra notes from the tag message; --notes/--replace-changelog go to the local tag flow")
+    if args.watch and (args.ci or args.dry_run):
+        parser.error("--watch only applies to the tag flow (no --ci, no --dry-run)")
+    building = args.ci or args.dry_run
+    if not building and (args.target or args.allow_untested or args.work_dir or args.keep_build):
+        parser.error("--target/--allow-untested/--work-dir/--keep-build need --dry-run or --ci: the workflow builds the release")
+
+    cargo_toml_head = git_out(run, repo_dir, "show", "HEAD:Cargo.toml")
+    version = args.version or cargo_toml_version(cargo_toml_head)
+    parse_version(version)
+    tag = tag_name(version)
+    gh_repo = args.repo or repository_slug(cargo_toml_head)
+    prerelease = is_prerelease(version, args.latest)
+    mode = "ci" + (" dry run" if args.dry_run else "") if args.ci else ("dry run" if args.dry_run else "tag and push")
+    print(f"release {tag} of {gh_repo} ({'prerelease' if prerelease else 'latest'}) [{mode}]")
+
+    if not building:
+        notes = args.notes.read_text() if args.notes else None
+        problems, commit = preflight(
             run, version, repo_dir=repo_dir, gh=args.gh, gh_repo=gh_repo, allow_dirty=args.allow_dirty_for_test
         )
-        if problems or again != commit:
-            for problem in problems or [f"HEAD moved from {commit} to {again} during the build"]:
-                print(f"  - {problem}", file=sys.stderr)
+        if problems:
+            report_problems(problems, False)
             return 2
-        publish(
+        if args.latest:
+            print("note: --latest is not passed to CI; the workflow publishes 0.x/-pre versions as prereleases", file=sys.stderr)
+        return push_tag(
             run, repo_dir=repo_dir, gh=args.gh, gh_repo=gh_repo, version=version, commit=commit,
-            notes=notes, assets=assets, archives=archives, prerelease=prerelease, download_dir=work / "verify",
+            message=tag_message(version, notes, args.replace_changelog), watch=args.watch,
         )
-        return 0
-    finally:
-        run(["git", "-C", repo_dir, "worktree", "remove", "--force", src], check=False, echo=True)
-        if not args.keep_build:
-            shutil.rmtree(target_dir, ignore_errors=True)
-        print(f"work directory: {work}" + ("" if args.keep_build else " (build directory removed; --keep-build keeps it)"))
+
+    targets = select_targets(args.target)
+    print("targets: " + ", ".join(t.triple for t in targets))
+    # Tools and smoke runners first: fail before the long build.
+    zig = None
+    if any(t.zig for t in targets):
+        zig = find_zig(args.zig, repo_dir, dict(os.environ))
+        if not zig:
+            raise ReleaseError("zig not found (compiles the musl targets' C code): run scripts/setup-zig.sh, set ZIG or pass --zig")
+    plans = {t.triple: smoke_plan(t, args.qemu_aarch64, args.allow_untested, host_machine()) for t in targets}
+
+    if args.ci:
+        problems, commit, body = ci_preflight(run, version, repo_dir=repo_dir, gh=args.gh, gh_repo=gh_repo)
+        prepend, replace_changelog = notes_from_tag_body(body)
+        build_url = ci_run_url(dict(os.environ))
+    else:
+        problems, commit = preflight(
+            run, version, repo_dir=repo_dir, gh=args.gh, gh_repo=gh_repo, allow_dirty=args.allow_dirty_for_test
+        )
+        prepend = args.notes.read_text() if args.notes else None
+        replace_changelog, build_url = args.replace_changelog, None
+    if problems:
+        report_problems(problems, args.dry_run)
+        if not args.dry_run:
+            return 2
+    if not commit:
+        raise ReleaseError("no commit to release")
+    if args.allow_dirty_for_test and not args.ci:
+        print("note: --allow-dirty-for-test; uncommitted changes are NOT part of the release", file=sys.stderr)
+    if prepend or replace_changelog:
+        print(f"extra notes: {len(prepend or '')} characters" + ("; replacing the changelog" if replace_changelog else ""))
+
+    if args.work_dir:
+        work = args.work_dir
+    else:
+        root = default_temp_root(dict(os.environ))
+        work = Path(tempfile.mkdtemp(prefix=f"bazel-rs-release-{version}-", dir=root))
+    built = build_release(
+        run, repo_dir=repo_dir, version=version, commit=commit, gh_repo=gh_repo, prerelease=prerelease,
+        targets=targets, plans=plans, zig=zig, work=work.resolve(), in_place=args.ci, keep_build=args.keep_build,
+        prepend=prepend, replace_changelog=replace_changelog, build_url=build_url,
+    )
+    create = release_create_argv("gh", tag, gh_repo, version, built.notes, prerelease, built.assets)
+    if args.dry_run:
+        print("\nDRY RUN: a real release would now run:")
+        if args.ci:
+            print("  " + shlex.join(create))
+        else:
+            print(f"  git tag -a --cleanup=verbatim -m 'bazel-rs {version} [+ --notes]' {tag} {commit}")
+            print(f"  git push {REMOTE} refs/tags/{tag}:refs/tags/{tag}")
+            print(f"  then GitHub Actions ({WORKFLOW}) builds the tag again and runs: scripts/release.py --ci --version {version}")
+            print("  which publishes with: " + shlex.join(create))
+        print("  then verify with gh release view / gh release download (sha256 of every archive)")
+        return 1 if problems else 0
+    publish(
+        run, gh=args.gh, gh_repo=gh_repo, version=version, notes=built.notes, assets=built.assets,
+        archives=built.archives, prerelease=prerelease, download_dir=work.resolve() / "verify",
+    )
+    return 0
 
 
 if __name__ == "__main__":

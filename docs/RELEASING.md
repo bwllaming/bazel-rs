@@ -7,18 +7,96 @@ Apache-2.0 (`LICENSE`, `NOTICE`).
 
 ## Cutting a release
 
+Releases are built and published by GitHub Actions
+(`.github/workflows/release.yml`) when a `v*` tag is pushed. A developer
+machine only checks, tags and pushes the tag:
+
 ```sh
 git switch main && git pull --ff-only     # the release commit must already be on origin/main
-scripts/release.py --dry-run               # optional rehearsal: build, smoke test, archive, notes
-scripts/release.py                         # tag v<version>, push the tag, create the release
+scripts/release.py --dry-run               # optional rehearsal: build, smoke test, archive, notes locally
+scripts/release.py [--notes FILE] --watch  # tag v<version>, push only the tag, follow the workflow run
 ```
 
-`scripts/release.py [--version X.Y.Z] [--dry-run] [--notes FILE] [--target TRIPLE]...
-[--allow-dirty-for-test]` (Python 3.11+, standard library only; `--help` lists the rest).
-Besides Rust (`scripts/setup-rust.sh`; `rust-toolchain.toml` lists the musl
-targets) the static builds need zig as their C compiler: run
-`scripts/setup-zig.sh` once (pinned zig 0.16.0, sha256-checked, into
-`.direnv/zig`), or pass `--zig PATH` / set `ZIG`.
+`scripts/release.py [--version X.Y.Z] [--notes FILE [--replace-changelog]] [--watch]`,
+`scripts/release.py --dry-run [--target TRIPLE]... [--allow-dirty-for-test]`,
+`scripts/release.py --ci` (the workflow) — Python 3.11+, standard library only;
+`--help` lists the rest. The tag flow needs `git` and an authenticated `gh`
+(`--gh PATH`, else `$GH`, else `gh` on PATH). `--dry-run` also needs Rust
+(`scripts/setup-rust.sh`; `rust-toolchain.toml` lists the musl targets) and zig
+as the static builds' C compiler: run `scripts/setup-zig.sh` once (pinned zig
+0.16.0, sha256-checked, into `.direnv/zig`), or pass `--zig PATH` / set `ZIG`.
+
+### The tag flow (default)
+
+1. **Preflight** (all problems are listed at once; exit 2): on `main`; clean
+   working tree (`--allow-dirty-for-test` skips this; only the commit is
+   tagged); after `git fetch origin`, HEAD is `origin/main` — the script never
+   pushes a branch, push `main` yourself; `Cargo.toml` and `Cargo.lock` at HEAD
+   say the release version (default: `Cargo.toml`'s); tag `v<version>` exists
+   neither locally nor on `origin`; `gh` is authenticated and the repository
+   has no release with that tag.
+2. **Tag**: `git tag -a --cleanup=verbatim -m <message> v<version> HEAD`. The
+   message's subject is `bazel-rs <version>`; its body is the `--notes FILE`
+   text (verbatim, so markdown `#` headings survive), preceded by the line
+   `<!-- release.py: replace-changelog -->` with `--replace-changelog`. This
+   is how the extra notes reach CI: `--ci` reads them back from the tag.
+3. **Push only the tag**: `git push origin refs/tags/v<version>:refs/tags/v<version>`.
+4. **Show the run**: polls `gh run list --workflow release.yml --event push
+   --branch v<version>` (about a minute) for the run of the tagged commit and
+   prints its URL and the `gh run watch` command. `--watch` waits with `gh run
+   watch --exit-status` and prints the release URL (exit status of the run).
+
+`--latest` is not passed to CI (the workflow publishes 0.x/-pre versions as
+prereleases; promote one in the GitHub UI or with `gh release edit --latest`).
+If tagging or pushing fails, the exact undo commands are printed
+(`git tag -d v<version>`, `git push origin :refs/tags/v<version>`).
+
+### The workflow (`--ci`)
+
+`release.yml` runs on `push` of `v*` tags and on `workflow_dispatch` with a
+`tag` input (re-runs: `gh workflow run release.yml -f tag=v<version>`; the
+build always uses the tag's sources and its `scripts/release.py`; the
+workflow definition comes from the ref the dispatch names, default `main`).
+One job on `ubuntu-24.04` (glibc 2.39, the glibc archive's requirement),
+timeout 60 minutes, `permissions: contents: write` only, one concurrency
+group per tag (never cancelled): check out the tag with full history
+(`fetch-depth: 0`, the changelog needs the previous tag); install the
+toolchain of `rust-toolchain.toml` with the musl target; zig via
+`scripts/setup-zig.sh` (cached on the script's hash); `Swatinem/rust-cache`
+(keyed on `Cargo.lock`, `rust-toolchain.toml` and the rustc version; caches
+of a tag ref are only visible to re-runs of that tag and the registry
+download); then `scripts/release.py --ci --version ${TAG#v} --work-dir
+$RUNNER_TEMP/release` with `GH_TOKEN=${{ github.token }}`; finally the
+archives, checksums and notes are kept as a workflow artifact for 14 days
+(also on failure). arm64 is not built in CI (opt-in locally: `--dry-run
+--target aarch64-unknown-linux-musl`).
+
+`--ci` differs from the local flow only where it must:
+
+- **CI preflight** (exit 2): `git fetch --force origin
+  +refs/tags/v<version>:refs/tags/v<version>` (so the annotated tag object is
+  present, whatever the checkout fetched); the tag exists and its commit is
+  HEAD (detached; no branch or pushed-ness check); the checkout is clean (it
+  is built in place); `Cargo.toml`/`Cargo.lock` say the version; `gh` works
+  and no release exists yet. The extra notes are the tag message body
+  (`git for-each-ref --format=%(contents:body)`); a lightweight tag has none.
+  `--notes`/`--replace-changelog` are rejected with `--ci`.
+- **Build in place**: the checkout itself into its `./target` (the cached
+  directory), not a temporary worktree. Everything else — build, checks,
+  packaging, smoke test, notes (steps below) — is the same code as `--dry-run`.
+- **Notes** additionally get a `Built by` row linking the workflow run
+  (`$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID`, plus
+  `/attempts/N` on re-runs).
+- **Publish**: `gh release create v<version> --verify-tag --title "bazel-rs
+  <version>" --notes-file … --prerelease|--latest <archives, .sha256 files,
+  SHA256SUMS>` (never creates or pushes a tag), `gh release view` checks the
+  assets, `gh release download` re-fetches every archive and compares its
+  sha256. On failure the tag is kept and the script prints `gh release
+  delete v<version> --yes` (if the release was created), `gh release upload
+  --clobber` and the re-run command.
+
+`--ci --dry-run` stops before publishing (prints the `gh release create`
+command): a CI rehearsal in a scratch clone (see Tests).
 
 ### Targets
 
@@ -73,34 +151,27 @@ only `--version`, `version`, `help` and `query`, because actions are started
 through `/proc/self/exe`, which plain qemu-user cannot exec). `--allow-untested`
 ships it without a smoke test, labelled so in the notes.
 
-### Steps
+### Build steps (`--dry-run` and `--ci`)
 
-
-1. **Preflight** (all problems are listed at once): on `main`; clean working
-   tree; after `git fetch origin`, HEAD is `origin/main` — the script never
-   pushes a branch, push `main` yourself; `Cargo.toml` and `Cargo.lock` at HEAD
-   say the release version; tag `v<version>` exists neither locally nor on
-   `origin`; `gh` is authenticated and the repository has no release with that
-   tag. The version defaults to `Cargo.toml`'s. `gh` is `--gh PATH`, else `$GH`,
-   else `gh` on PATH.
-2. **Build** the commit in a fresh detached `git worktree` in a temporary work
-   directory (`--work-dir` to choose it; by default a new directory under
-   `$TMPDIR`, or `~/opencodetmp` when `TMPDIR` is unset and that directory
-   exists, else the system default), never in the caller's tree, with its
-   own `CARGO_TARGET_DIR`, once per target (table above; the musl builds get
-   generated `zig cc`/`zig ar`/`zig ranlib` wrappers in `<work>/tools`, a zig
-   cache in `<work>/zig-cache`, and `rustup target add` first). The toolchain comes
+1. **Build** the commit — with `--dry-run` in a fresh detached `git worktree`
+   in a temporary work directory (`--work-dir` to choose it; by default a new
+   directory under `$TMPDIR`, or `~/opencodetmp` when `TMPDIR` is unset and
+   that directory exists, else the system default), never in the caller's
+   tree, with its own `CARGO_TARGET_DIR`; with `--ci` the checkout in place —
+   once per target (table above; the musl builds get generated `zig cc`/`zig
+   ar`/`zig ranlib` wrappers in `<work>/tools`, a zig cache in
+   `<work>/zig-cache`, and `rustup target add` first). The toolchain comes
    from that commit's `rust-toolchain.toml`; `RUSTUP_HOME`/`CARGO_HOME` are
    honoured and default to the checkout's `.direnv/{rustup,cargo}` like
    `.envrc`. `RUSTFLAGS`, `RUSTUP_TOOLCHAIN`, `RUSTC*` wrappers and target-dir
-   variables of the caller are dropped; `RUSTFLAGS` only remaps the worktree,
+   variables of the caller are dropped; `RUSTFLAGS` only remaps the source,
    `CARGO_HOME` and `RUSTUP_HOME` paths (`/bazel-rs`, `/cargo`, `/rustup`), so
    the binary does not depend on where it was built, and `SOURCE_DATE_EPOCH` is
    the commit time. Each binary is checked: ELF machine of the target; the
    static targets must have no program interpreter and no `DT_NEEDED`
    entry; the glibc target's requirement is its highest `GLIBC_x.y` symbol
    version (`objdump -T` or `readelf -V`).
-3. **Package** one `bazel-rs-<version>-<target>.tar.gz` per target with
+2. **Package** one `bazel-rs-<version>-<target>.tar.gz` per target with
    `bazel-rs-<version>-<target>/{bazel-rs, LICENSE, NOTICE, README.md,
    THIRD_PARTY_LICENSES.md}`. The tarball is deterministic: entries
    sorted, mtime = commit time, uid/gid 0 (`root`), modes 0755/0644, ustar;
@@ -113,46 +184,39 @@ ships it without a smoke test, labelled so in the notes.
    runtime (musl's `COPYRIGHT` and LLVM libunwind's licence, taken from the
    zig distribution). Next to each archive: `<archive>.sha256`, and one
    `SHA256SUMS` over all archives (`sha256sum -c` format).
-4. **Smoke test** each binary extracted from its archive, in a scratch
+3. **Smoke test** each binary extracted from its archive, in a scratch
    workspace with a scratch HOME, cache and TMPDIR and a dead HTTP(S) proxy (no
    network): `--version` (must print the release version), `version`, `help`,
    then `query //:all` and `build //:upper` twice (the second all cache hits)
    with the explicit-module profile (`--experimental-builtin-modules=false`),
    checking the output file (arm64: see Targets).
-5. **Release notes** (`<work>/RELEASE_NOTES.md`): version, commit, compatibility
-   target (from `--version`), toolchain; a downloads table (archive, platform,
-   linking — static, or the minimum glibc —, how it was smoke-tested,
-   sha256); requirements per archive (static: any distribution; glibc: the
-   version, e.g. Ubuntu 24.04 or newer; arm64: the x86_64-only caveat);
-   install instructions for the static x86_64 archive; then the changes: for
-   the first release the "Status" section of `PLAN.md`; afterwards `git log
-   --no-merges <previous tag>..<commit>` grouped by subject prefix (`feat`,
-   `parity`, `perf`, `fix`/`harden`, `docs`, `test`, everything else under
-   "Other"; `release:` commits are left out). `--notes FILE` is prepended;
-   with `--replace-changelog` it replaces the generated changelog.
-6. **Publish** (not with `--dry-run`, which prints the commands instead and
-   exits 1 if the preflight found problems): preflight is repeated (the build
-   takes minutes), then `git tag -a v<version>` at the built commit, `git push
-   origin refs/tags/v<version>` (only the tag), `gh release create v<version>
-   --verify-tag --title "bazel-rs <version>" --notes-file … <archives,
-   .sha256 files, SHA256SUMS>`, then `gh release view` checks the assets and
-   `gh release download` re-fetches every archive and compares its sha256.
+4. **Release notes** (`<work>/RELEASE_NOTES.md`): version, commit, compatibility
+   target (from `--version`), toolchain, (CI) the workflow run; a downloads
+   table (archive, platform, linking — static, or the minimum glibc —, how it
+   was smoke-tested, sha256); requirements per archive (static: any
+   distribution; glibc: the version, e.g. Ubuntu 24.04 or newer; arm64: the
+   x86_64-only caveat); install instructions for the static x86_64 archive;
+   then the changes: for the first release the "Status" section of `PLAN.md`;
+   afterwards `git log --no-merges <previous tag>..<commit>` grouped by
+   subject prefix (`feat`, `parity`, `perf`, `fix`/`harden`, `docs`, `test`,
+   everything else under "Other"; `release:` commits are left out). The extra
+   notes (`--notes FILE` with `--dry-run`, the tag message body with `--ci`)
+   are prepended; with `--replace-changelog` (or its marker in the tag) they
+   replace the generated changelog.
+5. `--dry-run` then prints what a real release would do and exits (1 if the
+   preflight found problems); `--ci` publishes (above).
 
 **Prereleases.** 0.x versions and `X.Y.Z-pre` versions are published as GitHub
 prereleases (bazel-rs is not at Bazel parity; GitHub then never shows them as
-"latest"). `--latest` publishes them as a full release marked latest; 1.0 and
-later are always full releases.
+"latest"). `--ci --latest` would publish them as a full release marked latest
+(the workflow does not pass it; promote a published prerelease with `gh release
+edit v<version> --prerelease=false --latest`); 1.0 and later are always full
+releases.
 
-**Failure after tagging.** Nothing is rolled back automatically. The script
-prints the exact commands to undo what was done so far, e.g.
-`gh release delete v0.1.0 --repo bwllaming/bazel-rs --yes`,
-`git push origin :refs/tags/v0.1.0`, `git tag -d v0.1.0` (or `gh release upload
-… --clobber` to keep the release and replace its assets).
-
-The work directory is kept (archive, checksums, notes, the smoke workspace);
-the temporary worktree is removed and so is its target directory unless
-`--keep-build`. `--allow-dirty-for-test` only skips the clean-tree check (the
-build uses the commit, never uncommitted changes).
+The `--dry-run` work directory is kept (archive, checksums, notes, the smoke
+workspace); the temporary worktree is removed and so is its target directory
+unless `--keep-build`. `--allow-dirty-for-test` only skips the clean-tree check
+(the build and the tag use the commit, never uncommitted changes).
 
 ## Preparing the next version
 
@@ -174,10 +238,24 @@ which stay as recorded. The registry client's user agent `bazel-rs/0.1`
 ## Tests
 
 `python3 -m unittest discover -s tests -p test_release.py` covers version
-parsing, the preflight with fake git/gh runners, the target table, the zig
+parsing, the preflight and the CI preflight with fake git/gh runners, the tag
+flow's command sequence (annotated tag, push of only the tag, run lookup,
+`--watch`, recovery output), the tag-message notes round trip through real
+git (a temporary bare `origin`), the run URL, the workflow's key settings,
+the target table, the zig
 wrappers and cross-build environment, ELF linkage checks, smoke-test
 planning, byte-identical tarballs, checksums, the license inventory (with the
 static runtime section), release notes and `bump_version.py`, all offline.
 `cargo test --locked --target x86_64-unknown-linux-musl --test libc_string`
 (with the `CC_`/`AR_` variables release.py sets, or the whole suite that way)
 runs the string-function checks against the musl build.
+
+CI rehearsal of `--ci` without publishing: in a scratch clone whose `origin`
+is a local bare repository holding an annotated `v<version>` tag, check out
+the tag detached and run `GITHUB_SERVER_URL=https://github.com
+GITHUB_REPOSITORY=<owner/name> GITHUB_RUN_ID=1 scripts/release.py --ci
+--dry-run --version <version> --work-dir <empty dir>`: it runs the CI
+preflight, builds in place, smoke-tests, packages and writes the notes (with
+the run link and the tag's notes), then prints the `gh release create`
+command instead of running it. Workflow lint: `actionlint` (1.7.12, with
+`shellcheck` on PATH) over `.github/workflows/`.

@@ -1,17 +1,22 @@
 """Offline tests of scripts/release.py and scripts/bump_version.py (pure parts only).
 
-No cargo, network, gh or real git commands: git and gh are fake runners.
+No cargo, network or gh: git and gh are fake runners, except TagNotesGitTest,
+which runs real git in a temporary directory (a local bare "origin").
 """
 
 import gzip
 import hashlib
 import importlib.util
 import io
+import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
+import unittest.mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -602,9 +607,308 @@ class NotesTest(unittest.TestCase):
     def test_recovery_commands(self):
         self.assertEqual(release.recovery_commands("tagged", "v1.0.0", "o/r"), ["git tag -d v1.0.0"])
         self.assertEqual(
+            release.recovery_commands("pushed", "v1.0.0", "o/r"),
+            ["git push origin :refs/tags/v1.0.0", "git tag -d v1.0.0"],
+        )
+        self.assertEqual(
             release.recovery_commands("released", "v1.0.0", "o/r"),
             ["gh release delete v1.0.0 --repo o/r --yes", "git push origin :refs/tags/v1.0.0", "git tag -d v1.0.0"],
         )
+        # CI never touches the tag.
+        self.assertEqual(release.recovery_commands("released", "v1.0.0", "o/r", ci=True), ["gh release delete v1.0.0 --repo o/r --yes"])
+        self.assertEqual(release.recovery_commands("none", "v1.0.0", "o/r", ci=True), [])
+
+    def test_build_url_row(self):
+        info = self.info(self.MUSL)
+        self.assertNotIn("Built by", release.render_notes(info, ""))
+        info.build_url = "https://github.com/o/r/actions/runs/42"
+        self.assertIn("| Toolchain | rustc 1.99.0 |\n| Built by | [GitHub Actions run](https://github.com/o/r/actions/runs/42) |\n", release.render_notes(info, ""))
+
+
+TAGGED = "refs/tags/v1.2.3"
+GH_RUN_LIST = (
+    "gh", "run", "list", "--repo", "o/r", "--workflow", "release.yml", "--event", "push",
+    "--branch", "v1.2.3", "--limit", "1", "--json", "databaseId,url,headSha,status",
+)
+RUN_ENTRY = {"databaseId": 77, "url": "https://github.com/o/r/actions/runs/77", "headSha": HEAD, "status": "queued"}
+
+
+class SequenceRunner(FakeRunner):
+    """FakeRunner whose answers may be lists, consumed one call at a time."""
+
+    def __call__(self, argv, **kwargs):
+        key = self.key(argv)
+        self.calls.append(key)
+        if key not in self.answers:
+            raise AssertionError(f"unexpected command {key}")
+        answer = self.answers[key]
+        return answer.pop(0) if isinstance(answer, list) else answer
+
+
+def tag_argv(message):
+    return ("tag", "-a", "--cleanup=verbatim", "-m", message, "v1.2.3", HEAD)
+
+
+PUSH = ("push", "origin", f"{TAGGED}:{TAGGED}")
+
+
+class TagFlowTest(unittest.TestCase):
+    def runner(self, message, overrides=None):
+        answers = {tag_argv(message): Result(0), PUSH: Result(0), GH_RUN_LIST: Result(0, json.dumps([RUN_ENTRY]))}
+        answers.update(overrides or {})
+        return SequenceRunner(answers)
+
+    def test_tag_push_and_run_url(self):
+        message = release.tag_message("1.2.3", "## Highlights\n\n- x\n")
+        runner = self.runner(message)
+        sleeps = []
+        out = io.StringIO()
+        with unittest.mock.patch("sys.stdout", out):
+            code = release.push_tag(
+                runner, repo_dir=Path("/repo"), gh="/x/gh", gh_repo="o/r", version="1.2.3", commit=HEAD,
+                message=message, sleep=sleeps.append,
+            )
+        self.assertEqual(code, 0)
+        # Annotated tag, then ONLY the tag is pushed, then the run is looked up; no release is created locally.
+        self.assertEqual(runner.calls, [tag_argv(message), PUSH, GH_RUN_LIST])
+        self.assertEqual(sleeps, [])
+        self.assertIn("workflow run: https://github.com/o/r/actions/runs/77", out.getvalue())
+        self.assertIn("gh run watch 77 --repo o/r --exit-status", out.getvalue())
+
+    def test_polls_until_the_run_of_the_commit_appears(self):
+        other = dict(RUN_ENTRY, headSha="b" * 40)
+        message = release.tag_message("1.2.3")
+        runner = self.runner(message, {GH_RUN_LIST: [Result(0, "[]"), Result(1, "", "HTTP 502"), Result(0, json.dumps([other])), Result(0, json.dumps([RUN_ENTRY]))]})
+        sleeps = []
+        with unittest.mock.patch("sys.stdout", io.StringIO()):
+            found = release.find_run(runner, "/x/gh", "o/r", "v1.2.3", HEAD, sleep=sleeps.append)
+        self.assertEqual(found, RUN_ENTRY)
+        self.assertEqual(sleeps, [5.0, 5.0, 5.0])
+        never = self.runner(message, {GH_RUN_LIST: Result(0, "[]")})
+        self.assertIsNone(release.find_run(never, "/x/gh", "o/r", "v1.2.3", HEAD, attempts=3, sleep=lambda s: None))
+        self.assertEqual(never.calls.count(GH_RUN_LIST), 3)
+
+    def test_run_not_found(self):
+        message = release.tag_message("1.2.3")
+        for watch, want in ((False, 0), (True, 1)):
+            runner = self.runner(message, {GH_RUN_LIST: Result(0, "[]")})
+            with unittest.mock.patch("sys.stdout", io.StringIO()), unittest.mock.patch("sys.stderr", io.StringIO()) as err:
+                code = release.push_tag(
+                    runner, repo_dir=Path("/repo"), gh="/x/gh", gh_repo="o/r", version="1.2.3", commit=HEAD,
+                    message=message, watch=watch, sleep=lambda s: None,
+                )
+            self.assertEqual(code, want)
+            self.assertIn("https://github.com/o/r/actions/workflows/release.yml", err.getvalue())
+
+    def test_watch(self):
+        message = release.tag_message("1.2.3")
+        watch = ("gh", "run", "watch", "77", "--repo", "o/r", "--exit-status", "--interval", "30")
+        view = ("gh", "release", "view", "v1.2.3", "--repo", "o/r", "--json", "url")
+        runner = self.runner(message, {watch: Result(0), view: Result(0, '{"url": "https://github.com/o/r/releases/tag/v1.2.3"}')})
+        with unittest.mock.patch("sys.stdout", io.StringIO()) as out:
+            code = release.push_tag(
+                runner, repo_dir=Path("/repo"), gh="/x/gh", gh_repo="o/r", version="1.2.3", commit=HEAD,
+                message=message, watch=True,
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(runner.calls, [tag_argv(message), PUSH, GH_RUN_LIST, watch, view])
+        self.assertIn("published https://github.com/o/r/releases/tag/v1.2.3", out.getvalue())
+        failed = self.runner(message, {watch: Result(1)})
+        with unittest.mock.patch("sys.stdout", io.StringIO()), unittest.mock.patch("sys.stderr", io.StringIO()) as err:
+            code = release.push_tag(
+                failed, repo_dir=Path("/repo"), gh="/x/gh", gh_repo="o/r", version="1.2.3", commit=HEAD,
+                message=message, watch=True,
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("gh workflow run release.yml --repo o/r -f tag=v1.2.3", err.getvalue())
+
+    def test_failed_push_prints_recovery(self):
+        message = release.tag_message("1.2.3")
+        runner = self.runner(message)
+
+        def fail_push(argv, **kwargs):
+            if runner.key(argv) == PUSH:
+                raise release.ReleaseError("push rejected")
+            return runner(argv, **kwargs)
+
+        with unittest.mock.patch("sys.stderr", io.StringIO()) as err, self.assertRaises(release.ReleaseError):
+            release.push_tag(
+                fail_push, repo_dir=Path("/repo"), gh="/x/gh", gh_repo="o/r", version="1.2.3", commit=HEAD, message=message,
+            )
+        self.assertIn("stage: tagged", err.getvalue())
+        self.assertIn("git tag -d v1.2.3", err.getvalue())
+        self.assertNotIn("git push origin :", err.getvalue())
+
+
+class TagNotesTest(unittest.TestCase):
+    def test_message_and_round_trip(self):
+        self.assertEqual(release.tag_message("1.2.3"), "bazel-rs 1.2.3\n")
+        notes = "## Highlights\n\n# not a comment\n- x\n"
+        message = release.tag_message("1.2.3", "\n" + notes + "\n\n")
+        self.assertEqual(message, "bazel-rs 1.2.3\n\n" + notes)
+        body = message.split("\n\n", 1)[1]
+        self.assertEqual(release.notes_from_tag_body(body), (notes, False))
+        replaced = release.tag_message("1.2.3", notes, replace_changelog=True)
+        self.assertEqual(release.notes_from_tag_body(replaced.split("\n\n", 1)[1]), (notes, True))
+        self.assertEqual(release.notes_from_tag_body(""), (None, False))
+        self.assertEqual(release.notes_from_tag_body(release.REPLACE_CHANGELOG_MARKER + "\n"), (None, True))
+
+    def test_ci_run_url(self):
+        env = {"GITHUB_SERVER_URL": "https://github.com", "GITHUB_REPOSITORY": "o/r", "GITHUB_RUN_ID": "42"}
+        self.assertEqual(release.ci_run_url(env), "https://github.com/o/r/actions/runs/42")
+        self.assertEqual(release.ci_run_url({**env, "GITHUB_RUN_ATTEMPT": "1"}), "https://github.com/o/r/actions/runs/42")
+        self.assertEqual(release.ci_run_url({**env, "GITHUB_RUN_ATTEMPT": "3"}), "https://github.com/o/r/actions/runs/42/attempts/3")
+        self.assertIsNone(release.ci_run_url({"GITHUB_RUN_ID": "42"}))
+
+
+def ci_answers(overrides=None):
+    answers = {
+        ("fetch", "--quiet", "--force", "--no-tags", "origin", f"+{TAGGED}:{TAGGED}"): Result(0),
+        ("rev-parse", "--verify", "HEAD^{commit}"): Result(0, HEAD + "\n"),
+        ("rev-parse", "--verify", "--quiet", f"{TAGGED}^{{commit}}"): Result(0, HEAD + "\n"),
+        ("status", "--porcelain", "--untracked-files=normal"): Result(0, ""),
+        ("show", f"{HEAD}:Cargo.toml"): Result(0, CARGO_TOML),
+        ("show", f"{HEAD}:Cargo.lock"): Result(0, CARGO_LOCK),
+        ("cat-file", "-t", TAGGED): Result(0, "tag\n"),
+        ("for-each-ref", "--format=%(contents:body)", TAGGED): Result(0, "Extra notes.\n"),
+        ("gh", "auth", "status", "--hostname", "github.com"): Result(0),
+        ("gh", "release", "view", "v1.2.3", "--repo", "o/r", "--json", "tagName"): Result(1, "", "release not found\n"),
+    }
+    answers.update(overrides or {})
+    return FakeRunner(answers)
+
+
+def run_ci_preflight(runner, version="1.2.3"):
+    return release.ci_preflight(runner, version, repo_dir=Path("/repo"), gh="/x/gh", gh_repo="o/r")
+
+
+class CiPreflightTest(unittest.TestCase):
+    def test_tag_at_head(self):
+        runner = ci_answers()
+        problems, head, body = run_ci_preflight(runner)
+        self.assertEqual((problems, head, body), ([], HEAD, "Extra notes.\n"))
+        # No branch checks (detached HEAD is expected) and nothing written.
+        for call in runner.calls:
+            self.assertNotIn("symbolic-ref", call)
+            self.assertNotIn("push", call)
+            self.assertNotIn("create", call)
+            self.assertNotEqual(call[:1], ("tag",))
+
+    def assertProblem(self, runner, needle, version="1.2.3"):
+        problems, _, _ = run_ci_preflight(runner, version)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn(needle, problems[0])
+
+    def test_tag_problems(self):
+        self.assertProblem(
+            ci_answers({("rev-parse", "--verify", "--quiet", f"{TAGGED}^{{commit}}"): Result(0, "b" * 40 + "\n")}),
+            "is commit bbbbbbbbbbbb, HEAD is aaaaaaaaaaaa",
+        )
+        missing = ci_answers({
+            ("rev-parse", "--verify", "--quiet", f"{TAGGED}^{{commit}}"): Result(1),
+            ("fetch", "--quiet", "--force", "--no-tags", "origin", f"+{TAGGED}:{TAGGED}"): Result(128, "", "couldn't find remote ref"),
+        })
+        problems, _, body = run_ci_preflight(missing)
+        self.assertEqual(len(problems), 2, problems)
+        self.assertIn("cannot fetch tag v1.2.3", problems[0])
+        self.assertIn("never creates tags", problems[1])
+        self.assertEqual(body, "")
+
+    def test_version_dirty_and_release(self):
+        self.assertProblem(ci_answers({("status", "--porcelain", "--untracked-files=normal"): Result(0, " M Cargo.toml\n")}), "not clean")
+        self.assertProblem(
+            ci_answers({("gh", "release", "view", "v1.2.3", "--repo", "o/r", "--json", "tagName"): Result(0, "{}")}),
+            "already exists",
+        )
+        tag2 = "refs/tags/v2.0.0"
+        runner = ci_answers({
+            ("fetch", "--quiet", "--force", "--no-tags", "origin", f"+{tag2}:{tag2}"): Result(0),
+            ("rev-parse", "--verify", "--quiet", f"{tag2}^{{commit}}"): Result(0, HEAD + "\n"),
+            ("cat-file", "-t", tag2): Result(0, "tag\n"),
+            ("for-each-ref", "--format=%(contents:body)", tag2): Result(0, ""),
+            ("gh", "release", "view", "v2.0.0", "--repo", "o/r", "--json", "tagName"): Result(1, "", "release not found"),
+        })
+        problems, _, _ = run_ci_preflight(runner, "2.0.0")
+        self.assertEqual(len(problems), 2, problems)
+        self.assertIn("Cargo.toml says 1.2.3, releasing 2.0.0", problems[0])
+
+    def test_lightweight_tag(self):
+        runner = ci_answers({("cat-file", "-t", TAGGED): Result(0, "commit\n")})
+        with unittest.mock.patch("sys.stderr", io.StringIO()) as err:
+            problems, _, body = run_ci_preflight(runner)
+        self.assertEqual((problems, body), ([], ""))
+        self.assertIn("lightweight", err.getvalue())
+
+
+class TagNotesGitTest(unittest.TestCase):
+    """The tag flow's message survives git verbatim and --ci reads it back (real git)."""
+
+    def git(self, *args, cwd):
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        return subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True, text=True).stdout
+
+    def test_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            origin, work, ci = tmp / "origin.git", tmp / "work", tmp / "ci"
+            self.git("init", "--quiet", "--bare", str(origin), cwd=tmp)
+            self.git("init", "--quiet", "-b", "main", str(work), cwd=tmp)
+            (work / "Cargo.toml").write_text(CARGO_TOML)
+            (work / "Cargo.lock").write_text(CARGO_LOCK)
+            for args in (("add", "."), ("-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "release: 1.2.3"),
+                         ("remote", "add", "origin", str(origin)), ("push", "--quiet", "origin", "main")):
+                self.git(*args, cwd=work)
+            commit = self.git("rev-parse", "HEAD", cwd=work).strip()
+            notes = "## Highlights\n\n# A heading the default cleanup would drop\n\n- item\n"
+            message = release.tag_message("1.2.3", notes, replace_changelog=True)
+            env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                   "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+            def run(argv, **kwargs):
+                kwargs.setdefault("env", env)
+                kwargs.pop("echo", None)
+                return release.run_command(argv, **kwargs)
+
+            gh_list = ("gh", *GH_RUN_LIST[1:])
+            with unittest.mock.patch("sys.stdout", io.StringIO()), unittest.mock.patch("sys.stderr", io.StringIO()):
+                code = release.push_tag(
+                    lambda argv, **kw: Result(1) if tuple(map(str, argv))[1:] == gh_list[1:] else run(argv, **kw),
+                    repo_dir=work, gh="gh", gh_repo="o/r", version="1.2.3", commit=commit, message=message,
+                    sleep=lambda s: None,
+                )
+            self.assertEqual(code, 0)
+            # What the workflow sees: a detached checkout of the tag in another clone.
+            self.git("clone", "--quiet", str(origin), str(ci), cwd=tmp)
+            self.git("checkout", "--quiet", "--detach", "v1.2.3", cwd=ci)
+            with unittest.mock.patch("sys.stderr", io.StringIO()):
+                problems, head, body = release.ci_preflight(run, "1.2.3", repo_dir=ci, gh=None, gh_repo="o/r")
+            self.assertEqual(problems, ["gh (GitHub CLI) not found: pass --gh PATH or set GH"])
+            self.assertEqual(head, commit)
+            self.assertEqual(release.notes_from_tag_body(body), (notes, True))
+
+
+class WorkflowTest(unittest.TestCase):
+    def test_release_workflow(self):
+        text = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+        for needle in (
+            'tags: ["v*"]',
+            "workflow_dispatch:",
+            "runs-on: ubuntu-24.04",
+            "contents: write",
+            "fetch-depth: 0",
+            "rustup toolchain install",
+            "scripts/setup-zig.sh",
+            "Swatinem/rust-cache",
+            "GH_TOKEN: ${{ github.token }}",
+            'scripts/release.py --ci --version "${TAG#v}"',
+            "timeout-minutes:",
+            "concurrency:",
+        ):
+            self.assertIn(needle, text)
+        # The workflow never makes tags itself.
+        self.assertNotIn("git tag", text.replace("# ", ""))
+        self.assertNotIn("git push", text)
+        self.assertEqual(release.WORKFLOW, "release.yml")
 
 
 class BumpVersionTest(unittest.TestCase):

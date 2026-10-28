@@ -63,7 +63,10 @@ Linux x86_64 binaries are published as GitHub releases of `bwllaming/bazel-rs`
 0.2.0 on). Install the
 `bazel-rs` binary anywhere on PATH and run it from a workspace like Bazel
 (`bazel-rs build //...`); it does not replace `bazel` or Bazelisk. Releases are
-cut with `scripts/release.py` and the version is bumped with
+built and published by GitHub Actions (`.github/workflows/release.yml`) when a
+`v*` tag is pushed; `scripts/release.py` checks the commit, creates the
+annotated tag (carrying optional extra notes) and pushes only the tag
+(`--dry-run` builds and packages locally instead); the version is bumped with
 `scripts/bump_version.py` (docs/RELEASING.md).
 
 bazel-rs is licensed under the Apache License 2.0 (`LICENSE`); `NOTICE` names
