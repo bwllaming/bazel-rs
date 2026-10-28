@@ -77,6 +77,7 @@ pub mod ignored;
 mod implicit_outputs;
 pub mod info;
 mod instrumented_files;
+mod java_actions;
 mod java_plugins;
 mod json;
 pub mod label;

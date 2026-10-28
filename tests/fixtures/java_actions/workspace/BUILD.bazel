@@ -1,0 +1,17 @@
+load("@rules_java//java/common/rules:java_toolchain.bzl", "java_toolchain")
+load("@rules_java//java/common/rules:java_runtime.bzl", "java_runtime")
+
+java_runtime(name = "runtime", srcs = glob(["jdk/**"]), java = "jdk/bin/java", version = 25)
+java_toolchain(
+    name = "compiler",
+    java_runtime = ":runtime",
+    header_compiler = "turbine.jar",
+    header_compiler_direct = "turbine.jar",
+    javabuilder = "javabuilder.jar",
+    singlejar = "singlejar",
+    proguard_allowlister = "singlejar",
+    javacopts = ["--release 11"],
+    jvm_opts = ["-Xmx256m"],
+)
+toolchain(name = "registered", toolchain = ":compiler", toolchain_type = "@bazel_tools//tools/jdk:toolchain_type")
+exports_files(["sources.jar"])

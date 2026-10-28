@@ -1,0 +1,9 @@
+load(":headers.bzl", "header")
+
+header(name = "base", srcs = ["Base.java"])
+header(name = "middle", srcs = ["Middle.java"], deps = [":base"])
+header(name = "top", srcs = ["Top.java"], deps = [":middle"])
+header(name = "empty")
+header(name = "sourcejar", source_jars = ["//:sources.jar"])
+header(name = "non_direct", srcs = ["Base.java"], direct = False)
+header(name = "bad_strict", srcs = ["Base.java"], strict_deps = "invalid")

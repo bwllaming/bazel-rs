@@ -69,8 +69,8 @@ cc_functions!(
 
 /// java_common.bzl `_internal_exports()` struct (java_common.bzl:26-38):
 /// (field, Java method name, behaviour). The three semantics-flag getters and
-/// constructor-time check_provider_instances are implemented; compilation
-/// APIs still fail explicitly.
+/// constructor-time check_provider_instances and the bounded direct header
+/// compiler are implemented. Full JavaBuilder compilation fails explicitly.
 const JAVA_INTERNAL_METHODS: [(&str, &str, Behavior); 11] = [
     (
         "check_java_toolchain_is_declared_on_rule",
@@ -95,7 +95,7 @@ const JAVA_INTERNAL_METHODS: [(&str, &str, Behavior); 11] = [
     (
         "create_header_compilation_action",
         "create_header_compilation_action",
-        Behavior::Unimplemented(Domain::Java),
+        Behavior::JavaHeaderCompilation,
     ),
     (
         "expand_java_opts",

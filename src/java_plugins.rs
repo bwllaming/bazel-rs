@@ -104,7 +104,7 @@ pub(crate) fn merge(prerequisites: &[Providers]) -> Result<Providers, String> {
 
 /// The native wrapper validates JavaOutput even though the bridge subsequently
 /// drops it (JavaPluginInfo.Provider.wrap, JavaOutput.fromStarlarkJavaOutput).
-fn validate_outputs<'v>(value: Value<'v>, heap: Heap<'v>) -> Result<(), String> {
+pub(crate) fn validate_outputs<'v>(value: Value<'v>, heap: Heap<'v>) -> Result<(), String> {
     let outputs = field(value, "java_outputs", heap)?;
     let outputs = starlark::values::list::ListRef::from_value(outputs)
         .map(|list| list.content())

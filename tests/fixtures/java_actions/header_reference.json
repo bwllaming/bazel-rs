@@ -1,0 +1,29 @@
+{
+  "bazel_version": "9.3.0",
+  "bazel_source": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+  "bazel_elf_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "rules_java_version": "9.1.0",
+  "rules_java_archive_sha256": "4e1a28a25c2efa53500c928d22ceffbc505dd95b335a2d025836a293b592212f",
+  "turbine_sha256": "b21ae0ebe9531db1a964903dd7a3558cad0fdf8d7ce2cbe635e0f056fa7a35be",
+  "java_builder_sha256": "e219484033d89eda6d2f9f0c6cdeae0d957b0d2c7ed53f45c07f4123600866eb",
+  "runtime": "Zulu25.30+17-CA 25.0.1+8-LTS x86_64 Linux",
+  "java_elf_sha256": "09f81827a1f7eb22e99c820cedcf1be93e504b32f92982694fa806ec1e008655",
+  "top_argv": [
+    "jdk/bin/java", "-Xmx256m", "-Dturbine.ctSymPath=jdk/lib/ct.sym", "-jar", "turbine.jar",
+    "--output", "bazel-out/k8-fastbuild/bin/third_party/bazel_rules/rules_java/top-hjar.jar",
+    "--header_compilation_output", "bazel-out/k8-fastbuild/bin/third_party/bazel_rules/rules_java/top-tjar.jar",
+    "--output_deps", "bazel-out/k8-fastbuild/bin/third_party/bazel_rules/rules_java/top-hjar.jdeps",
+    "--sources", "third_party/bazel_rules/rules_java/Top.java",
+    "--injecting_rule_kind", "fixture_header", "--javacopts", "--release", "11", "--",
+    "--target_label", "//third_party/bazel_rules/rules_java:top",
+    "--classpath", "bazel-out/k8-fastbuild/bin/third_party/bazel_rules/rules_java/middle-tjar.jar",
+    "--reduce_classpath_mode", "NONE"
+  ],
+  "environment": {"LC_CTYPE": "C.UTF-8", "PATH": "/bin:/usr/bin:/usr/local/bin"},
+  "execution_info": {"supports-path-mapping": "1", "internal-inline-outputs": "bazel-out/k8-fastbuild/bin/third_party/bazel_rules/rules_java/top-hjar.jdeps"},
+  "top_outputs_sha256": {
+    "top-hjar.jar": "4684c7a2344600f7c8e6c17046aa16905d2660ed672b9405217725825fe1e318",
+    "top-tjar.jar": "f47d7dbb1457780be7963353cc462ea3c3b8ab0b85c1ec1af90d558f6a52b8f9",
+    "top-hjar.jdeps": "5fc5f0227bf796a1d20512a27bdd9c230b3ab6fa32f4e0bacd6fa0778a418e4e"
+  }
+}
