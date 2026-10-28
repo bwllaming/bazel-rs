@@ -3210,6 +3210,7 @@ fn fuzz_fixture() -> Twin {
     twin.write("incr/b.txt", "b\n");
     twin.write("incr/BUILD.bazel", &fuzz_incr_build(&FuzzState::default()));
     twin.write("incr_use/BUILD.bazel", INCR_USE_BUILD);
+    twin.write("incr_t/BUILD.bazel", &incr_t_build(0, 0));
     twin.workspace_rc.set(true);
     twin
 }
@@ -3217,7 +3218,7 @@ fn fuzz_fixture() -> Twin {
 /// A Starlark rule without prints for the incremental-analysis packages:
 /// its action concatenates its sources and its dependencies' files and
 /// appends `flag`.
-const INCR_RULES: &str = r#"def _chain(ctx):
+const INCR_RULES: &str = r##"def _chain(ctx):
     out = ctx.actions.declare_file(ctx.label.name + ".txt")
     inputs = list(ctx.files.srcs)
     for dep in ctx.attr.deps:
@@ -3229,12 +3230,26 @@ const INCR_RULES: &str = r#"def _chain(ctx):
     )
     return [DefaultInfo(files = depset([out]))]
 
-chain = rule(implementation = _chain, attrs = {
+_CHAIN_ATTRS = {
     "srcs": attr.label_list(allow_files = True),
     "deps": attr.label_list(),
     "flag": attr.string(),
-})
-"#;
+}
+
+chain = rule(implementation = _chain, attrs = _CHAIN_ATTRS)
+
+def _chain_exe(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".sh")
+    inputs = list(ctx.files.srcs)
+    for dep in ctx.attr.deps:
+        inputs.extend(dep[DefaultInfo].files.to_list())
+    ctx.actions.write(out, "#!/bin/bash\necho {}\n".format(ctx.attr.flag), is_executable = True)
+    return [DefaultInfo(executable = out, files = depset([out]), runfiles = ctx.runfiles(files = inputs))]
+
+chain_test = rule(implementation = _chain_exe, test = True, attrs = _CHAIN_ATTRS)
+
+chain_bin = rule(implementation = _chain_exe, executable = True, attrs = _CHAIN_ATTRS)
+"##;
 
 const INCR_USE_BUILD: &str = "load('//incr:defs.bzl', 'chain')\nchain(name = 'u', deps = ['//incr:a'], flag = 'u')\nchain(name = 'v', flag = 'v', visibility = ['//visibility:public'])\n";
 
@@ -3368,6 +3383,9 @@ struct FuzzState {
     incr_flag: usize,
     incr_comments: usize,
     incr_added: usize,
+    /// `incr_t/BUILD.bazel`: the flag and the comments.
+    incr_t_flag: usize,
+    incr_t_comments: usize,
 }
 
 impl FuzzState {
@@ -3420,7 +3438,7 @@ enum Special {
 }
 
 /// The number of mutations of the catalogue ([`mutate`]).
-const MUTATIONS: usize = 65;
+const MUTATIONS: usize = 66;
 
 /// Apply one random mutation of the catalogue (the same to both copies);
 /// returns its name and what the step does besides its command.
@@ -3929,13 +3947,30 @@ fn mutate(twin: &Twin, rng: &mut Rng, state: &mut FuzzState, step: usize) -> (St
             );
             name("incr: a .bzl edit")
         }
+        65 => {
+            if rng.percent(50) {
+                state.incr_t_flag = (state.incr_t_flag + 1) % 3;
+                twin.write(
+                    "incr_t/BUILD.bazel",
+                    &incr_t_build(state.incr_t_flag, state.incr_t_comments),
+                );
+                name("incr_t: the tests' and tool's flag (spliced)")
+            } else {
+                state.incr_t_comments = (state.incr_t_comments + 1) % 3;
+                twin.write(
+                    "incr_t/BUILD.bazel",
+                    &incr_t_build(state.incr_t_flag, state.incr_t_comments),
+                );
+                name("incr_t: a comment (pruned)")
+            }
+        }
         _ => name("no change"),
     };
     (name, special)
 }
 
 /// The commands of the fuzz ([`fuzz_command`]).
-const FUZZ_COMMANDS: usize = 14;
+const FUZZ_COMMANDS: usize = 16;
 /// The command consuming the generated repository's tool
 /// ([`Special::TamperOn`]).
 const TOOL_COMMAND: usize = 10;
@@ -4006,6 +4041,19 @@ fn fuzz_command(
             "--nobuild".into(),
             "//incr/...".into(),
             "//incr_use/...".into(),
+        ],
+        14 => vec![
+            "test".into(),
+            "--test_output=all".into(),
+            "//incr_t:all".into(),
+        ],
+        15 => vec![
+            "run".into(),
+            format!(
+                "--script_path={}",
+                twin.run_root().join("home/run_t.sh").display()
+            ),
+            "//incr_t:tool".into(),
         ],
         _ => vec!["build".into(), "//swap:s".into(), "//pkgl:x".into()],
     };
@@ -4589,6 +4637,99 @@ fn incremental_analysis_splices_prunes_and_falls_back() {
     restored.assert_success();
 }
 
+/// `incr_t/BUILD.bazel`: two tests and a tool, `:t` and `:tool` reaching
+/// `//incr:a`; `flag` the tests' and tool's flag, `comments` comments.
+fn incr_t_build(flag: usize, comments: usize) -> String {
+    let mut build = format!(
+        "load('//incr:defs.bzl', 'chain_bin', 'chain_test')\nchain_test(name = 't', size = 'small', deps = ['//incr:a'], flag = 't{flag}')\nchain_test(name = 'u_test', size = 'small', flag = 'u')\nchain_bin(name = 'tool', deps = ['//incr:a'], flag = 'tool{flag}')\n"
+    );
+    for comment in 0..comments {
+        build.push_str(&format!("# comment {comment}\n"));
+    }
+    build
+}
+
+/// Incremental analysis of `test` and `run` (docs/INCREMENTAL_ANALYSIS.md):
+/// an edit of a dependency or of the tests' own package re-analyzes the
+/// tests and the tool reaching it and splices them (their run plans
+/// included); a comment keeps the saved plan; the tests run and the tool
+/// runs like the snapshot-less run's.
+#[test]
+fn incremental_analysis_of_test_and_run() {
+    let twin = fixture();
+    let mut state = FuzzState::default();
+    twin.write("repos.bzl", FUZZ_REPOS);
+    twin.write("BUILD.bazel", &fuzz_build(false, false));
+    twin.write("incr/defs.bzl", INCR_RULES);
+    twin.write("incr/srcs/a.txt", "a\n");
+    twin.write("incr/b.txt", "b\n");
+    twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
+    twin.write("incr_t/BUILD.bazel", &incr_t_build(0, 0));
+    let commands: [&[&str]; 3] = [
+        &["test", "--test_output=all", "//incr_t:all"],
+        &["test", "--test_output=all", "//incr_t:t"],
+        &[
+            "run",
+            &format!(
+                "--script_path={}",
+                twin.run_root().join("home/run.sh").display()
+            ),
+            "//incr_t:tool",
+        ],
+    ];
+    let incremental = |args: &[&str], rerun: usize| {
+        let pair = twin.same(args, &[]);
+        pair.assert_miss("incr").assert_success();
+        let line = pair
+            .explain()
+            .into_iter()
+            .find(|line| line.starts_with("incremental ") && line.contains(" re-analyzed;"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{args:?}: expected an incremental analysis:\n{}",
+                    pair.explain().join("\n")
+                )
+            });
+        assert!(
+            line.contains(&format!(" {rerun} requested target(s) re-analyzed")),
+            "{args:?}: {line}"
+        );
+        if pair.mode == VERIFY {
+            assert!(
+                pair.line("verified ").is_some(),
+                "{}",
+                pair.explain().join("\n")
+            );
+        } else {
+            pair.assert_saved();
+        }
+        twin.same(args, &[]).assert_hit().assert_success();
+    };
+    for args in commands {
+        twin.save(args, &[]);
+        twin.same(args, &[]).assert_hit().assert_success();
+    }
+    let all_tests = commands[0];
+    let one_test = commands[1];
+    let run = commands[2];
+    // A dependency's attribute: the tests and the tool reaching it.
+    state.incr_flag = 1;
+    twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
+    incremental(all_tests, 2);
+    incremental(one_test, 1);
+    incremental(run, 1);
+    // The tests' own package: every requested target in it.
+    twin.write("incr_t/BUILD.bazel", &incr_t_build(1, 0));
+    incremental(all_tests, 3);
+    incremental(one_test, 1);
+    incremental(run, 1);
+    // A comment: the saved plan stands.
+    twin.write("incr_t/BUILD.bazel", &incr_t_build(1, 1));
+    incremental(all_tests, 0);
+    incremental(one_test, 0);
+    incremental(run, 0);
+}
+
 /// Test suites (integration-21: parity-next's target pattern phase, ed8468a
 /// and 644a0b1, under L2-W5): explicit, implicit (`tests` empty: the
 /// package's non-manual tests) and nested suites, a suite of one test for
@@ -4838,6 +4979,11 @@ mod verify_mode {
     #[test]
     fn incremental_analysis_splices_prunes_and_falls_back() {
         verified(super::incremental_analysis_splices_prunes_and_falls_back);
+    }
+
+    #[test]
+    fn incremental_analysis_of_test_and_run() {
+        verified(super::incremental_analysis_of_test_and_run);
     }
 
     #[test]

@@ -821,9 +821,10 @@ fn run() -> Result<(), String> {
                         workspace_status: workspace_status.clone(),
                         workspace: &root,
                         verify,
-                        // `build` only (docs/INCREMENTAL_ANALYSIS.md): no
-                        // --keep_going plans, no top-level aspects.
-                        incremental: command == "build"
+                        // `build`, `test` and `run`
+                        // (docs/INCREMENTAL_ANALYSIS.md): no --keep_going
+                        // plans, no top-level aspects.
+                        incremental: builds(&command)
                             && !test_options.keep_going
                             && aspects.is_empty()
                             && aspects_parameters.is_empty(),
@@ -856,68 +857,22 @@ fn run() -> Result<(), String> {
                                 &query_options,
                                 memory_limit_mb,
                             );
-                            return match command.as_str() {
-                                "test" => test_tail(
-                                    planned,
-                                    Vec::new(),
-                                    TestTail {
-                                        cache: &cache,
-                                        jobs,
-                                        root: &root,
-                                        options: &test_options,
-                                        remote_enabled,
-                                        pattern_failure: None,
-                                        snapshot,
-                                    },
-                                ),
-                                "run" => {
-                                    let label = match &planned.request {
-                                        Ok(bazel_rs::request::PlannedRequest {
-                                            command:
-                                                bazel_rs::request::RequestCommand::Run { label, .. },
-                                            ..
-                                        }) => label.clone(),
-                                        _ => {
-                                            return Err(
-                                            "internal error: the snapshot of `run` holds no run target"
-                                                .to_owned(),
-                                        );
-                                        }
-                                    };
-                                    run_tail(
-                                        planned,
-                                        &label,
-                                        RunTail {
-                                            residue: &rest[1..],
-                                            cache: &cache,
-                                            jobs,
-                                            root: &root,
-                                            cwd: &cwd,
-                                            runfiles: runfiles_options,
-                                            options: &run_options,
-                                            remote_enabled,
-                                            test: &test_options,
-                                            pattern_failure: None,
-                                            snapshot,
-                                        },
-                                    )
-                                }
-                                _ => build_tail(
-                                    planned,
-                                    BuildTail {
-                                        cache: &cache,
-                                        jobs,
-                                        action_dump: action_dump.as_deref(),
-                                        remote_enabled,
-                                        loading_threads,
-                                        memory_limit_mb,
-                                        pattern_failure: None,
-                                        snapshot,
-                                        keep_going: test_options.keep_going,
-                                        run: false,
-                                    },
-                                ),
-                            };
+                            return PlannedTails {
+                                command: &command,
+                                rest: &rest,
+                                cache: &cache,
+                                jobs,
+                                root: &root,
+                                cwd: &cwd,
+                                runfiles: runfiles_options,
+                                run_options: &run_options,
+                                test_options: &test_options,
+                                action_dump: action_dump.as_deref(),
+                                remote_enabled,
+                                loading_threads,
+                                memory_limit_mb,
+                            }
+                            .finish(planned, snapshot);
                         }
                         bazel_rs::snapshot::Checked::Miss(save) => snapshot.save = save,
                         bazel_rs::snapshot::Checked::Incremental(save, candidate) => {
@@ -1046,7 +1001,7 @@ fn run() -> Result<(), String> {
     // The dependency index of incremental analysis rides with the saved
     // snapshot of a build (crate::snapshot::incremental).
     engine.set_incremental_tracking(
-        command == "build"
+        builds(&command)
             && snapshot.save.is_some()
             && bazel_rs::snapshot::incremental::switched_on(),
     );
@@ -1229,25 +1184,6 @@ fn run() -> Result<(), String> {
         snapshot.finish();
         return Ok(());
     }
-    if command == "test" {
-        return test_targets(TestContext {
-            engine,
-            patterns: &rest,
-            relative_directory: &relative_directory,
-            lockfile_gate: &lockfile_gate,
-            needs_instrumentation_filter: configuration_options.collects_coverage()
-                && !configuration_options.explicit_instrumentation_filter(),
-            tail: TestTail {
-                cache: &cache,
-                jobs,
-                root: &root,
-                options: &test_options,
-                remote_enabled,
-                pattern_failure: None,
-                snapshot,
-            },
-        });
-    }
     if let Some(candidate) = incremental_candidate.take() {
         // An incremental analysis instead of the target pattern phase and
         // the full analysis; any failure from here on runs the full
@@ -1262,7 +1198,11 @@ fn run() -> Result<(), String> {
             &mut engine,
             *candidate,
             IncrementalContext {
-                patterns: &rest,
+                patterns: if command == "run" {
+                    &rest[..rest.len().min(1)]
+                } else {
+                    &rest[..]
+                },
                 lockfile_gate: &lockfile_gate,
                 status: &status_options,
                 workspace: &root,
@@ -1284,22 +1224,42 @@ fn run() -> Result<(), String> {
             }
         };
         if let Some(planned) = planned {
-            return build_tail(
-                planned,
-                BuildTail {
-                    cache: &cache,
-                    jobs,
-                    action_dump: action_dump.as_deref(),
-                    remote_enabled,
-                    loading_threads,
-                    memory_limit_mb,
-                    pattern_failure: None,
-                    snapshot,
-                    keep_going: test_options.keep_going,
-                    run: false,
-                },
-            );
+            return PlannedTails {
+                command: &command,
+                rest: &rest,
+                cache: &cache,
+                jobs,
+                root: &root,
+                cwd: &cwd,
+                runfiles: runfiles_options,
+                run_options: &run_options,
+                test_options: &test_options,
+                action_dump: action_dump.as_deref(),
+                remote_enabled,
+                loading_threads,
+                memory_limit_mb,
+            }
+            .finish(planned, snapshot);
         }
+    }
+    if command == "test" {
+        return test_targets(TestContext {
+            engine,
+            patterns: &rest,
+            relative_directory: &relative_directory,
+            lockfile_gate: &lockfile_gate,
+            needs_instrumentation_filter: configuration_options.collects_coverage()
+                && !configuration_options.explicit_instrumentation_filter(),
+            tail: TestTail {
+                cache: &cache,
+                jobs,
+                root: &root,
+                options: &test_options,
+                remote_enabled,
+                pattern_failure: None,
+                snapshot,
+            },
+        });
     }
     bazel_rs::perf_mark("select.start");
     let accepts = |info: &bazel_rs::test_command::TestRuleInfo| test_options.accepts(info);
@@ -1779,6 +1739,91 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
     Ok(())
 }
 
+/// What the tails of `build`, `test` and `run` read besides a planned
+/// request that skipped the full analysis (a snapshot hit, an incremental
+/// analysis): no target pattern phase failure (such a run is never saved).
+struct PlannedTails<'a> {
+    command: &'a str,
+    rest: &'a [String],
+    cache: &'a Path,
+    jobs: usize,
+    root: &'a Path,
+    cwd: &'a Path,
+    runfiles: bazel_rs::runfiles_tree::RunfilesOptions,
+    run_options: &'a bazel_rs::run_command::RunOptions,
+    test_options: &'a bazel_rs::test_command::TestOptions,
+    action_dump: Option<&'a Path>,
+    remote_enabled: bool,
+    loading_threads: usize,
+    memory_limit_mb: Option<u64>,
+}
+
+impl PlannedTails<'_> {
+    /// Execute `planned` like the command's own tail.
+    fn finish(self, planned: Planned, snapshot: bazel_rs::snapshot::Scope) -> Result<(), String> {
+        match self.command {
+            "test" => test_tail(
+                planned,
+                Vec::new(),
+                TestTail {
+                    cache: self.cache,
+                    jobs: self.jobs,
+                    root: self.root,
+                    options: self.test_options,
+                    remote_enabled: self.remote_enabled,
+                    pattern_failure: None,
+                    snapshot,
+                },
+            ),
+            "run" => {
+                let label = match &planned.request {
+                    Ok(bazel_rs::request::PlannedRequest {
+                        command: bazel_rs::request::RequestCommand::Run { label, .. },
+                        ..
+                    }) => label.clone(),
+                    _ => {
+                        return Err(
+                            "internal error: the snapshot of `run` holds no run target".to_owned()
+                        );
+                    }
+                };
+                run_tail(
+                    planned,
+                    &label,
+                    RunTail {
+                        residue: &self.rest[1..],
+                        cache: self.cache,
+                        jobs: self.jobs,
+                        root: self.root,
+                        cwd: self.cwd,
+                        runfiles: self.runfiles,
+                        options: self.run_options,
+                        remote_enabled: self.remote_enabled,
+                        test: self.test_options,
+                        pattern_failure: None,
+                        snapshot,
+                    },
+                )
+            }
+            _ => build_tail(
+                planned,
+                BuildTail {
+                    cache: self.cache,
+                    jobs: self.jobs,
+                    action_dump: self.action_dump,
+                    remote_enabled: self.remote_enabled,
+                    loading_threads: self.loading_threads,
+                    memory_limit_mb: self.memory_limit_mb,
+                    pattern_failure: None,
+                    snapshot,
+                    keep_going: self.test_options.keep_going,
+                    run: false,
+                },
+            ),
+        }
+    }
+}
+
 /// A planned request — of the full-analysis path, handed over, or decoded
 /// from a snapshot hit — with its analysis diagnostics and the workspace
 /// status for its placeholders.
@@ -2022,7 +2067,63 @@ fn incremental_finish(
         let merged = incremental::merge_index(index, &dirty, None, &changed.fingerprints);
         (full, merged, status)
     } else {
-        let sub = engine.plan_request(bazel_rs::engine::RequestSpec::build(&labels))?;
+        // The command's request of the re-analyzed labels: `test` runs
+        // the tests among them, `run` its target's executable (and the
+        // runner's) with its test properties looked up again.
+        use bazel_rs::request::RequestCommand;
+        let requested: std::collections::HashSet<&bazel_rs::label::Label> = labels.iter().collect();
+        let (command, runs, trees) = match &full.command {
+            RequestCommand::Build => (RequestCommand::Build, Vec::new(), true),
+            RequestCommand::Test { tests, .. } => {
+                let tests: Vec<_> = tests
+                    .iter()
+                    .filter(|test| requested.contains(&test.label))
+                    .cloned()
+                    .collect();
+                let runs = tests.iter().map(|test| test.label.clone()).collect();
+                (
+                    RequestCommand::Test {
+                        build: labels.clone(),
+                        tests,
+                    },
+                    runs,
+                    false,
+                )
+            }
+            RequestCommand::Run { label, test } => {
+                for dirty in &labels {
+                    if let bazel_rs::engine::Runnable::No = engine.runnable(dirty)? {
+                        return Err(format!("{dirty} is no longer executable"));
+                    }
+                }
+                let test = if requested.contains(label) {
+                    engine.test_rule_info(label).map(|info| {
+                        info.map(|(info, location)| bazel_rs::request::PlannedTest {
+                            label: label.clone(),
+                            info,
+                            location,
+                        })
+                    })
+                } else {
+                    test.clone()
+                };
+                (
+                    RequestCommand::Run {
+                        label: label.clone(),
+                        test,
+                    },
+                    labels.clone(),
+                    true,
+                )
+            }
+        };
+        drop(requested);
+        let sub = engine.plan_request(bazel_rs::engine::RequestSpec {
+            command,
+            build: &labels,
+            runs: &runs,
+            trees,
+        })?;
         let sub = bazel_rs::snapshot::codec::hand_over(sub)?;
         let status = engine.take_workspace_status();
         let sub_index =

@@ -1143,12 +1143,62 @@ pub fn splice(
     if full.keep_going.is_some() || sub.keep_going.is_some() {
         return Err("--keep_going".to_owned());
     }
-    if full.command != crate::request::RequestCommand::Build
-        || sub.command != crate::request::RequestCommand::Build
-        || full.execute != sub.execute
-    {
-        return Err("not a build".to_owned());
+    if full.execute != sub.execute {
+        return Err("--nobuild differs".to_owned());
     }
+    let requested_labels: HashSet<&Label> = labels.iter().collect();
+    // The command's part: `test`'s tests and `run`'s test properties are
+    // the re-analysis's for the re-analyzed labels.
+    let command = {
+        use crate::request::RequestCommand;
+        match (&full.command, &sub.command) {
+            (RequestCommand::Build, RequestCommand::Build) => RequestCommand::Build,
+            (
+                RequestCommand::Test { build, tests },
+                RequestCommand::Test {
+                    tests: sub_tests, ..
+                },
+            ) => {
+                let mut newer: HashMap<&Label, &crate::request::PlannedTest> =
+                    sub_tests.iter().map(|test| (&test.label, test)).collect();
+                let mut merged = Vec::with_capacity(tests.len());
+                for test in tests {
+                    if requested_labels.contains(&test.label) {
+                        merged.push(
+                            (*newer.remove(&test.label).ok_or_else(|| {
+                                format!("{} is no longer a test of the request", test.label)
+                            })?)
+                            .clone(),
+                        );
+                    } else {
+                        merged.push(test.clone());
+                    }
+                }
+                if !newer.is_empty() {
+                    return Err("the re-analysis tests other targets".to_owned());
+                }
+                RequestCommand::Test {
+                    build: build.clone(),
+                    tests: merged,
+                }
+            }
+            (
+                RequestCommand::Run { label, test },
+                RequestCommand::Run {
+                    label: sub_label,
+                    test: sub_test,
+                },
+            ) if label == sub_label => RequestCommand::Run {
+                label: label.clone(),
+                test: if requested_labels.contains(label) {
+                    sub_test.clone()
+                } else {
+                    test.clone()
+                },
+            },
+            _ => return Err("the re-analysis is another command's".to_owned()),
+        }
+    };
     // The owners and whether they were re-analyzed.
     let mut owners: HashMap<String, bool> = HashMap::new();
     for (id, key) in index.keys.iter().enumerate() {
@@ -1386,7 +1436,6 @@ pub fn splice(
     }
     // The requested labels' reported outputs are the saved ones, and no
     // other label reports one a re-analyzed action produces.
-    let requested_labels: HashSet<&Label> = labels.iter().collect();
     let produced_by_dirty = |produced: &crate::request::Produced| {
         produced
             .producer
@@ -1455,9 +1504,79 @@ pub fn splice(
     if full_skipped != sub.skipped.iter().collect::<Vec<_>>() {
         return Err("the requested targets skipped as incompatible changed".to_owned());
     }
-    if !full.run_plans.is_empty() || !sub.run_plans.is_empty() {
-        return Err("run plans".to_owned());
+    // The run plans (`test`'s tests, `run`'s target): the re-analyzed
+    // labels' are the re-analysis's, in the saved order and configuration;
+    // the actions of other targets they need are the ones the saved plans
+    // needed (the plan keeps exactly the actions they reach), and no other
+    // plan needs a re-analyzed action.
+    let dirty_owner = |id: &str| owner_of_action(id, &owners).is_some_and(|(_, dirty)| dirty);
+    let mut newer_runs: HashMap<&Label, &crate::request::PlannedRun> = sub
+        .run_plans
+        .iter()
+        .map(|(label, plan)| (label, plan))
+        .collect();
+    let mut run_plans = Vec::with_capacity(full.run_plans.len());
+    let mut needed_before: BTreeSet<&str> = BTreeSet::new();
+    let mut needed_after: BTreeSet<&str> = BTreeSet::new();
+    for (label, plan) in &full.run_plans {
+        if plan.coverage.is_some() {
+            return Err("a coverage run plan".to_owned());
+        }
+        if !requested_labels.contains(label) {
+            if let Some(id) = run_plan_producers(plan).find(|id| dirty_owner(id)) {
+                return Err(format!(
+                    "the run plan of {label}, which was not re-analyzed, needs '{id}'"
+                ));
+            }
+            run_plans.push((label.clone(), plan.clone()));
+            continue;
+        }
+        let newer = newer_runs
+            .remove(label)
+            .ok_or_else(|| format!("{label} has no run plan now"))?;
+        if newer.coverage.is_some() {
+            return Err("a coverage run plan".to_owned());
+        }
+        let configuration = |configurations: &[crate::request::ConfigurationSummary], at: usize| {
+            configurations
+                .get(at)
+                .and_then(|summary| postcard::to_stdvec(summary).ok())
+        };
+        if configuration(&full.configurations, plan.configuration).is_none()
+            || configuration(&full.configurations, plan.configuration)
+                != configuration(&sub.configurations, newer.configuration)
+        {
+            return Err(format!("the configuration of {label}'s run plan changed"));
+        }
+        needed_before.extend(run_plan_producers(plan).filter(|id| !dirty_owner(id)));
+        needed_after.extend(run_plan_producers(newer).filter(|id| !dirty_owner(id)));
+        run_plans.push((
+            label.clone(),
+            crate::request::PlannedRun {
+                configuration: plan.configuration,
+                ..newer.clone()
+            },
+        ));
     }
+    if !newer_runs.is_empty() {
+        return Err("the re-analysis planned other run targets".to_owned());
+    }
+    if needed_before != needed_after {
+        return Err(
+            "the re-analyzed run plans need other actions of other targets than before".to_owned(),
+        );
+    }
+    let planned_ids: HashSet<&str> = nodes.iter().map(|node| node.action.id.as_str()).collect();
+    for (label, plan) in &run_plans {
+        if let Some(id) = run_plan_producers(plan).find(|id| {
+            !id.starts_with(crate::request::STATUS_ID_PREFIX) && !planned_ids.contains(id)
+        }) {
+            return Err(format!(
+                "the run plan of {label} needs '{id}', which the spliced plan does not have"
+            ));
+        }
+    }
+    drop(planned_ids);
     let printed: HashSet<String> = labels.iter().map(crate::test_runner::label_print).collect();
     let bep_of = |plan: &crate::bep::plan::BepPlan,
                   requested: &[(Label, crate::request::Produced)]|
@@ -1496,7 +1615,34 @@ pub fn splice(
     if bep_of(&full.bep, &full.requested) != bep_of(&sub.bep, &sub.requested) {
         return Err("the requested targets' build events changed".to_owned());
     }
-    Ok(crate::request::PlannedRequest { nodes, ..full })
+    Ok(crate::request::PlannedRequest {
+        nodes,
+        command,
+        run_plans,
+        ..full
+    })
+}
+
+/// The ids of the actions producing what a run plan reads (its executable,
+/// runfiles tree and entries, coverage inputs, completion).
+fn run_plan_producers(plan: &crate::request::PlannedRun) -> impl Iterator<Item = &str> {
+    let produced = std::iter::once(&plan.executable)
+        .chain(plan.tree.iter().map(|(tree, _)| tree))
+        .chain(
+            plan.entries
+                .iter()
+                .flatten()
+                .filter_map(|(_, produced)| produced.as_ref()),
+        )
+        .chain(
+            plan.coverage
+                .iter()
+                .flat_map(|coverage| coverage.inputs.iter().chain(&coverage.baselines))
+                .map(|(_, produced)| produced),
+        );
+    produced
+        .filter_map(|produced| produced.producer.as_ref().map(|(id, _)| id.as_str()))
+        .chain(plan.completion.iter().map(String::as_str))
 }
 
 /// Encoding helper for the splice's comparisons.

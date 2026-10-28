@@ -10559,6 +10559,9 @@ impl Engine {
         &mut self,
         label: &Label,
     ) -> Result<Option<(crate::test_command::TestRuleInfo, Option<String>)>, String> {
+        // A requested label's own lookup (incremental analysis: not a
+        // global package; a changed package's labels are looked up again).
+        let _pattern = incremental::PatternScope::enter();
         let Target::Rule(rule) = self.target(label)? else {
             return Ok(None);
         };
@@ -10571,6 +10574,9 @@ impl Engine {
         &mut self,
         label: &Label,
     ) -> Result<Option<(crate::test_command::TestRuleInfo, Option<String>)>, String> {
+        // A requested label's own lookup (incremental analysis: not a
+        // global package; a changed package's labels are looked up again).
+        let _pattern = incremental::PatternScope::enter();
         let Target::Rule(rule) = self.target(label)? else {
             return Ok(None);
         };
@@ -11009,6 +11015,9 @@ impl Engine {
 
     /// RunCommand.isExecutable of `label` (Runnable).
     pub fn runnable(&mut self, label: &Label) -> Result<Runnable, String> {
+        // A requested label's own lookup (incremental analysis: not a
+        // global package; a changed package's labels are looked up again).
+        let _pattern = incremental::PatternScope::enter();
         Ok(match self.target(label)? {
             Target::Source(_) | Target::Output(..) => Runnable::Yes,
             Target::Rule(rule) if forwards(&rule) => Runnable::Yes,
