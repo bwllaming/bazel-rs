@@ -2465,6 +2465,7 @@ mod tests {
                 code: Some([4; 32]),
             }],
             rule_modules: vec![(0, 0)],
+            planned: vec![(0, 0, 0)],
         };
         let stored = encode_index(&index).unwrap();
         assert_eq!(decode_index(stored).unwrap(), index);
