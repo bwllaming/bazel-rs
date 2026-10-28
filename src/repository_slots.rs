@@ -564,7 +564,9 @@ fn marker_path(store: &Path, canonical: &str) -> PathBuf {
 }
 
 /// The identity a complete mutable slot of `canonical` was made for (its
-/// marker), if the marker exists and is well formed.
+/// marker), if the marker exists and is well formed. An ordinary
+/// repository's slot has a marker only once another repository's tool wrote
+/// into it ([`written_into`]): its slot became a mutable copy of that tree.
 pub fn marker(store: &Path, canonical: &str) -> Option<String> {
     let text = fs::read_to_string(marker_path(store, canonical)).ok()?;
     let mut lines = text.lines();
@@ -642,8 +644,86 @@ pub fn noted(slot: &Path) -> Option<(String, SlotClass)> {
 /// Whether `canonical`'s slot is a complete mutable directory: a real
 /// directory with its marker.
 pub fn complete(store: &Path, canonical: &str) -> bool {
+    complete_for(store, canonical, None)
+}
+
+/// [`complete`], made for publication `identity` when given.
+pub fn complete_for(store: &Path, canonical: &str, identity: Option<&str>) -> bool {
     fs::symlink_metadata(slot_path(store, canonical)).is_ok_and(|metadata| metadata.is_dir())
-        && marker(store, canonical).is_some()
+        && marker(store, canonical)
+            .is_some_and(|marked| identity.is_none_or(|identity| marked == identity))
+}
+
+/// A byte that ends a path inside an argument or environment value: a
+/// list separator, a quote, an assignment, white space.
+fn path_end(byte: u8) -> bool {
+    matches!(byte, b':' | b';' | b',' | b'\'' | b'"' | b'=' | 0) || byte.is_ascii_whitespace()
+}
+
+/// Where `root` occurs in `text` as a whole path or a path's prefix
+/// (followed by `/`, a [`path_end`] byte or the end).
+fn occurrences(text: &[u8], root: &[u8]) -> Vec<usize> {
+    if root.is_empty() {
+        return Vec::new();
+    }
+    memchr::memmem::find_iter(text, root)
+        .filter(|&at| {
+            text.get(at + root.len())
+                .is_none_or(|&next| next == b'/' || path_end(next))
+        })
+        .collect()
+}
+
+/// Whether one of `texts` names the directory `root` or a path below it.
+pub fn names_path<'a>(root: &[u8], mut texts: impl Iterator<Item = &'a [u8]>) -> bool {
+    texts.any(|text| !occurrences(text, root).is_empty())
+}
+
+/// Whether one of `values` (an `execute`'s environment) names a path below
+/// the published tree `root` that the tree does not have: where the tool
+/// will write (gazelle's go_repository_tools runs `go build` with GOCACHE
+/// `<go_repository_cache>/gocache`, derived from a label into the cache
+/// repository, internal/env.bzl resolve_go_env). Genuine's repository is a
+/// plain directory under `external/` that the tool writes into; a published
+/// tree must never change, so that repository's slot becomes a mutable copy
+/// of the tree for the tool to use (crate::repository_ctx).
+pub fn written_into<'a>(root: &Path, values: impl Iterator<Item = &'a [u8]>) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = root.as_os_str().as_bytes();
+    for value in values {
+        for at in occurrences(value, bytes) {
+            let rest = &value[at + bytes.len()..];
+            let length = rest.iter().take_while(|&&byte| !path_end(byte)).count();
+            let rest = &rest[..length];
+            if rest.len() > 1
+                && fs::symlink_metadata(Path::new(std::ffi::OsStr::from_bytes(
+                    &value[at..at + bytes.len() + length],
+                )))
+                .is_err_and(|error| error.kind() == ErrorKind::NotFound)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// `text` with every occurrence of the path `from` ([`names_path`])
+/// replaced by `to`; `None` when there is none.
+pub fn redirected(text: &[u8], from: &[u8], to: &[u8]) -> Option<Vec<u8>> {
+    let starts = occurrences(text, from);
+    if starts.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(text.len() + starts.len() * to.len());
+    let mut done = 0;
+    for at in starts {
+        out.extend_from_slice(&text[done..at]);
+        out.extend_from_slice(to);
+        done = at + from.len();
+    }
+    out.extend_from_slice(&text[done..]);
+    Some(out)
 }
 
 /// Make `canonical`'s mutable slot again from its published `tree`
@@ -652,14 +732,19 @@ pub fn complete(store: &Path, canonical: &str) -> bool {
 /// while its slot is missing, a link, or an interrupted writer's leftover
 /// (no marker). The slot gets fresh copies of the tree's entries, then the
 /// marker. What else was in the slot is gone, as after a re-execution.
+/// `exact`: a complete slot made for another publication is made again too
+/// (an ordinary repository written into: its slot is a copy of the tree
+/// the consumer resolved, never another version's); a self-referencing
+/// one accepts any complete slot (no ping-pong between worktrees).
 pub fn restore_mutable(
     store: &Path,
     canonical: &str,
     identity: &str,
     tree: &Path,
+    exact: bool,
 ) -> Result<(), String> {
     let writer = SlotWriter::acquire(store, canonical)?;
-    if complete(store, canonical) {
+    if complete_for(store, canonical, exact.then_some(identity)) {
         return Ok(());
     }
     writer.unmark()?;
@@ -1128,14 +1213,14 @@ mod tests {
             disturb(&slot);
             let _ = remove_marker(&store, "gocache");
             assert!(!complete(&store, "gocache"));
-            restore_mutable(&store, "gocache", &identity, &tree).unwrap();
+            restore_mutable(&store, "gocache", &identity, &tree, false).unwrap();
             assert!(complete(&store, "gocache"));
             assert_eq!(fs::read(slot.join("go.env")).unwrap(), b"GOPATH=x\n");
             assert!(!slot.join("pkg").exists());
         }
         // Complete: what consumers wrote stays.
         fs::create_dir_all(slot.join("pkg/mod")).unwrap();
-        restore_mutable(&store, "gocache", &identity, &tree).unwrap();
+        restore_mutable(&store, "gocache", &identity, &tree, false).unwrap();
         assert!(slot.join("pkg/mod").is_dir());
     }
 
@@ -1171,5 +1256,48 @@ mod tests {
             fs::metadata(from.join("x")).unwrap().ino()
         );
         crate::repository_ctx::remove_tree(temp.path()).unwrap();
+    }
+
+    #[test]
+    fn paths_into_a_tree_are_found_whole_and_redirected() {
+        let temp = tempfile::tempdir().unwrap();
+        let tree = temp.path().join("trees/abc");
+        fs::create_dir_all(tree.join("pkg")).unwrap();
+        let root = tree.display().to_string();
+        let texts = [format!("GOPATH={root}"), format!("x:{root}/pkg:y")];
+        assert!(names_path(
+            root.as_bytes(),
+            texts.iter().map(|text| text.as_bytes())
+        ));
+        // A longer name is another path.
+        assert!(!names_path(
+            root.as_bytes(),
+            std::iter::once(format!("{root}d/x").as_bytes())
+        ));
+        // Existing paths are no write target; a missing one below it is.
+        assert!(!written_into(
+            &tree,
+            [root.clone(), format!("{root}/pkg"), format!("{root}/")]
+                .iter()
+                .map(|text| text.as_bytes())
+        ));
+        assert!(written_into(
+            &tree,
+            std::iter::once(format!("a:{root}/gocache:b").as_bytes())
+        ));
+        assert!(!written_into(
+            &tree,
+            std::iter::once(format!("{root}x/gocache").as_bytes())
+        ));
+        assert_eq!(
+            redirected(
+                format!("{root}/gocache:{root}:{root}x").as_bytes(),
+                root.as_bytes(),
+                b"/slot"
+            )
+            .unwrap(),
+            format!("/slot/gocache:/slot:{root}x").into_bytes()
+        );
+        assert_eq!(redirected(b"/elsewhere", root.as_bytes(), b"/slot"), None);
     }
 }

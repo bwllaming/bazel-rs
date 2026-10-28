@@ -11,7 +11,9 @@ when the parent directory is `external`, else `../<name>`) and a genrule checks
 `test -f <srcdir>/libfoo.a` from the execution root, as the duckdb Go bindings'
 `-L${SRCDIR}/` link flag needs; `linker` links a file of the sibling repository's
 directory (`../+sibling+sibling/file`, relative, absolute and through rctx.symlink)
-and its own (relative, absolute), and `//:read_links` reads them all.
+and its own (relative, absolute), and `//:read_links` reads them all. `cache_user` (cache_dir.bzl) keeps a run counter in
+`tool_cache`'s directory, as gazelle's go_repository_tools keeps the go build cache in
+go_repository_cache's (case `cache_dir_reuse`: build, edit the watched stamp, build, build).
 """
 import hashlib
 import json
@@ -21,7 +23,7 @@ import subprocess
 
 GENUINE = "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64"
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRATCH = "/tmp/opencode/repository-slots-capture"
+SCRATCH = "/home/coder/opencodetmp/w/repository-slots-capture"
 WS = SCRATCH + "/ws"
 OUR = SCRATCH + "/our"
 HOME = SCRATCH + "/home"
@@ -66,6 +68,27 @@ for name, target, output in [
         "output": normalize(open(path).read()) if p.returncode == 0 else None,
     }
     assert p.returncode == 0, p.stderr
+# A repository written into by another repository's tool (`cache_user`): the
+# second run, after an edit of the stamp only cache_user reads, sees the first
+# one's counter; the third (nothing changed) re-runs nothing.
+runs = []
+for step in range(3):
+    if step == 1:
+        open(os.path.join(WS, "cache_stamp.txt"), "w").write("2\n")
+    p = bazel("build", "//:cache_runs")
+    assert p.returncode == 0, p.stderr
+    runs.append(open(os.path.join(WS, "bazel-bin/cache_runs.txt")).read())
+cache_dir = OUTPUT_BASE + "/external/+cache_dir+tool_cache"
+out["cases"]["cache_dir_reuse"] = {
+    "target": "//:cache_runs",
+    "exit": 0,
+    "outputs": runs,
+    "cache_dir_is_link": os.path.islink(cache_dir),
+    "cache_dir_entries": sorted(
+        os.path.relpath(os.path.join(d, f), cache_dir)
+        for d, _, fs in os.walk(cache_dir) for f in fs),
+}
+open(os.path.join(WS, "cache_stamp.txt"), "w").write("1\n")
 bazel("shutdown")
 subprocess.run(["chmod", "-R", "u+w", SCRATCH])
 shutil.rmtree(SCRATCH, ignore_errors=True)

@@ -1711,55 +1711,127 @@ impl Context {
     }
 
     /// The readers' hold (crate::repository_slots::SlotReaders) of the
-    /// mutable repository directories `request` may write into: every
-    /// self-referencing repository a label of this execution resolved into
-    /// (its published files name its directory, as gazelle's
-    /// `go_repository_cache` names GOPATH in `go.env`), and every real
-    /// directory among the slots its arguments, environment or working
-    /// directory name. Never this execution's own (its writer holds it) nor
-    /// one this thread holds as a writer. A resolved one whose slot is not
-    /// complete (missing, a link, an interrupted writer's) is made again
-    /// from its tree first. Nothing is held between two `execute`s: a
-    /// consumer holding a directory for its whole execution would deadlock
-    /// with another process re-executing that repository while it demands a
-    /// repository this one is executing (go_repository reads `go.env`, then
-    /// demands go_repository_tools, which reads `go.env` too).
+    /// mutable repository directories an `execute` (`argv`, `environment`,
+    /// `working_directory`) may write into: every self-referencing
+    /// repository a label of this execution resolved into (its published
+    /// files name its directory, as gazelle 0.51's `go_repository_cache`
+    /// names GOPATH in `go.env`), every resolved ordinary repository the
+    /// command writes into (below), and every real directory among the
+    /// slots its arguments, environment or working directory name. Never
+    /// this execution's own (its writer holds it) nor one this thread holds
+    /// as a writer. A resolved one whose slot is not complete (missing, a
+    /// link, an interrupted writer's) is made again from its tree first.
+    /// Nothing is held between two `execute`s: a consumer holding a
+    /// directory for its whole execution would deadlock with another
+    /// process re-executing that repository while it demands a repository
+    /// this one is executing (go_repository reads `go.env`, then demands
+    /// go_repository_tools, which reads `go.env` too).
+    ///
+    /// Written into: a resolved ordinary repository whose published tree
+    /// the environment names a missing path of (gazelle's relocatable
+    /// `go.env`: GOCACHE is `<dirname of the cache repository's go.env>/
+    /// gocache`, internal/env.bzl resolve_go_env), or whose slot is already
+    /// the mutable copy of that tree (its marker names it). Genuine leaves
+    /// that repository a plain writable directory under `external/` and
+    /// checks it by its marker alone, so the tool's cache survives across
+    /// commands; natively the tree stays immutable (the analysis snapshot
+    /// and every reuse verify it) and the command is redirected to the
+    /// repository's slot, made a mutable copy of the tree (marker, reader
+    /// locks, re-made when the repository is re-executed): every path below
+    /// the tree in the command names the slot instead, genuine's
+    /// `external/<name>`.
     fn mutable_slot_readers(
         &self,
-        request: &crate::repository_process::Request<'_>,
+        argv: &mut [Vec<u8>],
+        environment: &mut [(Vec<u8>, Vec<u8>)],
+        working_directory: &mut PathBuf,
     ) -> anyhow::Result<crate::repository_slots::SlotReaders> {
         use crate::repository_slots::{SlotClass, SlotReaders, slot_path};
+        use std::os::unix::ffi::OsStringExt;
         let Ok(store) = self.repositories.source_cache_path() else {
             return Ok(SlotReaders::default());
         };
         let store = store.to_path_buf();
-        // canonical name -> (identity, tree) of a resolved self-referencing
-        // repository; None for a directory only named.
-        let mut wanted: BTreeMap<String, Option<(String, PathBuf)>> = BTreeMap::new();
+        // canonical name -> (identity, tree, exact) of a resolved mutable
+        // repository (exact: an ordinary one written into, whose slot must
+        // be the copy of this very tree); None for a directory only named.
+        let mut wanted: BTreeMap<String, Option<(String, PathBuf, bool)>> = BTreeMap::new();
+        // (tree root, slot) of the repositories written into.
+        let mut redirects: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         let resolved: Vec<String> = self.state.borrow().resolved.iter().cloned().collect();
         for name in resolved {
+            if (self.kind == Kind::Repository && name == self.canonical)
+                || crate::repository_slots::writing(&slot_path(&store, &name))
+            {
+                continue;
+            }
             let Ok(root) = self.repositories.root(&name) else {
                 continue;
             };
-            if let Some((identity, SlotClass::SelfReferencing)) =
-                crate::repository_store::slot_class(&store, &name, root)
-            {
-                wanted.insert(name, Some((identity, root.to_path_buf())));
+            match crate::repository_store::slot_class(&store, &name, root) {
+                Some((identity, SlotClass::SelfReferencing)) => {
+                    wanted.insert(name, Some((identity, root.to_path_buf(), false)));
+                }
+                Some((identity, SlotClass::Ordinary)) => {
+                    // Paths below the tree are spelled through the
+                    // canonical root (label paths are canonicalized).
+                    let tree = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+                    let mut spellings = vec![tree.as_os_str().as_bytes().to_vec()];
+                    if root != tree {
+                        spellings.push(root.as_os_str().as_bytes().to_vec());
+                    }
+                    let texts = || {
+                        argv.iter()
+                            .map(Vec::as_slice)
+                            .chain(environment.iter().map(|(_, value)| value.as_slice()))
+                            .chain(std::iter::once(working_directory.as_os_str().as_bytes()))
+                    };
+                    if !spellings
+                        .iter()
+                        .any(|spelling| crate::repository_slots::names_path(spelling, texts()))
+                    {
+                        continue;
+                    }
+                    let written = [&tree, &root.to_path_buf()].iter().any(|tree| {
+                        crate::repository_slots::written_into(
+                            tree,
+                            environment.iter().map(|(_, value)| value.as_slice()),
+                        )
+                    });
+                    if !written
+                        && !crate::repository_slots::complete_for(&store, &name, Some(&identity))
+                    {
+                        continue;
+                    }
+                    let slot = slot_path(&store, &name).as_os_str().as_bytes().to_vec();
+                    redirects.extend(spellings.into_iter().map(|from| (from, slot.clone())));
+                    wanted.insert(name, Some((identity, tree, true)));
+                }
+                None => {}
             }
         }
-        let texts = request
-            .argv
+        for (from, to) in &redirects {
+            for text in argv
+                .iter_mut()
+                .chain(environment.iter_mut().map(|(_, value)| value))
+            {
+                if let Some(redirected) = crate::repository_slots::redirected(text, from, to) {
+                    *text = redirected;
+                }
+            }
+            if let Some(redirected) = crate::repository_slots::redirected(
+                working_directory.as_os_str().as_bytes(),
+                from,
+                to,
+            ) {
+                *working_directory = PathBuf::from(std::ffi::OsString::from_vec(redirected));
+            }
+        }
+        let texts = argv
             .iter()
             .map(Vec::as_slice)
-            .chain(
-                request
-                    .environment
-                    .iter()
-                    .map(|(_, value)| value.as_slice()),
-            )
-            .chain(std::iter::once(
-                request.working_directory.as_os_str().as_bytes(),
-            ));
+            .chain(environment.iter().map(|(_, value)| value.as_slice()))
+            .chain(std::iter::once(working_directory.as_os_str().as_bytes()));
         for name in crate::repository_slots::named_slots(&store, texts) {
             if !wanted.contains_key(&name)
                 && fs::symlink_metadata(slot_path(&store, &name)).is_ok_and(|m| m.is_dir())
@@ -1780,14 +1852,20 @@ impl Context {
             let incomplete = wanted.iter().find_map(|(name, published)| {
                 published
                     .as_ref()
-                    .filter(|_| !crate::repository_slots::complete(&store, name))
+                    .filter(|(identity, _, exact)| {
+                        !crate::repository_slots::complete_for(
+                            &store,
+                            name,
+                            exact.then_some(identity.as_str()),
+                        )
+                    })
                     .map(|published| (name, published))
             });
-            let Some((name, (identity, tree))) = incomplete else {
+            let Some((name, (identity, tree, exact))) = incomplete else {
                 return Ok(readers);
             };
             drop(readers);
-            crate::repository_slots::restore_mutable(&store, name, identity, tree)
+            crate::repository_slots::restore_mutable(&store, name, identity, tree, *exact)
                 .map_err(anyhow::Error::msg)?;
         }
         bail!(
@@ -3597,7 +3675,7 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
         }
         // createDirectory(workingDirectory) (java:2076).
         context.mark_created()?;
-        let directory = if working_directory.is_empty() {
+        let mut directory = if working_directory.is_empty() {
             context.stage.clone()
         } else {
             let path = normalize(
@@ -3637,16 +3715,19 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
             }
         };
         context.facility("execute");
+        // Only a subprocess can write into another repository's directory
+        // (Starlark writes only below its own, [`Context::output`]): the
+        // mutable ones it may write into are held as a reader while it runs
+        // (and paths into a published tree it writes into name that
+        // repository's mutable slot instead).
+        let mut environment: Vec<(Vec<u8>, Vec<u8>)> = environment.into_iter().collect();
+        let readers = context.mutable_slot_readers(&mut argv, &mut environment, &mut directory)?;
         let request = crate::repository_process::Request {
             argv,
-            environment: environment.into_iter().collect(),
+            environment,
             working_directory: &directory,
             timeout: Duration::from_secs(timeout as u64),
         };
-        // Only a subprocess can write into another repository's directory
-        // (Starlark writes only below its own, [`Context::output`]): the
-        // mutable ones it may write into are held as a reader while it runs.
-        let readers = context.mutable_slot_readers(&request)?;
         let outcome = crate::repository_process::run(&request).map_err(anyhow::Error::msg);
         drop(readers);
         match outcome? {

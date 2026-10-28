@@ -15,3 +15,15 @@ sibling(name = "sibling")
 linker = use_repo_rule("//:links.bzl", "linker")
 
 linker(name = "linker")
+
+cache_dir = use_repo_rule("//:cache_dir.bzl", "cache_dir")
+
+cache_dir(name = "tool_cache")
+
+cache_user = use_repo_rule("//:cache_dir.bzl", "cache_user")
+
+cache_user(
+    name = "cache_user",
+    cache = "@tool_cache//:cache.env",
+    stamp = "//:cache_stamp.txt",
+)

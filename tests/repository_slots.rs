@@ -566,3 +566,105 @@ fn links_to_a_sibling_repository_directory_are_pinned_to_its_tree() {
         );
     }
 }
+
+/// Every file below `directory`, relative, sorted.
+fn files_below(directory: &Path) -> Vec<String> {
+    fn walk(root: &Path, directory: &Path, into: &mut Vec<String>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if fs::symlink_metadata(&path).unwrap().is_dir() {
+                walk(root, &path, into);
+            } else {
+                into.push(path.strip_prefix(root).unwrap().display().to_string());
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(directory, directory, &mut files);
+    files.sort();
+    files
+}
+
+/// A repository another repository's tool writes into, as gazelle's
+/// go_repository_tools writes the go build cache into
+/// go_repository_cache's directory (GOCACHE derived from a label into it,
+/// internal/env.bzl resolve_go_env): genuine leaves that repository a plain
+/// writable directory under `external/` (capture `cache_dir_reuse`), so
+/// after an edit only the tool re-runs and finds what it wrote before, and
+/// the run after that re-runs nothing. Natively the tool writes into the
+/// repository's slot, a mutable copy of the published tree, which stays
+/// unchanged: the cache repository is reused (not re-executed, not emptied)
+/// and the run after the edit is an analysis snapshot hit again.
+#[test]
+fn a_repository_written_into_by_another_ones_tool_stays_a_directory_like_bazel() {
+    let capture: serde_json::Value = serde_json::from_slice(
+        &fs::read(manifest().join("tests/fixtures/repository_slots/genuine_capture.json")).unwrap(),
+    )
+    .unwrap();
+    let case = &capture["cases"]["cache_dir_reuse"];
+    let expected: Vec<String> = case["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|output| output.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(case["cache_dir_is_link"], false);
+    let f = Fixture::new();
+    let (first, stderr) = f.build("//:cache_runs");
+    assert_eq!(first, expected[0]);
+    assert_eq!(repository_counts(&stderr).1, 2, "{stderr}");
+    let slot = f.store().join("external/+cache_dir+tool_cache");
+    assert!(fs::symlink_metadata(&slot).unwrap().is_dir());
+    let marker = fs::read_to_string(
+        f.store()
+            .join("direct/slots")
+            .join(&blake3::hash(b"+cache_dir+tool_cache").to_hex()[..32]),
+    )
+    .unwrap();
+    let identity = marker.lines().nth(1).unwrap().to_owned();
+    let tree = f.store().join("direct/trees").join(&identity);
+    // The published tree is what the rule wrote; the counter is in the slot.
+    assert_eq!(
+        files_below(&tree),
+        ["BUILD.bazel", "REPO.bazel", "cache.env"]
+    );
+    let genuine_entries: Vec<String> = case["cache_dir_entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(files_below(&slot), genuine_entries);
+
+    // Only the tool's repository re-runs, and sees its earlier cache.
+    fs::write(f.ws().join("cache_stamp.txt"), "2\n").unwrap();
+    let (second, stderr) = f.build("//:cache_runs");
+    assert_eq!(second, expected[1]);
+    assert_eq!(repository_counts(&stderr).1, 1, "{stderr}");
+    assert_eq!(
+        fs::read_to_string(slot.join("toolcache/runs")).unwrap(),
+        "2\n"
+    );
+    assert_eq!(
+        files_below(&tree),
+        ["BUILD.bazel", "REPO.bazel", "cache.env"]
+    );
+
+    // Nothing changed: nothing re-runs (a snapshot hit; with the snapshot
+    // off, the warm probe reuses the tool's repository).
+    let (third, stderr) = f.build("//:cache_runs");
+    assert_eq!(third, expected[2]);
+    assert_eq!(repository_counts(&stderr).1, 0, "{stderr}");
+    let (fourth, stderr) = f.build_with("//:cache_runs", &[SNAPSHOT_OFF]);
+    assert_eq!(fourth, expected[2]);
+    // (the tool's repository reused: its recorded inputs hold.)
+    assert_eq!(repository_counts(&stderr), (1, 0), "{stderr}");
+    assert_eq!(
+        fs::read_to_string(slot.join("toolcache/runs")).unwrap(),
+        "2\n"
+    );
+    assert_eq!(
+        files_below(&tree),
+        ["BUILD.bazel", "REPO.bazel", "cache.env"]
+    );
+}

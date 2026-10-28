@@ -10,3 +10,12 @@ genrule(
     outs = ["read_links.txt"],
     cmd = "cat $(SRCS) > $@",
 )
+
+exports_files(["cache_stamp.txt"])
+
+genrule(
+    name = "cache_runs",
+    srcs = ["@cache_user//:runs.txt"],
+    outs = ["cache_runs.txt"],
+    cmd = "cat $< > $@",
+)

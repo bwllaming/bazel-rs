@@ -21,6 +21,22 @@
       "target": "//:read_links",
       "exit": 0,
       "output": "sibling\nsibling\nsibling\ninner\ninner\n"
+    },
+    "cache_dir_reuse": {
+      "target": "//:cache_runs",
+      "exit": 0,
+      "outputs": [
+        "runs=1\n",
+        "runs=2\n",
+        "runs=2\n"
+      ],
+      "cache_dir_is_link": false,
+      "cache_dir_entries": [
+        "BUILD.bazel",
+        "REPO.bazel",
+        "cache.env",
+        "toolcache/runs"
+      ]
     }
   }
 }
