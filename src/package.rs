@@ -302,6 +302,10 @@ mod collector {
         /// (GlobCache, packages/GlobCache.java: one traversal per pattern
         /// and package evaluation). Lookups only: never iterated.
         pub globs: RefCell<HashMap<super::GlobKey, crate::glob::GlobOutcome>>,
+        /// The repository's link policy, computed at the first glob() or
+        /// subpackages() call of the evaluation (one list of every
+        /// materialized root per package, not per call).
+        pub link_policy: std::cell::OnceCell<crate::source_links::LinkPolicy>,
         pub subpackages: RefCell<crate::glob::SubpackagesCache>,
     }
 
@@ -476,6 +480,11 @@ pub(crate) fn register_custom<'v>(
 }
 
 impl Declarations {
+    fn link_policy(&self) -> &crate::source_links::LinkPolicy {
+        self.link_policy
+            .get_or_init(|| self.repositories.link_policy(&self.repository))
+    }
+
     fn check_macro_collision(&self, name: &str) -> anyhow::Result<()> {
         if self.macro_names.borrow().contains(name)
             && self
@@ -1577,7 +1586,7 @@ fn package_globals(builder: &mut GlobalsBuilder) {
             excludes,
             exclude_directories: exclude_directories != 0,
             allow_empty,
-            links: context.repositories.link_policy(&context.repository),
+            links: context.link_policy().clone(),
         };
         let cached = context.globs.borrow().get(&key).cloned();
         let outcome = match cached {
@@ -1674,7 +1683,7 @@ fn package_globals(builder: &mut GlobalsBuilder) {
             &excludes,
             allow_empty,
             &context.ignored,
-            &context.repositories.link_policy(&context.repository),
+            context.link_policy(),
             &mut context.subpackages.borrow_mut(),
         )
         .map_err(anyhow::Error::msg)?;
@@ -2381,6 +2390,7 @@ fn evaluate_at(
         glob_io_error: RefCell::new(None),
         glob_symlink_issue: RefCell::new(None),
         globs: RefCell::default(),
+        link_policy: std::cell::OnceCell::new(),
         subpackages: RefCell::default(),
     };
     // Canonical label texts parse once per package evaluation.
@@ -4097,6 +4107,7 @@ def legacy():
                 glob_io_error: RefCell::new(None),
                 glob_symlink_issue: RefCell::new(None),
                 globs: RefCell::default(),
+                link_policy: std::cell::OnceCell::new(),
                 subpackages: RefCell::default(),
             };
             Module::with_temp_heap(|module| {
