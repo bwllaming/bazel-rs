@@ -1973,7 +1973,7 @@ fn incremental_build(
         }
         if edited != candidate.edited {
             let (modules, bzl) = incremental::bzl_attribution(&candidate.index, &edited)
-                .map_err(|reason| early(reason))?;
+                .map_err(early)?;
             candidate.modules = modules;
             candidate.bzl = bzl;
             candidate.edited = edited;
