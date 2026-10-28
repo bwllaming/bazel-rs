@@ -62,3 +62,9 @@ provider values, execution-free cquery and bounded cache/source/flag/dependency
 edits. The actual rules_java `create_deploy_archive` function consumes the helper
 result with genuine JavaInfo/JavaRuntimeClasspathInfo and real SingleJar; its
 jar and manifest match bytes, and `java -jar` prints `archive:kept`.
+
+Application follow-up on the readonly PR clone: the targeted AddJarManifestEntry
+cquery passes this helper and stops at `java_common.collect_native_deps_dirs`,
+`java_common_internal.bzl:452` via `java_binary_impl.bzl:162` (4.563s,691.1MiB,
+no output, unchanged canaries). Full cquery was not repeated because this next
+binary API still blocks the target. No Java-binary/whole-graph/TD success claim.

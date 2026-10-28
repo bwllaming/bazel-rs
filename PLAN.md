@@ -156,16 +156,17 @@ Done since the last increment recorded under "History", one line each:
 - [x] Integrated JavaBuilder candidate passes the previously failing
       rules_jvm_external Java-library cquery: 4.46s / 705MiB, 1,450,936 bytes,
       clone canaries unchanged.
-- [ ] Full PR-clone deps(//...) now reaches the Java binary AddJarManifestEntry
-      and stops at java_common.get_runtime_classpath_for_archive (23.29s /
-      2,583MiB, no output). The dependent rules_python debugger select error
-      remains visible. Annotation processors and documented branches remain
-      unsupported; no whole-workspace TD claim or changed select semantics.
+- [ ] The PR-clone Java binary AddJarManifestEntry now passes runtime-classpath
+      filtering and stops at java_common.collect_native_deps_dirs (targeted
+      cquery4.56s / 691MiB, no output). Full deps(//...) was not repeated after
+      that targeted failure. The prior full-query Python debugger select error
+      remains unresolved; no whole-workspace TD claim or changed select semantics.
 - [x] Runtime archive classpath filtering implements the genuine empty-exclusion
       identity shortcut and nonempty Artifact-identity subtraction/stable-order
       result, including the intentionally untyped exclusion set. A real
       rules_java deploy-archive action consumes it with byte-identical runnable
-      output (docs/JAVA_RUNTIME_CLASSPATH.md). Application follow-up pending.
+      output (docs/JAVA_RUNTIME_CLASSPATH.md). Targeted application analysis
+      advances to the separate native-library-directory API.
 
 ### Commands that are rejected today
 
