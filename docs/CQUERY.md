@@ -124,11 +124,80 @@ there is no package loading. BUILD, `.bzl`, select/configuration, observed
 environment, package listings and source-presence changes are revalidated.
 Source **content** is read by TD itself; graph reuse does not replace TD's hashing.
 
+Each existing analysis key retains **at most two** configured-graph versions.
+The fixed filenames are `<short-G>-cq0.snap` and `<short-G>-cq1.snap`; both
+headers contain the original full G and exact ELF identity. A checkout/revert
+can reuse either version only when **all** its recorded observations, including
+`.bazelignore`, still validate. Changed metadata is accepted by the existing
+content validator when bytes match. No Git revision is used as a cache key.
+
+Candidates are probed sequentially in MRU order (mtime, then creation time and
+slot name). INPUTS/environment, workspace-status rejection, repository replay
+and publication integrity precede graph loading. Failed candidate data is
+dropped before the next candidate. Corrupt or absent candidates fall through;
+changed inputs retain their version for a future revert. Only a selected valid
+graph's diagnostics are emitted, once. Graph node/configuration/edge/pattern
+indices are checked. Output errors are terminal command errors; they do not
+trigger another candidate or full analysis. The config dump is written from the
+graph actually used by the successful output command.
+
+Publication stages a complete checksummed binary file before acquiring one
+store-scoped `cquery-history.lock` (at most two seconds waiting). Under that lock
+it reopens both slots, deduplicates equal content versions, chooses an empty slot
+or evicts the LRU, then atomically renames. The 32-byte STATS section is a binary
+deduplication digest over normalized input observations, replay identities,
+events and graph bytes; it is **not** a validation shortcut. Only input stat
+fast-path hints, recording window time and replay timings are normalized. Thus
+two ignore-file contents producing identical graphs still occupy distinct
+versions, while a verification or concurrent save of A cannot displace B with a
+second A. Verification pins the selected reader FD and performs removal/refresh
+under the same lock only if the path still names that generation. Readers stay
+valid across rename/unlink, and cannot suffer inode-number reuse while pinned.
+
+Both slots count toward the existing store-wide **64 entries** and filesystem-
+adaptive **512 MiB–4 GiB** byte budget, together with build snapshots. There is no
+second history budget. GC runs after publication: the instant before collection
+and concurrent staging files can exceed the budget. Each graph staging file is
+bounded by 256 MiB; interrupted `.tmp-` files use the existing one-hour cleanup.
+The one fixed lock file is never unlinked; lock files do not grow per key.
+
+Graph-specific bounds (ordinary build/Index decoding is unchanged):
+
+| Item | Maximum |
+|---|---:|
+| Stored entry, including header | 256 MiB |
+| INPUTS | 64 MiB |
+| EVENTS | 8 MiB |
+| Compressed PLAN | 192 MiB |
+| Raw PLAN | 768 MiB |
+| Raw frame / frame count | 4 MiB / 192 |
+| STATS deduplication digest | exactly 32 bytes |
+
+Entry/section bounds are checked before section allocation. A checked-arithmetic
+frame-table preflight checks all offsets, canonical frame sizes and the aggregate
+raw length before allocating the decompressed PLAN or frame vectors. The writer
+also stops at the raw/stored limits. These are byte-buffer bounds, not a total
+process RSS guarantee: the decoded graph and validator/replay structures also
+use memory. A normal hit never retains two decoded graphs. The known 265k-node
+graph's saved header/framing measures 404,498,195 raw PLAN bytes, 24,530,264 stored
+PLAN bytes, 7,961,305 INPUTS bytes and 88,297 EVENTS bytes (32,580,218 total before
+the digest section), comfortably within these limits.
+
 `BAZEL_RS_SNAPSHOT=off` disables graph reuse. `verify` compares a reused graph to
-fresh complete semantic analysis and fails/removes the snapshot on a mismatch.
+fresh complete semantic analysis and fails/invalidates that generation on a mismatch.
 `BAZEL_RS_SNAPSHOT_EXPLAIN=1` reports hit/miss/save reasons. Pending lockfile writes
 conservatively prevent saving: the initial repository/lockfile initialization
 may need another analysis before subsequent calls hit. No daemon is used.
+
+`tests/cquery_history.rs` covers a real tiny Git A/B/A/B checkout sequence,
+same-byte replacement and restored-mtime changed-byte adversaries, ignore-file
+changes with both equal and different graphs, loading/source/glob/directory/link
+observations, replay/environment/publication validation, corrupt-candidate
+fallback, LRU eviction, verify deduplication and selected config/diagnostic state.
+Graph-local unit tests cover concurrent writers, pinned-reader generation races,
+shared GC, ELF/full-key separation and allocation preflights. These small-fixture
+proofs do not establish whole-application TD memory fit; a new ELF must create its
+own snapshots before the separate bounded acceptance run.
 
 ## Validation and measured performance
 

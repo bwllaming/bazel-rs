@@ -595,6 +595,53 @@ fn deflate(frame: &[u8]) -> Vec<u8> {
 /// frame that does not inflate to its recorded size, or bytes left over
 /// are errors (the section's checksum already passed: a bug or a crafted
 /// file, never a torn write).
+/// Graph-only preflight, before any frame vector or decompressed allocation.
+/// Ordinary build/Index decoding retains its existing contract.
+pub(crate) fn check_compressed_bounds(stored: &[u8], max_raw: usize) -> Result<(), String> {
+    let malformed = || "malformed or oversized configured graph frames".to_owned();
+    let rest = stored
+        .strip_prefix(COMPRESSED_MAGIC.as_slice())
+        .ok_or_else(malformed)?;
+    let count =
+        u32::from_le_bytes(rest.get(..4).ok_or_else(malformed)?.try_into().unwrap()) as usize;
+    // Graph writers emit full 4 MiB frames, except the final one. This also
+    // bounds table allocations independently of the claimed aggregate size.
+    if count > max_raw.div_ceil(FRAME) {
+        return Err(malformed());
+    }
+    let end = count
+        .checked_mul(8)
+        .and_then(|n| n.checked_add(4))
+        .ok_or_else(malformed)?;
+    let table = rest.get(4..end).ok_or_else(malformed)?;
+    let mut offset = end;
+    let mut total = 0usize;
+    for (index, entry) in table.as_chunks::<8>().0.iter().enumerate() {
+        let raw = u32::from_le_bytes(entry[..4].try_into().unwrap()) as usize;
+        let len = u32::from_le_bytes(entry[4..].try_into().unwrap()) as usize;
+        if raw == 0 || raw > FRAME || (index + 1 < count && raw != FRAME) {
+            return Err(malformed());
+        }
+        total = total
+            .checked_add(raw)
+            .filter(|n| *n <= max_raw)
+            .ok_or_else(malformed)?;
+        offset = offset
+            .checked_add(len)
+            .filter(|n| *n <= rest.len())
+            .ok_or_else(malformed)?;
+    }
+    if offset != rest.len() {
+        return Err(malformed());
+    }
+    Ok(())
+}
+
+pub(crate) fn decompress_plan_bounded(stored: Vec<u8>, max_raw: usize) -> Result<Vec<u8>, String> {
+    check_compressed_bounds(&stored, max_raw)?;
+    decompress_plan(stored)
+}
+
 pub fn decompress_plan(stored: Vec<u8>) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let Some(rest) = stored.strip_prefix(COMPRESSED_MAGIC.as_slice()) else {

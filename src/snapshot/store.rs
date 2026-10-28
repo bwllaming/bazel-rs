@@ -105,6 +105,16 @@ impl Reader {
     /// another format or binary), `Err` when it is damaged.
     pub fn open(cache: &Path, key: &Key) -> Result<Option<Self>, String> {
         let path = path(cache, key);
+        Self::open_path_bounded(path, key, u64::MAX)
+    }
+
+    /// Graph-local fixed slots use the original full analysis key in the
+    /// header. Reject an oversized entry before reading any section.
+    pub(crate) fn open_path_bounded(
+        path: PathBuf,
+        key: &Key,
+        max_bytes: u64,
+    ) -> Result<Option<Self>, String> {
         let file = match File::open(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -114,6 +124,9 @@ impl Reader {
             .metadata()
             .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
         let len = metadata.len();
+        if !metadata.is_file() || len > max_bytes {
+            return Err("snapshot entry exceeds its size limit or is not a file".into());
+        }
         let identity = identity_of(&metadata);
         let mut bytes = [0u8; HEADER_LEN];
         file.read_exact_at(&mut bytes, 0)
@@ -143,6 +156,29 @@ impl Reader {
     /// Which file the reader opened ([`Pending::commit_replacing`]).
     pub fn identity(&self) -> FileIdentity {
         self.identity
+    }
+
+    pub(crate) fn modified(&self) -> SystemTime {
+        self.file
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH)
+    }
+
+    /// Bounded callers check the length before the stored-section allocation.
+    pub(crate) fn stored_section_bounded(
+        &self,
+        kind: Section,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, String> {
+        if self
+            .header
+            .slot(kind)
+            .is_some_and(|slot| slot.len > max_bytes)
+        {
+            return Err(format!("{} section exceeds its size limit", kind.name()));
+        }
+        self.stored_section(kind)
     }
 
     /// One section's content, checked against its checksum: the PLAN

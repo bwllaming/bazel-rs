@@ -756,7 +756,7 @@ fn run() -> Result<(), String> {
                 environment: repository_environment.clone(),
                 downloads_enabled: repository_downloads_enabled,
             },
-        );
+        )?;
         cquery_session = started.session;
         if let Some(graph) = started.hit {
             return cquery_output(&graph, expression, &cquery_options, &relative, &cache);

@@ -252,7 +252,7 @@ fn cquery_inherits_build_and_test_rc_configuration() {
 #[test]
 fn snapshot_verification_source_presence_and_configuration_changes() {
     let ws = Workspace::new();
-    ws.ok(&["deps(//:consumer)"]);
+    let original = ws.ok(&["deps(//:consumer)"]);
     let verified = ws
         .query_command(&["deps(//:consumer)"])
         .env("BAZEL_RS_SNAPSHOT", "verify")
@@ -268,7 +268,10 @@ fn snapshot_verification_source_presence_and_configuration_changes() {
     assert!(String::from_utf8_lossy(&removed.stderr).contains("snapshot: miss"));
     ws.write("input", "restored\n");
     let restored = ws.ok(&["deps(//:consumer)"]);
-    assert!(String::from_utf8_lossy(&restored.stderr).contains("snapshot: miss"));
+    // Source presence (not source contents) is the graph input. Both
+    // successful versions are retained, so restoring presence reuses A.
+    assert!(String::from_utf8_lossy(&restored.stderr).contains("snapshot: hit"));
+    assert_eq!(restored.stdout, original.stdout);
     let changed = ws.ok(&["--define=choice=no", "deps(//:consumer)"]);
     assert!(String::from_utf8_lossy(&changed.stderr).contains("snapshot: miss"));
     assert!(labels(&changed).contains(&"//:other".to_owned()));

@@ -5,11 +5,14 @@ use crate::snapshot::{self, format, key, store};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
+#[path = "cquery_history.rs"]
+mod history;
+
 pub struct Session {
     cache: PathBuf,
     key: key::Key,
     capture: Option<snapshot::capture::Capture>,
-    verify: Option<Graph>,
+    verify: Option<(Graph, store::Reader)>,
 }
 
 pub struct Started {
@@ -36,18 +39,21 @@ fn presentation(option: &crate::bazelrc::Unit) -> bool {
         || name.starts_with("--noproto:")
 }
 
-pub fn start(inputs: key::Inputs<'_>, replay: snapshot::hit::ReplayInputs) -> Started {
+pub fn start(
+    inputs: key::Inputs<'_>,
+    replay: snapshot::hit::ReplayInputs,
+) -> Result<Started, String> {
     let miss = || Started {
         hit: None,
         session: None,
     };
     let mode = snapshot::Mode::from_env();
     if matches!(mode, snapshot::Mode::Off | snapshot::Mode::Record) || key::test_hook().is_some() {
-        return miss();
+        return Ok(miss());
     }
     let _ = std::fs::create_dir_all(store::directory(inputs.cache));
     let Ok(binary) = snapshot::exe_id::binary_id(&store::root(inputs.cache)) else {
-        return miss();
+        return Ok(miss());
     };
     let options = inputs
         .options
@@ -61,27 +67,31 @@ pub fn start(inputs: key::Inputs<'_>, replay: snapshot::hit::ReplayInputs) -> St
         ..inputs
     };
     let key = key::compute(&filtered, binary);
-    let found = read(inputs.cache, &key, &replay);
+    let found = read(inputs.cache, &key, &replay)?;
     let verify = match found {
-        Ok(graph) if mode != snapshot::Mode::Verify => {
+        Some((graph, reader, events)) if mode != snapshot::Mode::Verify => {
+            use std::io::Write;
+            // Output errors are command failures, never candidate misses.
+            std::io::stderr()
+                .lock()
+                .write_all(&crate::ui::filtered(&events))
+                .map_err(|e| e.to_string())?;
+            reader.touch();
             explain("hit");
-            return Started {
+            return Ok(Started {
                 hit: Some(graph),
                 session: None,
-            };
+            });
         }
-        Ok(graph) => Some(graph),
-        Err(error) => {
-            explain(&format!("miss: {error}"));
-            None
-        }
+        Some((graph, reader, _)) => Some((graph, reader)),
+        None => None,
     };
     if !crate::observed_fs::open_window() {
-        return miss();
+        return Ok(miss());
     }
     snapshot::replay::install();
     let capture = snapshot::capture::start(snapshot::capture::Mode::Tee).ok();
-    Started {
+    Ok(Started {
         hit: None,
         session: Some(Session {
             cache: inputs.cache.to_owned(),
@@ -89,16 +99,37 @@ pub fn start(inputs: key::Inputs<'_>, replay: snapshot::hit::ReplayInputs) -> St
             capture,
             verify,
         }),
-    }
+    })
 }
 
 fn read(
     cache: &Path,
     key: &key::Key,
     replay: &snapshot::hit::ReplayInputs,
-) -> Result<Graph, String> {
-    let reader = store::Reader::open(cache, key)?.ok_or("no configured graph snapshot")?;
-    let inputs = format::decode_inputs(&reader.section(format::Section::Inputs)?)?;
+) -> Result<Option<(Graph, store::Reader, Vec<u8>)>, String> {
+    let mut reason = "no configured graph snapshot".to_owned();
+    for candidate in history::candidates(cache, key) {
+        let result = candidate.and_then(|reader| {
+            read_candidate(&reader, replay).map(|(graph, events)| (graph, reader, events))
+        });
+        match result {
+            Ok(selected) => return Ok(Some(selected)),
+            Err(error) if error == snapshot::replay::CANCELLED => return Err(error),
+            Err(error) => reason = error,
+        }
+        // Candidate INPUTS, replay heaps, and any corrupt graph are dropped
+        // before probing the next generation. No diagnostics have been emitted.
+    }
+    explain(&format!("miss: {reason}"));
+    Ok(None)
+}
+
+fn read_candidate(
+    reader: &store::Reader,
+    replay: &snapshot::hit::ReplayInputs,
+) -> Result<(Graph, Vec<u8>), String> {
+    let _version = history::section(reader, format::Section::Stats)?;
+    let mut inputs = format::decode_inputs(&history::section(reader, format::Section::Inputs)?)?;
     if inputs.workspace_status {
         return Err("configured graph recorded workspace status execution".into());
     }
@@ -106,10 +137,12 @@ fn read(
     snapshot::validate::validate_for_hit(&inputs.recording, &environment)?;
     if !inputs.replay.is_empty() {
         let cancel = AtomicBool::new(false);
-        snapshot::hit::replay_records(inputs.tables, replay, &inputs.replay, &cancel)?;
+        snapshot::hit::replay_records(inputs.tables.take(), replay, &inputs.replay, &cancel)?;
         snapshot::hit::check_local_trees(&inputs.replay, &cancel, false)?;
     }
-    let bytes = reader.section(format::Section::Plan)?;
+    drop(inputs);
+    let events = format::decode_events(&history::section(reader, format::Section::Events)?)?;
+    let bytes = history::section(reader, format::Section::Plan)?;
     let graph: Graph =
         postcard::from_bytes(&bytes).map_err(|e| format!("configured graph decode: {e}"))?;
     for node in &graph.nodes {
@@ -124,14 +157,15 @@ fn read(
             return Err("invalid configured graph index".into());
         }
     }
-    let events = format::decode_events(&reader.section(format::Section::Events)?)?;
-    use std::io::Write;
-    std::io::stderr()
-        .lock()
-        .write_all(&crate::ui::filtered(&events))
-        .map_err(|e| e.to_string())?;
-    reader.touch();
-    Ok(graph)
+    if graph
+        .patterns
+        .values()
+        .flatten()
+        .any(|id| *id as usize >= graph.nodes.len())
+    {
+        return Err("invalid configured graph pattern index".into());
+    }
+    Ok((graph, events))
 }
 
 impl Session {
@@ -148,12 +182,13 @@ impl Session {
             .capture
             .take()
             .map(|capture| capture.stop(std::time::Duration::from_secs(2)));
-        if let Some(expected) = self.verify.take()
-            && expected != *graph
+        if let Some((expected, reader)) = &self.verify
+            && expected != graph
         {
-            let _ = store::remove(&self.cache, &self.key);
+            history::remove(&self.cache, reader)?;
             return Err(
-                "configured graph snapshot verification mismatch; stale snapshot removed".into(),
+                "configured graph snapshot verification mismatch; stale generation invalidated"
+                    .into(),
             );
         }
         let save = || -> Result<(), String> {
@@ -184,19 +219,14 @@ impl Session {
             // A bounded frame buffer, never a second full uncompressed graph.
             let plan = encode_graph(graph)?;
             crate::perf_mark("cquery.snapshot_compressed");
-            store::write_in_background(
+            history::save(
                 &self.cache,
                 &self.key,
-                vec![
-                    (format::Section::Inputs, inputs),
-                    (
-                        format::Section::Events,
-                        format::encode_events(&window.bytes),
-                    ),
-                    (format::Section::Plan, plan),
-                ],
-            )
-            .commit()?;
+                inputs,
+                format::encode_events(&window.bytes),
+                plan,
+                self.verify.as_ref().map(|(_, reader)| reader),
+            )?;
             crate::perf_mark("cquery.snapshot_saved");
             explain("saved");
             Ok(())
@@ -217,24 +247,44 @@ fn encode_graph(value: &impl serde::Serialize) -> Result<Vec<u8>, String> {
     struct Frames {
         pending: Vec<u8>,
         parts: Vec<Vec<(usize, Vec<u8>)>>,
+        total: usize,
+        stored: u64,
     }
     impl Frames {
-        fn emit(&mut self) {
+        fn emit(&mut self) -> std::io::Result<()> {
             if !self.pending.is_empty() {
                 let part = std::mem::replace(&mut self.pending, Vec::with_capacity(FRAME));
-                self.parts.push(format::compress_part(part));
+                let compressed = format::compress_part(part);
+                let size = compressed
+                    .iter()
+                    .map(|(_, bytes)| 8 + bytes.len() as u64)
+                    .sum::<u64>();
+                self.stored = self
+                    .stored
+                    .checked_add(size)
+                    .filter(|size| *size <= history::MAX_PLAN)
+                    .ok_or_else(|| {
+                        std::io::Error::other("configured graph exceeds stored size limit")
+                    })?;
+                self.parts.push(compressed);
             }
+            Ok(())
         }
     }
     impl Write for Frames {
         fn write(&mut self, mut bytes: &[u8]) -> std::io::Result<usize> {
             let length = bytes.len();
+            self.total = self
+                .total
+                .checked_add(length)
+                .filter(|total| *total <= history::MAX_RAW)
+                .ok_or_else(|| std::io::Error::other("configured graph exceeds raw size limit"))?;
             while !bytes.is_empty() {
                 let count = bytes.len().min(FRAME - self.pending.len());
                 self.pending.extend_from_slice(&bytes[..count]);
                 bytes = &bytes[count..];
                 if self.pending.len() == FRAME {
-                    self.emit();
+                    self.emit()?;
                 }
             }
             Ok(length)
@@ -246,13 +296,15 @@ fn encode_graph(value: &impl serde::Serialize) -> Result<Vec<u8>, String> {
     let mut frames = Frames {
         pending: Vec::with_capacity(FRAME),
         parts: Vec::new(),
+        total: 0,
+        stored: 12,
     };
     // Buffer postcard's scalar writes without adding a graph-sized allocation.
     let mut writer = std::io::BufWriter::with_capacity(64 << 10, &mut frames);
     postcard::to_io(value, &mut writer).map_err(|error| error.to_string())?;
     writer.flush().map_err(|error| error.to_string())?;
     drop(writer);
-    frames.emit();
+    frames.emit().map_err(|error| error.to_string())?;
     Ok(format::assemble_compressed(frames.parts))
 }
 
