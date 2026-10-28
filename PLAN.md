@@ -134,9 +134,13 @@ Done since the last increment recorded under "History", one line each:
 - [x] `java_common.expand_java_opts` expands configured string-list attributes,
       Make/location/toolchain variables and optional tokenization; the Java 11
       toolchain query now passes.
-- [ ] Latest PR-clone full cquery is blocked fetching the pinned Upbound CLI:
-      `https://cli.upbound.io/stable/v0.39.1/bin/linux_amd64/up` returned HTTP 403.
-      No download retry, unverified substitute or whole-query success claim.
+- [x] Upbound's HTTP 403 was caused by the missing native downloader User-Agent,
+      not an unavailable binary: direct wget and truthful native-UA requests
+      succeed. The fixed repository downloader fetched the exact pinned AMD64
+      binary in 10.04 s from an empty scratch cache and verified its checksum.
+      Explicit caller/helper headers and authentication precedence are preserved.
+- [ ] Revalidate full PR-clone cquery after the downloader fix; no whole-query
+      or whole-repository target-determinator success claimed yet.
 
 ### Commands that are rejected today
 
