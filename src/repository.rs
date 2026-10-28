@@ -2918,9 +2918,11 @@ impl RepositorySet {
             let workspace = crate::observed_fs::canonicalize(self.main_root()).ok()?;
             Some((spec_key, crate::repository_warm::workspace_text(&workspace)))
         })?;
+        let canonical = canonical.to_owned();
         Some(Box::new(move || {
             crate::repository_speculation::withdraw_pointer(
                 &cache,
+                &canonical,
                 &spec_key,
                 Some(&workspace),
                 &identity,

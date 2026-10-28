@@ -159,10 +159,17 @@ pub(crate) fn take_output() -> Vec<u8> {
 /// wrong reuse (the warm probe revalidates whatever a pointer names).
 pub(crate) fn withdraw_pointer(
     cache: &std::path::Path,
+    canonical: &str,
     spec_key: &str,
     workspace: Option<&str>,
     identity: &str,
 ) {
+    // Withdrawal changes selection too. Never race a publisher/adopter and
+    // never wait while a dependent repository may hold another writer lock.
+    let Ok(Some(_writer)) = crate::repository_slots::SlotWriter::try_acquire(cache, canonical)
+    else {
+        return;
+    };
     #[derive(serde::Deserialize)]
     struct Pointer {
         identity: String,

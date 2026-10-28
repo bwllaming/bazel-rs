@@ -39,10 +39,10 @@
 //!   starving the writer). Several slots are taken all or nothing, in slug
 //!   order, holding nothing while waiting.
 //!
-//! The binding of an ordinary slot to its tree on reuse takes no lock
-//! ([`bind`]): it renames a symlink into place, which can never replace a
-//! real directory (rename(2) of a non-directory over a directory fails), so
-//! a writer's execution in progress or a mutable slot is never touched.
+//! Ordinary reuse binding also participates in the writer protocol ([`bind`]),
+//! but never waits: its caller may hold a dependent repository's writer lock.
+//! A busy slot is left alone; adoption can therefore exclude binders without
+//! creating a dependency-lock inversion. Mutable marked directories are kept.
 //! Slot maintenance uses the raw filesystem, never crate::observed_fs: slots
 //! are no inputs of the analysis snapshot (its records name trees only).
 
@@ -219,8 +219,7 @@ impl SlotWriter {
 
     /// A fresh, empty real directory at the slot: whatever was there — the
     /// link of an earlier publication, an interrupted execution, a mutable
-    /// slot — is removed first (an unlocked [`bind`] racing this may put a
-    /// link back in between: removed again).
+    /// slot — is removed first. Ordinary binders share this writer protocol.
     pub fn fresh(&self) -> Result<PathBuf, String> {
         ensure_slots_directory(&self.store)?;
         for _ in 0..64 {
@@ -321,7 +320,7 @@ impl SlotWriter {
 /// ([`Self::keep`]): removed when dropped otherwise (a failed or interrupted
 /// execution, Rust unwinding), like the stage it replaces. Only a real
 /// directory is removed — under the writer lock any real directory at the
-/// slot is this writer's — never a link an unlocked [`bind`] put there.
+/// slot is this writer's — never a link.
 pub struct SlotScratch<'a> {
     writer: &'a SlotWriter,
     armed: bool,
@@ -509,16 +508,26 @@ fn temporary_link(store: &Path, target: &Path) -> Result<PathBuf, String> {
     ))
 }
 
-/// Bind `canonical`'s slot to publication `identity` without any lock (a
+/// Bind `canonical`'s slot to publication `identity` under the writer lock (a
 /// warm reuse, in any process): nothing when the slot already links there;
 /// a link (missing, or naming another publication) is replaced by renaming
 /// a new one over it; a real directory is never replaced — a writer's
 /// execution or a mutable slot — except a leftover of an interrupted
 /// writer: a directory without a marker whose locks can be taken without
-/// waiting. Best effort: a failure only leaves the slot as it was.
+/// waiting. A busy writer/reader leaves the slot alone. Nested callers holding
+/// this slot's writer already reuse that hold; callers holding a different
+/// slot never wait, avoiding dependency-lock inversion.
 pub fn bind(store: &Path, canonical: &str, identity: &str) -> Result<(), String> {
     checked_name(canonical)?;
     let slot = slot_path(store, canonical);
+    let writer = if writing(&slot) {
+        None
+    } else {
+        let Some(writer) = SlotWriter::try_acquire(store, canonical)? else {
+            return Ok(());
+        };
+        Some(writer)
+    };
     let target = link_target(identity);
     match fs::read_link(&slot) {
         Ok(current) if current == target => return Ok(()),
@@ -529,12 +538,11 @@ pub fn bind(store: &Path, canonical: &str, identity: &str) -> Result<(), String>
             if marker(store, canonical).is_some() {
                 return Ok(());
             }
-            let Some(writer) = SlotWriter::try_acquire(store, canonical)? else {
+            // A nested warm probe never clears its writer's in-progress
+            // directory. Only a newly acquired writer may repair a leftover.
+            let Some(writer) = &writer else {
                 return Ok(());
             };
-            if marker(store, canonical).is_some() {
-                return Ok(());
-            }
             return writer.bind(identity);
         }
     }
@@ -1116,11 +1124,11 @@ mod tests {
         assert_eq!(waiting.join().unwrap(), 2);
     }
 
-    /// The unlocked binding replaces links but never a real directory with
+    /// The reuse binding replaces links but never a real directory with
     /// a marker or one a writer holds; a marker-less leftover with free
     /// locks is replaced.
     #[test]
-    fn unlocked_binding_never_replaces_a_real_directory() {
+    fn reuse_binding_never_replaces_a_working_real_directory() {
         let store = temp();
         let store = store.path().to_path_buf();
         fs::create_dir_all(store.join("direct/locks")).unwrap();
@@ -1131,6 +1139,24 @@ mod tests {
         assert_eq!(fs::read_link(&slot).unwrap(), link_target(&one));
         bind(&store, "r", &two).unwrap();
         assert_eq!(fs::read_link(&slot).unwrap(), link_target(&two));
+        // A writer also excludes link-to-link binders. The ordinary binder
+        // returns without waiting while it holds another dependency's lock.
+        let held = SlotWriter::acquire(&store, "r").unwrap();
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _dependent = SlotWriter::acquire(&store, "dependent").unwrap();
+                    bind(&store, "r", &one).unwrap();
+                })
+                .join()
+                .unwrap();
+        });
+        assert_eq!(fs::read_link(&slot).unwrap(), link_target(&two));
+        drop(held);
+        let readers = SlotReaders::acquire(&store, &["r".to_owned()]).unwrap();
+        bind(&store, "r", &one).unwrap();
+        assert_eq!(fs::read_link(&slot).unwrap(), link_target(&two));
+        drop(readers);
         // A writer's directory in progress.
         let writer = SlotWriter::acquire(&store, "r").unwrap();
         writer.fresh().unwrap();
