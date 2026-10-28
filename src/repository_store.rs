@@ -97,6 +97,23 @@ impl Manifest {
             crate::repository_slots::SlotClass::Ordinary
         }
     }
+
+    /// Semantic receipt key: refreshable stat hints and informational GC
+    /// references are not selection inputs. Unknown fields remain subject to
+    /// the manifest's existing format/profile contract.
+    fn semantic_digest(&self) -> Result<[u8; 32], String> {
+        let core = (
+            self.format,
+            &self.profile,
+            &self.identity,
+            &self.spec,
+            &self.recorded,
+            self.self_ref == Some(true),
+            content_view(&self.files),
+        );
+        let bytes = serde_json::to_vec(&core).map_err(|error| error.to_string())?;
+        Ok(Sha256::digest(bytes).into())
+    }
 }
 
 /// One tree entry of a [`Manifest`]. Unknown fields are tolerated: reuse
@@ -956,37 +973,12 @@ fn reuse_through(
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return Ok(Reuse::Found(destination));
     }
-    let recorded_ok = {
-        let _m = timing::mark(&timing::PHASES.recorded_check);
-        validate(
-            &destination,
-            existing.recorded.as_deref().unwrap_or_default(),
-        )
-        .unwrap_or(false)
-    };
-    if !recorded_ok {
+    let Some(outcome) = probe_loaded(&destination, spec_key, &existing, validate) else {
         return Ok(Reuse::Invalid);
-    }
-    let verified = {
-        let _m = timing::mark(&timing::PHASES.snapshot_check);
-        timing::count_snapshot(
-            existing.files.len() as u64,
-            existing.files.values().map(|e| e.size).sum::<u64>(),
-        );
-        match verify_snapshot_detailed(&destination, &existing.files, verify_mode()) {
-            Ok(outcome) => {
-                if outcome.matched && !outcome.refreshed.is_empty() {
-                    // Best-effort refresh (review R3): failure only costs
-                    // re-hashing next time, never correctness.
-                    let _ = refresh_manifest(direct, &identity, &bytes, &outcome.refreshed);
-                }
-                outcome.matched
-            }
-            Err(_) => false,
-        }
     };
-    if !verified {
-        return Ok(Reuse::Invalid);
+    if !outcome.refreshed.is_empty() {
+        // Normal reuse may refresh hints. Candidate probing never does.
+        let _ = refresh_manifest(direct, &identity, &bytes, &outcome.refreshed);
     }
     // REPO + INTEGRITY records of the analysis snapshot (after the
     // fingerprint refresh above, so the manifest's key is the final one).
@@ -996,6 +988,170 @@ fn reuse_through(
         .reused
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(Reuse::Found(destination))
+}
+
+/// Shared validation kernel. Neither manifest refresh, binding, REPO recording
+/// nor CARRIED shortcuts are part of this operation.
+fn probe_loaded(
+    destination: &Path,
+    spec_key: &str,
+    existing: &Manifest,
+    validate: Validate<'_>,
+) -> Option<Verified> {
+    if existing.spec.as_deref() != Some(spec_key) {
+        return None;
+    }
+    let recorded_ok = {
+        let _m = timing::mark(&timing::PHASES.recorded_check);
+        validate(
+            destination,
+            existing.recorded.as_deref().unwrap_or_default(),
+        )
+        .unwrap_or(false)
+    };
+    if !recorded_ok {
+        return None;
+    }
+    let verified = {
+        let _m = timing::mark(&timing::PHASES.snapshot_check);
+        timing::count_snapshot(
+            existing.files.len() as u64,
+            existing.files.values().map(|e| e.size).sum::<u64>(),
+        );
+        verify_snapshot_detailed(destination, &existing.files, verify_mode()).ok()?
+    };
+    verified.matched.then_some(verified)
+}
+
+/// Read-only check of one graph's explicit publication hint, after the caller
+/// has independently recomputed its current specification. Current shared then
+/// workspace winners take precedence; no history directory is enumerated.
+/// A successful result is NOT permission to adopt or report a graph hit.
+pub fn probe_candidate<V>(
+    cache: &Path,
+    receipt: &crate::repository_publication::Receipt,
+    workspace: &Path,
+    validate: V,
+) -> Option<crate::repository_publication::Candidate>
+where
+    V: Fn(&Path, &[u8]) -> Result<bool, String>,
+{
+    use crate::repository_publication::{Candidate, Scope};
+    if FORCE_FETCH.load(std::sync::atomic::Ordering::Relaxed)
+        || !hex_identity(&receipt.spec)
+        || !hex_identity(&receipt.publication)
+        || receipt.canonical.is_empty()
+        || receipt.canonical.starts_with('.')
+        || receipt.canonical.contains(['/', '\0'])
+    {
+        return None;
+    }
+    // A real slot may have been made writable by another repository's tool.
+    // Its old ordinary manifest is not evidence that the live root is immutable.
+    let slot = crate::repository_slots::slot_path(cache, &receipt.canonical);
+    match fs::symlink_metadata(&slot) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        _ => return None,
+    }
+    let workspace_text = crate::repository_warm::workspace_text(workspace);
+    let own = Scope::Workspace(workspace.as_os_str().as_encoded_bytes().to_vec());
+    if receipt.scope != Scope::Shared && receipt.scope != own {
+        return None;
+    }
+    let direct = cache.join("direct");
+    let probe = |identity: &str, scope: &Scope| -> Option<Manifest> {
+        let path = direct.join("manifests").join(format!("{identity}.json"));
+        let manifest = parse_manifest(&read_stable(&path).ok()?)?;
+        let recorded = manifest.recorded.as_deref()?;
+        // Historical selection never inherits legacy/unknown probe rules.
+        if !matches!(recorded_version(recorded), Some(2 | 3))
+            || manifest.identity != identity
+            || manifest.self_ref == Some(true)
+        {
+            return None;
+        }
+        match (scope, recorded_workspace(recorded)) {
+            (Scope::Shared, None) => {}
+            (Scope::Workspace(_), Some(found)) if found == workspace_text => {}
+            _ => return None,
+        }
+        probe_loaded(
+            &direct.join("trees").join(identity),
+            &receipt.spec,
+            &manifest,
+            &validate,
+        )?;
+        Some(manifest)
+    };
+    for (name, scope) in [
+        (receipt.spec.clone(), Scope::Shared),
+        (workspace_pointer(&receipt.spec, &workspace_text), own),
+    ] {
+        let pointer = direct.join("specs").join(name);
+        let identity = read_pointer_unobserved(&pointer).ok()?;
+        if let Some(identity) = identity
+            && let Some(manifest) = probe(&identity, &scope)
+        {
+            return (identity == receipt.publication
+                && scope == receipt.scope
+                && manifest.semantic_digest().ok()? == receipt.manifest_digest)
+                .then(|| Candidate {
+                    receipt: receipt.clone(),
+                });
+        }
+    }
+    let manifest = probe(&receipt.publication, &receipt.scope)?;
+    (manifest.semantic_digest().ok()? == receipt.manifest_digest).then(|| Candidate {
+        receipt: receipt.clone(),
+    })
+}
+
+/// Receipt of a live selection, called only after normal reuse (including an
+/// execution's successful re-probe). The selected pointer must still name the
+/// tree. This adds evidence; it does not remove any filesystem observation.
+pub(crate) fn selection_receipt(
+    cache: &Path,
+    canonical: &str,
+    origin: crate::repository_publication::Origin,
+    spec: &str,
+    root: &Path,
+) -> Option<crate::repository_publication::Receipt> {
+    use crate::repository_publication::{Receipt, Scope};
+    let tree =
+        store_tree_of(cache, root).filter(|tree| tree.kind == "direct" && tree.root == root)?;
+    let manifest = parse_manifest(&read_stable(&tree.manifest).ok()?)?;
+    if manifest.identity != tree.id || manifest.spec.as_deref() != Some(spec) {
+        return None;
+    }
+    let recorded = manifest.recorded.as_deref()?;
+    if !matches!(recorded_version(recorded), Some(2 | 3)) {
+        return None;
+    }
+    let (pointer, scope) = match recorded_workspace(recorded) {
+        Some(workspace) => (
+            workspace_pointer(spec, &workspace),
+            Scope::Workspace(
+                workspace
+                    .chars()
+                    .map(|c| u8::try_from(c as u32))
+                    .collect::<Result<_, _>>()
+                    .ok()?,
+            ),
+        ),
+        None => (spec.to_owned(), Scope::Shared),
+    };
+    if read_pointer_unobserved(&cache.join("direct/specs").join(pointer)).ok()?? != tree.id {
+        return None;
+    }
+    Some(Receipt {
+        canonical: canonical.to_owned(),
+        origin,
+        spec: spec.to_owned(),
+        publication: tree.id,
+        scope,
+        manifest_digest: manifest.semantic_digest().ok()?,
+    })
 }
 
 /// The publication and slot class of repository `canonical` whose root is
@@ -1807,6 +1963,21 @@ fn publish_pointer(specs: &Path, pointer: &Path, identity: &str) -> Result<(), S
 /// newer binary's additive pointer field therefore cannot change what is
 /// reused, where rejecting it would fail this binary's builds outright.
 fn read_pointer(path: &Path) -> Result<Option<String>, String> {
+    read_pointer_with(path, true)
+}
+
+fn read_pointer_unobserved(path: &Path) -> Result<Option<String>, String> {
+    read_pointer_with(path, false)
+}
+
+fn hex_identity(identity: &str) -> bool {
+    identity.len() == 64
+        && identity
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn read_pointer_with(path: &Path, observe: bool) -> Result<Option<String>, String> {
     #[derive(Deserialize)]
     struct Pointer {
         format: u32,
@@ -1816,20 +1987,16 @@ fn read_pointer(path: &Path) -> Result<Option<String>, String> {
     let Ok(bytes) = read_published(path, false) else {
         return Ok(None);
     };
-    crate::observed_fs::note_read(path, &bytes);
+    if observe {
+        crate::observed_fs::note_read(path, &bytes);
+    }
     let pointer: Pointer = serde_json::from_slice(&bytes).map_err(|e| {
         format!(
             "cannot parse direct repository specification {}: {e}",
             path.display()
         )
     })?;
-    if pointer.format != 1
-        || pointer.identity.len() != 64
-        || !pointer
-            .identity
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
+    if pointer.format != 1 || !hex_identity(&pointer.identity) {
         return Err(format!(
             "invalid direct repository specification pointer {}",
             path.display()
@@ -3286,6 +3453,151 @@ mod tests {
             fs::set_permissions(stage.join("data"), fs::Permissions::from_mode(0o755)).unwrap();
         }
         Ok(b"exact runtime inputs".to_vec())
+    }
+
+    #[test]
+    fn historical_probe_is_read_only_and_current_winner_has_precedence() {
+        use crate::repository_publication::Origin;
+        for changing_output in [false, true] {
+            let temp = temp();
+            let cache = temp.path().join("store");
+            let spec = "a".repeat(64);
+            let count = AtomicUsize::new(0);
+            let publish = |intent: &str| {
+                let recorded =
+                    serde_json::to_vec(&serde_json::json!({"version": 2, "intent": intent}))
+                        .unwrap();
+                let (root, _) = materialize_keyed(
+                    &cache,
+                    "+rule+r",
+                    &spec,
+                    b"same recipe",
+                    |_, bytes| Ok(bytes == recorded),
+                    |stage| {
+                        count.fetch_add(1, Ordering::Relaxed);
+                        fs::write(
+                            stage.join("data"),
+                            if changing_output { intent } else { "constant" },
+                        )
+                        .unwrap();
+                        Ok(Executed {
+                            inputs: intent.as_bytes().to_vec(),
+                            recorded: recorded.clone(),
+                        })
+                    },
+                )
+                .unwrap();
+                let receipt =
+                    selection_receipt(&cache, "+rule+r", Origin::DirectV3, &spec, &root).unwrap();
+                (root, receipt)
+            };
+            let (a, receipt_a) = publish("A");
+            let (b, receipt_b) = publish("B");
+            assert_ne!(receipt_a.publication, receipt_b.publication);
+            let pointer = cache.join("direct/specs").join(&spec);
+            let manifest = cache
+                .join("direct/manifests")
+                .join(format!("{}.json", receipt_a.publication));
+            let before = (
+                fs::read(&pointer).unwrap(),
+                fingerprint(&fs::metadata(&pointer).unwrap()),
+                fs::read(&manifest).unwrap(),
+                fs::read_link(cache.join("external/+rule+r")).unwrap(),
+            );
+            for (intent, receipt, root) in [
+                ("A", &receipt_a, &a),
+                ("B", &receipt_b, &b),
+                ("A", &receipt_a, &a),
+                ("B", &receipt_b, &b),
+            ] {
+                assert!(
+                    probe_candidate(&cache, receipt, temp.path(), |_, bytes| {
+                        let recorded: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+                        Ok(recorded["intent"] == intent)
+                    })
+                    .is_some()
+                );
+                assert_eq!(
+                    fs::read_to_string(root.join("data")).unwrap(),
+                    if changing_output { intent } else { "constant" }
+                );
+            }
+            assert_eq!(
+                count.load(Ordering::Relaxed),
+                2,
+                "probes cannot execute generators"
+            );
+            assert_eq!(
+                before,
+                (
+                    fs::read(&pointer).unwrap(),
+                    fingerprint(&fs::metadata(&pointer).unwrap()),
+                    fs::read(&manifest).unwrap(),
+                    fs::read_link(cache.join("external/+rule+r")).unwrap()
+                )
+            );
+            // Both runtime sets reusable: the current B wins, never force A.
+            assert!(probe_candidate(&cache, &receipt_a, temp.path(), |_, _| Ok(true)).is_none());
+            // Third unsaved runtime intent, no retained publication matches.
+            assert!(probe_candidate(&cache, &receipt_a, temp.path(), |_, _| Ok(false)).is_none());
+            fs::write(&pointer, b"malformed").unwrap();
+            assert!(probe_candidate(&cache, &receipt_a, temp.path(), |_, _| Ok(true)).is_none());
+            fs::write(&pointer, &before.0).unwrap();
+            let mut altered = receipt_a.clone();
+            altered.spec = "c".repeat(64);
+            assert!(probe_candidate(&cache, &altered, temp.path(), |_, _| Ok(true)).is_none());
+            altered = receipt_b.clone();
+            altered.manifest_digest[0] ^= 1;
+            assert!(probe_candidate(&cache, &altered, temp.path(), |_, _| Ok(true)).is_none());
+            fs::remove_file(cache.join("external/+rule+r")).unwrap();
+            fs::create_dir(cache.join("external/+rule+r")).unwrap();
+            assert!(probe_candidate(&cache, &receipt_b, temp.path(), |_, _| Ok(true)).is_none());
+            fs::remove_dir(cache.join("external/+rule+r")).unwrap();
+            fs::write(b.join("data"), "tampered").unwrap();
+            assert!(probe_candidate(&cache, &receipt_b, temp.path(), |_, _| Ok(true)).is_none());
+        }
+    }
+
+    #[test]
+    fn receipt_digest_excludes_only_refreshable_and_informational_fields() {
+        let temp = temp();
+        let spec = "d".repeat(64);
+        let (root, _) = materialize_keyed(
+            temp.path(),
+            "r",
+            &spec,
+            b"recipe",
+            |_, _| Ok(true),
+            |stage| {
+                write(stage)?;
+                Ok(Executed {
+                    inputs: b"inputs".to_vec(),
+                    recorded: br#"{"version":2}"#.to_vec(),
+                })
+            },
+        )
+        .unwrap();
+        let id = root.file_name().unwrap().to_str().unwrap();
+        let path = temp
+            .path()
+            .join("direct/manifests")
+            .join(format!("{id}.json"));
+        let manifest = parse_manifest(&fs::read(path).unwrap()).unwrap();
+        let digest = manifest.semantic_digest().unwrap();
+        let mut refreshed = manifest.clone();
+        for entry in refreshed.files.values_mut() {
+            entry.stat = None;
+        }
+        refreshed.refs.push("informational".into());
+        assert_eq!(digest, refreshed.semantic_digest().unwrap());
+        refreshed.self_ref = Some(true);
+        assert_ne!(digest, refreshed.semantic_digest().unwrap());
+        refreshed = manifest.clone();
+        refreshed.recorded = Some(br#"{"version":3}"#.to_vec());
+        assert_ne!(digest, refreshed.semantic_digest().unwrap());
+        refreshed = manifest;
+        refreshed.files.get_mut("data").unwrap().sha256 = "f".repeat(64);
+        assert_ne!(digest, refreshed.semantic_digest().unwrap());
     }
 
     /// Review R1 equivalence: the streamed digest-entry bytes are

@@ -137,6 +137,7 @@ pub mod repository_demand;
 mod repository_environment;
 pub mod repository_links;
 mod repository_process;
+pub mod repository_publication;
 pub mod repository_rule;
 pub mod repository_slots;
 mod repository_speculation;

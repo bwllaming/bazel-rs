@@ -446,6 +446,7 @@ struct InputsWire<'a> {
     #[serde(borrow)]
     tables: Option<TablesWire<'a>>,
     workspace_status: bool,
+    selections: Vec<crate::repository_publication::Receipt>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -969,6 +970,7 @@ pub fn encode_inputs(
         replay,
         tables,
         workspace_status,
+        selections: recording.selections.clone(),
     })
     .expect("the inputs encode")
 }
@@ -1141,6 +1143,7 @@ pub fn decode_inputs(bytes: &[u8]) -> Result<Inputs, String> {
             observations,
             env,
             repositories,
+            selections: wire.selections,
             crossed: Vec::new(),
             taints: BTreeMap::new(),
             plan_registered: None,
@@ -1199,6 +1202,14 @@ mod tests {
         let observation = |op: Op, outcome: Outcome| Observation { op, outcome };
         let recording = Recording {
             window_start_ns: 42,
+            selections: vec![crate::repository_publication::Receipt {
+                canonical: "+repo+r".into(),
+                origin: crate::repository_publication::Origin::DirectV3,
+                spec: "a".repeat(64),
+                publication: "b".repeat(64),
+                scope: crate::repository_publication::Scope::Workspace(b"/ws/\xff".to_vec()),
+                manifest_digest: [17; 32],
+            }],
             window: None,
             observations: vec![
                 (
@@ -1359,6 +1370,7 @@ mod tests {
         assert_eq!(decoded.recording.observations, recording.observations);
         assert_eq!(decoded.recording.env, recording.env);
         assert_eq!(decoded.recording.repositories, recording.repositories);
+        assert_eq!(decoded.recording.selections, recording.selections);
         assert_eq!(decoded.recording.window_start_ns, 42);
         assert_eq!(decoded.tables.as_ref(), Some(&tables));
         assert_eq!(decoded.replay.len(), 2);

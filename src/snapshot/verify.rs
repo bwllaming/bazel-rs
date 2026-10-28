@@ -1050,6 +1050,24 @@ fn compare_recordings(snapshot: &Recording, now: &Recording, report: &mut Report
     }
     // Verified repository trees (their roots: the heads' stat keys may be
     // refreshed by any run).
+    let selections: BTreeMap<_, _> = snapshot
+        .selections
+        .iter()
+        .map(|receipt| (&receipt.canonical, receipt))
+        .collect();
+    let changed: Vec<_> = now
+        .selections
+        .iter()
+        .filter(|receipt| selections.get(&receipt.canonical).copied() != Some(*receipt))
+        .map(|receipt| format!("publication selection @@{}", receipt.canonical))
+        .collect();
+    if !changed.is_empty() {
+        report.mismatch(
+            Class::Recording,
+            "publication selections differ from the snapshot's".to_owned(),
+            changed,
+        );
+    }
     let roots: HashSet<&std::path::Path> = snapshot
         .repositories
         .iter()

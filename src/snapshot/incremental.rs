@@ -321,6 +321,20 @@ pub fn merge_recordings(
             .filter(|repository| !roots.contains(&repository.root)),
     );
     recording.repositories.sort_by(|a, b| a.root.cmp(&b.root));
+    // Receipts travel with the same already-validated repository inputs; they
+    // do not grant CARRIED authority or reclassify a pointer change as package-only.
+    let mut selections: BTreeMap<_, _> = old
+        .selections
+        .into_iter()
+        .map(|receipt| (receipt.canonical.clone(), receipt))
+        .collect();
+    selections.extend(
+        recording
+            .selections
+            .into_iter()
+            .map(|receipt| (receipt.canonical.clone(), receipt)),
+    );
+    recording.selections = selections.into_values().collect();
     let mut crossed: std::collections::BTreeSet<PathBuf> = old.crossed.into_iter().collect();
     crossed.extend(recording.crossed);
     // A crossing's record stands only while no owner claimed the tree.

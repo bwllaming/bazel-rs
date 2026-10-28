@@ -3631,7 +3631,7 @@ impl RepositorySet {
             .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
         let workspace_text = crate::repository_warm::workspace_text(&workspace);
         let validating = self.clone();
-        crate::repository_store::try_reuse_in(
+        let reused = crate::repository_store::try_reuse_in(
             self.source_cache_path()?,
             canonical,
             &spec_key,
@@ -3639,7 +3639,16 @@ impl RepositorySet {
             move |tree, recorded| {
                 crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
             },
-        )
+        )?;
+        if let Some(root) = &reused {
+            self.record_publication(
+                canonical,
+                crate::repository_publication::Origin::DirectV3,
+                &spec_key,
+                root,
+            );
+        }
+        Ok(reused)
     }
 
     /// The direct spec key, streamed: per-repo fields + the group's
@@ -3849,7 +3858,15 @@ impl RepositorySet {
             },
             execute,
         )
-        .map(|(root, _)| root)
+        .map(|(root, _)| {
+            self.record_publication(
+                canonical,
+                crate::repository_publication::Origin::DirectV3,
+                &spec_key,
+                &root,
+            );
+            root
+        })
     }
 
     fn prepare_ordinary_group(&self, id: &str) -> Result<&PreparedOrdinary, String> {
@@ -4246,7 +4263,7 @@ impl RepositorySet {
             .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
         let workspace_text = crate::repository_warm::workspace_text(&workspace);
         let validating = self.clone();
-        crate::repository_store::try_reuse_in(
+        let reused = crate::repository_store::try_reuse_in(
             self.source_cache_path()?,
             &repository.canonical_name,
             &spec_key,
@@ -4254,7 +4271,16 @@ impl RepositorySet {
             move |tree, recorded| {
                 crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
             },
-        )
+        )?;
+        if let Some(root) = &reused {
+            self.record_publication(
+                canonical,
+                crate::repository_publication::Origin::ExtensionV3,
+                &spec_key,
+                root,
+            );
+        }
+        Ok(reused)
     }
 
     fn ordinary_root(&self, canonical: &str) -> Result<&Path, String> {
@@ -4405,7 +4431,31 @@ impl RepositorySet {
             },
             execute,
         )
-        .map(|(root, _)| root)
+        .map(|(root, _)| {
+            self.record_publication(
+                &repository.canonical_name,
+                crate::repository_publication::Origin::ExtensionV3,
+                &spec_key,
+                &root,
+            );
+            root
+        })
+    }
+
+    fn record_publication(
+        &self,
+        canonical: &str,
+        origin: crate::repository_publication::Origin,
+        spec: &str,
+        root: &Path,
+    ) {
+        if crate::observed_fs::recording()
+            && let Ok(cache) = self.source_cache_path()
+            && let Some(receipt) =
+                crate::repository_store::selection_receipt(cache, canonical, origin, spec, root)
+        {
+            crate::observed_fs::publication_selection(receipt);
+        }
     }
 
     /// Select exactly the mapping parsing needs, without demanding an extension

@@ -554,6 +554,7 @@ pub struct Recorder {
     shards: Vec<Shard>,
     env: Mutex<BTreeMap<OsString, EnvObservation>>,
     repositories: Mutex<Vec<RepositoryRecord>>,
+    selections: Mutex<BTreeMap<String, crate::repository_publication::Receipt>>,
     repository_roots: Mutex<HashMap<PathBuf, Claim>>,
     taints: Mutex<BTreeMap<Taint, TaintRecord>>,
     /// The plan-dependent taints analysis registered, once the planned
@@ -571,6 +572,9 @@ pub struct Recording {
     pub observations: Vec<(PathBuf, Observation)>,
     pub env: Vec<(OsString, EnvObservation)>,
     pub repositories: Vec<RepositoryRecord>,
+    /// Advisory non-local selection receipts. Raw pointer dependencies remain
+    /// mandatory until the guarded historical-adoption protocol is enabled.
+    pub selections: Vec<crate::repository_publication::Receipt>,
     /// The roots of `repositories` only a link crossing recorded: no
     /// repository of the run claimed them (sorted).
     pub crossed: Vec<PathBuf>,
@@ -638,6 +642,7 @@ impl Recorder {
             shards: (0..SHARDS).map(|_| Mutex::default()).collect(),
             env: Mutex::default(),
             repositories: Mutex::default(),
+            selections: Mutex::default(),
             repository_roots: Mutex::default(),
             taints: Mutex::default(),
             plan_registered: Mutex::default(),
@@ -1031,6 +1036,7 @@ impl Recorder {
                 .map(|(name, observation)| (name.clone(), observation.clone()))
                 .collect(),
             repositories,
+            selections: lock(&self.selections).values().cloned().collect(),
             crossed,
             taints: lock(&self.taints).clone(),
             plan_registered: lock(&self.plan_registered).clone(),
@@ -1087,6 +1093,9 @@ impl Recorder {
                 .map(|(name, observation)| (name.clone(), observation.clone()))
                 .collect(),
             repositories,
+            selections: std::mem::take(&mut *lock(&self.selections))
+                .into_values()
+                .collect(),
             crossed,
             taints: lock(&self.taints).clone(),
             plan_registered: lock(&self.plan_registered).clone(),
@@ -1287,7 +1296,22 @@ impl Recorder {
             Event::Env(name, observation) => self.store_env(&name, observation),
             Event::Claim(claim) => self.apply_claim(claim),
             Event::Supersede(path) => self.store_supersede(&path),
+            Event::Selection(receipt) => self.store_selection(receipt),
         }
+    }
+
+    fn store_selection(&self, receipt: crate::repository_publication::Receipt) {
+        let mut selections = lock(&self.selections);
+        if let Some(previous) = selections.get(&receipt.canonical)
+            && previous != &receipt
+        {
+            self.store_taint(
+                Taint::Unstable,
+                format!("publication selection @@{} changed", receipt.canonical),
+            );
+            return;
+        }
+        selections.insert(receipt.canonical.clone(), receipt);
     }
 
     /// A load unit's observations ([`commit`]): its events, and the
@@ -1419,6 +1443,7 @@ enum Event {
     Claim(ClaimEvent),
     /// [`supersede`].
     Supersede(PathBuf),
+    Selection(crate::repository_publication::Receipt),
 }
 
 /// A repository tree claim observed inside a frame ([`Recorder::claim_tree`]).
@@ -2044,6 +2069,18 @@ pub fn repository_tree(kind: &'static str, name: &str, root: &Path, manifest: Op
     crate::cache_gc::note_tree_used(root);
     if let Some(recorder) = active() {
         recorder.claim_tree(Claim::Owner, kind, name, root, manifest);
+    }
+}
+
+/// A successful live selection. No path-based filtering or superseding is
+/// performed: the pointer's READ remains an independent acceptance guard.
+pub(crate) fn publication_selection(receipt: crate::repository_publication::Receipt) {
+    if let Some(recorder) = active() {
+        if recorder.redirected() {
+            push_event(Event::Selection(receipt));
+        } else {
+            recorder.store_selection(receipt);
+        }
     }
 }
 
