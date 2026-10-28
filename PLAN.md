@@ -158,9 +158,10 @@ Done since the last increment recorded under "History", one line each:
       clone canaries unchanged.
 - [ ] The PR-clone Java binary AddJarManifestEntry now passes runtime-classpath
       filtering and stops at java_common.collect_native_deps_dirs (targeted
-      cquery4.56s / 691MiB, no output). Full deps(//...) was not repeated after
-      that targeted failure. The prior full-query Python debugger select error
-      remains unresolved; no whole-workspace TD claim or changed select semantics.
+      integrated cquery2.57s / 702MiB, no output). Full deps(//...) was not repeated
+      after that targeted failure. The prior full-query Python debugger select
+      diagnostic was not re-probed; no whole-workspace TD claim or select changes
+      in the runtime-classpath increment.
 - [x] Runtime archive classpath filtering implements the genuine empty-exclusion
       identity shortcut and nonempty Artifact-identity subtraction/stable-order
       result, including the intentionally untyped exclusion set. A real

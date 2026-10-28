@@ -65,6 +65,7 @@ jar and manifest match bytes, and `java -jar` prints `archive:kept`.
 
 Application follow-up on the readonly PR clone: the targeted AddJarManifestEntry
 cquery passes this helper and stops at `java_common.collect_native_deps_dirs`,
-`java_common_internal.bzl:452` via `java_binary_impl.bzl:162` (4.563s,691.1MiB,
+`java_common_internal.bzl:452` via `java_binary_impl.bzl:162` (integrated candidate:
+2.565s,702.1MiB,
 no output, unchanged canaries). Full cquery was not repeated because this next
 binary API still blocks the target. No Java-binary/whole-graph/TD success claim.
