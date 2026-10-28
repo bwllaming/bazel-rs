@@ -10,6 +10,12 @@ are relative to `src/main/cpp/`, server paths to
 
 ## Client: startup options and rc files
 
+Native-only `--native-lockfile=workspace|readonly|/absolute/path` is also accepted
+before the command, like the native `--cache-dir=PATH` control. It remains
+CLI-only, not a genuine Bazel startup option and never allowed in rc files.
+Command-level values override the startup default; see
+[lockfile isolation](REGISTRY_LOCKFILE.md#native-only---native-lockfileworkspacereadonlyabsolutepath).
+
 * **Command line split** (`option_processor.cc:80-172`). The leading `-`
   arguments, up to the command, are startup options. Bazel's nullary and unary
   startup flags (`startup_options.cc:121-166`, `bazel_startup_options.cc:29-39`)

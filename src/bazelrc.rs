@@ -101,10 +101,14 @@ const UNARY_STARTUP: &[&str] = &[
 /// The command line split into startup options, command and arguments.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommandLine {
-    /// Bazel startup options, unary ones normalized to `--name=value`.
+    /// Startup options, unary ones normalized to `--name=value`. Includes
+    /// native lockfile controls so snapshot keys retain their read policy.
     pub startup_args: Vec<String>,
     /// Native `--cache-dir=PATH` (not a Bazel option).
     pub cache_dir: Option<String>,
+    /// Native-only startup default; command-level --native-lockfile wins.
+    /// Parsed before rc/module loading, like --cache-dir (never from rc).
+    pub lockfile_target: Option<crate::registry_session::LockfileTarget>,
     pub command: Option<String>,
     pub command_args: Vec<String>,
 }
@@ -144,7 +148,8 @@ fn check_valid_nullary(arg: &str) -> Result<bool, String> {
 }
 
 /// OptionProcessor::SplitCommandLine (option_processor.cc:80-172). The native
-/// `--cache-dir=PATH` and the native `--version` command are recognized too.
+/// `--cache-dir=PATH`, `--native-lockfile=TARGET` and the native `--version`
+/// command are recognized too. Native controls are not Bazel startup options.
 pub fn split_command_line(args: Vec<String>) -> Result<CommandLine, String> {
     let mut line = CommandLine::default();
     let mut args = args.into_iter().peekable();
@@ -160,6 +165,16 @@ pub fn split_command_line(args: Vec<String>) -> Result<CommandLine, String> {
             }
             line.cache_dir = Some(value.to_owned());
             continue;
+        }
+        if let Some(value) = arg.strip_prefix("--native-lockfile=") {
+            line.lockfile_target = Some(crate::registry_session::LockfileTarget::parse(value)?);
+            line.startup_args.push(arg);
+            continue;
+        }
+        if arg == "--native-lockfile" {
+            return Err(
+                "--native-lockfile requires =workspace, =readonly or =/absolute/path".into(),
+            );
         }
         if check_valid_nullary(&arg)? {
             line.startup_args.push(arg);
@@ -1071,6 +1086,12 @@ fn process_startup_flags(
                 name,
                 &format!(" from rc file {file}:{line}"),
             ));
+        }
+        if let Some(value) = arg.strip_prefix("--native-lockfile=") {
+            // Native CLI control, validated/stored by split_command_line.
+            // Kept in startup_args for snapshot identity, never rc-admissible.
+            crate::registry_session::LockfileTarget::parse(value)?;
+            continue;
         }
         let matched = UNARY_STARTUP.iter().find_map(|name| {
             let key = format!("--{name}");

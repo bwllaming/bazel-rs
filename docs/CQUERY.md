@@ -80,6 +80,14 @@ separate fail-closed build/test skipping boundary. Attribute split
 transitions now analyze every branch; see [SPLIT_TRANSITIONS.md](SPLIT_TRANSITIONS.md).
 There is no genuine-Bazel fallback and no special-case TD output rewriting.
 
+For native TD lockfile isolation, pass
+`--bazel-startup-opts=--native-lockfile=/private/MODULE.bazel.lock` as well as
+private cache/output-base and rc-ignore startup controls. TD v0.34 does not
+forward `--bazel-opts` to `info` or `mod`; a command-only private lockfile flag
+therefore cannot protect its `mod dump_repo_mapping` companion. The native
+startup default covers all commands; explicit command values still override it.
+See [lockfile semantics](REGISTRY_LOCKFILE.md#native-only---native-lockfileworkspacereadonlyabsolutepath).
+
 Configuration checksums are the **existing full native ConfigIds**, not Bazel's
 BuildOptions checksums. Actions and ordinary build cache keys are not rekeyed.
 Native platform configurations can remain distinct where Bazel trims them to one

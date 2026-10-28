@@ -108,6 +108,8 @@ Lockfile: --lockfile_mode=update (default)|refresh|error|off reads/writes MODULE
   reused and written with Bazel's digests since N52; docs/REGISTRY_LOCKFILE.md).
   --allow_yanked_versions=MODULE@VERSION,... (repeatable).
   Native-only --native-lockfile=workspace|readonly|/abs/path: readonly never writes a lockfile
+  Accepted before or after the command; last command value overrides last startup value.
+  Requires '=' syntax; CLI only (never in .bazelrc), not a genuine Bazel startup flag.
   (the hidden one included); a path is a private lockfile read instead of (seeded from) the
   workspace one and written instead.
   Fast warm probes of real workspaces: --native-lockfile=/private/MODULE.bazel.lock.
@@ -322,7 +324,7 @@ fn run() -> Result<(), String> {
                 }
             }
         }
-        let mut native = NativeOptions::new(option_command);
+        let mut native = NativeOptions::with_startup(option_command, &line);
         for unit in &first_options.priority {
             if let Err(error) = parse_command_option(&mut native, &mut fetch, &command, unit)
                 && !(second_round && alias_candidate_error(&error, Some(unit))?)
@@ -1435,7 +1437,7 @@ fn info_command(
             return Err(early_exit(options, &error, *position));
         }
     }
-    let mut native = NativeOptions::new("build");
+    let mut native = NativeOptions::with_startup("build", line);
     let mut info = bazel_rs::info::Options::default();
     for unit in &options.priority {
         parse(&mut native, &mut info, unit)?;
@@ -2027,7 +2029,7 @@ fn config_command(
 ) -> Result<(), String> {
     let mut json = false;
     let mut dump = false;
-    let mut common = NativeOptions::new("config");
+    let mut common = NativeOptions::with_startup("config", line);
     for unit in &options.priority {
         match unit.option.text.as_str() {
             "--output=json" => json = true,
@@ -3474,6 +3476,17 @@ struct NativeOptions {
 }
 
 impl NativeOptions {
+    /// One default for every command consumer. The ordinary option parser
+    /// subsequently applies command-level overrides in its existing priority
+    /// order; validation-only parsers need no startup state or global setter.
+    fn with_startup(command: &str, line: &bazelrc::CommandLine) -> Self {
+        let mut options = Self::new(command);
+        if let Some(target) = &line.lockfile_target {
+            options.lockfile_target = target.clone();
+        }
+        options
+    }
+
     fn new(command: &str) -> Self {
         Self {
             jobs: None,
@@ -3726,6 +3739,10 @@ impl NativeOptions {
         } else if let Some(value) = arg.strip_prefix("--native-lockfile=") {
             self.lockfile_target = bazel_rs::registry_session::LockfileTarget::parse(value)?;
             false
+        } else if arg == "--native-lockfile" {
+            return Err(
+                "--native-lockfile requires =workspace, =readonly or =/absolute/path".into(),
+            );
         } else if let Some(value) = arg.strip_prefix("--native-action-dump=") {
             self.action_dump = Some(PathBuf::from(value));
             false
@@ -4960,7 +4977,7 @@ fn clean_command(
             return Err(early_exit(options, &error, *position));
         }
     }
-    let mut native = NativeOptions::new("build");
+    let mut native = NativeOptions::with_startup("build", line);
     let mut clean = bazel_rs::output_base::CleanOptions::default();
     for unit in &options.priority {
         parse(&mut native, &mut clean, unit)?;

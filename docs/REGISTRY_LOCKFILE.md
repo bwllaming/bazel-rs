@@ -381,6 +381,36 @@ exits 0 natively and 48 in Bazel.
 
 ## Native-only `--native-lockfile=workspace|readonly|/absolute/path`
 
+This native CLI control is accepted **before or after the command**. Use the
+before-command form for clients such as target-determinator which pass startup
+arguments to every invocation, but omit command options from `info` and `mod`:
+
+```sh
+bazel-rs --ignore_all_rc_files --cache-dir=/private/cache \
+  --native-lockfile=/private/MODULE.bazel.lock mod dump_repo_mapping ''
+```
+
+The last startup value is the default for every command. The last explicit
+command-level value overrides it, including `workspace` (which deliberately
+re-enables workspace writes) and `readonly`. Without a startup value the existing
+command-level/default behavior is unchanged. Both forms require `=`; empty,
+relative, unknown and missing values fail before module loading. Invalid startup
+values fail during command-line splitting, before rc processing, even if a later
+command value is valid. Valid startup values preserve rc-ignore/quiet ordering;
+command-level errors retain their existing rc/CLI parse order.
+
+This is **not a genuine Bazel flag** and remains forbidden in all rc groups,
+including `startup` and `common`. `help native` documents it; genuine flag help
+catalogs and `canonicalize-flags` do not register it. Non-loading commands such as
+`info`, `config`, `help`, `version`, `shutdown` and `canonicalize-flags` accept the
+startup control but do not acquire a module graph merely because it is present.
+In particular it can precede `canonicalize-flags`, but cannot be one of the
+genuine command flags being canonicalized. MODULE/CLI aliases cannot redirect
+native lockfile/bootstrap controls. No environment or process-global path default
+is installed. The startup argument is retained in existing snapshot keys, so
+changing it cannot hit a graph recorded using another lockfile target; ordinary
+invocations retain their key shape and the snapshot format is unchanged.
+
 - `workspace` (default): Bazel's behavior.
 - `readonly`: reads the workspace lockfile (and the hidden lockfile) and never
   writes any lockfile, not even the hidden one (N52).
@@ -389,6 +419,10 @@ exits 0 natively and 48 in Bazel.
     workspace lockfile is read instead, as a seed.
   - Updates are written to the private path. The workspace file is never
     written.
+  - Hidden lockfiles still use the effective private output base/cache. The
+    overlay does not isolate any other state: callers must also choose private
+    cache/output paths. An overlay write failure never falls back to writing the
+    workspace file; it retains the existing lockfile warning behavior.
 
 **Fast warm probes of real workspaces** use
 `--lockfile_mode=update --native-lockfile=/private/MODULE.bazel.lock` with a
