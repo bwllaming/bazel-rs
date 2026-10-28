@@ -896,8 +896,8 @@ enum Reuse {
 /// The published trees whose reuse an analysis snapshot's validation
 /// confirmed in this process (incremental analysis carries the verdict
 /// across the miss, crate::snapshot::incremental): their warm check — the
-/// recorded inputs, the tree against its manifest — and their REPO record
-/// are skipped; the snapshot the run saves keeps the validated records.
+/// recorded inputs, the tree against its manifest — is skipped; the
+/// snapshot the run saves keeps the validated observations.
 static CARRIED: std::sync::RwLock<Option<std::collections::HashSet<PathBuf>>> =
     std::sync::RwLock::new(None);
 
@@ -947,6 +947,14 @@ fn reuse_through(
         return Ok(Reuse::Invalid);
     }
     if carried(&destination) {
+        // Still the tree's REPO record (its links decide which recorded
+        // observations below it a hit validates).
+        crate::observed_fs::repository_tree(
+            "direct",
+            spec_key,
+            &destination,
+            Some(&manifest_path),
+        );
         settle_slot(cache, stage_key, &identity, existing.slot_class());
         timing::PHASES
             .reused
