@@ -259,7 +259,8 @@ value, else `build_setting_default` (`analysis/starlark/StarlarkRuleContext.java
 
 **Output paths.** Generated files live under `bazel-out/k8-<compilation_mode>/bin`,
 Bazel's `<cpu>-<mode>` mnemonic on this Linux x86-64 host (`k8-fastbuild` by
-default). Until N41 the native profile wrote a fixed `rust` CPU part
+default; on Linux arm64 the host CPU is `aarch64`, so `aarch64-fastbuild`, as
+genuine Bazel's AutoCpuConverter gives there; the examples below are x86-64). Until N41 the native profile wrote a fixed `rust` CPU part
 (divergence D1, `rust-fastbuild`); N41 closed it because output paths are
 part of every remote cache key (docs/REMOTE_CACHE.md), which rekeyed the
 native action cache once. Options without an output-path effect

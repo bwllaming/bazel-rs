@@ -1,8 +1,21 @@
 # Callback host metadata and fingerprints
 
-This bounded implementation targets native Linux/x86_64 builds. It reports
-`name="linux"` and `arch="amd64"`, matching the pinned reference getters. It is
-not runtime platform detection and does not detect or claim emulation support.
+This bounded implementation targets native Linux x86_64 and Linux aarch64
+builds. It reports `name="linux"` and `arch="amd64"` on x86_64 and
+`arch="aarch64"` on aarch64 — the JVM's `os.name`/`os.arch`, lower-cased, that
+genuine Bazel's getters return (StarlarkOS.java:61-82); the same `arch` is the
+`arch:` module extension factor (`os:linux,arch:aarch64` in the lockfile,
+RegularRunnableExtension.getEvalFactors) and the platforms module's
+`@platforms//host` detection turns it into `@platforms//cpu:aarch64`. The value
+is fixed by the compile target (`cfg!(target_arch)`), not detected at run time,
+and emulation is not detected (an arm64 binary under qemu-user reports
+`aarch64`, like genuine Bazel's arm64 JVM does). Paired check, genuine
+`bazel-9.3.0-linux-arm64` vs the arm64 bazel-rs, both under qemu-user on the
+same fixture (2026-10-28): identical `ctx.os` values, `HOST_CONSTRAINTS`,
+`$(TARGET_CPU)` (`aarch64`), output root (`bazel-out/aarch64-fastbuild`),
+`local_config_cc` BUILD (cpu `aarch64`), byte-identical `MODULE.bazel.lock`
+(with an `os_dependent`/`arch_dependent` extension) and an identical
+`cc_binary`.
 The isolated worktree verification below is complete; combined integration remains
 a separate gate.
 

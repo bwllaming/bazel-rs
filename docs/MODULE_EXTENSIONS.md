@@ -41,7 +41,7 @@ introspection or skip duplicate repository declarations.
 selected host factors in preparation identity, independently of `ctx.os` reads.
 `environ` and `facts_version` are supported (`facts_version` keys the
 lockfile facts, [REGISTRY_LOCKFILE.md](REGISTRY_LOCKFILE.md)). See
-[HOST_OS.md](HOST_OS.md) for the Linux/x86_64 compile-target profile and repository
+[HOST_OS.md](HOST_OS.md) for the Linux x86_64/aarch64 compile-target profile and repository
 fingerprint migration. Other unsupported options fail explicitly.
 `tag_class(attrs={}, *, doc=None)` owns a frozen descriptor schema and is unhashable.
 

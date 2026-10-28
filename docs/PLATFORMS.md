@@ -193,8 +193,8 @@ profile keep working.
 embedded `tools/BUILD` alias to `@platforms//host`; that package loads
 `HOST_CONSTRAINTS` from `@host_platform//:constraints.bzl`, which the platforms
 module's `host_platform` module extension generates from `repository_ctx.os`
-(`linux`/`amd64` → `@platforms//os:linux`, `@platforms//cpu:x86_64`;
-docs/HOST_OS.md). This needs the genuine built-in profile (the default,
+(`linux`/`amd64` → `@platforms//os:linux`, `@platforms//cpu:x86_64`; on an
+arm64 binary `linux`/`aarch64` → `@platforms//cpu:aarch64`; docs/HOST_OS.md). This needs the genuine built-in profile (the default,
 docs/BUILTIN_MODULES.md). With `--experimental-builtin-modules=false` the
 native module graph has no `@bazel_tools`, and resolving the default host
 platform fails explicitly: `the target platform
@@ -206,8 +206,9 @@ built-in @bazel_tools repository, which the explicit-module profile
 the default) is the default configuration and is resolved lazily too.
 
 The configuration identity includes the target and host platform labels
-(docs/CONFIGURATION.md); output paths keep the `k8-<mode>` root, as Bazel's
-`<cpu>-<mode>` does not depend on `--platforms`.
+(docs/CONFIGURATION.md); output paths keep the `<host cpu>-<mode>` root
+(`k8-<mode>` on x86_64, `aarch64-<mode>` on arm64: AutoCpuConverter's default
+`--cpu`), as Bazel's `<cpu>-<mode>` does not depend on `--platforms`.
 
 **Platforms module versions.** The tests and the paired capture use the
 genuine platforms 1.0.0 archive (sha256 3384eb1c…,

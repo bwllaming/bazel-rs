@@ -1,5 +1,7 @@
-//! Immutable compile-target metadata. Only Linux/x86_64 has a reference-backed
-//! mapping; this is not runtime detection or a general cross-platform profile.
+//! Immutable compile-target metadata: Linux x86_64 and Linux aarch64 have a
+//! reference-backed mapping (the JVM's `os.name`/`os.arch` lower-cased, as
+//! StarlarkOS.java:61-82 reports them); this is not runtime detection or a
+//! general cross-platform profile.
 use allocative::Allocative;
 use anyhow::{anyhow, bail};
 use starlark::collections::StarlarkHasher;
@@ -36,10 +38,9 @@ impl HostMetadata {
     }
 
     fn current() -> Result<Self, String> {
-        if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-            Self::bounded("linux", "amd64", "linux")
-        } else {
-            Err("repository host metadata is unsupported for this compile target (requires Linux/x86_64)".to_owned())
+        match compile_target_arch() {
+            Some(arch) => Self::bounded("linux", arch, "linux"),
+            None => Err("repository host metadata is unsupported for this compile target (requires Linux x86_64 or aarch64)".to_owned()),
         }
     }
 
@@ -71,6 +72,20 @@ impl HostMetadata {
     pub(crate) fn fixture(name: &str, arch: &str, os_factor: &str) -> Arc<Self> {
         // Synthetic native-only fixtures, not runtime evidence for other hosts.
         Arc::new(Self::bounded(name, arch, os_factor).unwrap())
+    }
+}
+
+/// The JVM's `os.arch` on this Linux compile target: OpenJDK reports `amd64`
+/// on x86_64 and `aarch64` on arm64 (`ctx.os.arch`; the module extension
+/// `arch:` factor, RegularRunnableExtension.getEvalFactors; DigestWriter's
+/// host key). `None` for unsupported targets.
+fn compile_target_arch() -> Option<&'static str> {
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some("amd64")
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        Some("aarch64")
+    } else {
+        None
     }
 }
 
@@ -391,15 +406,24 @@ mod tests {
 
     #[test]
     fn reference_linux_metadata_and_structural_surface() {
+        let arch = compile_target_arch().unwrap();
+        assert_eq!(
+            arch,
+            if cfg!(target_arch = "aarch64") {
+                "aarch64"
+            } else {
+                "amd64"
+            }
+        );
         evaluate(&format!(
             r#"
 (type(x) == 'repository_os') or fail('type')
 (dir(x) == ['arch', 'environ', 'name']) or fail('dir')
 (str(x) == {REPR:?} and repr(x) == {REPR:?}) or fail('repr')
-(x.name == 'linux' and x.arch == 'amd64') or fail('metadata')
+(x.name == 'linux' and x.arch == {arch:?}) or fail('metadata')
 (type(x.name) == 'string' and type(x.arch) == 'string') or fail('strings')
 (x.name.lower().startswith('lin') and x.name.endswith('ux')) or fail('operations')
-(json.encode(x.name) == '\"linux\"' and json.encode(x.arch) == '\"amd64\"') or fail('json')
+(json.encode(x.name) == '\"linux\"' and json.encode(x.arch) == json.encode({arch:?})) or fail('json')
 hasattr(x, 'environ') or fail('structural presence')
 (not hasattr(x, 'unknown') and getattr(x, 'unknown', 'fallback') == 'fallback') or fail('fallback')
 ({{x:'safe'}}[x] == 'safe' and x == x) or fail('hash')

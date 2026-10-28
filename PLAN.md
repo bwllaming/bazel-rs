@@ -511,7 +511,8 @@ combined host-metadata integration is a separate verification gate.
 
 ### Callback host metadata (isolated branch verified)
 
-- [x] Provide immutable Linux/x86_64 callback metadata with freeze-stable identity,
+- [x] Provide immutable Linux/x86_64 callback metadata with freeze-stable identity
+      (Linux aarch64 too since the linux-arm64 port: `arch="aarch64"`),
       explicit unsupported environment access, and retained extension host flags.
 - [x] Verify selected extension factors and unconditional versioned repository
       host fingerprints, including the intentional one-time publication rekey.

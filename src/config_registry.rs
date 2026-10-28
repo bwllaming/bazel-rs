@@ -298,12 +298,15 @@ pub fn output_root(mnemonic: &str) -> String {
     format!("bazel-out/{mnemonic}/bin")
 }
 
-/// The native profile's CPU descriptor: Bazel's `--cpu` on this Linux x86-64
-/// host, `k8` (CoreOptions.java:279-282 `cpu` default "" converted by
-/// AutoCpuConverter.java:52). Divergence D1 (the historical `rust`) is closed
-/// (N41, docs/REMOTE_CACHE.md): output paths are part of every remote cache
-/// key, so they must equal Bazel's for a shared cache.
-pub const NATIVE_CPU: &str = "k8";
+/// The native profile's CPU descriptor: Bazel's `--cpu` of this host, `k8`
+/// on Linux x86-64 and `aarch64` on Linux arm64 (CoreOptions.java:279-282
+/// `cpu` default "" converted by AutoCpuConverter.java:52;
+/// crate::configuration::host_cpu). Divergence D1 (the historical `rust`) is
+/// closed (N41, docs/REMOTE_CACHE.md): output paths are part of every remote
+/// cache key, so they must equal Bazel's for a shared cache.
+pub fn native_cpu() -> &'static str {
+    crate::configuration::host_cpu()
+}
 
 /// PlatformOptions.DEFAULT_PLATFORM_NAMES (analysis/PlatformOptions.java:43-50).
 const DEFAULT_PLATFORM_NAMES: [&str; 5] = [
@@ -330,8 +333,9 @@ fn cpu_descriptor(configuration: &Configuration) -> (&str, bool) {
     let native = &configuration.native;
     // `--cpu` (the command line's, a Starlark transition's (N18c), or the
     // exec configuration's `--host_cpu`) is the descriptor itself, as in
-    // Bazel (`arm-fastbuild`, `ppc-opt-exec`); the host CPU is `k8`.
-    let cpu = native.cpu.as_deref().unwrap_or(NATIVE_CPU);
+    // Bazel (`arm-fastbuild`, `ppc-opt-exec`); the host CPU is `k8` (x86_64)
+    // or `aarch64` (arm64).
+    let cpu = native.cpu.as_deref().unwrap_or(native_cpu());
     if !native.is_exec {
         return (cpu, false);
     }
