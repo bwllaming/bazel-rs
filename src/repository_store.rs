@@ -1209,6 +1209,7 @@ pub(crate) struct AdoptionGuard {
     cache: PathBuf,
     receipts: Vec<crate::repository_publication::Receipt>,
     slots: Vec<crate::repository_slots::SlotWriter>,
+    current_slots: Vec<crate::repository_slots::SlotWriter>,
     identities: Vec<File>,
 }
 
@@ -1218,10 +1219,20 @@ thread_local! {
 }
 
 impl AdoptionGuard {
+    #[cfg(test)]
     pub(crate) fn acquire<'a>(
         cache: &Path,
         receipts: &[crate::repository_publication::Receipt],
         producers: impl IntoIterator<Item = &'a crate::observed_fs::RepositoryRecord>,
+    ) -> Result<Self, String> {
+        Self::acquire_current(cache, receipts, producers, &[])
+    }
+
+    pub(crate) fn acquire_current<'a>(
+        cache: &Path,
+        receipts: &[crate::repository_publication::Receipt],
+        producers: impl IntoIterator<Item = &'a crate::observed_fs::RepositoryRecord>,
+        current_slots: &[String],
     ) -> Result<Self, String> {
         let mut receipts = receipts.to_vec();
         receipts.sort_by_key(|receipt| crate::repository_slots::slug(&receipt.canonical));
@@ -1229,15 +1240,38 @@ impl AdoptionGuard {
             cache: cache.to_path_buf(),
             receipts,
             slots: Vec::new(),
+            current_slots: Vec::new(),
             identities: Vec::new(),
         };
-        for receipt in &guard.receipts {
-            let slot = crate::repository_slots::SlotWriter::try_acquire(cache, &receipt.canonical)?
+        let mut names: Vec<_> = guard
+            .receipts
+            .iter()
+            .map(|receipt| (receipt.canonical.as_str(), Some(receipt)))
+            .chain(current_slots.iter().map(|name| (name.as_str(), None)))
+            .collect();
+        names.sort_by_key(|(name, _)| crate::repository_slots::slug(name));
+        let mut seen = std::collections::BTreeSet::new();
+        for (name, receipt) in names {
+            if !seen.insert(name) {
+                return Err("duplicate current/adopted slot".into());
+            }
+            let slot = crate::repository_slots::SlotWriter::try_acquire(cache, name)?
                 .ok_or("repository publisher or binder is busy")?;
-            if !slot.immutable() || read_pointer_unobserved(&receipt.pointer(cache))?.is_none() {
+            if !slot.immutable()
+                || receipt.is_some_and(|receipt| {
+                    read_pointer_unobserved(&receipt.pointer(cache))
+                        .ok()
+                        .flatten()
+                        .is_none()
+                })
+            {
                 return Err("publication selection or immutable slot is unavailable".into());
             }
-            guard.slots.push(slot);
+            if receipt.is_some() {
+                guard.slots.push(slot);
+            } else {
+                guard.current_slots.push(slot);
+            }
         }
         let mut paths: std::collections::BTreeSet<_> = guard
             .receipts

@@ -77,6 +77,7 @@ pub(crate) const COMMIT_ERROR: &str = "repository publication adoption failed: "
 /// A strict pointer match alone cannot leave an ordinary view at another
 /// publication (for example a different spec last bound this canonical slot).
 /// Established mutable-slot snapshots retain their ordinary validation path.
+#[cfg(test)]
 pub(crate) fn needs_view_adoption(recording: &crate::observed_fs::Recording) -> bool {
     recording.selections.iter().any(|receipt| {
         let Some(root) = recording
@@ -175,20 +176,36 @@ impl Prepared {
 
     /// Called only after the ordinary candidate's complete payload and indices
     /// have been checked. Nothing has been changed publicly before this point.
+    #[cfg(test)]
     pub(crate) fn commit(
         self,
         factory: Factory<'_>,
         recording: &crate::observed_fs::Recording,
         environment: &crate::snapshot::validate::Environment<'_>,
     ) -> Result<(), String> {
-        let guard = crate::repository_store::AdoptionGuard::acquire(
+        self.commit_current(factory, recording, environment, &[], &[], || Ok(()))
+    }
+
+    pub(crate) fn commit_current(
+        self,
+        factory: Factory<'_>,
+        recording: &crate::observed_fs::Recording,
+        environment: &crate::snapshot::validate::Environment<'_>,
+        current_slots: &[String],
+        current_producers: &[crate::observed_fs::RepositoryRecord],
+        check_current: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let guard = crate::repository_store::AdoptionGuard::acquire_current(
             &self.store,
             &self.receipts,
             recording
                 .repositories
                 .iter()
-                .chain(&self.proof_inputs.repositories),
+                .chain(&self.proof_inputs.repositories)
+                .chain(current_producers),
+            current_slots,
         )?;
+        check_current()?;
         let (store, latest) = current(factory, &self.receipts)?;
         if store != self.store {
             return Err("publication store changed during acceptance".into());

@@ -1,9 +1,9 @@
-//! Binary configured-graph snapshots. Shares the observed-input validator and
-//! repository replay invariants with build snapshots, never their action payload.
+//! Binary configured-graph snapshots after the current ordinary loading prefix.
+//! Local results come from this invocation's completed work, never speculative
+//! historical replay. Build snapshots retain their independent replay path.
 use crate::engine::cquery::Graph;
 use crate::snapshot::{self, format, key, store};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 
 #[path = "cquery_history.rs"]
 mod history;
@@ -13,11 +13,9 @@ pub struct Session {
     key: key::Key,
     capture: Option<snapshot::capture::Capture>,
     verify: Option<(Graph, store::Reader)>,
-}
-
-pub struct Started {
-    pub hit: Option<Graph>,
-    pub session: Option<Session>,
+    prefix: Option<snapshot::capture::Captured>,
+    replay: snapshot::hit::ReplayInputs,
+    verify_mode: bool,
 }
 
 fn presentation(option: &crate::bazelrc::Unit) -> bool {
@@ -39,22 +37,17 @@ fn presentation(option: &crate::bazelrc::Unit) -> bool {
         || name.starts_with("--noproto:")
 }
 
-pub fn start(
+pub fn begin(
     inputs: key::Inputs<'_>,
     replay: snapshot::hit::ReplayInputs,
-    publication_repositories: crate::repository_publication::Factory<'_>,
-) -> Result<Started, String> {
-    let miss = || Started {
-        hit: None,
-        session: None,
-    };
+) -> Result<Option<Session>, String> {
     let mode = snapshot::Mode::from_env();
     if matches!(mode, snapshot::Mode::Off | snapshot::Mode::Record) || key::test_hook().is_some() {
-        return Ok(miss());
+        return Ok(None);
     }
     let _ = std::fs::create_dir_all(store::directory(inputs.cache));
     let Ok(binary) = snapshot::exe_id::binary_id(&store::root(inputs.cache)) else {
-        return Ok(miss());
+        return Ok(None);
     };
     let options = inputs
         .options
@@ -68,52 +61,32 @@ pub fn start(
         ..inputs
     };
     let key = key::compute(&filtered, binary);
-    let found = read(inputs.cache, &key, &replay, publication_repositories)?;
-    let verify = match found {
-        Some((graph, reader, events)) if mode != snapshot::Mode::Verify => {
-            use std::io::Write;
-            // Output errors are command failures, never candidate misses.
-            std::io::stderr()
-                .lock()
-                .write_all(&crate::ui::filtered(&events))
-                .map_err(|e| e.to_string())?;
-            reader.touch();
-            explain("hit");
-            return Ok(Started {
-                hit: Some(graph),
-                session: None,
-            });
-        }
-        Some((graph, reader, _)) => Some((graph, reader)),
-        None => None,
-    };
     if !crate::observed_fs::open_window() {
-        return Ok(miss());
+        return Ok(None);
     }
     snapshot::replay::install();
     let capture = snapshot::capture::start(snapshot::capture::Mode::Tee).ok();
-    Ok(Started {
-        hit: None,
-        session: Some(Session {
-            cache: inputs.cache.to_owned(),
-            key,
-            capture,
-            verify,
-        }),
-    })
+    Ok(Some(Session {
+        cache: inputs.cache.to_owned(),
+        key,
+        capture,
+        verify: None,
+        prefix: None,
+        replay,
+        verify_mode: mode == snapshot::Mode::Verify,
+    }))
 }
 
 fn read(
     cache: &Path,
     key: &key::Key,
     replay: &snapshot::hit::ReplayInputs,
-    publication_repositories: crate::repository_publication::Factory<'_>,
+    current: &crate::repository::CurrentRefresh,
 ) -> Result<Option<(Graph, store::Reader, Vec<u8>)>, String> {
     let mut reason = "no configured graph snapshot".to_owned();
     for candidate in history::candidates(cache, key) {
         let result = candidate.and_then(|reader| {
-            read_candidate(&reader, replay, publication_repositories)
-                .map(|(graph, events)| (graph, reader, events))
+            read_candidate(&reader, replay, current).map(|(graph, events)| (graph, reader, events))
         });
         match result {
             Ok(selected) => return Ok(Some(selected)),
@@ -133,40 +106,20 @@ fn read(
 fn read_candidate(
     reader: &store::Reader,
     replay: &snapshot::hit::ReplayInputs,
-    publication_repositories: crate::repository_publication::Factory<'_>,
+    current: &crate::repository::CurrentRefresh,
 ) -> Result<(Graph, Vec<u8>), String> {
     let _version = history::section(reader, format::Section::Stats)?;
     let mut inputs = format::decode_inputs(&history::section(reader, format::Section::Inputs)?)?;
     if inputs.workspace_status {
         return Err("configured graph recorded workspace status execution".into());
     }
-    let environment = snapshot::validate::Environment::new(&replay.environment);
-    let strict = snapshot::validate::validate_for_hit(&inputs.recording, &environment);
-    let adoption = if strict.is_err()
-        || crate::repository_publication::needs_view_adoption(&inputs.recording)
-    {
-        if !inputs.replay.is_empty() {
-            return Err(
-                "historical publication adoption with local repository replay is unsupported"
-                    .into(),
-            );
-        }
-        drop(inputs.tables.take());
-        let prepared = crate::repository_publication::Prepared::prepare(
-            publication_repositories,
-            &mut inputs.recording,
-            &environment,
-        )?;
-        Some((prepared, inputs.recording))
-    } else {
-        if !inputs.replay.is_empty() {
-            let cancel = AtomicBool::new(false);
-            snapshot::hit::replay_records(inputs.tables.take(), replay, &inputs.replay, &cancel)?;
-            snapshot::hit::check_local_trees(&inputs.replay, &cancel, false)?;
-        }
-        None
-    };
     let events = format::decode_events(&history::section(reader, format::Section::Events)?)?;
+    if !events.is_empty() {
+        return Err("current-loading history requires empty saved EVENTS".into());
+    }
+    drop(inputs.tables.take());
+    let environment = snapshot::validate::Environment::new(&replay.environment);
+    let adoption = current.prepare(&inputs.replay, &mut inputs.recording, &environment)?;
     let bytes = history::section(reader, format::Section::Plan)?;
     let graph: Graph =
         postcard::from_bytes(&bytes).map_err(|e| format!("configured graph decode: {e}"))?;
@@ -190,13 +143,50 @@ fn read_candidate(
     {
         return Err("invalid configured graph pattern index".into());
     }
-    if let Some((prepared, recording)) = adoption {
-        prepared.commit(publication_repositories, &recording, &environment)?;
-    }
+    current.accept(&inputs.replay, &inputs.recording, adoption, &environment)?;
     Ok((graph, events))
 }
 
 impl Session {
+    /// The current command has completed its ordinary loading prefix. Only
+    /// now can historical metadata be inspected. Current output has already
+    /// been forwarded once; this first slice accepts only a silent prefix.
+    pub fn lookup(
+        &mut self,
+        current: &crate::repository::CurrentRefresh,
+    ) -> Result<Option<Graph>, String> {
+        let prefix = self
+            .capture
+            .take()
+            .map(|capture| capture.stop(std::time::Duration::from_secs(2)));
+        let silent = prefix.as_ref().is_some_and(|prefix| {
+            prefix.complete && !prefix.overflowed && !prefix.ended_early && prefix.bytes.is_empty()
+        });
+        self.prefix = prefix;
+        self.capture = snapshot::capture::start(snapshot::capture::Mode::Tee).ok();
+        if !silent || !current.eligible() {
+            explain("miss: current loading prefix is not silent and eligible");
+            return Ok(None);
+        }
+        let found = read(&self.cache, &self.key, &self.replay, current)?;
+        match found {
+            Some((graph, reader, _)) if self.verify_mode => {
+                self.verify = Some((graph, reader));
+                Ok(None)
+            }
+            Some((graph, reader, _)) => {
+                reader.touch();
+                crate::observed_fs::close_window();
+                if let Some(capture) = self.capture.take() {
+                    capture.stop(std::time::Duration::from_secs(2));
+                }
+                explain("hit");
+                Ok(Some(graph))
+            }
+            None => Ok(None),
+        }
+    }
+
     pub fn finish(
         mut self,
         graph: &Graph,
@@ -206,10 +196,21 @@ impl Session {
         // payload. Analysis failures have already aborted before this point.
         crate::observed_fs::settle_plan_taints([]);
         crate::observed_fs::close_window();
-        let window = self
+        let mut window = self
             .capture
             .take()
             .map(|capture| capture.stop(std::time::Duration::from_secs(2)));
+        if let (Some(prefix), Some(window)) = (self.prefix.take(), window.as_mut()) {
+            window.complete &= prefix.complete;
+            window.ended_early |= prefix.ended_early;
+            window.overflowed |= prefix.overflowed
+                || prefix.bytes.len() + window.bytes.len() > snapshot::capture::LIMIT;
+            if !window.overflowed {
+                let mut combined = prefix.bytes;
+                combined.append(&mut window.bytes);
+                window.bytes = combined;
+            }
+        }
         if let Some((expected, reader)) = &self.verify
             && expected != graph
         {
@@ -450,7 +451,11 @@ mod tests {
             environment: Vec::new(),
             downloads_enabled: false,
         };
-        let error = read_candidate(&reader, &replay, &|| fixture.repositories()).unwrap_err();
+        let _window = crate::observed_fs::tests_support::record_this_thread();
+        let repositories = std::sync::Arc::new(fixture.repositories().unwrap());
+        repositories.validate_root_module().unwrap();
+        let current = crate::repository::CurrentRefresh::seal(repositories, true);
+        let error = read_candidate(&reader, &replay, &current).unwrap_err();
         assert!(
             error.contains("invalid configured graph pattern index"),
             "{error}"

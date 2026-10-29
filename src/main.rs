@@ -774,7 +774,7 @@ fn run() -> Result<(), String> {
         let patterns = cquery_options.universe(expression);
         let relative = relative_directory(&root, &cwd)?;
         let allow_yanked = std::env::var("BZLMOD_ALLOW_YANKED_VERSIONS").ok();
-        let started = bazel_rs::cquery_state::start(
+        cquery_session = bazel_rs::cquery_state::begin(
             bazel_rs::snapshot::key::Inputs {
                 command: "cquery",
                 workspace: &root,
@@ -794,21 +794,7 @@ fn run() -> Result<(), String> {
                 environment: repository_environment.clone(),
                 downloads_enabled: repository_downloads_enabled,
             },
-            &|| {
-                let mut options = resolver_options.clone();
-                options.registry_session = open_registry_session()?;
-                Ok(
-                    bazel_rs::repository::RepositorySet::with_options(root.clone(), options)
-                        .with_source_cache(cache.join("repositories"))
-                        .with_repository_downloads_enabled(false)
-                        .with_repository_environment(repository_environment.clone()),
-                )
-            },
         )?;
-        cquery_session = started.session;
-        if let Some(graph) = started.hit {
-            return cquery_output(&graph, expression, &cquery_options, &relative, &cache);
-        }
     }
     match snapshot_mode {
         bazel_rs::snapshot::Mode::Record => {
@@ -1124,8 +1110,20 @@ fn run() -> Result<(), String> {
     // (cmdline/TargetPattern.java:783-789).
     let relative_directory = relative_directory(&root, &cwd)?;
     if let Some(expression) = cquery_expression {
-        let graph =
-            engine.cquery_graph(&cquery_options.universe(&expression), &relative_directory)?;
+        let loaded = engine
+            .load_cquery_patterns(&cquery_options.universe(&expression), &relative_directory)?;
+        let hit = match &mut cquery_session {
+            Some(session) => session.lookup(loaded.current())?,
+            None => None,
+        };
+        let graph = match hit {
+            Some(graph) => {
+                cquery_session = None;
+                drop(loaded);
+                graph
+            }
+            None => engine.cquery_graph_loaded(loaded)?,
+        };
         for warning in engine.take_warnings() {
             warn(&warning);
         }

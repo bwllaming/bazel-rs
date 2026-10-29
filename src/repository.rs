@@ -199,6 +199,10 @@ pub struct RepositorySet {
     state: Arc<RepositoryState>,
 }
 
+#[path = "repository_current.rs"]
+mod current;
+pub use current::CurrentRefresh;
+
 /// Ephemeral, point-in-time current-intent proof. There is deliberately no
 /// deserializer, public constructor, adoption method or CARRIED conversion.
 /// Historical graph switching still requires guarded whole-candidate acceptance.
@@ -275,6 +279,8 @@ struct RepositoryState {
     /// a definition or recorded runtime input can be loaded from its root.
     publication_proof: bool,
     proof_receipts: BTreeMap<String, crate::repository_publication::Receipt>,
+    current_locals: std::sync::Mutex<BTreeMap<String, Arc<current::LocalResult>>>,
+    proof_locals: BTreeMap<String, Arc<current::LocalResult>>,
     /// The record mode's replay capture: local executions become replay
     /// records, and `root()`/`mapping()` results inside replay scopes are
     /// pinned for them.
@@ -904,6 +910,8 @@ impl RepositorySet {
                 pinned: None,
                 publication_proof: false,
                 proof_receipts: BTreeMap::new(),
+                current_locals: Default::default(),
+                proof_locals: BTreeMap::new(),
                 replay: crate::snapshot::replay::global(),
                 verified_trees: Arc::default(),
                 speculation: Default::default(),
@@ -1118,6 +1126,8 @@ impl RepositorySet {
     fn record_local_execution(
         &self,
         canonical: &str,
+        origin: crate::repository_publication::Origin,
+        spec: &str,
         original_name: &str,
         definition: impl FnOnce() -> Result<crate::snapshot::replay::DefinitionSource, String>,
         rule: &repository_rule::RuleDefinition,
@@ -1133,6 +1143,15 @@ impl RepositorySet {
         let Some(observed) = observed else {
             return;
         };
+        self.record_current_local(
+            canonical,
+            origin,
+            spec,
+            &rule.identity,
+            root,
+            &execution,
+            observed.output.is_empty(),
+        );
         if !observed.output.is_empty() {
             crate::observed_fs::taint(crate::observed_fs::Taint::LocalRepositoryOutput, || {
                 format!("{canonical} ({} bytes)", observed.output.len())
@@ -1491,6 +1510,7 @@ impl RepositorySet {
                 .iter()
                 .map(|receipt| (receipt.canonical.clone(), receipt.clone()))
                 .collect();
+            state.proof_locals = self.state.proof_locals.clone();
             state.replay = None;
             proof.validate_root_module().ok()?;
             proof.root_module().ok()?.module_file()?;
@@ -1525,6 +1545,25 @@ impl RepositorySet {
     /// A graph must supply its producer receipt; mere root existence is never
     /// enough. No normal materializer, speculative worker or binder is called.
     fn proof_generated_root(&self, canonical: &str) -> Result<&Path, String> {
+        if let Some(local) = self.state.proof_locals.get(canonical) {
+            local.validate(self.source_cache_path()?)?;
+            let spec = self.prepare_spec(canonical, true)?;
+            if spec.origin != local.origin || spec.key != local.spec {
+                return Err(format!(
+                    "current local producer @@{canonical} changed recipe"
+                ));
+            }
+            crate::observed_fs::proof_repository_tree(
+                "direct",
+                &local.spec,
+                &local.root,
+                &self
+                    .source_cache_path()?
+                    .join("direct/manifests")
+                    .join(format!("{}.json", local.execution.identity)),
+            );
+            return Ok(&local.root);
+        }
         let runtime = self.direct_runtime()?;
         let slot = if let Some(slot) = runtime.roots.get(canonical) {
             slot
@@ -1577,6 +1616,10 @@ impl RepositorySet {
     }
 
     fn prepare_publication_spec(&self, canonical: &str) -> Result<CurrentSpec, String> {
+        self.prepare_spec(canonical, false)
+    }
+
+    fn prepare_spec(&self, canonical: &str, local: bool) -> Result<CurrentSpec, String> {
         use crate::repository_publication::Origin;
         if !self.state.publication_proof {
             return Err("current publication specs require isolated proof preparation".into());
@@ -1586,7 +1629,7 @@ impl RepositorySet {
         if let Some(entry) = runtime.catalog.repositories.get(canonical) {
             let group = &runtime.catalog.groups[&entry.group_id];
             let prepared = self.prepare_direct_group(&entry.group_id)?;
-            if prepared.definition.local {
+            if prepared.definition.local != local {
                 return Err("local repository rules cannot prove non-local selection".into());
             }
             return Ok(CurrentSpec {
@@ -1600,7 +1643,7 @@ impl RepositorySet {
             });
         }
         let (prepared, repository) = self.ordinary_repository(canonical)?;
-        if repository.definition.local {
+        if repository.definition.local != local {
             return Err("local repository rules cannot prove non-local selection".into());
         }
         Ok(CurrentSpec {
@@ -4048,6 +4091,8 @@ impl RepositorySet {
             crate::repository_store::timing::record_local_execution(canonical);
             self.record_local_execution(
                 canonical,
+                crate::repository_publication::Origin::DirectV2,
+                &spec_key,
                 &declaration.name,
                 || {
                     let (_, symbol) = group.definition_request()?;
@@ -4624,6 +4669,8 @@ impl RepositorySet {
             crate::repository_store::timing::record_local_execution(&repository.canonical_name);
             self.record_local_execution(
                 &repository.canonical_name,
+                crate::repository_publication::Origin::ExtensionV3,
+                &spec_key,
                 &repository.original_name,
                 || {
                     Ok(crate::snapshot::replay::DefinitionSource::Ordinary {

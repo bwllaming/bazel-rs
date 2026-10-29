@@ -320,6 +320,13 @@ pub struct LoadedQuery {
     roots: Vec<Label>,
     expanded: BTreeMap<String, Vec<Label>>,
     repositories: std::sync::Arc<crate::repository::RepositorySet>,
+    current: crate::repository::CurrentRefresh,
+}
+
+impl LoadedQuery {
+    pub fn current(&self) -> &crate::repository::CurrentRefresh {
+        &self.current
+    }
 }
 
 impl Graph {
@@ -836,6 +843,10 @@ impl Engine {
             roots,
             expanded,
             repositories: self.repositories.clone(),
+            current: crate::repository::CurrentRefresh::seal(
+                self.repositories.clone(),
+                self.warnings.is_empty(),
+            ),
         })
     }
 
@@ -846,8 +857,13 @@ impl Engine {
             );
         }
         let LoadedQuery {
-            roots, expanded, ..
+            roots,
+            expanded,
+            repositories,
+            current,
         } = loaded;
+        drop(current);
+        drop(repositories);
         self.cquery_capture = Some(Capture::default());
         // Engine instances may issue more than one configured request. These
         // semantic platform memos otherwise bypass the new graph's capture.

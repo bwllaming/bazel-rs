@@ -17,6 +17,17 @@ thread_local! {
     static DEMAND_STACK: RefCell<Vec<(u64, String)>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Witness of an actual current evaluator demand, not a declaration or a
+/// historical lookup. Only successful normal local materialization uses it.
+pub(crate) fn evaluating(runtime: u64, key: &str) -> bool {
+    DEMAND_STACK.with(|stack| {
+        stack
+            .borrow()
+            .iter()
+            .any(|(id, active)| *id == runtime && active == key)
+    })
+}
+
 /// Marker of the no-demand guard's sentinel error (review §1.2): a thread
 /// in no-demand mode asking for an unfetched repository gets this error
 /// instead of fetching. Workers run in that mode; the coordinator re-runs
