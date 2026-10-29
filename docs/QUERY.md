@@ -274,3 +274,52 @@ registry fetch (tracked elsewhere).
   parentheses (`testdata/651970 Delpharm_Pack_Folding Box (1).pdf`), the
   native label character profile; `kind(go_library, //src/beyondwork.ai/utils/str/...)`
   succeeds.
+
+## Performance (perf-query, SURVEY3 Q1)
+
+A query does loading only, but its visitations (`deps`, `rdeps`, `somepath`,
+`allpaths`, the SkyQuery universe) used to load every package one at a time
+on the coordinator. Fixes, all output-preserving:
+
+* **Package prefetch.** The visitation runs the build's phase-1 prefetcher
+  (`crate::prefetch`, docs/PARALLEL_ANALYSIS.md "Phase-1 prefetch"): every
+  frontier rule's targets are queued, the loading workers load packages ahead
+  (transitively, with repository fetch speculation), and each unit commits at
+  the sequential demand point, so prints, errors and output are the
+  one-thread ones. `--loading_phase_threads=1` keeps the sequential path.
+* **glob() cost.** `glob()` computed the link policy (a list of every
+  materialized root) per call and hashed the whole list in its cache key;
+  now once per package evaluation, hashed by length.
+* **Source targets.** The directories on a source file's path (lstat and the
+  BUILD-file boundary check) are probed once per invocation outside a
+  recording, and the last lstat answers `is_dir`/`is_file` when no link was
+  crossed.
+* **Reverse edges.** `parents_within` dedupes per source with a set instead
+  of `Vec::contains` per parent; the SkyQuery reverse map is shared.
+* **`--output=graph` (factored).** Classes by index instead of cloning a
+  class's label vector per class edge (O(edges x class size) memory: it
+  exceeded the 16 GB cap on `deps(//src/python:docstar)` in ~/code).
+
+~/code (warm private cache, 64 cores, shared machine; wall s / peak RSS MB):
+
+| query | before (df726b4) | after |
+|---|---|---|
+| `rdeps(//src/python:all, //src/python:docstar, 1)` | 26.6 / 1572 | 7.6 / 1720 |
+| `rdeps(//src/..., //src/python:docstar)` | 75.2 / 2689 | 14.5–16.5 / 2870 |
+| `--universe_scope=//src/... --order_output=no allrdeps(//src/python:docstar)` | 74.5 / 2920 | 15.1 / 2884 |
+| `deps(//src/...)` (232,118 lines) | 73.0 / 2583 | 15.1–16.8 / 2711 |
+| `somepath(//src/beyondwork.ai/bworker/..., //src/python:docstar)` | 22.8 / 1537 | 7.4 / 1670 |
+| `allpaths(//src/beyondwork.ai/bworker/..., //src/python:docstar)` | 23.8 / 1523 | 6.9 / 1730 |
+| `kind(go_binary, //src/...)` | 4.5 / 940 | 4.3 / 944 |
+| `--output=graph deps(//src/python:docstar)` | memory cap (16 GB) | 3.3 / 834 |
+
+Cold (fresh cache, 9,739 repositories fetched, mostly pip wheels of every
+platform: a query follows every select() branch), `rdeps(//src/...,
+//src/python:docstar)`: 530 s with a per-root serial fetch sum of 2,619 s.
+
+bazel-gazelle (scripts/bench_genuine.py `query` scenario, 3 reps, medians;
+outputs identical as sets): `deps(//...) --keep_going` rs 1.86 s → 1.32 s
+(genuine batch 3.4 s, warm server 0.3 s); `rdeps(//..., //rule:rule)
+--keep_going` 1.93 → 1.33 s (batch 3.3 s, server 0.3 s);
+`allpaths(//cmd/gazelle:gazelle, //rule:rule)` 0.45 → 0.36 s (batch 1.7–2.2 s,
+server 0.1–0.2 s).
