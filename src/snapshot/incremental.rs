@@ -260,6 +260,10 @@ pub struct Index {
     /// The packages the pattern phase's test suite expansions read: their
     /// requested labels never change incrementally.
     pub suite_packages: Vec<u32>,
+    /// (key, microseconds): each planned key's phase-2 time in the
+    /// analysis that recorded it (its implementation and actions), the
+    /// weights of [`dirty_labels`]'s cost estimate.
+    pub costs: Vec<(u32, u32)>,
 }
 
 /// The digest of a `.bzl` file's code: its bytes with every comment's text
@@ -1539,16 +1543,28 @@ pub fn dirty_labels(
             todo.extend(children.get(&key).into_iter().flatten().copied());
         }
     }
-    let configured = index.keys.iter().filter(|key| key.config.is_some()).count();
-    let reanalyzed = closure
+    // Each planned target weighs its phase-2 time in the saved analysis
+    // (1 µs at least): the share of the saved analysis the partial one
+    // repeats.
+    let weights: HashMap<u32, u64> = index
+        .costs
         .iter()
-        .filter(|key| index.keys[**key as usize].config.is_some())
-        .count();
-    let cost = (reanalyzed * 100).checked_div(configured).unwrap_or(0);
+        .map(|(key, cost)| (*key, u64::from(*cost).max(1)))
+        .collect();
+    let weight = |key: &u32| weights.get(key).copied().unwrap_or(1);
+    let planned_keys: Vec<u32> = index.planned.iter().map(|(key, _, _)| *key).collect();
+    let configured: u64 = planned_keys.iter().map(weight).sum();
+    let reanalyzed: u64 = planned_keys
+        .iter()
+        .filter(|key| closure.contains(key))
+        .map(weight)
+        .sum();
+    let cost = (reanalyzed * 100).checked_div(configured).unwrap_or(0) as usize;
+
     let (limit, minimum) = max_cost_percent();
-    if configured >= minimum && reanalyzed * 100 > configured * limit {
+    if planned_keys.len() >= minimum && cost > limit {
         return Err(format!(
-            "the re-analysis would analyze {reanalyzed} of {configured} configured targets (more than {limit}%)"
+            "the re-analysis would repeat {cost}% of the saved analysis (its targets' time; more than {limit}%)"
         ));
     }
     Ok(Dirty {
@@ -1560,10 +1576,10 @@ pub fn dirty_labels(
 }
 
 /// `BAZEL_RS_INCREMENTAL_MAX_COST_PERCENT`: when the partial analysis
-/// would re-analyze more than this share of the saved analysis's
-/// configured targets (the dirty roots' forward closure), the full
-/// analysis runs at once (default 60, for analyses of 500 configured
-/// targets or more; set, for any).
+/// would repeat more than this share of the saved analysis — the dirty
+/// roots' forward closure, each planned target weighed by its phase-2
+/// time then — the full analysis runs at once (default 90, for analyses
+/// of 500 planned targets or more; set, for any).
 pub const MAX_COST_VAR: &str = "BAZEL_RS_INCREMENTAL_MAX_COST_PERCENT";
 
 /// The cost limit (percent) and the analysis size it applies from.
@@ -1573,7 +1589,7 @@ fn max_cost_percent() -> (usize, usize) {
         .and_then(|value| value.parse().ok())
     {
         Some(limit) => (limit, 0),
-        None => (60, 500),
+        None => (90, 500),
     }
 }
 
@@ -2132,6 +2148,20 @@ pub fn merge_index(
         }
     }
     index.label_accesses = label_accesses.into_iter().collect();
+    // The re-analyzed keys' costs are the re-analysis's.
+    let mut costs: std::collections::BTreeMap<u32, u32> = index
+        .costs
+        .iter()
+        .filter(|(key, _)| !dirty.contains(key))
+        .copied()
+        .collect();
+    for (key, cost) in &sub.costs {
+        let key = mapped[*key as usize];
+        if dirty.contains(&key) {
+            costs.insert(key, *cost);
+        }
+    }
+    index.costs = costs.into_iter().collect();
     // The re-analyzed keys' aspect applications are the re-analysis's.
     let mut aspects: BTreeSet<(u32, String)> = index
         .aspects
@@ -2332,6 +2362,12 @@ pub fn reshape_index(
         .iter()
         .filter(|(key, _)| alive(key))
         .map(|(key, package)| (map(*key), *package))
+        .collect();
+    index.costs = index
+        .costs
+        .iter()
+        .filter(|(key, _)| alive(key))
+        .map(|(key, cost)| (map(*key), *cost))
         .collect();
     index.label_accesses = index
         .label_accesses
@@ -3612,6 +3648,7 @@ mod tests {
             demand: vec![(0, "//a:b#0".to_owned())],
             patterns: Some(vec![(0, 0)]),
             suite_packages: vec![0],
+            costs: vec![(0, 12)],
             top: [7; 32],
             labels: vec![Label::parse_canonical("//a:b").unwrap()],
             keys: vec![IndexKey {

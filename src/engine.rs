@@ -10648,7 +10648,7 @@ impl Engine {
     /// The speculation pool of the target pattern phase
     /// ([`Self::target_pattern_phase`]), on the conditions of phase 1's
     /// (`start_prefetch`). Whether it started.
-    fn start_pattern_speculation(&mut self) -> bool {
+    pub(super) fn start_pattern_speculation(&mut self) -> bool {
         if self.loading_phase_threads <= 1
             || !self.repositories.prefetch_allowed()
             || std::env::var_os("BAZEL_RS_LOADING_NO_DEMAND").is_some()
@@ -14392,7 +14392,11 @@ impl Engine {
     ) -> Result<(), String> {
         let depth = self.track_depth();
         self.track_planning(key);
+        let started = self.tracking().then(std::time::Instant::now);
         let result = self.plan_one_target_body(state, key, rule, configured, index);
+        if let Some(started) = started {
+            self.track_cost(started.elapsed());
+        }
         self.track_restore(depth);
         result
     }

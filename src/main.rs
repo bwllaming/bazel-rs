@@ -2048,10 +2048,9 @@ fn incremental_build(
             || pattern.ends_with(":all-targets")
             || pattern.ends_with(":all-targets/")
     });
-    // The lookup validated every repository tree the saved analysis
-    // reused, and no recorded input of a repository changed but those of
-    // `candidate.repositories`, which run again: the others' warm checks
-    // are not run again (docs/INCREMENTAL_ANALYSIS.md).
+    // (The repository verdict is carried across the miss only for the
+    // partial analysis, incremental_finish: a full analysis continuing in
+    // this process runs every warm check, recording what they observe.)
     let old_roots: std::collections::BTreeMap<String, std::path::PathBuf> = candidate
         .index
         .repository_roots
@@ -2059,16 +2058,6 @@ fn incremental_build(
         .filter(|(name, _)| candidate.repositories.contains(name))
         .map(|(name, root)| (name.clone(), root.0.clone()))
         .collect();
-    bazel_rs::repository_store::carry_verified_trees(
-        candidate
-            .inputs
-            .recording
-            .repositories
-            .iter()
-            .filter(|tree| tree.kind == "direct")
-            .filter(|tree| !old_roots.values().any(|root| *root == tree.root))
-            .map(|tree| tree.root.clone()),
-    );
     // A repository one of whose recorded inputs changed runs again; its
     // tree must hold what it held (Skyframe's change pruning of
     // repository values): then nothing it feeds changed.
@@ -2299,6 +2288,19 @@ fn incremental_finish(
         key,
         ..
     } = candidate;
+    // The lookup validated every repository tree the saved analysis
+    // reused, and no recorded input of a repository changed but those of
+    // the repositories that ran again: the others' warm checks are not run
+    // again (docs/INCREMENTAL_ANALYSIS.md).
+    bazel_rs::repository_store::carry_verified_trees(
+        inputs
+            .recording
+            .repositories
+            .iter()
+            .filter(|tree| tree.kind == "direct")
+            .filter(|tree| !replaced_roots.iter().any(|(_, old, _)| *old == tree.root))
+            .map(|tree| tree.root.clone()),
+    );
     let relabels = relabel.changes();
     let new_labels: Vec<bazel_rs::label::Label> = if relabels {
         relabel.labels.clone()

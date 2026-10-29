@@ -160,6 +160,9 @@ pub(super) struct Tracker {
     patterns_simple: Option<bool>,
     /// The packages test suite expansions read.
     suite_packages: BTreeSet<u32>,
+    /// Each planned key's phase-2 time (its implementation and actions),
+    /// microseconds.
+    costs: HashMap<u32, u32>,
 }
 
 #[derive(Default)]
@@ -336,6 +339,17 @@ impl Engine {
     pub(super) fn track_restore(&mut self, depth: usize) {
         if let Some(tracker) = self.incremental.as_mut() {
             tracker.frames.truncate(depth);
+        }
+    }
+
+    /// The innermost frame's phase 2 took `elapsed`.
+    pub(super) fn track_cost(&mut self, elapsed: std::time::Duration) {
+        if let Some(tracker) = self.incremental.as_mut()
+            && let Some((frame, _)) = tracker.frames.last().copied()
+        {
+            let micros = elapsed.as_micros().min(u32::MAX as u128) as u32;
+            let cost = tracker.costs.entry(frame).or_default();
+            *cost = cost.saturating_add(micros);
         }
     }
 
@@ -620,6 +634,15 @@ impl Engine {
             patterns: (tracker.patterns_simple == Some(true))
                 .then(|| tracker.covered.iter().copied().collect()),
             suite_packages: tracker.suite_packages.iter().copied().collect(),
+            costs: {
+                let mut costs: Vec<(u32, u32)> = tracker
+                    .costs
+                    .iter()
+                    .map(|(key, cost)| (*key, *cost))
+                    .collect();
+                costs.sort_unstable();
+                costs
+            },
         };
         crate::snapshot::incremental::set_modules(&mut index, &graph, &package_loads, &rules);
         Some(index)
@@ -766,7 +789,15 @@ impl Engine {
     ) -> Result<Vec<(Fingerprint, bool)>, (PackageId, String)> {
         {
             let _pattern = PatternScope::enter();
-            if let Err(error) = self.load_packages_parallel(packages, |_, _| Ok(())) {
+            // As the target pattern phase's loads: the repositories the
+            // loaded files enter are fetched (reused) ahead on the
+            // speculation pool, so the workers' loads find them.
+            let speculating = self.start_pattern_speculation();
+            let loaded = self.load_packages_parallel(packages, |_, _| Ok(()));
+            if speculating {
+                self.repositories.stop_speculation();
+            }
+            if let Err(error) = loaded {
                 // The first one that does not load (named by its own load).
                 for package in packages {
                     if let Err(error) = self.load_package(package) {
