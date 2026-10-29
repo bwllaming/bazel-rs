@@ -638,8 +638,8 @@ else still needs it would take the plan's whole reachability (the
 ### Large dirty sets
 
 `BAZEL_RS_INCREMENTAL_MAX_DIRTY_PERCENT` (default 25, from 500 configured
-targets): above that share of dirty configured targets the full analysis
-runs. The partial analysis re-analyzes the forward closure of the dirty
+targets; replaced in §6 by a cost estimate): above that share of dirty
+configured targets the full analysis runs. The partial analysis re-analyzes the forward closure of the dirty
 requested targets, which for a few targets with large closures is most of
 the analysis anyway (below).
 
@@ -690,3 +690,187 @@ not set `BAZEL_RS_RESULT_LINES=1`.)
   the step's log line.
 - Unit tests: `.bzl` attribution (affected modules, refusals), code
   digests.
+
+## 6. Tier A, extended again: targets, reachability, watched files, cost
+
+Code: the same files; `Engine::package_selection`,
+`Engine::package_fingerprints` and the tracker's new records in
+`src/engine/incremental.rs`; `relabel`, `Dirty`, `check_graph`'s
+`Insert`s, `splice`'s `Shape`, `reshape_index` in
+`src/snapshot/incremental.rs`; `repository_store::same_tree_contents`.
+The index gains `root_entries`, `demand`, `patterns`, `suite_packages`,
+`label_accesses`, per-rule target digests in the fingerprints,
+`repository_roots`, the owners of `repository_inputs`, and `costs`.
+
+### Per-target dirtiness
+
+A package fingerprint now also keeps a digest of the package's own part
+(arguments, exports, defaults, loads, BUILD file) and one digest per rule,
+listed under the rule's name and each of its output names. The index
+records, besides the packages each configured target looked up, the
+main-repository target names it looked up (`label_accesses`, the same
+`Engine::target` calls). When a changed package's own part is unchanged
+and no file inside it changed, only the targets whose rule digest changed
+(or that were added or removed) are dirty, with the keys that looked them
+up; otherwise the whole package is, as before. On gazelle the
+`rule/BUILD.bazel` edit dirtied 255 configured targets (239 requested
+re-analyzed); now none.
+
+### Added, removed and renamed targets (requested labels change)
+
+Allowed for `build` when the target pattern phase was the plain one (no
+`--build_tag_filters`, no tests, no `--keep_going`; test suites only
+outside the changed packages: `suite_packages`) and no pattern names file
+targets (`:*`, `:all-targets`).
+
+- **The new labels.** The tracker records which packages each pattern's
+  wildcard expanded (`patterns`; the directory listings are unchanged, or
+  the miss is not attributable). `Engine::package_selection` replays the
+  patterns (`select_filtered`'s rules: FILTER_MANUAL for positive
+  wildcards, negative patterns remove, single labels must exist, an
+  ambiguous `:all` falls back) over each package whose pattern summary
+  changed; the other packages' labels stay (`relabel`).
+- **Removed labels.** The keys planned during a removed label's analysis
+  (the saved plan between its root entry and the next one) are removed,
+  with keys planned nowhere that only they reach. Any of them reached by a
+  kept key, a kept root among them, one that printed or feeds a shared
+  computation falls back. Their actions are dropped; the index is
+  compacted.
+- **Added labels.** Analyzed by the partial analysis with the dirty ones.
+  An added label's analysis would begin where the next saved label's
+  began (`root_entries`): everything it reaches that the saved analysis
+  had must be planned before that point, and its new targets (reached by
+  nothing old) are inserted there — in the plan positions, and their
+  actions between the last action of a target planned before and the
+  first of one planned after (only trailing workspace status nodes may lie
+  between; anything else ambiguous falls back).
+- **The request's parts** (reported outputs, results, aspect reports, the
+  build events with their output groups re-indexed) are taken per label,
+  in the new order, from the partial analysis (analyzed labels) or the
+  saved request. Incompatible or skipped targets fall back.
+- **The window**: the saved `INFO: Analyzed …` / `INFO: Found …` notes
+  must be exactly what the saved counts print (labels, packages loaded,
+  plan length, distinct aspect applications), and are replaced by the new
+  counts' (`progress::analysis_lines`).
+
+### Removed dependencies: the plan's reachability
+
+The index keeps the producers of the hidden top-level artifacts of each
+requested label (`demand`: runfiles, executables, validation and other
+`_` groups, the workspace status). The splice first checks that the saved
+plan is exactly what its roots (reported outputs, aspect reports,
+`demand`) reach — else the roots are not the full analysis's and it falls
+back — then prunes the spliced plan to what the merged roots reach, as
+`plan_build` prunes. A re-analyzed target that no longer consumes another
+target's action therefore splices: the action stays if anything still
+needs it, else it goes. This replaces §5's fallback.
+
+### Recorded inputs of repositories (Skyframe's change pruning)
+
+Recorded inputs are noted with the repository whose warm check or
+execution observed them (`repository_owner`; a module extension's stay
+unattributable). A changed observation that is a recorded input of
+repositories is attributed like any other (the BUILD file of its package),
+provided no package or target of the analysis lies in those repositories;
+the repositories are materialized again before the reload (outside the
+carried verdict: their recorded inputs changed, so they run again) and
+the run continues only if the new tree's manifest lists the same entries
+(mode, size, digest, link target) as the old one's
+(`same_tree_contents`; the identity differs, as it covers the recorded
+inputs). The merged recording drops the old tree's record and the
+selection reads the new publication superseded. A rule printing while it
+runs again falls back (the window check).
+
+### Parallel reloads
+
+The packages a miss reloads load on the loading-phase-threads pool with
+the target pattern phase's repository speculation (`package_fingerprints`).
+Measured on ~/code (22 packages loading `docker.bzl`, all unchanged): 1.7–
+2.0 s against 1.87 s sequential — no gain. The time is the `.bzl` graph's
+critical path, not per-package work: obtaining the repository roots the
+modules enter (`PERF repo-root`: the npm hub 0.39 s, pypi 0.24 s, ...;
+`enter-parts path=2.8 s` of module entering), which the first package
+pays and every other one shares.
+
+### The cost estimate
+
+`BAZEL_RS_INCREMENTAL_MAX_DIRTY_PERCENT` is replaced by
+`BAZEL_RS_INCREMENTAL_MAX_COST_PERCENT` (default 90, from 500 planned
+targets; set: any): the index records each planned target's phase-2 time
+(`costs`), and the estimate is the share of that time the forward closure
+of the dirty roots holds. Above the limit the full analysis runs at once,
+in process. On ~/code an x_defs edit of a library 196 requested targets
+reach estimated 81 %; the partial analysis took 76–79 % of the full one
+(98 s against 125–135 s) and was spliced (verify agreed) — so the default
+lets it run; it only refuses partial analyses that cannot win. Key counts
+alone predicted 7 % there (Python wheels dominate the time).
+
+### Measured
+
+Release binaries: before = main `9cb31a9`, after = this branch; ~/code
+private copy at `0f4253f1`, real `.bazelrc` with the storagebox overrides,
+`build --nobuild //src/beyondwork.ai/...` (21,117 actions), one run per
+cell, the cache shared by both binaries but each binary's runs in one
+sequence (interleaving the binaries' full analyses rewrites manifests'
+stat hints and makes the other's next miss verify every tree).
+
+| edit | before | after | after: outcome |
+|---|---|---|---|
+| a `go_library` added to `oauth2token` | 125.7 s (full) | **5.0–5.3 s** | 1 label added and analyzed (3.5–3.9 s) |
+| the same removed | 124.2 s (full) | **1.9 s** | 1 label and its target removed |
+| a dependency of `oauth2token_lib` removed | 130.9 s (falls back after the partial) | **5.2–5.3 s** | 3 targets re-analyzed, unreached actions pruned |
+| `gogenrule.bzl` rule body (`mnemonic`) | 5.6 s | 5.2–5.4 s | 5 targets (this ~/code: no large closure) |
+| `docker.bzl` docstring (22 packages reloaded) | 3.3 s (reload 1.87 s) | 3.1–4.3 s (reload 1.7–2.6 s) | all unchanged |
+| `docker.bzl` genrule `cmd` (16 packages change) | 8.7–11.8 s (71 targets) | 9.1–9.7 s (19 targets) | per-target dirtiness |
+| `timelineevents` `x_defs` (196 targets reach it) | 98.3 s | 100.5 s | cost 81 %: spliced |
+| none (hit) | 0.45 s | 0.38–0.49 s | |
+
+Verify mode (strict) agreed on every splice tried on ~/code: the add, the
+removal, the removed dependency, the `gogenrule.bzl` edit, an add after an
+in-process fallback (`full analysis 124–128 s`, "the full analysis agrees
+with the snapshot").
+
+gazelle (`build //...` minus the exclusions, the benchmark's flags, `env
+-i` like `bench_genuine.py`'s rs side; the `build_edit` scenario: a
+`filegroup(name = "bench_edit_N")` appended to the pristine
+`rule/BUILD.bazel`, so each step renames the previous one's target):
+
+| | before | after | genuine warm server (docs/BENCHMARKS.md) |
+|---|---|---|---|
+| `build_edit`, 5 reps | 4.86–5.34 s | **1.19–1.21 s** | 1.0–1.2 s |
+
+(after: `bazel_gazelle_go_repository_tools` ran again, its tree unchanged,
+1 label added, 1 removed, nothing re-analyzed but the new filegroup;
+reload incl. the repository's run 0.7–0.8 s. Verify mode agreed; stdout
+`label<TAB>path` lines identical.)
+
+### Tests
+
+- `tests/snapshot.rs::incremental_analysis_of_targets_and_watched_build_files`
+  (and its strict `verify_mode` twin): a repository rule reading
+  `incr_w/BUILD.bazel`; an attribute, targets added, renamed, removed, a
+  target and a dependency no requested target reaches added and removed
+  together, the repository's contents changed (falls back).
+- The existing incremental tests' counts follow the per-target
+  dirtiness; a target added and removed, a dependency removed now splice.
+- The mutation fuzz: `@watchrepo` (watching `incr_w/BUILD.bazel`, in
+  command 13's patterns) and mutations 68 (its flag, marker, targets
+  added/removed/renamed), 69 (`incr/` targets added, removed, renamed with
+  random dependencies), 70 (`:a`'s dependency on `:b`). Run here: the
+  incremental subset (`..._COMMANDS=12,13,0,7`,
+  `..._MUTATIONS=0,3,11,46,56,...,70`, 150 steps, seeds 8101, 8202, 8303,
+  8404) and the default catalogue (150 steps, seeds 9101, 7301, 7402,
+  7503): all identical, 30 % of the steps in strict verify mode.
+
+### Still falling back
+
+- Labels of `test`/`run`, tag filters, `--build_tests_only`, a changed
+  package a test suite expansion read, `:*` patterns.
+- A removed label whose analysis planned a target something else reaches;
+  an added one reaching a target planned after its place; actions of a
+  saved target the plan pruned that an added target now needs.
+- A repository that ran again with other contents, or holding a package
+  or target of the analysis; recorded inputs of module extensions.
+- A repository selection read of a tree a full analysis of another
+  command republished (`SELECTION_READ … repository publication
+  selection`, seen in the fuzz across commands).
