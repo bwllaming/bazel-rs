@@ -366,7 +366,13 @@ class Repo:
         home, tmp = os.path.join(st, "home"), os.path.join(st, "tmp")
         os.makedirs(home, exist_ok=True)
         os.makedirs(tmp, exist_ok=True)
-        return {"PATH": "/usr/bin:/bin", "HOME": home, "TMPDIR": tmp}
+        env = {"PATH": "/usr/bin:/bin", "HOME": home, "TMPDIR": tmp}
+        if side == "rs":
+            # The output check reads bazel-rs's `label<TAB>path` result lines,
+            # which go to stdout only with this set (genuine prints `Target ...
+            # up-to-date:` on stderr).
+            env["BAZEL_RS_RESULT_LINES"] = "1"
+        return env
 
     def argv(self, side, command, extra):
         st = self.state(side)
