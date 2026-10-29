@@ -267,8 +267,11 @@ pub fn bundle_identity() -> Result<String, String> {
 /// Current compiled bundle, already staged and verified. Never creates a
 /// directory, takes a publisher lock, repairs a tree or emits a live REPO use.
 pub(crate) fn probe_existing(cache: &Path) -> Result<PathBuf, String> {
-    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        return Err("unsupported built-in proof platform".into());
+    if PINNED.is_none() {
+        return Err(UNSUPPORTED.into());
+    }
+    if !cache.is_absolute() {
+        return Err("embedded bazel_tools cache root must be absolute".into());
     }
     let bundle = bundle()?;
     let destination = cache.join("trees").join(&bundle.identity);
