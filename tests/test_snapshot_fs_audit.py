@@ -146,6 +146,8 @@ class SnapshotAuditTests(unittest.TestCase):
             # Read with a READ record; read with only a STAT record.
             '1 openat(AT_FDCWD</ws>, "/ws/read.bzl", O_RDONLY|O_CLOEXEC) = 3</ws/read.bzl>\n'
             '1 openat(AT_FDCWD</ws>, "/ws/stat-only.txt", O_RDONLY|O_CLOEXEC) = 3</ws/stat-only.txt>\n'
+            '1 openat(AT_FDCWD</ws>, "/ws/selected", O_RDONLY|O_CLOEXEC) = 3</ws/selected>\n'
+            '1 openat(AT_FDCWD</ws>, "/ws/absence-only", O_RDONLY|O_CLOEXEC) = 3</ws/absence-only>\n'
             # Directory, O_PATH and write opens need coverage only.
             '1 openat(AT_FDCWD</ws>, "/ws/dir", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 4</ws/dir>\n'
             '1 openat(AT_FDCWD</ws>, "/ws/handle", O_RDONLY|O_PATH|O_CLOEXEC) = 4</ws/handle>\n'
@@ -166,6 +168,8 @@ class SnapshotAuditTests(unittest.TestCase):
         dump_text = (
             "OBS /ws/read.bzl READ sha256:00 key:1:2:3:4:5\n"
             "OBS /ws/stat-only.txt STAT kind:f\n"
+            "OBS /ws/selected SELECTION_READ sha256:00 key:1:2:3:4:5\n"
+            "OBS /ws/absence-only SELECTION_ABSENT error:2\n"
             "OBS /ws/dir STAT kind:d\n"
             "OBS /ws/handle STAT kind:f\n"
             "OBS /ws/written STAT error:2\n"
@@ -182,10 +186,11 @@ class SnapshotAuditTests(unittest.TestCase):
             dump.write_text(dump_text)
             stats = {}
             _, unrecorded = audit.audit(trace, dump, "/ws", "/cache", [], stats=stats)
-        self.assertEqual(stats["read_opens"], 4)
+        self.assertEqual(stats["read_opens"], 6)
         found = {u.split()[0]: u.split()[1] for u in unrecorded}
         self.assertEqual(found, {
             "/ws/stat-only.txt": "[UNREAD",
+            "/ws/absence-only": "[UNREAD",
             "/c/trees/t/inc/unrecorded.h": "[statx]",
             "/c/trees/t/inc/read.h": "[UNREAD",
             # The link itself is a tree entry; listing through it is not.

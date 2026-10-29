@@ -378,7 +378,9 @@ def load_dump(path):
                     canon_targets.add(unescape_dump(parts[3][5:]))
             if parts[2].startswith('READDIR'):
                 readdirs.add(p)
-            if parts[2] == 'READ':
+            # Selection ownership changes validation authority, not the fact
+            # that these bytes were read. An absence guard is not a byte read.
+            if parts[2] in ('READ', 'SELECTION_READ'):
                 reads.add(p)
         elif parts[0] == 'INT':
             p = unescape_dump(parts[1])
