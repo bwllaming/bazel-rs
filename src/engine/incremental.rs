@@ -904,7 +904,7 @@ pub(crate) fn fingerprint(package: &Package) -> Fingerprint {
         );
         // The rule's own digest, for its name and each of its outputs.
         let mut digest = [0u8; 16];
-        digest.copy_from_slice(&blake3::hash(text[start..].as_bytes()).as_bytes()[..16]);
+        digest.copy_from_slice(&blake3::hash(&text.as_bytes()[start..]).as_bytes()[..16]);
         targets.push((rule.label.name.clone(), digest));
         for out in &rule.outs {
             targets.push((out.clone(), digest));
