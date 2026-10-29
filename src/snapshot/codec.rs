@@ -40,6 +40,16 @@
 //! decoded group recomputes it from what it lists
 //! (InputGroup::listed_valid).
 //!
+//! Paths in the GROUPS and NODES sections are written once per section
+//! (MEM5): a section is its path table (the distinct path byte strings,
+//! first-seen order) followed by its content, where every path is its
+//! index in the table. An action reads thousands of the same paths as its
+//! siblings (a cross-compiling toolchain's files, a runfiles tree): listed
+//! in full they made `--config=linux_arm64 //src/rust/...`'s plan 1.28 GB
+//! (55 MB tabled), and decoded one allocation per listing. Decoded, every
+//! listing shares the table's one `SharedPath`, as the planner's do. META
+//! and any postcard use outside a section keep paths as byte strings.
+//!
 //! What the encoding leaves out, by design: an action's resolved client
 //! environment values (re-resolved by crate::request finalize on every run,
 //! and never written to disk), the workspace status (placeholders, expanded
@@ -78,7 +88,8 @@ pub const MAGIC: &[u8; 8] = b"BZRSPLN1";
 /// `map_each` functions (crate::snapshot::mapper). 4: META carries the
 /// build event plan (crate::bep::plan).
 // 7: incompatible skipped roots and BEP compatibility decisions in META.
-pub const FORMAT: u32 = 7;
+// 8: GROUPS and NODES sections carry a path table, paths as indices (MEM5).
+pub const FORMAT: u32 = 8;
 /// Actions per NODES section (fixed: the encoding must not depend on the
 /// machine).
 pub const CHUNK: usize = 1024;
@@ -238,10 +249,10 @@ pub fn encode_parts_with<T: Send>(
     // The shared input groups, each once, and every node's indices into
     // the table: sequential, before the chunks encode on other threads.
     let (table, indices) = group_table(&request.nodes);
-    let groups = postcard::to_stdvec(&table_of(&table))
+    let groups = to_section(&table_of(&table))
         .map_err(|error| postcard_error(error, "the shared input groups"))?;
     let encode_chunk = |(chunk, indices): &(&[PlannedAction], &[Vec<u32>])| {
-        postcard::to_stdvec(&chunk_elements(chunk, indices))
+        to_section(&chunk_elements(chunk, indices))
             .map(|bytes| (bytes.len(), part(bytes)))
             .map_err(|error| EncodeError::NotSerializable(not_serializable_reason(chunk, error)))
     };
@@ -490,6 +501,9 @@ fn encodes_to(request: &PlannedRequest, bytes: &[u8]) -> Result<bool, String> {
     fn encoded<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, String> {
         postcard::to_stdvec(value).map_err(|error| error.to_string())
     }
+    fn tabled<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, String> {
+        to_section(value).map_err(|error| error.to_string())
+    }
     let sections = sections(bytes)?;
     if encoded(&meta_of(request))? != sections.meta {
         return Ok(false);
@@ -497,7 +511,7 @@ fn encodes_to(request: &PlannedRequest, bytes: &[u8]) -> Result<bool, String> {
     // The table rebuilt from the request (first-seen order), then every
     // chunk with its nodes' indices into it.
     let (table, indices) = group_table(&request.nodes);
-    if encoded(&table_of(&table))? != sections.groups {
+    if tabled(&table_of(&table))? != sections.groups {
         return Ok(false);
     }
     let chunks: Vec<(&[PlannedAction], &[Vec<u32>])> = request
@@ -509,7 +523,7 @@ fn encodes_to(request: &PlannedRequest, bytes: &[u8]) -> Result<bool, String> {
         return Ok(false);
     }
     for ((chunk, indices), section) in chunks.into_iter().zip(sections.nodes) {
-        if encoded(&chunk_elements(chunk, indices))? != section {
+        if tabled(&chunk_elements(chunk, indices))? != section {
             return Ok(false);
         }
     }
@@ -588,7 +602,7 @@ pub fn sections(bytes: &[u8]) -> Result<Sections<'_>, String> {
 /// The GROUPS table: one `Arc` per entry, each flag recomputed.
 fn decode_groups(section: &[u8]) -> Result<Vec<Arc<InputGroup>>, String> {
     let table: Vec<GroupIn> =
-        postcard::from_bytes(section).map_err(|error| format!("shared input groups: {error}"))?;
+        from_section(section).map_err(|error| format!("shared input groups: {error}"))?;
     Ok(table
         .into_iter()
         .map(|group| Arc::new(group.into_group()))
@@ -599,7 +613,7 @@ fn decode_groups(section: &[u8]) -> Result<Vec<Arc<InputGroup>>, String> {
 /// decoded holders share its `Arc`s, in each action's own group order).
 fn decode_chunk(chunk: &[u8], table: &[Arc<InputGroup>]) -> Result<Vec<PlannedAction>, String> {
     let elements: Vec<(PlannedAction, Vec<u32>)> =
-        postcard::from_bytes(chunk).map_err(|error| format!("planned actions: {error}"))?;
+        from_section(chunk).map_err(|error| format!("planned actions: {error}"))?;
     elements
         .into_iter()
         .map(|(mut node, indices)| {
@@ -836,7 +850,27 @@ struct PathRef<'a>(&'a Path);
 
 impl Serialize for PathRef<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_bytes(self.0.as_os_str().as_bytes())
+        let bytes = self.0.as_os_str().as_bytes();
+        // In a GROUPS or NODES section ([`to_section`]): the path's index
+        // in the section's table.
+        let index = ENCODING.with(|table| {
+            let mut table = table.borrow_mut();
+            let table = table.as_mut()?;
+            Some(match table.positions.get(bytes) {
+                Some(&index) => index,
+                None => {
+                    let index = u32::try_from(table.entries.len())
+                        .expect("fewer than 2^32 paths in one section");
+                    table.entries.push(bytes.into());
+                    table.positions.insert(bytes.into(), index);
+                    index
+                }
+            })
+        });
+        match index {
+            Some(index) => serializer.serialize_u32(index),
+            None => serializer.serialize_bytes(bytes),
+        }
     }
 }
 
@@ -882,6 +916,122 @@ impl Bytes {
     }
 }
 
+// ---- the per-section path table (MEM5) --------------------------------------
+
+/// The paths of one GROUPS or NODES section, each once, in first-seen
+/// order while the section encodes (thread-local: chunks encode on several
+/// threads, each with its own table).
+#[derive(Default)]
+struct PathTable {
+    positions: crate::fast_hash::FxHashMap<Box<[u8]>, u32>,
+    entries: Vec<Box<[u8]>>,
+}
+
+thread_local! {
+    /// The table of the section this thread encodes, if any.
+    static ENCODING: std::cell::RefCell<Option<PathTable>> = const { std::cell::RefCell::new(None) };
+    /// The decoded table of the section this thread decodes, if any.
+    static DECODING: std::cell::RefCell<Option<Vec<SharedPath>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Clears this thread's table when the section is done (or its encoder or
+/// decoder panicked), so no later postcard call sees it.
+struct TableScope;
+
+impl Drop for TableScope {
+    fn drop(&mut self) {
+        ENCODING.with(|table| table.borrow_mut().take());
+        DECODING.with(|table| table.borrow_mut().take());
+    }
+}
+
+/// A GROUPS or NODES section: its path table (the distinct path byte
+/// strings) followed by `value` with every path written as its index in
+/// the table. The same value always gives the same bytes.
+fn to_section<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, postcard::Error> {
+    let _scope = TableScope;
+    ENCODING.with(|table| *table.borrow_mut() = Some(PathTable::default()));
+    let body = postcard::to_stdvec(value)?;
+    let table = ENCODING
+        .with(|table| table.borrow_mut().take())
+        .unwrap_or_default();
+    let entries: Vec<BytesRef<'_>> = table.entries.iter().map(|entry| BytesRef(entry)).collect();
+    let mut bytes = postcard::to_stdvec(&entries)?;
+    bytes.extend_from_slice(&body);
+    Ok(bytes)
+}
+
+/// [`to_section`]'s inverse: every path of the decoded value is shared
+/// with the table's one copy (a path many actions list is one allocation,
+/// as in the planner, crate::shared_path).
+fn from_section<T: serde::de::DeserializeOwned>(section: &[u8]) -> Result<T, postcard::Error> {
+    let (entries, body) = postcard::take_from_bytes::<Vec<Bytes>>(section)?;
+    let table: Vec<SharedPath> = entries
+        .into_iter()
+        .map(|entry| SharedPath::from(entry.path()))
+        .collect();
+    let _scope = TableScope;
+    DECODING.with(|slot| *slot.borrow_mut() = Some(table));
+    postcard::from_bytes(body)
+}
+
+/// A decoded path: shared with the section's table, or (outside a table
+/// section) its own bytes.
+pub(crate) enum PathIn {
+    Owned(Vec<u8>),
+    Shared(SharedPath),
+}
+
+impl<'de> Deserialize<'de> for PathIn {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let tabled = DECODING.with(|table| table.borrow().is_some());
+        if !tabled {
+            return Bytes::deserialize(deserializer).map(|bytes| PathIn::Owned(bytes.0));
+        }
+        let index = u32::deserialize(deserializer)?;
+        DECODING.with(|table| {
+            table
+                .borrow()
+                .as_ref()
+                .and_then(|table| table.get(index as usize).cloned())
+                .map(PathIn::Shared)
+                .ok_or_else(|| {
+                    serde::de::Error::custom(format!("path {index} is not in the section's table"))
+                })
+        })
+    }
+}
+
+impl PathIn {
+    fn path(self) -> PathBuf {
+        match self {
+            PathIn::Owned(bytes) => PathBuf::from(OsString::from_vec(bytes)),
+            PathIn::Shared(path) => path.to_path_buf(),
+        }
+    }
+}
+
+/// A path type a decoded [`PathIn`] converts into (a [`SharedPath`] keeps
+/// sharing the table's copy).
+pub(crate) trait FromPathIn {
+    fn from_path_in(path: PathIn) -> Self;
+}
+
+impl FromPathIn for PathBuf {
+    fn from_path_in(path: PathIn) -> Self {
+        path.path()
+    }
+}
+
+impl FromPathIn for SharedPath {
+    fn from_path_in(path: PathIn) -> Self {
+        match path {
+            PathIn::Owned(bytes) => SharedPath::from(PathBuf::from(OsString::from_vec(bytes))),
+            PathIn::Shared(path) => path,
+        }
+    }
+}
+
 /// `PathBuf` as raw bytes.
 pub(crate) mod path {
     use super::*;
@@ -893,10 +1043,10 @@ pub(crate) mod path {
         PathRef(value.as_ref()).serialize(serializer)
     }
 
-    pub(crate) fn deserialize<'de, D: Deserializer<'de>, P: From<PathBuf>>(
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>, P: FromPathIn>(
         deserializer: D,
     ) -> Result<P, D::Error> {
-        Bytes::deserialize(deserializer).map(|bytes| P::from(bytes.path()))
+        PathIn::deserialize(deserializer).map(P::from_path_in)
     }
 }
 
@@ -914,7 +1064,7 @@ pub(crate) mod optional_path {
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Option<PathBuf>, D::Error> {
-        Option::<Bytes>::deserialize(deserializer).map(|value| value.map(Bytes::path))
+        Option::<PathIn>::deserialize(deserializer).map(|value| value.map(PathIn::path))
     }
 }
 
@@ -932,8 +1082,8 @@ pub(crate) mod paths {
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Vec<PathBuf>, D::Error> {
-        Vec::<Bytes>::deserialize(deserializer)
-            .map(|value| value.into_iter().map(Bytes::path).collect())
+        Vec::<PathIn>::deserialize(deserializer)
+            .map(|value| value.into_iter().map(PathIn::path).collect())
     }
 }
 
@@ -952,8 +1102,8 @@ pub(crate) mod path_set {
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<BTreeSet<PathBuf>, D::Error> {
-        Vec::<Bytes>::deserialize(deserializer)
-            .map(|value| value.into_iter().map(Bytes::path).collect())
+        Vec::<PathIn>::deserialize(deserializer)
+            .map(|value| value.into_iter().map(PathIn::path).collect())
     }
 }
 
@@ -972,13 +1122,13 @@ pub(crate) mod path_pairs {
         )
     }
 
-    pub(crate) fn deserialize<'de, D: Deserializer<'de>, P: From<PathBuf>>(
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>, P: FromPathIn>(
         deserializer: D,
     ) -> Result<Vec<(P, P)>, D::Error> {
-        Vec::<(Bytes, Bytes)>::deserialize(deserializer).map(|value| {
+        Vec::<(PathIn, PathIn)>::deserialize(deserializer).map(|value| {
             value
                 .into_iter()
-                .map(|(a, b)| (P::from(a.path()), P::from(b.path())))
+                .map(|(a, b)| (P::from_path_in(a), P::from_path_in(b)))
                 .collect()
         })
     }
@@ -998,7 +1148,7 @@ pub(crate) mod path_contents {
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Vec<(PathBuf, Vec<u8>)>, D::Error> {
-        Vec::<(Bytes, Bytes)>::deserialize(deserializer)
+        Vec::<(PathIn, Bytes)>::deserialize(deserializer)
             .map(|value| value.into_iter().map(|(a, b)| (a.path(), b.0)).collect())
     }
 }
@@ -1021,10 +1171,10 @@ pub(crate) mod entries {
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<crate::action::RunfilesEntries, D::Error> {
-        Vec::<(String, Option<Bytes>)>::deserialize(deserializer).map(|value| {
+        Vec::<(String, Option<PathIn>)>::deserialize(deserializer).map(|value| {
             value
                 .into_iter()
-                .map(|(name, path)| (name.into(), path.map(|path| path.path().into())))
+                .map(|(name, path)| (name.into(), path.map(SharedPath::from_path_in)))
                 .collect()
         })
     }
@@ -1102,7 +1252,7 @@ pub(crate) mod embedded {
         deserializer: D,
     ) -> Result<Vec<(PathBuf, &'static [u8])>, D::Error> {
         let blobs = embedded_blobs();
-        Vec::<(Bytes, u8)>::deserialize(deserializer)?
+        Vec::<(PathIn, u8)>::deserialize(deserializer)?
             .into_iter()
             .map(|(destination, tag)| {
                 let blob = blobs.get(usize::from(tag)).copied().ok_or_else(|| {
@@ -2010,7 +2160,12 @@ mod tests {
             .unwrap()
             .len()
         };
-        let group_bytes = postcard::to_stdvec(&GroupOut::of(&tool)).unwrap().len();
+        // A GROUPS section's growth by these groups (their paths in its
+        // table, MEM5).
+        let groups_bytes = |groups: &[&InputGroup]| {
+            to_section(&table_of(groups)).unwrap().len() - to_section(&table_of(&[])).unwrap().len()
+        };
+        let group_bytes = groups_bytes(&[&tool]);
         assert!(group_bytes > 100, "{group_bytes}");
         // Without groups, with one group held by 1 and by 100 actions.
         let (bare_1, bare_100) = (size(1, &[]), size(100, &[]));
@@ -2026,7 +2181,56 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(table(&two).len(), 2);
-        assert_eq!(two.len() - bare_100, 2 * group_bytes + 100);
+        assert_eq!(two.len() - bare_100, groups_bytes(&[&tool, &other]) + 100);
+        assert!(groups_bytes(&[&tool, &other]) > group_bytes);
+    }
+
+    /// MEM5: a path many actions of one NODES section list is encoded once
+    /// (the section's path table) and decoded as one shared allocation; a
+    /// path index outside the table is refused; outside a section paths
+    /// stay byte strings.
+    #[test]
+    fn section_paths_are_tabled_once_and_decode_shared() {
+        let shared = raw(b"/ws/\xffshared/input.rs");
+        let reader = |index: usize| {
+            let mut node = holder(index, &[]);
+            node.action.inputs = vec![
+                (shared.clone().into(), PathBuf::from("src/input.rs").into()),
+                (
+                    PathBuf::from(format!("/ws/own{index}")).into(),
+                    PathBuf::from(format!("own{index}")).into(),
+                ),
+            ];
+            node
+        };
+        let size = |count: usize| encode(&with_nodes((0..count).map(reader).collect())).unwrap();
+        let (one, hundred) = (size(1), size(100));
+        let once = |bytes: &[u8]| {
+            bytes
+                .windows(b"\xffshared/input.rs".len())
+                .filter(|window| *window == b"\xffshared/input.rs")
+                .count()
+        };
+        assert_eq!((once(&one), once(&hundred)), (1, 1));
+        let decoded = decode(&hundred).unwrap();
+        assert_eq!(encode(&decoded).unwrap(), hundred);
+        let first = &decoded.nodes[0].action.inputs[0];
+        assert_eq!(first.0.as_path(), shared.as_path());
+        for node in &decoded.nodes {
+            let input = &node.action.inputs[0];
+            assert!(std::ptr::eq(input.0.as_path(), first.0.as_path()));
+            assert!(std::ptr::eq(input.1.as_path(), first.1.as_path()));
+        }
+        // Outside a section (no table) a path is its bytes.
+        let plain = postcard::to_stdvec(&reader(0)).unwrap();
+        assert_eq!(once(&plain), 1);
+        let back: PlannedAction = postcard::from_bytes(&plain).unwrap();
+        assert_eq!(back.action.inputs, reader(0).action.inputs);
+        // An index past the table.
+        let mut table_of_one = to_section(&vec![PathRef(Path::new("a"))]).unwrap();
+        assert_eq!(table_of_one, [1, 1, b'a', 1, 0]);
+        *table_of_one.last_mut().unwrap() = 1;
+        assert!(from_section::<Vec<PathIn>>(&table_of_one).is_err());
     }
 
     /// A group's `valid` flag is never decoded but recomputed: a tampered
@@ -2092,10 +2296,10 @@ mod tests {
             input_group("other.runfiles", "b"),
         );
         let meta = postcard::to_stdvec(&meta_of(&sample())).unwrap();
-        let one = postcard::to_stdvec(&table_of(&[&tool])).unwrap();
-        let two = postcard::to_stdvec(&table_of(&[&tool, &other])).unwrap();
+        let one = to_section(&table_of(&[&tool])).unwrap();
+        let two = to_section(&table_of(&[&tool, &other])).unwrap();
         let node = holder(0, &[]);
-        let nodes = |indices: &[u32]| postcard::to_stdvec(&vec![(&node, indices)]).unwrap();
+        let nodes = |indices: &[u32]| to_section(&vec![(&node, indices)]).unwrap();
         let decoded = |sections: &[(u32, &[u8])]| decode(&container(sections));
         // The well-formed container decodes.
         let fine = decoded(&[
