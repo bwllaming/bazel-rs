@@ -4638,10 +4638,13 @@ fn incremental_analysis_splices_prunes_and_falls_back() {
     incremental(3);
     twin.each(|root| fs::remove_file(root.join("ws/incr/srcs/new.txt")).unwrap());
     incremental(3);
-    // Fallbacks, in this process before any analysis or in a fresh one.
+    // A target added to the package: a new requested label (it, :a, :b
+    // and //incr_use:u analyzed), its actions inserted where its analysis
+    // would have planned them.
     state.toggle("incr-extra");
     twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
-    fallback("expansion may change");
+    incremental(4);
+    // Fallbacks, in this process before any analysis or in a fresh one.
     state.toggle("incr-dep");
     twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
     fallback("dependencies of //incr:a changed");
@@ -4686,6 +4689,12 @@ fn incremental_analysis_splices_prunes_and_falls_back() {
     twin.write("incr/b.txt", "b\n");
     let restored = twin.same(args, &[]);
     restored.assert_success();
+    // The added target removed again: its actions go, :a, :b and
+    // //incr_use:u are analyzed again.
+    twin.same(args, &[]).assert_hit();
+    state.toggle("incr-extra");
+    twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
+    incremental(3);
 }
 
 /// A macro module loaded by `incr_m/BUILD.bazel` only.
@@ -4865,9 +4874,9 @@ fn incremental_analysis_of_dependency_changes() {
     // (:x2 is re-analyzed too: its actions are the re-analysis's).
     step(ro_build(&[":x", ":y", "//lib:l"], &[], &[":x2"]), Ok(5));
     step(ro_build(&[":x", ":y", "//lib:l"], &[], &[]), Ok(5));
-    // Removed: //lib:l's action is no longer consumed by a re-analyzed one
-    // (it might not be needed any more).
-    step(ro_build(&[":x", ":y"], &[], &[]), Err("no longer depend"));
+    // Removed: //lib:l's action is no longer consumed by a re-analyzed
+    // one, but still needed (//lib:l is requested).
+    step(ro_build(&[":x", ":y"], &[], &[]), Ok(5));
     // Reordered: :y and :y2 would be planned first.
     step(
         ro_build(&[":y", ":x"], &[], &[]),

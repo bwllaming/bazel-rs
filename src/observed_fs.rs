@@ -1829,18 +1829,49 @@ pub fn open_window() -> bool {
 /// (path, its tree: a `watch_tree` directory, everything below counts).
 /// Incremental analysis (crate::snapshot::incremental) never attributes a
 /// change of one of them to a package: the repository may change.
-static REPOSITORY_INPUTS: Mutex<BTreeSet<(PathBuf, bool)>> = Mutex::new(BTreeSet::new());
+/// The third element names the repository whose execution or warm check
+/// observed it ([`repository_owner`]; `None`: a module extension or
+/// unknown).
+#[allow(clippy::type_complexity)]
+static REPOSITORY_INPUTS: Mutex<BTreeSet<(PathBuf, bool, Option<String>)>> =
+    Mutex::new(BTreeSet::new());
+
+thread_local! {
+    /// The repositories being executed or checked on this thread,
+    /// innermost last ([`repository_owner`]).
+    static REPOSITORY_OWNERS: std::cell::RefCell<Vec<Option<String>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// While alive, recorded inputs noted on this thread belong to the
+/// repository `canonical` (`None`: to something else, a module extension).
+pub struct RepositoryOwner(());
+
+impl Drop for RepositoryOwner {
+    fn drop(&mut self) {
+        REPOSITORY_OWNERS.with(|owners| {
+            owners.borrow_mut().pop();
+        });
+    }
+}
+
+/// [`RepositoryOwner`] of `canonical`.
+pub fn repository_owner(canonical: Option<&str>) -> RepositoryOwner {
+    REPOSITORY_OWNERS.with(|owners| owners.borrow_mut().push(canonical.map(str::to_owned)));
+    RepositoryOwner(())
+}
 
 /// A recorded input of a repository or extension was observed (see
 /// [`REPOSITORY_INPUTS`]); outside the window nothing is kept.
 pub fn note_repository_input(path: &Path, tree: bool) {
     if recording() && !PRIVATE_RECORDING.with(std::cell::Cell::get) {
-        lock(&REPOSITORY_INPUTS).insert((path.to_path_buf(), tree));
+        let owner = REPOSITORY_OWNERS.with(|owners| owners.borrow().last().cloned().flatten());
+        lock(&REPOSITORY_INPUTS).insert((path.to_path_buf(), tree, owner));
     }
 }
 
 /// The repository inputs noted so far (see [`note_repository_input`]).
-pub fn repository_inputs() -> Vec<(PathBuf, bool)> {
+pub fn repository_inputs() -> Vec<(PathBuf, bool, Option<String>)> {
     lock(&REPOSITORY_INPUTS).iter().cloned().collect()
 }
 
@@ -2573,7 +2604,11 @@ mod tests {
         let path = temp.path().join("private-runtime-input");
         let (_, recording) = record_private(|| note_repository_input(&path, true));
         assert!(recording.observations.is_empty());
-        assert!(!repository_inputs().iter().any(|(input, _)| input == &path));
+        assert!(
+            !repository_inputs()
+                .iter()
+                .any(|(input, _, _)| input == &path)
+        );
     }
 
     /// A captured set lands in the recorder at most once, however many

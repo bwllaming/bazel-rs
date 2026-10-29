@@ -876,6 +876,9 @@ where
     if FORCE_FETCH.load(std::sync::atomic::Ordering::Relaxed) {
         return Ok(None);
     }
+    // The recorded inputs its warm check observes are this repository's
+    // (crate::snapshot::incremental).
+    let _owner = crate::observed_fs::repository_owner(Some(stage_key));
     let direct = cache.join("direct");
     let shared = direct.join("specs").join(spec_key);
     let found = reuse_through(cache, &shared, stage_key, spec_key, &validate)?;
@@ -917,6 +920,47 @@ enum Reuse {
 /// snapshot the run saves keeps the validated observations.
 static CARRIED: std::sync::RwLock<Option<std::collections::HashSet<PathBuf>>> =
     std::sync::RwLock::new(None);
+
+/// Whether the published store trees `old` and `new`
+/// (`<cache>/direct/trees/<identity>`) hold the same contents: their
+/// manifests' entries (mode, size, digest, link target) and slot classes
+/// (incremental analysis: a repository that ran again because one of its
+/// recorded inputs changed published what it had, crate::snapshot::incremental).
+pub fn same_tree_contents(old: &Path, new: &Path) -> Result<bool, String> {
+    let manifest = |root: &Path| -> Result<Manifest, String> {
+        let identity = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("{} is no store tree", root.display()))?;
+        let direct = root
+            .parent()
+            .filter(|trees| trees.file_name().is_some_and(|name| name == "trees"))
+            .and_then(Path::parent)
+            .ok_or_else(|| format!("{} is no store tree", root.display()))?;
+        let path = direct.join("manifests").join(format!("{identity}.json"));
+        let bytes = crate::observed_fs::read(&path)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        parse_manifest(&bytes).ok_or_else(|| format!("{}: malformed manifest", path.display()))
+    };
+    let (old, new) = (manifest(old)?, manifest(new)?);
+    let content = |manifest: &Manifest| {
+        manifest
+            .files
+            .iter()
+            .map(|(path, entry)| {
+                (
+                    path.clone(),
+                    entry.directory,
+                    entry.mode,
+                    entry.size,
+                    entry.sha256.clone(),
+                    entry.symlink.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    Ok(old.slot_class() == new.slot_class() && content(&old) == content(&new))
+}
 
 /// Carry the snapshot's verdict on `roots` (see [`CARRIED`]).
 pub fn carry_verified_trees(roots: impl IntoIterator<Item = PathBuf>) {

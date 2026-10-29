@@ -1290,6 +1290,9 @@ fn run() -> Result<(), String> {
                 } else {
                     &rest[..]
                 },
+                relative_directory: &relative_directory,
+                build: command == "build",
+                expand_test_suites: test_options.expand_test_suites,
                 lockfile_gate: &lockfile_gate,
                 status: &status_options,
                 workspace: &root,
@@ -1992,6 +1995,11 @@ fn plan_request(
 /// engine (crate::snapshot::incremental).
 struct IncrementalContext<'a> {
     patterns: &'a [String],
+    /// TargetPattern.Parser's relative directory.
+    relative_directory: &'a str,
+    /// A `build` (its requested labels may change).
+    build: bool,
+    expand_test_suites: bool,
     lockfile_gate: &'a LockfileGate,
     status: &'a bazel_rs::workspace_status::WorkspaceStatusOptions,
     workspace: &'a Path,
@@ -2040,6 +2048,52 @@ fn incremental_build(
             || pattern.ends_with(":all-targets")
             || pattern.ends_with(":all-targets/")
     });
+    // The lookup validated every repository tree the saved analysis
+    // reused, and no recorded input of a repository changed but those of
+    // `candidate.repositories`, which run again: the others' warm checks
+    // are not run again (docs/INCREMENTAL_ANALYSIS.md).
+    let old_roots: std::collections::BTreeMap<String, std::path::PathBuf> = candidate
+        .index
+        .repository_roots
+        .iter()
+        .filter(|(name, _)| candidate.repositories.contains(name))
+        .map(|(name, root)| (name.clone(), root.0.clone()))
+        .collect();
+    bazel_rs::repository_store::carry_verified_trees(
+        candidate
+            .inputs
+            .recording
+            .repositories
+            .iter()
+            .filter(|tree| tree.kind == "direct")
+            .filter(|tree| !old_roots.values().any(|root| *root == tree.root))
+            .map(|tree| tree.root.clone()),
+    );
+    // A repository one of whose recorded inputs changed runs again; its
+    // tree must hold what it held (Skyframe's change pruning of
+    // repository values): then nothing it feeds changed.
+    let mut replaced_roots: Vec<(String, std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+    for (name, old) in &old_roots {
+        let new = engine
+            .repository_root_now(name)
+            .map_err(|error| early(format!("repository @@{name} does not run again: {error}")))?;
+        if new != *old {
+            match bazel_rs::repository_store::same_tree_contents(old, &new) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(early(format!(
+                        "repository @@{name} ran again and published other contents"
+                    )));
+                }
+                Err(error) => {
+                    return Err(early(format!(
+                        "repository @@{name} ran again: its trees cannot be compared: {error}"
+                    )));
+                }
+            }
+        }
+        replaced_roots.push((name.clone(), old.clone(), new));
+    }
     // Edited `.bzl` modules whose code did not change (comments only):
     // nothing they define or load changed. Read again (the merged INPUTS
     // record what was read now).
@@ -2070,6 +2124,7 @@ fn incremental_build(
         packages: Default::default(),
         fingerprints: Default::default(),
         pruned: 0,
+        relabeled: Default::default(),
     };
     let reloaded: Vec<u32> = candidate
         .loaded
@@ -2080,31 +2135,96 @@ fn incremental_build(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    for id in reloaded {
-        let package = bazel_rs::label::PackageId {
+    // The requested labels may change with a plain `build` pattern phase.
+    let relabel_allowed: Result<(), String> = if !context.build {
+        Err("the requested labels of a test or run never change".to_owned())
+    } else if candidate.index.patterns.is_none() {
+        Err(
+            "the target pattern phase was not a plain build's (tag filters, tests, test suites)"
+                .to_owned(),
+        )
+    } else if candidate.index.root_entries.len() != candidate.index.labels.len() + 1 {
+        Err("the saved index has no root entries".to_owned())
+    } else {
+        Ok(())
+    };
+    // Loaded on the loading-phase-threads pool, committed in order.
+    let ids: Vec<bazel_rs::label::PackageId> = reloaded
+        .iter()
+        .map(|id| bazel_rs::label::PackageId {
             repository: String::new(),
-            package: candidate.index.packages[id as usize].package.clone(),
-        };
-        let (fingerprint, printed) = engine.package_fingerprint(&package).map_err(|error| {
+            package: candidate.index.packages[*id as usize].package.clone(),
+        })
+        .collect();
+    let fingerprints = engine
+        .package_fingerprints(&ids)
+        .map_err(|(package, error)| {
             IncrementalFallback::Reexec(format!(
                 "package //{} does not load: {error}",
                 package.package
             ))
         })?;
+    for (id, (fingerprint, printed)) in reloaded.iter().zip(fingerprints) {
         incremental::compare_package(
             &candidate,
-            id,
+            *id,
             fingerprint,
             printed,
             strict_patterns,
+            &relabel_allowed,
             &mut changed,
         )
         .map_err(early)?;
     }
+    // The requested labels of the packages whose targets were added,
+    // removed or renamed: the pattern phase's selection of them now.
+    let relabel = if changed.relabeled.is_empty() {
+        None
+    } else {
+        let covered = candidate.index.patterns.clone().unwrap_or_default();
+        let mut selections = std::collections::BTreeMap::new();
+        for id in &changed.relabeled {
+            if candidate.index.suite_packages.contains(id) {
+                return Err(early(format!(
+                    "package //{}: its targets changed, and a test suite's expansion read it",
+                    candidate.index.packages[*id as usize].package
+                )));
+            }
+            let positions: std::collections::BTreeSet<u32> = covered
+                .iter()
+                .filter(|(_, package)| package == id)
+                .map(|(position, _)| *position)
+                .collect();
+            let package = bazel_rs::label::PackageId {
+                repository: String::new(),
+                package: candidate.index.packages[*id as usize].package.clone(),
+            };
+            let selection = engine
+                .package_selection(
+                    context.patterns,
+                    context.relative_directory,
+                    &positions,
+                    &package,
+                    context.expand_test_suites,
+                )
+                .map_err(|error| {
+                    early(format!(
+                        "the target patterns' selection of //{} cannot be computed: {error}",
+                        package.package
+                    ))
+                })?;
+            selections.insert(*id, selection);
+        }
+        Some(incremental::relabel(&candidate.index, &selections).map_err(early)?)
+    };
     let reloaded_at = started.elapsed();
-    let (labels, dirty) =
-        incremental::dirty_labels(&candidate.index, &changed.packages, &candidate.modules)
-            .map_err(early)?;
+    let dirty = incremental::dirty_labels(
+        &candidate.index,
+        &changed.packages,
+        &candidate.modules,
+        relabel.as_ref(),
+    )
+    .map_err(early)?;
     incremental_finish(
         engine,
         candidate,
@@ -2114,8 +2234,9 @@ fn incremental_build(
             started,
             reloaded_at,
             changed,
-            labels,
             dirty,
+            relabel: relabel.unwrap_or_default(),
+            replaced_roots,
             explain,
             timing,
         },
@@ -2123,13 +2244,21 @@ fn incremental_build(
     .map_err(IncrementalFallback::Reexec)
 }
 
+/// What the window's `INFO: Analyzed …` and `INFO: Found …` lines count:
+/// the requested labels, packages loaded, targets configured, aspect
+/// applications.
+type WindowCounts = (Vec<bazel_rs::label::Label>, usize, usize, usize);
+
 /// What [`incremental_build`] decided before its partial analysis.
 struct IncrementalPlan {
     started: std::time::Instant,
     reloaded_at: std::time::Duration,
     changed: bazel_rs::snapshot::incremental::Changed,
-    labels: Vec<bazel_rs::label::Label>,
-    dirty: std::collections::BTreeSet<u32>,
+    dirty: bazel_rs::snapshot::incremental::Dirty,
+    /// The requested labels' change (none: [`Default`]).
+    relabel: bazel_rs::snapshot::incremental::Relabel,
+    /// (repository, old root, new root) of the repositories that ran again.
+    replaced_roots: Vec<(String, std::path::PathBuf, std::path::PathBuf)>,
     explain: bool,
     timing: bool,
 }
@@ -2147,32 +2276,53 @@ fn incremental_finish(
         started,
         reloaded_at,
         changed,
-        labels,
-        dirty,
+        dirty:
+            incremental::Dirty {
+                labels,
+                dirty,
+                removed,
+                cost,
+            },
+        relabel,
+        replaced_roots,
         explain,
         timing,
     } = plan;
     let incremental::Candidate {
         inputs,
-        window,
+        mut window,
         request: full,
         index,
         changed: changed_observations,
         key,
         ..
     } = candidate;
-    // The lookup validated every repository tree the saved analysis
-    // reused, and no recorded input of a repository changed: their warm
-    // checks are not run again (docs/INCREMENTAL_ANALYSIS.md).
-    bazel_rs::repository_store::carry_verified_trees(
-        inputs
-            .recording
-            .repositories
-            .iter()
-            .filter(|tree| tree.kind == "direct")
-            .map(|tree| tree.root.clone()),
-    );
-    let (request, merged, status) = if labels.is_empty() {
+    let relabels = relabel.changes();
+    let new_labels: Vec<bazel_rs::label::Label> = if relabels {
+        relabel.labels.clone()
+    } else {
+        index.labels.clone()
+    };
+    // The window's `INFO: Analyzed …` counts of the saved analysis.
+    let window_counts = |index: &incremental::Index, aspects: usize| {
+        (
+            index.labels.clone(),
+            index
+                .packages
+                .iter()
+                .filter(|package| package.loaded)
+                .count(),
+            index.root_entries.last().copied().unwrap_or(0) as usize,
+            aspects,
+        )
+    };
+    let mut counts: Option<(WindowCounts, WindowCounts)> = None;
+    // The keys analyzed again (identities: the merged index compacts).
+    let mut analyzed_identities: Vec<incremental::IndexKey> = dirty
+        .iter()
+        .map(|key| index.keys[*key as usize].clone())
+        .collect();
+    let (request, merged, status) = if labels.is_empty() && !relabels && removed.is_empty() {
         // Nothing the request analyzes changed (a comment, an unused
         // target): the saved plan stands.
         let needs_status = inputs.workspace_status || full.has_status_placeholders();
@@ -2233,37 +2383,132 @@ fn incremental_finish(
             }
         };
         drop(requested);
-        let sub = engine.plan_request(bazel_rs::engine::RequestSpec {
-            command,
-            build: &labels,
-            runs: &runs,
-            trees,
-        })?;
-        let sub = bazel_rs::snapshot::codec::hand_over(sub)?;
-        let status = engine.take_workspace_status();
-        let sub_index =
-            incremental::take_planned_index().ok_or("the partial analysis recorded no index")?;
+        let (sub, sub_index, status) = if labels.is_empty() {
+            // Only removed labels: nothing to analyze.
+            let needs_status = inputs.workspace_status || full.has_status_placeholders();
+            let status = bazel_rs::snapshot::hit::quiet_status(
+                context.status,
+                context.workspace,
+                needs_status,
+            )?;
+            bazel_rs::progress::arm_summary();
+            (
+                bazel_rs::request::PlannedRequest {
+                    command,
+                    execute: full.execute,
+                    ..bazel_rs::request::PlannedRequest::empty()
+                },
+                incremental::Index {
+                    top: index.top,
+                    root_entries: vec![0],
+                    ..incremental::Index::default()
+                },
+                status,
+            )
+        } else {
+            let sub = engine.plan_request(bazel_rs::engine::RequestSpec {
+                command,
+                build: &labels,
+                runs: &runs,
+                trees,
+            })?;
+            let sub = bazel_rs::snapshot::codec::hand_over(sub)?;
+            let status = engine.take_workspace_status();
+            let sub_index = incremental::take_planned_index()
+                .ok_or("the partial analysis recorded no index")?;
+            (sub, sub_index, status)
+        };
         let mut index = index;
-        let mapped = incremental::check_graph(&mut index, &dirty, &sub_index)?;
-        let spliced = incremental::splice(full, &index, &labels, &dirty, sub)?;
+        // Each added label's new targets go where its analysis would have
+        // begun: before the next saved requested label's.
+        let added: Vec<(u32, u32)> = relabel
+            .added
+            .iter()
+            .map(|label| {
+                let at = labels
+                    .iter()
+                    .position(|analyzed| analyzed == label)
+                    .ok_or("an added label was not analyzed")?;
+                let next = index.labels.partition_point(|old| old < label);
+                let boundary = *index
+                    .root_entries
+                    .get(next)
+                    .ok_or("the saved index has no root entries")?;
+                Ok((at as u32, boundary))
+            })
+            .collect::<Result<_, String>>()?;
+        let graph = incremental::check_graph(&mut index, &dirty, &removed, &sub_index, &added)?;
+        let mut analyzed_keys = dirty.clone();
+        analyzed_keys.extend(graph.new_keys.iter().copied());
+        analyzed_identities.extend(
+            graph
+                .new_keys
+                .iter()
+                .map(|key| index.keys[*key as usize].clone()),
+        );
+        let before = window_counts(&index, graph.aspects.0);
+        let spliced = incremental::splice(
+            full,
+            &index,
+            &labels,
+            &analyzed_keys,
+            sub,
+            &incremental::Shape {
+                labels: &new_labels,
+                removed: &removed,
+                new_keys: &graph.new_keys,
+                inserts: &graph.inserts,
+                sub: &sub_index,
+            },
+        )?;
         let merged = incremental::merge_index(
             index,
-            &dirty,
-            Some((&sub_index, &mapped)),
+            &analyzed_keys,
+            Some((&sub_index, &graph.mapped)),
             &changed.fingerprints,
         );
+        let merged = incremental::reshape_index(
+            merged,
+            &new_labels,
+            &labels,
+            Some((&sub_index, &graph.mapped)),
+            &removed,
+            &graph.inserts,
+        );
+        if merged.root_entries.len() != new_labels.len() + 1 {
+            return Err("the merged index has no root entries".to_owned());
+        }
+        let after = window_counts(&merged, graph.aspects.1);
+        if before != after {
+            counts = Some((before, after));
+        }
         (spliced, merged, status)
     };
     // The modules: what this run loaded replaces what the saved index
     // knew of them (a `.bzl` edit may change a module's loads, a BUILD
     // edit a package's, a re-analyzed target's rule its modules).
     let mut merged = merged;
+    // The repositories that ran again: their new roots.
+    for (name, _, new) in &replaced_roots {
+        merged.repository_roots.retain(|(other, _)| other != name);
+        merged
+            .repository_roots
+            .push((name.clone(), incremental::PathBufWire(new.clone())));
+    }
+    merged.repository_roots.sort();
     {
-        let keys: Vec<(u32, bazel_rs::label::Label)> = dirty
+        let ids: std::collections::HashMap<&incremental::IndexKey, u32> = merged
+            .keys
             .iter()
-            .filter(|key| merged.keys[**key as usize].config.is_some())
-            .map(|key| (*key, merged.keys[*key as usize].label.clone()))
+            .enumerate()
+            .map(|(id, key)| (key, id as u32))
             .collect();
+        let keys: Vec<(u32, bazel_rs::label::Label)> = analyzed_identities
+            .iter()
+            .filter(|key| key.config.is_some())
+            .filter_map(|key| Some((*ids.get(key)?, key.label.clone())))
+            .collect();
+        drop(ids);
         let rules = engine.rule_modules(&keys);
         incremental::refresh_modules(
             &mut merged,
@@ -2283,6 +2528,16 @@ fn incremental_finish(
         return Err("the partial analysis's stderr capture is incomplete".to_owned());
     }
     incremental::window_covers(&window, &captured.bytes)?;
+    // The requested labels, or the counts, changed: the window's
+    // `INFO: Analyzed …` and `INFO: Found …` lines are the full analysis's
+    // (the saved ones must be what the saved counts print).
+    if let Some((before, after)) = &counts {
+        let lines = |(labels, packages, configured, aspects): &WindowCounts| {
+            bazel_rs::progress::analysis_lines(labels, None, *packages, *configured, *aspects)
+        };
+        let (old, new) = (lines(before), lines(after));
+        window = incremental::replace_window_lines(&window, &old, &new)?;
+    }
     let recorder = bazel_rs::observed_fs::recorder().ok_or("nothing was recorded")?;
     let taints = recorder.taints();
     if let Some((taint, record)) = taints.iter().next() {
@@ -2297,6 +2552,12 @@ fn incremental_finish(
     // full analysis would not either (every target observing inside a
     // changed package was re-analyzed).
     let mut inputs = inputs;
+    // The trees the repositories that ran again replaced.
+    inputs.recording.repositories.retain(|tree| {
+        !replaced_roots
+            .iter()
+            .any(|(_, old, new)| old != new && tree.root == *old)
+    });
     let changed_set: std::collections::HashSet<usize> =
         changed_observations.iter().copied().collect();
     let observations = std::mem::take(&mut inputs.recording.observations);
@@ -2308,12 +2569,16 @@ fn incremental_finish(
         .collect();
     context.lockfile_gate.open();
     let summary = format!(
-        "incremental {key}: {} changed observation(s) in {} package(s), {} unchanged; {} configured target(s) dirty, {} requested target(s) re-analyzed; {:.1} ms (reload {:.1} ms)",
+        "incremental {key}: {} changed observation(s) in {} package(s), {} unchanged; {} configured target(s) dirty, {} requested target(s) re-analyzed; {} label(s) added, {} removed ({} target(s)); {} repository(ies) ran again unchanged; cost {cost}%; {:.1} ms (reload {:.1} ms)",
         changed_observations.len(),
         changed.packages.len(),
         changed.pruned,
         dirty.len(),
         labels.len(),
+        relabel.added.len(),
+        relabel.removed.len(),
+        removed.len(),
+        replaced_roots.len(),
         started.elapsed().as_secs_f64() * 1000.0,
         reloaded_at.as_secs_f64() * 1000.0,
     );

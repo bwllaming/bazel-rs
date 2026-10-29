@@ -1218,6 +1218,8 @@ pub fn execute(
     let _fetching = crate::progress::fetching_extension(|| {
         format!("{}%{extension_name}", public_label.canonical_starlark())
     });
+    // Its recorded inputs belong to no repository.
+    let _owner = crate::observed_fs::repository_owner(None);
     let run = || -> anyhow::Result<ExtensionExecution> {
         let tag_repo_mappings = RefCell::new(Vec::new());
         let modules = bind_modules(&repositories, definition, participants, &tag_repo_mappings)

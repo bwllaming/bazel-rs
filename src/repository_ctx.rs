@@ -4866,6 +4866,9 @@ fn execute_with(
     stage: &Path,
     live: bool,
 ) -> Result<ExecutedRepository, String> {
+    // What the rule watches are this repository's recorded inputs
+    // (crate::snapshot::incremental).
+    let _owner = crate::observed_fs::repository_owner(Some(canonical_name));
     let run = || -> anyhow::Result<ExecutedRepository> {
         ensure!(
             canonical_name.is_ascii() && original_name.is_ascii(),

@@ -38,6 +38,24 @@ thread_local! {
     /// The outermost shared computation (diagnostics).
     static SHARED_NAME: Cell<&'static str> = const { Cell::new("") };
     static PATTERN_DEPTH: Cell<u32> = const { Cell::new(0) };
+    static SUITE_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// While alive, the packages the engine looks up are read by a test
+/// suite's expansion in the target pattern phase.
+pub(super) struct SuiteScope(());
+
+impl SuiteScope {
+    pub(super) fn enter() -> Self {
+        SUITE_DEPTH.with(|depth| depth.set(depth.get() + 1));
+        Self(())
+    }
+}
+
+impl Drop for SuiteScope {
+    fn drop(&mut self) {
+        SUITE_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
 }
 
 /// While alive, the engine's lookups belong to a computation whose result
@@ -123,6 +141,22 @@ pub(super) struct Tracker {
     root_analysis: Option<u32>,
     /// The root analysis reached its first key.
     root_reached: bool,
+    /// The plan length when each requested label's analysis began (by
+    /// position), and at the end of phase 1 (last).
+    root_entries: Vec<u32>,
+    /// (requested label position, `u32::MAX` for the workspace status;
+    /// action id): the producers of the requested labels' hidden top-level
+    /// artifacts (the plan's reachability roots besides the reported ones).
+    demand: Vec<(u32, String)>,
+    /// The target pattern phase's pattern being expanded (its position).
+    pattern_position: Option<u32>,
+    /// (pattern position, package) the wildcard patterns expanded.
+    covered: BTreeSet<(u32, u32)>,
+    /// The pattern phase was the plain `build` one (no tag filters, no
+    /// tests): `Some(simple)` once it ran.
+    patterns_simple: Option<bool>,
+    /// The packages test suite expansions read.
+    suite_packages: BTreeSet<u32>,
 }
 
 #[derive(Default)]
@@ -210,6 +244,9 @@ impl Tracker {
         let package = label.package_id();
         let id = self.package(&package);
         let inner = self.frames.last().copied();
+        if SUITE_DEPTH.with(Cell::get) > 0 {
+            self.suite_packages.insert(id);
+        }
         if pattern() {
             self.packages[id as usize].pattern = true;
         } else if let Some((frame, depth)) = inner
@@ -370,6 +407,71 @@ impl Engine {
         }
     }
 
+    /// The analysis of requested label `position` begins with `plan_len`
+    /// targets planned (`position` = the labels' count: phase 1 ended).
+    pub(super) fn track_root_entry(&mut self, position: usize, plan_len: usize) {
+        if let Some(tracker) = self.incremental.as_mut() {
+            if position == 0 {
+                tracker.root_entries.clear();
+            }
+            if tracker.root_entries.len() == position {
+                tracker.root_entries.push(plan_len as u32);
+            }
+        }
+    }
+
+    /// The hidden top-level artifacts' producers of the request (the
+    /// requested label at each position; `None`: the workspace status).
+    pub(super) fn track_demand(&mut self, demand: Vec<(Option<usize>, String)>) {
+        if let Some(tracker) = self.incremental.as_mut() {
+            tracker.demand = demand
+                .into_iter()
+                .map(|(position, id)| (position.map_or(u32::MAX, |position| position as u32), id))
+                .collect();
+            tracker.demand.sort();
+            tracker.demand.dedup();
+        }
+    }
+
+    /// The target pattern phase expands the pattern at `position` (`None`:
+    /// done).
+    pub(super) fn track_pattern(&mut self, position: Option<usize>) {
+        if let Some(tracker) = self.incremental.as_mut() {
+            // Only the target pattern phase's (crate::engine's `select*`
+            // serve other commands too).
+            tracker.pattern_position = position
+                .filter(|_| pattern())
+                .map(|position| position as u32);
+        }
+    }
+
+    /// The pattern being expanded covers `packages`.
+    pub(super) fn track_pattern_packages(&mut self, packages: &[PackageId]) {
+        if let Some(tracker) = self.incremental.as_mut()
+            && let Some(position) = tracker.pattern_position
+        {
+            for package in packages {
+                let id = tracker.package(package);
+                tracker.covered.insert((position, id));
+            }
+        }
+    }
+
+    /// A test suite's expansion read `label`'s package.
+    pub(super) fn track_suite_package(&mut self, label: &Label) {
+        if let Some(tracker) = self.incremental.as_mut() {
+            let id = tracker.package(&label.package_id());
+            tracker.suite_packages.insert(id);
+        }
+    }
+
+    /// The target pattern phase ended; `simple`: a plain `build` one.
+    pub(super) fn track_patterns_simple(&mut self, simple: bool) {
+        if let Some(tracker) = self.incremental.as_mut() {
+            tracker.patterns_simple = Some(simple && tracker.patterns_simple != Some(false));
+        }
+    }
+
     /// The dependency index of the last planned build (`labels`: its
     /// requested labels), with the fingerprints of its main-repository
     /// packages; `None` without tracking.
@@ -448,12 +550,27 @@ impl Engine {
             .collect();
         let graph = module_graph(&self.packages);
         let rules = rule_modules(&self.packages, &keys);
+        let repository_inputs: Vec<_> = crate::observed_fs::repository_inputs()
+            .into_iter()
+            .map(|(path, tree, owner)| {
+                (crate::snapshot::incremental::PathBufWire(path), tree, owner)
+            })
+            .collect();
         let mut index = Index {
             main_root,
-            repository_inputs: crate::observed_fs::repository_inputs()
-                .into_iter()
-                .map(|(path, tree)| (crate::snapshot::incremental::PathBufWire(path), tree))
-                .collect(),
+            repository_inputs: repository_inputs.clone(),
+            repository_roots: {
+                let owners: BTreeSet<&str> = repository_inputs
+                    .iter()
+                    .filter_map(|(_, _, owner)| owner.as_deref())
+                    .collect();
+                self.repositories
+                    .materialized_roots()
+                    .into_iter()
+                    .filter(|(name, _)| owners.contains(name.as_str()))
+                    .map(|(name, root)| (name, crate::snapshot::incremental::PathBufWire(root)))
+                    .collect()
+            },
             top: self.configurations.top().bytes(),
             labels: labels.to_vec(),
             keys: tracker
@@ -484,6 +601,15 @@ impl Engine {
                 planned.sort_unstable();
                 planned
             },
+            root_entries: if tracker.root_entries.len() == labels.len() + 1 {
+                tracker.root_entries.clone()
+            } else {
+                Vec::new()
+            },
+            demand: tracker.demand.clone(),
+            patterns: (tracker.patterns_simple == Some(true))
+                .then(|| tracker.covered.iter().copied().collect()),
+            suite_packages: tracker.suite_packages.iter().copied().collect(),
         };
         crate::snapshot::incremental::set_modules(&mut index, &graph, &package_loads, &rules);
         Some(index)
@@ -525,6 +651,134 @@ impl Engine {
                 .is_some_and(|id| tracker.packages[*id as usize].printed)
         });
         Ok((fingerprint(&self.packages[package]), printed))
+    }
+
+    /// What the plain `build` target pattern phase (crate::engine's
+    /// `select_filtered` with FILTER_MANUAL, no tag filters, tests or test
+    /// suites) selects of the loaded main-repository package `package` now:
+    /// `covered` names the patterns (positions) whose wildcards expanded it
+    /// (the saved analysis's: the directory listings did not change). The
+    /// error says why it cannot be computed this way (a test suite, an
+    /// ambiguous `:all`, a label that does not exist).
+    pub fn package_selection(
+        &mut self,
+        patterns: &[String],
+        relative_directory: &str,
+        covered: &BTreeSet<u32>,
+        package: &PackageId,
+        expand_test_suites: bool,
+    ) -> Result<BTreeSet<Label>, String> {
+        use crate::target_pattern::Kind;
+        // The lookups are the target pattern phase's.
+        let _pattern = PatternScope::enter();
+        let mut selected: BTreeSet<Label> = BTreeSet::new();
+        for (position, text) in patterns.iter().enumerate() {
+            let pattern = crate::target_pattern::parse(text, relative_directory)?;
+            let filter = !pattern.negative;
+            let covers = covered.contains(&(position as u32));
+            let targets: BTreeSet<Label> = match &pattern.kind {
+                Kind::TargetsBelowDirectory { rules_only } => {
+                    if covers {
+                        self.package_targets(package, *rules_only, filter)?
+                            .into_iter()
+                            .collect()
+                    } else {
+                        BTreeSet::new()
+                    }
+                }
+                Kind::TargetsInPackage {
+                    suffix,
+                    absolute,
+                    rules_only,
+                } => {
+                    if !covers {
+                        BTreeSet::new()
+                    } else if *absolute
+                        && self
+                            .existing_target_kind(package, suffix)
+                            .ok()
+                            .flatten()
+                            .is_some()
+                    {
+                        return Err(format!("the pattern '{text}' names an existing target"));
+                    } else {
+                        self.package_targets(package, *rules_only, filter)?
+                            .into_iter()
+                            .collect()
+                    }
+                }
+                Kind::SingleTarget { .. } | Kind::PathAsTarget { .. } => {
+                    let label = match &pattern.kind {
+                        Kind::SingleTarget { target } => {
+                            self.repositories
+                                .parse(&pattern.label_text(target), "", "")?
+                        }
+                        Kind::PathAsTarget { path } => self
+                            .path_as_target(path)
+                            .map_err(PatternError::into_message)?,
+                        _ => unreachable!("a single target"),
+                    };
+                    if label.package_id() == *package {
+                        self.target(&label)?;
+                        BTreeSet::from([label])
+                    } else {
+                        BTreeSet::new()
+                    }
+                }
+            };
+            if pattern.negative {
+                selected.retain(|label| !targets.contains(label));
+            } else {
+                selected.extend(targets);
+            }
+        }
+        if expand_test_suites
+            && let Some(suite) = selected.iter().find(|label| self.loaded_test_suite(label))
+        {
+            return Err(format!("{suite} is a test suite"));
+        }
+        Ok(selected)
+    }
+
+    /// The root of repository `name`, materialized now (its warm check, or
+    /// its execution: incremental analysis re-runs a repository whose
+    /// recorded inputs changed).
+    pub fn repository_root_now(&self, name: &str) -> Result<PathBuf, String> {
+        self.repositories.root(name).map(Path::to_path_buf)
+    }
+
+    /// [`Self::package_fingerprint`] of every package of `packages` (in
+    /// order), their loads on the loading-phase-threads pool (commits in
+    /// order, like the target pattern phase's).
+    pub fn package_fingerprints(
+        &mut self,
+        packages: &[PackageId],
+    ) -> Result<Vec<(Fingerprint, bool)>, (PackageId, String)> {
+        {
+            let _pattern = PatternScope::enter();
+            if let Err(error) = self.load_packages_parallel(packages, |_, _| Ok(())) {
+                // The first one that does not load (named by its own load).
+                for package in packages {
+                    if let Err(error) = self.load_package(package) {
+                        return Err((package.clone(), error));
+                    }
+                }
+                return Err((
+                    packages.first().cloned().unwrap_or(PackageId {
+                        repository: String::new(),
+                        package: String::new(),
+                    }),
+                    error,
+                ));
+            }
+        }
+        packages
+            .iter()
+            .map(|package| {
+                self.package_fingerprint(package)
+                    .map_err(|error| (package.clone(), error))
+            })
+            .collect()
     }
 }
 

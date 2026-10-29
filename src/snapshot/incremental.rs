@@ -221,8 +221,11 @@ pub struct Index {
     /// planning requested (their distinct number is the window's count).
     pub aspects: Vec<(u32, String)>,
     /// The recorded inputs of repositories and extensions
-    /// (crate::observed_fs::note_repository_input): (path, a tree).
-    pub repository_inputs: Vec<(PathBufWire, bool)>,
+    /// (crate::observed_fs::note_repository_input): (path, a tree, the
+    /// repository whose execution or warm check named it).
+    pub repository_inputs: Vec<(PathBufWire, bool, Option<String>)>,
+    /// The roots of the repositories `repository_inputs` names.
+    pub repository_roots: Vec<(String, PathBufWire)>,
     /// The `.bzl` modules edits of which incremental analysis attributes
     /// ([`IndexModule`]).
     pub modules: Vec<IndexModule>,
@@ -233,6 +236,20 @@ pub struct Index {
     /// of targets planned when their analysis began and their position in
     /// the plan (its post-order).
     pub planned: Vec<(u32, u32, u32)>,
+    /// The plan length when each requested label's analysis began (by
+    /// position), then at the end of phase 1.
+    pub root_entries: Vec<u32>,
+    /// (requested label position, or `u32::MAX` for the workspace status;
+    /// action id): the producers of the hidden top-level artifacts (with
+    /// the reported outputs, the roots of the plan's reachability).
+    pub demand: Vec<(u32, String)>,
+    /// The plain `build` target pattern phase (no tag filters, tests or
+    /// test suites): the (pattern position, package) its wildcards
+    /// expanded; `None`: another one, the requested labels never change.
+    pub patterns: Option<Vec<(u32, u32)>>,
+    /// The packages the pattern phase's test suite expansions read: their
+    /// requested labels never change incrementally.
+    pub suite_packages: Vec<u32>,
 }
 
 /// The digest of a `.bzl` file's code: its bytes with every comment's text
@@ -739,6 +756,9 @@ pub struct Attribution {
     pub bzl: std::collections::BTreeSet<u32>,
     /// The edited modules themselves.
     pub edited: std::collections::BTreeSet<u32>,
+    /// The repositories one of whose recorded inputs changed (canonical
+    /// names): they run again, their trees must keep their contents.
+    pub repositories: std::collections::BTreeSet<String>,
 }
 
 /// While a lookup misses (crate::snapshot::hit): every changed observation
@@ -800,6 +820,8 @@ pub struct Candidate {
     pub bzl: std::collections::BTreeSet<u32>,
     /// The edited modules themselves.
     pub edited: std::collections::BTreeSet<u32>,
+    /// The repositories whose recorded inputs changed ([`Attribution`]).
+    pub repositories: std::collections::BTreeSet<String>,
     /// The snapshot's short key (diagnostics).
     pub key: String,
     pub started: std::time::Instant,
@@ -824,6 +846,7 @@ impl Candidate {
                     modules,
                     bzl,
                     edited,
+                    repositories,
                 },
         } = classified?;
         Ok(Self {
@@ -837,6 +860,7 @@ impl Candidate {
             modules,
             bzl,
             edited,
+            repositories,
             key,
             started: std::time::Instant::now(),
         })
@@ -887,6 +911,7 @@ pub fn classify(
     }
     let mut loaded = BTreeSet::new();
     let mut content = BTreeSet::new();
+    let mut repositories: BTreeSet<String> = BTreeSet::new();
     for &at in changed {
         let (path, observation) = recording
             .observations
@@ -902,11 +927,20 @@ pub fn classify(
         if path.starts_with(cache) {
             return Err(format!("{what}: inside the cache"));
         }
-        for (input, tree) in &index.repository_inputs {
+        // A recorded input of repositories (not of a module extension):
+        // they run again, and must publish the same tree (below, and
+        // crate::main's incremental analysis); the observation is
+        // attributed like any other.
+        for (input, tree, owner) in &index.repository_inputs {
             if *path == input.0 || (*tree && path.starts_with(&input.0)) {
-                return Err(format!(
-                    "{what}: a recorded input of a repository or module extension"
-                ));
+                match owner {
+                    Some(owner) => {
+                        repositories.insert(owner.clone());
+                    }
+                    None => {
+                        return Err(format!("{what}: a recorded input of a module extension"));
+                    }
+                }
             }
         }
         let relative = path
@@ -960,6 +994,40 @@ pub fn classify(
         }
     }
     let (modules, bzl) = bzl_attribution(index, &edited)?;
+    // A repository that runs again publishes a new tree (its identity
+    // names its recorded inputs): nothing the analysis analyzed or loaded
+    // may lie in it, and its old root must be known.
+    for repository in &repositories {
+        if !index
+            .repository_roots
+            .iter()
+            .any(|(name, _)| name == repository)
+        {
+            return Err(format!(
+                "repository @@{repository}, whose recorded input changed, has no recorded root"
+            ));
+        }
+        if let Some(package) = index
+            .packages
+            .iter()
+            .find(|package| package.repository == *repository)
+        {
+            return Err(format!(
+                "repository @@{repository}, whose recorded input changed, holds package //{} of the analysis",
+                package.package
+            ));
+        }
+        if let Some(key) = index
+            .keys
+            .iter()
+            .find(|key| key.label.repository == *repository)
+        {
+            return Err(format!(
+                "repository @@{repository}, whose recorded input changed, holds {} of the analysis",
+                key.label
+            ));
+        }
+    }
     for &id in loaded.iter().chain(content.iter()) {
         let package = &index.packages[id as usize];
         let shown = format!("package //{}", package.package);
@@ -987,6 +1055,7 @@ pub fn classify(
         modules,
         bzl,
         edited,
+        repositories,
     })
 }
 
@@ -1076,17 +1145,25 @@ pub struct Changed {
     pub fingerprints: std::collections::BTreeMap<u32, Fingerprint>,
     /// Packages loaded again whose fingerprint did not change.
     pub pruned: usize,
+    /// Changed packages whose pattern summary changed too (targets added,
+    /// removed, renamed or retagged): the requested labels they contribute
+    /// are computed again ([`relabel`]).
+    pub relabeled: std::collections::BTreeSet<u32>,
 }
 
 /// Compare a reloaded package with what the index recorded of it.
 /// `strict_patterns`: a target pattern names file targets (`:*`,
 /// `:all-targets`), whose expansion any fingerprint change may move.
+/// `relabel`: the requested labels may be computed again (a plain `build`
+/// pattern phase, [`Index::patterns`]): a changed pattern summary is one
+/// of [`Changed::relabeled`].
 pub fn compare_package(
     candidate: &Candidate,
     id: u32,
     now: Fingerprint,
     printed: bool,
     strict_patterns: bool,
+    relabel: &Result<(), String>,
     changed: &mut Changed,
 ) -> Result<(), String> {
     let package = &candidate.index.packages[id as usize];
@@ -1113,10 +1190,18 @@ pub fn compare_package(
     }
     // Whether the target pattern phase expanded the package is not
     // tracked precisely: any change of what an expansion reads falls back.
-    if before.summary != now.summary || (strict_patterns && before.digest != now.digest) {
+    if strict_patterns && before.digest != now.digest {
         return Err(format!(
             "{shown}: the target patterns' expansion may change (targets added, removed or retagged)"
         ));
+    }
+    if before.summary != now.summary {
+        if let Err(why) = relabel {
+            return Err(format!(
+                "{shown}: the target patterns' expansion may change (targets added, removed or retagged), and {why}"
+            ));
+        }
+        changed.relabeled.insert(id);
     }
     changed.fingerprints.insert(id, now);
     if unchanged {
@@ -1127,14 +1212,102 @@ pub fn compare_package(
     Ok(())
 }
 
+/// The requested labels after a change of the packages `relabeled`
+/// ([`Changed::relabeled`]) and what changed of them.
+#[derive(Debug, Default)]
+pub struct Relabel {
+    /// The requested labels now, sorted like the target pattern phase's.
+    pub labels: Vec<Label>,
+    /// The positions (in [`Index::labels`]) of the labels no longer
+    /// requested.
+    pub removed: std::collections::BTreeSet<u32>,
+    /// The labels requested now and not before.
+    pub added: std::collections::BTreeSet<Label>,
+}
+
+impl Relabel {
+    /// Whether the requested labels changed.
+    pub fn changes(&self) -> bool {
+        !self.removed.is_empty() || !self.added.is_empty()
+    }
+}
+
+/// The requested labels of `index` with each package of `selections`
+/// (index package ids) contributing what the pattern phase selects of it
+/// now (crate::engine::Engine::package_selection).
+pub fn relabel(
+    index: &Index,
+    selections: &std::collections::BTreeMap<u32, std::collections::BTreeSet<Label>>,
+) -> Result<Relabel, String> {
+    use std::collections::BTreeSet;
+    if !index.labels.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Err("the requested labels are not the sorted pattern selection".to_owned());
+    }
+    let packages: BTreeSet<(&str, &str)> = selections
+        .keys()
+        .map(|id| {
+            let package = &index.packages[*id as usize];
+            (package.repository.as_str(), package.package.as_str())
+        })
+        .collect();
+    let in_changed =
+        |label: &Label| packages.contains(&(label.repository.as_str(), label.package.as_str()));
+    let old: BTreeSet<&Label> = index.labels.iter().collect();
+    let mut labels: BTreeSet<Label> = index
+        .labels
+        .iter()
+        .filter(|label| !in_changed(label))
+        .cloned()
+        .collect();
+    for selection in selections.values() {
+        labels.extend(selection.iter().cloned());
+    }
+    let removed = index
+        .labels
+        .iter()
+        .enumerate()
+        .filter(|(_, label)| !labels.contains(*label))
+        .map(|(position, _)| position as u32)
+        .collect();
+    let added = labels
+        .iter()
+        .filter(|label| !old.contains(label))
+        .cloned()
+        .collect();
+    Ok(Relabel {
+        labels: labels.into_iter().collect(),
+        removed,
+        added,
+    })
+}
+
+/// What a change dirties ([`dirty_labels`]).
+#[derive(Debug, Default)]
+pub struct Dirty {
+    /// The requested labels the partial analysis analyzes, in request
+    /// order: those whose root is dirty and the added ones.
+    pub labels: Vec<Label>,
+    /// The saved analysis's configured targets (and source files) that
+    /// are re-analyzed.
+    pub dirty: std::collections::BTreeSet<u32>,
+    /// The keys only removed labels' analyses planned (or reached): they
+    /// and their actions are gone.
+    pub removed: std::collections::BTreeSet<u32>,
+    /// The share of the saved analysis's configured targets the partial
+    /// analysis re-analyzes (the dirty roots' forward closure), percent.
+    pub cost: usize,
+}
+
 /// The configured targets the changed `packages` dirty — those in them,
 /// those whose analysis looked them up, and everything reaching either —
-/// and the requested labels among their roots, in request order.
+/// the keys of the labels `relabel` removes, and the requested labels to
+/// analyze again (with the added ones), in request order.
 pub fn dirty_labels(
     index: &Index,
     packages: &std::collections::BTreeSet<u32>,
     modules: &std::collections::BTreeSet<u32>,
-) -> Result<(Vec<Label>, std::collections::BTreeSet<u32>), String> {
+    relabel: Option<&Relabel>,
+) -> Result<Dirty, String> {
     use std::collections::{BTreeSet, HashMap};
     let mut by_package: HashMap<(&str, &str), u32> = HashMap::new();
     for (id, package) in index.packages.iter().enumerate() {
@@ -1172,63 +1345,199 @@ pub fn dirty_labels(
             }
         }
     }
-    if let Some(printed) = index.printed.iter().find(|key| dirty.contains(key)) {
+    // The removed labels' keys: what their analyses planned (the plan
+    // between their roots' entries), and what only those reach.
+    let empty = Relabel::default();
+    let relabel = relabel.unwrap_or(&empty);
+    let mut removed: BTreeSet<u32> = BTreeSet::new();
+    if !relabel.removed.is_empty() {
+        if index.root_entries.len() != index.labels.len() + 1 {
+            return Err("the saved index has no root entries".to_owned());
+        }
+        let positions: HashMap<u32, u32> = index
+            .planned
+            .iter()
+            .map(|(key, _, position)| (*position, *key))
+            .collect();
+        for &at in &relabel.removed {
+            let (from, to) = (
+                index.root_entries[at as usize],
+                index.root_entries[at as usize + 1],
+            );
+            for position in from..to {
+                let key = positions.get(&position).ok_or_else(|| {
+                    format!("the saved plan has no target at position {position}")
+                })?;
+                removed.insert(*key);
+            }
+        }
+        let planned: std::collections::HashSet<u32> =
+            index.planned.iter().map(|(key, _, _)| *key).collect();
+        // Keys planned nowhere (source files, aliases) reached only from
+        // removed ones go with them.
+        loop {
+            let mut grew = false;
+            for (parent, child) in &index.edges {
+                if removed.contains(parent)
+                    && !removed.contains(child)
+                    && !planned.contains(child)
+                    && parents
+                        .get(child)
+                        .is_some_and(|all| all.iter().all(|parent| removed.contains(parent)))
+                {
+                    removed.insert(*child);
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        for (parent, child) in &index.edges {
+            if removed.contains(child) && !removed.contains(parent) {
+                return Err(format!(
+                    "{}, planned by a removed target's analysis, is reached by {} too",
+                    index.keys[*child as usize].label, index.keys[*parent as usize].label
+                ));
+            }
+        }
+        for (position, key) in &index.roots {
+            if !relabel.removed.contains(position) && removed.contains(key) {
+                return Err(format!(
+                    "the requested {} was planned by a removed target's analysis",
+                    index.keys[*key as usize].label
+                ));
+            }
+        }
+    }
+    if let Some(printed) = index
+        .printed
+        .iter()
+        .find(|key| dirty.contains(key) || removed.contains(key))
+    {
         return Err(format!(
-            "{} printed while it was analyzed and would be re-analyzed",
+            "{} printed while it was analyzed and would be re-analyzed or removed",
             index.keys[*printed as usize].label
         ));
     }
-    if let Some(shared) = index.shared.iter().find(|key| dirty.contains(key)) {
+    if let Some(shared) = index
+        .shared
+        .iter()
+        .find(|key| dirty.contains(key) || removed.contains(key))
+    {
         return Err(format!(
-            "{} feeds a shared computation (toolchains, platforms, transitions) and would be re-analyzed",
+            "{} feeds a shared computation (toolchains, platforms, transitions) and would be re-analyzed or removed",
             index.keys[*shared as usize].label
         ));
     }
+    dirty.retain(|key| !removed.contains(key));
     let mut positions: BTreeSet<u32> = BTreeSet::new();
     for (position, key) in &index.roots {
-        if dirty.contains(key) {
+        if dirty.contains(key) && !relabel.removed.contains(position) {
             positions.insert(*position);
         }
     }
-    let labels: Vec<Label> = positions
-        .into_iter()
-        .filter_map(|position| index.labels.get(position as usize).cloned())
+    let mut labels: BTreeSet<Label> = positions
+        .iter()
+        .filter_map(|position| index.labels.get(*position as usize).cloned())
         .collect();
+    labels.extend(relabel.added.iter().cloned());
+    let labels: Vec<Label> = labels.into_iter().collect();
     if labels.is_empty() && !dirty.is_empty() {
         return Err(format!(
             "{} is dirty but reaches no requested target",
             index.keys[*dirty.iter().next().expect("not empty") as usize].label
         ));
     }
-    // A large dirty set is analyzed no faster than the whole request.
+    // The cost: the partial analysis re-analyzes the forward closure of
+    // the dirty roots; near the whole analysis it is no faster (and a
+    // fallback after it pays both).
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (parent, child) in &index.edges {
+        children.entry(*parent).or_default().push(*child);
+    }
+    let mut closure: BTreeSet<u32> = BTreeSet::new();
+    let mut todo: Vec<u32> = index
+        .roots
+        .iter()
+        .filter(|(position, _)| positions.contains(position))
+        .map(|(_, key)| *key)
+        .collect();
+    while let Some(key) = todo.pop() {
+        if closure.insert(key) {
+            todo.extend(children.get(&key).into_iter().flatten().copied());
+        }
+    }
     let configured = index.keys.iter().filter(|key| key.config.is_some()).count();
-    let dirty_configured = dirty
+    let reanalyzed = closure
         .iter()
         .filter(|key| index.keys[**key as usize].config.is_some())
         .count();
-    let (limit, minimum) = max_dirty_percent();
-    if configured >= minimum && dirty_configured * 100 > configured * limit {
+    let cost = (reanalyzed * 100).checked_div(configured).unwrap_or(0);
+    let (limit, minimum) = max_cost_percent();
+    if configured >= minimum && reanalyzed * 100 > configured * limit {
         return Err(format!(
-            "{dirty_configured} of {configured} configured targets are dirty (more than {limit}%)"
+            "the re-analysis would analyze {reanalyzed} of {configured} configured targets (more than {limit}%)"
         ));
     }
-    Ok((labels, dirty))
+    Ok(Dirty {
+        labels,
+        dirty,
+        removed,
+        cost,
+    })
 }
 
-/// `BAZEL_RS_INCREMENTAL_MAX_DIRTY_PERCENT`: above this share of the saved
-/// analysis's configured targets dirty, the full analysis runs (default 25,
-/// for analyses of 500 configured targets or more; set, for any).
-pub const MAX_DIRTY_VAR: &str = "BAZEL_RS_INCREMENTAL_MAX_DIRTY_PERCENT";
+/// `BAZEL_RS_INCREMENTAL_MAX_COST_PERCENT`: when the partial analysis
+/// would re-analyze more than this share of the saved analysis's
+/// configured targets (the dirty roots' forward closure), the full
+/// analysis runs at once (default 60, for analyses of 500 configured
+/// targets or more; set, for any).
+pub const MAX_COST_VAR: &str = "BAZEL_RS_INCREMENTAL_MAX_COST_PERCENT";
 
-/// The dirty share's limit (percent) and the analysis size it applies from.
-fn max_dirty_percent() -> (usize, usize) {
-    match std::env::var(MAX_DIRTY_VAR)
+/// The cost limit (percent) and the analysis size it applies from.
+fn max_cost_percent() -> (usize, usize) {
+    match std::env::var(MAX_COST_VAR)
         .ok()
         .and_then(|value| value.parse().ok())
     {
         Some(limit) => (limit, 0),
-        None => (25, 500),
+        None => (60, 500),
     }
+}
+
+/// The saved window `window` with the notes `old` (the saved analysis's
+/// `INFO: Analyzed …` and `INFO: Found …` lines, crate::progress::
+/// analysis_lines) replaced by `new`; the window must end with `old`'s
+/// notes, in order, where the analysis printed them (else the counts are
+/// not the saved analysis's).
+pub fn replace_window_lines(
+    window: &[u8],
+    old: &[String],
+    new: &[String],
+) -> Result<Vec<u8>, String> {
+    let old_bytes: Vec<u8> = old
+        .iter()
+        .flat_map(|line| crate::ui::marked(line))
+        .collect();
+    let new_bytes: Vec<u8> = new
+        .iter()
+        .flat_map(|line| crate::ui::marked(line))
+        .collect();
+    let at = window
+        .windows(old_bytes.len().max(1))
+        .rposition(|part| part == old_bytes.as_slice())
+        .filter(|_| !old_bytes.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "the saved window does not print what the saved counts print ({})",
+                one_line(&old.join(" "))
+            )
+        })?;
+    let mut replaced = window[..at].to_vec();
+    replaced.extend_from_slice(&new_bytes);
+    replaced.extend_from_slice(&window[at + old_bytes.len()..]);
+    Ok(replaced)
 }
 
 /// Every line the partial analysis printed — but its own `INFO: Analyzed`
@@ -1297,20 +1606,52 @@ fn node_bytes(node: &crate::scheduler::PlannedAction) -> Result<Vec<u8>, String>
     postcard::to_stdvec(node).map_err(|error| format!("action '{}': {error}", node.action.id))
 }
 
+/// The new targets an added requested label's analysis planned, inserted
+/// into the saved plan before position `boundary` ([`check_graph`]).
+#[derive(Clone, Debug, Default)]
+pub struct Insert {
+    /// The saved plan position (the plan length when the next saved
+    /// requested label's analysis began; the end of phase 1).
+    pub boundary: u32,
+    /// The new keys (merged index ids) in plan order, each with the number
+    /// of this group's keys planned when its analysis began.
+    pub keys: Vec<(u32, u32)>,
+}
+
+/// What [`check_graph`] found of the partial analysis's graph.
+#[derive(Debug, Default)]
+pub struct Graph {
+    /// The partial analysis's key ids as merged index ids.
+    pub mapped: Vec<u32>,
+    /// The configured targets the saved analysis did not have (added
+    /// labels' new targets), appended to the index's keys.
+    pub new_keys: std::collections::BTreeSet<u32>,
+    /// Per added label (in request order), its new planned targets.
+    pub inserts: Vec<Insert>,
+    /// The distinct aspect applications before and after.
+    pub aspects: (usize, usize),
+}
+
 /// Map the keys of `sub` (a partial analysis's index) to `index`'s (the
 /// saved one, which becomes the merged index), checking that the
-/// configured graph did not change: every configured target the partial
-/// analysis reached is one the saved analysis had, each dirty one with the
-/// same configured dependencies, and it loaded no package the saved
-/// analysis did not (so the plan order and the counts the window reports
-/// are the same). Source files may come and go (a `srcs` edit): new ones
-/// join the index, and the dirty targets' source edges become the partial
-/// analysis's.
+/// configured graph did not change but where the requested labels did:
+/// every configured target the partial analysis reached is one the saved
+/// analysis had — but the new ones only added labels' analyses reach —
+/// each dirty one with the same configured dependencies, and it loaded no
+/// package the saved analysis did not (so the plan order and the counts
+/// the window reports follow). An added label (`added`: its position among
+/// the partial analysis's labels, and the saved plan position its new
+/// targets go before) reaches only targets the saved plan had before that
+/// position. Source files may come and go (a `srcs` edit): new ones join
+/// the index, and the dirty targets' source edges become the partial
+/// analysis's. `removed` (the keys of removed labels) are not looked at.
 pub fn check_graph(
     index: &mut Index,
     dirty: &std::collections::BTreeSet<u32>,
+    removed: &std::collections::BTreeSet<u32>,
     sub: &Index,
-) -> Result<Vec<u32>, String> {
+    added: &[(u32, u32)],
+) -> Result<Graph, String> {
     use std::collections::{BTreeSet, HashMap};
     if sub.top != index.top {
         return Err("the top-level configuration changed".to_owned());
@@ -1322,24 +1663,35 @@ pub fn check_graph(
         .map(|(id, key)| (key.clone(), id as u32))
         .collect();
     let mut mapped = Vec::with_capacity(sub.keys.len());
+    let mut new_keys: BTreeSet<u32> = BTreeSet::new();
     for key in &sub.keys {
         match ids.get(key) {
+            Some(id) if removed.contains(id) => {
+                return Err(format!(
+                    "the re-analysis reached {}, a removed target's",
+                    key.label
+                ));
+            }
             Some(id) => mapped.push(*id),
-            None if key.config.is_none() => {
+            None => {
+                if key.config.is_some() && added.is_empty() {
+                    return Err(format!(
+                        "the re-analysis reached {}, which the saved analysis did not (the dependency graph changed)",
+                        key.label
+                    ));
+                }
                 let id = index.keys.len() as u32;
                 index.keys.push(key.clone());
                 ids.insert(key.clone(), id);
+                if key.config.is_some() {
+                    new_keys.insert(id);
+                }
                 mapped.push(id);
-            }
-            None => {
-                return Err(format!(
-                    "the re-analysis reached {}, which the saved analysis did not (the dependency graph changed)",
-                    key.label
-                ));
             }
         }
     }
     let configured = |index: &Index, key: u32| index.keys[key as usize].config.is_some();
+    let analyzed = |key: &u32| dirty.contains(key) || new_keys.contains(key);
     // The configured dependencies of each dirty target, in the order its
     // analysis reached them (phase 1's depth-first order).
     let mut base_children: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -1349,13 +1701,21 @@ pub fn check_graph(
         }
     }
     let mut sub_children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut all_children: HashMap<u32, Vec<u32>> = HashMap::new();
     let mut sub_edges: Vec<(u32, u32)> = Vec::new();
     let mut reached: BTreeSet<u32> = BTreeSet::new();
     for (parent, child) in &sub.edges {
         let (parent, child) = (mapped[*parent as usize], mapped[*child as usize]);
         reached.insert(parent);
         reached.insert(child);
-        if dirty.contains(&parent) {
+        all_children.entry(parent).or_default().push(child);
+        if new_keys.contains(&child) && !new_keys.contains(&parent) {
+            return Err(format!(
+                "{} depends on {}, which the saved analysis did not have",
+                index.keys[parent as usize].label, index.keys[child as usize].label
+            ));
+        }
+        if analyzed(&parent) {
             sub_edges.push((parent, child));
             if configured(index, child) {
                 let children = sub_children.entry(parent).or_default();
@@ -1411,8 +1771,88 @@ pub fn check_graph(
             }
         }
     }
+    // Added labels: what their analyses reach of the saved analysis was
+    // planned before their place in the plan; their new targets go there.
+    let mut inserts: Vec<Insert> = Vec::new();
+    if !added.is_empty() {
+        if sub.root_entries.len() != sub.labels.len() + 1 {
+            return Err("the partial analysis recorded no root entries".to_owned());
+        }
+        let sub_planned: HashMap<u32, (u32, u32)> = sub
+            .planned
+            .iter()
+            .map(|(key, entry, position)| (mapped[*key as usize], (*entry, *position)))
+            .collect();
+        let mut owner_of_new: HashMap<u32, usize> = HashMap::new();
+        for (group, (at, boundary)) in added.iter().enumerate() {
+            let root = sub
+                .roots
+                .iter()
+                .find(|(position, _)| position == at)
+                .map(|(_, key)| mapped[*key as usize])
+                .ok_or("an added label has no root in the partial analysis")?;
+            let mut seen: BTreeSet<u32> = BTreeSet::new();
+            let mut todo = vec![root];
+            while let Some(key) = todo.pop() {
+                if !seen.insert(key) {
+                    continue;
+                }
+                if !new_keys.contains(&key)
+                    && configured(index, key)
+                    && let Some((_, position)) = planned.get(&key)
+                    && position >= boundary
+                {
+                    return Err(format!(
+                        "the added {} reaches {}, which the saved analysis planned after it",
+                        sub.labels[*at as usize], index.keys[key as usize].label
+                    ));
+                }
+                todo.extend(all_children.get(&key).into_iter().flatten().copied());
+            }
+            let (from, to) = (
+                sub.root_entries[*at as usize],
+                sub.root_entries[*at as usize + 1],
+            );
+            let mut keys: Vec<(u32, u32, u32)> = new_keys
+                .iter()
+                .filter_map(|key| {
+                    let (entry, position) = sub_planned.get(key)?;
+                    (*position >= from && *position < to).then_some((*position, *entry, *key))
+                })
+                .collect();
+            keys.sort_unstable();
+            for (_, _, key) in &keys {
+                owner_of_new.insert(*key, group);
+            }
+            let positions: Vec<u32> = keys.iter().map(|(position, _, _)| *position).collect();
+            inserts.push(Insert {
+                boundary: *boundary,
+                keys: keys
+                    .iter()
+                    .map(|(_, entry, key)| {
+                        (
+                            *key,
+                            positions
+                                .iter()
+                                .filter(|position| *position < entry)
+                                .count() as u32,
+                        )
+                    })
+                    .collect(),
+            });
+        }
+        if let Some(key) = new_keys
+            .iter()
+            .find(|key| sub_planned.contains_key(key) && !owner_of_new.contains_key(key))
+        {
+            return Err(format!(
+                "{} is new and planned outside an added label's analysis",
+                index.keys[*key as usize].label
+            ));
+        }
+    }
     for key in &sub.printed {
-        if dirty.contains(&mapped[*key as usize]) {
+        if analyzed(&mapped[*key as usize]) {
             return Err(format!(
                 "{} printed while it was re-analyzed",
                 sub.keys[*key as usize].label
@@ -1420,14 +1860,14 @@ pub fn check_graph(
         }
     }
     for key in &sub.shared {
-        if dirty.contains(&mapped[*key as usize]) {
+        if analyzed(&mapped[*key as usize]) {
             return Err(format!(
                 "{} feeds a shared computation",
                 sub.keys[*key as usize].label
             ));
         }
     }
-    // The distinct aspect applications (the window's count) stay the same.
+    // The distinct aspect applications (the window's count).
     let before: BTreeSet<&str> = index
         .aspects
         .iter()
@@ -1436,22 +1876,19 @@ pub fn check_graph(
     let mut after: BTreeSet<&str> = index
         .aspects
         .iter()
-        .filter(|(key, _)| !dirty.contains(key))
+        .filter(|(key, _)| !dirty.contains(key) && !removed.contains(key))
         .map(|(_, application)| application.as_str())
         .collect();
     after.extend(
         sub.aspects
             .iter()
-            .filter(|(key, _)| {
-                mapped
-                    .get(*key as usize)
-                    .is_some_and(|key| dirty.contains(key))
-            })
+            .filter(|(key, _)| mapped.get(*key as usize).is_some_and(analyzed))
             .map(|(_, application)| application.as_str()),
     );
-    if before != after {
+    if before != after && added.is_empty() && removed.is_empty() {
         return Err("the aspect applications changed".to_owned());
     }
+    let aspects = (before.len(), after.len());
     let loaded: BTreeSet<(&str, &str)> = index
         .packages
         .iter()
@@ -1466,9 +1903,9 @@ pub fn check_graph(
             package.repository, package.package
         ));
     }
-    // A package only re-analyzed targets looked up before, and none now,
-    // may no longer be loaded (the window's count would change) unless
-    // something else loads it.
+    // A package only re-analyzed or removed targets looked up before, and
+    // none now, may no longer be loaded (the window's count would change)
+    // unless something else loads it.
     let by_identity: std::collections::HashMap<(&str, &str), u32> = index
         .packages
         .iter()
@@ -1482,7 +1919,7 @@ pub fn check_graph(
         .collect();
     let mut still: BTreeSet<u32> = BTreeSet::new();
     for (key, package) in &sub.accesses {
-        if dirty.contains(&mapped[*key as usize]) {
+        if analyzed(&mapped[*key as usize]) {
             let package = &sub.packages[*package as usize];
             if let Some(id) =
                 by_identity.get(&(package.repository.as_str(), package.package.as_str()))
@@ -1493,19 +1930,22 @@ pub fn check_graph(
     }
     let mut elsewhere: BTreeSet<u32> = BTreeSet::new();
     for (key, package) in &index.accesses {
-        if !dirty.contains(key) {
+        if !dirty.contains(key) && !removed.contains(key) {
             elsewhere.insert(*package);
         }
     }
-    for key in index.keys.iter() {
-        if let Some(id) =
+    for (id, key) in index.keys.iter().enumerate() {
+        if removed.contains(&(id as u32)) {
+            continue;
+        }
+        if let Some(package) =
             by_identity.get(&(key.label.repository.as_str(), key.label.package.as_str()))
         {
-            elsewhere.insert(*id);
+            elsewhere.insert(*package);
         }
     }
     for (key, package) in &index.accesses {
-        if dirty.contains(key)
+        if (dirty.contains(key) || removed.contains(key))
             && !still.contains(package)
             && !elsewhere.contains(package)
             && !index.packages[*package as usize].pattern
@@ -1518,12 +1958,12 @@ pub fn check_graph(
             ));
         }
     }
-    // The dirty targets' edges are the re-analysis's (each target's in
-    // the order it reached them).
+    // The re-analyzed targets' edges are the re-analysis's (each target's
+    // in the order it reached them); the removed ones' are gone.
     let mut edges: Vec<(u32, u32)> = index
         .edges
         .iter()
-        .filter(|(parent, _)| !dirty.contains(parent))
+        .filter(|(parent, _)| !dirty.contains(parent) && !removed.contains(parent))
         .copied()
         .collect();
     let mut seen: std::collections::HashSet<(u32, u32)> = edges.iter().copied().collect();
@@ -1533,7 +1973,12 @@ pub fn check_graph(
         }
     }
     index.edges = edges;
-    Ok(mapped)
+    Ok(Graph {
+        mapped,
+        new_keys,
+        inserts,
+        aspects,
+    })
 }
 
 /// The index an incremental save writes: `index` (the saved one, after
@@ -1620,28 +2065,286 @@ pub fn merge_index(
     let mut shared: BTreeSet<u32> = index.shared.iter().copied().collect();
     shared.extend(sub.shared.iter().map(|key| mapped[*key as usize]));
     index.shared = shared.into_iter().collect();
-    let mut inputs: BTreeSet<(PathBufWire, bool)> = index.repository_inputs.into_iter().collect();
+    let mut inputs: BTreeSet<(PathBufWire, bool, Option<String>)> =
+        index.repository_inputs.into_iter().collect();
     inputs.extend(sub.repository_inputs.iter().cloned());
     index.repository_inputs = inputs.into_iter().collect();
+    let mut roots: std::collections::BTreeMap<String, PathBufWire> =
+        index.repository_roots.into_iter().collect();
+    roots.extend(sub.repository_roots.iter().cloned());
+    index.repository_roots = roots.into_iter().collect();
     index
 }
 
+/// The merged index's request (after [`merge_index`]): the requested
+/// labels now, their roots, the plan positions with the removed labels'
+/// keys dropped and the added labels' new ones inserted, the hidden
+/// artifacts' producers; the removed keys compacted away. `analyzed`: the
+/// partial analysis's labels, `sub` its index and key mapping.
+pub fn reshape_index(
+    mut index: Index,
+    labels: &[Label],
+    analyzed: &[Label],
+    sub: Option<(&Index, &[u32])>,
+    removed: &std::collections::BTreeSet<u32>,
+    inserts: &[Insert],
+) -> Index {
+    use std::collections::{BTreeSet, HashMap, HashSet};
+    let now: HashMap<&Label, u32> = labels
+        .iter()
+        .enumerate()
+        .map(|(position, label)| (label, position as u32))
+        .collect();
+    let analyzed: HashSet<&Label> = analyzed.iter().collect();
+    // The hidden artifacts' producers and the roots.
+    let mut demand: BTreeSet<(u32, String)> = BTreeSet::new();
+    let mut roots: BTreeSet<(u32, u32)> = BTreeSet::new();
+    let kept_position = |position: u32| -> Option<u32> {
+        let label = index.labels.get(position as usize)?;
+        if analyzed.contains(label) {
+            return None;
+        }
+        now.get(label).copied()
+    };
+    for (position, id) in &index.demand {
+        if *position == u32::MAX {
+            demand.insert((*position, id.clone()));
+        } else if let Some(position) = kept_position(*position) {
+            demand.insert((position, id.clone()));
+        }
+    }
+    for (position, key) in &index.roots {
+        if let Some(position) = kept_position(*position) {
+            roots.insert((position, *key));
+        }
+    }
+    if let Some((sub, mapped)) = sub {
+        let position = |at: u32| sub.labels.get(at as usize).and_then(|label| now.get(label));
+        for (at, id) in &sub.demand {
+            if *at == u32::MAX {
+                demand.insert((*at, id.clone()));
+            } else if let Some(position) = position(*at) {
+                demand.insert((*position, id.clone()));
+            }
+        }
+        for (at, key) in &sub.roots {
+            if let Some(position) = position(*at) {
+                roots.insert((*position, mapped[*key as usize]));
+            }
+        }
+    }
+    // The plan positions.
+    let mut kept: Vec<u32> = index
+        .planned
+        .iter()
+        .filter(|(key, _, _)| !removed.contains(key))
+        .map(|(_, _, position)| *position)
+        .collect();
+    kept.sort_unstable();
+    let kept_before = |position: u32| kept.partition_point(|at| *at < position) as u32;
+    let new_up_to = |boundary: u32, inclusive: bool| -> u32 {
+        inserts
+            .iter()
+            .filter(|insert| {
+                if inclusive {
+                    insert.boundary <= boundary
+                } else {
+                    insert.boundary < boundary
+                }
+            })
+            .map(|insert| insert.keys.len() as u32)
+            .sum()
+    };
+    let map_after = |position: u32| kept_before(position) + new_up_to(position, true);
+    let mut planned: Vec<(u32, u32, u32)> = index
+        .planned
+        .iter()
+        .filter(|(key, _, _)| !removed.contains(key))
+        .map(|(key, entry, position)| (*key, map_after(*entry), map_after(*position)))
+        .collect();
+    let mut bases: Vec<u32> = Vec::with_capacity(inserts.len());
+    for (group, insert) in inserts.iter().enumerate() {
+        let offset: u32 = inserts[..group]
+            .iter()
+            .filter(|earlier| earlier.boundary == insert.boundary)
+            .map(|earlier| earlier.keys.len() as u32)
+            .sum();
+        let base = kept_before(insert.boundary) + new_up_to(insert.boundary, false) + offset;
+        bases.push(base);
+        for (at, (key, entry)) in insert.keys.iter().enumerate() {
+            planned.push((*key, base + entry, base + at as u32));
+        }
+    }
+    planned.sort_unstable();
+    let total = kept.len() as u32
+        + inserts
+            .iter()
+            .map(|insert| insert.keys.len() as u32)
+            .sum::<u32>();
+    let mut root_entries: Vec<u32> = Vec::new();
+    if index.root_entries.len() == index.labels.len() + 1 {
+        let old: HashMap<&Label, u32> = index
+            .labels
+            .iter()
+            .enumerate()
+            .map(|(position, label)| (label, position as u32))
+            .collect();
+        let mut added = bases.iter();
+        for label in labels {
+            match old.get(label) {
+                Some(position) => {
+                    root_entries.push(map_after(index.root_entries[*position as usize]));
+                }
+                None => match added.next() {
+                    Some(base) => root_entries.push(*base),
+                    None => {
+                        root_entries.clear();
+                        break;
+                    }
+                },
+            }
+        }
+        if root_entries.len() == labels.len() {
+            root_entries.push(total);
+        } else {
+            root_entries.clear();
+        }
+    }
+    index.labels = labels.to_vec();
+    index.demand = demand.into_iter().collect();
+    index.roots = roots.into_iter().collect();
+    index.planned = planned;
+    index.root_entries = root_entries;
+    if removed.is_empty() {
+        return index;
+    }
+    // Compact the removed keys away.
+    let mut ids: Vec<u32> = Vec::with_capacity(index.keys.len());
+    let mut next = 0u32;
+    for id in 0..index.keys.len() as u32 {
+        if removed.contains(&id) {
+            ids.push(u32::MAX);
+        } else {
+            ids.push(next);
+            next += 1;
+        }
+    }
+    let map = |id: u32| ids.get(id as usize).copied().unwrap_or(u32::MAX);
+    let alive = |id: &u32| map(*id) != u32::MAX;
+    index.keys = std::mem::take(&mut index.keys)
+        .into_iter()
+        .enumerate()
+        .filter(|(id, _)| !removed.contains(&(*id as u32)))
+        .map(|(_, key)| key)
+        .collect();
+    index.edges = index
+        .edges
+        .iter()
+        .filter(|(parent, child)| alive(parent) && alive(child))
+        .map(|(parent, child)| (map(*parent), map(*child)))
+        .collect();
+    index.accesses = index
+        .accesses
+        .iter()
+        .filter(|(key, _)| alive(key))
+        .map(|(key, package)| (map(*key), *package))
+        .collect();
+    index.roots = index
+        .roots
+        .iter()
+        .filter(|(_, key)| alive(key))
+        .map(|(position, key)| (*position, map(*key)))
+        .collect();
+    index.shared = index
+        .shared
+        .iter()
+        .filter(|key| alive(key))
+        .map(|key| map(*key))
+        .collect();
+    index.printed = index
+        .printed
+        .iter()
+        .filter(|key| alive(key))
+        .map(|key| map(*key))
+        .collect();
+    index.aspects = index
+        .aspects
+        .iter()
+        .filter(|(key, _)| *key == u32::MAX || alive(key))
+        .map(|(key, application)| {
+            (
+                if *key == u32::MAX { *key } else { map(*key) },
+                application.clone(),
+            )
+        })
+        .collect();
+    index.rule_modules = index
+        .rule_modules
+        .iter()
+        .filter(|(key, _)| alive(key))
+        .map(|(key, module)| (map(*key), *module))
+        .collect();
+    index.planned = index
+        .planned
+        .iter()
+        .filter(|(key, _, _)| alive(key))
+        .map(|(key, entry, position)| (map(*key), *entry, *position))
+        .collect();
+    index
+}
+
+/// How the requested labels changed for [`splice`].
+pub struct Shape<'a> {
+    /// The requested labels now ([`Index::labels`] when they did not
+    /// change).
+    pub labels: &'a [Label],
+    /// The removed labels' keys ([`Dirty::removed`]).
+    pub removed: &'a std::collections::BTreeSet<u32>,
+    /// The added labels' new keys ([`Graph::new_keys`]).
+    pub new_keys: &'a std::collections::BTreeSet<u32>,
+    /// Where the new keys' actions go ([`Graph::inserts`]).
+    pub inserts: &'a [Insert],
+    /// The partial analysis's index (its labels' hidden top-level
+    /// artifacts).
+    pub sub: &'a Index,
+}
+
+impl Shape<'_> {
+    fn relabels(&self, index: &Index) -> bool {
+        self.labels != index.labels.as_slice()
+            || !self.removed.is_empty()
+            || !self.new_keys.is_empty()
+    }
+}
+
 /// Splice the partial analysis `sub` of the requested `labels` (whose
-/// configured targets `dirty` holds, base ids) into the saved request
-/// `full`: each re-analyzed target's actions replace its saved ones in
-/// place; every other action the partial analysis planned must equal the
-/// saved one; the requested labels' reported outputs must be the saved
-/// ones. Any difference is the error (the run falls back).
+/// configured targets `dirty` holds, base ids, the new ones included) into
+/// the saved request `full`: each re-analyzed target's actions replace its
+/// saved ones in place, a new one's go where an added label's analysis
+/// planned it, a removed one's are dropped; every other action the partial
+/// analysis planned must equal the saved one; the actions no longer
+/// reachable from the requested outputs are pruned like the full
+/// analysis's prune; the requested labels' reported outputs must be the
+/// saved ones (or, when the requested labels changed, are put in their
+/// place). Any difference is the error (the run falls back).
 pub fn splice(
     full: crate::request::PlannedRequest,
     index: &Index,
     labels: &[Label],
     dirty: &std::collections::BTreeSet<u32>,
     sub: crate::request::PlannedRequest,
+    shape: &Shape<'_>,
 ) -> Result<crate::request::PlannedRequest, String> {
     use crate::scheduler::{InputGroup, PlannedAction};
     use std::collections::{BTreeSet, HashMap, HashSet};
     use std::sync::Arc;
+    let relabels = shape.relabels(index);
+    if relabels && !matches!(full.command, crate::request::RequestCommand::Build) {
+        return Err("the requested labels of a test or run changed".to_owned());
+    }
+    // The plan reaches what the saved roots say: checked on the saved plan
+    // (a root it does not know would prune a needed action).
+    reachable(&full, &saved_demand(index, |_| true), "the saved plan")?;
     if !full.warnings.is_empty() || !sub.warnings.is_empty() {
         return Err("the analysis reported warnings".to_owned());
     }
@@ -1710,12 +2413,51 @@ pub fn splice(
             _ => return Err("the re-analysis is another command's".to_owned()),
         }
     };
-    // The owners and whether they were re-analyzed.
+    // The requested labels' parts (the reachability roots below).
+    let parts = if relabels {
+        Some(relabeled_parts(
+            &full,
+            &sub,
+            index,
+            shape,
+            &requested_labels,
+        )?)
+    } else {
+        None
+    };
+    // The owners and whether they were re-analyzed; the removed and new
+    // ones.
     let mut owners: HashMap<String, bool> = HashMap::new();
+    let mut removed_owners: HashSet<String> = HashSet::new();
+    let mut new_owners: HashSet<String> = HashSet::new();
+    let mut owner_positions: HashMap<String, u32> = HashMap::new();
+    let positions: HashMap<u32, u32> = index
+        .planned
+        .iter()
+        .map(|(key, _, position)| (*key, *position))
+        .collect();
     for (id, key) in index.keys.iter().enumerate() {
+        let id = id as u32;
         if let Some(owner) = owner_of_key(key, &index.top) {
+            if let Some(position) = positions.get(&id) {
+                owner_positions.insert(owner.clone(), *position);
+            }
+            if shape.removed.contains(&id) {
+                removed_owners.insert(owner.clone());
+            }
+            if shape.new_keys.contains(&id) {
+                new_owners.insert(owner.clone());
+            }
             let entry = owners.entry(owner).or_insert(false);
-            *entry |= dirty.contains(&(id as u32));
+            *entry |= dirty.contains(&id);
+        }
+    }
+    for (id, key) in index.keys.iter().enumerate() {
+        if let Some(owner) = owner_of_key(key, &index.top)
+            && removed_owners.contains(&owner)
+            && !shape.removed.contains(&(id as u32))
+        {
+            return Err(format!("{owner} is removed and kept"));
         }
     }
     let owner = |node: &PlannedAction| owner_of_action(&node.action.id, &owners);
@@ -1804,10 +2546,13 @@ pub fn splice(
     // place.
     let mut seen_runs: HashSet<String> = HashSet::new();
     let mut previous: Option<String> = None;
-    let mut removed_dependencies: BTreeSet<String> = BTreeSet::new();
     let mut kept: Vec<PlannedAction> = Vec::with_capacity(full.nodes.len());
     let mut replaced: Vec<(usize, String)> = Vec::new();
     for node in full.nodes {
+        if owner(&node).is_some_and(|(name, _)| removed_owners.contains(name)) {
+            previous = None;
+            continue;
+        }
         match owner(&node) {
             Some((name, true)) => {
                 if previous.as_deref() != Some(name) {
@@ -1817,13 +2562,6 @@ pub fn splice(
                     replaced.push((kept.len(), name.to_owned()));
                 }
                 previous = Some(name.to_owned());
-                for dependency in node.all_dependencies() {
-                    if owner_of_action(&dependency.action_id, &owners)
-                        .is_none_or(|(_, dirty)| !dirty)
-                    {
-                        removed_dependencies.insert(dependency.action_id.clone());
-                    }
-                }
                 // The saved run's groups map to the re-analysis's by position.
                 if let Some(run) = run_of.get(name)
                     && let Some(newer) = runs[*run]
@@ -1841,29 +2579,11 @@ pub fn splice(
         }
     }
     for (name, _) in &runs {
-        if !seen_runs.contains(name) {
+        if !seen_runs.contains(name) && !new_owners.contains(name) {
             return Err(format!(
                 "{name} has actions now but had none in the saved plan"
             ));
         }
-    }
-    let mut added_dependencies: BTreeSet<String> = BTreeSet::new();
-    for (_, run) in &runs {
-        for node in run {
-            for dependency in node.all_dependencies() {
-                if owner_of_action(&dependency.action_id, &owners).is_none_or(|(_, dirty)| !dirty) {
-                    added_dependencies.insert(dependency.action_id.clone());
-                }
-            }
-        }
-    }
-    // New dependencies on other targets' actions must be planned (below);
-    // one no longer depended upon might no longer be needed at all (the
-    // full analysis would not plan it).
-    if let Some(dropped) = removed_dependencies.difference(&added_dependencies).next() {
-        return Err(format!(
-            "the re-analyzed actions no longer depend on '{dropped}' of a target that was not re-analyzed"
-        ));
     }
     // Assemble: each re-analyzed run where the saved one was.
     let mut by_name: HashMap<String, Vec<PlannedAction>> = runs.into_iter().collect();
@@ -1885,6 +2605,96 @@ pub fn splice(
         }
     }
     nodes.extend(kept);
+    // The new targets' runs where their added labels' analyses planned
+    // them: after every action of a target planned before, before every
+    // one of a target planned after (an action of no planned target in
+    // between is ambiguous).
+    if !shape.inserts.is_empty() {
+        let key_owner = |key: u32| owner_of_key(&index.keys[key as usize], &index.top);
+        let at: Vec<Option<u32>> = nodes
+            .iter()
+            .map(|node| owner(node).and_then(|(name, _)| owner_positions.get(name).copied()))
+            .collect();
+        let mut placed: Vec<(usize, usize, Vec<PlannedAction>)> = Vec::new();
+        for (group, insert) in shape.inserts.iter().enumerate() {
+            let mut run: Vec<PlannedAction> = Vec::new();
+            for (key, _) in &insert.keys {
+                if let Some(name) = key_owner(*key) {
+                    run.extend(by_name.remove(&name).unwrap_or_default());
+                }
+            }
+            if run.is_empty() {
+                continue;
+            }
+            let before = at
+                .iter()
+                .rposition(|position| position.is_some_and(|position| position < insert.boundary));
+            let after = at
+                .iter()
+                .position(|position| position.is_some_and(|position| position >= insert.boundary));
+            let from = before.map_or(0, |at| at + 1);
+            let to = after.unwrap_or(nodes.len());
+            if to < from || at[from..to].iter().any(Option::is_none) {
+                return Err(format!(
+                    "the new actions of {} have no unambiguous place in the plan",
+                    shape
+                        .sub
+                        .labels
+                        .first()
+                        .map_or_else(String::new, ToString::to_string)
+                ));
+            }
+            placed.push((from, group, run));
+        }
+        placed.sort_by_key(|(from, group, _)| (*from, *group));
+        let mut merged =
+            Vec::with_capacity(nodes.len() + placed.iter().map(|p| p.2.len()).sum::<usize>());
+        let mut placed = placed.into_iter().peekable();
+        for (at, node) in nodes.into_iter().enumerate() {
+            while placed.peek().is_some_and(|(from, _, _)| *from == at) {
+                merged.extend(placed.next().expect("peeked").2);
+            }
+            merged.push(node);
+        }
+        for (_, _, run) in placed {
+            merged.extend(run);
+        }
+        nodes = merged;
+        for node in &mut nodes {
+            for group in &mut node.groups {
+                if let Some(saved) = groups.get(&Arc::as_ptr(group)) {
+                    *group = saved.clone();
+                }
+            }
+        }
+    }
+    if let Some(name) = by_name.keys().next() {
+        return Err(format!(
+            "the re-analyzed actions of {name} have no place in the plan"
+        ));
+    }
+    // What the plan reaches now: the actions no longer needed (a removed
+    // dependency, a removed label's) are pruned like the full analysis
+    // prunes them.
+    {
+        let (requested, aspect_reports) = match &parts {
+            Some(parts) => (&parts.requested, &parts.aspect_reports),
+            None => (&full.requested, &full.aspect_reports),
+        };
+        let mut roots = merged_demand(index, shape, labels);
+        roots.extend(
+            requested
+                .iter()
+                .map(|(_, produced)| produced)
+                .chain(aspect_reports.iter().flat_map(|(_, _, produced)| produced))
+                .filter_map(|produced| produced.producer.as_ref().map(|(id, _)| id.clone())),
+        );
+        let required: HashSet<String> = reach(&nodes, roots)?
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        nodes.retain(|node| required.contains(node.action.id.as_str()));
+    }
     // Every dependency is planned, and no action of a target that was not
     // re-analyzed consumes one that was (its target would be dirty).
     let planned: HashSet<&str> = nodes.iter().map(|node| node.action.id.as_str()).collect();
@@ -1987,7 +2797,7 @@ pub fn splice(
         .filter(|(label, _)| requested_labels.contains(label))
         .collect();
     let sub_requested: Vec<_> = sub.requested.iter().collect();
-    if encoded(&full_requested) != encoded(&sub_requested) {
+    if parts.is_none() && encoded(&full_requested) != encoded(&sub_requested) {
         return Err("the requested targets' outputs changed".to_owned());
     }
     let full_results: Vec<_> = full
@@ -1996,7 +2806,7 @@ pub fn splice(
         .filter(|(label, _)| requested_labels.contains(label))
         .collect();
     let sub_results: Vec<_> = sub.results.iter().collect();
-    if encoded(&full_results) != encoded(&sub_results) {
+    if parts.is_none() && encoded(&full_results) != encoded(&sub_results) {
         return Err("the requested targets' results changed".to_owned());
     }
     let full_aspects: Vec<_> = full
@@ -2005,7 +2815,7 @@ pub fn splice(
         .filter(|(_, label, _)| requested_labels.contains(label))
         .collect();
     let sub_aspects: Vec<_> = sub.aspect_reports.iter().collect();
-    if encoded(&full_aspects) != encoded(&sub_aspects) {
+    if parts.is_none() && encoded(&full_aspects) != encoded(&sub_aspects) {
         return Err("the requested targets' aspect outputs changed".to_owned());
     }
     // The requested labels skipped as incompatible are the saved ones.
@@ -2014,7 +2824,7 @@ pub fn splice(
         .iter()
         .filter(|label| requested_labels.contains(label))
         .collect();
-    if full_skipped != sub.skipped.iter().collect::<Vec<_>>() {
+    if parts.is_none() && full_skipped != sub.skipped.iter().collect::<Vec<_>>() {
         return Err("the requested targets skipped as incompatible changed".to_owned());
     }
     // The run plans (`test`'s tests, `run`'s target): the re-analyzed
@@ -2125,8 +2935,20 @@ pub fn splice(
             .collect();
         postcard::to_stdvec(&targets).unwrap_or_default()
     };
-    if bep_of(&full.bep, &full.requested) != bep_of(&sub.bep, &sub.requested) {
+    if parts.is_none() && bep_of(&full.bep, &full.requested) != bep_of(&sub.bep, &sub.requested) {
         return Err("the requested targets' build events changed".to_owned());
+    }
+    if let Some(parts) = parts {
+        return Ok(crate::request::PlannedRequest {
+            nodes,
+            command,
+            run_plans,
+            requested: parts.requested,
+            results: parts.results,
+            aspect_reports: parts.aspect_reports,
+            bep: parts.bep,
+            ..full
+        });
     }
     Ok(crate::request::PlannedRequest {
         nodes,
@@ -2134,6 +2956,248 @@ pub fn splice(
         run_plans,
         ..full
     })
+}
+
+/// The saved demand ([`Index::demand`]) of the requested labels `keep`
+/// accepts (by position), and the workspace status's.
+fn saved_demand(index: &Index, keep: impl Fn(u32) -> bool) -> Vec<String> {
+    index
+        .demand
+        .iter()
+        .filter(|(position, _)| *position == u32::MAX || keep(*position))
+        .map(|(_, id)| id.clone())
+        .collect()
+}
+
+/// The hidden top-level artifacts' producers after the splice: the saved
+/// ones of the requested labels that were not re-analyzed (nor removed),
+/// the partial analysis's of those it analyzed.
+fn merged_demand(index: &Index, shape: &Shape<'_>, labels: &[Label]) -> Vec<String> {
+    let analyzed: std::collections::HashSet<&Label> = labels.iter().collect();
+    let requested: std::collections::HashSet<&Label> = shape.labels.iter().collect();
+    let mut demand = saved_demand(index, |position| {
+        index
+            .labels
+            .get(position as usize)
+            .is_some_and(|label| requested.contains(label) && !analyzed.contains(label))
+    });
+    demand.extend(shape.sub.demand.iter().map(|(_, id)| id.clone()));
+    demand
+}
+
+/// What the actions `roots` name reach in `plan` (every one must be
+/// planned).
+fn reach(
+    nodes: &[crate::scheduler::PlannedAction],
+    roots: Vec<String>,
+) -> Result<std::collections::HashSet<&str>, String> {
+    let by_id: std::collections::HashMap<&str, &crate::scheduler::PlannedAction> = nodes
+        .iter()
+        .map(|node| (node.action.id.as_str(), node))
+        .collect();
+    let mut required: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut todo: Vec<String> = roots;
+    while let Some(id) = todo.pop() {
+        let Some((id, node)) = by_id.get_key_value(id.as_str()) else {
+            return Err(format!("the plan does not have the needed action '{id}'"));
+        };
+        if required.insert(id) {
+            todo.extend(
+                node.all_dependencies()
+                    .map(|dependency| dependency.action_id.clone()),
+            );
+        }
+    }
+    Ok(required)
+}
+
+/// Every action of `plan` is reached from its reported outputs and the
+/// hidden top-level artifacts `demand` names (else the roots are not the
+/// full analysis's).
+fn reachable(
+    plan: &crate::request::PlannedRequest,
+    demand: &[String],
+    what: &str,
+) -> Result<(), String> {
+    let mut roots = demand.to_vec();
+    roots.extend(
+        plan.requested
+            .iter()
+            .map(|(_, produced)| produced)
+            .chain(
+                plan.aspect_reports
+                    .iter()
+                    .flat_map(|(_, _, produced)| produced),
+            )
+            .filter_map(|produced| produced.producer.as_ref().map(|(id, _)| id.clone())),
+    );
+    let required = reach(&plan.nodes, roots)?;
+    if let Some(node) = plan
+        .nodes
+        .iter()
+        .find(|node| !required.contains(node.action.id.as_str()))
+    {
+        return Err(format!(
+            "{what} has action '{}', which its roots do not reach",
+            node.action.id
+        ));
+    }
+    Ok(())
+}
+
+/// The per-label parts of a request whose requested labels changed.
+struct Parts {
+    requested: Vec<(Label, crate::request::Produced)>,
+    results: Vec<(Label, Vec<crate::request::Produced>)>,
+    aspect_reports: Vec<(String, Label, Vec<crate::request::Produced>)>,
+    bep: crate::bep::plan::BepPlan,
+}
+
+/// The per-label parts in the new label order: a label analyzed again or
+/// added takes the partial analysis's, any other the saved request's; the
+/// build events' output groups index the new `requested`.
+fn relabeled_parts(
+    full: &crate::request::PlannedRequest,
+    sub: &crate::request::PlannedRequest,
+    index: &Index,
+    shape: &Shape<'_>,
+    analyzed: &std::collections::HashSet<&Label>,
+) -> Result<Parts, String> {
+    use std::collections::HashMap;
+    if !full.skipped.is_empty() || !sub.skipped.is_empty() {
+        return Err("targets skipped as incompatible".to_owned());
+    }
+    let compatible = |plan: &crate::bep::plan::BepPlan| {
+        plan.targets
+            .iter()
+            .all(|target| target.compatibility == crate::bep::plan::Compatibility::Compatible)
+    };
+    if !compatible(&full.bep) || !compatible(&sub.bep) {
+        return Err("incompatible requested targets".to_owned());
+    }
+    if full.bep.targets.len() != index.labels.len() {
+        return Err("the saved build events do not name each requested label once".to_owned());
+    }
+    // Contiguous per label, in label order (crate::engine's plan_build).
+    fn by_label<T>(
+        items: &[T],
+        label: impl Fn(&T) -> &Label,
+    ) -> Result<HashMap<&Label, (usize, usize)>, String> {
+        let mut ranges: HashMap<&Label, (usize, usize)> = HashMap::new();
+        let mut last: Option<&Label> = None;
+        for (at, item) in items.iter().enumerate() {
+            let current = label(item);
+            if last != Some(current) {
+                if ranges.contains_key(current) {
+                    return Err(format!("the parts of {current} are not contiguous"));
+                }
+                ranges.insert(current, (at, at + 1));
+            } else if let Some(range) = ranges.get_mut(current) {
+                range.1 = at + 1;
+            }
+            last = Some(current);
+        }
+        Ok(ranges)
+    }
+    let full_requested = by_label(&full.requested, |(label, _)| label)?;
+    let sub_requested = by_label(&sub.requested, |(label, _)| label)?;
+    let full_aspects = by_label(&full.aspect_reports, |(_, label, _)| label)?;
+    let sub_aspects = by_label(&sub.aspect_reports, |(_, label, _)| label)?;
+    let full_results: HashMap<&Label, &(Label, Vec<crate::request::Produced>)> = full
+        .results
+        .iter()
+        .map(|result| (&result.0, result))
+        .collect();
+    let sub_results: HashMap<&Label, &(Label, Vec<crate::request::Produced>)> = sub
+        .results
+        .iter()
+        .map(|result| (&result.0, result))
+        .collect();
+    let printed = |plan: &crate::bep::plan::BepPlan| -> HashMap<String, usize> {
+        plan.targets
+            .iter()
+            .enumerate()
+            .map(|(at, target)| (target.label.clone(), at))
+            .collect()
+    };
+    let (full_bep, sub_bep) = (printed(&full.bep), printed(&sub.bep));
+    let mut parts = Parts {
+        requested: Vec::new(),
+        results: Vec::new(),
+        aspect_reports: Vec::new(),
+        bep: crate::bep::plan::BepPlan {
+            configurations: Vec::new(),
+            targets: Vec::new(),
+        },
+    };
+    for label in shape.labels {
+        let from_sub = analyzed.contains(label);
+        let (plan, requested, aspects, results, bep) = if from_sub {
+            (sub, &sub_requested, &sub_aspects, &sub_results, &sub_bep)
+        } else {
+            (
+                full,
+                &full_requested,
+                &full_aspects,
+                &full_results,
+                &full_bep,
+            )
+        };
+        let base = parts.requested.len();
+        let (from, to) = requested.get(label).copied().unwrap_or((0, 0));
+        parts
+            .requested
+            .extend(plan.requested[from..to].iter().cloned());
+        let (from_aspects, to_aspects) = aspects.get(label).copied().unwrap_or((0, 0));
+        parts.aspect_reports.extend(
+            plan.aspect_reports[from_aspects..to_aspects]
+                .iter()
+                .cloned(),
+        );
+        if let Some(result) = results.get(label) {
+            parts.results.push((*result).clone());
+        }
+        let target = bep
+            .get(&crate::test_runner::label_print(label))
+            .map(|at| &plan.bep.targets[*at])
+            .ok_or_else(|| format!("{label} has no build events"))?;
+        let mut target = target.clone();
+        for (_, files) in &mut target.groups {
+            for file in files.iter_mut() {
+                if *file < from || *file >= to {
+                    return Err(format!(
+                        "an output group of {label} names another label's file"
+                    ));
+                }
+                *file = *file - from + base;
+            }
+        }
+        parts.bep.targets.push(target);
+    }
+    // The configurations: the untrimmed one, then the trimmed one when a
+    // target is not a test (crate::engine's bep_plan).
+    let trimmed = parts.bep.targets.iter().any(|target| target.test.is_none());
+    let source = [&full.bep, &sub.bep]
+        .into_iter()
+        .find(|plan| plan.configurations.len() == if trimmed { 2 } else { 1 })
+        .or_else(|| {
+            [&full.bep, &sub.bep]
+                .into_iter()
+                .find(|plan| plan.configurations.len() == 2 && !trimmed)
+        })
+        .ok_or("the build events' configurations are unknown")?;
+    let mut configurations = source.configurations.clone();
+    configurations.truncate(if trimmed { 2 } else { 1 });
+    if [&full.bep, &sub.bep].into_iter().any(|plan| {
+        plan.configurations
+            .iter()
+            .zip(&configurations)
+            .any(|(a, b)| a != b)
+    }) {
+        return Err("the build events' configurations differ".to_owned());
+    }
+    parts.bep.configurations = configurations;
+    Ok(parts)
 }
 
 /// The ids of the actions producing what a run plan reads (its executable,
@@ -2211,7 +3275,7 @@ mod tests {
         let mut index = Index {
             main_root: PathBuf::from("/ws"),
             packages: vec![package(""), package("a"), package("a/b")],
-            repository_inputs: vec![(PathBufWire(PathBuf::from("/ws/watched")), true)],
+            repository_inputs: vec![(PathBufWire(PathBuf::from("/ws/watched")), true, None)],
             ..Index::default()
         };
         let recording = crate::observed_fs::Recording {
@@ -2242,7 +3306,7 @@ mod tests {
             (3, ".bzl"),
             (4, "package boundary"),
             (5, "directory listing"),
-            (6, "recorded input of a repository"),
+            (6, "recorded input of a module extension"),
             (7, "inside the cache"),
             (8, "outside the main repository"),
         ] {
@@ -2329,10 +3393,9 @@ mod tests {
         let attribution = classify(&index, &recording, &[0], cache).unwrap();
         assert_eq!(attribution.bzl.iter().copied().collect::<Vec<_>>(), [0]);
         assert!(attribution.loaded.is_empty() && attribution.content.is_empty());
-        let (labels, dirty) =
-            dirty_labels(&index, &Default::default(), &attribution.modules).unwrap();
-        assert_eq!(dirty.into_iter().collect::<Vec<_>>(), [0]);
-        assert_eq!(labels, [label("//a:x")]);
+        let dirty = dirty_labels(&index, &Default::default(), &attribution.modules, None).unwrap();
+        assert_eq!(dirty.dirty.into_iter().collect::<Vec<_>>(), [0]);
+        assert_eq!(dirty.labels, [label("//a:x")]);
         // A definition load entered it: refused.
         let mut defined = graph.clone();
         defined.definitions.insert(label("//lib:util.bzl"));
@@ -2435,7 +3498,16 @@ mod tests {
     fn the_index_round_trips() {
         let index = Index {
             main_root: PathBuf::from("/ws"),
-            repository_inputs: vec![(PathBufWire(PathBuf::from("/ws/a")), true)],
+            repository_inputs: vec![(
+                PathBufWire(PathBuf::from("/ws/a")),
+                true,
+                Some("r".to_owned()),
+            )],
+            repository_roots: vec![("r".to_owned(), PathBufWire(PathBuf::from("/c/r")))],
+            root_entries: vec![0, 1],
+            demand: vec![(0, "//a:b#0".to_owned())],
+            patterns: Some(vec![(0, 0)]),
+            suite_packages: vec![0],
             top: [7; 32],
             labels: vec![Label::parse_canonical("//a:b").unwrap()],
             keys: vec![IndexKey {

@@ -3545,11 +3545,12 @@ impl Engine {
             .map(|pattern| crate::target_pattern::parse(pattern, relative_directory))
             .collect::<Result<Vec<_>, _>>()?;
         let mut selected = BTreeSet::new();
-        for pattern in &parsed {
+        for (position, pattern) in parsed.iter().enumerate() {
             let filter = filter_manual && !pattern.negative;
-            let targets = self
-                .expand_pattern(pattern, filter, filter_manual)
-                .map_err(PatternError::into_message)?;
+            self.track_pattern(Some(position));
+            let targets = self.expand_pattern(pattern, filter, filter_manual);
+            self.track_pattern(None);
+            let targets = targets.map_err(PatternError::into_message)?;
             if pattern.negative {
                 selected.retain(|label| !targets.contains(label));
             } else {
@@ -3630,6 +3631,7 @@ impl Engine {
                 // that package's targets, interleaved exactly like the
                 // sequential path — stay in pattern order.
                 let rules_only = *rules_only;
+                self.track_pattern_packages(&ids);
                 self.load_packages_parallel(&ids, |engine, id| {
                     found.extend(engine.package_targets(id, rules_only, filter_manual)?);
                     Ok(())
@@ -3662,6 +3664,7 @@ impl Engine {
                     });
                     return Ok(found);
                 }
+                self.track_pattern_packages(std::slice::from_ref(&id));
                 // TargetPatternResolverUtil.getParsingErrorMessage
                 // (pkgcache/TargetPatternResolverUtil.java:33-39).
                 self.load_package(&id).map_err(|error| {
@@ -10735,18 +10738,33 @@ impl Engine {
         }
         let mut build = BTreeSet::new();
         let mut post_expansion_error = false;
+        // Incremental analysis may change the requested labels of a plain
+        // `build` pattern phase only (crate::snapshot::incremental).
+        let simple = !self.keep_going
+            && options.build_tag_filters.is_empty()
+            && !options.determine_tests
+            && !options.build_tests_only;
         for label in targets {
             // Every selected label's package is loaded: a lookup, no
             // filesystem facts of source-file targets.
             if options.expand_test_suites && self.loaded_test_suite(&label) {
-                let (expanded, error) =
-                    self.tests_in_suite(&label, &mut expansions, &mut Vec::new())?;
+                // What the expansion reads (crate::snapshot::incremental:
+                // the labels of those packages never change incrementally).
+                let suite = incremental::SuiteScope::enter();
+                self.track_suite_package(&label);
+                let expanded = self.tests_in_suite(&label, &mut expansions, &mut Vec::new());
+                drop(suite);
+                let (expanded, error) = expanded?;
+                for test in &expanded {
+                    self.track_suite_package(test);
+                }
                 post_expansion_error |= error;
                 build.extend(expanded);
             } else {
                 build.insert(label);
             }
         }
+        self.track_patterns_simple(simple);
         let PatternFailures { loading, skipped } = failures;
         self.record_explicit_targets(patterns, relative_directory);
         Ok(TargetPatternPhase {
@@ -14547,6 +14565,7 @@ impl Engine {
             if self.keep_going {
                 self.keep_going_state.current = Some(label.clone());
             }
+            self.track_root_entry(position, plan.len());
             self.track_root_analysis(Some(position));
             let analyzed = self.analyze(label, top, &mut active, configured, plan);
             self.track_root_analysis(None);
@@ -14588,6 +14607,7 @@ impl Engine {
                 }
             }
         }
+        self.track_root_entry(labels.len(), plan.len());
         // N58: the top-level aspects' applications on each requested target
         // and along their `attr_aspects` closure are analyzed like any
         // dependency (ToplevelStarlarkAspectFunction over AspectFunction:
@@ -15557,6 +15577,28 @@ impl Engine {
                     plan.completion = completion.iter().map(|id| (*id).to_owned()).collect();
                 }
             }
+        }
+        // Incremental analysis keeps the plan's other reachability roots
+        // (crate::snapshot::incremental: a splice prunes like this does).
+        if self.tracking() {
+            let positions: HashMap<&Label, usize> = all_labels
+                .iter()
+                .enumerate()
+                .map(|(position, label)| (label, position))
+                .collect();
+            let demand = hidden
+                .iter()
+                .filter_map(|(owner, artifact)| {
+                    let (id, _) = artifact.producer.as_ref()?;
+                    let position = if id.starts_with(crate::request::STATUS_ID_PREFIX) {
+                        None
+                    } else {
+                        Some(positions.get(&owners.keys[*owner].label).copied()?)
+                    };
+                    Some((position, id.clone()))
+                })
+                .collect();
+            self.track_demand(demand);
         }
         // Analyze everything first, but execute only the actions reachable from
         // requested outputs. Empty DefaultInfo must not execute unused actions.

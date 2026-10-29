@@ -177,25 +177,43 @@ static SUMMARY: AtomicBool = AtomicBool::new(false);
 /// printed in every UI mode. Notes written while planning's stderr is
 /// captured: an analysis snapshot hit replays them as they were.
 pub(crate) fn analysis_report(labels: &[crate::label::Label], tests: Option<usize>) {
+    for line in analysis_lines(
+        labels,
+        tests,
+        COUNTERS.packages.load(Ordering::Relaxed),
+        COUNTERS.configured.load(Ordering::Relaxed),
+        COUNTERS.aspects.load(Ordering::Relaxed),
+    ) {
+        crate::ui::note(&line);
+    }
+    SUMMARY.store(true, Ordering::Relaxed);
+}
+
+/// The notes [`analysis_report`] prints for `labels` with these counts
+/// (an incremental analysis whose requested labels changed prints them
+/// in place of the saved ones, crate::snapshot::incremental).
+pub fn analysis_lines(
+    labels: &[crate::label::Label],
+    tests: Option<usize>,
+    packages: usize,
+    configured: usize,
+    aspects: usize,
+) -> Vec<String> {
     let what = match labels {
         [label] => format!("target {}", crate::test_runner::label_print(label)),
         _ => format!("{} targets", labels.len()),
     };
+    let mut lines = Vec::new();
     // No targets: nothing analyzed to report (genuine `build` without
     // targets prints only `Found 0 targets...`).
     if !labels.is_empty() {
-        crate::note!(
+        lines.push(format!(
             "INFO: {}",
-            render::analyzed(
-                &what,
-                COUNTERS.packages.load(Ordering::Relaxed),
-                COUNTERS.configured.load(Ordering::Relaxed),
-                COUNTERS.aspects.load(Ordering::Relaxed),
-            )
-        );
+            render::analyzed(&what, packages, configured, aspects)
+        ));
     }
-    crate::note!("INFO: {}", render::found(labels.len(), tests));
-    SUMMARY.store(true, Ordering::Relaxed);
+    lines.push(format!("INFO: {}", render::found(labels.len(), tests)));
+    lines
 }
 
 /// Arm the build summary as [`analysis_report`] does (an incremental
