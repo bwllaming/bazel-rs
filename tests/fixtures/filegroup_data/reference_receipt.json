@@ -26,7 +26,7 @@
   "other/BUILD.bazel": "d679b27ae95eefddb3923414a2477fa42c425c8d2bfd0f074ec3276693b9ca94",
   "other/o.txt": "7427d152005f9ed0fa31c76ef9963cf4bb47dce6e2768111d9eb0edbfe59c704",
   "path/BUILD.bazel": "5bb540cc911a29a80b728595f66c3fe822e2ef4e3fb6a5866e488dcbee655cdd",
-  "pkg/BUILD.bazel": "7d73f2c217fc528cb1e1d23f5090f8d484af9158ab4d14c838bd221528206f64",
+  "pkg/BUILD.bazel": "f3805feb88fa62b9602fb026557221b040373f212e3dc128b11eeea76550beae",
   "pkg/a.txt": "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7",
   "pkg/b.txt": "0263829989b6fd954f72baaf2fc64bc2e2f01d692d4de72986ea808f6e99813f",
   "pkg/d.txt": "8d74beec1be996322ad76813bafb92d40839895d6dd7ee808b17ca201eac98be",
@@ -46,12 +46,12 @@
  ],
  "known_divergences": [
   "Native prints its own result format (`LABEL\\tPATH`, `bazel-rs: N actions executed ...`), no INFO lines; native result lines of source files are not compared (Bazel prints `up-to-date (nothing to build)`).",
-  "Declared divergences aspect_probe, missing_nobuild and path: see the cases (pre-existing native limitations, not specific to `data`).",
+  "Declared divergences missing_nobuild and path: see the cases (pre-existing native limitations, not specific to `data`).",
   "Native is passed --experimental-builtin-modules in every case (as in the other paired fixtures)."
  ],
  "counts": {
-  "MATCH": 12,
-  "DECLARED_DIVERGENCE": 3
+  "MATCH": 13,
+  "DECLARED_DIVERGENCE": 2
  },
  "scratch_removed": true,
  "cases": {
@@ -168,16 +168,11 @@
     }
    },
    "native": {
-    "exit": 1,
-    "seconds": 0.344,
-    "stdout": "",
-    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:124:13: in //pkg:defs.bzl%labels_aspect aspect on native rule //pkg:fg: //pkg:fg is not a custom rule\n",
-    "outputs": null
+    "exit": 0,
+    "note": "since the native-aspects parity change (tests/fixtures/native_aspects): the aspect applies to the filegroups and the built output matches the genuine one (live comparison in tests/filegroup_data.rs)"
    },
-   "declared_divergence": "pre-existing: Starlark aspects applied to native rules (here filegroups) are not modelled natively; native fails explicitly before the aspect runs",
-   "native_message": "aspect on native rule //pkg:fg: //pkg:fg is not a custom rule",
-   "verdict": "DECLARED_DIVERGENCE",
-   "exit_code_equal": false
+   "verdict": "MATCH",
+   "exit_code_equal": true
   },
   "build_fg": {
    "argv": [

@@ -999,6 +999,45 @@ fn aspect_applied_dependencies_keep_files_to_run() {
     compare_genuine_builtin("aspect_merged_files_to_run", &["E "], false);
 }
 
+/// Aspects apply to native rule targets like to Starlark ones
+/// (tests/fixtures/native_aspects/genuine.txt): `ctx.rule.kind`, the native
+/// rule class's attributes in `ctx.rule.attr`/`files`, propagation along
+/// them with `attr_aspects = ['*']`, aliases seen through, no application
+/// on files and no-config constraint rules, required providers over the
+/// advertised ones, the rules_multirun `commands` shape over a genrule, and
+/// a top-level `--aspects` over `//...` building the aspect outputs.
+#[test]
+fn aspects_apply_to_native_rule_targets() {
+    let markers = ["K ", "V ", "F ", "S ", "P ", "R ", "M ", "N ", "Q ", "O "];
+    compare_genuine_builtin("native_aspects", &markers, false);
+    let ws = Workspace::fixture("native_aspects");
+    ok(&ws.build_builtin(
+        &["--aspects=//:defs.bzl%asp", "--output_groups=asp"],
+        &["//..."],
+    ));
+    let outputs: Vec<String> = ws
+        .outputs_ending(".asp")
+        .iter()
+        .map(|name| name.rsplit('/').next().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        outputs,
+        [
+            "fg.asp",
+            "fg2.asp",
+            "g.asp",
+            "gx.asp",
+            "l.asp",
+            "mr.asp",
+            "r.asp",
+            "tool_fg.asp",
+            "tty.asp",
+            "tty2.asp",
+            "vis.asp"
+        ]
+    );
+}
+
 /// Subrules from aspects (tests/fixtures/aspect_subrules/genuine.txt): the
 /// aspect's declared subrules (and theirs) run under the aspect, with
 /// Bazel's undeclared-subrule texts for aspects and rules; a lifted

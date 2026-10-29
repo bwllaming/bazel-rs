@@ -20,6 +20,40 @@ wording, `toolchains`, `exec_compatible_with`, `exec_groups`, `fragments`
 (and `host_fragments`, which Bazel 9.3 ignores) — see "Aspect toolchains,
 exec groups and fragments". Every declared feature is applied (none is a silent no-op).
 
+## Native base rules
+
+An aspect applies to the targets of native rule classes exactly like to
+Starlark ones (tests/fixtures/native_aspects, genuine capture): `genrule`,
+`filegroup`, `test_suite`, `config_setting`, `config_feature_flag`,
+`platform`, `toolchain`, `toolchain_type`, `java_plugins_flag_alias`.
+`alias`/`label_flag`/`label_setting` are seen through (the application is
+the actual target's); source and output files (without
+`apply_to_generating_rules`), package groups and the no-config
+`constraint_setting`/`constraint_value` (NoConfigTransition rule classes)
+get none. `ctx.rule.kind` is the class name; `ctx.rule.attr` holds every
+attribute of the rule class under its public name
+(StarlarkRuleContext.java:300-303 over `rule.getAttributes()`): the
+common ones (`licenses` as a `License` whose repr is its canonical type
+list, e.g. `["none"]`), the class's own with their defaults, and the
+private ones Bazel 9.3 exposes (`_action_listener` where the class keeps
+it, `_config_dependencies`, genrule `_genrule_setup` and `_is_executable`,
+config_setting `_flag_alias_settings`, test_suite `_implicit_tests`,
+config_feature_flag `_whitelist_config_feature_flag`,
+java_plugins_flag_alias `_java_plugins`), TRISTATE attributes (`stamp`)
+and `exec_group_compatible_with` omitted. Dependency attributes are
+Targets with `ctx.rule.files` entries (also the ones only an aspect
+needs: `toolchain_type`, `target_settings`, `parents`, `required_settings`,
+`constraint_values`, `flag_values`, `aspect_hints`, `*_compatible_with`,
+`$genrule_setup`, the allowlist; crate::engine `native_aspect_edges`),
+`nodep` labels and `outs` Labels. `ctx.rule.file`/`executable` are empty
+(no native attribute is a single-file or executable label). `attr_aspects`
+propagates along the native attribute names (`'*'`: all of them, `tools`
+in the exec configuration). `required_providers` is checked against the
+class's advertised providers (`platform`: PlatformInfo, `toolchain_type`:
+ToolchainTypeInfo, nothing for the others; ANY for the alias-like
+classes). An aspect's `ctx.rule.attr` of a Starlark rule also keeps
+`aspect_hints` (filtered from the rule's own `ctx.attr` only).
+
 ## Propagation functions
 
 A function `attr_aspects` or `toolchains_aspects` and the

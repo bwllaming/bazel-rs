@@ -1,0 +1,890 @@
+# Genuine Bazel 9.3.0 (--batch --ignore_all_rc_files, `ARGS --noshow_progress --curses=no
+# --color=no`, a fresh output base per command), the sorted `print()` texts (DEBUG lines
+# without their `DEBUG: <WS>/defs.bzl:L:C: ` lead).
+### build --nobuild //:r //:mr
+F @@//:cs files=["_action_listener=[]", "_config_dependencies=[]", "_flag_alias_settings=[]", "aspect_hints=[]", "constraint_values=[]", "flag_values=[]", "package_metadata=[]"]
+F @@//:ff files=["_action_listener=[]", "_config_dependencies=[]", "_whitelist_config_feature_flag=[]", "aspect_hints=[]", "package_metadata=[]"]
+F @@//:fg files=["_action_listener=[]", "_config_dependencies=[]", "aspect_hints=[]", "compatible_with=[]", "data=[F(data.txt)]", "package_metadata=[]", "restricted_to=[]", "srcs=[F(in.txt), F(g.out)]", "target_compatible_with=[]"]
+F @@//:g files=["_action_listener=[]", "_config_dependencies=[]", "_genrule_setup=[F(../bazel_tools/tools/genrule/genrule-setup.sh)]", "aspect_hints=[]", "compatible_with=[]", "exec_compatible_with=[]", "package_metadata=[]", "restricted_to=[]", "srcs=[F(in.txt)]", "target_compatible_with=[]", "toolchains=[]", "tools=[F(tool.sh)]"]
+F @@//:gx files=["_action_listener=[]", "_config_dependencies=[]", "_genrule_setup=[F(../bazel_tools/tools/genrule/genrule-setup.sh)]", "aspect_hints=[]", "compatible_with=[]", "exec_compatible_with=[]", "package_metadata=[]", "restricted_to=[]", "srcs=[]", "target_compatible_with=[]", "toolchains=[]", "tools=[]"]
+F @@//:l files=["_action_listener=[]", "_config_dependencies=[]", "aspect_hints=[]", "compatible_with=[]", "exec_compatible_with=[]", "package_metadata=[]", "restricted_to=[]", "srcs=[F(in.txt)]", "target_compatible_with=[]", "toolchains=[]"]
+F @@//:plat files=["_config_dependencies=[]", "aspect_hints=[]", "constraint_values=[]", "parents=[]", "required_settings=[]"]
+F @@//:tc files=["_config_dependencies=[]", "aspect_hints=[]", "exec_compatible_with=[]", "package_metadata=[]", "target_compatible_with=[]", "target_settings=[]", "toolchain_type=[]"]
+F @@//:tool_fg files=["_action_listener=[]", "_config_dependencies=[]", "aspect_hints=[]", "compatible_with=[]", "data=[]", "package_metadata=[]", "restricted_to=[]", "srcs=[F(tool.sh)]", "target_compatible_with=[]"]
+F @@//:ts files=["_action_listener=[]", "_config_dependencies=[]", "_implicit_tests=[]", "aspect_hints=[]", "compatible_with=[]", "package_metadata=[]", "restricted_to=[]", "target_compatible_with=[]", "tests=[]"]
+F @@//:tty files=["_config_dependencies=[]", "aspect_hints=[]", "compatible_with=[]", "package_metadata=[]", "restricted_to=[]", "target_compatible_with=[]"]
+F @@//:vis files=["_action_listener=[]", "_config_dependencies=[]", "aspect_hints=[]", "compatible_with=[]", "data=[]", "package_metadata=[]", "restricted_to=[]", "srcs=[F(data.txt)]", "target_compatible_with=[]"]
+K @@//:cs kind=config_setting attrs=["_action_listener", "_config_dependencies", "_flag_alias_settings", "aspect_hints", "constraint_values", "define_values", "deprecation", "distribs", "features", "flag_values", "generator_function", "generator_location", "generator_name", "licenses", "name", "package_metadata", "tags", "testonly", "transitive_configs", "values", "visibility"]
+K @@//:ff kind=config_feature_flag attrs=["_action_listener", "_config_dependencies", "_whitelist_config_feature_flag", "allowed_values", "aspect_hints", "default_value", "deprecation", "distribs", "features", "generator_function", "generator_location", "generator_name", "licenses", "name", "package_metadata", "scope", "tags", "testonly", "visibility"]
+K @@//:fg kind=filegroup attrs=["_action_listener", "_config_dependencies", "aspect_hints", "compatible_with", "data", "deprecation", "distribs", "features", "generator_function", "generator_location", "generator_name", "licenses", "name", "output_group", "output_licenses", "package_metadata", "restricted_to", "srcs", "tags", "target_compatible_with", "testonly", "transitive_configs", "visibility"]
+K @@//:g kind=genrule attrs=["_action_listener", "_config_dependencies", "_genrule_setup", "_is_executable", "aspect_hints", "cmd", "cmd_bash", "cmd_bat", "cmd_ps", "compatible_with", "deprecation", "distribs", "exec_compatible_with", "exec_properties", "executable", "features", "generator_function", "generator_location", "generator_name", "heuristic_label_expansion", "licenses", "local", "message", "name", "output_licenses", "output_to_bindir", "outs", "package_metadata", "restricted_to", "srcs", "tags", "target_compatible_with", "testonly", "toolchains", "tools", "transitive_configs", "visibility"]
+K @@//:gx kind=genrule attrs=["_action_listener", "_config_dependencies", "_genrule_setup", "_is_executable", "aspect_hints", "cmd", "cmd_bash", "cmd_bat", "cmd_ps", "compatible_with", "deprecation", "distribs", "exec_compatible_with", "exec_properties", "executable", "features", "generator_function", "generator_location", "generator_name", "heuristic_label_expansion", "licenses", "local", "message", "name", "output_licenses", "output_to_bindir", "outs", "package_metadata", "restricted_to", "srcs", "tags", "target_compatible_with", "testonly", "toolchains", "tools", "transitive_configs", "visibility"]
+K @@//:l kind=lib attrs=["_action_listener", "_config_dependencies", "aspect_hints", "compatible_with", "deprecation", "exec_compatible_with", "exec_properties", "expect_failure", "features", "generator_function", "generator_location", "generator_name", "name", "package_metadata", "restricted_to", "srcs", "tags", "target_compatible_with", "testonly", "toolchains", "transitive_configs", "visibility"]
+K @@//:plat kind=platform attrs=["_config_dependencies", "allowed_toolchain_types", "aspect_hints", "check_toolchain_types", "constraint_values", "deprecation", "distribs", "exec_properties", "features", "flags", "generator_function", "generator_location", "generator_name", "licenses", "missing_toolchain_error", "name", "parents", "remote_execution_properties", "required_settings", "tags", "testonly", "transitive_configs", "visibility"]
+K @@//:tc kind=toolchain attrs=["_config_dependencies", "aspect_hints", "deprecation", "distribs", "exec_compatible_with", "features", "generator_function", "generator_location", "generator_name", "licenses", "name", "package_metadata", "tags", "target_compatible_with", "target_settings", "testonly", "toolchain", "toolchain_type", "transitive_configs", "use_target_platform_constraints", "visibility"]
+K @@//:tool_fg kind=filegroup attrs=["_action_listener", "_config_dependencies", "aspect_hints", "compatible_with", "data", "deprecation", "distribs", "features", "generator_function", "generator_location", "generator_name", "licenses", "name", "output_group", "output_licenses", "package_metadata", "restricted_to", "srcs", "tags", "target_compatible_with", "testonly", "transitive_configs", "visibility"]
+K @@//:ts kind=test_suite attrs=["_action_listener", "_config_dependencies", "_implicit_tests", "aspect_hints", "compatible_with", "deprecation", "distribs", "features", "generator_function", "generator_location", "generator_name", "licenses", "name", "package_metadata", "restricted_to", "tags", "target_compatible_with", "testonly", "tests", "transitive_configs", "visibility"]
+K @@//:tty kind=toolchain_type attrs=["_config_dependencies", "aspect_hints", "compatible_with", "deprecation", "features", "generator_function", "generator_location", "generator_name", "name", "no_match_error", "package_metadata", "restricted_to", "tags", "target_compatible_with", "testonly", "transitive_configs", "visibility"]
+K @@//:vis kind=filegroup attrs=["_action_listener", "_config_dependencies", "aspect_hints", "compatible_with", "data", "deprecation", "distribs", "features", "generator_function", "generator_location", "generator_name", "licenses", "name", "output_group", "output_licenses", "package_metadata", "restricted_to", "srcs", "tags", "target_compatible_with", "testonly", "transitive_configs", "visibility"]
+M @@//:fg kind=filegroup exe=False args=[] env={} data=True
+M @@//:gx kind=genrule exe=True args=[] env={} data=False
+M @@//:tool_fg kind=filegroup exe=True args=[] env={} data=True
+N @@//:fg exe=None args=[] files=["g.out", "in.txt"]
+N @@//:gx exe=gx.sh args=[] files=["gx.sh"]
+N @@//:gx exe=gx.sh args=[] files=["gx.sh"]
+N @@//:tool_fg exe=tool.sh args=[] files=["tool.sh"]
+O @@//:fg2 pinfo=-
+O @@//:plat2 pinfo=platform
+O @@//:tty2 pinfo=-
+P @@//:cs seen=[]
+P @@//:ff seen=[]
+P @@//:fg seen=["srcs:@@//:g"]
+P @@//:g seen=["srcs:@@//:l", "tools:@@//:tool_fg"]
+P @@//:gx seen=[]
+P @@//:l seen=[]
+P @@//:plat seen=[]
+P @@//:tc seen=["toolchain_type:@@//:tty"]
+P @@//:tool_fg seen=[]
+P @@//:ts seen=[]
+P @@//:tty seen=[]
+P @@//:vis seen=[]
+Q @@//:plat2 kind=platform
+R @@//:cs info=config_setting files=[] exe=None
+R @@//:cset info=- files=[] exe=None
+R @@//:cv info=- files=[] exe=None
+R @@//:data.txt info=- files=["data.txt"] exe=data.txt
+R @@//:ff info=config_feature_flag files=[] exe=None
+R @@//:fg info=filegroup files=["g.out", "in.txt"] exe=None
+R @@//:fg info=filegroup files=["g.out", "in.txt"] exe=None
+R @@//:fg info=filegroup files=["g.out", "in.txt"] exe=None
+R @@//:g info=genrule files=["g.out"] exe=None
+R @@//:g.out info=- files=["g.out"] exe=g.out
+R @@//:gx info=genrule files=["gx.sh"] exe=gx.sh
+R @@//:gx info=genrule files=["gx.sh"] exe=gx.sh
+R @@//:in.txt info=- files=["in.txt"] exe=in.txt
+R @@//:l info=lib files=["in.txt"] exe=None
+R @@//:plat info=platform files=[] exe=None
+R @@//:tc info=toolchain files=[] exe=None
+R @@//:ts info=test_suite files=[] exe=None
+R @@//:tty info=toolchain_type files=[] exe=None
+R @@//:vis info=filegroup files=["data.txt"] exe=data.txt
+S @@//:cs file=[] executable=[]
+S @@//:ff file=[] executable=[]
+S @@//:fg file=[] executable=[]
+S @@//:g file=[] executable=[]
+S @@//:gx file=[] executable=[]
+S @@//:l file=[] executable=[]
+S @@//:plat file=[] executable=[]
+S @@//:tc file=[] executable=[]
+S @@//:tool_fg file=[] executable=[]
+S @@//:ts file=[] executable=[]
+S @@//:tty file=[] executable=[]
+S @@//:vis file=[] executable=[]
+V @@//:cs _action_listener list []
+V @@//:cs _config_dependencies list []
+V @@//:cs _flag_alias_settings list []
+V @@//:cs aspect_hints list []
+V @@//:cs constraint_values list []
+V @@//:cs define_values dict {}
+V @@//:cs deprecation NoneType None
+V @@//:cs distribs list []
+V @@//:cs features list []
+V @@//:cs flag_values dict {}
+V @@//:cs generator_function string ""
+V @@//:cs generator_location string ""
+V @@//:cs generator_name string ""
+V @@//:cs licenses License ["none"]
+V @@//:cs name string "cs"
+V @@//:cs package_metadata list []
+V @@//:cs tags list ["manual"]
+V @@//:cs testonly bool False
+V @@//:cs transitive_configs list []
+V @@//:cs values dict {"compilation_mode": "opt"}
+V @@//:cs visibility list []
+V @@//:ff _action_listener list []
+V @@//:ff _config_dependencies list []
+V @@//:ff _whitelist_config_feature_flag Target T(@@bazel_tools//tools/allowlists/config_feature_flag:config_feature_flag)
+V @@//:ff allowed_values list ["a", "b"]
+V @@//:ff aspect_hints list []
+V @@//:ff default_value string "a"
+V @@//:ff deprecation NoneType None
+V @@//:ff distribs list []
+V @@//:ff features list []
+V @@//:ff generator_function string ""
+V @@//:ff generator_location string ""
+V @@//:ff generator_name string ""
+V @@//:ff licenses License ["none"]
+V @@//:ff name string "ff"
+V @@//:ff package_metadata list []
+V @@//:ff scope string "universal"
+V @@//:ff tags list ["manual"]
+V @@//:ff testonly bool False
+V @@//:ff visibility list []
+V @@//:fg _action_listener list []
+V @@//:fg _config_dependencies list []
+V @@//:fg aspect_hints list []
+V @@//:fg compatible_with list []
+V @@//:fg data list [T(@@//:data.txt)]
+V @@//:fg deprecation NoneType None
+V @@//:fg distribs list []
+V @@//:fg features list []
+V @@//:fg generator_function string ""
+V @@//:fg generator_location string ""
+V @@//:fg generator_name string ""
+V @@//:fg licenses License ["none"]
+V @@//:fg name string "fg"
+V @@//:fg output_group string ""
+V @@//:fg output_licenses list []
+V @@//:fg package_metadata list []
+V @@//:fg restricted_to list []
+V @@//:fg srcs list [T(@@//:in.txt), T(@@//:g)]
+V @@//:fg tags list []
+V @@//:fg target_compatible_with list []
+V @@//:fg testonly bool False
+V @@//:fg transitive_configs list []
+V @@//:fg visibility list []
+V @@//:g _action_listener list []
+V @@//:g _config_dependencies list []
+V @@//:g _genrule_setup Target T(@@bazel_tools//tools/genrule:genrule-setup.sh)
+V @@//:g _is_executable bool False
+V @@//:g aspect_hints list []
+V @@//:g cmd string "cat $(SRCS) > $@"
+V @@//:g cmd_bash string ""
+V @@//:g cmd_bat string ""
+V @@//:g cmd_ps string ""
+V @@//:g compatible_with list []
+V @@//:g deprecation NoneType None
+V @@//:g distribs list []
+V @@//:g exec_compatible_with list []
+V @@//:g exec_properties dict {}
+V @@//:g executable bool False
+V @@//:g features list []
+V @@//:g generator_function string ""
+V @@//:g generator_location string ""
+V @@//:g generator_name string ""
+V @@//:g heuristic_label_expansion bool False
+V @@//:g licenses License ["none"]
+V @@//:g local bool False
+V @@//:g message string ""
+V @@//:g name string "g"
+V @@//:g output_licenses list []
+V @@//:g output_to_bindir bool False
+V @@//:g outs list [L(@@//:g.out)]
+V @@//:g package_metadata list []
+V @@//:g restricted_to list []
+V @@//:g srcs list [T(@@//:in.txt), T(@@//:l)]
+V @@//:g tags list []
+V @@//:g target_compatible_with list []
+V @@//:g testonly bool False
+V @@//:g toolchains list []
+V @@//:g tools list [T(@@//:tool_fg)]
+V @@//:g transitive_configs list []
+V @@//:g visibility list []
+V @@//:gx _action_listener list []
+V @@//:gx _config_dependencies list []
+V @@//:gx _genrule_setup Target T(@@bazel_tools//tools/genrule:genrule-setup.sh)
+V @@//:gx _is_executable bool True
+V @@//:gx aspect_hints list []
+V @@//:gx cmd string "printf '#!/bin/sh\\n' > $@"
+V @@//:gx cmd_bash string ""
+V @@//:gx cmd_bat string ""
+V @@//:gx cmd_ps string ""
+V @@//:gx compatible_with list []
+V @@//:gx deprecation NoneType None
+V @@//:gx distribs list []
+V @@//:gx exec_compatible_with list []
+V @@//:gx exec_properties dict {}
+V @@//:gx executable bool True
+V @@//:gx features list []
+V @@//:gx generator_function string ""
+V @@//:gx generator_location string ""
+V @@//:gx generator_name string ""
+V @@//:gx heuristic_label_expansion bool False
+V @@//:gx licenses License ["none"]
+V @@//:gx local bool False
+V @@//:gx message string ""
+V @@//:gx name string "gx"
+V @@//:gx output_licenses list []
+V @@//:gx output_to_bindir bool False
+V @@//:gx outs list [L(@@//:gx.sh)]
+V @@//:gx package_metadata list []
+V @@//:gx restricted_to list []
+V @@//:gx srcs list []
+V @@//:gx tags list []
+V @@//:gx target_compatible_with list []
+V @@//:gx testonly bool False
+V @@//:gx toolchains list []
+V @@//:gx tools list []
+V @@//:gx transitive_configs list []
+V @@//:gx visibility list []
+V @@//:l _action_listener list []
+V @@//:l _config_dependencies list []
+V @@//:l aspect_hints list []
+V @@//:l compatible_with list []
+V @@//:l deprecation NoneType None
+V @@//:l exec_compatible_with list []
+V @@//:l exec_properties dict {}
+V @@//:l expect_failure string ""
+V @@//:l features list []
+V @@//:l generator_function string ""
+V @@//:l generator_location string ""
+V @@//:l generator_name string ""
+V @@//:l name string "l"
+V @@//:l package_metadata list []
+V @@//:l restricted_to list []
+V @@//:l srcs list [T(@@//:in.txt)]
+V @@//:l tags list []
+V @@//:l target_compatible_with list []
+V @@//:l testonly bool False
+V @@//:l toolchains list []
+V @@//:l transitive_configs list []
+V @@//:l visibility list []
+V @@//:plat _config_dependencies list []
+V @@//:plat allowed_toolchain_types list []
+V @@//:plat aspect_hints list []
+V @@//:plat check_toolchain_types bool False
+V @@//:plat constraint_values list [T(@@//:cv)]
+V @@//:plat deprecation NoneType None
+V @@//:plat distribs list []
+V @@//:plat exec_properties dict {}
+V @@//:plat features list []
+V @@//:plat flags list []
+V @@//:plat generator_function string ""
+V @@//:plat generator_location string ""
+V @@//:plat generator_name string ""
+V @@//:plat licenses License ["none"]
+V @@//:plat missing_toolchain_error string "For more information on platforms or toolchains see https://bazel.build/concepts/platforms-intro."
+V @@//:plat name string "plat"
+V @@//:plat parents list []
+V @@//:plat remote_execution_properties string ""
+V @@//:plat required_settings list []
+V @@//:plat tags list ["manual"]
+V @@//:plat testonly bool False
+V @@//:plat transitive_configs list []
+V @@//:plat visibility list []
+V @@//:tc _config_dependencies list []
+V @@//:tc aspect_hints list []
+V @@//:tc deprecation NoneType None
+V @@//:tc distribs list []
+V @@//:tc exec_compatible_with list []
+V @@//:tc features list []
+V @@//:tc generator_function string ""
+V @@//:tc generator_location string ""
+V @@//:tc generator_name string ""
+V @@//:tc licenses License ["none"]
+V @@//:tc name string "tc"
+V @@//:tc package_metadata list []
+V @@//:tc tags list ["manual"]
+V @@//:tc target_compatible_with list []
+V @@//:tc target_settings list []
+V @@//:tc testonly bool False
+V @@//:tc toolchain Label L(@@//:fg)
+V @@//:tc toolchain_type Target T(@@//:tty)
+V @@//:tc transitive_configs list []
+V @@//:tc use_target_platform_constraints bool False
+V @@//:tc visibility list []
+V @@//:tool_fg _action_listener list []
+V @@//:tool_fg _config_dependencies list []
+V @@//:tool_fg aspect_hints list []
+V @@//:tool_fg compatible_with list []
+V @@//:tool_fg data list []
+V @@//:tool_fg deprecation NoneType None
+V @@//:tool_fg distribs list []
+V @@//:tool_fg features list []
+V @@//:tool_fg generator_function string ""
+V @@//:tool_fg generator_location string ""
+V @@//:tool_fg generator_name string ""
+V @@//:tool_fg licenses License ["none"]
+V @@//:tool_fg name string "tool_fg"
+V @@//:tool_fg output_group string ""
+V @@//:tool_fg output_licenses list []
+V @@//:tool_fg package_metadata list []
+V @@//:tool_fg restricted_to list []
+V @@//:tool_fg srcs list [T(@@//:tool.sh)]
+V @@//:tool_fg tags list []
+V @@//:tool_fg target_compatible_with list []
+V @@//:tool_fg testonly bool False
+V @@//:tool_fg transitive_configs list []
+V @@//:tool_fg visibility list []
+V @@//:ts _action_listener list []
+V @@//:ts _config_dependencies list []
+V @@//:ts _implicit_tests list []
+V @@//:ts aspect_hints list []
+V @@//:ts compatible_with list []
+V @@//:ts deprecation NoneType None
+V @@//:ts distribs list []
+V @@//:ts features list []
+V @@//:ts generator_function string ""
+V @@//:ts generator_location string ""
+V @@//:ts generator_name string ""
+V @@//:ts licenses License ["none"]
+V @@//:ts name string "ts"
+V @@//:ts package_metadata list []
+V @@//:ts restricted_to list []
+V @@//:ts tags list []
+V @@//:ts target_compatible_with list []
+V @@//:ts testonly bool True
+V @@//:ts tests list []
+V @@//:ts transitive_configs list []
+V @@//:ts visibility list []
+V @@//:tty _config_dependencies list []
+V @@//:tty aspect_hints list []
+V @@//:tty compatible_with list []
+V @@//:tty deprecation NoneType None
+V @@//:tty features list []
+V @@//:tty generator_function string ""
+V @@//:tty generator_location string ""
+V @@//:tty generator_name string ""
+V @@//:tty name string "tty"
+V @@//:tty no_match_error string ""
+V @@//:tty package_metadata list []
+V @@//:tty restricted_to list []
+V @@//:tty tags list []
+V @@//:tty target_compatible_with list []
+V @@//:tty testonly bool False
+V @@//:tty transitive_configs list []
+V @@//:tty visibility list []
+V @@//:vis _action_listener list []
+V @@//:vis _config_dependencies list []
+V @@//:vis aspect_hints list []
+V @@//:vis compatible_with list []
+V @@//:vis data list []
+V @@//:vis deprecation string "old"
+V @@//:vis distribs list []
+V @@//:vis features list []
+V @@//:vis generator_function string ""
+V @@//:vis generator_location string ""
+V @@//:vis generator_name string ""
+V @@//:vis licenses License ["notice", "unencumbered"]
+V @@//:vis name string "vis"
+V @@//:vis output_group string ""
+V @@//:vis output_licenses list []
+V @@//:vis package_metadata list []
+V @@//:vis restricted_to list []
+V @@//:vis srcs list [T(@@//:data.txt)]
+V @@//:vis tags list ["x"]
+V @@//:vis target_compatible_with list []
+V @@//:vis testonly bool False
+V @@//:vis transitive_configs list []
+V @@//:vis visibility list [L(@@//visibility:public)]
+### build --aspects=//:defs.bzl%asp --output_groups=asp //...
+F @@//:cs files=["_action_listener=[]", "_config_dependencies=[]", "_flag_alias_settings=[]", "aspect_hints=[]", "constraint_values=[]", "flag_values=[]", "package_metadata=[]"]
+F @@//:ff files=["_action_listener=[]", "_config_dependencies=[]", "_whitelist_config_feature_flag=[]", "aspect_hints=[]", "package_metadata=[]"]
+F @@//:fg files=["_action_listener=[]", "_config_dependencies=[]", "aspect_hints=[]", "compatible_with=[]", "data=[F(data.txt)]", "package_metadata=[]", "restricted_to=[]", "srcs=[F(in.txt), F(g.out)]", "target_compatible_with=[]"]
+F @@//:fg2 files=["_action_listener=[]", "_config_dependencies=[]", "aspect_hints=[]", "compatible_with=[]", "data=[]", "package_metadata=[]", "restricted_to=[]", "srcs=[]", "target_compatible_with=[]"]
+F @@//:g files=["_action_listener=[]", "_config_dependencies=[]", "_genrule_setup=[F(../bazel_tools/tools/genrule/genrule-setup.sh)]", "aspect_hints=[]", "compatible_with=[]", "exec_compatible_with=[]", "package_metadata=[]", "restricted_to=[]", "srcs=[F(in.txt)]", "target_compatible_with=[]", "toolchains=[]", "tools=[F(tool.sh)]"]
+F @@//:gx files=["_action_listener=[]", "_config_dependencies=[]", "_genrule_setup=[F(../bazel_tools/tools/genrule/genrule-setup.sh)]", "aspect_hints=[]", "compatible_with=[]", "exec_compatible_with=[]", "package_metadata=[]", "restricted_to=[]", "srcs=[]", "target_compatible_with=[]", "toolchains=[]", "tools=[]"]
+F @@//:l files=["_action_listener=[]", "_config_dependencies=[]", "aspect_hints=[]", "compatible_with=[]", "exec_compatible_with=[]", "package_metadata=[]", "restricted_to=[]", "srcs=[F(in.txt)]", "target_compatible_with=[]", "toolchains=[]"]
+F @@//:mr files=["_action_listener=[]", "_config_dependencies=[]", "aspect_hints=[]", "commands=[F(gx.sh), F(in.txt), F(g.out), F(tool.sh)]", "compatible_with=[]", "exec_compatible_with=[]", "package_metadata=[]", "restricted_to=[]", "target_compatible_with=[]", "toolchains=[]"]
+F @@//:plat files=["_config_dependencies=[]", "aspect_hints=[]", "constraint_values=[]", "parents=[]", "required_settings=[]"]
+F @@//:plat2 files=["_config_dependencies=[]", "aspect_hints=[]", "constraint_values=[]", "parents=[]", "required_settings=[]"]
+F @@//:r files=["_action_listener=[]", "_config_dependencies=[]", "aspect_hints=[]", "compatible_with=[]", "deps=[F(data.txt), F(g.out), F(in.txt), F(gx.sh)]", "exec_compatible_with=[]", "package_metadata=[]", "pdeps=[]", "restricted_to=[]", "target_compatible_with=[]", "toolchains=[]"]
+F @@//:tc files=["_config_dependencies=[]", "aspect_hints=[]", "exec_compatible_with=[]", "package_metadata=[]", "target_compatible_with=[]", "target_settings=[]", "toolchain_type=[]"]
+F @@//:tool_fg files=["_action_listener=[]", "_config_dependencies=[]", "aspect_hints=[]", "compatible_with=[]", "data=[]", "package_metadata=[]", "restricted_to=[]", "srcs=[F(tool.sh)]", "target_compatible_with=[]"]
+F @@//:tool_fg files=["_action_listener=[]", "_config_dependencies=[]", "aspect_hints=[]", "compatible_with=[]", "data=[]", "package_metadata=[]", "restricted_to=[]", "srcs=[F(tool.sh)]", "target_compatible_with=[]"]
+F @@//:ts files=["_action_listener=[]", "_config_dependencies=[]", "_implicit_tests=[]", "aspect_hints=[]", "compatible_with=[]", "package_metadata=[]", "restricted_to=[]", "target_compatible_with=[]", "tests=[]"]
+F @@//:tty files=["_config_dependencies=[]", "aspect_hints=[]", "compatible_with=[]", "package_metadata=[]", "restricted_to=[]", "target_compatible_with=[]"]
+F @@//:tty2 files=["_config_dependencies=[]", "aspect_hints=[]", "compatible_with=[]", "package_metadata=[]", "restricted_to=[]", "target_compatible_with=[]"]
+F @@//:vis files=["_action_listener=[]", "_config_dependencies=[]", "aspect_hints=[]", "compatible_with=[]", "data=[]", "package_metadata=[]", "restricted_to=[]", "srcs=[F(data.txt)]", "target_compatible_with=[]"]
+K @@//:cs kind=config_setting attrs=["_action_listener", "_config_dependencies", "_flag_alias_settings", "aspect_hints", "constraint_values", "define_values", "deprecation", "distribs", "features", "flag_values", "generator_function", "generator_location", "generator_name", "licenses", "name", "package_metadata", "tags", "testonly", "transitive_configs", "values", "visibility"]
+K @@//:ff kind=config_feature_flag attrs=["_action_listener", "_config_dependencies", "_whitelist_config_feature_flag", "allowed_values", "aspect_hints", "default_value", "deprecation", "distribs", "features", "generator_function", "generator_location", "generator_name", "licenses", "name", "package_metadata", "scope", "tags", "testonly", "visibility"]
+K @@//:fg kind=filegroup attrs=["_action_listener", "_config_dependencies", "aspect_hints", "compatible_with", "data", "deprecation", "distribs", "features", "generator_function", "generator_location", "generator_name", "licenses", "name", "output_group", "output_licenses", "package_metadata", "restricted_to", "srcs", "tags", "target_compatible_with", "testonly", "transitive_configs", "visibility"]
+K @@//:fg2 kind=filegroup attrs=["_action_listener", "_config_dependencies", "aspect_hints", "compatible_with", "data", "deprecation", "distribs", "features", "generator_function", "generator_location", "generator_name", "licenses", "name", "output_group", "output_licenses", "package_metadata", "restricted_to", "srcs", "tags", "target_compatible_with", "testonly", "transitive_configs", "visibility"]
+K @@//:g kind=genrule attrs=["_action_listener", "_config_dependencies", "_genrule_setup", "_is_executable", "aspect_hints", "cmd", "cmd_bash", "cmd_bat", "cmd_ps", "compatible_with", "deprecation", "distribs", "exec_compatible_with", "exec_properties", "executable", "features", "generator_function", "generator_location", "generator_name", "heuristic_label_expansion", "licenses", "local", "message", "name", "output_licenses", "output_to_bindir", "outs", "package_metadata", "restricted_to", "srcs", "tags", "target_compatible_with", "testonly", "toolchains", "tools", "transitive_configs", "visibility"]
+K @@//:gx kind=genrule attrs=["_action_listener", "_config_dependencies", "_genrule_setup", "_is_executable", "aspect_hints", "cmd", "cmd_bash", "cmd_bat", "cmd_ps", "compatible_with", "deprecation", "distribs", "exec_compatible_with", "exec_properties", "executable", "features", "generator_function", "generator_location", "generator_name", "heuristic_label_expansion", "licenses", "local", "message", "name", "output_licenses", "output_to_bindir", "outs", "package_metadata", "restricted_to", "srcs", "tags", "target_compatible_with", "testonly", "toolchains", "tools", "transitive_configs", "visibility"]
+K @@//:l kind=lib attrs=["_action_listener", "_config_dependencies", "aspect_hints", "compatible_with", "deprecation", "exec_compatible_with", "exec_properties", "expect_failure", "features", "generator_function", "generator_location", "generator_name", "name", "package_metadata", "restricted_to", "srcs", "tags", "target_compatible_with", "testonly", "toolchains", "transitive_configs", "visibility"]
+K @@//:mr kind=multirun attrs=["_action_listener", "_config_dependencies", "aspect_hints", "commands", "compatible_with", "deprecation", "exec_compatible_with", "exec_properties", "expect_failure", "features", "generator_function", "generator_location", "generator_name", "name", "package_metadata", "restricted_to", "tags", "target_compatible_with", "testonly", "toolchains", "transitive_configs", "visibility"]
+K @@//:plat kind=platform attrs=["_config_dependencies", "allowed_toolchain_types", "aspect_hints", "check_toolchain_types", "constraint_values", "deprecation", "distribs", "exec_properties", "features", "flags", "generator_function", "generator_location", "generator_name", "licenses", "missing_toolchain_error", "name", "parents", "remote_execution_properties", "required_settings", "tags", "testonly", "transitive_configs", "visibility"]
+K @@//:plat2 kind=platform attrs=["_config_dependencies", "allowed_toolchain_types", "aspect_hints", "check_toolchain_types", "constraint_values", "deprecation", "distribs", "exec_properties", "features", "flags", "generator_function", "generator_location", "generator_name", "licenses", "missing_toolchain_error", "name", "parents", "remote_execution_properties", "required_settings", "tags", "testonly", "transitive_configs", "visibility"]
+K @@//:r kind=root attrs=["_action_listener", "_config_dependencies", "aspect_hints", "compatible_with", "deprecation", "deps", "exec_compatible_with", "exec_properties", "expect_failure", "features", "generator_function", "generator_location", "generator_name", "name", "package_metadata", "pdeps", "restricted_to", "tags", "target_compatible_with", "testonly", "toolchains", "transitive_configs", "visibility"]
+K @@//:tc kind=toolchain attrs=["_config_dependencies", "aspect_hints", "deprecation", "distribs", "exec_compatible_with", "features", "generator_function", "generator_location", "generator_name", "licenses", "name", "package_metadata", "tags", "target_compatible_with", "target_settings", "testonly", "toolchain", "toolchain_type", "transitive_configs", "use_target_platform_constraints", "visibility"]
+K @@//:tool_fg kind=filegroup attrs=["_action_listener", "_config_dependencies", "aspect_hints", "compatible_with", "data", "deprecation", "distribs", "features", "generator_function", "generator_location", "generator_name", "licenses", "name", "output_group", "output_licenses", "package_metadata", "restricted_to", "srcs", "tags", "target_compatible_with", "testonly", "transitive_configs", "visibility"]
+K @@//:tool_fg kind=filegroup attrs=["_action_listener", "_config_dependencies", "aspect_hints", "compatible_with", "data", "deprecation", "distribs", "features", "generator_function", "generator_location", "generator_name", "licenses", "name", "output_group", "output_licenses", "package_metadata", "restricted_to", "srcs", "tags", "target_compatible_with", "testonly", "transitive_configs", "visibility"]
+K @@//:ts kind=test_suite attrs=["_action_listener", "_config_dependencies", "_implicit_tests", "aspect_hints", "compatible_with", "deprecation", "distribs", "features", "generator_function", "generator_location", "generator_name", "licenses", "name", "package_metadata", "restricted_to", "tags", "target_compatible_with", "testonly", "tests", "transitive_configs", "visibility"]
+K @@//:tty kind=toolchain_type attrs=["_config_dependencies", "aspect_hints", "compatible_with", "deprecation", "features", "generator_function", "generator_location", "generator_name", "name", "no_match_error", "package_metadata", "restricted_to", "tags", "target_compatible_with", "testonly", "transitive_configs", "visibility"]
+K @@//:tty2 kind=toolchain_type attrs=["_config_dependencies", "aspect_hints", "compatible_with", "deprecation", "features", "generator_function", "generator_location", "generator_name", "name", "no_match_error", "package_metadata", "restricted_to", "tags", "target_compatible_with", "testonly", "transitive_configs", "visibility"]
+K @@//:vis kind=filegroup attrs=["_action_listener", "_config_dependencies", "aspect_hints", "compatible_with", "data", "deprecation", "distribs", "features", "generator_function", "generator_location", "generator_name", "licenses", "name", "output_group", "output_licenses", "package_metadata", "restricted_to", "srcs", "tags", "target_compatible_with", "testonly", "transitive_configs", "visibility"]
+M @@//:fg kind=filegroup exe=False args=[] env={} data=True
+M @@//:gx kind=genrule exe=True args=[] env={} data=False
+M @@//:tool_fg kind=filegroup exe=True args=[] env={} data=True
+N @@//:fg exe=None args=[] files=["g.out", "in.txt"]
+N @@//:gx exe=gx.sh args=[] files=["gx.sh"]
+N @@//:gx exe=gx.sh args=[] files=["gx.sh"]
+N @@//:tool_fg exe=tool.sh args=[] files=["tool.sh"]
+O @@//:fg2 pinfo=-
+O @@//:plat2 pinfo=platform
+O @@//:tty2 pinfo=-
+P @@//:cs seen=[]
+P @@//:ff seen=[]
+P @@//:fg seen=["srcs:@@//:g"]
+P @@//:fg2 seen=[]
+P @@//:g seen=["srcs:@@//:l", "tools:@@//:tool_fg"]
+P @@//:gx seen=[]
+P @@//:l seen=[]
+P @@//:mr seen=["commands:@@//:fg", "commands:@@//:gx", "commands:@@//:gx", "commands:@@//:tool_fg"]
+P @@//:plat seen=[]
+P @@//:plat2 seen=[]
+P @@//:r seen=["deps:@@//:cs", "deps:@@//:ff", "deps:@@//:fg", "deps:@@//:fg", "deps:@@//:fg", "deps:@@//:g", "deps:@@//:gx", "deps:@@//:gx", "deps:@@//:l", "deps:@@//:plat", "deps:@@//:tc", "deps:@@//:ts", "deps:@@//:tty", "deps:@@//:vis", "pdeps:@@//:fg2", "pdeps:@@//:plat2", "pdeps:@@//:tty2"]
+P @@//:tc seen=["toolchain_type:@@//:tty"]
+P @@//:tool_fg seen=[]
+P @@//:tool_fg seen=[]
+P @@//:ts seen=[]
+P @@//:tty seen=[]
+P @@//:tty2 seen=[]
+P @@//:vis seen=[]
+Q @@//:plat2 kind=platform
+R @@//:cs info=config_setting files=[] exe=None
+R @@//:cset info=- files=[] exe=None
+R @@//:cv info=- files=[] exe=None
+R @@//:data.txt info=- files=["data.txt"] exe=data.txt
+R @@//:ff info=config_feature_flag files=[] exe=None
+R @@//:fg info=filegroup files=["g.out", "in.txt"] exe=None
+R @@//:fg info=filegroup files=["g.out", "in.txt"] exe=None
+R @@//:fg info=filegroup files=["g.out", "in.txt"] exe=None
+R @@//:g info=genrule files=["g.out"] exe=None
+R @@//:g.out info=- files=["g.out"] exe=g.out
+R @@//:gx info=genrule files=["gx.sh"] exe=gx.sh
+R @@//:gx info=genrule files=["gx.sh"] exe=gx.sh
+R @@//:in.txt info=- files=["in.txt"] exe=in.txt
+R @@//:l info=lib files=["in.txt"] exe=None
+R @@//:plat info=platform files=[] exe=None
+R @@//:tc info=toolchain files=[] exe=None
+R @@//:ts info=test_suite files=[] exe=None
+R @@//:tty info=toolchain_type files=[] exe=None
+R @@//:vis info=filegroup files=["data.txt"] exe=data.txt
+S @@//:cs file=[] executable=[]
+S @@//:ff file=[] executable=[]
+S @@//:fg file=[] executable=[]
+S @@//:fg2 file=[] executable=[]
+S @@//:g file=[] executable=[]
+S @@//:gx file=[] executable=[]
+S @@//:l file=[] executable=[]
+S @@//:mr file=[] executable=[]
+S @@//:plat file=[] executable=[]
+S @@//:plat2 file=[] executable=[]
+S @@//:r file=[] executable=[]
+S @@//:tc file=[] executable=[]
+S @@//:tool_fg file=[] executable=[]
+S @@//:tool_fg file=[] executable=[]
+S @@//:ts file=[] executable=[]
+S @@//:tty file=[] executable=[]
+S @@//:tty2 file=[] executable=[]
+S @@//:vis file=[] executable=[]
+V @@//:cs _action_listener list []
+V @@//:cs _config_dependencies list []
+V @@//:cs _flag_alias_settings list []
+V @@//:cs aspect_hints list []
+V @@//:cs constraint_values list []
+V @@//:cs define_values dict {}
+V @@//:cs deprecation NoneType None
+V @@//:cs distribs list []
+V @@//:cs features list []
+V @@//:cs flag_values dict {}
+V @@//:cs generator_function string ""
+V @@//:cs generator_location string ""
+V @@//:cs generator_name string ""
+V @@//:cs licenses License ["none"]
+V @@//:cs name string "cs"
+V @@//:cs package_metadata list []
+V @@//:cs tags list ["manual"]
+V @@//:cs testonly bool False
+V @@//:cs transitive_configs list []
+V @@//:cs values dict {"compilation_mode": "opt"}
+V @@//:cs visibility list []
+V @@//:ff _action_listener list []
+V @@//:ff _config_dependencies list []
+V @@//:ff _whitelist_config_feature_flag Target T(@@bazel_tools//tools/allowlists/config_feature_flag:config_feature_flag)
+V @@//:ff allowed_values list ["a", "b"]
+V @@//:ff aspect_hints list []
+V @@//:ff default_value string "a"
+V @@//:ff deprecation NoneType None
+V @@//:ff distribs list []
+V @@//:ff features list []
+V @@//:ff generator_function string ""
+V @@//:ff generator_location string ""
+V @@//:ff generator_name string ""
+V @@//:ff licenses License ["none"]
+V @@//:ff name string "ff"
+V @@//:ff package_metadata list []
+V @@//:ff scope string "universal"
+V @@//:ff tags list ["manual"]
+V @@//:ff testonly bool False
+V @@//:ff visibility list []
+V @@//:fg _action_listener list []
+V @@//:fg _config_dependencies list []
+V @@//:fg aspect_hints list []
+V @@//:fg compatible_with list []
+V @@//:fg data list [T(@@//:data.txt)]
+V @@//:fg deprecation NoneType None
+V @@//:fg distribs list []
+V @@//:fg features list []
+V @@//:fg generator_function string ""
+V @@//:fg generator_location string ""
+V @@//:fg generator_name string ""
+V @@//:fg licenses License ["none"]
+V @@//:fg name string "fg"
+V @@//:fg output_group string ""
+V @@//:fg output_licenses list []
+V @@//:fg package_metadata list []
+V @@//:fg restricted_to list []
+V @@//:fg srcs list [T(@@//:in.txt), T(@@//:g)]
+V @@//:fg tags list []
+V @@//:fg target_compatible_with list []
+V @@//:fg testonly bool False
+V @@//:fg transitive_configs list []
+V @@//:fg visibility list []
+V @@//:fg2 _action_listener list []
+V @@//:fg2 _config_dependencies list []
+V @@//:fg2 aspect_hints list []
+V @@//:fg2 compatible_with list []
+V @@//:fg2 data list []
+V @@//:fg2 deprecation NoneType None
+V @@//:fg2 distribs list []
+V @@//:fg2 features list []
+V @@//:fg2 generator_function string ""
+V @@//:fg2 generator_location string ""
+V @@//:fg2 generator_name string ""
+V @@//:fg2 licenses License ["none"]
+V @@//:fg2 name string "fg2"
+V @@//:fg2 output_group string ""
+V @@//:fg2 output_licenses list []
+V @@//:fg2 package_metadata list []
+V @@//:fg2 restricted_to list []
+V @@//:fg2 srcs list []
+V @@//:fg2 tags list []
+V @@//:fg2 target_compatible_with list []
+V @@//:fg2 testonly bool False
+V @@//:fg2 transitive_configs list []
+V @@//:fg2 visibility list []
+V @@//:g _action_listener list []
+V @@//:g _config_dependencies list []
+V @@//:g _genrule_setup Target T(@@bazel_tools//tools/genrule:genrule-setup.sh)
+V @@//:g _is_executable bool False
+V @@//:g aspect_hints list []
+V @@//:g cmd string "cat $(SRCS) > $@"
+V @@//:g cmd_bash string ""
+V @@//:g cmd_bat string ""
+V @@//:g cmd_ps string ""
+V @@//:g compatible_with list []
+V @@//:g deprecation NoneType None
+V @@//:g distribs list []
+V @@//:g exec_compatible_with list []
+V @@//:g exec_properties dict {}
+V @@//:g executable bool False
+V @@//:g features list []
+V @@//:g generator_function string ""
+V @@//:g generator_location string ""
+V @@//:g generator_name string ""
+V @@//:g heuristic_label_expansion bool False
+V @@//:g licenses License ["none"]
+V @@//:g local bool False
+V @@//:g message string ""
+V @@//:g name string "g"
+V @@//:g output_licenses list []
+V @@//:g output_to_bindir bool False
+V @@//:g outs list [L(@@//:g.out)]
+V @@//:g package_metadata list []
+V @@//:g restricted_to list []
+V @@//:g srcs list [T(@@//:in.txt), T(@@//:l)]
+V @@//:g tags list []
+V @@//:g target_compatible_with list []
+V @@//:g testonly bool False
+V @@//:g toolchains list []
+V @@//:g tools list [T(@@//:tool_fg)]
+V @@//:g transitive_configs list []
+V @@//:g visibility list []
+V @@//:gx _action_listener list []
+V @@//:gx _config_dependencies list []
+V @@//:gx _genrule_setup Target T(@@bazel_tools//tools/genrule:genrule-setup.sh)
+V @@//:gx _is_executable bool True
+V @@//:gx aspect_hints list []
+V @@//:gx cmd string "printf '#!/bin/sh\\n' > $@"
+V @@//:gx cmd_bash string ""
+V @@//:gx cmd_bat string ""
+V @@//:gx cmd_ps string ""
+V @@//:gx compatible_with list []
+V @@//:gx deprecation NoneType None
+V @@//:gx distribs list []
+V @@//:gx exec_compatible_with list []
+V @@//:gx exec_properties dict {}
+V @@//:gx executable bool True
+V @@//:gx features list []
+V @@//:gx generator_function string ""
+V @@//:gx generator_location string ""
+V @@//:gx generator_name string ""
+V @@//:gx heuristic_label_expansion bool False
+V @@//:gx licenses License ["none"]
+V @@//:gx local bool False
+V @@//:gx message string ""
+V @@//:gx name string "gx"
+V @@//:gx output_licenses list []
+V @@//:gx output_to_bindir bool False
+V @@//:gx outs list [L(@@//:gx.sh)]
+V @@//:gx package_metadata list []
+V @@//:gx restricted_to list []
+V @@//:gx srcs list []
+V @@//:gx tags list []
+V @@//:gx target_compatible_with list []
+V @@//:gx testonly bool False
+V @@//:gx toolchains list []
+V @@//:gx tools list []
+V @@//:gx transitive_configs list []
+V @@//:gx visibility list []
+V @@//:l _action_listener list []
+V @@//:l _config_dependencies list []
+V @@//:l aspect_hints list []
+V @@//:l compatible_with list []
+V @@//:l deprecation NoneType None
+V @@//:l exec_compatible_with list []
+V @@//:l exec_properties dict {}
+V @@//:l expect_failure string ""
+V @@//:l features list []
+V @@//:l generator_function string ""
+V @@//:l generator_location string ""
+V @@//:l generator_name string ""
+V @@//:l name string "l"
+V @@//:l package_metadata list []
+V @@//:l restricted_to list []
+V @@//:l srcs list [T(@@//:in.txt)]
+V @@//:l tags list []
+V @@//:l target_compatible_with list []
+V @@//:l testonly bool False
+V @@//:l toolchains list []
+V @@//:l transitive_configs list []
+V @@//:l visibility list []
+V @@//:mr _action_listener list []
+V @@//:mr _config_dependencies list []
+V @@//:mr aspect_hints list []
+V @@//:mr commands list [T(@@//:gx), T(@@//:gx), T(@@//:fg), T(@@//:tool_fg)]
+V @@//:mr compatible_with list []
+V @@//:mr deprecation NoneType None
+V @@//:mr exec_compatible_with list []
+V @@//:mr exec_properties dict {}
+V @@//:mr expect_failure string ""
+V @@//:mr features list []
+V @@//:mr generator_function string ""
+V @@//:mr generator_location string ""
+V @@//:mr generator_name string ""
+V @@//:mr name string "mr"
+V @@//:mr package_metadata list []
+V @@//:mr restricted_to list []
+V @@//:mr tags list []
+V @@//:mr target_compatible_with list []
+V @@//:mr testonly bool False
+V @@//:mr toolchains list []
+V @@//:mr transitive_configs list []
+V @@//:mr visibility list []
+V @@//:plat _config_dependencies list []
+V @@//:plat allowed_toolchain_types list []
+V @@//:plat aspect_hints list []
+V @@//:plat check_toolchain_types bool False
+V @@//:plat constraint_values list [T(@@//:cv)]
+V @@//:plat deprecation NoneType None
+V @@//:plat distribs list []
+V @@//:plat exec_properties dict {}
+V @@//:plat features list []
+V @@//:plat flags list []
+V @@//:plat generator_function string ""
+V @@//:plat generator_location string ""
+V @@//:plat generator_name string ""
+V @@//:plat licenses License ["none"]
+V @@//:plat missing_toolchain_error string "For more information on platforms or toolchains see https://bazel.build/concepts/platforms-intro."
+V @@//:plat name string "plat"
+V @@//:plat parents list []
+V @@//:plat remote_execution_properties string ""
+V @@//:plat required_settings list []
+V @@//:plat tags list ["manual"]
+V @@//:plat testonly bool False
+V @@//:plat transitive_configs list []
+V @@//:plat visibility list []
+V @@//:plat2 _config_dependencies list []
+V @@//:plat2 allowed_toolchain_types list []
+V @@//:plat2 aspect_hints list []
+V @@//:plat2 check_toolchain_types bool False
+V @@//:plat2 constraint_values list []
+V @@//:plat2 deprecation NoneType None
+V @@//:plat2 distribs list []
+V @@//:plat2 exec_properties dict {}
+V @@//:plat2 features list []
+V @@//:plat2 flags list []
+V @@//:plat2 generator_function string ""
+V @@//:plat2 generator_location string ""
+V @@//:plat2 generator_name string ""
+V @@//:plat2 licenses License ["none"]
+V @@//:plat2 missing_toolchain_error string "For more information on platforms or toolchains see https://bazel.build/concepts/platforms-intro."
+V @@//:plat2 name string "plat2"
+V @@//:plat2 parents list []
+V @@//:plat2 remote_execution_properties string ""
+V @@//:plat2 required_settings list []
+V @@//:plat2 tags list ["manual"]
+V @@//:plat2 testonly bool False
+V @@//:plat2 transitive_configs list []
+V @@//:plat2 visibility list []
+V @@//:r _action_listener list []
+V @@//:r _config_dependencies list []
+V @@//:r aspect_hints list []
+V @@//:r compatible_with list []
+V @@//:r deprecation NoneType None
+V @@//:r deps list [T(@@//:ff), T(@@//:vis), T(@@//:g), T(@@//:fg), T(@@//:fg), T(@@//:ts), T(@@//:cs), T(@@//:fg), T(@@//:cset), T(@@//:cv), T(@@//:plat), T(@@//:tty), T(@@//:tc), T(@@//:gx), T(@@//:gx), T(@@//:data.txt), T(@@//:in.txt), T(@@//:g.out), T(@@//:l)]
+V @@//:r exec_compatible_with list []
+V @@//:r exec_properties dict {}
+V @@//:r expect_failure string ""
+V @@//:r features list []
+V @@//:r generator_function string ""
+V @@//:r generator_location string ""
+V @@//:r generator_name string ""
+V @@//:r name string "r"
+V @@//:r package_metadata list []
+V @@//:r pdeps list [T(@@//:plat2), T(@@//:tty2), T(@@//:fg2)]
+V @@//:r restricted_to list []
+V @@//:r tags list []
+V @@//:r target_compatible_with list []
+V @@//:r testonly bool True
+V @@//:r toolchains list []
+V @@//:r transitive_configs list []
+V @@//:r visibility list []
+V @@//:tc _config_dependencies list []
+V @@//:tc aspect_hints list []
+V @@//:tc deprecation NoneType None
+V @@//:tc distribs list []
+V @@//:tc exec_compatible_with list []
+V @@//:tc features list []
+V @@//:tc generator_function string ""
+V @@//:tc generator_location string ""
+V @@//:tc generator_name string ""
+V @@//:tc licenses License ["none"]
+V @@//:tc name string "tc"
+V @@//:tc package_metadata list []
+V @@//:tc tags list ["manual"]
+V @@//:tc target_compatible_with list []
+V @@//:tc target_settings list []
+V @@//:tc testonly bool False
+V @@//:tc toolchain Label L(@@//:fg)
+V @@//:tc toolchain_type Target T(@@//:tty)
+V @@//:tc transitive_configs list []
+V @@//:tc use_target_platform_constraints bool False
+V @@//:tc visibility list []
+V @@//:tool_fg _action_listener list []
+V @@//:tool_fg _action_listener list []
+V @@//:tool_fg _config_dependencies list []
+V @@//:tool_fg _config_dependencies list []
+V @@//:tool_fg aspect_hints list []
+V @@//:tool_fg aspect_hints list []
+V @@//:tool_fg compatible_with list []
+V @@//:tool_fg compatible_with list []
+V @@//:tool_fg data list []
+V @@//:tool_fg data list []
+V @@//:tool_fg deprecation NoneType None
+V @@//:tool_fg deprecation NoneType None
+V @@//:tool_fg distribs list []
+V @@//:tool_fg distribs list []
+V @@//:tool_fg features list []
+V @@//:tool_fg features list []
+V @@//:tool_fg generator_function string ""
+V @@//:tool_fg generator_function string ""
+V @@//:tool_fg generator_location string ""
+V @@//:tool_fg generator_location string ""
+V @@//:tool_fg generator_name string ""
+V @@//:tool_fg generator_name string ""
+V @@//:tool_fg licenses License ["none"]
+V @@//:tool_fg licenses License ["none"]
+V @@//:tool_fg name string "tool_fg"
+V @@//:tool_fg name string "tool_fg"
+V @@//:tool_fg output_group string ""
+V @@//:tool_fg output_group string ""
+V @@//:tool_fg output_licenses list []
+V @@//:tool_fg output_licenses list []
+V @@//:tool_fg package_metadata list []
+V @@//:tool_fg package_metadata list []
+V @@//:tool_fg restricted_to list []
+V @@//:tool_fg restricted_to list []
+V @@//:tool_fg srcs list [T(@@//:tool.sh)]
+V @@//:tool_fg srcs list [T(@@//:tool.sh)]
+V @@//:tool_fg tags list []
+V @@//:tool_fg tags list []
+V @@//:tool_fg target_compatible_with list []
+V @@//:tool_fg target_compatible_with list []
+V @@//:tool_fg testonly bool False
+V @@//:tool_fg testonly bool False
+V @@//:tool_fg transitive_configs list []
+V @@//:tool_fg transitive_configs list []
+V @@//:tool_fg visibility list []
+V @@//:tool_fg visibility list []
+V @@//:ts _action_listener list []
+V @@//:ts _config_dependencies list []
+V @@//:ts _implicit_tests list []
+V @@//:ts aspect_hints list []
+V @@//:ts compatible_with list []
+V @@//:ts deprecation NoneType None
+V @@//:ts distribs list []
+V @@//:ts features list []
+V @@//:ts generator_function string ""
+V @@//:ts generator_location string ""
+V @@//:ts generator_name string ""
+V @@//:ts licenses License ["none"]
+V @@//:ts name string "ts"
+V @@//:ts package_metadata list []
+V @@//:ts restricted_to list []
+V @@//:ts tags list []
+V @@//:ts target_compatible_with list []
+V @@//:ts testonly bool True
+V @@//:ts tests list []
+V @@//:ts transitive_configs list []
+V @@//:ts visibility list []
+V @@//:tty _config_dependencies list []
+V @@//:tty aspect_hints list []
+V @@//:tty compatible_with list []
+V @@//:tty deprecation NoneType None
+V @@//:tty features list []
+V @@//:tty generator_function string ""
+V @@//:tty generator_location string ""
+V @@//:tty generator_name string ""
+V @@//:tty name string "tty"
+V @@//:tty no_match_error string ""
+V @@//:tty package_metadata list []
+V @@//:tty restricted_to list []
+V @@//:tty tags list []
+V @@//:tty target_compatible_with list []
+V @@//:tty testonly bool False
+V @@//:tty transitive_configs list []
+V @@//:tty visibility list []
+V @@//:tty2 _config_dependencies list []
+V @@//:tty2 aspect_hints list []
+V @@//:tty2 compatible_with list []
+V @@//:tty2 deprecation NoneType None
+V @@//:tty2 features list []
+V @@//:tty2 generator_function string ""
+V @@//:tty2 generator_location string ""
+V @@//:tty2 generator_name string ""
+V @@//:tty2 name string "tty2"
+V @@//:tty2 no_match_error string ""
+V @@//:tty2 package_metadata list []
+V @@//:tty2 restricted_to list []
+V @@//:tty2 tags list []
+V @@//:tty2 target_compatible_with list []
+V @@//:tty2 testonly bool False
+V @@//:tty2 transitive_configs list []
+V @@//:tty2 visibility list []
+V @@//:vis _action_listener list []
+V @@//:vis _config_dependencies list []
+V @@//:vis aspect_hints list []
+V @@//:vis compatible_with list []
+V @@//:vis data list []
+V @@//:vis deprecation string "old"
+V @@//:vis distribs list []
+V @@//:vis features list []
+V @@//:vis generator_function string ""
+V @@//:vis generator_location string ""
+V @@//:vis generator_name string ""
+V @@//:vis licenses License ["notice", "unencumbered"]
+V @@//:vis name string "vis"
+V @@//:vis output_group string ""
+V @@//:vis output_licenses list []
+V @@//:vis package_metadata list []
+V @@//:vis restricted_to list []
+V @@//:vis srcs list [T(@@//:data.txt)]
+V @@//:vis tags list ["x"]
+V @@//:vis target_compatible_with list []
+V @@//:vis testonly bool False
+V @@//:vis transitive_configs list []
+V @@//:vis visibility list [L(@@//visibility:public)]

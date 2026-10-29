@@ -17,6 +17,7 @@ use crate::custom_rule::{AttrKind, AttrSpec, AttrValue};
 use crate::package::Rule;
 use crate::repository::RepositorySet;
 use crate::starlark_types::{File, Target, alloc_file, alloc_shared_target, alloc_target};
+pub(crate) mod native_aspect;
 mod split;
 
 /// What a consumer sees of one dependency edge's configured target.
@@ -914,14 +915,8 @@ fn make_ctx<'v>(
         "split_attr",
     ];
     let owned = Module::with_temp_heap(|module| -> anyhow::Result<_> {
-        let structs = ctx_attribute_structs(
-            rule,
-            invocation,
-            context,
-            dependencies,
-            Vec::new(),
-            module.heap(),
-        )?;
+        let structs =
+            ctx_attribute_structs(rule, invocation, context, dependencies, None, module.heap())?;
         for (name, value) in NAMES.into_iter().zip(structs) {
             module.set(name, value);
         }
@@ -1371,7 +1366,8 @@ fn ctx_attribute_structs<'v>(
     invocation: &crate::custom_rule::CustomInvocation,
     context: &Context,
     dependencies: &BTreeMap<String, DependencyTarget>,
-    base_aspects: Vec<AspectAttributeMaps<'v>>,
+    // `Some` for an aspect's `ctx.rule`: the base aspects' attributes.
+    base_aspects: Option<Vec<AspectAttributeMaps<'v>>>,
     heap: Heap<'v>,
 ) -> anyhow::Result<[Value<'v>; 6]> {
     // RuleContext attribute errors: `in A attribute of KIND rule L: `
@@ -1736,11 +1732,19 @@ fn ctx_attribute_structs<'v>(
         let file = alloc_file(heap, context.declare(output)?);
         outputs.insert(key.clone(), file);
     }
-    builtin_ctx_attrs(rule, invocation, dependencies, &mut attrs, &mut files, heap)?;
+    builtin_ctx_attrs(
+        rule,
+        invocation,
+        dependencies,
+        base_aspects.is_some(),
+        &mut attrs,
+        &mut files,
+        heap,
+    )?;
     // An aspect's `ctx.rule`: the base aspects' attributes after the
     // rule's, the first attribute of a name winning
     // (StarlarkAttributesCollection.Builder.addAttribute, :387-390).
-    for base in base_aspects {
+    for base in base_aspects.into_iter().flatten() {
         for (name, value) in base.attrs {
             if attrs.contains_key(&name) {
                 continue;
@@ -1790,7 +1794,8 @@ pub(crate) fn setting_default(
 /// `ctx.attr`/`ctx.files` entries of Bazel's built-in attributes
 /// (StarlarkRuleContext.java:205-266, StarlarkAttributesCollection.java:225-390):
 /// every attribute of the rule class is exposed under its public name except
-/// `aspect_hints` (filtered, StarlarkRuleContext.java:207-209) and
+/// `aspect_hints` (filtered from a rule's own context, StarlarkRuleContext.java:207-209;
+/// an aspect's `ctx.rule` keeps it) and
 /// `exec_group_compatible_with` (shouldIgnore, :255-259); public names are
 /// unique (clashes fail when the rule is exported, RuleClass.java:1905-1918).
 /// Non-dependency values convert directly (`Attribute.valueToStarlark`, so an
@@ -1802,6 +1807,7 @@ fn builtin_ctx_attrs<'v>(
     rule: &Rule,
     invocation: &crate::custom_rule::CustomInvocation,
     dependencies: &BTreeMap<String, DependencyTarget>,
+    for_aspect: bool,
     attrs: &mut BTreeMap<String, Value<'v>>,
     files: &mut BTreeMap<String, Value<'v>>,
     heap: Heap<'v>,
@@ -1830,7 +1836,9 @@ fn builtin_ctx_attrs<'v>(
     let mut values = Vec::new();
     for attribute in class.attrs() {
         let name = attribute.name;
-        if matches!(name, "aspect_hints" | "exec_group_compatible_with") {
+        // `aspect_hints` is filtered from a rule's own context only
+        // (StarlarkRuleContext.java:205-209); an aspect's `ctx.rule` has it.
+        if name == "exec_group_compatible_with" || (name == "aspect_hints" && !for_aspect) {
             continue;
         }
         let explicit = target.attrs.get(name);
@@ -2079,6 +2087,9 @@ pub(crate) struct AspectApplication {
     /// The aspect's own ToolchainCollection (crate::engine).
     pub toolchains: AspectToolchains,
     pub repositories: Arc<RepositorySet>,
+    /// The configured facts of a native base rule (`None` for a Starlark
+    /// one, whose CustomInvocation carries them).
+    pub native: Option<native_aspect::NativeAspectBase>,
 }
 
 /// One base aspect's attributes in an aspect's `ctx.rule`
@@ -2117,12 +2128,7 @@ pub(crate) fn analyze_aspect_buffered(
         match error.downcast_ref::<crate::rule_errors::ReportedErrors>() {
             Some(reported) => reported.0.clone(),
             None => {
-                let rule_class = application
-                    .rule
-                    .custom
-                    .as_ref()
-                    .map(|custom| custom.declaration.rule_class.as_str())
-                    .unwrap_or("native");
+                let rule_class = application.rule.rule_class_name();
                 format!(
                     "in {} aspect on {} rule {}: {error:#}",
                     application.aspect.identity,
@@ -2152,22 +2158,43 @@ fn analyze_aspect_inner(
         .map(|value| crate::subrule::direct_ids(value.subrules.iter().copied()))
         .transpose()?
         .unwrap_or_default();
-    let invocation = rule
-        .custom
-        .as_ref()
-        .ok_or_else(|| anyhow!("{} is not a custom rule", rule.label))?;
-    let mut aspect_surface = rule_surface(
-        rule,
-        invocation,
-        &application.repositories,
-        &application.dependencies,
-    );
-    aspect_surface.locations = location_map(
-        rule,
-        invocation,
-        &application.dependencies,
-        target.output_root,
-    )?;
+    // A Starlark base rule's facts are its CustomInvocation's, a native
+    // one's the engine's NativeAspectBase.
+    let invocation = rule.custom.as_ref();
+    let (mut aspect_surface, cpp, top_level_functions) = match (invocation, &application.native) {
+        (Some(invocation), _) => {
+            let mut surface = rule_surface(
+                rule,
+                invocation,
+                &application.repositories,
+                &application.dependencies,
+            );
+            surface.locations = location_map(
+                rule,
+                invocation,
+                &application.dependencies,
+                target.output_root,
+            )?;
+            (
+                surface,
+                invocation.cpp.clone(),
+                invocation.top_level_functions.clone(),
+            )
+        }
+        (None, Some(native)) => (
+            native_aspect::rule_surface(
+                rule,
+                native,
+                &application.repositories,
+                &application.dependencies,
+                target.output_root,
+            )?,
+            native.cpp.clone(),
+            Default::default(),
+        ),
+        (None, None) => bail!("{} is not an analyzed rule", rule.label),
+    };
+    let base_class = rule.rule_class_name().to_owned();
     // The aspect's RuleContext: its configuration fragment policy is the
     // aspect's `fragments` (ConfiguredTargetFactory.createAspect:692), its
     // rule class for messages `ASPECTS aspect on KIND`
@@ -2176,7 +2203,7 @@ fn analyze_aspect_inner(
     aspect_surface.rule_class = format!(
         "{} aspect on {}",
         application.aspect_path.join(","),
-        invocation.declaration.rule_class
+        base_class
     );
     let aspect_surface = Arc::new(aspect_surface);
     let active = Arc::new(AtomicBool::new(true));
@@ -2185,14 +2212,14 @@ fn analyze_aspect_inner(
         label: rule.label.clone(),
         // The base rule's class (cc_internal.rule_class reads
         // RuleContext.getRule().getRuleClass()).
-        rule_class: invocation.declaration.rule_class.clone(),
+        rule_class: base_class.clone(),
         output_root: target.output_root.to_owned(),
         action_owner: target.action_owner.to_owned(),
         declared: RefCell::new(Vec::new()),
         shareable: RefCell::new(BTreeSet::new()),
         actions: RefCell::new(Vec::new()),
         active,
-        top_level_functions: invocation.top_level_functions.clone(),
+        top_level_functions,
         loaded_functions: target.loaded_functions.cloned(),
         repositories: application.repositories.clone(),
         // The aspect's subrules (StarlarkRuleContext.getSubrules: the main
@@ -2208,7 +2235,7 @@ fn analyze_aspect_inner(
                 .toolchains
                 .action_exec_groups
                 .use_auto_exec_groups,
-            invocation.cpp.clone(),
+            cpp,
         ),
         exec_groups: application.toolchains.action_exec_groups.clone(),
         runfiles: crate::runfiles::ContextRunfiles {
@@ -2546,10 +2573,7 @@ fn make_aspect_ctx<'v>(
 ) -> anyhow::Result<Value<'v>> {
     let aspect = &application.aspect;
     let rule = &application.rule;
-    let invocation = rule
-        .custom
-        .as_ref()
-        .ok_or_else(|| anyhow!("{} is not a custom rule", rule.label))?;
+    let invocation = rule.custom.as_ref();
     let shown_label = crate::rule_declarations::canonical_form(&rule.label);
     // The aspect's own attributes (StarlarkRuleContext.java:270-285 over the
     // main aspect's attributes, StarlarkAttributesCollection.Builder
@@ -2661,21 +2685,41 @@ fn make_aspect_ctx<'v>(
                 heap,
             )?);
         }
-        ctx_attribute_structs(
-            rule,
-            invocation,
-            context,
-            &application.dependencies,
-            base_aspects,
-            heap,
-        )?
+        match (invocation, &application.native) {
+            (Some(invocation), _) => ctx_attribute_structs(
+                rule,
+                invocation,
+                context,
+                &application.dependencies,
+                Some(base_aspects),
+                heap,
+            )?,
+            (None, Some(native)) => {
+                let [attr, files, file, executable] = native_aspect::attribute_structs(
+                    rule,
+                    native,
+                    &application.dependencies,
+                    base_aspects,
+                    heap,
+                )?;
+                [
+                    attr,
+                    files,
+                    file,
+                    Value::new_none(),
+                    executable,
+                    Value::new_none(),
+                ]
+            }
+            (None, None) => bail!("{} is not an analyzed rule", rule.label),
+        }
     };
     let rule_attributes = heap.alloc_complex_no_freeze(crate::analysis_ctx::RuleAttributes {
         attr: base_attr,
         executable: base_executable,
         file: base_file,
         files: base_files,
-        kind: invocation.declaration.rule_class.clone(),
+        kind: rule.rule_class_name().to_owned(),
         toolchains: crate::toolchain_info::alloc_context(
             heap,
             Some(application.rule_toolchains.clone()),
@@ -2705,7 +2749,11 @@ fn make_aspect_ctx<'v>(
         heap,
         backing,
         context.scope.root(),
-        invocation.target_platform.clone(),
+        match (invocation, &application.native) {
+            (Some(invocation), _) => invocation.target_platform.clone(),
+            (None, Some(native)) => native.target_platform.clone(),
+            (None, None) => Default::default(),
+        },
         Some(application.toolchains.toolchains.clone()),
         Some(application.toolchains.exec_groups.clone()),
         surface,

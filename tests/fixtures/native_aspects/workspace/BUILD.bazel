@@ -1,0 +1,107 @@
+load(":defs.bzl", "lib", "multirun", "root")
+
+exports_files(["data.txt"])
+
+lib(name = "l", srcs = ["in.txt"])
+
+genrule(
+    name = "g",
+    srcs = ["in.txt", ":l"],
+    outs = ["g.out"],
+    cmd = "cat $(SRCS) > $@",
+    tools = [":tool_fg"],
+)
+
+filegroup(name = "tool_fg", srcs = ["tool.sh"])
+
+filegroup(
+    name = "fg",
+    srcs = ["in.txt", ":g"],
+    data = ["data.txt"],
+)
+
+alias(name = "al", actual = ":fg")
+
+test_suite(name = "ts", tests = [])
+
+config_setting(name = "cs", values = {"compilation_mode": "opt"})
+
+label_flag(name = "lf", build_setting_default = ":fg")
+
+constraint_setting(name = "cset")
+
+constraint_value(name = "cv", constraint_setting = ":cset")
+
+platform(name = "plat", constraint_values = [":cv"])
+
+toolchain_type(name = "tty")
+
+toolchain(name = "tc", toolchain = ":fg", toolchain_type = ":tty")
+
+package_group(name = "pg", packages = ["//..."])
+
+genrule(
+    name = "gx",
+    outs = ["gx.sh"],
+    cmd = "printf '#!/bin/sh\\n' > $@",
+    executable = True,
+)
+
+alias(name = "gxa", actual = ":gx")
+
+config_feature_flag(
+    name = "ff",
+    allowed_values = ["a", "b"],
+    default_value = "a",
+)
+
+filegroup(
+    name = "vis",
+    srcs = ["data.txt"],
+    deprecation = "old",
+    licenses = ["notice", "unencumbered"],
+    tags = ["x"],
+    visibility = ["//visibility:public"],
+)
+
+platform(name = "plat2")
+
+toolchain_type(name = "tty2")
+
+filegroup(name = "fg2")
+
+root(
+    name = "r",
+    testonly = True,
+    pdeps = [
+        ":plat2",
+        ":tty2",
+        ":fg2",
+    ],
+    deps = [
+        ":ff",
+        ":vis",
+        ":g",
+        ":fg",
+        ":al",
+        ":ts",
+        ":cs",
+        ":lf",
+        ":cset",
+        ":cv",
+        ":plat",
+        ":tty",
+        ":tc",
+        ":gx",
+        ":gxa",
+        "data.txt",
+        "in.txt",
+        "g.out",
+        ":l",
+    ],
+)
+
+multirun(
+    name = "mr",
+    commands = [":gx", ":gxa", ":fg", ":tool_fg"],
+)

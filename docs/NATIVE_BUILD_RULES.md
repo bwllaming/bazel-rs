@@ -207,9 +207,8 @@ match the target platform (docs/PLATFORMS.md).
   single-file executable come from `srcs` alone (docs/RUNFILES.md). Bazel
   9.3's filegroup has no `path` attribute (`no such attribute 'path' in
   'filegroup' rule`). Paired capture `tests/fixtures/filegroup_data` (15
-  genuine 9.3.0 cases: 12 MATCH, 3 declared pre-existing divergences —
-  Starlark aspects on native rules, the native
-  missing-input check under `--nobuild`, the `Target pattern parsing failed.`
+  genuine 9.3.0 cases: 13 MATCH, 2 declared pre-existing divergences — the
+  native missing-input check under `--nobuild`, the `Target pattern parsing failed.`
   warning of a package error), replayed by `tests/filegroup_data.rs`.
   Motivation: rules_rust's toolchain repository `rust-lld` filegroup (its
   gcc-ld/* linkers are data runfiles of the toolchain's exec `linker`).

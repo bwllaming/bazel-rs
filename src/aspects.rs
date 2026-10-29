@@ -202,14 +202,20 @@ impl AspectDefinition {
         if self.declaration.required_providers.is_empty() {
             return true;
         }
-        // AdvertisedProviderSet.ANY: the forwarding rule classes.
-        if let Some(native) = &rule.native
-            && matches!(
-                native.rule_class.as_str(),
-                "alias" | "label_flag" | "label_setting"
-            )
+        // A native rule class's advertised providers; AdvertisedProviderSet
+        // .ANY for the forwarding rule classes.
+        if rule.custom.is_none()
+            && let Some(native) = &rule.native
         {
-            return true;
+            let Some(advertised) = crate::native_rules::advertised_providers(&native.rule_class)
+            else {
+                return true;
+            };
+            return self.declaration.required_providers.iter().any(|clause| {
+                clause
+                    .iter()
+                    .all(|required| advertised.contains(&required.id.as_str()))
+            });
         }
         let provides = rule
             .custom

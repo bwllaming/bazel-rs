@@ -9,7 +9,7 @@ returning nothing) print the same executable, default runfiles and files of an
 executable Starlark rule, a non-executable rule naming an executable in its
 DefaultInfo (like ~/code's `copyfiles`), an executable rule symlinking that
 rule's output (like `sh_binary` over it) and a source file. (Aspects over
-native rules such as genrule/filegroup are rejected natively: not covered.)
+native rules such as genrule/filegroup: tests/fixtures/native_aspects.)
 (Found on ~/code: `rules_multirun`'s `commands` attribute carries an aspect,
 and an `sh_binary` there lost its executable.) `genuine.txt` holds the
 genuine 9.3.0 capture; tests/aspects.rs

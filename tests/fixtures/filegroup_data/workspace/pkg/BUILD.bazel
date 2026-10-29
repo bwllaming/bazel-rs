@@ -120,7 +120,7 @@ runner(
     ],
 )
 
-# Manual: Starlark aspects on native rules are not modelled natively.
+# Manual: a Starlark aspect over native filegroups.
 aspect_probe(
     name = "aspect_probe",
     tags = ["manual"],

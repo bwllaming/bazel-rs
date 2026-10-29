@@ -657,6 +657,115 @@ pub fn rule_class(name: &str) -> Option<RuleClass> {
     })
 }
 
+/// How an aspect's `ctx.rule.attr` sees one private (`$x`/`:x`) attribute
+/// of a native rule class (StarlarkAttributesCollection.Builder.addAttribute
+/// over `rule.getAttributes()`, StarlarkRuleContext.java:300-303).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PrivateAttrKind {
+    /// A label list never resolved as a prerequisite here (`:action_listener`
+    /// without --experimental_action_listener, `$config_dependencies`
+    /// (DependencyResolutionHelpers.java:408-416), `:flag_alias_settings`
+    /// without --flag_alias): `[]`, with an empty `ctx.rule.files` entry.
+    EmptyTargets,
+    /// A label prerequisite with a fixed default (exec-configured when `exec`).
+    Label { label: &'static str, exec: bool },
+    /// A label-list prerequisite whose labels the engine computes
+    /// (`$implicit_tests`, `:java_plugins`); exec-configured when `exec`.
+    Labels { exec: bool },
+    /// `$is_executable` (Rule.IS_EXECUTABLE_ATTRIBUTE_NAME): the rule's
+    /// `executable` value.
+    IsExecutable,
+}
+
+/// A private attribute of a native rule class an aspect sees.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PrivateAttr {
+    /// The native name (`$x`/`:x`), the attribute name aspects propagate along.
+    pub native: &'static str,
+    pub kind: PrivateAttrKind,
+}
+
+impl PrivateAttr {
+    /// Attribute.getPublicName (packages/Attribute.java:2307-2312): `_x`.
+    pub fn public_name(&self) -> String {
+        format!("_{}", &self.native[1..])
+    }
+}
+
+/// The private attributes of native rule class `name` that an aspect's
+/// `ctx.rule.attr` holds (genuine 9.3 capture, tests/fixtures/
+/// native_aspects): BaseRuleClasses.commonCoreAndStarlarkAttributes's
+/// `:action_listener` (removed by ToolchainType.java:66, ToolchainRule.java:53,
+/// PlatformRule.java:56, ConstraintSettingRule.java:45,
+/// ConstraintValueRule.java:44, Alias.java:73, LabelBuildSettings.java:90)
+/// and `$config_dependencies`, then the class's own: genrule's
+/// `$genrule_setup` (BazelGenRuleRule.java:44-46) and `$is_executable`
+/// (GenRuleBaseRule.java:293-296), config_setting's `:flag_alias_settings`
+/// (ConfigRuleClasses.java:295), test_suite's `$implicit_tests`
+/// (TestSuiteRule.java:105-110), config_feature_flag's allowlist
+/// (`$whitelist_config_feature_flag`, Allowlist.getAttributeFromAllowlistName)
+/// and java_plugins_flag_alias's `:java_plugins` (JavaPluginsFlagAliasRule.java:51-53).
+pub(crate) fn aspect_private_attributes(name: &str) -> Vec<PrivateAttr> {
+    use PrivateAttrKind::*;
+    let private = |native, kind| PrivateAttr { native, kind };
+    let mut attrs = Vec::new();
+    if !matches!(
+        name,
+        "toolchain_type"
+            | "toolchain"
+            | "platform"
+            | "constraint_setting"
+            | "constraint_value"
+            | "alias"
+            | "label_flag"
+            | "label_setting"
+    ) {
+        attrs.push(private(":action_listener", EmptyTargets));
+    }
+    attrs.push(private("$config_dependencies", EmptyTargets));
+    match name {
+        "genrule" => {
+            attrs.push(private(
+                "$genrule_setup",
+                Label {
+                    label: "@@bazel_tools//tools/genrule:genrule-setup.sh",
+                    exec: true,
+                },
+            ));
+            attrs.push(private("$is_executable", IsExecutable));
+        }
+        "config_setting" => attrs.push(private(":flag_alias_settings", EmptyTargets)),
+        "test_suite" => attrs.push(private("$implicit_tests", Labels { exec: false })),
+        "config_feature_flag" => attrs.push(private(
+            "$whitelist_config_feature_flag",
+            Label {
+                label: "@@bazel_tools//tools/allowlists/config_feature_flag:config_feature_flag",
+                exec: true,
+            },
+        )),
+        "java_plugins_flag_alias" => attrs.push(private(":java_plugins", Labels { exec: true })),
+        _ => {}
+    }
+    attrs
+}
+
+/// RuleClass.getAdvertisedProviders of a native rule class: the provider
+/// requirement ids it advertises (ToolchainType.java:63, PlatformRule.java:53,
+/// ConstraintSettingRule.java:41, ConstraintValueRule.java:40), `None` for
+/// AdvertisedProviderSet.ANY (`canHaveAnyProvider`: Alias.java:79,
+/// LabelBuildSettings.java:98). ToolchainRule's DeclaredToolchainInfo is a
+/// native-only class no Starlark requirement can name.
+pub(crate) fn advertised_providers(name: &str) -> Option<&'static [&'static str]> {
+    Some(match name {
+        "alias" | "label_flag" | "label_setting" => return None,
+        "toolchain_type" => &["builtin:ToolchainTypeInfo"],
+        "platform" => &["builtin:PlatformInfo"],
+        "constraint_setting" => &["builtin:ConstraintSettingInfo"],
+        "constraint_value" => &["builtin:ConstraintValueInfo"],
+        _ => &[],
+    })
+}
+
 /// Names that `src/main/starlark/builtins_bzl/bazel/exports.bzl:22-37,53-58`
 /// replace with `_removed_rule_failure` in both BUILD and `native`.
 pub const REMOVED_RULES: &[&str] = &[

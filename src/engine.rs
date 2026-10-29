@@ -1480,6 +1480,18 @@ fn dependency_edges(rule: &Rule) -> Vec<Edge> {
     edges
 }
 
+/// The native rule classes whose rule transition is NoConfigTransition
+/// (ConstraintSettingRule.java:42, ConstraintValueRule.java:41): their
+/// configured targets live in the no-config configuration, where aspects
+/// never apply (AspectFunction.java:296-305: NonApplicableAspect).
+fn no_config_rule_class(rule: &Rule) -> bool {
+    rule.custom.is_none()
+        && matches!(
+            rule.kind,
+            RuleKind::Native("constraint_setting" | "constraint_value")
+        )
+}
+
 fn attribute_edges(rule: &Rule) -> Vec<Edge> {
     let edge = |label: &String, attribute: &str, cfg: EdgeCfg| Edge {
         label: label.clone(),
@@ -4950,6 +4962,9 @@ impl Engine {
                 .unwrap_or(rule),
             _ => return Ok(Vec::new()),
         };
+        if no_config_rule_class(&base_rule) {
+            return Ok(Vec::new());
+        }
         let collection = self.aspect_collection_for(aspects, &base_rule)?;
         if collection.is_empty() {
             return Ok(Vec::new());
@@ -5067,8 +5082,20 @@ impl Engine {
         // aspect of the collection that propagates along the attribute name
         // applies to the edge's dependency (computePropagatingAspects), in
         // the edge's configuration exactly as the application's planning
-        // reaches it (Self::plan_aspect_application).
-        for edge in self.rule_edges(&base_rule, base_key.config) {
+        // reaches it (Self::plan_aspect_application). A native base rule's
+        // attribute edges its own analysis does not resolve are analyzed
+        // first (Self::native_aspect_edges).
+        let native_edges = self.native_aspect_edges(&base_rule);
+        for edge in &native_edges {
+            let edge_configs = self.analyzed_edge_configurations(&base_key, &edge.cfg)?;
+            let dependency = self.resolve_rule_src(&base_rule, &edge.label)?;
+            for edge_config in edge_configs.ids() {
+                self.analyze(&dependency, edge_config, active, configured, plan)?;
+            }
+        }
+        let mut edges = self.rule_edges(&base_rule, base_key.config);
+        edges.extend(native_edges);
+        for edge in edges {
             let attribute_aspects = base_rule
                 .custom
                 .as_ref()
@@ -10565,6 +10592,76 @@ impl Engine {
         edges
     }
 
+    /// The label attribute edges of a native rule that only an aspect
+    /// application on it resolves, beyond [`Self::rule_edges`] (which its
+    /// own analysis needs): every other dependency label attribute of the
+    /// rule class (`toolchain_type`, `target_settings`, `parents`,
+    /// `required_settings`, `constraint_values`, `flag_values`, the common
+    /// `aspect_hints`/`compatible_with`/`restricted_to`/
+    /// `*_compatible_with`) in the target configuration, and the private
+    /// prerequisites with a fixed default (`$genrule_setup`, the
+    /// config_feature_flag allowlist; exec-configured). They are
+    /// `ctx.rule.attr` Targets and edges aspects propagate along
+    /// (StarlarkRuleContext.java:300-303; AspectResolutionHelpers over the
+    /// rule's attributes). Empty for Starlark rules.
+    fn native_aspect_edges(&self, rule: &Rule) -> Vec<Edge> {
+        use crate::native_rules::{NativeType, PrivateAttrKind};
+        let (None, Some(native)) = (&rule.custom, &rule.native) else {
+            return Vec::new();
+        };
+        let Some(class) = crate::native_rules::rule_class(&native.rule_class) else {
+            return Vec::new();
+        };
+        let covered: BTreeSet<String> = dependency_edges(rule)
+            .into_iter()
+            .map(|edge| edge.attribute)
+            .chain(["srcs", "tools", "toolchains", "data", "tests"].map(str::to_owned))
+            .collect();
+        let mut edges = Vec::new();
+        let target = |label: String, attribute: &str| Edge {
+            label,
+            attribute: attribute.to_owned(),
+            cfg: EdgeCfg::Target,
+        };
+        for attribute in &class.attrs {
+            let name = attribute.name;
+            if covered.contains(name) || name == "exec_group_compatible_with" {
+                continue;
+            }
+            match (attribute.ty, native.attrs.get(name)) {
+                (NativeType::Label, Some(crate::custom_rule::AttrValue::Label(Some(label)))) => {
+                    edges.push(target(label.clone(), name));
+                }
+                (NativeType::LabelList, _) => {
+                    edges.extend(native.labels(name).into_iter().map(|l| target(l, name)));
+                }
+                (
+                    NativeType::LabelKeyedStringDict,
+                    Some(crate::custom_rule::AttrValue::LabelKeyedStringDict(entries)),
+                ) => {
+                    edges.extend(entries.iter().map(|(l, _)| target(l.clone(), name)));
+                }
+                _ => {}
+            }
+        }
+        for private in crate::native_rules::aspect_private_attributes(&native.rule_class) {
+            if let PrivateAttrKind::Label { label, exec } = private.kind
+                && self.repositories.root("bazel_tools").is_ok()
+            {
+                edges.push(Edge {
+                    label: label.to_owned(),
+                    attribute: private.native.to_owned(),
+                    cfg: if exec {
+                        EdgeCfg::Exec(None)
+                    } else {
+                        EdgeCfg::Target
+                    },
+                });
+            }
+        }
+        edges
+    }
+
     /// The test properties of a test rule target (TestTargetProperties;
     /// RuleConfiguredTargetBuilder.initializeTestProvider's shard_count
     /// checks, analysis/RuleConfiguredTargetBuilder.java:470-484) and its
@@ -11754,7 +11851,12 @@ impl Engine {
             .iter()
             .map(|(used, _)| used.clone())
             .collect();
-        for edge in self.rule_edges(&base_rule, base_key.config) {
+        let mut edges = self.rule_edges(&base_rule, base_key.config);
+        edges.extend(self.native_aspect_edges(&base_rule));
+        // A native base rule's dependency keys per attribute (native name),
+        // in edge order: its `ctx.rule.attr` Targets.
+        let mut native_attribute_keys: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for edge in edges {
             let attribute_aspects = base_rule
                 .custom
                 .as_ref()
@@ -11814,6 +11916,10 @@ impl Engine {
                         _ => analysis::dependency_key(&dependency.to_string(), false),
                     },
                 };
+                native_attribute_keys
+                    .entry(edge.attribute.clone())
+                    .or_default()
+                    .push(map_key.clone());
                 dependencies.insert(map_key, view);
             }
         }
@@ -12033,7 +12139,8 @@ impl Engine {
             },
         };
         let mut analyzed_rule = base_rule.clone();
-        if analyzed_rule.custom.is_some() {
+        let mut native_base = None;
+        if analyzed_rule.custom.is_some() || analyzed_rule.native.is_some() {
             let platform = match self.platforms.get(&ConfiguredTargetKey::new(
                 self.configurations
                     .get(base_key.config)
@@ -12059,9 +12166,42 @@ impl Engine {
                 custom.cpp = cpp;
                 custom.target_platform = platform;
                 custom.surface = surface;
+            } else if let Some(native) = &analyzed_rule.native {
+                let args = self
+                    .packages
+                    .get(&analyzed_rule.label.package_id())
+                    .map(|package| package.args.clone())
+                    .unwrap_or_default();
+                // An explicit `visibility` value, simplified
+                // (RuleVisibility.validateAndSimplify).
+                let visibility = if analyzed_rule.explicit_visibility {
+                    analyzed_rule
+                        .visibility
+                        .declared_labels()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let licenses = match native.attrs.get("licenses") {
+                    Some(crate::custom_rule::AttrValue::Strings(values)) => Some(values.clone()),
+                    _ => args.license.clone(),
+                };
+                native_base = Some(analysis::native_aspect::NativeAspectBase {
+                    surface,
+                    target_platform: platform,
+                    cpp,
+                    testonly: analyzed_rule.is_test_only(&args),
+                    deprecation: analyzed_rule.deprecation_warning(&args),
+                    licenses,
+                    visibility,
+                    attribute_keys: native_attribute_keys,
+                });
             }
         }
         let application = analysis::AspectApplication {
+            native: native_base,
             aspect_split_dependencies,
             aspect: aspect.clone(),
             aspect_ids: collection.path_descriptions(&aspect.descriptor),
@@ -12355,7 +12495,7 @@ impl Engine {
                 Vec::new(),
             ));
         };
-        if matches!(rule.kind, RuleKind::PackageGroup(_)) {
+        if matches!(rule.kind, RuleKind::PackageGroup(_)) || no_config_rule_class(&rule) {
             aspects.clear();
         }
         let collection = if aspects.is_empty() {
