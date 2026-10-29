@@ -273,8 +273,9 @@ Two parts of the design address this:
 Code: `src/engine/incremental.rs` (the dependency tracker),
 `src/snapshot/incremental.rs` (the index, attribution, graph check,
 splice, merges), `src/snapshot/hit.rs` (the miss keeps what it decoded),
-`incremental_build` in `src/main.rs` (the driver). `build` only; `test`,
-`run`, `--keep_going`, `--aspects` and coverage keep the full analysis.
+`incremental_build` in `src/main.rs` (the driver). `build`, `test` and
+`run` (§5); `--keep_going`, `--aspects` and coverage keep the full
+analysis.
 `BAZEL_RS_SNAPSHOT_INCREMENTAL=0` turns it off (no index is recorded
 either): every miss is a full analysis, exactly as before.
 
@@ -513,17 +514,22 @@ observations, 45 local repositories)").
 
 ### Not handled (fall back), and follow-ups
 
-- **New or removed targets, and dependency changes.** Any change of the
-  configured graph falls back: the plan order, the actions' positions and
-  the window's counts would have to be computed for the full analysis.
-  The index already holds the ordered edges; replaying the phase-1
-  post-order over the changed graph, and the target pattern phase over the
-  saved package summaries, is the next step (it is the gazelle
-  benchmark's edit, besides its repository input).
-- **`.bzl` edits.** A changed `.bzl` falls back. A module only BUILD files
-  load (macros), outside the load closure of every rule, aspect,
-  transition and extension the analysis used, could reload the packages
-  that load it and compare fingerprints like a BUILD edit.
+- **New or removed targets.** A changed pattern summary (a target added,
+  removed, renamed or retagged) falls back: the requested labels, the plan
+  positions after the new root, the window's `Analyzed`/`Found` counts and
+  the request's per-label parts (outputs, results, build events) would
+  have to be computed for the full analysis. Sketch (not implemented): keep
+  per-rule summary digests to diff a package's targets; a target added to
+  a package a wildcard pattern covers is a new root at its sorted position
+  `i`; it splices when everything its analysis reaches that the saved
+  analysis had — the shared computations' targets included — was planned
+  before root `i` began (§5's dependency rule), its new targets are
+  inserted there, and the counts grow by its labels and planned targets.
+  Removal additionally needs the reachability of the actions the removed
+  target consumed (the same question as a removed dependency, below).
+- **Removed dependencies whose actions were consumed**, and dependencies
+  on targets planned after the dependant's analysis began (or reordered):
+  fall back (§5).
 - **Repository inputs.** A change to a watched file falls back; re-executing
   the repository and comparing its published tree (Skyframe's change
   pruning of repository values, which genuine gets from its markers) would
@@ -536,3 +542,138 @@ observations, 45 local repositories)").
 - **The save** re-encodes and re-compresses the whole plan (0.4 s on
   beyondwork, 1.4–1.9 s on `//src/...`); reusing the saved PLAN's
   compressed chunks that hold no dirty action would remove most of it.
+
+## 5. Tier A, extended: `test`/`run`, `.bzl` edits, dependency changes
+
+Code: the same files; `src/loading.rs` notes the modules definition loads
+enter and each main-repository module's code digest.
+
+### `test` and `run`
+
+The index is recorded for every `build`, `test` and `run` whose analysis
+the snapshot saves, and their misses try incremental analysis like a
+`build`'s:
+
+- The partial analysis plans the command's request for the re-analyzed
+  labels: `test` with the tests among them (their test properties looked
+  up again by planning), `run` with its target (and the `--run_under`
+  runner) — whose `Runnable` and test properties are looked up again first
+  (a target no longer executable falls back).
+- The splice merges the command's part: the saved tests with the
+  re-analyzed ones' properties, `run`'s test properties; the run plans
+  (executable, runfiles tree and entries, completion) of the re-analyzed
+  labels replace the saved ones in place, in the saved configuration (the
+  re-analysis's configuration summary must equal it). The actions of other
+  targets a re-analyzed run plan needs must include every one the saved
+  plan needed (one no longer needed might not be planned at all) and be
+  planned; no other run plan may need a re-analyzed action; coverage run
+  plans fall back.
+- The lookups `run` and `test` make of their requested labels before
+  planning (`Runnable`, the test selection properties) count as the target
+  pattern phase's, not as a lookup outside every target (which would make
+  the package global).
+- The tails are the hit's (`PlannedTails` in `src/main.rs`): `test` runs
+  the tests, `run` runs its target.
+
+### `.bzl` edits in the main repository
+
+The index keeps the `.bzl` module graph of every loaded package — the
+main-repository modules and every module loading one, with their direct
+loads — each package's direct loads, each configured target's rule
+modules (the `.bzl` that called `rule()` and the one being initialized
+then; a rule naming none that parses makes every `.bzl` edit fall back),
+the modules a definition load entered (a repository rule's, a module
+extension's, an aspect's identity reload: `loading::definition_modules`),
+and each main-repository module's *code digest*: its bytes with every
+comment's text removed (a `#` outside string literals to the end of its
+line), everything else in place, trailing whitespace dropped.
+
+A changed observation of a module's path is a `.bzl` edit:
+
+1. **Comments only.** The module is read again; an equal code digest
+   means the same tokens at the same positions (an edited comment, blank
+   lines or comments appended): nothing changed. Its new READ joins the
+   merged INPUTS, the saved plan stands (unless something else changed).
+2. **Otherwise** the *affected* modules are it and every module loading it
+   (transitively). Not attributable, so the full analysis runs: an
+   affected module a definition load entered (its edit changes a
+   repository's or extension's identity), a package of another repository
+   or one not loaded loading an affected module, one that printed while it
+   loaded.
+3. Every main-repository package loading an affected module is loaded
+   again and compared like a BUILD edit's (§4): an unchanged fingerprint
+   is pruned — also for a package shared computations read or one
+   defining toolchains or platforms, which fall back only when changed; a
+   changed summary (a macro adding a target) falls back.
+4. The dirty targets are §4's plus every configured target whose rule an
+   affected module defines, closed over the reverse edges; the rest — the
+   partial analysis, the splice, the save — is §4's. Aspects need no rule
+   of their own: the targets whose rules attach them are dirty, and the
+   aspect actions on targets that are not re-analyzed must equal the
+   saved ones.
+
+After every incremental analysis the index's modules are refreshed with
+what the run loaded (a module's or package's loads may change, a
+re-analyzed target's rule modules too).
+
+### Dependency changes
+
+A re-analyzed target's configured dependencies are compared *in the order
+its analysis reached them* (§4 compared them as sets: a reordered `deps`
+whose dependencies were first planned through it changed the plan's order
+— the splice kept the saved one; verify mode showed the mismatch, now a
+fallback). The index records, per planned target, the plan length when its
+analysis began and its plan position. A dependency planned before the
+dependant's analysis began is a memo hit wherever it is reached, so adding
+or removing one changes neither the plan's targets nor its order; every
+other dependency must be reached in the same order. The merged index takes
+the re-analyzed targets' edges from the partial analysis.
+
+The re-analyzed actions may depend on actions of other targets they did
+not consume before (those are in the saved plan, so they were needed and
+stay planned); one they no longer consume falls back — whether anything
+else still needs it would take the plan's whole reachability (the
+`hidden` artifacts of the requested targets are not in the request).
+
+### Large dirty sets
+
+`BAZEL_RS_INCREMENTAL_MAX_DIRTY_PERCENT` (default 25, from 500 configured
+targets): above that share of dirty configured targets the full analysis
+runs. The partial analysis re-analyzes the forward closure of the dirty
+requested targets, which for a few targets with large closures is most of
+the analysis anyway (below).
+
+### Measured
+
+Release binaries, private caches and lockfile, the real `.bazelrc` with
+the storagebox overrides, `--nobuild`, wall by the harness, one run per
+cell on the shared machine (load 10–15). ~/code private copy at
+`8fdf5779`.
+
+| request | edit | full analysis (miss) | incremental | outcome |
+|---|---|---|---|---|
+| `//src/beyondwork.ai/...` | `gomock.bzl` comment appended (69 packages) | 134–137 s | **1.8 s** | comments only |
+| | `gomock.bzl` comment (first version, no code digest) | 134 s | 109 s | 393 targets re-analyzed |
+| | `gogenrule.bzl` rule body (`mnemonic`) | 137 s | 100.6 s | 27 targets re-analyzed, their closures ~95 % of the analysis |
+| `test --nobuild //src/beyondwork.ai/tools/oauth2token:oauth2token_test` | BUILD comment | 4.7 s | **0.7 s** | pruned |
+| | `x_defs` of the test's library | 5.9 s (3.7 s snapshot off) | 4.5 s | the test re-analyzed (its whole request) |
+
+### Tests
+
+- `tests/snapshot.rs::incremental_analysis_of_test_and_run`,
+  `incremental_analysis_of_bzl_edits`,
+  `incremental_analysis_of_dependency_changes` (each with its strict
+  `verify_mode` twin): a dependency's attribute, the tests' own package
+  and a comment for `test` (two tests and a tool) and `run`; a macro's
+  comment (pruned) and body, the rules' module (a comment appended: nothing;
+  inserted above the code: every target of its rules; a body edit), a
+  repository rule's module (falls back); dependencies added before the
+  dependant's analysis began, removed within the package, removed across
+  packages (falls back), reordered (falls back), added after (falls back).
+- The mutation fuzz: `incr_t` (two tests and a tool: commands 14 and 15)
+  and `incr_m` (a macro module) packages and mutations 65–67 (the tests'
+  flag or a comment, the macro's body or a comment, `incr_use`'s
+  dependencies added, reordered or restored); a fallback's reason joins
+  the step's log line.
+- Unit tests: `.bzl` attribution (affected modules, refusals), code
+  digests.
