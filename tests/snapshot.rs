@@ -3061,6 +3061,9 @@ local_path_override(module_name = "localdep", path = "../localdep")
 
 ext = use_extension("//ext:ext.bzl", "ext")
 use_repo(ext, "extrepo")
+
+wr = use_repo_rule("//incr_w:watch.bzl", "watch_rule")
+wr(name = "watchrepo")
 "#,
         if flavor { r#", flavor = "spicy""# } else { "" }
     )
@@ -3213,6 +3216,8 @@ fn fuzz_fixture() -> Twin {
     twin.write("incr_t/BUILD.bazel", &incr_t_build(0, 0));
     twin.write("incr_m/macros.bzl", &incr_macros("one", false));
     twin.write("incr_m/BUILD.bazel", INCR_M_BUILD);
+    twin.write("incr_w/watch.bzl", INCR_WATCH);
+    twin.write("incr_w/BUILD.bazel", &incr_w_build(0, &[], false));
     twin.workspace_rc.set(true);
     twin
 }
@@ -3255,6 +3260,115 @@ chain_bin = rule(implementation = _chain_exe, executable = True, attrs = _CHAIN_
 
 const INCR_USE_BUILD: &str = "load('//incr:defs.bzl', 'chain')\nchain(name = 'u', deps = ['//incr:a'], flag = 'u')\nchain(name = 'v', flag = 'v', visibility = ['//visibility:public'])\n";
 
+/// A repository rule reading (so watching) `incr_w/BUILD.bazel`: an edit
+/// of it runs the rule again, which publishes the same tree unless the
+/// file's `repo-marker` changed.
+const INCR_WATCH: &str = r##"def _watch(ctx):
+    text = ctx.read(Label("//incr_w:BUILD.bazel"))
+    ctx.file("BUILD.bazel", "")
+    ctx.file("defs.bzl", "MARKED = %s\n" % ("repo-marker" in text))
+
+watch_rule = repository_rule(implementation = _watch)
+"##;
+
+/// The module lines declaring `@watchrepo` ([`INCR_WATCH`]).
+const INCR_WATCH_MODULE: &str =
+    "\nwr = use_repo_rule('//incr_w:watch.bzl', 'watch_rule')\nwr(name = 'watchrepo')\n";
+
+/// `incr_w/BUILD.bazel`: `:w` (its flag, the watched repository's
+/// marker), extra targets (name, dependencies), the marker comment.
+fn incr_w_build(flag: usize, extras: &[(String, Vec<String>)], marker: bool) -> String {
+    let mut build = format!(
+        "load('@watchrepo//:defs.bzl', 'MARKED')\nload('//incr:defs.bzl', 'chain')\nchain(name = 'w', flag = 'w{flag}' + str(MARKED))\n"
+    );
+    for (name, deps) in extras {
+        build.push_str(&format!(
+            "chain(name = '{name}', deps = [{}], flag = '{name}')\n",
+            deps.iter()
+                .map(|dep| format!("'{dep}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if marker {
+        build.push_str("# repo-marker\n");
+    }
+    build
+}
+
+/// Add, remove or rename one of `extras` (targets of the fuzz's
+/// incremental packages): names `prefix0`..`prefix3`, dependencies on
+/// `bases` and on extras with smaller names.
+fn mutate_extras(
+    rng: &mut Rng,
+    extras: &mut Vec<(String, Vec<String>)>,
+    prefix: &str,
+    bases: &[&str],
+) -> &'static str {
+    let free: Vec<String> = (0..4)
+        .map(|at| format!("{prefix}{at}"))
+        .filter(|name| !extras.iter().any(|(other, _)| other == name))
+        .collect();
+    let operation = if extras.is_empty() {
+        0
+    } else if free.is_empty() {
+        1 + rng.below(2)
+    } else {
+        rng.below(3)
+    };
+    match operation {
+        0 => {
+            let name = free[rng.below(free.len())].clone();
+            let mut deps: Vec<String> = Vec::new();
+            for base in bases {
+                if rng.percent(40) {
+                    deps.push((*base).to_owned());
+                }
+            }
+            for (other, _) in extras.iter() {
+                if *other < name && rng.percent(40) {
+                    deps.push(format!(":{other}"));
+                }
+            }
+            extras.push((name, deps));
+            extras.sort();
+            "a target added"
+        }
+        1 => {
+            let at = rng.below(extras.len());
+            let (name, _) = extras.remove(at);
+            let gone = format!(":{name}");
+            for (_, deps) in extras.iter_mut() {
+                deps.retain(|dep| *dep != gone);
+            }
+            "a target removed"
+        }
+        _ => {
+            let at = rng.below(extras.len());
+            let new = free
+                .first()
+                .cloned()
+                .unwrap_or_else(|| extras[at].0.clone());
+            let old = std::mem::replace(&mut extras[at].0, new.clone());
+            // Keep dependencies on smaller names only.
+            let (old, new) = (format!(":{old}"), format!(":{new}"));
+            let renamed = extras[at].0.clone();
+            for (name, deps) in extras.iter_mut() {
+                for dep in deps.iter_mut() {
+                    if *dep == old {
+                        dep.clone_from(&new);
+                    }
+                }
+                let name = name.clone();
+                deps.retain(|dep| !dep.starts_with(':') || dep[1..] < *name);
+            }
+            let _ = renamed;
+            extras.sort();
+            "a target renamed"
+        }
+    }
+}
+
 /// `incr/BUILD.bazel` of the fuzz state: the flag of `:a` (an attribute
 /// edit: spliced), comments (pruned), a dependency on `//incr_use:v` (the
 /// graph changes: falls back), an extra target (the patterns' expansion
@@ -3266,12 +3380,15 @@ fn fuzz_incr_build(state: &FuzzState) -> String {
         build.push_str("print('incr loaded')\n");
     }
     build.push_str(&format!(
-        "chain(name = 'a', srcs = glob(['srcs/*.txt']), deps = [':b'{}], flag = 'f{}', visibility = ['{}'])\n",
-        if state.on("incr-dep") {
-            ", '//incr_use:v'"
-        } else {
-            ""
-        },
+        "chain(name = 'a', srcs = glob(['srcs/*.txt']), deps = [{}], flag = 'f{}', visibility = ['{}'])\n",
+        [
+            (!state.on("incr-a-nob")).then_some("':b'"),
+            state.on("incr-dep").then_some("'//incr_use:v'"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", "),
         state.incr_flag,
         if state.on("incr-private") {
             "//visibility:private"
@@ -3289,6 +3406,15 @@ fn fuzz_incr_build(state: &FuzzState) -> String {
     ));
     if state.on("incr-extra") {
         build.push_str("chain(name = 'extra', flag = 'x')\n");
+    }
+    for (name, deps) in &state.incr_extras {
+        build.push_str(&format!(
+            "chain(name = '{name}', deps = [{}], flag = '{name}')\n",
+            deps.iter()
+                .map(|dep| format!("'{dep}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
     for comment in 0..state.incr_comments {
         build.push_str(&format!("# comment {comment}\n"));
@@ -3390,6 +3516,13 @@ struct FuzzState {
     incr_t_comments: usize,
     /// `incr_m/macros.bzl`: the macro's flag.
     incr_m_flag: usize,
+    /// Extra targets of `incr/BUILD.bazel` (added, removed, renamed).
+    incr_extras: Vec<(String, Vec<String>)>,
+    /// `incr_w/BUILD.bazel` (watched by `@watchrepo`): `:w`'s flag, its
+    /// extra targets, the marker changing the repository's contents.
+    incr_w_flag: usize,
+    incr_w_extras: Vec<(String, Vec<String>)>,
+    incr_w_marker: bool,
 }
 
 impl FuzzState {
@@ -3442,7 +3575,7 @@ enum Special {
 }
 
 /// The number of mutations of the catalogue ([`mutate`]).
-const MUTATIONS: usize = 68;
+const MUTATIONS: usize = 71;
 
 /// Apply one random mutation of the catalogue (the same to both copies);
 /// returns its name and what the step does besides its command.
@@ -3998,6 +4131,51 @@ fn mutate(twin: &Twin, rng: &mut Rng, state: &mut FuzzState, step: usize) -> (St
             twin.write("incr_use/BUILD.bazel", &build);
             name("incr_use: dependencies added, reordered or restored")
         }
+        68 => {
+            // A BUILD file a repository rule watches: it runs again, and
+            // publishes the same tree but for the marker.
+            let what = match rng.below(4) {
+                0 => {
+                    state.incr_w_flag = (state.incr_w_flag + 1) % 3;
+                    "the flag"
+                }
+                1 => {
+                    state.incr_w_marker = !state.incr_w_marker;
+                    "the repository's marker"
+                }
+                _ => mutate_extras(rng, &mut state.incr_w_extras, "w", &[":w", "//incr:a"]),
+            };
+            twin.write(
+                "incr_w/BUILD.bazel",
+                &incr_w_build(state.incr_w_flag, &state.incr_w_extras, state.incr_w_marker),
+            );
+            name(match what {
+                "the flag" => "incr_w (watched): the flag",
+                "the repository's marker" => "incr_w (watched): the repository's contents",
+                "a target added" => "incr_w (watched): a target added",
+                "a target removed" => "incr_w (watched): a target removed",
+                _ => "incr_w (watched): a target renamed",
+            })
+        }
+        69 => {
+            let what = mutate_extras(
+                rng,
+                &mut state.incr_extras,
+                "x",
+                &[":a", ":b", "//incr_use:v"],
+            );
+            twin.write("incr/BUILD.bazel", &fuzz_incr_build(state));
+            name(match what {
+                "a target added" => "incr: a target added",
+                "a target removed" => "incr: a target removed",
+                _ => "incr: a target renamed",
+            })
+        }
+        70 => {
+            state.toggle("incr-a-nob");
+            twin.write("incr/BUILD.bazel", &fuzz_incr_build(state));
+            name("incr: :a's dependency on :b removed or restored")
+        }
         _ => name("no change"),
     };
     (name, special)
@@ -4076,6 +4254,7 @@ fn fuzz_command(
             "//incr/...".into(),
             "//incr_use/...".into(),
             "//incr_m/...".into(),
+            "//incr_w/...".into(),
         ],
         // Two tests: their outputs would print in completion order.
         14 => vec![
@@ -5147,6 +5326,115 @@ fn failing_test_suite_expansions_are_never_saved() {
     assert_eq!(twin.snapshots().len(), 1);
 }
 
+/// Incremental analysis of added, removed and renamed targets and of a
+/// BUILD file a repository rule watches (docs/INCREMENTAL_ANALYSIS.md):
+/// the requested labels change, the new targets' actions are inserted where
+/// their analyses would have planned them, the removed ones' dropped with
+/// what nothing needs any more; the repository runs again and, its tree
+/// unchanged, nothing it feeds changes (its contents changed: the full
+/// analysis).
+#[test]
+fn incremental_analysis_of_targets_and_watched_build_files() {
+    let twin = fixture();
+    twin.write("MODULE.bazel", &format!("{MODULE}{INCR_WATCH_MODULE}"));
+    twin.write("incr/defs.bzl", INCR_RULES);
+    twin.write("incr/BUILD.bazel", "");
+    twin.write(
+        "alib/BUILD.bazel",
+        "load('//incr:defs.bzl', 'chain')\nchain(name = 'l', flag = 'l', visibility = ['//visibility:public'])\nchain(name = 'hidden', flag = 'h', tags = ['manual'], visibility = ['//visibility:public'])\n",
+    );
+    twin.write("incr_w/watch.bzl", INCR_WATCH);
+    let extras = |list: &[(&str, &[&str])]| -> Vec<(String, Vec<String>)> {
+        list.iter()
+            .map(|(name, deps)| {
+                (
+                    (*name).to_owned(),
+                    deps.iter().map(|dep| (*dep).to_owned()).collect(),
+                )
+            })
+            .collect()
+    };
+    twin.write("incr_w/BUILD.bazel", &incr_w_build(0, &[], false));
+    let args = &["build", "//alib:all", "//incr_w/..."];
+    twin.save(args, &[]);
+    twin.same(args, &[]).assert_hit();
+    let step = |build: String, expected: Result<(usize, usize, usize), &str>| {
+        twin.write("incr_w/BUILD.bazel", &build);
+        let pair = twin.same(args, &[]);
+        pair.assert_miss("").assert_success();
+        let explain = pair.explain();
+        match expected {
+            Ok((rerun, added, removed)) => {
+                assert!(
+                    explain.iter().any(|line| line.starts_with("incremental ")
+                        && line.contains(&format!(
+                            " {rerun} requested target(s) re-analyzed; {added} label(s) added, {removed} removed"
+                        ))
+                        && line.contains(" 1 repository(ies) ran again unchanged")),
+                    "{}",
+                    explain.join("\n")
+                );
+                if pair.mode == VERIFY {
+                    assert!(pair.line("verified ").is_some(), "{}", explain.join("\n"));
+                } else {
+                    pair.assert_saved();
+                }
+            }
+            Err(reason) => assert!(
+                explain.iter().any(|line| line.starts_with("incremental")
+                    && !line.contains(" re-analyzed;")
+                    && line.contains(reason)),
+                "expected a fallback ({reason}):\n{}",
+                explain.join("\n")
+            ),
+        }
+        twin.same(args, &[]).assert_hit().assert_success();
+    };
+    // An attribute: :w alone.
+    step(incr_w_build(1, &[], false), Ok((1, 0, 0)));
+    // Targets added (one depending on :w and //alib:l, planned before).
+    step(
+        incr_w_build(
+            1,
+            &extras(&[("w0", &[":w", "//alib:l"]), ("w1", &[])]),
+            false,
+        ),
+        Ok((2, 2, 0)),
+    );
+    // Renamed (w1 → w2), then removed.
+    step(
+        incr_w_build(
+            1,
+            &extras(&[("w0", &[":w", "//alib:l"]), ("w2", &[])]),
+            false,
+        ),
+        Ok((1, 1, 1)),
+    );
+    step(
+        incr_w_build(1, &extras(&[("w0", &[":w", "//alib:l"])]), false),
+        Ok((0, 0, 1)),
+    );
+    // A target depending on a target no requested one reaches: planned
+    // with it; removed again, both go (and the action nothing needs).
+    step(
+        incr_w_build(
+            1,
+            &extras(&[("w0", &[":w", "//alib:l"]), ("w3", &["//alib:hidden"])]),
+            false,
+        ),
+        Ok((1, 1, 0)),
+    );
+    step(
+        incr_w_build(1, &extras(&[("w0", &[":w", "//alib:l"])]), false),
+        Ok((0, 0, 1)),
+    );
+    // The repository's contents change: the full analysis.
+    step(
+        incr_w_build(1, &extras(&[("w0", &[":w", "//alib:l"])]), true),
+        Err("published other contents"),
+    );
+}
+
 /// L2-W7, on by default: with `BAZEL_RS_SNAPSHOT` unset or empty (or set to
 /// a value it does not know, which it reports) a build saves and hits like
 /// `on`, byte-identical with `off`; `off`, `0` and `false` turn everything
@@ -5242,6 +5530,11 @@ mod verify_mode {
     #[test]
     fn incremental_analysis_of_test_and_run() {
         verified(super::incremental_analysis_of_test_and_run);
+    }
+
+    #[test]
+    fn incremental_analysis_of_targets_and_watched_build_files() {
+        verified(super::incremental_analysis_of_targets_and_watched_build_files);
     }
 
     #[test]

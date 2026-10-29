@@ -2563,10 +2563,19 @@ fn incremental_finish(
     let changed_set: std::collections::HashSet<usize> =
         changed_observations.iter().copied().collect();
     let observations = std::mem::take(&mut inputs.recording.observations);
+    // A repository that ran again superseded its selection's pointer
+    // reads (what the full analysis records of them is this run's).
+    let reselected = |op: &bazel_rs::observed_fs::Op| match op {
+        bazel_rs::observed_fs::Op::SelectionRead(owner)
+        | bazel_rs::observed_fs::Op::SelectionAbsent(owner) => {
+            replaced_roots.iter().any(|(name, _, _)| name == owner)
+        }
+        _ => false,
+    };
     inputs.recording.observations = observations
         .into_iter()
         .enumerate()
-        .filter(|(at, _)| !changed_set.contains(at))
+        .filter(|(at, (_, observation))| !changed_set.contains(at) && !reselected(&observation.op))
         .map(|(_, observation)| observation)
         .collect();
     context.lockfile_gate.open();

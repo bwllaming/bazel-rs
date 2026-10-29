@@ -2724,14 +2724,19 @@ pub fn splice(
                 .position(|position| position.is_some_and(|position| position >= insert.boundary));
             let from = before.map_or(0, |at| at + 1);
             let to = after.unwrap_or(nodes.len());
-            if to < from || at[from..to].iter().any(Option::is_none) {
+            // A workspace status node after the last earlier target's
+            // actions was registered by a later target, or at the end of
+            // phase 2: after the new targets either way.
+            if to < from
+                || nodes[from..to]
+                    .iter()
+                    .any(|node| !node.action.id.starts_with(crate::request::STATUS_ID_PREFIX))
+            {
                 return Err(format!(
-                    "the new actions of {} have no unambiguous place in the plan",
-                    shape
-                        .sub
-                        .labels
-                        .first()
-                        .map_or_else(String::new, ToString::to_string)
+                    "the new actions of {} have no unambiguous place in the plan (between {} and {})",
+                    index.keys[insert.keys[0].0 as usize].label,
+                    before.map_or("the start", |at| nodes[at].action.id.as_str()),
+                    after.map_or("the end", |at| nodes[at].action.id.as_str()),
                 ));
             }
             placed.push((from, group, run));
