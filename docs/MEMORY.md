@@ -135,3 +135,40 @@ Result (release builds, warm private cache, `--memory-limit=24000`):
 | `--nobuild //src/...`, snapshot hit | — | 5.1 GB, 2 s |
 
 The action dump (`BAZEL_RS_DUMP_ACTIONS=1`, 59,788 actions) is byte-identical.
+
+## Snapshot hits (MEM5, ~/code)
+
+A snapshot hit only decodes the planned request and runs the execution tail, but it held far more than the
+decoded plan. On `--config=linux_arm64 //src/rust/...` (rules_rust cross-compiling through the zig cc
+toolchain) a hit peaked at 2.6 GB, against 0.9 GB for amd64. A heap profile at the peak showed what was held:
+
+| what | cost before | fix |
+|---|---|---|
+| every Rustc/Clippy action lists the toolchain's ~4,000 files in full: a 1.28 GB raw plan (arm64), decoded one `SharedPath` allocation per listing (1.2 GB) | ~2.5 GB at the arm64 peak | a path table per GROUPS/NODES section (format 8, docs/PLANNED_REQUEST.md): each distinct path once, every listing an index, decoded as one shared `SharedPath`. The raw plan is 55 MB and the stored snapshot 23 MB instead of 72 MB |
+| the whole PLAN section inflated before decoding (768 MB for `//src/...`) and held beside the decoded actions | ~0.7 GB | `codec::decode_stored`: each section is inflated on the thread that decodes it, then dropped |
+| an executable's runfiles manifest and tree encode the same entry list, and every name was decoded as its own `String` and then `Arc<str>` | ~0.4 GB (`//src/...`) | a list is written once per section, by content; names are path-table indices; decoded listings share the list and the names |
+| stamped tree files' paths built with `join` (the copy grows by doubling); the tree memo of the TypeScript hit holds ~10^5 of them | ~0.08 GB (ts) | exact-size paths |
+
+Result (release builds, warm private cache, real `.bazelrc`, `--memory-limit=20000`). Each hit was the third run
+of its binary, and the two binaries ran back to back on the same ~/code state:
+
+| hit | main 59b528b | MEM5 |
+|---|---|---|
+| `build //src/rust/...` | 889 MB, 0.9 s | 282 MB, 0.7 s |
+| `build --config=linux_arm64 //src/rust/...` | 2,594 MB, 2.2 s | 470 MB, 1.5 s |
+| `build //src/ts/...` | 1,058 MB, 1.6 s | 880 MB, 1.5 s |
+| `build --nobuild //src/...` | 5,215 MB, 2.1 s | 1,202 MB, 1.0 s |
+
+Each hit's stdout and stderr, apart from the PERF lines and timings, are identical to the base binary's. Every
+action is still a cache hit (keys unchanged), and `BAZEL_RS_SNAPSHOT=verify` reports `verified` for arm64 rust,
+ts and `//src/...`.
+
+What remains:
+
+- **`//src/...`.** The decoded plan itself: the actions' input vectors, each chunk's own path table, the
+  dependencies and the path sets.
+- **ts.** The execution's tree memo (the npm package trees, ~200 MB live) and the allocator.
+- **The allocator.** jemalloc's default of 4 arenas per CPU (256 on the 64-CPU host) keeps memory freed by one
+  thread out of the other threads' reach. With `_RJEM_MALLOC_CONF=narenas:4` the ts hit peaks at 776 MB instead of
+  920 MB, and with `dirty_decay_ms:0` at 697 MB.
+  - This is not changed here. It is process-wide, and fewer arenas may slow the parallel analysis.

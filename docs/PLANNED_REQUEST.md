@@ -136,6 +136,16 @@ from what it lists (`InputGroup::listed_valid`: its inputs', dependencies' and e
 inputs listed), so a tampered destination fails validation instead of passing the shortcut. Verify mode
 compares the groups by value (once per pair of groups).
 
+**Path tables (format 8, MEM5, docs/MEMORY.md).** A GROUPS or NODES section is its path table (the distinct
+path byte strings, first-seen order) followed by its content, in which every path is its index. Runfiles names
+are indices into the same table, and a runfiles entry list is written once per section by content; later
+listings of an equal list are its index. Each section has its own table, so chunks still encode and decode on
+their own threads. A decoded listing shares the table's one `SharedPath`, `Arc<str>` or list, as the planner's
+values do. META, and every postcard use outside a section (verify's group comparison, incremental node
+digests), keep paths as byte strings. A hit inflates the stored PLAN section one section at a time, on the
+thread that decodes it (`codec::decode_stored`). The verify mode, and a plan whose frames do not follow its
+sections, inflate the whole plan first.
+
 ### What the encoding leaves out
 
 * An action's resolved client environment values (finalize re-resolves them on every run; they are never
