@@ -2125,6 +2125,7 @@ fn incremental_build(
         fingerprints: Default::default(),
         pruned: 0,
         relabeled: Default::default(),
+        names: Default::default(),
     };
     let reloaded: Vec<u32> = candidate
         .loaded
@@ -2221,6 +2222,7 @@ fn incremental_build(
     let dirty = incremental::dirty_labels(
         &candidate.index,
         &changed.packages,
+        &changed.names,
         &candidate.modules,
         relabel.as_ref(),
     )

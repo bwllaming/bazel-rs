@@ -124,6 +124,9 @@ pub(super) struct Tracker {
     edges: Vec<(u32, u32)>,
     edge_set: HashSet<(u32, u32)>,
     accesses: HashSet<(u32, u32)>,
+    /// (key, package, target name): the main-repository targets each
+    /// key's analysis looked up.
+    label_accesses: HashSet<(u32, u32, String)>,
     packages: Vec<PackageRecord>,
     package_ids: HashMap<PackageId, u32>,
     shared_keys: BTreeSet<u32>,
@@ -253,6 +256,9 @@ impl Tracker {
             && depth == shared_depth()
         {
             self.accesses.insert((frame, id));
+            if label.repository.is_empty() {
+                self.label_accesses.insert((frame, id, label.name.clone()));
+            }
         } else if shared() {
             self.make_global(id, || {
                 format!("{label} looked up by {}", SHARED_NAME.with(Cell::get))
@@ -527,6 +533,9 @@ impl Engine {
         }
         let mut accesses: Vec<(u32, u32)> = tracker.accesses.iter().copied().collect();
         accesses.sort_unstable();
+        let mut label_accesses: Vec<(u32, u32, String)> =
+            tracker.label_accesses.iter().cloned().collect();
+        label_accesses.sort_unstable();
         let main_root = self
             .repositories
             .root("")
@@ -584,6 +593,7 @@ impl Engine {
                 .collect(),
             edges: tracker.edges.clone(),
             accesses,
+            label_accesses,
             packages,
             roots: tracker.roots.clone(),
             shared: tracker.shared_keys.iter().copied().collect(),
@@ -860,9 +870,12 @@ pub(crate) fn fingerprint(package: &Package) -> Fingerprint {
         package.build_file,
         package.direct_loads,
     );
+    let package_digest = *blake3::hash(text.as_bytes()).as_bytes();
     let mut rules_summary = String::new();
     let mut shared_kinds = false;
+    let mut targets: Vec<(String, [u8; 16])> = Vec::new();
     for (label, rule) in package.rules.iter() {
+        let start = text.len();
         let custom = rule.custom.as_ref().map(|custom| {
             (
                 &custom.attrs,
@@ -889,6 +902,13 @@ pub(crate) fn fingerprint(package: &Package) -> Fingerprint {
             rule.call_stack,
             rule.generator,
         );
+        // The rule's own digest, for its name and each of its outputs.
+        let mut digest = [0u8; 16];
+        digest.copy_from_slice(&blake3::hash(text[start..].as_bytes()).as_bytes()[..16]);
+        targets.push((rule.label.name.clone(), digest));
+        for out in &rule.outs {
+            targets.push((out.clone(), digest));
+        }
         shared_kinds |= shared_kind(rule);
         let test_attributes = rule.native.as_ref().map(|native| {
             [
@@ -935,10 +955,13 @@ pub(crate) fn fingerprint(package: &Package) -> Fingerprint {
             custom_test_attributes,
         );
     }
+    targets.sort();
     Fingerprint {
         digest: *blake3::hash(text.as_bytes()).as_bytes(),
         summary: *blake3::hash(rules_summary.as_bytes()).as_bytes(),
         shared_kinds,
+        package: package_digest,
+        targets,
     }
 }
 

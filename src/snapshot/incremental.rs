@@ -142,7 +142,7 @@ pub struct IndexKey {
 
 /// What a package's load produced, as far as analysis and the target
 /// pattern phase can read it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fingerprint {
     /// Every rule with its load-time attributes, the exports, the package
     /// arguments and loads.
@@ -153,6 +153,13 @@ pub struct Fingerprint {
     /// The package holds a target of a kind shared computations read
     /// (package groups, toolchains, platforms, constraints, flags).
     pub shared_kinds: bool,
+    /// What the package's own arguments, exports, defaults and loads
+    /// digest to (`digest` but the rules).
+    pub package: [u8; 32],
+    /// Every rule's name and output names with the rule's digest (its
+    /// part of `digest`; 16 bytes), sorted: a change of some rules only
+    /// dirties what looked those targets up.
+    pub targets: Vec<(String, [u8; 16])>,
 }
 
 /// One package the analysis touched.
@@ -208,6 +215,9 @@ pub struct Index {
     pub edges: Vec<(u32, u32)>,
     /// (key, package) ids: the packages each key's analysis looked up.
     pub accesses: Vec<(u32, u32)>,
+    /// (key, package, target name): the main-repository targets each key's
+    /// analysis looked up (the same lookups as `accesses`).
+    pub label_accesses: Vec<(u32, u32, String)>,
     pub packages: Vec<IndexPackage>,
     /// (requested label position, key): the key each requested label's
     /// analysis began with.
@@ -1042,6 +1052,7 @@ pub fn classify(
         }
         if package
             .fingerprint
+            .as_ref()
             .is_some_and(|fingerprint| fingerprint.shared_kinds)
         {
             return Err(format!(
@@ -1149,6 +1160,41 @@ pub struct Changed {
     /// removed, renamed or retagged): the requested labels they contribute
     /// are computed again ([`relabel`]).
     pub relabeled: std::collections::BTreeSet<u32>,
+    /// Of each changed package, the target names whose rules changed, were
+    /// added or removed (`None`: the package itself changed — its
+    /// arguments, defaults, loads, or a file inside it — and every target
+    /// of it is dirty).
+    pub names: std::collections::BTreeMap<u32, Option<std::collections::BTreeSet<String>>>,
+}
+
+/// The target names whose digests differ between two fingerprints of a
+/// package (added and removed ones included).
+pub fn changed_targets(
+    before: &Fingerprint,
+    now: &Fingerprint,
+) -> std::collections::BTreeSet<String> {
+    let before: std::collections::BTreeMap<&String, &[u8; 16]> = before
+        .targets
+        .iter()
+        .map(|(name, digest)| (name, digest))
+        .collect();
+    let now_map: std::collections::BTreeMap<&String, &[u8; 16]> = now
+        .targets
+        .iter()
+        .map(|(name, digest)| (name, digest))
+        .collect();
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (name, digest) in &before {
+        if now_map.get(name) != Some(digest) {
+            names.insert((*name).clone());
+        }
+    }
+    for name in now_map.keys() {
+        if !before.contains_key(name) {
+            names.insert((*name).clone());
+        }
+    }
+    names
 }
 
 /// Compare a reloaded package with what the index recorded of it.
@@ -1170,6 +1216,7 @@ pub fn compare_package(
     let shown = format!("package //{}", package.package);
     let before = package
         .fingerprint
+        .as_ref()
         .ok_or_else(|| format!("{shown} has no recorded fingerprint"))?;
     if printed {
         return Err(format!("{shown} prints while it loads"));
@@ -1203,12 +1250,18 @@ pub fn compare_package(
         }
         changed.relabeled.insert(id);
     }
-    changed.fingerprints.insert(id, now);
     if unchanged {
         changed.pruned += 1;
     } else {
         changed.packages.insert(id);
+        // The rules alone changed: what looked them up is dirty.
+        let names = (before.package == now.package
+            && !candidate.content.contains(&id)
+            && before.package != [0; 32])
+            .then(|| changed_targets(before, &now));
+        changed.names.insert(id, names);
     }
+    changed.fingerprints.insert(id, now);
     Ok(())
 }
 
@@ -1305,6 +1358,7 @@ pub struct Dirty {
 pub fn dirty_labels(
     index: &Index,
     packages: &std::collections::BTreeSet<u32>,
+    names: &std::collections::BTreeMap<u32, Option<std::collections::BTreeSet<String>>>,
     modules: &std::collections::BTreeSet<u32>,
     relabel: Option<&Relabel>,
 ) -> Result<Dirty, String> {
@@ -1313,17 +1367,34 @@ pub fn dirty_labels(
     for (id, package) in index.packages.iter().enumerate() {
         by_package.insert((&package.repository, &package.package), id as u32);
     }
+    // A package whose rules alone changed dirties the targets named so
+    // and what looked them up; any other one all of its targets and what
+    // looked it up.
+    let whole = |package: &u32| {
+        packages.contains(package) && names.get(package).is_none_or(Option::is_none)
+    };
+    let named = |package: &u32, name: &str| {
+        names
+            .get(package)
+            .and_then(Option::as_ref)
+            .is_some_and(|names| names.contains(name))
+    };
     let mut dirty: BTreeSet<u32> = BTreeSet::new();
     for (id, key) in index.keys.iter().enumerate() {
-        if by_package
-            .get(&(key.label.repository.as_str(), key.label.package.as_str()))
-            .is_some_and(|package| packages.contains(package))
+        if let Some(package) =
+            by_package.get(&(key.label.repository.as_str(), key.label.package.as_str()))
+            && (whole(package) || named(package, &key.label.name))
         {
             dirty.insert(id as u32);
         }
     }
     for (key, package) in &index.accesses {
-        if packages.contains(package) {
+        if whole(package) {
+            dirty.insert(*key);
+        }
+    }
+    for (key, package, name) in &index.label_accesses {
+        if named(package, name) {
             dirty.insert(*key);
         }
     }
@@ -1993,7 +2064,7 @@ pub fn merge_index(
     use std::collections::{BTreeSet, HashMap};
     for (id, fingerprint) in fingerprints {
         if let Some(package) = index.packages.get_mut(*id as usize) {
-            package.fingerprint = Some(*fingerprint);
+            package.fingerprint = Some(fingerprint.clone());
         }
     }
     let Some((sub, mapped)) = sub else {
@@ -2048,6 +2119,19 @@ pub fn merge_index(
         }
     }
     index.accesses = accesses.into_iter().collect();
+    let mut label_accesses: BTreeSet<(u32, u32, String)> = index
+        .label_accesses
+        .iter()
+        .filter(|(key, _, _)| !dirty.contains(key))
+        .cloned()
+        .collect();
+    for (key, package, name) in &sub.label_accesses {
+        let key = mapped[*key as usize];
+        if dirty.contains(&key) {
+            label_accesses.insert((key, package_map[*package as usize], name.clone()));
+        }
+    }
+    index.label_accesses = label_accesses.into_iter().collect();
     // The re-analyzed keys' aspect applications are the re-analysis's.
     let mut aspects: BTreeSet<(u32, String)> = index
         .aspects
@@ -2248,6 +2332,12 @@ pub fn reshape_index(
         .iter()
         .filter(|(key, _)| alive(key))
         .map(|(key, package)| (map(*key), *package))
+        .collect();
+    index.label_accesses = index
+        .label_accesses
+        .iter()
+        .filter(|(key, _, _)| alive(key))
+        .map(|(key, package, name)| (map(*key), *package, name.clone()))
         .collect();
     index.roots = index
         .roots
@@ -3251,6 +3341,8 @@ mod tests {
                 digest: [0; 32],
                 summary: [0; 32],
                 shared_kinds: false,
+                package: [0; 32],
+                targets: Vec::new(),
             }),
             loads: Vec::new(),
         }
@@ -3393,7 +3485,14 @@ mod tests {
         let attribution = classify(&index, &recording, &[0], cache).unwrap();
         assert_eq!(attribution.bzl.iter().copied().collect::<Vec<_>>(), [0]);
         assert!(attribution.loaded.is_empty() && attribution.content.is_empty());
-        let dirty = dirty_labels(&index, &Default::default(), &attribution.modules, None).unwrap();
+        let dirty = dirty_labels(
+            &index,
+            &Default::default(),
+            &Default::default(),
+            &attribution.modules,
+            None,
+        )
+        .unwrap();
         assert_eq!(dirty.dirty.into_iter().collect::<Vec<_>>(), [0]);
         assert_eq!(dirty.labels, [label("//a:x")]);
         // A definition load entered it: refused.
@@ -3517,6 +3616,7 @@ mod tests {
             }],
             edges: vec![(0, 0)],
             accesses: vec![(0, 0)],
+            label_accesses: vec![(0, 0, "b".to_owned())],
             packages: vec![IndexPackage {
                 repository: String::new(),
                 package: "a".to_owned(),
@@ -3529,6 +3629,8 @@ mod tests {
                     digest: [2; 32],
                     summary: [3; 32],
                     shared_kinds: false,
+                    package: [5; 32],
+                    targets: vec![("b".to_owned(), [6; 16])],
                 }),
                 loads: vec![0],
             }],

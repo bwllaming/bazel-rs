@@ -938,8 +938,10 @@ pub fn same_tree_contents(old: &Path, new: &Path) -> Result<bool, String> {
             .and_then(Path::parent)
             .ok_or_else(|| format!("{} is no store tree", root.display()))?;
         let path = direct.join("manifests").join(format!("{identity}.json"));
-        let bytes = crate::observed_fs::read(&path)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+        // Unobserved: the comparison is this run's; what the trees hold
+        // is recorded by their REPO records (a manifest's stat hints are
+        // refreshed by later reuses, which must not miss).
+        let bytes = std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         parse_manifest(&bytes).ok_or_else(|| format!("{}: malformed manifest", path.display()))
     };
     let (old, new) = (manifest(old)?, manifest(new)?);

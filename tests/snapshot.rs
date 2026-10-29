@@ -4622,11 +4622,11 @@ fn incremental_analysis_splices_prunes_and_falls_back() {
     state.incr_comments = 1;
     twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
     incremental(0);
-    // An attribute of //incr:a: it and //incr_use:u are re-analyzed (and
-    // :b, its package's other target).
+    // An attribute of //incr:a: it and //incr_use:u are re-analyzed (not
+    // :b, whose rule did not change).
     state.incr_flag = 1;
     twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
-    let spliced = incremental(3);
+    let spliced = incremental(2);
     assert!(
         spliced.stderr().contains("2 actions executed"),
         "{}",
@@ -4634,16 +4634,18 @@ fn incremental_analysis_splices_prunes_and_falls_back() {
     );
     // A globbed source added, then removed; an explicit source deleted and
     // restored (the build then fails like the full analysis's).
+    // (The glob listing changes :a's sources; a file's existence the
+    // whole package.)
     twin.write("incr/srcs/new.txt", "new\n");
-    incremental(3);
+    incremental(2);
     twin.each(|root| fs::remove_file(root.join("ws/incr/srcs/new.txt")).unwrap());
     incremental(3);
-    // A target added to the package: a new requested label (it, :a, :b
-    // and //incr_use:u analyzed), its actions inserted where its analysis
-    // would have planned them.
+    // A target added to the package: a new requested label (it alone is
+    // analyzed), its actions inserted where its analysis would have
+    // planned them.
     state.toggle("incr-extra");
     twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
-    incremental(4);
+    incremental(1);
     // Fallbacks, in this process before any analysis or in a fresh one.
     state.toggle("incr-dep");
     twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
@@ -4674,8 +4676,8 @@ fn incremental_analysis_splices_prunes_and_falls_back() {
     // (a package group) falls back.
     state.incr_flag = 2;
     twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
-    // :a, :b, :extra and //incr_use:u.
-    incremental(4);
+    // :a and //incr_use:u.
+    incremental(2);
     twin.write(
         "incr_use/BUILD.bazel",
         &format!("{INCR_USE_BUILD}package_group(name = 'friends', packages = ['//incr'])\n"),
@@ -4689,12 +4691,12 @@ fn incremental_analysis_splices_prunes_and_falls_back() {
     twin.write("incr/b.txt", "b\n");
     let restored = twin.same(args, &[]);
     restored.assert_success();
-    // The added target removed again: its actions go, :a, :b and
-    // //incr_use:u are analyzed again.
+    // The added target removed again: its actions go, nothing else is
+    // analyzed again.
     twin.same(args, &[]).assert_hit();
     state.toggle("incr-extra");
     twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
-    incremental(3);
+    incremental(0);
 }
 
 /// A macro module loaded by `incr_m/BUILD.bazel` only.
@@ -4766,9 +4768,9 @@ fn incremental_analysis_of_bzl_edits() {
     // The macro's comment: its package's targets stay.
     twin.write("incr_m/macros.bzl", &incr_macros("one", true));
     incremental(0);
-    // The macro's body: its package's targets change.
+    // The macro's body: one of its package's targets changes.
     twin.write("incr_m/macros.bzl", &incr_macros("uno", true));
-    let spliced = incremental(2);
+    let spliced = incremental(1);
     assert!(
         spliced.stderr().contains("1 action executed")
             || spliced.stderr().contains("1 actions executed"),
@@ -4868,22 +4870,23 @@ fn incremental_analysis_of_dependency_changes() {
         }
         twin.same(args, &[]).assert_hit().assert_success();
     };
-    // //lib:l is planned before //ro:top's analysis begins.
-    step(ro_build(&[":x", ":y", "//lib:l"], &[], &[]), Ok(5));
+    // //lib:l is planned before //ro:top's analysis begins (:top alone
+    // changed).
+    step(ro_build(&[":x", ":y", "//lib:l"], &[], &[]), Ok(1));
     // :y's analysis begins after :x and :x2 are planned; removed again
-    // (:x2 is re-analyzed too: its actions are the re-analysis's).
-    step(ro_build(&[":x", ":y", "//lib:l"], &[], &[":x2"]), Ok(5));
-    step(ro_build(&[":x", ":y", "//lib:l"], &[], &[]), Ok(5));
+    // (:y and :top re-analyzed).
+    step(ro_build(&[":x", ":y", "//lib:l"], &[], &[":x2"]), Ok(2));
+    step(ro_build(&[":x", ":y", "//lib:l"], &[], &[]), Ok(2));
     // Removed: //lib:l's action is no longer consumed by a re-analyzed
     // one, but still needed (//lib:l is requested).
-    step(ro_build(&[":x", ":y"], &[], &[]), Ok(5));
+    step(ro_build(&[":x", ":y"], &[], &[]), Ok(1));
     // Reordered: :y and :y2 would be planned first.
     step(
         ro_build(&[":y", ":x"], &[], &[]),
         Err("dependencies of //ro:top changed"),
     );
     // Now :y2 is planned before :x's analysis begins, :x2 after :y's.
-    step(ro_build(&[":y", ":x"], &[":y2"], &[]), Ok(5));
+    step(ro_build(&[":y", ":x"], &[":y2"], &[]), Ok(2));
     step(
         ro_build(&[":y", ":x"], &[":y2"], &[":x2"]),
         Err("dependencies of //ro:y changed"),
@@ -4972,9 +4975,10 @@ fn incremental_analysis_of_test_and_run() {
     incremental(all_tests, 2);
     incremental(one_test, 1);
     incremental(run, 1);
-    // The tests' own package: every requested target in it.
+    // The tests' own package: the requested targets whose rules changed
+    // (:t and :tool).
     twin.write("incr_t/BUILD.bazel", &incr_t_build(1, 0));
-    incremental(all_tests, 3);
+    incremental(all_tests, 2);
     incremental(one_test, 1);
     incremental(run, 1);
     // A comment: the saved plan stands.
