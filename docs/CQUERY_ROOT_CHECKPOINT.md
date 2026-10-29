@@ -78,6 +78,36 @@ the respective ceiling. Zero declines overlap; values cannot raise the ceiling.
 Invalid values fail before current demand. They affect only lookup admission, not
 semantic inputs or namespace selection. Unknown current RSS also declines.
 
+With `BAZEL_RS_SNAPSHOT_EXPLAIN`, a budget refusal retains the exact existing
+prefix and appends measurements, for example:
+
+```text
+bazel-rs-cquery-root: declined: current work exceeds lookup admission budget; first_failed=elapsed_exceeded all_supported_failed=[elapsed_exceeded,nodes_exceeded,rss_exceeded] elapsed_ns=30000000001 max_ms=30000 nodes=50001 max_nodes=50000 rss_bytes=1073741825 max_rss_bytes=1073741824
+```
+
+`first_failed` preserves the original short-circuit predicate order:
+`max_ms_zero`, `max_nodes_zero`, `max_rss_bytes_zero`, `elapsed_exceeded`,
+`nodes_exceeded`, then `rss_unknown` or `rss_exceeded`.
+`all_supported_failed` lists every failing criterion supported by the retained
+values in that same order. Thus a zero node limit and positive actual nodes can
+report both `max_nodes_zero` and `nodes_exceeded`. No unmeasured elapsed failure
+is inferred. Unknown RSS is distinct from a measured value above its ceiling.
+
+The existing single RSS sample is taken before budget evaluation, including
+when a zero control refuses admission. If all three controls are positive,
+elapsed is captured once at the original comparison point, after that RSS read.
+The same full `Duration` decides admission and supplies integer `elapsed_ns`;
+there is no millisecond rounding. Zero controls still skip the clock and report
+`elapsed_ns=not_evaluated`. `rss_bytes=unknown` means the RSS sample was unavailable.
+Effective limits are always reported as `max_ms`, `max_nodes`, `max_rss_bytes`;
+`nodes` remains the actual combined ConfiguredNodes + Plan count.
+
+Formatting happens only after refusal under the existing explain switch, through
+`snapshot::diag` outside captured EVENTS. Earlier serial/quiescence and queued-warning
+guards still win, with their unchanged reasons and no budget measurements. Success
+tracing is unchanged. These diagnostics do not change admission, extend its timer
+to pattern loading, or reconstruct measurements missing from older failed runs.
+
 **These bounds do not limit the cost of completing a root.** One root can contain
 most of the graph. The engine finishes whatever that root normally needs, checks
 admission at the fixed cut, and continues normally on decline. It does not discard

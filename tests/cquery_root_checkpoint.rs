@@ -240,19 +240,102 @@ fn lower_budgets_and_parallel_decline_without_restart_or_history_decision() {
         ("BAZEL_RS_CQUERY_ROOT_MAX_MS", "0"),
         ("BAZEL_RS_CQUERY_ROOT_MAX_NODES", "0"),
         ("BAZEL_RS_CQUERY_ROOT_MAX_RSS_MB", "0"),
+        ("combined_zero", "0"),
+        ("BAZEL_RS_CQUERY_ROOT_MAX_NODES", "1"),
+        ("BAZEL_RS_CQUERY_ROOT_MAX_RSS_MB", "1"),
         ("parallel", "4"),
+        ("parallel_zero", "4"),
     ] {
         let before = f.count("local");
         let mut c = f.command("deps(//:a + //:z)");
-        if control == "parallel" {
+        if control == "combined_zero" || control == "parallel_zero" {
+            c.env("BAZEL_RS_CQUERY_ROOT_MAX_MS", "0")
+                .env("BAZEL_RS_CQUERY_ROOT_MAX_NODES", "0")
+                .env("BAZEL_RS_CQUERY_ROOT_MAX_RSS_MB", "0");
+        }
+        if control.starts_with("parallel") {
             c.arg("--loading_phase_threads=4");
-        } else {
+        } else if control != "combined_zero" {
             c.env(control, value);
         }
         let out = c.output().unwrap();
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success(), "{err}");
         assert!(err.contains("cquery-root: declined"), "{err}");
+        assert_eq!(err.matches("cquery-root: declined").count(), 1, "{err}");
+        if control.starts_with("parallel") {
+            assert!(
+                err.lines().any(|line| line
+                    == "bazel-rs-cquery-root: declined: requires already-serial quiescent sources"),
+                "{err}"
+            );
+            assert!(
+                !err.contains("first_failed=") && !err.contains("elapsed_ns="),
+                "{err}"
+            );
+        } else {
+            let prefix =
+                "bazel-rs-cquery-root: declined: current work exceeds lookup admission budget; ";
+            let detail = err
+                .lines()
+                .find_map(|line| line.strip_prefix(prefix))
+                .expect("old generic prefix plus retained details");
+            let fields: std::collections::BTreeMap<_, _> = detail
+                .split_whitespace()
+                .map(|field| field.split_once('=').expect("key=value field"))
+                .collect();
+            assert_eq!(fields.len(), 8, "{detail}");
+            let max_ms = if control == "BAZEL_RS_CQUERY_ROOT_MAX_MS" || control == "combined_zero" {
+                "0"
+            } else {
+                "30000"
+            };
+            let max_nodes = if control == "combined_zero" {
+                "0"
+            } else if control == "BAZEL_RS_CQUERY_ROOT_MAX_NODES" {
+                value
+            } else {
+                "50000"
+            };
+            let max_rss = if control == "combined_zero"
+                || control == "BAZEL_RS_CQUERY_ROOT_MAX_RSS_MB" && value == "0"
+            {
+                "0"
+            } else if control == "BAZEL_RS_CQUERY_ROOT_MAX_RSS_MB" {
+                "1048576"
+            } else {
+                "1073741824"
+            };
+            assert_eq!(fields["max_ms"], max_ms);
+            assert_eq!(fields["max_nodes"], max_nodes);
+            assert_eq!(fields["max_rss_bytes"], max_rss);
+            assert!(fields["nodes"].parse::<usize>().unwrap() > 1);
+            // On Linux the existing RSS read is retained even for zero limits.
+            assert!(fields["rss_bytes"].parse::<u64>().unwrap() > 1 << 20);
+            if value == "0" {
+                assert_eq!(fields["elapsed_ns"], "not_evaluated");
+            } else {
+                assert!(fields["elapsed_ns"].parse::<u128>().unwrap() > 0);
+            }
+            let (first, all) = match (control, value) {
+                ("BAZEL_RS_CQUERY_ROOT_MAX_MS", _) => ("max_ms_zero", "[max_ms_zero]"),
+                ("BAZEL_RS_CQUERY_ROOT_MAX_NODES", "0") => {
+                    ("max_nodes_zero", "[max_nodes_zero,nodes_exceeded]")
+                }
+                ("BAZEL_RS_CQUERY_ROOT_MAX_RSS_MB", "0") => {
+                    ("max_rss_bytes_zero", "[max_rss_bytes_zero,rss_exceeded]")
+                }
+                ("combined_zero", _) => (
+                    "max_ms_zero",
+                    "[max_ms_zero,max_nodes_zero,max_rss_bytes_zero,nodes_exceeded,rss_exceeded]",
+                ),
+                ("BAZEL_RS_CQUERY_ROOT_MAX_NODES", _) => ("nodes_exceeded", "[nodes_exceeded]"),
+                ("BAZEL_RS_CQUERY_ROOT_MAX_RSS_MB", _) => ("rss_exceeded", "[rss_exceeded]"),
+                _ => unreachable!(),
+            };
+            assert_eq!(fields["first_failed"], first, "{detail}");
+            assert_eq!(fields["all_supported_failed"], all, "{detail}");
+        }
         assert!(
             !err.contains("cquery-snapshot: hit")
                 && !err.contains("cquery-snapshot: miss")
@@ -261,9 +344,91 @@ fn lower_budgets_and_parallel_decline_without_restart_or_history_decision() {
         );
         assert_eq!(f.count("local"), before + 1);
         let fresh = c.env("BAZEL_RS_SNAPSHOT", "off").output().unwrap();
+        assert!(
+            fresh.status.success(),
+            "{}",
+            String::from_utf8_lossy(&fresh.stderr)
+        );
+        assert_eq!(f.count("local"), before + 2);
         assert_eq!(out.stdout, fresh.stdout);
         assert_eq!(diagnostics(&out), diagnostics(&fresh));
     }
+}
+
+#[test]
+fn budget_explanation_is_silent_when_unset_and_never_contaminates_saved_events() {
+    use bazel_rs::snapshot::format::{self, Header, Section};
+    let f = Fixture::new();
+    let query = "deps(//:a + //:z)";
+    let cold = f
+        .command(query)
+        .env_remove("BAZEL_RS_SNAPSHOT_EXPLAIN")
+        .output()
+        .unwrap();
+    assert!(
+        cold.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cold.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&cold.stderr).contains("bazel-rs-cquery-"));
+    let snapshots = f.snapshots();
+    assert_eq!(snapshots.len(), 1);
+    let saved = fs::read(&snapshots[0]).unwrap();
+    let header = Header::decode(&saved, saved.len() as u64).unwrap();
+    let slot = header.slot(Section::Events).unwrap();
+    let events =
+        format::decode_events(&saved[slot.offset as usize..(slot.offset + slot.len) as usize])
+            .unwrap();
+    assert!(String::from_utf8_lossy(&events).contains("PROVIDER-a-A"));
+    for text in [
+        "bazel-rs-cquery-",
+        "first_failed=",
+        "all_supported_failed=",
+        "elapsed_ns=",
+        "rss_bytes=",
+    ] {
+        assert!(!String::from_utf8_lossy(&events).contains(text));
+    }
+    for explain in [false, true] {
+        let before = f.count("local");
+        let mut command = f.command(query);
+        command.env("BAZEL_RS_CQUERY_ROOT_MAX_MS", "0");
+        if !explain {
+            command.env_remove("BAZEL_RS_SNAPSHOT_EXPLAIN");
+        }
+        let out = command.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(err.contains("first_failed=max_ms_zero"), explain, "{err}");
+        if !explain {
+            assert!(!err.contains("bazel-rs-cquery-"), "{err}");
+        }
+        assert!(
+            !err.contains("cquery-snapshot: hit")
+                && !err.contains("cquery-snapshot: miss")
+                && !err.contains("cquery-root: cut")
+        );
+        assert_eq!(out.stdout, cold.stdout);
+        assert_eq!(diagnostics(&out), diagnostics(&cold));
+        assert_eq!(f.count("local"), before + 1);
+        assert_eq!(f.snapshots(), snapshots);
+        assert_eq!(
+            fs::read(&snapshots[0]).unwrap(),
+            saved,
+            "refusal must not change saved EVENTS"
+        );
+    }
+    let before = f.count("local");
+    let hit = f.run("hit");
+    assert_eq!(hit.stdout, cold.stdout);
+    assert_eq!(diagnostics(&hit), diagnostics(&cold));
+    assert!(!String::from_utf8_lossy(&hit.stderr).contains("first_failed="));
+    assert_eq!(f.count("local"), before + 1);
+    assert_eq!(fs::read(&snapshots[0]).unwrap(), saved);
 }
 
 #[test]
@@ -500,11 +665,25 @@ fn queued_prefix_warnings_decline_without_early_flush_or_replay() {
         .env("BAZEL_RS_SNAPSHOT", "off")
         .output()
         .unwrap();
-    for _ in 0..2 {
-        let out = f.command("deps(//:a + //:z)").output().unwrap();
+    for zero_budget in [false, true] {
+        let before = f.count("local");
+        let mut command = f.command("deps(//:a + //:z)");
+        if zero_budget {
+            command
+                .env("BAZEL_RS_CQUERY_ROOT_MAX_MS", "0")
+                .env("BAZEL_RS_CQUERY_ROOT_MAX_NODES", "0")
+                .env("BAZEL_RS_CQUERY_ROOT_MAX_RSS_MB", "0");
+        }
+        let out = command.output().unwrap();
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success(), "{err}");
         assert!(err.contains("declined: queued diagnostics"), "{err}");
+        assert!(err.lines().any(|line| line == "bazel-rs-cquery-root: declined: queued diagnostics still belong to ordinary command completion"), "{err}");
+        assert!(
+            !err.contains("first_failed=") && !err.contains("elapsed_ns="),
+            "{err}"
+        );
+        assert_eq!(f.count("local"), before + 1);
         assert!(!err.contains("cquery-snapshot: miss") && !err.contains("cquery-snapshot: hit"));
         assert_eq!(out.stdout, fresh.stdout);
         assert_eq!(diagnostics(&out), diagnostics(&fresh));
