@@ -976,21 +976,7 @@ impl Serialize for PathRef<'_> {
         let bytes = self.0.as_os_str().as_bytes();
         // In a GROUPS or NODES section ([`to_section`]): the path's index
         // in the section's table.
-        let index = ENCODING.with(|table| {
-            let mut table = table.borrow_mut();
-            let table = table.as_mut()?;
-            Some(match table.positions.get(bytes) {
-                Some(&index) => index,
-                None => {
-                    let index = u32::try_from(table.entries.len())
-                        .expect("fewer than 2^32 paths in one section");
-                    table.entries.push(bytes.into());
-                    table.positions.insert(bytes.into(), index);
-                    index
-                }
-            })
-        });
-        match index {
+        match table_index(bytes) {
             Some(index) => serializer.serialize_u32(index),
             None => serializer.serialize_bytes(bytes),
         }
@@ -1044,17 +1030,67 @@ impl Bytes {
 /// The paths of one GROUPS or NODES section, each once, in first-seen
 /// order while the section encodes (thread-local: chunks encode on several
 /// threads, each with its own table).
+/// The section's runfiles entry lists likewise: each distinct list once
+/// (by content), later listings as its index.
 #[derive(Default)]
 struct PathTable {
     positions: crate::fast_hash::FxHashMap<Box<[u8]>, u32>,
     entries: Vec<Box<[u8]>>,
+    /// The lists written so far (kept alive: their addresses stay theirs).
+    lists: Vec<crate::action::RunfilesEntries>,
+    list_positions: crate::fast_hash::FxHashMap<usize, u32>,
+    list_hashes: crate::fast_hash::FxHashMap<u64, Vec<u32>>,
+    kept: Vec<crate::action::RunfilesEntries>,
+}
+
+/// The decoded tables of one section.
+struct DecodedTable {
+    paths: Vec<SharedPath>,
+    /// Runfiles names decoded from the path table, each once.
+    names: Vec<Option<Arc<str>>>,
+    lists: Vec<crate::action::RunfilesEntries>,
 }
 
 thread_local! {
     /// The table of the section this thread encodes, if any.
     static ENCODING: std::cell::RefCell<Option<PathTable>> = const { std::cell::RefCell::new(None) };
     /// The decoded table of the section this thread decodes, if any.
-    static DECODING: std::cell::RefCell<Option<Vec<SharedPath>>> = const { std::cell::RefCell::new(None) };
+    static DECODING: std::cell::RefCell<Option<DecodedTable>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The index of `bytes` in the path table of the section this thread
+/// encodes (added if new), or `None` outside a section.
+fn table_index(bytes: &[u8]) -> Option<u32> {
+    ENCODING.with(|table| {
+        let mut table = table.borrow_mut();
+        let table = table.as_mut()?;
+        Some(match table.positions.get(bytes) {
+            Some(&index) => index,
+            None => {
+                let index = u32::try_from(table.entries.len())
+                    .expect("fewer than 2^32 paths in one section");
+                table.entries.push(bytes.into());
+                table.positions.insert(bytes.into(), index);
+                index
+            }
+        })
+    })
+}
+
+/// Whether this thread decodes a section.
+fn decoding() -> bool {
+    DECODING.with(|table| table.borrow().is_some())
+}
+
+/// The decoded table entry `index` as `make` maps it.
+fn decoded<T, E: serde::de::Error>(
+    index: u32,
+    what: &str,
+    make: impl FnOnce(&mut DecodedTable, usize) -> Option<T>,
+) -> Result<T, E> {
+    DECODING
+        .with(|table| make(table.borrow_mut().as_mut()?, index as usize))
+        .ok_or_else(|| E::custom(format!("{what} {index} is not in the section's table")))
 }
 
 /// Clears this thread's table when the section is done (or its encoder or
@@ -1089,10 +1125,15 @@ fn to_section<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, postcard::Err
 /// as in the planner, crate::shared_path).
 fn from_section<T: serde::de::DeserializeOwned>(section: &[u8]) -> Result<T, postcard::Error> {
     let (entries, body) = postcard::take_from_bytes::<Vec<Bytes>>(section)?;
-    let table: Vec<SharedPath> = entries
+    let paths: Vec<SharedPath> = entries
         .into_iter()
         .map(|entry| SharedPath::from(entry.path()))
         .collect();
+    let table = DecodedTable {
+        names: vec![None; paths.len()],
+        paths,
+        lists: Vec::new(),
+    };
     let _scope = TableScope;
     DECODING.with(|slot| *slot.borrow_mut() = Some(table));
     postcard::from_bytes(body)
@@ -1107,20 +1148,12 @@ pub(crate) enum PathIn {
 
 impl<'de> Deserialize<'de> for PathIn {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let tabled = DECODING.with(|table| table.borrow().is_some());
-        if !tabled {
+        if !decoding() {
             return Bytes::deserialize(deserializer).map(|bytes| PathIn::Owned(bytes.0));
         }
         let index = u32::deserialize(deserializer)?;
-        DECODING.with(|table| {
-            table
-                .borrow()
-                .as_ref()
-                .and_then(|table| table.get(index as usize).cloned())
-                .map(PathIn::Shared)
-                .ok_or_else(|| {
-                    serde::de::Error::custom(format!("path {index} is not in the section's table"))
-                })
+        decoded(index, "path", |table, index| {
+            table.paths.get(index).cloned().map(PathIn::Shared)
         })
     }
 }
@@ -1277,29 +1310,161 @@ pub(crate) mod path_contents {
 }
 
 /// `Vec<(String, Option<PathBuf>)>` (runfiles entries) with raw-byte paths.
+/// In a section ([`to_section`], MEM5) a list is written once, by content
+/// (an executable's manifest and tree list the same entries; the planner
+/// shares one list between them, crate::action::RunfilesEntries), later
+/// listings as its index, and each name is an index in the path table;
+/// decoded, the listings share one list and every name one `Arc<str>`.
 pub(crate) mod entries {
     use super::*;
+    use crate::action::RunfilesEntries;
+    use std::hash::Hasher;
+
+    /// A name in the section's path table.
+    struct NameRef<'a>(&'a str);
+
+    impl Serialize for NameRef<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let index = table_index(self.0.as_bytes()).ok_or_else(|| {
+                S::Error::custom("a runfiles name outside a section has no table")
+            })?;
+            serializer.serialize_u32(index)
+        }
+    }
+
+    struct NameIn(Arc<str>);
+
+    impl<'de> Deserialize<'de> for NameIn {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            let index = u32::deserialize(deserializer)?;
+            let name = decoded(index, "name", |table, index| {
+                let slot = table.names.get_mut(index)?;
+                if slot.is_none() {
+                    let bytes = table.paths[index].as_os_str().as_bytes();
+                    *slot = Some(Arc::from(std::str::from_utf8(bytes).ok()?));
+                }
+                slot.clone()
+            })?;
+            Ok(NameIn(name))
+        }
+    }
+
+    #[derive(Serialize)]
+    enum ListOut<'a> {
+        New(Vec<(NameRef<'a>, Option<PathRef<'a>>)>),
+        Seen(u32),
+    }
+
+    #[derive(Deserialize)]
+    enum ListIn {
+        New(Vec<(NameIn, Option<PathIn>)>),
+        Seen(u32),
+    }
+
+    fn content_hash(value: &RunfilesEntries) -> u64 {
+        let mut hasher = crate::fast_hash::FxHasher::default();
+        hasher.write_usize(value.len());
+        for (name, path) in value.iter() {
+            hasher.write(name.as_bytes());
+            hasher.write_u8(0xff);
+            match path {
+                Some(path) => hasher.write(path.as_os_str().as_bytes()),
+                None => hasher.write_u8(0xfe),
+            }
+            hasher.write_u8(0xff);
+        }
+        hasher.finish()
+    }
+
+    /// The index of an equal list already written in this section, else
+    /// `None` (and `value` is recorded as the next one).
+    fn seen(value: &RunfilesEntries) -> Option<u32> {
+        ENCODING.with(|table| {
+            let mut table = table.borrow_mut();
+            let table = table.as_mut().expect("in a section");
+            let pointer = Arc::as_ptr(value) as *const u8 as usize;
+            if let Some(&index) = table.list_positions.get(&pointer) {
+                return Some(index);
+            }
+            let hash = content_hash(value);
+            let equal = table.list_hashes.get(&hash).and_then(|candidates| {
+                candidates
+                    .iter()
+                    .copied()
+                    .find(|&index| *table.lists[index as usize] == **value)
+            });
+            // Every list whose address is remembered is kept alive by the
+            // table (`lists` or `kept`), so the address stays that list's.
+            match equal {
+                Some(index) => {
+                    table.kept.push(Arc::clone(value));
+                    table.list_positions.insert(pointer, index);
+                    Some(index)
+                }
+                None => {
+                    let index = u32::try_from(table.lists.len())
+                        .expect("fewer than 2^32 runfiles lists in one section");
+                    table.lists.push(Arc::clone(value));
+                    table.list_hashes.entry(hash).or_default().push(index);
+                    table.list_positions.insert(pointer, index);
+                    None
+                }
+            }
+        })
+    }
 
     pub(crate) fn serialize<S: Serializer>(
-        value: &crate::action::RunfilesEntries,
+        value: &RunfilesEntries,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        serializer.collect_seq(
-            value
-                .iter()
-                .map(|(name, path)| (&**name, path.as_deref().map(PathRef))),
-        )
+        let tabled = ENCODING.with(|table| table.borrow().is_some());
+        if !tabled {
+            return serializer.collect_seq(
+                value
+                    .iter()
+                    .map(|(name, path)| (&**name, path.as_deref().map(PathRef))),
+            );
+        }
+        match seen(value) {
+            Some(index) => ListOut::Seen(index),
+            None => ListOut::New(
+                value
+                    .iter()
+                    .map(|(name, path)| (NameRef(name), path.as_deref().map(PathRef)))
+                    .collect(),
+            ),
+        }
+        .serialize(serializer)
     }
 
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
-    ) -> Result<crate::action::RunfilesEntries, D::Error> {
-        Vec::<(String, Option<PathIn>)>::deserialize(deserializer).map(|value| {
-            value
-                .into_iter()
-                .map(|(name, path)| (name.into(), path.map(SharedPath::from_path_in)))
-                .collect()
-        })
+    ) -> Result<RunfilesEntries, D::Error> {
+        if !decoding() {
+            return Vec::<(String, Option<PathIn>)>::deserialize(deserializer).map(|value| {
+                value
+                    .into_iter()
+                    .map(|(name, path)| (name.into(), path.map(SharedPath::from_path_in)))
+                    .collect()
+            });
+        }
+        match ListIn::deserialize(deserializer)? {
+            ListIn::New(value) => {
+                let list: RunfilesEntries = value
+                    .into_iter()
+                    .map(|(name, path)| (name.0, path.map(SharedPath::from_path_in)))
+                    .collect();
+                DECODING.with(|table| {
+                    if let Some(table) = table.borrow_mut().as_mut() {
+                        table.lists.push(Arc::clone(&list));
+                    }
+                });
+                Ok(list)
+            }
+            ListIn::Seen(index) => decoded(index, "runfiles list", |table, index| {
+                table.lists.get(index).cloned()
+            }),
+        }
     }
 }
 
@@ -2354,6 +2519,83 @@ mod tests {
         assert_eq!(table_of_one, [1, 1, b'a', 1, 0]);
         *table_of_one.last_mut().unwrap() = 1;
         assert!(from_section::<Vec<PathIn>>(&table_of_one).is_err());
+    }
+
+    /// MEM5: in a section a runfiles entry list is written once by content
+    /// (the same list, or an equal one, again is its index) and its names
+    /// are path-table indices; decoded, the listings share one list and
+    /// each name one allocation.
+    #[test]
+    fn runfiles_lists_are_written_once_per_section() {
+        let entries = |tag: &str| -> crate::action::RunfilesEntries {
+            vec![
+                ("_main/\u{e9}name".into(), Some(raw(b"pkg/\xffa").into())),
+                (format!("_main/{tag}").into(), None),
+            ]
+            .into()
+        };
+        let shared = entries("same");
+        let transform = |id: &str, transform: Transform| PlannedAction {
+            action: Action {
+                id: id.into(),
+                outputs: vec![PathBuf::from(format!("bazel-out/{id}"))],
+                extra: ActionExtra {
+                    transform: Some(transform),
+                    ..ActionExtra::default()
+                },
+                ..Action::default()
+            },
+            dependencies: Vec::new(),
+            deferred: None,
+            groups: Vec::new(),
+        };
+        let manifest = |id: &str, entries: crate::action::RunfilesEntries| {
+            transform(id, Transform::RunfilesManifest { entries })
+        };
+        let tree = |id: &str, entries: crate::action::RunfilesEntries| {
+            transform(
+                id,
+                Transform::RunfilesTree {
+                    entries,
+                    manifest: "bazel-out/x.runfiles_manifest".into(),
+                    executable: None,
+                    create: true,
+                },
+            )
+        };
+        let nodes = vec![
+            manifest("m1", Arc::clone(&shared)),
+            tree("t1", Arc::clone(&shared)),
+            manifest("m2", entries("same")),
+            manifest("m3", entries("other")),
+        ];
+        let bytes = encode(&with_nodes(nodes)).unwrap();
+        let count = |needle: &[u8]| {
+            bytes
+                .windows(needle.len())
+                .filter(|window| *window == needle)
+                .count()
+        };
+        assert_eq!(count("\u{e9}name".as_bytes()), 1);
+        assert_eq!((count(b"_main/same"), count(b"_main/other")), (1, 1));
+        let decoded = decode(&bytes).unwrap();
+        assert_eq!(encode(&decoded).unwrap(), bytes);
+        let list = |index: usize| match &decoded.nodes[index].action.extra.transform {
+            Some(Transform::RunfilesManifest { entries })
+            | Some(Transform::RunfilesTree { entries, .. }) => Arc::clone(entries),
+            other => panic!("{other:?}"),
+        };
+        assert!(Arc::ptr_eq(&list(0), &list(1)) && Arc::ptr_eq(&list(0), &list(2)));
+        assert_eq!(list(0), shared);
+        assert_eq!(list(3), entries("other"));
+        assert!(Arc::ptr_eq(&list(0)[0].0, &list(3)[0].0));
+        // Outside a section the list is its entries, as before.
+        let plain = postcard::to_stdvec(&manifest("m", Arc::clone(&shared))).unwrap();
+        let back: PlannedAction = postcard::from_bytes(&plain).unwrap();
+        assert!(matches!(
+            back.action.extra.transform,
+            Some(Transform::RunfilesManifest { entries }) if entries == shared
+        ));
     }
 
     /// MEM5: a stored plan decodes section by section from its frames, to
