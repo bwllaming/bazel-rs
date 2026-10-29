@@ -4077,9 +4077,10 @@ fn fuzz_command(
             "//incr_use/...".into(),
             "//incr_m/...".into(),
         ],
+        // Two tests: their outputs would print in completion order.
         14 => vec![
             "test".into(),
-            "--test_output=all".into(),
+            "--test_output=errors".into(),
             "//incr_t:all".into(),
         ],
         15 => vec![
@@ -4909,7 +4910,8 @@ fn incremental_analysis_of_test_and_run() {
     twin.write("incr/BUILD.bazel", &fuzz_incr_build(&state));
     twin.write("incr_t/BUILD.bazel", &incr_t_build(0, 0));
     let commands: [&[&str]; 3] = [
-        &["test", "--test_output=all", "//incr_t:all"],
+        // Two tests: `all` would print their outputs in completion order.
+        &["test", "--test_output=errors", "//incr_t:all"],
         &["test", "--test_output=all", "//incr_t:t"],
         &[
             "run",
