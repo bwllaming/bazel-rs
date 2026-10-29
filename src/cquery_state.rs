@@ -18,6 +18,8 @@ pub fn root_checkpoint_budget() -> Result<Option<Budget>, String> {
         return Ok(None);
     }
     let lower = |name: &str, ceiling: u64| -> Result<u64, String> {
+        // snapshot-unrecorded: lower-only lookup-overlap admission; never a
+        // semantic input or authority to choose a different root/demand.
         let Some(value) = std::env::var_os(name) else {
             return Ok(ceiling);
         };
