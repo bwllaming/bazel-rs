@@ -2,11 +2,45 @@
 //! replay and saved diagnostics. An explicit native opt-in selects current
 //! ordinary loading in a separate analysis namespace; the paths never mix.
 use crate::engine::cquery::Graph;
+use crate::engine::root_checkpoint::{Budget, RootCut};
 use crate::snapshot::{self, format, key, store};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 pub const CURRENT_LOADING_ENV: &str = "BAZEL_RS_CQUERY_CURRENT_LOADING";
+pub const ROOT_CHECKPOINT_ENV: &str = "BAZEL_RS_CQUERY_ROOT_CHECKPOINT";
+
+pub fn root_checkpoint_budget() -> Result<Option<Budget>, String> {
+    // snapshot-unrecorded: native admission/profile controls, not semantic inputs.
+    let enabled = parse_current_loading(std::env::var_os(ROOT_CHECKPOINT_ENV).as_deref())
+        .map_err(|error| error.replace(CURRENT_LOADING_ENV, ROOT_CHECKPOINT_ENV))?;
+    if !enabled {
+        return Ok(None);
+    }
+    let lower = |name: &str, ceiling: u64| -> Result<u64, String> {
+        let Some(value) = std::env::var_os(name) else {
+            return Ok(ceiling);
+        };
+        value
+            .to_str()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value <= ceiling)
+            .ok_or_else(|| format!("{name} must be an integer from 0 through {ceiling}"))
+    };
+    let defaults = Budget::default();
+    Ok(Some(Budget {
+        millis: lower("BAZEL_RS_CQUERY_ROOT_MAX_MS", defaults.millis)?,
+        nodes: lower("BAZEL_RS_CQUERY_ROOT_MAX_NODES", defaults.nodes as u64)? as usize,
+        rss_mb: lower("BAZEL_RS_CQUERY_ROOT_MAX_RSS_MB", defaults.rss_mb)?,
+    }))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Profile {
+    Default,
+    Patterns,
+    Root,
+}
 
 pub fn current_loading_enabled() -> Result<bool, String> {
     // snapshot-unrecorded: native profile selector, encoded in the cquery key.
@@ -43,6 +77,8 @@ pub struct Session {
     current_loading: bool,
     prefix_boundary_owned: bool,
     verify_suffix: Option<Vec<u8>>,
+    profile: Profile,
+    root_cut: Option<RootCut>,
 }
 
 pub struct Started {
@@ -76,7 +112,7 @@ pub fn start(
     replay: snapshot::hit::ReplayInputs,
     publication_repositories: crate::repository_publication::Factory<'_>,
 ) -> Result<Started, String> {
-    let Some((key, mode)) = analysis_key(&inputs, false) else {
+    let Some((key, mode)) = analysis_key(&inputs, Profile::Default) else {
         return Ok(Started {
             hit: None,
             session: None,
@@ -107,7 +143,7 @@ pub fn start(
     };
     Ok(Started {
         hit: None,
-        session: open_session(inputs.cache, key, replay, mode, false, verify),
+        session: open_session(inputs.cache, key, replay, mode, Profile::Default, verify),
     })
 }
 
@@ -117,16 +153,39 @@ pub fn begin(
     inputs: key::Inputs<'_>,
     replay: snapshot::hit::ReplayInputs,
 ) -> Result<Option<Session>, String> {
-    let Some((key, mode)) = analysis_key(&inputs, true) else {
+    let Some((key, mode)) = analysis_key(&inputs, Profile::Patterns) else {
         return Ok(None);
     };
-    Ok(open_session(inputs.cache, key, replay, mode, true, None))
+    Ok(open_session(
+        inputs.cache,
+        key,
+        replay,
+        mode,
+        Profile::Patterns,
+        None,
+    ))
 }
 
-fn analysis_key(
-    inputs: &key::Inputs<'_>,
-    current_loading: bool,
-) -> Option<(key::Key, snapshot::Mode)> {
+/// Root mode opens the same observation/capture window, but performs NO pattern
+/// lookup. Capture remains prefix-owned while configured phase1 is live.
+pub fn begin_root(
+    inputs: key::Inputs<'_>,
+    replay: snapshot::hit::ReplayInputs,
+) -> Result<Option<Session>, String> {
+    let Some((key, mode)) = analysis_key(&inputs, Profile::Root) else {
+        return Ok(None);
+    };
+    Ok(open_session(
+        inputs.cache,
+        key,
+        replay,
+        mode,
+        Profile::Root,
+        None,
+    ))
+}
+
+fn analysis_key(inputs: &key::Inputs<'_>, profile: Profile) -> Option<(key::Key, snapshot::Mode)> {
     let mode = snapshot::Mode::from_env();
     if matches!(mode, snapshot::Mode::Off | snapshot::Mode::Record) || key::test_hook().is_some() {
         return None;
@@ -142,10 +201,10 @@ fn analysis_key(
         .cloned()
         .collect::<Vec<_>>();
     let filtered = key::Inputs {
-        command: if current_loading {
-            "cquery-graph-current-loading-v2"
-        } else {
-            "cquery-graph-v2"
+        command: match profile {
+            Profile::Root => "cquery-graph-registered-root-v1",
+            Profile::Patterns => "cquery-graph-current-loading-v2",
+            Profile::Default => "cquery-graph-v2",
         },
         options: &options,
         ..*inputs
@@ -159,7 +218,7 @@ fn open_session(
     key: key::Key,
     replay: snapshot::hit::ReplayInputs,
     mode: snapshot::Mode,
-    current_loading: bool,
+    profile: Profile,
     verify: Option<(Graph, store::Reader)>,
 ) -> Option<Session> {
     if !crate::observed_fs::open_window() {
@@ -175,7 +234,9 @@ fn open_session(
         prefix: None,
         replay,
         verify_mode: mode == snapshot::Mode::Verify,
-        current_loading,
+        current_loading: profile != Profile::Default,
+        profile,
+        root_cut: None,
         prefix_boundary_owned: false,
         verify_suffix: None,
     })
@@ -184,7 +245,11 @@ fn open_session(
 #[derive(Clone, Copy)]
 enum Validation<'a> {
     Ordinary(crate::repository_publication::Factory<'a>),
-    Current(&'a crate::repository::CurrentRefresh, &'a [u8]),
+    Current(
+        &'a crate::repository::CurrentRefresh,
+        &'a [u8],
+        Option<RootCut>,
+    ),
 }
 
 fn read(
@@ -198,8 +263,8 @@ fn read(
         let result = candidate.and_then(|reader| {
             match validation {
                 Validation::Ordinary(factory) => read_ordinary_candidate(&reader, replay, factory),
-                Validation::Current(current, prefix) => {
-                    read_candidate(&reader, replay, current, prefix)
+                Validation::Current(current, prefix, cut) => {
+                    read_candidate(&reader, replay, current, prefix, cut)
                 }
             }
             .map(|(graph, events)| (graph, reader, events))
@@ -224,6 +289,7 @@ fn read_candidate(
     replay: &snapshot::hit::ReplayInputs,
     current: &crate::repository::CurrentRefresh,
     current_prefix: &[u8],
+    root_cut: Option<RootCut>,
 ) -> Result<(Graph, Vec<u8>), String> {
     let _version = history::section(reader, format::Section::Stats)?;
     let mut inputs = format::decode_inputs(&history::section(reader, format::Section::Inputs)?)?;
@@ -231,7 +297,10 @@ fn read_candidate(
         return Err("configured graph recorded workspace status execution".into());
     }
     let events = format::decode_events(&history::section(reader, format::Section::Events)?)?;
-    let phases = event_phases::decode(&events)?;
+    let phases = match root_cut {
+        Some(cut) => event_phases::decode_root(&events, cut)?,
+        None => event_phases::decode(&events)?,
+    };
     let agreement = phases.agree(current_prefix)?;
     drop(inputs.tables.take());
     let environment = snapshot::validate::Environment::new(&replay.environment);
@@ -326,6 +395,17 @@ fn decode_graph(reader: &store::Reader) -> Result<Graph, String> {
 }
 
 impl Session {
+    pub fn lookup_root(
+        &mut self,
+        current: &crate::repository::CurrentRefresh,
+        cut: RootCut,
+    ) -> Result<Option<Graph>, String> {
+        if self.profile != Profile::Root || self.root_cut.is_some() {
+            return Err("root checkpoint does not belong to this session".into());
+        }
+        self.root_cut = Some(cut);
+        self.lookup(current)
+    }
     /// The current command has completed its ordinary loading prefix. Only
     /// now can historical metadata be inspected. Current output has already
     /// been forwarded once. It must match the explicitly recorded prefix; only
@@ -336,6 +416,9 @@ impl Session {
     ) -> Result<Option<Graph>, String> {
         if !self.current_loading {
             return Err("ordinary cquery session cannot enter current-loading lookup".into());
+        }
+        if self.profile == Profile::Root && self.root_cut.is_none() {
+            return Err("root mode cannot look up at the pattern boundary".into());
         }
         if self.prefix.is_some() {
             return Err("current-loading lookup already performed".into());
@@ -361,6 +444,7 @@ impl Session {
             Validation::Current(
                 current,
                 &self.prefix.as_ref().expect("prefix captured").bytes,
+                self.root_cut,
             ),
         );
         let lookup = self
@@ -456,7 +540,11 @@ impl Session {
                 {
                     return Err("current-loading event phase ownership is incomplete".into());
                 }
-                format::encode_events(&event_phases::encode(&prefix.bytes, &window.bytes)?)
+                let bytes = match self.root_cut {
+                    Some(cut) => event_phases::encode_root(&prefix.bytes, &window.bytes, cut)?,
+                    None => event_phases::encode(&prefix.bytes, &window.bytes)?,
+                };
+                format::encode_events(&bytes)
             } else {
                 format::encode_events(&window.bytes)
             };
@@ -708,7 +796,7 @@ mod tests {
         repositories.enable_current_loading();
         repositories.validate_root_module().unwrap();
         let current = crate::repository::CurrentRefresh::seal(repositories, true);
-        let error = read_candidate(&reader, &replay, &current, b"").unwrap_err();
+        let error = read_candidate(&reader, &replay, &current, b"", None).unwrap_err();
         assert!(
             error.contains("invalid configured graph pattern index"),
             "{error}"

@@ -6,6 +6,43 @@ const MAGIC: &[u8; 8] = b"BZCQEV01";
 const HEADER: usize = 24;
 // Keep the existing 8 MiB EVENTS bound, including framing and the outer codec.
 const PAYLOAD_LIMIT: usize = (8 << 20) - 32;
+const ROOT_MAGIC: &[u8; 8] = b"BZCQRC01";
+const ROOT_HEADER: usize = 48;
+
+pub(super) fn encode_root(
+    prefix: &[u8],
+    suffix: &[u8],
+    cut: crate::engine::root_checkpoint::RootCut,
+) -> Result<Vec<u8>, String> {
+    if prefix.len().saturating_add(suffix.len()) > PAYLOAD_LIMIT - ROOT_HEADER {
+        return Err("root-cut events exceed EVENTS limit".into());
+    }
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(ROOT_MAGIC);
+    bytes.extend_from_slice(&cut.ordinal.to_le_bytes());
+    bytes.extend_from_slice(&cut.registration);
+    bytes.extend_from_slice(&encode(prefix, suffix)?);
+    Ok(bytes)
+}
+
+pub(super) fn decode_root(
+    bytes: &[u8],
+    cut: crate::engine::root_checkpoint::RootCut,
+) -> Result<Phases<'_>, String> {
+    let header = bytes
+        .get(..ROOT_HEADER)
+        .ok_or("truncated root-cut event frame")?;
+    if &header[..8] != ROOT_MAGIC
+        || header[8..16] != cut.ordinal.to_le_bytes()
+        || header[16..48] != cut.registration
+    {
+        return Err("candidate root-cut identity differs from current completed root".into());
+    }
+    if bytes.len() > HEADER + PAYLOAD_LIMIT {
+        return Err("root-cut events exceed EVENTS limit".into());
+    }
+    decode(&bytes[ROOT_HEADER..])
+}
 
 pub(super) struct Phases<'a> {
     pub prefix: &'a [u8],
@@ -79,6 +116,38 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Phases<'_>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_cut_identity_is_explicit_and_never_aliases_pattern_events() {
+        let cut = crate::engine::root_checkpoint::RootCut {
+            ordinal: 2,
+            registration: [9; 32],
+        };
+        let bytes = encode_root(b"configured prefix", b"analysis suffix", cut).unwrap();
+        assert!(decode(&bytes).is_err());
+        assert!(
+            decode_root(
+                &encode(b"configured prefix", b"analysis suffix").unwrap(),
+                cut
+            )
+            .is_err()
+        );
+        let phases = decode_root(&bytes, cut).unwrap();
+        assert_eq!(phases.prefix, b"configured prefix");
+        assert_eq!(phases.suffix, b"analysis suffix");
+        for wrong in [
+            crate::engine::root_checkpoint::RootCut { ordinal: 1, ..cut },
+            crate::engine::root_checkpoint::RootCut {
+                registration: [8; 32],
+                ..cut
+            },
+        ] {
+            assert!(decode_root(&bytes, wrong).is_err());
+        }
+        for end in 0..bytes.len() {
+            assert!(decode_root(&bytes[..end], cut).is_err());
+        }
+    }
 
     #[test]
     fn a_phase_requires_complete_nonoverflowing_capture_even_if_its_bytes_match() {

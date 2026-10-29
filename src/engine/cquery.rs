@@ -833,6 +833,17 @@ impl Engine {
         self.load_cquery_patterns_inner(patterns, relative_directory, true)
     }
 
+    /// Same ordinary selection, but no pattern seal/lookup for the distinct
+    /// root-cut profile. Completed locals are freshly sealed on the live cut.
+    pub fn load_cquery_root_patterns(
+        &mut self,
+        patterns: &[String],
+        relative_directory: &str,
+    ) -> Result<LoadedQuery, String> {
+        self.repositories.enable_current_loading();
+        self.load_cquery_patterns_inner(patterns, relative_directory, false)
+    }
+
     fn load_cquery_patterns_inner(
         &mut self,
         patterns: &[String],
@@ -865,6 +876,32 @@ impl Engine {
     }
 
     pub fn cquery_graph_loaded(&mut self, loaded: LoadedQuery) -> Result<Graph, String> {
+        match self.cquery_graph_loaded_inner(loaded, None)? {
+            super::root_checkpoint::Outcome::Continue(graph) => Ok(graph),
+            super::root_checkpoint::Outcome::AcceptedQuery(_) => unreachable!("no root checkpoint"),
+        }
+    }
+
+    pub fn cquery_graph_loaded_with_checkpoint(
+        &mut self,
+        loaded: LoadedQuery,
+        budget: super::root_checkpoint::Budget,
+        callback: &mut impl FnMut(
+            crate::repository::CurrentRefresh,
+            super::root_checkpoint::RootCut,
+        ) -> Result<super::root_checkpoint::Outcome, String>,
+    ) -> Result<super::root_checkpoint::Outcome<Graph>, String> {
+        self.root_checkpoint = Some(super::root_checkpoint::Request::new(budget));
+        let result = self.cquery_graph_loaded_inner(loaded, Some(callback));
+        self.root_checkpoint = None;
+        result
+    }
+
+    fn cquery_graph_loaded_inner(
+        &mut self,
+        loaded: LoadedQuery,
+        checkpoint: Option<&mut super::root_checkpoint::Callback<'_>>,
+    ) -> Result<super::root_checkpoint::Outcome<Graph>, String> {
         if !std::sync::Arc::ptr_eq(&loaded.repositories, &self.repositories) {
             return Err(
                 "configured-query continuation belongs to another engine repository set".into(),
@@ -884,16 +921,20 @@ impl Engine {
         self.platforms.clear();
         let execute = self.execute_build;
         self.execute_build = false;
-        let analyzed = self.plan_build(&roots);
+        let analyzed = self.plan_build_with_checkpoint(&roots, checkpoint);
         self.execute_build = execute;
         let capture = self.cquery_capture.take().expect("capture installed");
-        analyzed?;
+        if let super::root_checkpoint::Outcome::AcceptedQuery(graph) = analyzed? {
+            // Drop partial action/provider state, not just the graph recorder.
+            self.action_planning = None;
+            return Ok(super::root_checkpoint::Outcome::AcceptedQuery(graph));
+        }
         crate::perf_mark("cquery.analysis_state_dropped");
         crate::perf_mark("cquery.graph_begin");
         let graph = self.finish_cquery_graph(capture, &roots, expanded)?;
         crate::perf_mark("cquery.graph_ready");
         self.record_link_anchors();
-        Ok(graph)
+        Ok(super::root_checkpoint::Outcome::Continue(graph))
     }
 
     fn cquery_key(

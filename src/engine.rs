@@ -35,6 +35,7 @@ mod incremental;
 mod keep_going;
 pub mod query;
 mod query_attrs;
+pub mod root_checkpoint;
 mod split;
 
 /// A planned artifact. Its data is shared by its copies (MEM4): the
@@ -1951,6 +1952,8 @@ pub struct Engine {
     /// registered toolchain target being analyzed (a stack: an exec edge of
     /// a registered target may compute another configuration's).
     computing_toolchains: Vec<ConfiguredTargetKey>,
+    /// Present only during the separate configured-root cquery invocation.
+    root_checkpoint: Option<root_checkpoint::Request>,
     /// The cycle report of a registered toolchain that needs toolchain
     /// resolution itself (Self::toolchain_cycle), per configuration.
     toolchain_cycle_reports: BTreeMap<ConfigId, String>,
@@ -2166,6 +2169,7 @@ impl Engine {
             empty_configuration_rules: BTreeSet::new(),
             registered_toolchains: BTreeMap::new(),
             computing_toolchains: Vec::new(),
+            root_checkpoint: None,
             toolchain_cycle_reports: BTreeMap::new(),
             registered_execution_platforms: BTreeMap::new(),
             computing_execution_platforms: Vec::new(),
@@ -8389,6 +8393,11 @@ impl Engine {
         let result = self.compute_registered_toolchains(config, configured, plan);
         self.computing_toolchains.pop();
         self.registered_toolchains.insert(config, result.clone());
+        if result.is_ok()
+            && let Some(request) = self.root_checkpoint.as_mut()
+        {
+            request.first.get_or_insert(config);
+        }
         result
     }
 
@@ -14518,7 +14527,8 @@ impl Engine {
         top: ConfigId,
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
-    ) -> Result<(), String> {
+        mut checkpoint: Option<&mut root_checkpoint::Callback<'_>>,
+    ) -> Result<root_checkpoint::Outcome, String> {
         for (position, label) in labels.iter().enumerate() {
             // A requested non-alias rule is first keyed in the untrimmed
             // top-level configuration, then in its test-trimmed one
@@ -14564,7 +14574,18 @@ impl Engine {
                         .failed_targets
                         .insert(label.clone(), active.len() > 1);
                 }
-                analyzed => analyzed?,
+                analyzed => {
+                    analyzed?;
+                    if let Some(callback) = checkpoint.as_deref_mut()
+                        && let root_checkpoint::Outcome::AcceptedQuery(graph) = self.root_cut(
+                            position,
+                            configured.len().saturating_add(plan.len()),
+                            callback,
+                        )?
+                    {
+                        return Ok(root_checkpoint::Outcome::AcceptedQuery(graph));
+                    }
+                }
             }
         }
         // N58: the top-level aspects' applications on each requested target
@@ -14576,7 +14597,7 @@ impl Engine {
         // package.
         let aspects = self.top_level_aspects_list()?;
         if aspects.is_empty() {
-            return Ok(());
+            return Ok(root_checkpoint::Outcome::Continue(()));
         }
         let mut seen = BTreeSet::new();
         for label in labels {
@@ -14607,7 +14628,7 @@ impl Engine {
                 }
             }
         }
-        Ok(())
+        Ok(root_checkpoint::Outcome::Continue(()))
     }
 
     /// Start phase-1 package prefetch (crate::prefetch) for a build's
@@ -14774,6 +14795,17 @@ impl Engine {
     /// Analysis and action planning of a build: the actions reachable from
     /// the requested targets' artifacts, validated before any execution.
     fn plan_build(&mut self, labels: &[Label]) -> Result<BuildPlan, String> {
+        match self.plan_build_with_checkpoint(labels, None)? {
+            root_checkpoint::Outcome::Continue(plan) => Ok(plan),
+            root_checkpoint::Outcome::AcceptedQuery(_) => unreachable!("no checkpoint installed"),
+        }
+    }
+
+    fn plan_build_with_checkpoint(
+        &mut self,
+        labels: &[Label],
+        checkpoint: Option<&mut root_checkpoint::Callback<'_>>,
+    ) -> Result<root_checkpoint::Outcome<BuildPlan>, String> {
         crate::progress::analysis_targets(labels.len());
         crate::perf_mark("plan.start");
         // The workspace status is computed at most once per build
@@ -14842,9 +14874,12 @@ impl Engine {
         // Phase-1 prefetch (crate::prefetch) runs while the requested
         // targets are analyzed, and stops with phase 1 however it ends.
         self.start_prefetch(labels);
-        let analyzed = self.analyze_requested(labels, top, &mut configured, &mut plan);
+        let analyzed = self.analyze_requested(labels, top, &mut configured, &mut plan, checkpoint);
         self.stop_prefetch();
-        analyzed?;
+        if let root_checkpoint::Outcome::AcceptedQuery(graph) = analyzed? {
+            // The live phase1 plan/nodes drop here; never export partial capture.
+            return Ok(root_checkpoint::Outcome::AcceptedQuery(graph));
+        }
         crate::progress::analysis_planned(plan.len());
         crate::perf_mark("plan.phase1_analysis_done");
         // Alias-like targets and the end of their alias chain: dependents see
@@ -15025,7 +15060,12 @@ impl Engine {
             // Full provider analysis (including top-level aspects) succeeded.
             // Nothing below this boundary is part of configured querying.
             crate::perf_mark("cquery.analysis_done");
-            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+            return Ok(root_checkpoint::Outcome::Continue((
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )));
         }
         // N63 follow-up (BLOCKER 1): Bazel adds the workspace status
         // artifacts to artifactsToBuild UNCONDITIONALLY on every build
@@ -15956,7 +15996,7 @@ impl Engine {
                 ),
             ));
         }
-        Ok(built)
+        Ok(root_checkpoint::Outcome::Continue(built))
     }
 }
 

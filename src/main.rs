@@ -743,6 +743,17 @@ fn run() -> Result<(), String> {
     } else {
         false
     };
+    let cquery_root_budget = if cquery_expression.is_some() {
+        bazel_rs::cquery_state::root_checkpoint_budget()
+            .map_err(bazel_rs::exit_code::command_line)?
+    } else {
+        None
+    };
+    if cquery_current_loading && cquery_root_budget.is_some() {
+        return Err(bazel_rs::exit_code::command_line(
+            "select only one cquery current-loading or root-checkpoint profile".into(),
+        ));
+    }
     // Both full analysis and historical candidate proof open the current
     // lockfile choice through this factory. No pre-window frozen lock result
     // substitutes for the reads collected during private acceptance proof.
@@ -799,7 +810,9 @@ fn run() -> Result<(), String> {
             environment: repository_environment.clone(),
             downloads_enabled: repository_downloads_enabled,
         };
-        if cquery_current_loading {
+        if cquery_root_budget.is_some() {
+            cquery_session = bazel_rs::cquery_state::begin_root(inputs, replay)?;
+        } else if cquery_current_loading {
             cquery_session = bazel_rs::cquery_state::begin(inputs, replay)?;
         } else {
             let started = bazel_rs::cquery_state::start(inputs, replay, &|| {
@@ -946,7 +959,7 @@ fn run() -> Result<(), String> {
             .with_source_cache(cache.join("repositories"))
             .with_repository_environment(repository_environment),
     );
-    if cquery_current_loading {
+    if cquery_current_loading || cquery_root_budget.is_some() {
         repositories.enable_current_loading();
     }
     // Never dropped (L2-W4, PLAN-L2 §5): the repository set holds only
@@ -1135,7 +1148,33 @@ fn run() -> Result<(), String> {
     // (cmdline/TargetPattern.java:783-789).
     let relative_directory = relative_directory(&root, &cwd)?;
     if let Some(expression) = cquery_expression {
-        let graph = if cquery_current_loading {
+        let graph = if let Some(budget) = cquery_root_budget {
+            use bazel_rs::engine::root_checkpoint::Outcome;
+            let loaded = engine.load_cquery_root_patterns(
+                &cquery_options.universe(&expression),
+                &relative_directory,
+            )?;
+            let result = engine.cquery_graph_loaded_with_checkpoint(
+                loaded,
+                budget,
+                &mut |current, cut| match cquery_session
+                    .as_mut()
+                    .map(|session| session.lookup_root(&current, cut))
+                    .transpose()?
+                    .flatten()
+                {
+                    Some(graph) => Ok(Outcome::AcceptedQuery(Box::new(graph))),
+                    None => Ok(Outcome::Continue(())),
+                },
+            )?;
+            match result {
+                Outcome::AcceptedQuery(graph) => {
+                    cquery_session = None;
+                    *graph
+                }
+                Outcome::Continue(graph) => graph,
+            }
+        } else if cquery_current_loading {
             let loaded = engine
                 .load_cquery_patterns(&cquery_options.universe(&expression), &relative_directory)?;
             let hit = match &mut cquery_session {
@@ -1166,7 +1205,8 @@ fn run() -> Result<(), String> {
             session.finish(
                 &graph,
                 &_lockfile_writer.0,
-                !cquery_current_loading || repositories.cquery_events_quiescent(),
+                !(cquery_current_loading || cquery_root_budget.is_some())
+                    || repositories.cquery_events_quiescent(),
             )?;
         }
         bazel_rs::observed_fs::close_window();
