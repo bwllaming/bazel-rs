@@ -185,6 +185,20 @@ impl RootWarmer {
         lock(&self.state).width > 0
     }
 
+    /// Nonblocking phase ownership, not a request to finish any work. Finished
+    /// handles include worker finalizers after `running` was decremented.
+    pub(crate) fn quiescent(&self) -> bool {
+        let Ok(workers) = self.workers.try_lock() else {
+            return false;
+        };
+        let Ok(state) = self.state.try_lock() else {
+            return false;
+        };
+        state.running == 0
+            && state.queue.is_empty()
+            && workers.iter().all(|worker| worker.is_finished())
+    }
+
     /// Warm the roots of `files` (`.bzl` or BUILD labels) and follow their
     /// loads. Files of roots the set does not warm (the main repository,
     /// materialized roots) are still followed when their root is known.
@@ -372,6 +386,40 @@ pub(crate) fn file_loads(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn phase_boundary_requires_finished_workers_and_no_pending_jobs() {
+        let warmer = RootWarmer::default();
+        assert!(warmer.quiescent());
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        warmer
+            .workers
+            .lock()
+            .unwrap()
+            .push(std::thread::spawn(move || {
+                release_rx
+                    .recv_timeout(std::time::Duration::from_secs(60))
+                    .unwrap();
+            }));
+        assert_eq!(lock(&warmer.state).running, 0);
+        assert!(!warmer.quiescent(), "worker finalization still owns output");
+        release_tx.send(()).unwrap();
+        for worker in std::mem::take(&mut *warmer.workers.lock().unwrap()) {
+            worker.join().unwrap();
+        }
+        assert!(warmer.quiescent());
+        lock(&warmer.state).queue.push_back(Job {
+            repository: "pending".into(),
+            files: Vec::new(),
+        });
+        assert!(!warmer.quiescent());
+        lock(&warmer.state).queue.clear();
+        let _guard = warmer.workers.lock().unwrap();
+        assert!(
+            !warmer.quiescent(),
+            "busy ownership lock never blocks lookup"
+        );
+    }
 
     #[test]
     fn shutdown_cancels_stalled_overlay_headers_and_body_and_discards_queue() {

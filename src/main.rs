@@ -1163,7 +1163,11 @@ fn run() -> Result<(), String> {
         bazel_rs::perf_mark("cquery.engine_released");
         lockfile_gate.open();
         if let Some(session) = cquery_session {
-            session.finish(&graph, &_lockfile_writer.0)?;
+            session.finish(
+                &graph,
+                &_lockfile_writer.0,
+                !cquery_current_loading || repositories.cquery_events_quiescent(),
+            )?;
         }
         bazel_rs::observed_fs::close_window();
         cquery_output(

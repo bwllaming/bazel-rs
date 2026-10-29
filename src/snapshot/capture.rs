@@ -760,4 +760,30 @@ mod tests {
         assert!(captured.overflowed && !captured.forwarded);
         assert!(discard.original().is_empty());
     }
+
+    #[test]
+    fn phase_tee_drain_owns_partial_lines_and_detached_output_stays_with_its_original() {
+        let mut prefix = rig(Mode::Tee, 64);
+        prefix.write(b"prefix without newline");
+        let captured = prefix.stop(true, false);
+        assert!(captured.complete && !captured.overflowed && !captured.ended_early);
+        assert_eq!(captured.bytes, b"prefix without newline");
+        assert_eq!(prefix.original(), captured.bytes);
+
+        let mut prefix = rig(Mode::Tee, 64);
+        prefix.write(b"current-prefix\n");
+        prefix.wait_original(b"current-prefix\n");
+        let incomplete = prefix.stop(false, false);
+        assert!(!incomplete.complete);
+        let mut suffix = rig(Mode::Tee, 64);
+        suffix.write(b"current-analysis\n");
+        prefix.write(b"late-prefix-error\n");
+        prefix.wait_original(b"current-prefix\nlate-prefix-error\n");
+        let suffix = suffix.stop(true, false);
+        assert_eq!(suffix.bytes, b"current-analysis\n");
+        assert_eq!(incomplete.bytes, b"current-prefix\n");
+        prefix.writer = None;
+        prefix.settle(|state| state.finished);
+        assert_eq!(prefix.original(), b"current-prefix\nlate-prefix-error\n");
+    }
 }

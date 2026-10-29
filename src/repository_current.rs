@@ -41,6 +41,14 @@ impl LocalResult {
 }
 
 impl RepositorySet {
+    /// No waiting, cancellation or demand. The coordinator starts no new work
+    /// until ordinary continuation resumes; candidate proof cannot warm roots.
+    pub fn cquery_events_quiescent(&self) -> bool {
+        // A speculative publication listener can enqueue root warming. Check
+        // that producer first; once stopped with no live workers it cannot
+        // enqueue between the warmer's check and the coordinator's phase cut.
+        self.state.speculation.quiescent() && self.state.root_warmer.quiescent()
+    }
     /// Enable the explicit cquery experiment before any current option/pattern
     /// loading. Ordinary/default commands do not collect this ledger.
     pub fn enable_current_loading(&self) {
@@ -105,10 +113,11 @@ pub struct CurrentRefresh {
     locals: BTreeMap<String, Arc<LocalResult>>,
     observations: Recording,
     eligible: bool,
+    event_boundary_owned: bool,
 }
 
 impl CurrentRefresh {
-    pub(crate) fn seal(repositories: Arc<RepositorySet>, silent: bool) -> Self {
+    pub(crate) fn seal(repositories: Arc<RepositorySet>, no_pending_diagnostics: bool) -> Self {
         let locals = repositories
             .state
             .current_locals
@@ -116,12 +125,13 @@ impl CurrentRefresh {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let recording = crate::observed_fs::current_recording();
+        let event_boundary_owned = no_pending_diagnostics && repositories.cquery_events_quiescent();
         let eligible = repositories
             .state
             .current_loading
             .load(std::sync::atomic::Ordering::Relaxed)
             && crate::observed_fs::recording()
-            && silent
+            && event_boundary_owned
             && recording
                 .as_ref()
                 .is_some_and(|recording| recording.taints.is_empty())
@@ -132,6 +142,7 @@ impl CurrentRefresh {
             locals,
             observations: recording.unwrap_or_default(),
             eligible,
+            event_boundary_owned,
         }
     }
 
@@ -139,7 +150,14 @@ impl CurrentRefresh {
         self.eligible
     }
 
-    fn proof_set(&self) -> Result<RepositorySet, String> {
+    pub(crate) fn event_boundary_owned(&self) -> bool {
+        self.event_boundary_owned
+    }
+
+    fn proof_set(
+        &self,
+        _agreement: &crate::cquery_state::PrefixAgreement,
+    ) -> Result<RepositorySet, String> {
         let source = &self.repositories.state;
         let mut set = RepositorySet::configured_environment(
             source.root.clone(),
@@ -152,6 +170,10 @@ impl CurrentRefresh {
         let state = Arc::get_mut(&mut set.state).expect("new proof set");
         state.replay = None;
         state.proof_locals = self.locals.clone();
+        // These loads are proof work, not ordinary command loading. The
+        // current prefix was emitted and matched; the guarded cached suffix
+        // owns remaining diagnostics. Never emit duplicate proof-load notes.
+        state.phase_diagnostics_agreed = true;
         Ok(set)
     }
 
@@ -220,13 +242,14 @@ impl CurrentRefresh {
         records: &[ReplayRecord],
         inputs: &mut Recording,
         env: &Environment<'_>,
+        agreement: &crate::cquery_state::PrefixAgreement,
     ) -> Result<Option<Prepared>, String> {
         self.check(records, inputs, env)?;
         if inputs.selections.is_empty() {
             validate::validate_for_hit(inputs, env)?;
             Ok(None)
         } else {
-            Prepared::prepare(&|| self.proof_set(), inputs, env).map(Some)
+            Prepared::prepare(&|| self.proof_set(agreement), inputs, env).map(Some)
         }
     }
 
@@ -236,6 +259,7 @@ impl CurrentRefresh {
         inputs: &Recording,
         prepared: Option<Prepared>,
         env: &Environment<'_>,
+        agreement: &crate::cquery_state::PrefixAgreement,
     ) -> Result<(), String> {
         let store = self.repositories.source_cache_path()?;
         let names: Vec<_> = self.locals.keys().cloned().collect();
@@ -257,9 +281,14 @@ impl CurrentRefresh {
             .collect();
         trees.extend(self.observations.repositories.iter().cloned());
         if let Some(prepared) = prepared {
-            prepared.commit_current(&|| self.proof_set(), inputs, env, &names, &trees, || {
-                self.check(records, inputs, env)
-            })?;
+            prepared.commit_current(
+                &|| self.proof_set(agreement),
+                inputs,
+                env,
+                &names,
+                &trees,
+                || self.check(records, inputs, env),
+            )?;
         } else {
             let _guards = AdoptionGuard::acquire_current(store, &[], trees.iter(), &names)?;
             self.check(records, inputs, env)?;

@@ -282,6 +282,9 @@ struct RepositoryState {
     current_locals: std::sync::Mutex<BTreeMap<String, Arc<current::LocalResult>>>,
     current_loading: std::sync::atomic::AtomicBool,
     proof_locals: BTreeMap<String, Arc<current::LocalResult>>,
+    /// Only phase-aware cquery acceptance after exact current-prefix agreement.
+    /// Other/default proof callers still reject diagnostic-producing preparation.
+    phase_diagnostics_agreed: bool,
     /// The record mode's replay capture: local executions become replay
     /// records, and `root()`/`mapping()` results inside replay scopes are
     /// pinned for them.
@@ -914,6 +917,7 @@ impl RepositorySet {
                 current_locals: Default::default(),
                 current_loading: Default::default(),
                 proof_locals: BTreeMap::new(),
+                phase_diagnostics_agreed: false,
                 replay: crate::snapshot::replay::global(),
                 verified_trees: Arc::default(),
                 speculation: Default::default(),
@@ -1513,6 +1517,7 @@ impl RepositorySet {
                 .map(|receipt| (receipt.canonical.clone(), receipt.clone()))
                 .collect();
             state.proof_locals = self.state.proof_locals.clone();
+            state.phase_diagnostics_agreed = self.state.phase_diagnostics_agreed;
             state.replay = None;
             proof.validate_root_module().ok()?;
             proof.root_module().ok()?.module_file()?;
@@ -1538,7 +1543,7 @@ impl RepositorySet {
                     receipt: candidate.receipt().clone(),
                 });
             }
-            (!notes.emitted()).then_some(proved)
+            (self.state.phase_diagnostics_agreed || !notes.emitted()).then_some(proved)
         })()
     }
 

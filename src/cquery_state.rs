@@ -26,8 +26,11 @@ fn parse_current_loading(value: Option<&std::ffi::OsStr>) -> Result<bool, String
     }
 }
 
+#[path = "cquery_events.rs"]
+mod event_phases;
 #[path = "cquery_history.rs"]
 mod history;
+pub(crate) use event_phases::PrefixAgreement;
 
 pub struct Session {
     cache: PathBuf,
@@ -38,6 +41,8 @@ pub struct Session {
     replay: snapshot::hit::ReplayInputs,
     verify_mode: bool,
     current_loading: bool,
+    prefix_boundary_owned: bool,
+    verify_suffix: Option<Vec<u8>>,
 }
 
 pub struct Started {
@@ -138,7 +143,7 @@ fn analysis_key(
         .collect::<Vec<_>>();
     let filtered = key::Inputs {
         command: if current_loading {
-            "cquery-graph-current-loading-v1"
+            "cquery-graph-current-loading-v2"
         } else {
             "cquery-graph-v2"
         },
@@ -171,13 +176,15 @@ fn open_session(
         replay,
         verify_mode: mode == snapshot::Mode::Verify,
         current_loading,
+        prefix_boundary_owned: false,
+        verify_suffix: None,
     })
 }
 
 #[derive(Clone, Copy)]
 enum Validation<'a> {
     Ordinary(crate::repository_publication::Factory<'a>),
-    Current(&'a crate::repository::CurrentRefresh),
+    Current(&'a crate::repository::CurrentRefresh, &'a [u8]),
 }
 
 fn read(
@@ -191,7 +198,9 @@ fn read(
         let result = candidate.and_then(|reader| {
             match validation {
                 Validation::Ordinary(factory) => read_ordinary_candidate(&reader, replay, factory),
-                Validation::Current(current) => read_candidate(&reader, replay, current),
+                Validation::Current(current, prefix) => {
+                    read_candidate(&reader, replay, current, prefix)
+                }
             }
             .map(|(graph, events)| (graph, reader, events))
         });
@@ -214,6 +223,7 @@ fn read_candidate(
     reader: &store::Reader,
     replay: &snapshot::hit::ReplayInputs,
     current: &crate::repository::CurrentRefresh,
+    current_prefix: &[u8],
 ) -> Result<(Graph, Vec<u8>), String> {
     let _version = history::section(reader, format::Section::Stats)?;
     let mut inputs = format::decode_inputs(&history::section(reader, format::Section::Inputs)?)?;
@@ -221,15 +231,25 @@ fn read_candidate(
         return Err("configured graph recorded workspace status execution".into());
     }
     let events = format::decode_events(&history::section(reader, format::Section::Events)?)?;
-    if !events.is_empty() {
-        return Err("current-loading history requires empty saved EVENTS".into());
-    }
+    let phases = event_phases::decode(&events)?;
+    let agreement = phases.agree(current_prefix)?;
     drop(inputs.tables.take());
     let environment = snapshot::validate::Environment::new(&replay.environment);
-    let adoption = current.prepare(&inputs.replay, &mut inputs.recording, &environment)?;
+    let adoption = current.prepare(
+        &inputs.replay,
+        &mut inputs.recording,
+        &environment,
+        &agreement,
+    )?;
     let graph = decode_graph(reader)?;
-    current.accept(&inputs.replay, &inputs.recording, adoption, &environment)?;
-    Ok((graph, events))
+    current.accept(
+        &inputs.replay,
+        &inputs.recording,
+        adoption,
+        &environment,
+        &agreement,
+    )?;
+    Ok((graph, phases.suffix.to_vec()))
 }
 
 /// The installed ordinary validation/replay/adoption contract. This function is
@@ -308,7 +328,8 @@ fn decode_graph(reader: &store::Reader) -> Result<Graph, String> {
 impl Session {
     /// The current command has completed its ordinary loading prefix. Only
     /// now can historical metadata be inspected. Current output has already
-    /// been forwarded once; this first slice accepts only a silent prefix.
+    /// been forwarded once. It must match the explicitly recorded prefix; only
+    /// a selected candidate's suffix is replayed after complete acceptance.
     pub fn lookup(
         &mut self,
         current: &crate::repository::CurrentRefresh,
@@ -316,40 +337,73 @@ impl Session {
         if !self.current_loading {
             return Err("ordinary cquery session cannot enter current-loading lookup".into());
         }
+        if self.prefix.is_some() {
+            return Err("current-loading lookup already performed".into());
+        }
         let prefix = self
             .capture
             .take()
-            .map(|capture| capture.stop(std::time::Duration::from_secs(2)));
-        let silent = prefix.as_ref().is_some_and(|prefix| {
-            prefix.complete && !prefix.overflowed && !prefix.ended_early && prefix.bytes.is_empty()
-        });
-        self.prefix = prefix;
+            .map(|capture| capture.stop(std::time::Duration::from_secs(2)))
+            .unwrap_or_default();
+        self.prefix_boundary_owned =
+            current.event_boundary_owned() && event_phases::complete(&prefix);
+        self.prefix = Some(prefix);
         self.capture = snapshot::capture::start(snapshot::capture::Mode::Tee).ok();
-        if !silent || !current.eligible() {
-            explain("miss: current loading prefix is not silent and eligible");
+        if !self.prefix_boundary_owned || !current.eligible() || self.capture.is_none() {
+            explain("miss: current loading event boundary or result is not eligible");
             return Ok(None);
         }
+        // Lookup is a distinct transient phase, never a saved analysis suffix.
         let found = read(
             &self.cache,
             &self.key,
             &self.replay,
-            Validation::Current(current),
-        )?;
+            Validation::Current(
+                current,
+                &self.prefix.as_ref().expect("prefix captured").bytes,
+            ),
+        );
+        let lookup = self
+            .capture
+            .take()
+            .expect("lookup capture")
+            .stop(std::time::Duration::from_secs(2));
+        if !event_phases::complete(&lookup) || !lookup.bytes.is_empty() {
+            self.prefix_boundary_owned = false;
+            if matches!(&found, Ok(Some(_))) {
+                // Adoption may have completed: terminal, never a partial-commit
+                // miss or a replay of saved analysis diagnostics.
+                return Err(format!(
+                    "{}unaccounted output during current-loading acceptance",
+                    crate::repository_publication::COMMIT_ERROR
+                ));
+            }
+        }
+        let found = found?;
         match found {
-            Some((graph, reader, _)) if self.verify_mode => {
+            Some((graph, reader, suffix)) if self.verify_mode => {
                 self.verify = Some((graph, reader));
+                self.verify_suffix = Some(suffix);
+                self.capture = snapshot::capture::start(snapshot::capture::Mode::Tee).ok();
                 Ok(None)
             }
-            Some((graph, reader, _)) => {
-                reader.touch();
+            Some((graph, reader, suffix)) => {
                 crate::observed_fs::close_window();
-                if let Some(capture) = self.capture.take() {
-                    capture.stop(std::time::Duration::from_secs(2));
-                }
+                // Prefix is already visible. No capture is active now, so the
+                // accepted suffix cannot be recorded/emitted as current work.
+                use std::io::Write;
+                std::io::stderr()
+                    .lock()
+                    .write_all(&crate::ui::filtered(&suffix))
+                    .map_err(|error| error.to_string())?;
+                reader.touch();
                 explain("hit");
                 Ok(Some(graph))
             }
-            None => Ok(None),
+            None => {
+                self.capture = snapshot::capture::start(snapshot::capture::Mode::Tee).ok();
+                Ok(None)
+            }
         }
     }
 
@@ -357,26 +411,16 @@ impl Session {
         mut self,
         graph: &Graph,
         registry: &crate::registry_session::SessionHandle,
+        event_sources_quiescent: bool,
     ) -> Result<(), String> {
         // Args callbacks and other action-only values do not belong to this
         // payload. Analysis failures have already aborted before this point.
         crate::observed_fs::settle_plan_taints([]);
         crate::observed_fs::close_window();
-        let mut window = self
+        let window = self
             .capture
             .take()
             .map(|capture| capture.stop(std::time::Duration::from_secs(2)));
-        if let (Some(prefix), Some(window)) = (self.prefix.take(), window.as_mut()) {
-            window.complete &= prefix.complete;
-            window.ended_early |= prefix.ended_early;
-            window.overflowed |= prefix.overflowed
-                || prefix.bytes.len() + window.bytes.len() > snapshot::capture::LIMIT;
-            if !window.overflowed {
-                let mut combined = prefix.bytes;
-                combined.append(&mut window.bytes);
-                window.bytes = combined;
-            }
-        }
         if let Some((expected, reader)) = &self.verify
             && expected != graph
         {
@@ -386,11 +430,36 @@ impl Session {
                     .into(),
             );
         }
+        if let (Some(expected), Some((_, reader))) = (&self.verify_suffix, &self.verify)
+            && (!self.prefix_boundary_owned
+                || !event_sources_quiescent
+                || !window.as_ref().is_some_and(|window| {
+                    event_phases::complete(window) && window.bytes == *expected
+                }))
+        {
+            history::remove(&self.cache, reader)?;
+            return Err("configured graph snapshot diagnostic phase verification mismatch; stale generation invalidated".into());
+        }
         let save = || -> Result<(), String> {
             let window = window.ok_or("stderr capture unavailable")?;
             if !window.complete || window.overflowed || window.ended_early {
                 return Err("incomplete stderr capture".into());
             }
+            let events = if self.current_loading {
+                let prefix = self
+                    .prefix
+                    .as_ref()
+                    .ok_or("current-loading prefix capture unavailable")?;
+                if !self.prefix_boundary_owned
+                    || !event_sources_quiescent
+                    || !event_phases::complete(prefix)
+                {
+                    return Err("current-loading event phase ownership is incomplete".into());
+                }
+                format::encode_events(&event_phases::encode(&prefix.bytes, &window.bytes)?)
+            } else {
+                format::encode_events(&window.bytes)
+            };
             if let Some(registry) = registry.session()
                 && (registry.updated_lockfile().is_some()
                     || registry.updated_hidden_lockfile().is_some())
@@ -418,7 +487,7 @@ impl Session {
                 &self.cache,
                 &self.key,
                 inputs,
-                format::encode_events(&window.bytes),
+                events,
                 plan,
                 self.verify.as_ref().map(|(_, reader)| reader),
             )?;
@@ -619,7 +688,7 @@ mod tests {
             fixture.temp.path(),
             &key,
             format::encode_inputs(&fixture.a, &[], None, false),
-            format::encode_events(b""),
+            format::encode_events(&event_phases::encode(b"", b"").unwrap()),
             encode_graph(&graph).unwrap(),
             None,
         )
@@ -639,7 +708,7 @@ mod tests {
         repositories.enable_current_loading();
         repositories.validate_root_module().unwrap();
         let current = crate::repository::CurrentRefresh::seal(repositories, true);
-        let error = read_candidate(&reader, &replay, &current).unwrap_err();
+        let error = read_candidate(&reader, &replay, &current, b"").unwrap_err();
         assert!(
             error.contains("invalid configured graph pattern index"),
             "{error}"

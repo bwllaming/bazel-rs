@@ -858,7 +858,7 @@ impl Engine {
             current: current_loading.then(|| {
                 crate::repository::CurrentRefresh::seal(
                     self.repositories.clone(),
-                    self.warnings.is_empty(),
+                    self.warnings.is_empty() && self.prefetch.is_none(),
                 )
             }),
         })

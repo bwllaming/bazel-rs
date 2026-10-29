@@ -64,17 +64,52 @@ Only eligible nonlocal pointers/views are installed; local current views are
 never rebound to historical versions. Errors after installation begins remain
 terminal command errors, not candidate misses.
 
-The first slice requires a **silent current prefix and empty saved EVENTS**.
-Current diagnostics are forwarded once. Non-silent prefixes or saved analysis
-events fall back to the same continuation, which emits required current analysis
-output once. No cached warning is silently dropped or duplicated. Quiet/proto
-output keeps its normal routing. Saving joins the actual prefix and continuation
-event segments without replaying either. Prefix observation copies are released
-when the continuation resumes or an accepted hit leaves loading.
+The current profile records **two explicitly owned event segments**: ordinary
+loading prefix, then configured-analysis continuation. Current prefix diagnostics
+are always emitted by normal loading, once. A candidate must have a byte-identical
+recorded prefix (including UI note markers); only its analysis suffix is replayed,
+after all validation and guarded adoption succeeds. Deterministic nonempty MODULE,
+`.bzl` and BUILD prints are supported, as are analysis prints and warnings. An empty
+current prefix is insufficient by itself: the recorded prefix must also be empty.
+Mismatch resumes the same continuation; it never replays an old prefix.
 
-No binary layout changed: certificates are ephemeral and persisted ReplayRecord
-remains comparison evidence only. INPUTS stays format 5. Existing typed selection
-guards, incremental A/B/CARRIED semantics and mutable-slot detection are preserved.
+The phase cut leaves queued warnings alone. It requires no pending engine warnings
+or prefetch, no live/admitting speculative pool (including late listeners after a
+bounded stop), and an already-quiescent root warmer. The speculative producer is
+checked before the warmer it can enqueue. These checks are nonblocking and never
+drain unneeded repositories to obtain a hit. Captures use the existing bounded Tee
+semantics: restore stderr, wait at most two seconds for EOF/drain, and require a
+complete, nonoverflowed, non-early result. A partial line is flushed before the
+next phase. An inherited lingering writer or unknown ownership makes the cut
+ineligible; its current output continues to be forwarded, never saved/replayed.
+
+Lookup has a separate transient capture. Private producer proof notes are
+suppressed using the existing `PrivateNotes` scope; only this profile's explicit
+prefix agreement permits diagnostic-producing proof re-evaluation. Proof is not
+ordinary loading and emits no command output. All proof observations, errors,
+taints, source identities and publication guards still apply. Unexpected lookup
+output prevents saving; if adoption already succeeded it is a terminal acceptance
+error, never a partial-commit fallback or saved-suffix replay.
+
+Saving requires complete prefix/suffix capture and final worker quiescence.
+Overflow/incomplete capture continues ordinary output but saves no candidate.
+`verify` runs the continuation and compares both graph and actual suffix bytes;
+it emits only fresh output, never the saved suffix. A mismatch invalidates the
+candidate. The current UI applies quiet filtering to the replayed marked suffix,
+with the ordinary color policy and byte-protobuf stdout routing. Native outer
+`bazel-rs-cquery-snapshot: hit`, final `miss`, and `saved` markers remain outside
+captured EVENTS through `snapshot::diag`; no line-prefix stripping is used.
+
+Only the experimental key changes to `cquery-graph-current-loading-v2`. Within
+its ordinary EVENTS byte-string section, `BZCQEV01` plus two little-endian u64
+lengths frames prefix then suffix, with exact exhaustion and a combined payload
+limit of 8 MiB minus 32 bytes (including space for framing/outer codec). Legacy,
+truncated, trailing or oversized frames miss before diagnostic emission. The
+default remains `cquery-graph-v2` and its flat event codec/early replay is unchanged.
+Existing ELF/key checks still apply. Certificates are ephemeral and persisted
+ReplayRecord remains comparison evidence only. INPUTS stays format 5; ConfigIds,
+action keys, typed selection guards, incremental A/B/CARRIED semantics and
+mutable-slot detection are unchanged.
 
 ## Enabled slice and remaining application boundary
 
@@ -90,8 +125,15 @@ local dependency cycles, cancellation, mutable locals and exactly-once output.
 This prefix does **not** establish neededness for all 45 saved application locals.
 In particular registered toolchains still load in configured analysis only after
 the nonempty resolved-toolchain-type gate. No registration/history sweep was added.
-The saved application's nonempty EVENTS (about 88 KB) is a separate unsupported
-boundary. Full-application prefix cost and memory overlap with graph decoding are
+Nonempty EVENTS alone is no longer a rejection, but old unframed snapshots are
+incompatible and no application run is established by these small fixtures.
+Pending warnings, dynamic/untracked inputs, output-producing local callbacks,
+unknown async ownership and non-equivalent prefixes remain conservative misses.
+Full-application prefix cost and memory overlap with graph decoding are
 unmeasured; one continuation/candidate is retained, but loading need not be cheap.
 The application/large TD gate remains halted pending further implementation and
 a separately authorized measurement.
+
+A future configured-root checkpoint needs its own enter-prefix, successful-cut,
+continue-miss and accept-hit ownership hooks. This target-loading boundary does
+not implement that checkpoint or flush its queued warnings/transition output.

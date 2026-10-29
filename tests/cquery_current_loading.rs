@@ -102,6 +102,9 @@ payload = repository_rule(implementation=_payload, attrs={{'src':attr.label()}})
             "--experimental-builtin-modules=false",
             "--lockfile_mode=off",
             "--repository_disable_download",
+            // Deterministic phase-ownership tests; parallel ownership is tested
+            // separately without draining speculative work to manufacture a hit.
+            "--loading_phase_threads=1",
             "--platforms=//:platform",
             "--host_platform=//:platform",
             "--output=proto",
@@ -207,7 +210,7 @@ fn no_history_corrupt_history_and_changed_current_tool_resume_the_completed_loca
 }
 
 #[test]
-fn current_prefix_output_is_emitted_once_on_every_fallback() {
+fn deterministic_current_prefix_is_emitted_once_on_hits_and_quiet() {
     let f = Fixture::new();
     f.write("BUILD.bazel","load('@defs//:defs.bzl','targets')\nprint('current-prefix-note')\nplatform(name='platform')\nexports_files(['.bazelignore'])\ntargets()\n");
     for (index, quiet) in [false, true, false].into_iter().enumerate() {
@@ -225,17 +228,20 @@ fn current_prefix_output_is_emitted_once_on_every_fallback() {
             "{stderr}"
         );
         assert!(
-            stderr.contains("miss: current loading prefix is not silent and eligible"),
+            stderr.contains(if index == 0 {
+                "cquery-snapshot: saved"
+            } else {
+                "cquery-snapshot: hit"
+            }),
             "{stderr}"
         );
-        assert!(!stderr.contains("cquery-snapshot: hit"), "{stderr}");
         assert_eq!(f.count("local"), index + 1);
         assert_eq!(f.count("nonlocal"), 1);
     }
 }
 
 #[test]
-fn nonempty_saved_analysis_events_are_not_replayed_after_current_loading() {
+fn nonempty_saved_analysis_suffix_is_replayed_after_current_loading_without_actions() {
     let f = Fixture::new();
     // Printing in configured analysis, not in the current loading prefix.
     let marker = f.temp.path().join("analysis-action-ran");
@@ -246,7 +252,14 @@ fn nonempty_saved_analysis_events_are_not_replayed_after_current_loading() {
         let out = f.command().output().unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success(), "{stderr}");
-        assert!(stderr.contains("cquery-snapshot: miss"), "{stderr}");
+        assert!(
+            stderr.contains(if expected == 1 {
+                "cquery-snapshot: saved"
+            } else {
+                "cquery-snapshot: hit"
+            }),
+            "{stderr}"
+        );
         assert_eq!(stderr.matches("analysis-note").count(), 1, "{stderr}");
         assert_eq!(f.count("local"), expected);
         assert_eq!(f.count("nonlocal"), 0);
@@ -519,6 +532,467 @@ fn cancelling_required_current_loading_cannot_fall_through_to_a_saved_graph() {
 }
 
 const CURRENT_LOADING: &str = "BAZEL_RS_CQUERY_CURRENT_LOADING";
+
+// Project only the native outer cache protocol, not user output. All other
+// stderr bytes (including multi-line prints and warnings) must agree exactly.
+fn command_diagnostics(out: &std::process::Output) -> String {
+    String::from_utf8(out.stderr.clone())
+        .unwrap()
+        .lines()
+        .filter(|line| !line.starts_with("bazel-rs-cquery-snapshot:"))
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
+fn event_fixture(f: &Fixture, prefix: &str, suffix: &str) {
+    let module = "module(name='current_loading')\nl=use_repo_rule('//:repos.bzl','local_maker')\nl(name='defs')\nl(name='unused',bad=True)\nr=use_repo_rule('//:repos.bzl','payload')\nr(name='payload',src='//:.bazelignore')\n";
+    f.write(
+        "MODULE.bazel",
+        &format!(
+            "{module}{}",
+            if prefix.is_empty() {
+                String::new()
+            } else {
+                format!("print('MODULE-PREFIX-{prefix}')\n")
+            }
+        ),
+    );
+    let action = serde_json::to_string(&format!(
+        "touch '{}'",
+        f.temp.path().join("EVENT-ACTION-RAN").display()
+    ))
+    .unwrap();
+    let prints = if prefix.is_empty() {
+        String::new()
+    } else {
+        format!("print('BZL-PREFIX-{prefix}\\nuser continuation: not a protocol line')\n")
+    };
+    f.write("events.bzl", &format!(r#"{prints}
+def impl(ctx):
+    print('ANALYSIS-' + ctx.attr.message)
+    out=ctx.actions.declare_file(ctx.label.name + '.event')
+    ctx.actions.run_shell(outputs=[out],command={action})
+    return [DefaultInfo(files=depset([out],transitive=[d[DefaultInfo].files for d in ctx.attr.deps]))]
+reported=rule(implementation=impl,attrs={{'message':attr.string(),'deps':attr.label_list(allow_files=True)}})
+"#));
+    let print = if prefix.is_empty() {
+        String::new()
+    } else {
+        format!("print('BUILD-PREFIX-{prefix}')\n")
+    };
+    fs::create_dir_all(f.root.join("legacy")).unwrap();
+    f.write("legacy/BUILD.bazel", "load('//:events.bzl','reported')\nreported(name='legacy',message='LEGACY',deprecation='event-phase-deprecation',visibility=['//visibility:public'])\n");
+    f.write("BUILD.bazel", &format!("load('@defs//:defs.bzl','targets')\nload(':events.bzl','reported')\n{print}platform(name='platform')\nexports_files(['.bazelignore'])\nreported(name='top',message='{suffix}',deps=['//legacy','@payload//:data'])\n"));
+}
+
+fn event_query(f: &Fixture, mode: &str, quiet: bool, color: &str) -> std::process::Output {
+    let out = f
+        .command_with_quiet(quiet)
+        .env("BAZEL_RS_SNAPSHOT", mode)
+        .arg(format!("--color={color}"))
+        .arg(format!(
+            "--workspace_status_command=touch {}",
+            f.temp.path().join("EVENT-STATUS-RAN").display()
+        ))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!f.temp.path().join("EVENT-ACTION-RAN").exists());
+    assert!(!f.temp.path().join("EVENT-STATUS-RAN").exists());
+    out
+}
+
+#[test]
+fn phase_owned_module_bzl_build_notes_and_analysis_suffix_match_fresh_output_on_history_hits() {
+    let f = Fixture::new();
+    let mut graphs = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut local = 0;
+    for version in ["A", "B"] {
+        event_fixture(&f, version, version);
+        f.write(".bazelignore", &format!("unused-{version}\n"));
+        let cold = event_query(&f, "on", false, "no");
+        local += 1;
+        assert!(String::from_utf8_lossy(&cold.stderr).contains("cquery-snapshot: saved"));
+        let fresh = event_query(&f, "off", false, "no");
+        local += 1;
+        let warm = event_query(&f, "on", false, "no");
+        local += 1;
+        assert!(
+            String::from_utf8_lossy(&warm.stderr).contains("cquery-snapshot: hit"),
+            "{}",
+            String::from_utf8_lossy(&warm.stderr)
+        );
+        assert_eq!(warm.stdout, fresh.stdout);
+        assert_eq!(cold.stdout, fresh.stdout);
+        let expected = command_diagnostics(&fresh);
+        assert_eq!(command_diagnostics(&cold), expected);
+        assert_eq!(command_diagnostics(&warm), expected);
+        for note in [
+            format!("MODULE-PREFIX-{version}"),
+            format!("BZL-PREFIX-{version}"),
+            format!("BUILD-PREFIX-{version}"),
+            format!("ANALYSIS-{version}"),
+        ] {
+            assert_eq!(expected.matches(&note).count(), 1, "{expected}");
+        }
+        assert_eq!(
+            expected.matches("event-phase-deprecation").count(),
+            1,
+            "{expected}"
+        );
+        graphs.push(cold.stdout);
+        diagnostics.push(expected);
+    }
+    for (index, version) in [(0, "A"), (1, "B"), (0, "A"), (1, "B")] {
+        event_fixture(&f, version, version);
+        f.write(".bazelignore", &format!("unused-{version}\n"));
+        let out = event_query(&f, "on", false, "no");
+        local += 1;
+        assert!(String::from_utf8_lossy(&out.stderr).contains("cquery-snapshot: hit"));
+        assert_eq!(out.stdout, graphs[index]);
+        assert_eq!(command_diagnostics(&out), diagnostics[index]);
+        assert_eq!(f.count("local"), local);
+        assert_eq!(f.count("nonlocal"), 2);
+    }
+}
+
+#[test]
+fn same_prefix_distinct_suffix_quiet_color_and_verify_keep_current_output_once() {
+    let f = Fixture::new();
+    for version in ["A", "B"] {
+        event_fixture(&f, "SAME", version);
+        event_query(&f, "on", false, "no");
+    }
+    for version in ["A", "B"] {
+        event_fixture(&f, "SAME", version);
+        for (quiet, color) in [(true, "no"), (false, "yes"), (false, "no")] {
+            let fresh = event_query(&f, "off", quiet, color);
+            let before = f.count("local");
+            let hit = event_query(&f, "on", quiet, color);
+            assert!(
+                String::from_utf8_lossy(&hit.stderr).contains("cquery-snapshot: hit"),
+                "{}",
+                String::from_utf8_lossy(&hit.stderr)
+            );
+            assert_eq!(hit.stdout, fresh.stdout);
+            assert_eq!(command_diagnostics(&hit), command_diagnostics(&fresh));
+            assert_eq!(f.count("local"), before + 1);
+            let verified = event_query(&f, "verify", quiet, color);
+            assert_eq!(verified.stdout, fresh.stdout);
+            assert_eq!(command_diagnostics(&verified), command_diagnostics(&fresh));
+            assert!(
+                !String::from_utf8_lossy(&verified.stderr).contains("cquery-snapshot: hit"),
+                "verify ran fresh analysis"
+            );
+            assert_eq!(f.count("local"), before + 2);
+        }
+    }
+    assert_eq!(f.count("nonlocal"), 1);
+}
+
+// Independent wire helpers for deliberate corrupt-candidate tests. The default
+// EVENTS codec is unchanged; the current profile has an explicitly framed body.
+fn phase_frame(prefix: &[u8], suffix: &[u8]) -> Vec<u8> {
+    let mut bytes = b"BZCQEV01".to_vec();
+    bytes.extend_from_slice(&(prefix.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&(suffix.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(prefix);
+    bytes.extend_from_slice(suffix);
+    bytes
+}
+
+fn saved_phases(path: &Path) -> (Vec<u8>, Vec<u8>) {
+    use bazel_rs::snapshot::format::{self, Header, Section};
+    let bytes = fs::read(path).unwrap();
+    let header = Header::decode(&bytes, bytes.len() as u64).unwrap();
+    let events = header.slot(Section::Events).unwrap();
+    let bytes = format::decode_events(
+        &bytes[events.offset as usize..(events.offset + events.len) as usize],
+    )
+    .unwrap();
+    assert_eq!(&bytes[..8], b"BZCQEV01");
+    let prefix = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
+    let suffix = u64::from_le_bytes(bytes[16..24].try_into().unwrap()) as usize;
+    assert_eq!(bytes.len(), 24 + prefix + suffix);
+    (
+        bytes[24..24 + prefix].to_vec(),
+        bytes[24 + prefix..].to_vec(),
+    )
+}
+
+fn change_events(source: &Path, destination: &Path, events: &[u8], bad_graph: bool) {
+    use bazel_rs::snapshot::{
+        format::{self, Header, Section},
+        key::Key,
+    };
+    let bytes = fs::read(source).unwrap();
+    let header = Header::decode(&bytes, bytes.len() as u64).unwrap();
+    let mut sections: Vec<_> = [
+        Section::Inputs,
+        Section::Events,
+        Section::Plan,
+        Section::Stats,
+    ]
+    .into_iter()
+    .map(|kind| {
+        let s = header.slot(kind).unwrap();
+        (
+            kind,
+            bytes[s.offset as usize..(s.offset + s.len) as usize].to_vec(),
+        )
+    })
+    .collect();
+    sections[1].1 = format::encode_events(events);
+    if bad_graph {
+        let mut graph: bazel_rs::engine::cquery::Graph =
+            postcard::from_bytes(&format::decompress_plan(sections[2].1.clone()).unwrap()).unwrap();
+        graph.patterns.insert("//:top".into(), vec![u32::MAX]);
+        sections[2].1 = format::compress_plan(&postcard::to_allocvec(&graph).unwrap());
+    }
+    let views: Vec<_> = sections
+        .iter()
+        .map(|(kind, bytes)| (*kind, bytes.as_slice()))
+        .collect();
+    let mut bytes = Header::new(
+        &Key {
+            g: header.key,
+            binary: header.binary,
+        },
+        header.created_ns + 1,
+        &views,
+    )
+    .encode()
+    .to_vec();
+    for (_, part) in sections {
+        bytes.extend(part);
+    }
+    fs::write(destination, bytes).unwrap();
+}
+
+#[test]
+fn corrupt_newest_phase_metadata_or_graph_emits_only_the_selected_suffix() {
+    let f = Fixture::new();
+    event_fixture(&f, "", "SAFE");
+    let cold = event_query(&f, "on", false, "no");
+    let original = f.snapshots().pop().unwrap();
+    let (prefix, suffix) = saved_phases(&original);
+    assert!(
+        prefix.is_empty(),
+        "silent current prefix is proved in the stored frame"
+    );
+    assert!(String::from_utf8_lossy(&suffix).contains("ANALYSIS-SAFE"));
+    assert!(!String::from_utf8_lossy(&suffix).contains("cquery-snapshot:"));
+    let other = original.with_file_name(
+        original
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replace("cq0", "cq1"),
+    );
+    for damage in [
+        "wrong-prefix",
+        "legacy",
+        "oversized",
+        "truncated",
+        "trailing",
+        "version",
+        "graph",
+    ] {
+        let mut frame = phase_frame(&prefix, b"POISON-SUFFIX\n");
+        match damage {
+            "wrong-prefix" => frame = phase_frame(b"OLD-PREFIX\n", b"POISON-SUFFIX\n"),
+            "legacy" => frame = b"unframed POISON-SUFFIX\n".to_vec(),
+            "oversized" => frame[8..16].copy_from_slice(&u64::MAX.to_le_bytes()),
+            "truncated" => frame.truncate(17),
+            "trailing" => frame.push(0),
+            "version" => frame[7] = b'9',
+            _ => {}
+        }
+        change_events(&original, &other, &frame, damage == "graph");
+        let before = f.count("local");
+        let out = event_query(&f, "on", false, "no");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("cquery-snapshot: hit"),
+            "{damage}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(out.stdout, cold.stdout);
+        assert_eq!(command_diagnostics(&out), command_diagnostics(&cold));
+        assert_eq!(f.count("local"), before + 1);
+    }
+    // An empty *current* prefix cannot authorize a nonempty recorded prefix.
+    change_events(
+        &original,
+        &other,
+        &phase_frame(b"OLD-PREFIX\n", b"POISON-SUFFIX\n"),
+        false,
+    );
+    fs::remove_file(&original).unwrap();
+    let before = f.count("local");
+    let miss = event_query(&f, "on", false, "no");
+    assert!(
+        String::from_utf8_lossy(&miss.stderr).contains("miss: current loading diagnostics differ")
+    );
+    assert_eq!(command_diagnostics(&miss), command_diagnostics(&cold));
+    assert_eq!(f.count("local"), before + 1);
+    assert_eq!(f.count("nonlocal"), 1);
+}
+
+#[test]
+fn verification_compares_actual_analysis_suffix_without_printing_cached_poison() {
+    let f = Fixture::new();
+    event_fixture(&f, "NOW", "ACTUAL");
+    event_query(&f, "on", false, "no");
+    let path = f.snapshots().pop().unwrap();
+    let (prefix, _) = saved_phases(&path);
+    assert!(String::from_utf8_lossy(&prefix).contains("MODULE-PREFIX-NOW"));
+    assert!(!String::from_utf8_lossy(&prefix).contains("ANALYSIS-"));
+    change_events(
+        &path,
+        &path,
+        &phase_frame(&prefix, b"POISON-SUFFIX\n"),
+        false,
+    );
+    let before = f.count("local");
+    let out = f
+        .command()
+        .env("BAZEL_RS_SNAPSHOT", "verify")
+        .arg("--color=no")
+        .arg(format!(
+            "--workspace_status_command=touch {}",
+            f.temp.path().join("EVENT-STATUS-RAN").display()
+        ))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("diagnostic phase verification mismatch"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("POISON-SUFFIX"));
+    assert_eq!(stderr.matches("MODULE-PREFIX-NOW").count(), 1);
+    assert_eq!(stderr.matches("ANALYSIS-ACTUAL").count(), 1);
+    assert_eq!(f.count("local"), before + 1);
+    assert!(!f.temp.path().join("EVENT-ACTION-RAN").exists());
+    assert!(!f.temp.path().join("EVENT-STATUS-RAN").exists());
+}
+
+#[test]
+fn current_prefix_and_analysis_failures_keep_fresh_error_order_once_with_valid_history() {
+    let f = Fixture::new();
+    event_fixture(&f, "NOW", "SAVED");
+    event_query(&f, "on", false, "no");
+    for phase in ["module", "local", "build", "analysis"] {
+        for quiet in [false, true] {
+            event_fixture(&f, "NOW", "SAVED");
+            f.tool("one");
+            match phase {
+                "module" => {
+                    let path = f.root.join("MODULE.bazel");
+                    let text = fs::read_to_string(&path).unwrap();
+                    fs::write(path, format!("{text}fail('PHASE-ERROR-module')\n")).unwrap();
+                }
+                "local" => {
+                    fs::remove_file(f.bin.join("probe-tool")).unwrap();
+                }
+                "build" => {
+                    let path = f.root.join("BUILD.bazel");
+                    let text = fs::read_to_string(&path).unwrap();
+                    fs::write(path, format!("{text}fail('PHASE-ERROR-build')\n")).unwrap();
+                }
+                "analysis" => {
+                    let path = f.root.join("events.bzl");
+                    let text = fs::read_to_string(&path).unwrap();
+                    fs::write(
+                        path,
+                        text.replace(
+                            "    out=ctx.actions",
+                            "    fail('PHASE-ERROR-analysis')\n    out=ctx.actions",
+                        ),
+                    )
+                    .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let mut outputs = Vec::new();
+            for mode in ["off", "on"] {
+                let before = f.count("local");
+                let out = f
+                    .command_with_quiet(quiet)
+                    .env("BAZEL_RS_SNAPSHOT", mode)
+                    .arg("--color=no")
+                    .arg(format!(
+                        "--workspace_status_command=touch {}",
+                        f.temp.path().join("EVENT-STATUS-RAN").display()
+                    ))
+                    .output()
+                    .unwrap();
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                assert!(!out.status.success(), "{phase}: {stderr}");
+                assert!(!stderr.contains("cquery-snapshot: hit"));
+                assert!(!stderr.contains("ANALYSIS-SAVED"));
+                assert!(
+                    stderr.contains(if phase == "local" {
+                        "current tool missing"
+                    } else {
+                        "PHASE-ERROR-"
+                    }),
+                    "{stderr}"
+                );
+                assert_eq!(f.count("local"), before + usize::from(phase != "module"));
+                assert!(!f.temp.path().join("EVENT-ACTION-RAN").exists());
+                assert!(!f.temp.path().join("EVENT-STATUS-RAN").exists());
+                outputs.push(out);
+            }
+            assert_eq!(outputs[0].status.code(), outputs[1].status.code());
+            assert_eq!(outputs[0].stdout, outputs[1].stdout);
+            assert_eq!(
+                command_diagnostics(&outputs[0]),
+                command_diagnostics(&outputs[1]),
+                "{phase}, quiet={quiet}"
+            );
+        }
+    }
+}
+
+#[test]
+fn overflowing_prefix_or_suffix_is_visible_once_and_never_saved_or_replayed() {
+    for phase in ["prefix", "suffix"] {
+        let f = Fixture::new();
+        event_fixture(&f, "NOW", "SAVED");
+        let path = f.root.join("events.bzl");
+        let text = fs::read_to_string(&path).unwrap();
+        let huge = "print('OVERFLOW-BEGIN' + 'x' * 8388608 + 'OVERFLOW-END')";
+        let text = if phase == "prefix" {
+            format!("{huge}\n{text}")
+        } else {
+            text.replace(
+                "    out=ctx.actions",
+                &format!("    {huge}\n    out=ctx.actions"),
+            )
+        };
+        fs::write(path, text).unwrap();
+        let fresh = event_query(&f, "off", false, "no");
+        for _ in 0..2 {
+            let before = f.count("local");
+            let out = event_query(&f, "on", false, "no");
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(!stderr.contains("cquery-snapshot: hit"));
+            assert!(stderr.contains("cquery-snapshot: not saved"), "{phase}");
+            assert_eq!(out.stdout, fresh.stdout);
+            assert_eq!(command_diagnostics(&out), command_diagnostics(&fresh));
+            assert_eq!(f.count("local"), before + 1);
+            assert!(f.snapshots().is_empty());
+        }
+    }
+}
 
 #[test]
 fn default_warm_hit_replays_diagnostics_once_without_reloading_the_package_prefix() {

@@ -284,6 +284,9 @@ struct Shared {
     /// pool stops.
     changed: Condvar,
     workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    /// Includes finalization/listeners, even after stop drops a handle at its
+    /// bounded grace deadline. One increment/decrement per worker thread.
+    live_workers: std::sync::atomic::AtomicUsize,
 }
 
 /// One repository set's speculations (crate::repository).
@@ -303,6 +306,15 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Speculations {
+    pub(crate) fn quiescent(&self) -> bool {
+        let Ok(state) = self.shared.state.try_lock() else {
+            return false;
+        };
+        state.width == 0
+            && state.running == 0
+            && state.queue.is_empty()
+            && self.shared.live_workers.load(Ordering::Acquire) == 0
+    }
     /// Start accepting requests: at most `width` workers run `job`.
     pub(crate) fn start(&self, width: usize, job: Job, listener: Listener, jitter_millis: u64) {
         let mut state = lock(&self.shared.state);
@@ -517,13 +529,26 @@ impl Speculations {
         while workers.len() < wanted {
             let index = workers.len() as u64;
             let shared = self.shared.clone();
+            shared.live_workers.fetch_add(1, Ordering::AcqRel);
             let spawned = std::thread::Builder::new()
                 .name("bazel-rs-fetch".to_owned())
                 .stack_size(WORKER_STACK)
-                .spawn(move || worker(&shared, index));
+                .spawn(move || {
+                    struct Live(Arc<Shared>);
+                    impl Drop for Live {
+                        fn drop(&mut self) {
+                            self.0.live_workers.fetch_sub(1, Ordering::Release);
+                        }
+                    }
+                    let live = Live(shared);
+                    worker(&live.0, index);
+                });
             match spawned {
                 Ok(handle) => workers.push(handle),
-                Err(_) => break,
+                Err(_) => {
+                    self.shared.live_workers.fetch_sub(1, Ordering::Release);
+                    break;
+                }
             }
         }
     }
@@ -641,6 +666,45 @@ mod tests {
             obtained: crate::repository_demand::Obtained::default(),
             withdraw: None,
         })
+    }
+
+    #[test]
+    fn phase_boundary_rejects_idle_pools_and_late_publication_listeners_without_waiting() {
+        let speculations = Speculations::default();
+        assert!(speculations.quiescent());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        speculations.start(
+            1,
+            Arc::new(|_| Finished::Published),
+            Arc::new(move || {
+                entered_tx.send(()).unwrap();
+                lock(&release_rx)
+                    .recv_timeout(Duration::from_secs(60))
+                    .unwrap();
+            }),
+            0,
+        );
+        assert!(
+            !speculations.quiescent(),
+            "idle enabled pool can admit work"
+        );
+        speculations.request("late-listener");
+        entered_rx.recv_timeout(Duration::from_secs(60)).unwrap();
+        // Ownership state after stop's bounded grace expires: running=0 and
+        // no retained handle, but a listener still owns possible output/work.
+        lock(&speculations.shared.state).width = 0;
+        assert_eq!(lock(&speculations.shared.state).running, 0);
+        let handles = std::mem::take(&mut *lock(&speculations.shared.workers));
+        assert!(!speculations.quiescent());
+        release_tx.send(()).unwrap();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert!(speculations.quiescent());
+        let _guard = lock(&speculations.shared.state);
+        assert!(!speculations.quiescent(), "a busy ownership lock is a miss");
     }
 
     /// A speculation's prints are deferred on its thread only; the
