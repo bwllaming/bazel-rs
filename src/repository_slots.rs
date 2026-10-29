@@ -318,12 +318,7 @@ impl SlotWriter {
     /// Historical adoption may replace only an unmarked link (or a missing
     /// link), never repair or replace a real mutable/in-progress root.
     pub(crate) fn immutable(&self) -> bool {
-        fs::symlink_metadata(marker_path(&self.store, &self.canonical))
-            .is_err_and(|error| error.kind() == ErrorKind::NotFound)
-            && match fs::symlink_metadata(&self.slot) {
-                Ok(metadata) => metadata.file_type().is_symlink(),
-                Err(error) => error.kind() == ErrorKind::NotFound,
-            }
+        immutable_slot(&self.store, &self.canonical)
     }
 
     pub(crate) fn bind_immutable(&self, identity: &str) -> Result<(), String> {
@@ -599,6 +594,15 @@ pub fn bind(store: &Path, canonical: &str, identity: &str) -> Result<(), String>
 }
 
 const MARKER_MAGIC: &str = "bazel-rs repository directory marker 1";
+
+pub(crate) fn immutable_slot(store: &Path, canonical: &str) -> bool {
+    fs::symlink_metadata(marker_path(store, canonical))
+        .is_err_and(|error| error.kind() == ErrorKind::NotFound)
+        && match fs::symlink_metadata(slot_path(store, canonical)) {
+            Ok(metadata) => metadata.file_type().is_symlink(),
+            Err(error) => error.kind() == ErrorKind::NotFound,
+        }
+}
 
 fn marker_path(store: &Path, canonical: &str) -> PathBuf {
     store.join("direct").join("slots").join(slug(canonical))

@@ -30,21 +30,30 @@ source, usage, mapping, environment, input and facts checks. Invalid entries mis
 before extension evaluation. Preparation heaps are shared per group and released
 before returning compact, non-deserializable point-in-time proofs.
 
-The initial supported closure is deliberately narrow:
+The supported closure includes current module dependencies and transitive loads:
 
-- Explicit-module profile, with no module dependencies (including nodep/dev).
-- Definitions and transitive loads in the root workspace.
-- Non-local direct rules, or ordinary extensions with a current valid lock entry.
-- Runtime probes in the workspace or candidate publication (`stage:`), without
-  symlink hops. Declared and watched environment values are checked normally.
+- Local override and registry-local source roots selected by current metadata.
+- Registry metadata read from local registries or CAS named by **current reopened
+  lockfile checksums**, never an old URL memo. Missing checksums/data, mutable
+  remote metadata and refresh mode miss without transport or prefetch.
+- Already published registry archives under the existing source/overlay/patch
+  key, current compiled built-ins (with normal filesystem precedence), and fully
+  pinned Git sources under their normal remote/commit/strip/patch key. Pure
+  verification returns before staging, fetching, Git invocation or repair.
+- Non-local direct rules and ordinary extensions with current valid lock entries.
+  Generated definition/runtime roots require their own receipt and recursive
+  current-spec/runtime/integrity proof **before loading**. Existing demand-slot
+  cycle/depth checks apply. All producer receipts must be in the candidate batch.
+- Friendly workspace, candidate `stage:`, and `@@repo//` runtime probes through
+  current proved roots, without symlink hops. Declared/watched environment values
+  are checked normally.
 
-External/registry/Git/builtin producers, seeded hidden lock entries, absolute
-runtime paths, local rules, diagnostic-producing preparation, and mutable real
-slots are conservative misses. Derived definitions are refused **before loading**;
-their retained bytes, pinned tables, or an old preparation memo are not proof.
-The dependency check precedes module graph resolution, so this slice cannot
-fetch registry metadata, invoke Git or prepare module roots. Registry CAS
-selection by current checksums belongs to a future producer-closure increment.
+Seeded hidden lock entries, arbitrary absolute runtime paths, local rules,
+diagnostic-producing preparation and mutable roots are conservative misses.
+Retained bytes, old pinned tables and old prepared memos never certify current
+producers. The private proof records current resolution, source and runtime reads;
+producer identity locks join the adoption lock set, and a changed producer closure
+after lock acquisition misses before mutation.
 
 The store's read-only probe uses the same validation kernel as normal reuse.
 It checks current shared then workspace pointer winners first. A different valid
@@ -88,5 +97,14 @@ now require four historical hits, exactly two generator executions, and matching
 pointer, graph and actual external bytes for constant and changing output, direct
 and valid-lock extension cases. Late invalid graph indices, changed input/winner,
 mutable markers, busy publishers, missing data and partial-commit recovery are
-covered. Broader producer closure remains unsupported; no application/TD unblock
-is implied by root-only adoption.
+covered. Additional CLI tests cover registry local/archive sources, module deps,
+recursive generated definitions, and built-in filesystem precedence under module
+overrides. Counters cover generators and extension callbacks; registry transport
+and Git-fetch counters stay zero during pure proof.
+
+Historical adoption with local replay is still unsupported. Read-only structural
+inspection of the saved V3 INPUTS found **45 local-repository replay records in
+each retained graph**, alongside registry, built-in, direct and Git trees. This
+series therefore does **not** unblock that application/TD probe. Supporting those
+records requires a separate preacceptance replay/adoption rollback protocol for
+real slots; they are refused before replay today.

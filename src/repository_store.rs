@@ -1048,11 +1048,8 @@ where
     }
     // A real slot may have been made writable by another repository's tool.
     // Its old ordinary manifest is not evidence that the live root is immutable.
-    let slot = crate::repository_slots::slot_path(cache, &receipt.canonical);
-    match fs::symlink_metadata(&slot) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        _ => return None,
+    if !crate::repository_slots::immutable_slot(cache, &receipt.canonical) {
+        return None;
     }
     let workspace_text = crate::repository_warm::workspace_text(workspace);
     let own = Scope::Workspace(workspace.as_os_str().as_encoded_bytes().to_vec());
@@ -1221,9 +1218,10 @@ thread_local! {
 }
 
 impl AdoptionGuard {
-    pub(crate) fn acquire(
+    pub(crate) fn acquire<'a>(
         cache: &Path,
         receipts: &[crate::repository_publication::Receipt],
+        producers: impl IntoIterator<Item = &'a crate::observed_fs::RepositoryRecord>,
     ) -> Result<Self, String> {
         let mut receipts = receipts.to_vec();
         receipts.sort_by_key(|receipt| crate::repository_slots::slug(&receipt.canonical));
@@ -1241,18 +1239,29 @@ impl AdoptionGuard {
             }
             guard.slots.push(slot);
         }
-        let ids: std::collections::BTreeSet<_> = guard
+        let mut paths: std::collections::BTreeSet<_> = guard
             .receipts
             .iter()
-            .map(|receipt| &receipt.publication)
+            .map(|receipt| cache.join("direct/locks").join(&receipt.publication))
             .collect();
-        for id in ids {
+        for producer in producers {
+            let tree = store_tree_of(cache, &producer.root)
+                .filter(|tree| tree.root == producer.root)
+                .ok_or("unsupported producer publication lock")?;
+            let directory = match tree.kind {
+                "direct" => "direct/locks",
+                "registry" => "locks",
+                "builtin" => "builtins/locks",
+                "git" => "git/locks",
+                _ => return Err("unknown producer lock kind".into()),
+            };
+            paths.insert(cache.join(directory).join(tree.id));
+        }
+        for path in paths {
             let mut options = OpenOptions::new();
             options.read(true).write(true);
             no_follow(&mut options);
-            let lock = options
-                .open(cache.join("direct/locks").join(id))
-                .map_err(|e| e.to_string())?;
+            let lock = options.open(path).map_err(|e| e.to_string())?;
             regular_metadata(&lock.metadata().map_err(|e| e.to_string())?)?;
             FileExt::try_lock_shared(&lock)
                 .map_err(|_| "publication is being refreshed, published or evicted")?;

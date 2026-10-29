@@ -71,6 +71,7 @@ pub struct RegistrySession {
     mode: LockfileMode,
     workspace: PathBuf,
     target: LockfileTarget,
+    proof_store: Option<PathBuf>,
     lockfile: Lockfile,
     write_path: Option<PathBuf>,
     cas: Option<PathBuf>,
@@ -203,6 +204,7 @@ impl RegistrySession {
             mode,
             workspace: workspace.to_path_buf(),
             target: target.clone(),
+            proof_store: None,
             lockfile,
             write_path,
             cas: repository_cache
@@ -317,6 +319,53 @@ impl RegistrySession {
     /// Read one registry file; at most one transport request per URL and
     /// invocation (so bazel_registry.json is fetched once per registry).
     pub fn read(&self, registry: &Registry, relative: &str) -> Result<Fetch, String> {
+        if let Some(store) = &self.proof_store {
+            if let Some(path) = registry.local_path() {
+                let path = crate::observed_fs::canonicalize(path).map_err(|e| e.to_string())?;
+                if path.starts_with(store) {
+                    return Err("proof registry metadata requires an unproved derived root".into());
+                }
+                return direct(registry, relative);
+            }
+            // A current lock checksum is the only authority for remote CAS
+            // metadata. Never use a URL memo, fetch, refresh or populate CAS.
+            let url = registry.download_location(relative)?;
+            if self.mode == LockfileMode::Off
+                || self.mode == LockfileMode::Refresh
+                || relative.ends_with("/metadata.json")
+            {
+                return Err("registry metadata is unavailable in read-only proof mode".into());
+            }
+            return match self.lockfile.registry_file_hashes.get(&url) {
+                Some(Some(hash)) => {
+                    if hash.len() != 64
+                        || !hash
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    {
+                        return Err("current registry checksum is malformed".into());
+                    }
+                    let path = self
+                        .cas
+                        .as_ref()
+                        .ok_or("proof has no registry CAS")?
+                        .join(hash);
+                    if !crate::observed_fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file())
+                    {
+                        return Err("current registry checksum has no regular CAS entry".into());
+                    }
+                    let bytes = crate::observed_fs::read(&path).map_err(|e| e.to_string())?;
+                    if sha256_hex(&bytes) != *hash {
+                        return Err("current registry CAS checksum mismatch".into());
+                    }
+                    Ok(Fetch::Found(Arc::new(bytes)))
+                }
+                Some(None) => Ok(Fetch::NotFound(format!(
+                    "{url}: absent in current lockfile"
+                ))),
+                None => Err("current lockfile has no registry checksum for proof".into()),
+            };
+        }
         if registry.local_path().is_some() {
             return direct(registry, relative);
         }
@@ -405,6 +454,9 @@ impl RegistrySession {
     /// a failure, a checksum the lockfile does not know in error mode):
     /// the warm-up gives up and the sequential read reports it.
     fn peek(&self, registry: &Registry, relative: &str) -> Option<Arc<Vec<u8>>> {
+        if self.proof_store.is_some() {
+            return None;
+        }
         let url = registry.download_location(relative).ok()?;
         if let Some(slot) = self.memo.lock().expect("registry memo").get(&url)
             && let Some(result) = slot.get()
@@ -507,6 +559,9 @@ impl RegistrySession {
     /// one does not report "not found", as ModuleFileFunction does for each
     /// module of a horizon in parallel (ModuleFileFunction.java:820-855).
     pub fn prefetch_fallbacks(&self, items: Vec<(Vec<Registry>, String)>) {
+        if self.proof_store.is_some() {
+            return;
+        }
         let mut seen = BTreeSet::new();
         let pending: VecDeque<(Vec<Registry>, String)> = {
             let memo = self.memo.lock().expect("registry memo");
@@ -803,10 +858,27 @@ impl SessionHandle {
     /// A private fresh lockfile view for non-materializing preparation. Reopen
     /// the current overlay/workspace choice; never inherit evaluated extension
     /// results, memoized registry reads or seeded historical hidden entries.
-    pub(crate) fn for_publication_proof(&self) -> Result<Self, String> {
+    pub(crate) fn for_publication_proof(
+        &self,
+        workspace: &Path,
+        store: &Path,
+    ) -> Result<Self, String> {
+        let proof_store =
+            crate::observed_fs::canonicalize(store).unwrap_or_else(|_| store.to_path_buf());
         let Some(session) = &self.0 else {
-            return Ok(Self::default());
+            let mut session = RegistrySession::open(
+                workspace,
+                LockfileMode::Off,
+                &LockfileTarget::ReadOnly,
+                None,
+                Default::default(),
+            )?;
+            session.proof_store = Some(proof_store);
+            return Ok(Self::new(session));
         };
+        if session.mode == LockfileMode::Refresh {
+            return Err("lockfile refresh cannot be proved without evaluation".into());
+        }
         if session.hidden_seeded {
             return Err("publication proof does not support seeded hidden lockfiles".into());
         }
@@ -818,11 +890,19 @@ impl SessionHandle {
             session.allowed_yanked.clone(),
         )?;
         fresh.readonly = true;
+        fresh.proof_store = Some(proof_store);
+        fresh.cas = session.cas.clone();
         fresh.spellings = session.spellings.clone();
         if let Some((path, _)) = &session.hidden {
             fresh = fresh.with_hidden_lockfile(path.clone());
         }
         Ok(Self::new(fresh))
+    }
+
+    pub(crate) fn publication_proof(&self) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|session| session.proof_store.is_some())
     }
 
     pub fn new(session: RegistrySession) -> Self {
@@ -1008,6 +1088,50 @@ mod tests {
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn proof_registry_reads_only_current_lock_checksums_with_zero_transport() {
+        let temp = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
+        let server = serve(BTreeMap::new());
+        let registry = Registry::parse(&server.base).unwrap();
+        let relative = "modules/defs/1.0/MODULE.bazel";
+        let url = registry.download_location(relative).unwrap();
+        let a = b"module(name='defs',version='1.0')";
+        let b = b"module(name='defs',version='1.1')";
+        let cache = temp.path().join("cache");
+        let cas = crate::materializer::download_cache_dir(&cache, "sha256");
+        std::fs::create_dir_all(&cas).unwrap();
+        std::fs::write(cas.join(sha256_hex(a)), a).unwrap();
+        let lock = |hash: &str| {
+            serde_json::json!({"lockFileVersion":28,"registryFileHashes":{url.clone():hash}})
+                .to_string()
+        };
+        let old = SessionHandle::new(session(
+            temp.path(),
+            LockfileMode::Update,
+            Some(&lock(&sha256_hex(a))),
+        ));
+        let proof = old.for_publication_proof(temp.path(), &cache).unwrap();
+        assert!(
+            matches!(proof.read(&registry, relative).unwrap(), Fetch::Found(bytes) if bytes.as_slice() == a)
+        );
+        std::fs::write(temp.path().join("MODULE.bazel.lock"), lock(&sha256_hex(b))).unwrap();
+        let proof = old.for_publication_proof(temp.path(), &cache).unwrap();
+        assert!(
+            proof.read(&registry, relative).is_err(),
+            "old memo/CAS must not substitute for current checksum"
+        );
+        std::fs::write(cas.join(sha256_hex(b)), b).unwrap();
+        assert!(
+            matches!(proof.read(&registry, relative).unwrap(), Fetch::Found(bytes) if bytes.as_slice() == b)
+        );
+        std::fs::write(cas.join(sha256_hex(b)), b"tampered").unwrap();
+        assert!(proof.read(&registry, relative).is_err());
+        proof.prefetch(vec![(registry.clone(), relative.to_owned())]);
+        assert!(proof.read(&registry, "missing").is_err());
+        assert_eq!(server.total.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read(cas.join(sha256_hex(b))).unwrap(), b"tampered");
+    }
 
     /// A tiny HTTP/1.1 server over a map of paths; counts requests per path.
     struct Server {

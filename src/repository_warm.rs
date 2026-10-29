@@ -361,9 +361,9 @@ pub(crate) fn record(
 /// Reobserve the recorded inputs against the current world. `Ok(false)` means
 /// the world changed (or cannot be confirmed unchanged): the store re-executes
 /// the repository rule, like Bazel refetching after a dependency change.
-/// The bounded historical proof subset: friendly workspace and stage paths
-/// only, with no symlink hops or arbitrary absolute derived paths. External
-/// roots need producer proof before this boundary can be widened.
+/// Historical proof paths: friendly workspace, stage, and named repositories
+/// resolved by the proof-only RepositorySet (current producer proof before
+/// loading). Symlink hops and arbitrary absolute derived paths remain excluded.
 pub(crate) fn unchanged_for_proof(
     repositories: &RepositorySet,
     workspace: &Path,
@@ -390,6 +390,13 @@ pub(crate) fn unchanged_for_proof(
             (tree, relative, true)
         } else if let Some(relative) = text.strip_prefix("@@//") {
             (workspace, relative, false)
+        } else if let Some((repository, relative)) = text
+            .strip_prefix("@@")
+            .and_then(|text| text.split_once("//"))
+        {
+            // root() is proof-only on this RepositorySet: generated roots
+            // require their own current spec/runtime receipt before loading.
+            (repositories.root(repository)?, relative, true)
         } else {
             return Ok(false);
         };

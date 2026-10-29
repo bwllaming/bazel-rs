@@ -280,7 +280,12 @@ fn adoption_excludes_normal_binders_and_partial_commit_is_terminal_then_recovera
         .unwrap();
     assert!(!needs_view_adoption(&f.a));
     let accepted = f.state();
-    let guard = crate::repository_store::AdoptionGuard::acquire(&f.store, &f.a.selections).unwrap();
+    let guard = crate::repository_store::AdoptionGuard::acquire(
+        &f.store,
+        &f.a.selections,
+        f.a.repositories.iter(),
+    )
+    .unwrap();
     std::thread::scope(|scope| {
         scope
             .spawn(|| {

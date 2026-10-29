@@ -127,6 +127,64 @@ pub struct GitTree {
     pub module_file: Vec<u8>,
 }
 
+fn current_key(spec: &GitSpec, patches: &LocalPatchPlan) -> Result<(String, String), String> {
+    let commit = spec.commit.to_ascii_lowercase();
+    let identity = serde_json::to_vec(&(
+        POLICY,
+        (&spec.remote, &commit, &spec.strip_prefix),
+        patches.cache_identity(),
+    ))
+    .map_err(|e| e.to_string())?;
+    Ok((commit, format!("{:x}", Sha256::digest(identity))))
+}
+
+/// Current pinned Git source, proved without invoking Git, creating locks or
+/// repairing a publication. This is the normal source identity (including
+/// patches/strip-prefix), not a graph key based on the workspace's Git commit.
+pub(crate) fn resolve_current<T>(
+    spec: &GitSpec,
+    patches: &LocalPatchPlan,
+    cache: &Path,
+    allow_remote: bool,
+    proof: bool,
+    validate: impl Fn(&Path, &[u8]) -> Result<T, String>,
+) -> Result<(GitTree, T), String> {
+    if !proof {
+        return materialize(spec, patches, cache, allow_remote, validate);
+    }
+    spec.validate(allow_remote)?;
+    patches.validate_materialization()?;
+    let (commit, key) = current_key(spec, patches)?;
+    let cache = crate::observed_fs::canonicalize(cache)
+        .map_err(|e| e.to_string())?
+        .join("git");
+    let root = cache.join("trees").join(&key);
+    let manifest_path = cache.join("manifests").join(format!("{key}.json"));
+    check_optional_directory(&root)?;
+    check_optional_regular(&manifest_path)?;
+    let bytes = crate::observed_fs::read(&manifest_path).map_err(|e| e.to_string())?;
+    let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    if manifest.policy != POLICY
+        || manifest.key != key
+        || manifest.commit != commit
+        || !snapshot(&root, false).is_ok_and(|actual| actual == manifest.files)
+    {
+        return Err("current Git source lacks a verified read-only publication".into());
+    }
+    crate::observed_fs::proof_repository_tree("git", &spec.remote, &root, &manifest_path);
+    let module_file =
+        crate::observed_fs::read(root.join("MODULE.bazel")).map_err(|e| e.to_string())?;
+    let value = validate(&root, &module_file)?;
+    Ok((
+        GitTree {
+            root,
+            commit,
+            module_file,
+        },
+        value,
+    ))
+}
+
 /// The graph validates final MODULE syntax, name and dependencies through this
 /// callback, before publication and on every verified warm read. It must treat
 /// the supplied tree as read-only; its staging path is not a persistent handle.
@@ -139,14 +197,7 @@ pub fn materialize<T>(
 ) -> Result<(GitTree, T), String> {
     spec.validate(allow_remote)?;
     patches.validate_materialization()?;
-    let commit = spec.commit.to_ascii_lowercase();
-    let identity = serde_json::to_vec(&(
-        POLICY,
-        (&spec.remote, &commit, &spec.strip_prefix),
-        patches.cache_identity(),
-    ))
-    .map_err(|e| e.to_string())?;
-    let key = format!("{:x}", Sha256::digest(identity));
+    let (commit, key) = current_key(spec, patches)?;
     ensure_directory(cache)?;
     let cache = fs::canonicalize(cache)
         .map_err(|e| e.to_string())?
@@ -252,7 +303,14 @@ pub fn materialize<T>(
     ))
 }
 
+#[cfg(test)]
+thread_local! {
+    static FETCH_EXPORTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn fetch_export(spec: &GitSpec, commit: &str, cache: &Path, stage: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    FETCH_EXPORTS.with(|count| count.set(count.get() + 1));
     let private = tempfile::Builder::new()
         .prefix(".fetch-")
         .tempdir_in(cache)
@@ -872,6 +930,39 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const MODULE: &[u8] = b"module(name=\"dep\",version=\"arbitrary\")\n";
+
+    #[test]
+    fn current_git_proof_never_fetches_or_repairs_even_when_remote_is_gone() {
+        let fixture = Fixture::new("");
+        let patches = LocalPatchPlan::default();
+        let before = FETCH_EXPORTS.with(std::cell::Cell::get);
+        let probe = |spec: &GitSpec| {
+            resolve_current(spec, &patches, &fixture.cache, false, true, |_, bytes| {
+                Ok(bytes.to_vec())
+            })
+        };
+        assert!(probe(&fixture.spec).is_err());
+        assert!(!fixture.cache.exists());
+        assert_eq!(FETCH_EXPORTS.with(std::cell::Cell::get), before);
+        let (tree, _) = materialize(
+            &fixture.spec,
+            &patches,
+            &fixture.cache,
+            false,
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(FETCH_EXPORTS.with(std::cell::Cell::get), before + 1);
+        fs::remove_dir_all(&fixture.origin).unwrap();
+        assert_eq!(probe(&fixture.spec).unwrap().0, tree);
+        let mut different = fixture.spec.clone();
+        different.commit = "b".repeat(40);
+        assert!(probe(&different).is_err());
+        fs::write(tree.root.join("data"), "tampered").unwrap();
+        assert!(probe(&fixture.spec).is_err());
+        assert_eq!(fs::read(tree.root.join("data")).unwrap(), b"tampered");
+        assert_eq!(FETCH_EXPORTS.with(std::cell::Cell::get), before + 1);
+    }
 
     struct Fixture {
         temp: tempfile::TempDir,

@@ -1,6 +1,6 @@
-//! Non-local publication receipts. A receipt is a hint, never current intent
-//! or permission to bind a repository. Historical graph switching is disabled
-//! until acceptance and all public binders share an adoption protocol.
+//! Non-local publication receipts and guarded configured-graph adoption. A
+//! receipt is a hint, never current intent or permission to bind a repository.
+//! Whole-candidate acceptance re-proves intent under publisher/binder guards.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -92,7 +92,8 @@ pub(crate) fn needs_view_adoption(recording: &crate::observed_fs::Recording) -> 
         };
         let slot = crate::repository_slots::slot_path(store, &receipt.canonical);
         if std::fs::symlink_metadata(&slot).is_ok_and(|metadata| metadata.is_dir()) {
-            return false;
+            return crate::repository_slots::marker(store, &receipt.canonical).as_deref()
+                != Some(receipt.publication.as_str());
         }
         std::fs::read_link(slot).ok()
             != Some(crate::repository_slots::link_target(&receipt.publication))
@@ -186,10 +187,26 @@ impl Prepared {
         recording: &crate::observed_fs::Recording,
         environment: &crate::snapshot::validate::Environment<'_>,
     ) -> Result<(), String> {
-        let guard = crate::repository_store::AdoptionGuard::acquire(&self.store, &self.receipts)?;
+        let guard = crate::repository_store::AdoptionGuard::acquire(
+            &self.store,
+            &self.receipts,
+            recording
+                .repositories
+                .iter()
+                .chain(&self.proof_inputs.repositories),
+        )?;
         let (store, latest) = current(factory, &self.receipts)?;
         if store != self.store {
             return Err("publication store changed during acceptance".into());
+        }
+        if latest.repositories.iter().any(|latest| {
+            !recording
+                .repositories
+                .iter()
+                .chain(&self.proof_inputs.repositories)
+                .any(|held| held.root == latest.root && held.manifest == latest.manifest)
+        }) {
+            return Err("current producer closure changed while acquiring adoption locks".into());
         }
         for inputs in [recording, &self.proof_inputs, &latest] {
             crate::snapshot::validate::validate_for_hit(inputs, environment)?;

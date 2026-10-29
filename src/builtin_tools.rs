@@ -264,6 +264,34 @@ pub fn bundle_identity() -> Result<String, String> {
     Ok(bundle()?.identity.clone())
 }
 
+/// Current compiled bundle, already staged and verified. Never creates a
+/// directory, takes a publisher lock, repairs a tree or emits a live REPO use.
+pub(crate) fn probe_existing(cache: &Path) -> Result<PathBuf, String> {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return Err("unsupported built-in proof platform".into());
+    }
+    let bundle = bundle()?;
+    let destination = cache.join("trees").join(&bundle.identity);
+    let manifest_path = cache
+        .join("trees")
+        .join(format!("{}.json", bundle.identity));
+    reject_symlink(&destination)?;
+    reject_symlink(&manifest_path)?;
+    if crate::observed_fs::read(&manifest_path).is_ok_and(|bytes| bytes == MANIFEST)
+        && verified_warm(&destination, &bundle.manifest)
+    {
+        crate::observed_fs::proof_repository_tree(
+            "builtin",
+            "bazel_tools",
+            &destination,
+            &manifest_path,
+        );
+        Ok(destination)
+    } else {
+        Err("current built-in publication is absent or invalid".into())
+    }
+}
+
 /// Publish/reuse a fully verified native tools tree under an absolute cache root.
 /// The Linux x86-64 and arm64 distributions are bundled (one per binary).
 pub fn materialize(cache: &Path) -> Result<PathBuf, String> {
@@ -555,6 +583,19 @@ fn remove_cache_entry(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_builtin_proof_never_stages_or_repairs() {
+        let temp = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
+        let cache = temp.path().join("builtins");
+        assert!(probe_existing(&cache).is_err());
+        assert!(!cache.exists());
+        let root = materialize(&cache).unwrap();
+        assert_eq!(probe_existing(&cache).unwrap(), root);
+        fs::write(root.join("MODULE.bazel"), "tampered").unwrap();
+        assert!(probe_existing(&cache).is_err());
+        assert_eq!(fs::read(root.join("MODULE.bazel")).unwrap(), b"tampered");
+    }
 
     #[test]
     fn genrule_setup_is_the_embedded_tools_entry() {

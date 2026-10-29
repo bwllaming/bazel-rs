@@ -1825,7 +1825,7 @@ static REPOSITORY_INPUTS: Mutex<BTreeSet<(PathBuf, bool)>> = Mutex::new(BTreeSet
 /// A recorded input of a repository or extension was observed (see
 /// [`REPOSITORY_INPUTS`]); outside the window nothing is kept.
 pub fn note_repository_input(path: &Path, tree: bool) {
-    if recording() {
+    if recording() && !PRIVATE_RECORDING.with(std::cell::Cell::get) {
         lock(&REPOSITORY_INPUTS).insert((path.to_path_buf(), tree));
     }
 }
@@ -2174,6 +2174,15 @@ pub fn repository_tree(kind: &'static str, name: &str, root: &Path, manifest: Op
     crate::cache_gc::note_tree_used(root);
     if let Some(recorder) = active() {
         recorder.claim_tree(Claim::Owner, kind, name, root, manifest);
+    }
+}
+
+/// A producer verified during private proof. Unlike live reuse this never
+/// updates GC last-use state. The caller must be inside `record_private` or a
+/// discarded inspection scope; no public binding is implied by this claim.
+pub(crate) fn proof_repository_tree(kind: &'static str, name: &str, root: &Path, manifest: &Path) {
+    if let Some(recorder) = active() {
+        recorder.claim_tree(Claim::Owner, kind, name, root, Some(manifest));
     }
 }
 
@@ -2547,6 +2556,15 @@ mod tests {
         assert!(recording.observations.iter().any(|(_, observation)| matches!(&observation.outcome,
             Outcome::Read { sha256: digest, .. } if observation.op == Op::SelectionRead("r".into()) && *digest == sha256(b"new"))));
         assert!(recording.taints.is_empty());
+    }
+
+    #[test]
+    fn private_probe_does_not_publish_incremental_repository_inputs() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("private-runtime-input");
+        let (_, recording) = record_private(|| note_repository_input(&path, true));
+        assert!(recording.observations.is_empty());
+        assert!(!repository_inputs().iter().any(|(input, _)| input == &path));
     }
 
     /// A captured set lands in the recorder at most once, however many

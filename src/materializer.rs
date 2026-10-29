@@ -207,6 +207,7 @@ pub fn materialize_with_registry_config(
         downloads_enabled,
         config,
         false,
+        false,
     )
 }
 
@@ -250,6 +251,7 @@ pub(crate) fn warm_with_registry_config(
         downloads_enabled,
         config,
         true,
+        false,
     )
 }
 
@@ -265,6 +267,7 @@ fn materialize_registry(
     downloads_enabled: bool,
     config: Option<Map<String, Value>>,
     warming: bool,
+    proof: bool,
 ) -> Result<PathBuf, String> {
     local_patches.validate_materialization()?;
     for key in source.keys() {
@@ -361,6 +364,36 @@ fn materialize_registry(
     // URL policy is checked even when the verified blob is already cached.
     for url in &urls {
         registry::validate_download_url(url)?;
+    }
+    if proof {
+        let cache = crate::observed_fs::canonicalize(cache).map_err(|e| e.to_string())?;
+        let identity = registry_identity(
+            registry,
+            name,
+            version,
+            source,
+            config.as_ref(),
+            module_file,
+            local_patches,
+            !patches.is_empty(),
+        )?;
+        let key = hex(&Sha256::digest(identity));
+        let destination = cache.join("trees").join(&key);
+        let manifest_path = cache.join("trees").join(format!("{key}.json"));
+        reject_symlink(&destination)?;
+        reject_symlink(&manifest_path)?;
+        let bytes = crate::observed_fs::read(&manifest_path).map_err(|e| e.to_string())?;
+        let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        if manifest.format != FORMAT || !tree_matches(&destination, &manifest.files) {
+            return Err("current registry publication failed read-only integrity proof".into());
+        }
+        crate::observed_fs::proof_repository_tree(
+            "registry",
+            &format!("{name}@{version}"),
+            &destination,
+            &manifest_path,
+        );
+        return Ok(destination);
     }
     ensure_directory(cache)?;
     let cache = fs::canonicalize(cache).map_err(|e| e.to_string())?;
@@ -536,6 +569,35 @@ fn materialize_registry(
             .insert(root.clone(), captured);
     }
     Ok(root)
+}
+
+/// Existing-root proof using exactly the normal source/patch/overlay key and
+/// validation prelude. The proof arm returns before any mkdir, lock creation,
+/// warmed-result consumption, download, extraction, patch command or repair.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn probe_with_registry_config(
+    registry: &Registry,
+    name: &str,
+    version: &str,
+    module_file: &[u8],
+    source: &Map<String, Value>,
+    cache: &Path,
+    local_patches: &LocalPatchPlan,
+    config: Option<Map<String, Value>>,
+) -> Result<PathBuf, String> {
+    materialize_registry(
+        registry,
+        name,
+        version,
+        module_file,
+        source,
+        cache,
+        local_patches,
+        false,
+        config,
+        false,
+        true,
+    )
 }
 
 fn archive_type(source: &Map<String, Value>, url: &str) -> Result<String, String> {
@@ -1023,6 +1085,38 @@ mod tests {
         fs::write(&path, &archive).unwrap();
         let source = json!({ "url": reqwest::Url::from_file_path(path).unwrap().as_str(), "integrity": sri(&archive), "strip_prefix": "pkg" }).as_object().unwrap().clone();
         (Registry::LocalPath(registry), source)
+    }
+
+    #[test]
+    fn readonly_registry_probe_uses_normal_key_and_never_repairs_or_stages() {
+        let temp = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
+        let (registry, source) = fixture(temp.path());
+        let cache = temp.path().join("cache");
+        let patches = LocalPatchPlan::default();
+        let module = b"module(name='defs',version='1.0')";
+        let probe = |source: &Map<String, Value>| {
+            probe_with_registry_config(
+                &registry, "defs", "1.0", module, source, &cache, &patches, None,
+            )
+        };
+        assert!(probe(&source).is_err());
+        assert!(!cache.exists());
+        let root = materialize_with_registry_config(
+            &registry, "defs", "1.0", module, &source, &cache, &patches, true, None,
+        )
+        .unwrap();
+        assert_eq!(probe(&source).unwrap(), root);
+        let mut changed = source.clone();
+        changed.insert("strip_prefix".into(), json!("different-current-source"));
+        assert!(probe(&changed).is_err());
+        fs::write(root.join("data"), "tampered").unwrap();
+        assert!(probe(&source).is_err());
+        assert_eq!(fs::read(root.join("data")).unwrap(), b"tampered");
+        assert_eq!(
+            fs::read_dir(cache.join("trees")).unwrap().count(),
+            2,
+            "one retained tree and its manifest, no repair/stage"
+        );
     }
 
     #[test]

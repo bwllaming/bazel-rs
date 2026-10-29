@@ -270,10 +270,11 @@ struct RepositoryState {
     /// roots, mappings and the generated flag answer from recorded tables;
     /// the module graph is never resolved and anything else is refused.
     pinned: Option<Arc<crate::snapshot::replay::PinnedTables>>,
-    /// Isolated current-intent preparation, never exposed to an Engine. This
-    /// initial slice supports root-workspace definitions only; every external
-    /// producer demand fails before a root can be loaded or materialized.
+    /// Isolated current-intent preparation, never exposed to an Engine. Every
+    /// external producer is resolved and verified without materialization before
+    /// a definition or recorded runtime input can be loaded from its root.
     publication_proof: bool,
+    proof_receipts: BTreeMap<String, crate::repository_publication::Receipt>,
     /// The record mode's replay capture: local executions become replay
     /// records, and `root()`/`mapping()` results inside replay scopes are
     /// pinned for them.
@@ -902,6 +903,7 @@ impl RepositorySet {
                 build_globals: OnceLock::new(),
                 pinned: None,
                 publication_proof: false,
+                proof_receipts: BTreeMap::new(),
                 replay: crate::snapshot::replay::global(),
                 verified_trees: Arc::default(),
                 speculation: Default::default(),
@@ -1450,16 +1452,16 @@ impl RepositorySet {
     /// released before return. Nothing is bound, published, refreshed or
     /// recorded into the calling analysis. A failure is a conservative miss.
     ///
-    /// Initial supported closure: explicit-module profile, no module deps,
-    /// definitions and runtime probes in the root workspace (or stage probes),
-    /// direct rules and ordinary extensions with a currently valid lock entry.
-    /// External producers, registry/Git/builtin roots, absolute runtime paths,
-    /// local rules and diagnostic-producing preparations are unsupported.
+    /// Current module metadata is read locally or from current-lock-checksummed
+    /// CAS only. Source roots must be current live local roots or verified existing
+    /// registry/Git/builtin publications. Generated producers require their own
+    /// receipt and recursive current proof before loading. Absolute runtime paths,
+    /// local rules and diagnostic-producing preparations remain unsupported.
     pub fn prove_publications(
         &self,
         receipts: &[crate::repository_publication::Receipt],
     ) -> Option<Vec<ProvedPublication>> {
-        crate::observed_fs::discard(|| self.prove_publications_current(receipts))
+        crate::observed_fs::record_private(|| self.prove_publications_current(receipts)).0
     }
 
     /// Only used inside a private recording by candidate acceptance. The
@@ -1471,10 +1473,10 @@ impl RepositorySet {
         (|| {
             let notes = crate::ui::PrivateNotes::new();
             let mut options = self.state.options.clone();
-            if options.builtin_profile != module_graph::BuiltinProfile::ExplicitModules {
-                return None;
-            }
-            options.registry_session = options.registry_session.for_publication_proof().ok()?;
+            options.registry_session = options
+                .registry_session
+                .for_publication_proof(self.main_root(), self.source_cache_path().ok()?)
+                .ok()?;
             let mut proof = Self::configured_environment(
                 self.state.root.clone(),
                 options,
@@ -1485,15 +1487,13 @@ impl RepositorySet {
             );
             let state = Arc::get_mut(&mut proof.state)?;
             state.publication_proof = true;
+            state.proof_receipts = receipts
+                .iter()
+                .map(|receipt| (receipt.canonical.clone(), receipt.clone()))
+                .collect();
             state.replay = None;
             proof.validate_root_module().ok()?;
-            let root = proof.root_module().ok()?.module_file()?;
-            // Fail BEFORE the resolver could fetch, prefetch, invoke Git or
-            // inspect a derived MODULE. Even ignored/nodep deps are refused in
-            // this bounded first slice, rather than duplicating resolution.
-            if root.effective_dependencies().next().is_some() {
-                return None;
-            }
+            proof.root_module().ok()?.module_file()?;
             let workspace = crate::observed_fs::canonicalize(proof.main_root()).ok()?;
             let cache = proof.source_cache_path().ok()?;
             let mut proved = Vec::with_capacity(receipts.len());
@@ -1518,6 +1518,62 @@ impl RepositorySet {
             }
             (!notes.emitted()).then_some(proved)
         })()
+    }
+
+    /// Recursively prove a derived definition/runtime root before loading any
+    /// file from it. DemandSlot's existing depth/cycle checks bound recursion.
+    /// A graph must supply its producer receipt; mere root existence is never
+    /// enough. No normal materializer, speculative worker or binder is called.
+    fn proof_generated_root(&self, canonical: &str) -> Result<&Path, String> {
+        let runtime = self.direct_runtime()?;
+        let slot = if let Some(slot) = runtime.roots.get(canonical) {
+            slot
+        } else {
+            &self.ordinary_repository(canonical)?.1.root
+        };
+        slot.get_or_try_init(
+            self.state.runtime_id,
+            &format!("proof:repository:{canonical}"),
+            || {
+                let receipt = self.state.proof_receipts.get(canonical).ok_or_else(|| {
+                    format!("no current-proof receipt for generated producer @@{canonical}")
+                })?;
+                let current = self.prepare_publication_spec(canonical)?;
+                if current.origin != receipt.origin || current.key != receipt.spec {
+                    return Err(format!(
+                        "generated producer @@{canonical} changed specification"
+                    ));
+                }
+                let workspace = crate::observed_fs::canonicalize(self.main_root())
+                    .map_err(|e| e.to_string())?;
+                let cache = self.source_cache_path()?;
+                crate::repository_store::probe_candidate(
+                    cache,
+                    receipt,
+                    &workspace,
+                    |tree, recorded| {
+                        crate::repository_warm::unchanged_for_proof(
+                            self, &workspace, tree, recorded,
+                        )
+                    },
+                )
+                .ok_or_else(|| {
+                    format!("generated producer @@{canonical} has no current publication proof")
+                })?;
+                let root = receipt.root(cache);
+                let manifest = cache
+                    .join("direct/manifests")
+                    .join(format!("{}.json", receipt.publication));
+                crate::observed_fs::proof_repository_tree(
+                    "direct",
+                    &receipt.spec,
+                    &root,
+                    &manifest,
+                );
+                Ok(root)
+            },
+        )
+        .map(PathBuf::as_path)
     }
 
     fn prepare_publication_spec(&self, canonical: &str) -> Result<CurrentSpec, String> {
@@ -3416,11 +3472,6 @@ impl RepositorySet {
 
     /// [`Self::root`] of a non-main repository of an unpinned set.
     fn external_root(&self, repository: &str) -> Result<&Path, String> {
-        if self.state.publication_proof {
-            return Err(format!(
-                "publication proof requires an unsupported producer @@{repository}"
-            ));
-        }
         let graph = self.resolve_graph()?;
         if repository == "bazel_tools"
             && self.state.options.builtin_profile == module_graph::BuiltinProfile::ExplicitModules
@@ -3431,6 +3482,9 @@ impl RepositorySet {
             return Err(BAZEL_TOOLS_UNAVAILABLE.to_owned());
         }
         let Some(module) = graph.modules.get(repository) else {
+            if self.state.publication_proof {
+                return self.proof_generated_root(repository);
+            }
             return if self
                 .direct_runtime()?
                 .catalog
@@ -3455,7 +3509,12 @@ impl RepositorySet {
                     .collect()
             });
             return guarded_root_slot(&roots[repository], repository, || {
-                crate::builtin_tools::materialize(&self.source_cache_path()?.join("builtins"))
+                let cache = self.source_cache_path()?.join("builtins");
+                if self.state.publication_proof {
+                    crate::builtin_tools::probe_existing(&cache)
+                } else {
+                    crate::builtin_tools::materialize(&cache)
+                }
             });
         }
         match &module.source {
@@ -3466,6 +3525,11 @@ impl RepositorySet {
                 local_patches,
                 tree,
             } => {
+                if self.state.publication_proof {
+                    // Discovery already proved this exact current Git key and
+                    // recorded its integrity before evaluating its MODULE.
+                    return Ok(&tree.root);
+                }
                 let roots = self.state.registry_roots.get_or_init(|| {
                     graph
                         .modules
@@ -4816,6 +4880,22 @@ fn registry_source_root(
     let source = access
         .read_object(registry, &relative)?
         .ok_or_else(|| format!("missing registry source descriptor {descriptor}"))?;
+    if access.publication_proof()
+        && source
+            .get("type")
+            .is_none_or(|kind| kind.as_str() == Some("archive"))
+    {
+        return crate::materializer::probe_with_registry_config(
+            registry,
+            name,
+            version,
+            module_file,
+            &source,
+            cache,
+            local_patches,
+            access.read_object(registry, "bazel_registry.json")?,
+        );
+    }
     match source.get("type") {
         Some(serde_json::Value::String(kind)) if kind == "local_path" => {}
         None => {
@@ -4909,6 +4989,12 @@ fn registry_source_root(
             chosen.display()
         )
     })?;
+    if access.publication_proof() {
+        let cache = crate::observed_fs::canonicalize(cache).unwrap_or_else(|_| cache.to_path_buf());
+        if root.starts_with(&cache) {
+            return Err("registry local_path requires an unproved derived root".into());
+        }
+    }
     if !crate::observed_fs::is_dir(&root) {
         return Err(format!(
             "registry local_path source is not a directory: {}",
@@ -5348,15 +5434,17 @@ impl LockInputProbe<'_> {
         path: &crate::lockfile_extensions::FriendlyPath,
     ) -> Result<PathBuf, String> {
         if self.0.state.publication_proof {
-            let root =
-                crate::observed_fs::canonicalize(self.0.main_root()).map_err(|e| e.to_string())?;
-            if path.repository.as_deref() != Some("")
-                || !crate::repository_warm::proof_path(
-                    &root,
-                    &path.path,
-                    Some(self.0.source_cache_path()?),
-                )
-            {
+            let repository = path
+                .repository
+                .as_deref()
+                .ok_or("absolute extension inputs are unsupported in publication proof")?;
+            let root = crate::observed_fs::canonicalize(self.0.root(repository)?)
+                .map_err(|e| e.to_string())?;
+            if !crate::repository_warm::proof_path(
+                &root,
+                &path.path,
+                repository.is_empty().then_some(self.0.source_cache_path()?),
+            ) {
                 return Err("publication proof requires an unsupported extension input".into());
             }
         }

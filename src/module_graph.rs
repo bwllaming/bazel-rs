@@ -1049,11 +1049,12 @@ impl Discovery<'_> {
                 spec.validate(self.options.allow_remote)?;
                 let local_patches = patch_inputs::snapshot(&self.root_path, self.root, patches)?;
                 local_patches.validate_materialization()?;
-                let (tree, module) = git_source::materialize(
+                let (tree, module) = git_source::resolve_current(
                     &spec,
                     &local_patches,
                     self.source_cache,
                     self.options.allow_remote,
+                    self.options.registry_session.publication_proof(),
                     |root, bytes| {
                         let path = root.join("MODULE.bazel").display().to_string();
                         let source = String::from_utf8(bytes.to_vec()).map_err(|error| {
@@ -1097,6 +1098,15 @@ impl Discovery<'_> {
                     format!("cannot resolve local override for {name:?} at {path:?}: {e}")
                 })?;
             let file = path.join("MODULE.bazel");
+            if self.options.registry_session.publication_proof() {
+                let cache = crate::observed_fs::canonicalize(self.source_cache)
+                    .unwrap_or_else(|_| self.source_cache.to_path_buf());
+                if path.starts_with(&cache)
+                    || !crate::repository_warm::proof_path(&path, "MODULE.bazel", Some(&cache))
+                {
+                    return Err("local override MODULE requires an unproved derived root".into());
+                }
+            }
             let source = crate::observed_fs::read_to_string(&file)
                 .map_err(|e| format!("cannot read MODULE file {}: {e}", file.display()))?;
             let module = bzlmod::evaluate_source_with_builtins(

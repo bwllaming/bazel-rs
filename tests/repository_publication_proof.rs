@@ -19,7 +19,8 @@ struct Fixture {
     root: PathBuf,
     cache: PathBuf,
     counter: PathBuf,
-    extension: bool,
+    registry: Option<PathBuf>,
+    builtins: bool,
 }
 
 impl Fixture {
@@ -32,7 +33,8 @@ impl Fixture {
             cache: temp.path().join("cache"),
             counter: temp.path().join("executions"),
             _temp: temp,
-            extension,
+            registry: None,
+            builtins: false,
         };
         f.write("MODULE.bazel", &if extension {
             "module(name='publication_baseline')\ne = use_extension('//:repo.bzl', 'gen')\nuse_repo(e, 'constant_repo')\n".to_owned()
@@ -45,6 +47,8 @@ impl Fixture {
         f.write("extension-input", "one");
         f.write("helper.bzl", "CONSTANT = 'constant data\\n'\n");
         let counter = serde_json::to_string(f.counter.to_str().unwrap()).unwrap();
+        let extension_counter =
+            serde_json::to_string(f.counter.with_extension("extension").to_str().unwrap()).unwrap();
         let data = if changing { "watched" } else { "CONSTANT" };
         f.write("repo.bzl", &format!(r#"load(":helper.bzl", "CONSTANT")
 def _make(ctx):
@@ -57,6 +61,7 @@ def _make(ctx):
     ctx.file('data', {data})
 maker = repository_rule(implementation = _make, attrs = {{'src': attr.label(allow_single_file = True)}}, environ = ['DECLARED'])
 def _ext(ctx):
+    ctx.execute(['/bin/sh', '-c', 'echo run >> "$1"', 'counter', {extension_counter}])
     ctx.read(Label('//:extension-input'))
     maker(name = 'constant_repo', src = '//:.bazelignore')
 gen = module_extension(implementation = _ext)
@@ -84,13 +89,18 @@ gen = module_extension(implementation = _ext)
                 &format!("--cache-dir={}", self.cache.display()),
                 &format!("--output_base={}", self.cache.join("output-base").display()),
                 "cquery",
-                "--experimental-builtin-modules=false",
+                &format!("--experimental-builtin-modules={}", self.builtins),
                 "--repository_disable_download",
                 "--platforms=//:platform",
                 "--host_platform=//:platform",
                 "--output=proto",
                 "deps(//:top)",
             ])
+            .args(
+                self.registry
+                    .as_ref()
+                    .map(|path| format!("--registry=file://{}", path.display())),
+            )
             .output()
             .unwrap();
         let stderr = String::from_utf8(out.stderr).unwrap();
@@ -101,7 +111,10 @@ gen = module_extension(implementation = _ext)
     fn prime(&self) -> Receipt {
         let first = self.query();
         if !first.contains("bazel-rs-cquery-snapshot: saved") {
-            assert!(self.extension && first.contains("lock"), "{first}");
+            assert!(
+                first.contains("lock") || first.contains("RepositoryMaterialized"),
+                "{first}"
+            );
             assert!(self.query().contains("bazel-rs-cquery-snapshot: saved"));
         }
         assert!(self.query().contains("bazel-rs-cquery-snapshot: hit"));
@@ -147,7 +160,7 @@ gen = module_extension(implementation = _ext)
             &self.root,
             bazel_rs::lockfile::LockfileMode::Update,
             &bazel_rs::registry_session::LockfileTarget::Workspace,
-            None,
+            Some(self.cache.join("repositories")),
             Default::default(),
         )
         .unwrap();
@@ -162,6 +175,17 @@ gen = module_extension(implementation = _ext)
             self.root.clone(),
             ResolverOptions {
                 registry_session: SessionHandle::new(session),
+                registries: self
+                    .registry
+                    .iter()
+                    .cloned()
+                    .map(bazel_rs::registry::Registry::LocalPath)
+                    .collect(),
+                builtin_profile: if self.builtins {
+                    bazel_rs::module_graph::BuiltinProfile::Bazel93Builtins
+                } else {
+                    bazel_rs::module_graph::BuiltinProfile::ExplicitModules
+                },
                 ..Default::default()
             },
         )
@@ -177,6 +201,31 @@ gen = module_extension(implementation = _ext)
 
     fn executions(&self) -> usize {
         fs::read_to_string(&self.counter).unwrap().lines().count()
+    }
+
+    fn extension_executions(&self) -> usize {
+        fs::read_to_string(self.counter.with_extension("extension"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+
+    fn receipts(&self, selected: &Receipt) -> Vec<Receipt> {
+        let mut snapshots = Vec::new();
+        snapshots_in(&self.cache, &mut snapshots);
+        for path in snapshots {
+            let bytes = fs::read(path).unwrap();
+            let header = Header::decode(&bytes, bytes.len() as u64).unwrap();
+            let section = header.slot(Section::Inputs).unwrap();
+            let inputs = format::decode_inputs(
+                &bytes[section.offset as usize..(section.offset + section.len) as usize],
+            )
+            .unwrap();
+            if inputs.recording.selections.contains(selected) {
+                return inputs.recording.selections;
+            }
+        }
+        panic!("missing receipt batch");
     }
 }
 
@@ -240,6 +289,7 @@ fn current_spec_and_runtime_proofs_preserve_pointer_and_view_without_reexecution
                     }
                 );
                 assert_eq!(f.executions(), 2);
+                assert_eq!(f.extension_executions(), usize::from(extension));
             }
             f.write(".bazelignore", "third-unsaved\n");
             assert!(
@@ -385,6 +435,7 @@ fn stale_prepared_sets_cannot_certify_changed_current_recipes_or_extension_locks
         }
         assert_eq!(stamp(&f.pointer(&receipt)), pointer);
         assert_eq!(f.executions(), 1, "no rejected proof can run a generator");
+        assert_eq!(f.extension_executions(), usize::from(extension));
         assert_eq!(fs::read(f.root.join("MODULE.bazel.lock")).unwrap(), lock);
     }
 }
@@ -406,13 +457,15 @@ provider = repository_rule(implementation = _provide, attrs = {{'source': attr.l
     f.write("MODULE.bazel", module);
     let receipt = f.prime();
     let repositories = f.repositories();
-    // This closure is explicitly unsupported even before the producer changes.
+    // A consumer receipt alone cannot certify its generated definition root.
     assert!(
         repositories
             .prove_publications(std::slice::from_ref(&receipt))
             .is_none()
     );
     let trees = f.cache.join("repositories/direct/trees");
+    let complete = f.receipts(&receipt);
+    assert!(repositories.prove_publications(&complete).is_some());
     let retained: Vec<_> = fs::read_dir(&trees)
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -422,6 +475,7 @@ provider = repository_rule(implementation = _provide, attrs = {{'source': attr.l
         "MODULE.bazel",
         &module.replace("revision='A'", "revision='B'"),
     );
+    assert!(repositories.prove_publications(&complete).is_none());
     assert!(
         repositories
             .prove_publications(std::slice::from_ref(&receipt))
@@ -431,4 +485,220 @@ provider = repository_rule(implementation = _provide, attrs = {{'source': attr.l
     assert_eq!(f.executions(), 1);
     assert_eq!(fs::read_dir(trees).unwrap().count(), retained.len());
     assert!(retained.iter().all(|tree| tree.is_dir()));
+}
+
+#[test]
+fn local_registry_module_definition_closure_supports_historical_cli_hits() {
+    for extension in [false, true] {
+        for archived in [false, true] {
+            let mut f = Fixture::new(extension, true);
+            let source = f._temp.path().join("module-source");
+            let registry = f._temp.path().join("registry");
+            let metadata = registry.join("modules/defs/1.0");
+            fs::create_dir_all(&metadata).unwrap();
+            fs::create_dir(&source).unwrap();
+            for name in ["repo.bzl", "helper.bzl", "BUILD.bazel"] {
+                let text = fs::read_to_string(f.root.join(name))
+                    .unwrap()
+                    .replace("'//:.bazelignore'", "'@@//:.bazelignore'")
+                    .replace("'//:extension-input'", "'@@//:extension-input'");
+                fs::write(source.join(name), text).unwrap();
+            }
+            let module = "module(name='defs',version='1.0')\n";
+            fs::write(source.join("MODULE.bazel"), module).unwrap();
+            fs::write(metadata.join("MODULE.bazel"), module).unwrap();
+            let descriptor = if archived {
+                use base64::Engine as _;
+                use sha2::Digest as _;
+                let mut archive = tar::Builder::new(Vec::new());
+                for name in ["repo.bzl", "helper.bzl", "BUILD.bazel", "MODULE.bazel"] {
+                    let bytes = fs::read(source.join(name)).unwrap();
+                    let mut header = tar::Header::new_gnu();
+                    header.set_size(bytes.len() as u64);
+                    header.set_mode(0o644);
+                    header.set_cksum();
+                    archive
+                        .append_data(&mut header, format!("pkg/{name}"), bytes.as_slice())
+                        .unwrap();
+                }
+                let bytes = archive.into_inner().unwrap();
+                let digest = sha2::Sha256::digest(&bytes);
+                let cas = f.cache.join("repositories/downloads/sha256");
+                fs::create_dir_all(&cas).unwrap();
+                fs::write(cas.join(format!("{digest:x}")), &bytes).unwrap();
+                serde_json::json!({"type":"archive", "url":"https://example.invalid/owned-fixture.tar", "integrity":format!("sha256-{}",base64::engine::general_purpose::STANDARD.encode(digest)), "strip_prefix":"pkg"})
+            } else {
+                serde_json::json!({"type":"local_path","path":source})
+            };
+            fs::write(
+                metadata.join("source.json"),
+                serde_json::to_vec(&descriptor).unwrap(),
+            )
+            .unwrap();
+            fs::write(registry.join("bazel_registry.json"), "{}").unwrap();
+            let root = fs::read_to_string(f.root.join("MODULE.bazel"))
+                .unwrap()
+                .replace("'//:repo.bzl'", "'@defs//:repo.bzl'");
+            f.write(
+                "MODULE.bazel",
+                &root.replacen(
+                    "module(name='publication_baseline')\n",
+                    "module(name='publication_baseline')\nbazel_dep(name='defs',version='1.0')\n",
+                    1,
+                ),
+            );
+            f.registry = Some(registry);
+            let a = f.prime();
+            f.write(".bazelignore", "unused-b\n");
+            let b = f.prime();
+            for (text, receipt) in [
+                ("unused-a\n", &a),
+                ("unused-b\n", &b),
+                ("unused-a\n", &a),
+                ("unused-b\n", &b),
+            ] {
+                f.write(".bazelignore", text);
+                let stderr = f.query();
+                assert!(stderr.contains("bazel-rs-cquery-snapshot: hit"), "{stderr}");
+                assert_eq!(
+                    fs::read_to_string(
+                        f.cache
+                            .join("repositories/external")
+                            .join(&receipt.canonical)
+                            .join("data")
+                    )
+                    .unwrap(),
+                    text
+                );
+                assert_eq!(f.executions(), 2);
+            }
+            fs::write(
+                source.join("helper.bzl"),
+                "CONSTANT = 'changed current definition'\n",
+            )
+            .unwrap();
+            if archived {
+                let mut changed = descriptor;
+                changed["strip_prefix"] = "different-current-source".into();
+                fs::write(
+                    metadata.join("source.json"),
+                    serde_json::to_vec(&changed).unwrap(),
+                )
+                .unwrap();
+            }
+            assert!(
+                f.repositories()
+                    .prove_publications(&f.receipts(&b))
+                    .is_none()
+            );
+            assert_eq!(f.executions(), 2);
+        }
+    }
+}
+
+#[test]
+fn generated_definition_producer_is_proved_recursively_before_historical_adoption() {
+    for extension in [false, true] {
+        let f = Fixture::new(extension, true);
+        let source = fs::read_to_string(f.root.join("repo.bzl"))
+            .unwrap()
+            .replace("'//:.bazelignore'", "'@@//:.bazelignore'")
+            .replace("'//:extension-input'", "'@@//:extension-input'");
+        f.write("repo.bzl", &source);
+        f.write("provider.bzl", "def impl(ctx):\n    ctx.template('repo.bzl',ctx.attr.source)\n    ctx.template('helper.bzl',ctx.attr.helper)\n    ctx.file('BUILD.bazel',\"exports_files(['repo.bzl','helper.bzl'])\")\nprovider=repository_rule(implementation=impl,attrs={'source':attr.label(),'helper':attr.label()})\n");
+        let root = if extension {
+            // The extension entry point is in the main repository; its load
+            // closure consumes a generated repository-rule definition.
+            f.write("generated_extension.bzl", "load('@defs//:repo.bzl','maker')\ndef impl(ctx):\n    maker(name='constant_repo',src='//:.bazelignore')\ngen=module_extension(implementation=impl)\n");
+            fs::read_to_string(f.root.join("MODULE.bazel"))
+                .unwrap()
+                .replace("'//:repo.bzl'", "'//:generated_extension.bzl'")
+        } else {
+            fs::read_to_string(f.root.join("MODULE.bazel"))
+                .unwrap()
+                .replace("'//:repo.bzl'", "'@defs//:repo.bzl'")
+        };
+        f.write("MODULE.bazel", &root.replacen("module(name='publication_baseline')\n", "module(name='publication_baseline')\np=use_repo_rule('//:provider.bzl','provider')\np(name='defs',source='//:repo.bzl',helper='//:helper.bzl')\n", 1));
+        let a = f.prime();
+        let batch = f.receipts(&a);
+        assert_eq!(batch.len(), 2);
+        assert!(f.repositories().prove_publications(&batch).is_some());
+        f.write(".bazelignore", "unused-b\n");
+        let b = f.prime();
+        for (text, receipt) in [
+            ("unused-a\n", &a),
+            ("unused-b\n", &b),
+            ("unused-a\n", &a),
+            ("unused-b\n", &b),
+        ] {
+            f.write(".bazelignore", text);
+            let stderr = f.query();
+            assert!(stderr.contains("bazel-rs-cquery-snapshot: hit"), "{stderr}");
+            assert_eq!(
+                fs::read_to_string(
+                    f.cache
+                        .join("repositories/external")
+                        .join(&receipt.canonical)
+                        .join("data")
+                )
+                .unwrap(),
+                text
+            );
+            assert_eq!(f.executions(), 2);
+        }
+    }
+}
+
+#[test]
+fn current_builtin_filesystem_precedence_survives_module_override_and_historical_adoption() {
+    let mut f = Fixture::new(false, true);
+    f.builtins = true;
+    let override_root = f.root.join("builtin-override");
+    fs::create_dir_all(override_root.join("tools/build_defs/repo")).unwrap();
+    fs::write(
+        override_root.join("MODULE.bazel"),
+        "module(name='bazel_tools')\n",
+    )
+    .unwrap();
+    fs::write(
+        override_root.join("tools/build_defs/repo/utils.bzl"),
+        "fail('override filesystem must never supply canonical bazel_tools')\n",
+    )
+    .unwrap();
+    let module = fs::read_to_string(f.root.join("MODULE.bazel")).unwrap();
+    f.write(
+        "MODULE.bazel",
+        &format!(
+            "{module}\nlocal_path_override(module_name='bazel_tools',path='builtin-override')\n"
+        ),
+    );
+    let definition = fs::read_to_string(f.root.join("repo.bzl")).unwrap();
+    f.write(
+        "repo.bzl",
+        &format!("load('@bazel_tools//tools/build_defs/repo:utils.bzl','maybe')\n{definition}"),
+    );
+    let a = f.prime();
+    f.write(".bazelignore", "unused-b\n");
+    let b = f.prime();
+    for (text, receipt) in [
+        ("unused-a\n", &a),
+        ("unused-b\n", &b),
+        ("unused-a\n", &a),
+        ("unused-b\n", &b),
+    ] {
+        f.write(".bazelignore", text);
+        let stderr = f.query();
+        assert!(stderr.contains("bazel-rs-cquery-snapshot: hit"), "{stderr}");
+        assert_eq!(
+            fs::read_to_string(
+                f.cache
+                    .join("repositories/external")
+                    .join(&receipt.canonical)
+                    .join("data")
+            )
+            .unwrap(),
+            text
+        );
+        assert_eq!(f.executions(), 2);
+    }
 }
