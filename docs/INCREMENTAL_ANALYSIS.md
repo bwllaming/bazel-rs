@@ -655,8 +655,21 @@ cell on the shared machine (load 10–15). ~/code private copy at
 | `//src/beyondwork.ai/...` | `gomock.bzl` comment appended (69 packages) | 134–137 s | **1.8 s** | comments only |
 | | `gomock.bzl` comment (first version, no code digest) | 134 s | 109 s | 393 targets re-analyzed |
 | | `gogenrule.bzl` rule body (`mnemonic`) | 137 s | 100.6 s | 27 targets re-analyzed, their closures ~95 % of the analysis |
+| | oauth2token_lib: a dependency added (planned earlier) | 135 s | **5.6 s** | 3 targets re-analyzed; verify (strict) agreed |
+| | the same dependency removed | 135 s | 139 s | falls back (its action no longer consumed) |
+| `//src/...` (57,313 actions) | `gomock.bzl` comment appended | 243 s, 8.7 GB | **4.4 s**, 5.3 GB | comments only |
+| | oauth2token_lib: a dependency added | 243 s | **8.8 s** | spliced |
+| | `src/docker/docker.bzl` (macros, 31 packages): a docstring | 243 s | **9.1 s** | 31 packages reloaded (4.8 s), all unchanged |
+| | the same: a macro's `genrule` `cmd` | 243 s | **20.0 s**, 6.1 GB | 16 packages changed, 71 targets re-analyzed; verify (strict) agreed |
 | `test --nobuild //src/beyondwork.ai/tools/oauth2token:oauth2token_test` | BUILD comment | 4.7 s | **0.7 s** | pruned |
 | | `x_defs` of the test's library | 5.9 s (3.7 s snapshot off) | 4.5 s | the test re-analyzed (its whole request) |
+
+gazelle (`bench_genuine.py run --repo gazelle --scenario build_edit`):
+unchanged, bazel-rs 5.3–5.8 s against genuine's warm server 1.0–1.2 s —
+`rule/BUILD.bazel` is a recorded input of
+`bazel_gazelle_go_repository_tools` (not attempted), and the edit adds a
+target. (The script's verification compared no bazel-rs labels: it does
+not set `BAZEL_RS_RESULT_LINES=1`.)
 
 ### Tests
 
