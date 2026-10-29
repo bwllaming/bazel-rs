@@ -2,6 +2,7 @@
 //! No JVM/javac in tests; archives are checksum-verified before extraction.
 #![allow(clippy::disallowed_methods)]
 include!("support/temp_root.rs");
+include!("support/cquery_current_scope.rs");
 include!("support/module_archives.rs");
 use serde_json::{Value, json};
 use std::os::unix::fs::PermissionsExt;
@@ -316,10 +317,9 @@ fn configured_plugin_edges_snapshot_invalidation_and_no_cquery_execution() {
     let cold = f.ok("cquery", &args);
     let warm = f.ok("cquery", &args);
     assert_eq!(cold.stdout, warm.stdout);
-    assert!(
-        String::from_utf8_lossy(&warm.stderr).contains("cquery-snapshot: hit"),
-        "{}",
-        String::from_utf8_lossy(&warm.stderr)
+    assert_current_loading_scope_miss(
+        &warm,
+        "current loading does not exactly cover the candidate's local repositories",
     );
     let proto = &cold.stdout;
     let rules: Vec<_> = messages(proto, 1)
@@ -371,14 +371,20 @@ fn configured_plugin_edges_snapshot_invalidation_and_no_cquery_execution() {
     let edited = f.ok("cquery", &args);
     // A graph snapshot contains File identity, not source contents. As in
     // docs/CQUERY.md, TD reads contents itself; this is a valid graph hit.
-    assert!(String::from_utf8_lossy(&edited.stderr).contains("cquery-snapshot: hit"));
+    assert_current_loading_scope_miss(
+        &edited,
+        "current loading does not exactly cover the candidate's local repositories",
+    );
     assert_eq!(edited.stdout, warm.stdout);
     fs::remove_file(f.path().join("input.txt")).unwrap();
     let edited = f.ok("cquery", &args);
     assert!(String::from_utf8_lossy(&edited.stderr).contains("cquery-snapshot: miss"));
     f.write("input.txt", "restored source\n");
     let restored = f.ok("cquery", &args);
-    assert!(String::from_utf8_lossy(&restored.stderr).contains("cquery-snapshot: hit"));
+    assert_current_loading_scope_miss(
+        &restored,
+        "current loading does not exactly cover the candidate's local repositories",
+    );
     assert_eq!(restored.stdout, cold.stdout);
     let bzl = fs::read_to_string(f.path().join("plugin.bzl")).unwrap();
     f.write("plugin.bzl", &(bzl + "\n# changed plugin implementation\n"));

@@ -116,11 +116,13 @@ compact IDs, and shared toolchain context dependencies are captured even on
 resolution memo hits. No provider or base-graph copies are made per aspect edge.
 
 Graph snapshots reuse the sectioned binary snapshot store, binary identity,
-observed_fs input validator, recorded repository replay and local publication
-validation. The analysis key includes universe/configuration/aspect/loading
+observed_fs input validator and local publication validation. Local freshness
+comes from completed ordinary current loading, not candidate-driven replay
+([current loading contract](CQUERY_CURRENT_LOADING.md)). The analysis key includes universe/configuration/aspect/loading
 inputs but excludes expression traversal, output format/path, transitions and
-edge-presentation filters. `deps(P)` and `P` therefore share analysis. On a hit
-there is no package loading. BUILD, `.bzl`, select/configuration, observed
+edge-presentation filters. `deps(P)` and `P` therefore share analysis. Every command
+performs its ordinary pattern-loading prefix before lookup; a hit skips the
+remaining configured analysis. BUILD, `.bzl`, select/configuration, observed
 environment, package listings and source-presence changes are revalidated.
 Source **content** is read by TD itself; graph reuse does not replace TD's hashing.
 
@@ -132,11 +134,12 @@ can reuse either version only when **all** its recorded observations, including
 content validator when bytes match. No Git revision is used as a cache key.
 
 Candidates are probed sequentially in MRU order (mtime, then creation time and
-slot name). INPUTS/environment, workspace-status rejection, repository replay
-and publication integrity precede graph loading. Failed candidate data is
+slot name). INPUTS/environment, workspace-status rejection, exact coverage by
+sealed current-local results and publication integrity precede graph loading. Failed candidate data is
 dropped before the next candidate. Corrupt or absent candidates fall through;
-changed inputs retain their version for a future revert. Only a selected valid
-graph's diagnostics are emitted, once. Graph node/configuration/edge/pattern
+changed inputs retain their version for a future revert. This first current-loading
+slice requires a silent prefix and empty saved EVENTS. Other cases resume the
+same continuation and emit current diagnostics once. Graph node/configuration/edge/pattern
 indices are checked. Output errors are terminal command errors; they do not
 trigger another candidate or full analysis. The config dump is written from the
 graph actually used by the successful output command.
@@ -177,11 +180,14 @@ Entry/section bounds are checked before section allocation. A checked-arithmetic
 frame-table preflight checks all offsets, canonical frame sizes and the aggregate
 raw length before allocating the decompressed PLAN or frame vectors. The writer
 also stops at the raw/stored limits. These are byte-buffer bounds, not a total
-process RSS guarantee: the decoded graph and validator/replay structures also
+process RSS guarantee: the retained current-loading continuation, decoded graph
+and validator/current-result structures also
 use memory. A normal hit never retains two decoded graphs. The known 265k-node
 graph's saved header/framing measures 404,498,195 raw PLAN bytes, 24,530,264 stored
 PLAN bytes, 7,961,305 INPUTS bytes and 88,297 EVENTS bytes (32,580,218 total before
-the digest section), comfortably within these limits.
+the digest section), within these byte limits. Its nonempty EVENTS and unproven
+coverage of 45 analysis-time locals remain outside current-loading eligibility;
+those historical size measurements are not a current-prefix memory-fit claim.
 
 `BAZEL_RS_SNAPSHOT=off` disables graph reuse. `verify` compares a reused graph to
 fresh complete semantic analysis and fails/invalidates that generation on a mismatch.
@@ -192,8 +198,10 @@ may need another analysis before subsequent calls hit. No daemon is used.
 `tests/cquery_history.rs` covers a real tiny Git A/B/A/B checkout sequence,
 same-byte replacement and restored-mtime changed-byte adversaries, ignore-file
 changes with both equal and different graphs, loading/source/glob/directory/link
-observations, replay/environment/publication validation, corrupt-candidate
-fallback, LRU eviction, verify deduplication and selected config/diagnostic state.
+observations, current-local/environment/publication validation, corrupt-candidate
+fallback, LRU eviction, verify deduplication and selected configuration state.
+Dedicated current-loading tests cover exactly-once diagnostics and the explicit
+nonempty-EVENTS/analysis-only-local fallback boundaries.
 Graph-local unit tests cover concurrent writers, pinned-reader generation races,
 shared GC, ELF/full-key separation and allocation preflights. These small-fixture
 proofs do not establish whole-application TD memory fit; a new ELF must create its

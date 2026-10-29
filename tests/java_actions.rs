@@ -4,6 +4,7 @@
 //! fixtures/java_actions/README.md (actual native/genuine builds, byte equality).
 #![allow(clippy::disallowed_methods)]
 include!("support/temp_root.rs");
+include!("support/cquery_current_scope.rs");
 include!("support/module_archives.rs");
 
 use std::fs;
@@ -266,7 +267,10 @@ fn turbine_plans_match_captured_argv_and_keep_header_producer_edges_without_exec
     let expression = format!("deps({target})");
     f.ok("cquery", &[&expression]);
     let warm = f.ok("cquery", &[&expression]);
-    assert!(errors(&warm).contains("hit"), "{}", errors(&warm));
+    assert_current_loading_scope_miss(
+        &warm,
+        "current loading does not exactly cover the candidate's local repositories",
+    );
     // A source-content edit is safe for configured-graph reuse, while the
     // compilation still retains the source as an execution input.
     f.write(
@@ -275,7 +279,10 @@ fn turbine_plans_match_captured_argv_and_keep_header_producer_edges_without_exec
     );
     let edited = f.ok("cquery", &[&expression]);
     assert_eq!(warm.stdout, edited.stdout);
-    assert!(errors(&edited).contains("hit"));
+    assert_current_loading_scope_miss(
+        &edited,
+        "current loading does not exactly cover the candidate's local repositories",
+    );
     f.write(
         &format!("{PACKAGE}/headers.bzl"),
         &DEFS.replace("fixture_header", "edited_header"),
@@ -429,7 +436,10 @@ fn javabuilder_registers_real_library_default_bazel_and_empty_off_with_full_outp
     let query = format!("deps(//{PACKAGE}:real_middle)");
     f.ok("cquery", &[&query]);
     let warm = f.ok("cquery", &[&query]);
-    assert!(errors(&warm).contains("hit"));
+    assert_current_loading_scope_miss(
+        &warm,
+        "current loading does not exactly cover the candidate's local repositories",
+    );
     // Neither generated dependency metadata nor the fail-if-executed compiler
     // is read during cquery. A status command is also execution-only.
     let marker = f.path().join("status-must-not-run");

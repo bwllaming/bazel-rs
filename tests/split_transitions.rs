@@ -1,6 +1,7 @@
 //! Real split configuration analysis, provider views, actions and graph reuse.
 #![allow(clippy::disallowed_methods)]
 include!("support/temp_root.rs");
+include!("support/cquery_current_scope.rs");
 use std::{
     fs,
     path::Path,
@@ -183,7 +184,7 @@ fn configured_graph_keeps_both_split_branches_and_reuses_the_universe() {
             "//:use",
         ],
     );
-    assert!(String::from_utf8_lossy(&warm.stderr).contains("cquery-snapshot: hit"));
+    assert_current_loading_scope_miss(&warm, "current-loading history requires empty saved EVENTS");
     let verified = ws
         .command("cquery", &["deps(//:use)"])
         .env("BAZEL_RS_SNAPSHOT", "verify")

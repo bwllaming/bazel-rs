@@ -1,6 +1,7 @@
 //! Per-config runfiles policy, captured with genuine Bazel 9.3.
 #![allow(clippy::disallowed_methods)]
 include!("support/temp_root.rs");
+include!("support/cquery_current_scope.rs");
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -281,7 +282,7 @@ fn cquery_graph_options_edges_and_snapshots_do_not_execute_actions() {
     let cold = f.ok("cquery", &args);
     let warm = f.ok("cquery", &args);
     assert_eq!(cold.stdout, warm.stdout);
-    assert!(String::from_utf8_lossy(&warm.stderr).contains("cquery-snapshot: hit"));
+    assert_current_loading_scope_miss(&warm, "current-loading history requires empty saved EVENTS");
     let count = String::from_utf8_lossy(&cold.stdout)
         .lines()
         .filter(|l| l.starts_with("//:exe ("))
@@ -301,7 +302,10 @@ fn cquery_graph_options_edges_and_snapshots_do_not_execute_actions() {
             "//:split",
         ],
     );
-    assert!(String::from_utf8_lossy(&shared.stderr).contains("cquery-snapshot: hit"));
+    assert_current_loading_scope_miss(
+        &shared,
+        "current-loading history requires empty saved EVENTS",
+    );
     // Independent field walk: analysis_v2.proto CqueryResult configs=2,
     // Configuration.fragment_options=7, FragmentOptions.options=2;
     // build.proto Rule.configured_rule_input=15. No new wire fields.
