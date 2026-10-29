@@ -215,9 +215,20 @@ fn attempt_keeping(
         std::thread::scope(|scope| {
             let plan = scope.spawn(|| {
                 let started = Instant::now();
-                let decoded = reader.section(Section::Plan).and_then(|bytes| {
-                    let size = bytes.len();
-                    let request = crate::snapshot::codec::decode_cancellable(&bytes, &cancel)?;
+                // The plan is inflated section by section as it decodes
+                // (MEM5), but for the verify mode, which keeps its bytes.
+                let decoded = if keep_plan {
+                    reader.section(Section::Plan).and_then(|bytes| {
+                        let request = crate::snapshot::codec::decode_cancellable(&bytes, &cancel)?;
+                        Ok((request, bytes.len(), Some(bytes)))
+                    })
+                } else {
+                    reader.stored_section(Section::Plan).and_then(|stored| {
+                        crate::snapshot::codec::decode_stored(&stored, &cancel)
+                            .map(|(request, size)| (request, size, None))
+                    })
+                };
+                let decoded = decoded.and_then(|(request, size, bytes)| {
                     let decoded_at = started.elapsed();
                     // The plan's portable `map_each` functions, from their
                     // modules loaded against the pinned tables
@@ -229,13 +240,7 @@ fn attempt_keeping(
                         &attempt.replay,
                     )
                     .map_err(|error| format!("{MAPPERS_MISS}{error}"))?;
-                    Ok((
-                        request,
-                        size,
-                        keep_plan.then_some(bytes),
-                        decoded_at,
-                        mappers,
-                    ))
+                    Ok((request, size, bytes, decoded_at, mappers))
                 });
                 failed(decoded.is_err());
                 decoded

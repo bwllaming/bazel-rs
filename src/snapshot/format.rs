@@ -652,55 +652,21 @@ pub(crate) fn decompress_plan_bounded(stored: Vec<u8>, max_raw: usize) -> Result
 }
 
 pub fn decompress_plan(stored: Vec<u8>) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-    let Some(rest) = stored.strip_prefix(COMPRESSED_MAGIC.as_slice()) else {
+    let Some(frames) = plan_frames(&stored)? else {
         return Ok(stored);
     };
-    let malformed = || "malformed compressed plan".to_owned();
-    let count = u32::from_le_bytes(rest.get(..4).ok_or_else(malformed)?.try_into().unwrap());
-    let count = usize::try_from(count).map_err(|_| malformed())?;
-    let table = rest
-        .get(4..4 + count.checked_mul(8).ok_or_else(malformed)?)
-        .ok_or_else(malformed)?;
-    let mut frames = Vec::with_capacity(count);
-    let mut offset = 4 + table.len();
-    let mut total = 0usize;
-    for entry in table.as_chunks::<8>().0 {
-        let raw = u32::from_le_bytes(entry[..4].try_into().unwrap()) as usize;
-        let len = u32::from_le_bytes(entry[4..].try_into().unwrap()) as usize;
-        if raw > FRAME {
-            return Err(malformed());
-        }
-        let deflated = rest.get(offset..offset + len).ok_or_else(malformed)?;
-        frames.push((deflated, raw));
-        offset += len;
-        total += raw;
-    }
-    if offset != rest.len() {
-        return Err(malformed());
-    }
+    let total = frames.iter().map(|(raw, _)| raw).sum();
     // Each frame inflates in place into its slice of the plan (no second
     // copy of a plan of hundreds of MB).
     let mut plan = vec![0u8; total];
     let mut jobs: Vec<(&[u8], &mut [u8])> = Vec::with_capacity(frames.len());
     let mut remaining = plan.as_mut_slice();
-    for (deflated, raw) in &frames {
+    for (raw, deflated) in &frames {
         let (slice, rest) = remaining.split_at_mut(*raw);
         jobs.push((deflated, slice));
         remaining = rest;
     }
-    let inflate = |(deflated, slice): (&[u8], &mut [u8])| -> Result<(), String> {
-        let mut decoder = flate2::read::DeflateDecoder::new(deflated);
-        decoder
-            .read_exact(slice)
-            .map_err(|error| format!("a compressed plan frame does not inflate: {error}"))?;
-        let mut extra = [0u8; 1];
-        match decoder.read(&mut extra) {
-            Ok(0) => Ok(()),
-            Ok(_) => Err("a compressed plan frame inflates to more than its size".to_owned()),
-            Err(error) => Err(format!("a compressed plan frame does not inflate: {error}")),
-        }
-    };
+    let inflate = |(deflated, slice): (&[u8], &mut [u8])| inflate_into(deflated, slice);
     let threads = std::thread::available_parallelism()
         .map(usize::from)
         .unwrap_or(1)
@@ -741,6 +707,68 @@ pub fn decompress_plan(stored: Vec<u8>) -> Result<Vec<u8>, String> {
     {
         Some(error) => Err(error),
         None => Ok(plan),
+    }
+}
+
+/// One frame of a stored PLAN section: its plan bytes and deflated bytes.
+pub(crate) type Frame<'a> = (usize, &'a [u8]);
+
+/// The frames of a stored PLAN section in order, each as (plan bytes,
+/// deflated bytes): `None` when the section is stored as it is (not
+/// [`compress_plan`]'s format). A malformed frame table is an error.
+pub(crate) fn plan_frames(stored: &[u8]) -> Result<Option<Vec<Frame<'_>>>, String> {
+    let Some(rest) = stored.strip_prefix(COMPRESSED_MAGIC.as_slice()) else {
+        return Ok(None);
+    };
+    let malformed = || "malformed compressed plan".to_owned();
+    let count = u32::from_le_bytes(rest.get(..4).ok_or_else(malformed)?.try_into().unwrap());
+    let count = usize::try_from(count).map_err(|_| malformed())?;
+    let table = rest
+        .get(4..4 + count.checked_mul(8).ok_or_else(malformed)?)
+        .ok_or_else(malformed)?;
+    let mut frames = Vec::with_capacity(count);
+    let mut offset = 4 + table.len();
+    for entry in table.as_chunks::<8>().0 {
+        let raw = u32::from_le_bytes(entry[..4].try_into().unwrap()) as usize;
+        let len = u32::from_le_bytes(entry[4..].try_into().unwrap()) as usize;
+        if raw > FRAME {
+            return Err(malformed());
+        }
+        let deflated = rest.get(offset..offset + len).ok_or_else(malformed)?;
+        frames.push((raw, deflated));
+        offset += len;
+    }
+    if offset != rest.len() {
+        return Err(malformed());
+    }
+    Ok(Some(frames))
+}
+
+/// `frames` ([`plan_frames`]) inflated in order into one buffer of their
+/// plan size (on the calling thread).
+pub(crate) fn inflate_frames(frames: &[Frame<'_>]) -> Result<Vec<u8>, String> {
+    let mut bytes = vec![0u8; frames.iter().map(|(raw, _)| raw).sum()];
+    let mut remaining = bytes.as_mut_slice();
+    for (raw, deflated) in frames {
+        let (slice, rest) = remaining.split_at_mut(*raw);
+        inflate_into(deflated, slice)?;
+        remaining = rest;
+    }
+    Ok(bytes)
+}
+
+/// One frame inflated into `slice`, which it must fill exactly.
+fn inflate_into(deflated: &[u8], slice: &mut [u8]) -> Result<(), String> {
+    use std::io::Read;
+    let mut decoder = flate2::read::DeflateDecoder::new(deflated);
+    decoder
+        .read_exact(slice)
+        .map_err(|error| format!("a compressed plan frame does not inflate: {error}"))?;
+    let mut extra = [0u8; 1];
+    match decoder.read(&mut extra) {
+        Ok(0) => Ok(()),
+        Ok(_) => Err("a compressed plan frame inflates to more than its size".to_owned()),
+        Err(error) => Err(format!("a compressed plan frame does not inflate: {error}")),
     }
 }
 

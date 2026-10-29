@@ -560,28 +560,52 @@ fn u64_at(bytes: &mut &[u8], what: &str) -> Result<u64, String> {
 /// Split an encoded request into its sections (no copying, no decoding).
 pub fn sections(bytes: &[u8]) -> Result<Sections<'_>, String> {
     let mut rest = bytes;
-    if take(&mut rest, 8, "magic")? != MAGIC {
+    let table = section_table(&mut rest)?;
+    let mut bodies = Vec::with_capacity(table.len());
+    for (kind, length) in table {
+        bodies.push((kind, take(&mut rest, length, "section")?));
+    }
+    if !rest.is_empty() {
+        return Err("trailing bytes after the last section".to_owned());
+    }
+    let (meta, groups, nodes) = classify(bodies)?;
+    Ok(Sections {
+        meta,
+        groups,
+        nodes,
+    })
+}
+
+/// The container's header: magic, format, and each section's kind and
+/// length (`rest` is left at the first section).
+fn section_table(rest: &mut &[u8]) -> Result<Vec<(u32, usize)>, String> {
+    if take(rest, 8, "magic")? != MAGIC {
         return Err("not a planned request (bad magic)".to_owned());
     }
-    let format = u32_at(&mut rest, "format")?;
+    let format = u32_at(rest, "format")?;
     if format != FORMAT {
         return Err(format!(
             "planned request format {format}, this binary reads {FORMAT}"
         ));
     }
-    let count = u32_at(&mut rest, "section count")? as usize;
+    let count = u32_at(rest, "section count")? as usize;
     let mut table = Vec::with_capacity(count.min(1 << 16));
     for _ in 0..count {
-        let kind = u32_at(&mut rest, "section table")?;
-        let length = usize::try_from(u64_at(&mut rest, "section table")?)
+        let kind = u32_at(rest, "section table")?;
+        let length = usize::try_from(u64_at(rest, "section table")?)
             .map_err(|_| "section length overflows".to_owned())?;
         table.push((kind, length));
     }
+    Ok(table)
+}
+
+/// The sections by kind: exactly one META, exactly one GROUPS, the NODES
+/// chunks in order.
+fn classify<T>(sections: Vec<(u32, T)>) -> Result<(T, T, Vec<T>), String> {
     let mut meta = None;
     let mut groups = None;
     let mut nodes = Vec::new();
-    for (kind, length) in table {
-        let body = take(&mut rest, length, "section")?;
+    for (kind, body) in sections {
         match kind {
             SECTION_META if meta.is_none() => meta = Some(body),
             SECTION_GROUPS if groups.is_none() => groups = Some(body),
@@ -589,14 +613,11 @@ pub fn sections(bytes: &[u8]) -> Result<Sections<'_>, String> {
             _ => return Err(format!("unexpected section kind {kind}")),
         }
     }
-    if !rest.is_empty() {
-        return Err("trailing bytes after the last section".to_owned());
-    }
-    Ok(Sections {
-        meta: meta.ok_or_else(|| "missing META section".to_owned())?,
-        groups: groups.ok_or_else(|| "missing GROUPS section".to_owned())?,
+    Ok((
+        meta.ok_or_else(|| "missing META section".to_owned())?,
+        groups.ok_or_else(|| "missing GROUPS section".to_owned())?,
         nodes,
-    })
+    ))
 }
 
 /// The GROUPS table: one `Arc` per entry, each flag recomputed.
@@ -706,6 +727,108 @@ pub fn decode_cancellable(bytes: &[u8], cancel: &AtomicBool) -> Result<PlannedRe
     } else {
         sections.nodes.iter().map(chunk).collect()
     };
+    assemble(meta, groups, chunks)
+}
+
+/// [`decode_cancellable`] of a stored PLAN section (crate::snapshot::format::
+/// compress_plan's frames), with its plan size: each section is inflated
+/// only to be decoded, a NODES chunk on the thread that decodes it, and
+/// dropped right after (MEM5) — the plan, hundreds of MB for a large
+/// build, is never inflated whole beside its decoded actions. A section
+/// that does not start and end on a frame boundary (a plan not written
+/// part by part, crate::snapshot::format::assemble_compressed) decodes
+/// from the whole inflated plan instead. An uncompressed section decodes
+/// as it is.
+pub fn decode_stored(
+    stored: &[u8],
+    cancel: &AtomicBool,
+) -> Result<(PlannedRequest, usize), String> {
+    use crate::snapshot::format::{inflate_frames, plan_frames};
+    let Some(frames) = plan_frames(stored)? else {
+        return decode_cancellable(stored, cancel).map(|request| (request, stored.len()));
+    };
+    let total: usize = frames.iter().map(|(raw, _)| raw).sum();
+    let whole = || {
+        let bytes = inflate_frames(&frames)?;
+        decode_cancellable(&bytes, cancel).map(|request| (request, total))
+    };
+    // The header: the first frames, up to its section table.
+    let mut header = Vec::new();
+    let mut next = 0;
+    let table = loop {
+        let mut rest = header.as_slice();
+        match section_table(&mut rest) {
+            Ok(table) if rest.is_empty() => break table,
+            Ok(_) => return whole(),
+            Err(error) if error.starts_with("truncated") && next < frames.len() => {
+                header.extend(inflate_frames(&frames[next..=next])?);
+                next += 1;
+            }
+            Err(_) => return whole(),
+        }
+    };
+    // Each section's frames: from the frame starting where it starts to
+    // the one starting where it ends.
+    let mut ranges = Vec::with_capacity(table.len());
+    let mut offset = header.len();
+    let mut frame = next;
+    let mut frame_start = offset;
+    for (kind, length) in table {
+        if frame_start != offset {
+            return whole();
+        }
+        let first = frame;
+        let end = offset
+            .checked_add(length)
+            .ok_or("section length overflows")?;
+        while frame_start < end && frame < frames.len() {
+            frame_start += frames[frame].0;
+            frame += 1;
+        }
+        if frame_start != end {
+            return whole();
+        }
+        ranges.push((kind, &frames[first..frame]));
+        offset = end;
+    }
+    if frame != frames.len() {
+        return whole();
+    }
+    let (meta, groups, nodes) = classify(ranges)?;
+    let meta: MetaOwned = postcard::from_bytes(&inflate_frames(meta)?)
+        .map_err(|error| format!("planned request outline: {error}"))?;
+    let groups = decode_groups(&inflate_frames(groups)?)?;
+    let chunk = |frames: &&[(usize, &[u8])]| {
+        if cancel.load(Ordering::Relaxed) {
+            Err(CANCELLED.to_owned())
+        } else {
+            decode_chunk(&inflate_frames(frames)?, &groups)
+        }
+    };
+    let node_bytes: usize = nodes
+        .iter()
+        .flat_map(|frames| frames.iter())
+        .map(|(raw, _)| raw)
+        .sum();
+    let chunks: Vec<Result<Vec<PlannedAction>, String>> = if nodes.len() > 1
+        && node_bytes >= PARALLEL_DECODE_BYTES
+    {
+        on_threads(&nodes, chunk)
+            .into_iter()
+            .map(|chunk| chunk.unwrap_or_else(|| Err("planned actions: decoder panicked".into())))
+            .collect()
+    } else {
+        nodes.iter().map(chunk).collect()
+    };
+    assemble(meta, groups, chunks).map(|request| (request, total))
+}
+
+/// The decoded request of its decoded parts.
+fn assemble(
+    meta: MetaOwned,
+    groups: Vec<Arc<InputGroup>>,
+    chunks: Vec<Result<Vec<PlannedAction>, String>>,
+) -> Result<PlannedRequest, String> {
     let mut nodes = Vec::with_capacity(chunks.iter().map(|c| c.as_ref().map_or(0, Vec::len)).sum());
     for chunk in chunks {
         nodes.extend(chunk?);
@@ -2231,6 +2354,50 @@ mod tests {
         assert_eq!(table_of_one, [1, 1, b'a', 1, 0]);
         *table_of_one.last_mut().unwrap() = 1;
         assert!(from_section::<Vec<PathIn>>(&table_of_one).is_err());
+    }
+
+    /// MEM5: a stored plan decodes section by section from its frames, to
+    /// the same request as the whole inflated plan; a plan whose frames do
+    /// not follow its sections, an uncompressed one and a damaged one decode
+    /// (or fail) as the whole plan does.
+    #[test]
+    fn stored_plans_decode_section_by_section() {
+        use crate::snapshot::format::{assemble_compressed, compress_part, compress_plan};
+        let tool = input_group("tool.runfiles", "a");
+        let held = [&tool];
+        let mut nodes: Vec<PlannedAction> = (0..2 * CHUNK + 3)
+            .map(|index| holder(index, if index % 3 == 0 { &held[..] } else { &[] }))
+            .collect();
+        nodes.extend(sample().nodes);
+        let request = with_nodes(nodes);
+        let bytes = encode(&request).unwrap();
+        let (parts, _) = encode_parts_with(&request, compress_part).unwrap();
+        let stored = assemble_compressed(parts);
+        let never = AtomicBool::new(false);
+        let (decoded, size) = decode_stored(&stored, &never).unwrap();
+        assert_eq!(size, bytes.len());
+        assert_eq!(encode(&decoded).unwrap(), bytes);
+        // Whole-plan frames (not on section boundaries) and no compression.
+        for other in [compress_plan(&bytes), bytes.clone()] {
+            let (decoded, size) = decode_stored(&other, &never).unwrap();
+            assert_eq!(
+                (encode(&decoded).unwrap(), size),
+                (bytes.clone(), bytes.len())
+            );
+        }
+        // Cancelled before the chunks.
+        assert_eq!(
+            decode_stored(&stored, &AtomicBool::new(true))
+                .err()
+                .as_deref(),
+            Some(CANCELLED)
+        );
+        // A damaged frame, a truncated frame table.
+        let mut damaged = stored.clone();
+        let last = damaged.len() - 2;
+        damaged[last] ^= 0xff;
+        assert!(decode_stored(&damaged, &never).is_err());
+        assert!(decode_stored(&stored[..stored.len() - 1], &never).is_err());
     }
 
     /// A group's `valid` flag is never decoded but recomputed: a tampered

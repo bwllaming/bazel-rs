@@ -335,8 +335,14 @@ fn stamped_tree(
             return None;
         }
         let name = PathBuf::from(OsStr::from_bytes(&bytes));
+        // `path.join(&name)` at its exact size: a join grows the copy of
+        // `path` by doubling, and a TypeScript build keeps hundreds of
+        // thousands of these paths in the tree memo (MEM5).
+        let mut file = PathBuf::with_capacity(path.as_os_str().len() + 1 + bytes.len());
+        file.push(path);
+        file.push(&name);
         let input = Input {
-            path: path.join(&name),
+            path: file,
             digest,
             size: *size,
             executable: mode & 0o111,
