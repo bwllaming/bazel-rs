@@ -280,6 +280,7 @@ struct RepositoryState {
     publication_proof: bool,
     proof_receipts: BTreeMap<String, crate::repository_publication::Receipt>,
     current_locals: std::sync::Mutex<BTreeMap<String, Arc<current::LocalResult>>>,
+    current_loading: std::sync::atomic::AtomicBool,
     proof_locals: BTreeMap<String, Arc<current::LocalResult>>,
     /// The record mode's replay capture: local executions become replay
     /// records, and `root()`/`mapping()` results inside replay scopes are
@@ -911,6 +912,7 @@ impl RepositorySet {
                 publication_proof: false,
                 proof_receipts: BTreeMap::new(),
                 current_locals: Default::default(),
+                current_loading: Default::default(),
                 proof_locals: BTreeMap::new(),
                 replay: crate::snapshot::replay::global(),
                 verified_trees: Arc::default(),

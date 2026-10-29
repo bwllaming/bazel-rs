@@ -41,6 +41,13 @@ impl LocalResult {
 }
 
 impl RepositorySet {
+    /// Enable the explicit cquery experiment before any current option/pattern
+    /// loading. Ordinary/default commands do not collect this ledger.
+    pub fn enable_current_loading(&self) {
+        self.state
+            .current_loading
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_current_local(
         &self,
@@ -52,6 +59,13 @@ impl RepositorySet {
         execution: &LocalExecution,
         silent: bool,
     ) {
+        if !self
+            .state
+            .current_loading
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
         let ordinary = self.source_cache_path().ok().is_some_and(|store| {
             crate::repository_store::slot_class(store, canonical, root).is_some_and(
                 |(id, class)| {
@@ -102,7 +116,11 @@ impl CurrentRefresh {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let recording = crate::observed_fs::current_recording();
-        let eligible = crate::observed_fs::recording()
+        let eligible = repositories
+            .state
+            .current_loading
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && crate::observed_fs::recording()
             && silent
             && recording
                 .as_ref()

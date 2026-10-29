@@ -320,12 +320,14 @@ pub struct LoadedQuery {
     roots: Vec<Label>,
     expanded: BTreeMap<String, Vec<Label>>,
     repositories: std::sync::Arc<crate::repository::RepositorySet>,
-    current: crate::repository::CurrentRefresh,
+    current: Option<crate::repository::CurrentRefresh>,
 }
 
 impl LoadedQuery {
     pub fn current(&self) -> &crate::repository::CurrentRefresh {
-        &self.current
+        self.current
+            .as_ref()
+            .expect("explicit current-loading continuation")
     }
 }
 
@@ -818,7 +820,7 @@ impl Engine {
         patterns: &[String],
         relative_directory: &str,
     ) -> Result<Graph, String> {
-        let loaded = self.load_cquery_patterns(patterns, relative_directory)?;
+        let loaded = self.load_cquery_patterns_inner(patterns, relative_directory, false)?;
         self.cquery_graph_loaded(loaded)
     }
 
@@ -826,6 +828,16 @@ impl Engine {
         &mut self,
         patterns: &[String],
         relative_directory: &str,
+    ) -> Result<LoadedQuery, String> {
+        self.repositories.enable_current_loading();
+        self.load_cquery_patterns_inner(patterns, relative_directory, true)
+    }
+
+    fn load_cquery_patterns_inner(
+        &mut self,
+        patterns: &[String],
+        relative_directory: &str,
+        current_loading: bool,
     ) -> Result<LoadedQuery, String> {
         if self.keep_going {
             return Err(
@@ -843,10 +855,12 @@ impl Engine {
             roots,
             expanded,
             repositories: self.repositories.clone(),
-            current: crate::repository::CurrentRefresh::seal(
-                self.repositories.clone(),
-                self.warnings.is_empty(),
-            ),
+            current: current_loading.then(|| {
+                crate::repository::CurrentRefresh::seal(
+                    self.repositories.clone(),
+                    self.warnings.is_empty(),
+                )
+            }),
         })
     }
 

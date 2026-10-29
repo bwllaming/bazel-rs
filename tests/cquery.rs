@@ -278,7 +278,7 @@ fn snapshot_verification_source_presence_and_configuration_changes() {
 }
 
 #[test]
-fn current_prefix_fallback_honors_quiet_without_duplicating_console_markers() {
+fn graph_snapshot_replay_honors_quiet_without_storing_console_markers_in_output() {
     let ws = Workspace::new();
     let definitions = fs::read_to_string(ws.path().join("defs.bzl")).unwrap();
     ws.write(
@@ -312,9 +312,7 @@ fn current_prefix_fallback_honors_quiet_without_duplicating_console_markers() {
         assert!(warm.status.success(), "{warm:?}");
         assert_eq!(cold_quiet.stdout, warm.stdout);
         let stderr = String::from_utf8_lossy(&warm.stderr);
-        // Current-loading lookup conservatively refuses a non-silent prefix,
-        // including notes hidden by quiet. Current output is forwarded once.
-        assert!(stderr.contains("snapshot: miss"), "{stderr}");
+        assert!(stderr.contains("snapshot: hit"), "{stderr}");
         assert_eq!(
             stderr.matches("cquery-note-sentinel").count(),
             usize::from(!quiet)

@@ -1,7 +1,6 @@
 //! Cquery collects semantic File identities, not execution-path input maps.
 #![allow(clippy::disallowed_methods)]
 include!("support/temp_root.rs");
-include!("support/cquery_current_scope.rs");
 use std::{
     collections::BTreeMap,
     fs,
@@ -172,7 +171,7 @@ fn semantic_graph_reuse_verify_and_changed_conflicting_writer_stay_correct() {
             PROBES,
         ],
     );
-    assert_current_loading_scope_miss(&warm, "current-loading history requires empty saved EVENTS");
+    assert!(String::from_utf8_lossy(&warm.stderr).contains("cquery-snapshot: hit"));
     assert_eq!(observations(&first), observations(&warm));
     let verified = ws
         .command("cquery", &[PROBES])
@@ -244,10 +243,7 @@ fn runfiles_support_files_are_semantic_identities_without_manifest_or_tree_lower
         let output = ws.ok("cquery", &args);
         assert_eq!(observations(&output), genuine["support_probes"][name]);
         let warm = ws.ok("cquery", &args);
-        assert_current_loading_scope_miss(
-            &warm,
-            "current-loading history requires empty saved EVENTS",
-        );
+        assert!(String::from_utf8_lossy(&warm.stderr).contains("cquery-snapshot: hit"));
         assert_eq!(observations(&warm), genuine["support_probes"][name]);
         let verify = ws
             .command("cquery", &args)

@@ -1,9 +1,30 @@
-//! Binary configured-graph snapshots after the current ordinary loading prefix.
-//! Local results come from this invocation's completed work, never speculative
-//! historical replay. Build snapshots retain their independent replay path.
+//! Binary configured-graph snapshots. The default early lookup preserves local
+//! replay and saved diagnostics. An explicit native opt-in selects current
+//! ordinary loading in a separate analysis namespace; the paths never mix.
 use crate::engine::cquery::Graph;
 use crate::snapshot::{self, format, key, store};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+
+pub const CURRENT_LOADING_ENV: &str = "BAZEL_RS_CQUERY_CURRENT_LOADING";
+
+pub fn current_loading_enabled() -> Result<bool, String> {
+    // snapshot-unrecorded: native profile selector, encoded in the cquery key.
+    parse_current_loading(std::env::var_os(CURRENT_LOADING_ENV).as_deref())
+}
+
+fn parse_current_loading(value: Option<&std::ffi::OsStr>) -> Result<bool, String> {
+    match value.and_then(std::ffi::OsStr::to_str) {
+        None if value.is_none() => Ok(false),
+        Some("") | Some("0") => Ok(false),
+        Some("1") => Ok(true),
+        Some(value) if value.eq_ignore_ascii_case("off") => Ok(false),
+        Some(value) if value.eq_ignore_ascii_case("on") => Ok(true),
+        _ => Err(format!(
+            "{CURRENT_LOADING_ENV} must be 1/on or 0/off (unset or empty means off)"
+        )),
+    }
+}
 
 #[path = "cquery_history.rs"]
 mod history;
@@ -16,6 +37,12 @@ pub struct Session {
     prefix: Option<snapshot::capture::Captured>,
     replay: snapshot::hit::ReplayInputs,
     verify_mode: bool,
+    current_loading: bool,
+}
+
+pub struct Started {
+    pub hit: Option<Graph>,
+    pub session: Option<Session>,
 }
 
 fn presentation(option: &crate::bazelrc::Unit) -> bool {
@@ -37,17 +64,71 @@ fn presentation(option: &crate::bazelrc::Unit) -> bool {
         || name.starts_with("--noproto:")
 }
 
+/// Installed default: lookup before any current package loading. A miss opens
+/// the normal recording window, exactly as the original cquery checkpoint did.
+pub fn start(
+    inputs: key::Inputs<'_>,
+    replay: snapshot::hit::ReplayInputs,
+    publication_repositories: crate::repository_publication::Factory<'_>,
+) -> Result<Started, String> {
+    let Some((key, mode)) = analysis_key(&inputs, false) else {
+        return Ok(Started {
+            hit: None,
+            session: None,
+        });
+    };
+    let found = read(
+        inputs.cache,
+        &key,
+        &replay,
+        Validation::Ordinary(publication_repositories),
+    )?;
+    let verify = match found {
+        Some((graph, reader, events)) if mode != snapshot::Mode::Verify => {
+            use std::io::Write;
+            std::io::stderr()
+                .lock()
+                .write_all(&crate::ui::filtered(&events))
+                .map_err(|e| e.to_string())?;
+            reader.touch();
+            explain("hit");
+            return Ok(Started {
+                hit: Some(graph),
+                session: None,
+            });
+        }
+        Some((graph, reader, _)) => Some((graph, reader)),
+        None => None,
+    };
+    Ok(Started {
+        hit: None,
+        session: open_session(inputs.cache, key, replay, mode, false, verify),
+    })
+}
+
+/// Explicit experimental profile: open recording but do not inspect history
+/// until ordinary loading has sealed its results. Never fall back to replay.
 pub fn begin(
     inputs: key::Inputs<'_>,
     replay: snapshot::hit::ReplayInputs,
 ) -> Result<Option<Session>, String> {
+    let Some((key, mode)) = analysis_key(&inputs, true) else {
+        return Ok(None);
+    };
+    Ok(open_session(inputs.cache, key, replay, mode, true, None))
+}
+
+fn analysis_key(
+    inputs: &key::Inputs<'_>,
+    current_loading: bool,
+) -> Option<(key::Key, snapshot::Mode)> {
     let mode = snapshot::Mode::from_env();
     if matches!(mode, snapshot::Mode::Off | snapshot::Mode::Record) || key::test_hook().is_some() {
-        return Ok(None);
+        return None;
     }
     let _ = std::fs::create_dir_all(store::directory(inputs.cache));
     let Ok(binary) = snapshot::exe_id::binary_id(&store::root(inputs.cache)) else {
-        return Ok(None);
+        return None;
     };
     let options = inputs
         .options
@@ -56,37 +137,63 @@ pub fn begin(
         .cloned()
         .collect::<Vec<_>>();
     let filtered = key::Inputs {
-        command: "cquery-graph-v2",
+        command: if current_loading {
+            "cquery-graph-current-loading-v1"
+        } else {
+            "cquery-graph-v2"
+        },
         options: &options,
-        ..inputs
+        ..*inputs
     };
     let key = key::compute(&filtered, binary);
+    Some((key, mode))
+}
+
+fn open_session(
+    cache: &Path,
+    key: key::Key,
+    replay: snapshot::hit::ReplayInputs,
+    mode: snapshot::Mode,
+    current_loading: bool,
+    verify: Option<(Graph, store::Reader)>,
+) -> Option<Session> {
     if !crate::observed_fs::open_window() {
-        return Ok(None);
+        return None;
     }
     snapshot::replay::install();
     let capture = snapshot::capture::start(snapshot::capture::Mode::Tee).ok();
-    Ok(Some(Session {
-        cache: inputs.cache.to_owned(),
+    Some(Session {
+        cache: cache.to_owned(),
         key,
         capture,
-        verify: None,
+        verify,
         prefix: None,
         replay,
         verify_mode: mode == snapshot::Mode::Verify,
-    }))
+        current_loading,
+    })
+}
+
+#[derive(Clone, Copy)]
+enum Validation<'a> {
+    Ordinary(crate::repository_publication::Factory<'a>),
+    Current(&'a crate::repository::CurrentRefresh),
 }
 
 fn read(
     cache: &Path,
     key: &key::Key,
     replay: &snapshot::hit::ReplayInputs,
-    current: &crate::repository::CurrentRefresh,
+    validation: Validation<'_>,
 ) -> Result<Option<(Graph, store::Reader, Vec<u8>)>, String> {
     let mut reason = "no configured graph snapshot".to_owned();
     for candidate in history::candidates(cache, key) {
         let result = candidate.and_then(|reader| {
-            read_candidate(&reader, replay, current).map(|(graph, events)| (graph, reader, events))
+            match validation {
+                Validation::Ordinary(factory) => read_ordinary_candidate(&reader, replay, factory),
+                Validation::Current(current) => read_candidate(&reader, replay, current),
+            }
+            .map(|(graph, events)| (graph, reader, events))
         });
         match result {
             Ok(selected) => return Ok(Some(selected)),
@@ -120,6 +227,58 @@ fn read_candidate(
     drop(inputs.tables.take());
     let environment = snapshot::validate::Environment::new(&replay.environment);
     let adoption = current.prepare(&inputs.replay, &mut inputs.recording, &environment)?;
+    let graph = decode_graph(reader)?;
+    current.accept(&inputs.replay, &inputs.recording, adoption, &environment)?;
+    Ok((graph, events))
+}
+
+/// The installed ordinary validation/replay/adoption contract. This function is
+/// reached only by the early default checkpoint, never after a current prefix.
+fn read_ordinary_candidate(
+    reader: &store::Reader,
+    replay: &snapshot::hit::ReplayInputs,
+    publication_repositories: crate::repository_publication::Factory<'_>,
+) -> Result<(Graph, Vec<u8>), String> {
+    let _version = history::section(reader, format::Section::Stats)?;
+    let mut inputs = format::decode_inputs(&history::section(reader, format::Section::Inputs)?)?;
+    if inputs.workspace_status {
+        return Err("configured graph recorded workspace status execution".into());
+    }
+    let environment = snapshot::validate::Environment::new(&replay.environment);
+    let strict = snapshot::validate::validate_for_hit(&inputs.recording, &environment);
+    let adoption = if strict.is_err()
+        || crate::repository_publication::needs_view_adoption(&inputs.recording)
+    {
+        if !inputs.replay.is_empty() {
+            return Err(
+                "historical publication adoption with local repository replay is unsupported"
+                    .into(),
+            );
+        }
+        drop(inputs.tables.take());
+        let prepared = crate::repository_publication::Prepared::prepare(
+            publication_repositories,
+            &mut inputs.recording,
+            &environment,
+        )?;
+        Some((prepared, inputs.recording))
+    } else {
+        if !inputs.replay.is_empty() {
+            let cancel = AtomicBool::new(false);
+            snapshot::hit::replay_records(inputs.tables.take(), replay, &inputs.replay, &cancel)?;
+            snapshot::hit::check_local_trees(&inputs.replay, &cancel, false)?;
+        }
+        None
+    };
+    let events = format::decode_events(&history::section(reader, format::Section::Events)?)?;
+    let graph = decode_graph(reader)?;
+    if let Some((prepared, recording)) = adoption {
+        prepared.commit(publication_repositories, &recording, &environment)?;
+    }
+    Ok((graph, events))
+}
+
+fn decode_graph(reader: &store::Reader) -> Result<Graph, String> {
     let bytes = history::section(reader, format::Section::Plan)?;
     let graph: Graph =
         postcard::from_bytes(&bytes).map_err(|e| format!("configured graph decode: {e}"))?;
@@ -143,8 +302,7 @@ fn read_candidate(
     {
         return Err("invalid configured graph pattern index".into());
     }
-    current.accept(&inputs.replay, &inputs.recording, adoption, &environment)?;
-    Ok((graph, events))
+    Ok(graph)
 }
 
 impl Session {
@@ -155,6 +313,9 @@ impl Session {
         &mut self,
         current: &crate::repository::CurrentRefresh,
     ) -> Result<Option<Graph>, String> {
+        if !self.current_loading {
+            return Err("ordinary cquery session cannot enter current-loading lookup".into());
+        }
         let prefix = self
             .capture
             .take()
@@ -168,7 +329,12 @@ impl Session {
             explain("miss: current loading prefix is not silent and eligible");
             return Ok(None);
         }
-        let found = read(&self.cache, &self.key, &self.replay, current)?;
+        let found = read(
+            &self.cache,
+            &self.key,
+            &self.replay,
+            Validation::Current(current),
+        )?;
         match found {
             Some((graph, reader, _)) if self.verify_mode => {
                 self.verify = Some((graph, reader));
@@ -404,6 +570,23 @@ pub fn dump_configurations(cache: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_loading_profile_is_explicit_and_rejects_invalid_values() {
+        use std::ffi::OsStr;
+        assert!(!parse_current_loading(None).unwrap());
+        for value in ["", "0", "off", "OFF"] {
+            assert!(!parse_current_loading(Some(OsStr::new(value))).unwrap());
+        }
+        for value in ["1", "on", "ON"] {
+            assert!(parse_current_loading(Some(OsStr::new(value))).unwrap());
+        }
+        for value in ["true", "yes", "2", " on ", "auto"] {
+            assert!(parse_current_loading(Some(OsStr::new(value))).is_err());
+        }
+        use std::os::unix::ffi::OsStrExt;
+        assert!(parse_current_loading(Some(OsStr::from_bytes(b"\xff"))).is_err());
+    }
     #[test]
     fn incremental_graph_encoding_has_identical_frames_and_roundtrips() {
         // Scalar writes, large writes and boundaries inside one string are all
@@ -453,6 +636,7 @@ mod tests {
         };
         let _window = crate::observed_fs::tests_support::record_this_thread();
         let repositories = std::sync::Arc::new(fixture.repositories().unwrap());
+        repositories.enable_current_loading();
         repositories.validate_root_module().unwrap();
         let current = crate::repository::CurrentRefresh::seal(repositories, true);
         let error = read_candidate(&reader, &replay, &current).unwrap_err();

@@ -77,7 +77,6 @@ pub(crate) const COMMIT_ERROR: &str = "repository publication adoption failed: "
 /// A strict pointer match alone cannot leave an ordinary view at another
 /// publication (for example a different spec last bound this canonical slot).
 /// Established mutable-slot snapshots retain their ordinary validation path.
-#[cfg(test)]
 pub(crate) fn needs_view_adoption(recording: &crate::observed_fs::Recording) -> bool {
     recording.selections.iter().any(|receipt| {
         let Some(root) = recording
@@ -176,7 +175,6 @@ impl Prepared {
 
     /// Called only after the ordinary candidate's complete payload and indices
     /// have been checked. Nothing has been changed publicly before this point.
-    #[cfg(test)]
     pub(crate) fn commit(
         self,
         factory: Factory<'_>,

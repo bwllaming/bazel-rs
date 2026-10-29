@@ -72,10 +72,11 @@ own operations, preserving unrelated consumers.
 
 Candidate proof uses a thread-private recording of current preparation/runtime
 inputs. Ordinary observations, EVENTS, PLAN and all graph indices must validate
-before adoption. Cquery now uses sealed results from its ordinary current loading
-prefix for locals, including strict-pointer candidates, instead of replaying old
-records. See [CQUERY_CURRENT_LOADING.md](CQUERY_CURRENT_LOADING.md) for exact local
-coverage and the silent-prefix/empty-EVENTS boundary. Other commands retain replay.
+before adoption. Default cquery retains the early strict lookup, ordinary local
+replay and saved diagnostics. The native `BAZEL_RS_CQUERY_CURRENT_LOADING=1/on`
+opt-in uses sealed current-loading results instead, in a separate cquery history
+namespace. See [CQUERY_CURRENT_LOADING.md](CQUERY_CURRENT_LOADING.md) for its exact
+local coverage and silent-prefix/empty-EVENTS boundary. It is default off.
 
 Adoption takes the existing per-canonical slot writer locks and publication
 identity locks without waiting. Busy acquisition releases all held guards and
@@ -104,9 +105,10 @@ recursive generated definitions, and built-in filesystem precedence under module
 overrides. Counters cover generators and extension callbacks; registry transport
 and Git-fetch counters stay zero during pure proof.
 
-Historical local replay remains unsupported; only locals already required and
-completed by current ordinary loading can qualify. The saved V3 graphs each have
-45 local records, whose full current neededness is not established by pattern
-loading, and nonempty EVENTS. The bounded current-loading slice therefore does
-**not** unblock that application/TD probe. No historical record can add a demand
-to fill the missing coverage.
+Historical nonlocal switching with local replay remains unsupported by the default
+path; its already-working strict-pointer local replay is preserved. The explicit
+current-loading experiment supports only locals already required and completed
+by the current prefix. The saved V3 graphs each have45 local records whose full
+neededness is not established by pattern loading, and nonempty EVENTS. The opt-in
+therefore does **not** unblock that application/TD probe, and remains default off.
+No historical record can add a demand to fill missing current coverage.

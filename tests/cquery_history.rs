@@ -36,6 +36,7 @@ impl Workspace {
         ws.write("leaf.bzl", "VALUE = 'one'\n");
         ws.write("defs.bzl", r#"
 load(":leaf.bzl", "VALUE")
+print("history-note-" + VALUE)
 def _impl(ctx):
     out = ctx.actions.declare_file(ctx.label.name + ".txt")
     ctx.actions.run_shell(inputs = [ctx.info_file], outputs = [out], command = "touch ACTION-RAN; touch " + out.path)
@@ -154,7 +155,7 @@ fn hit_eq(out: &Output, expected: &Output) {
 const PROTO: &[&str] = &["--output=proto", "deps(//:top)"];
 
 #[test]
-fn real_git_checkouts_reuse_both_silent_graphs() {
+fn real_git_checkouts_reuse_both_graphs_and_only_selected_diagnostics() {
     let ws = Workspace::new();
     ws.git(&["init", "-q"]);
     ws.git(&["add", "."]);
@@ -175,12 +176,19 @@ fn real_git_checkouts_reuse_both_silent_graphs() {
     state(&second, "saved");
     hit_eq(&ws.query(PROTO), &second);
     assert_ne!(first.stdout, second.stdout);
-    for (revision, expected) in [(&a, &first), (&b, &second)] {
+    for (revision, expected, note, absent) in
+        [(&a, &first, "one", "two"), (&b, &second, "two", "one")]
+    {
         ws.git(&["checkout", "-q", revision]);
         let out = ws.query(PROTO);
         hit_eq(&out, expected);
         let text = String::from_utf8_lossy(&out.stderr);
-        assert!(!text.contains("history-note"), "{text}");
+        assert_eq!(
+            text.matches(&format!("history-note-{note}")).count(),
+            1,
+            "{text}"
+        );
+        assert!(!text.contains(&format!("history-note-{absent}")), "{text}");
     }
     let new = fs::metadata(ws.root.join("leaf.bzl")).unwrap();
     assert_ne!(
@@ -363,7 +371,7 @@ fn verification_deduplicates_and_configuration_dump_follows_selected_graph() {
             String::from_utf8_lossy(&verified.stderr)
                 .matches("history-note-one")
                 .count(),
-            0
+            1
         );
         assert_eq!(ws.snapshots().len(), 2);
     }
@@ -488,7 +496,7 @@ fn corrupt_newest_falls_back_without_diagnostics_and_both_missing_or_corrupt_mis
             String::from_utf8_lossy(&out.stderr)
                 .matches("history-note-one")
                 .count(),
-            0
+            1
         );
     }
     fs::write(&original, b"corrupt").unwrap();
@@ -592,11 +600,9 @@ repo = repository_rule(implementation = _impl, environ = ['HISTORY_NAME'], local
         let restored = query("two");
         hit_eq(&restored, &b);
         hit_eq(&query("two"), &b);
-        // Current ordinary loading must repair corrupt local publications
-        // before lookup. Once repaired, a matching graph may hit; no historical
-        // record can replace this fresh execution or supply tampered bytes.
+        // A valid replay identity alone is insufficient: corrupt all retained
+        // publications and require analysis/repair, never a graph hit.
         let mut roots = std::collections::BTreeSet::new();
-        let mut canonicals = std::collections::BTreeSet::new();
         for snapshot in ws.snapshots() {
             use bazel_rs::snapshot::format;
             let bytes = fs::read(snapshot).unwrap();
@@ -606,30 +612,15 @@ repo = repository_rule(implementation = _impl, environ = ['HISTORY_NAME'], local
                 &bytes[slot.offset as usize..(slot.offset + slot.len) as usize],
             )
             .unwrap();
-            for record in inputs.replay {
-                canonicals.insert(record.canonical);
-                roots.insert(record.root);
-            }
+            roots.extend(inputs.replay.into_iter().map(|record| record.root));
         }
         assert!(!roots.is_empty(), "fixture must exercise local replay");
         for root in roots {
             fs::write(root.join("BUILD.bazel"), "filegroup(name='tampered')\n").unwrap();
         }
         let repaired = query("two");
-        state(&repaired, "hit");
+        state(&repaired, "miss");
         assert_eq!(repaired.stdout, b.stdout);
-        for canonical in canonicals {
-            assert_eq!(
-                fs::read_to_string(
-                    ws.cache
-                        .join("repositories/external")
-                        .join(canonical)
-                        .join("BUILD.bazel")
-                )
-                .unwrap(),
-                "filegroup(name = \"two\")"
-            );
-        }
         ws.sentinels_absent();
     }
 }

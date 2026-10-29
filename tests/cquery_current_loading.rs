@@ -1,4 +1,5 @@
-//! Current ordinary loading, never historical records, chooses local callbacks.
+//! Explicit current-loading profile: ordinary loading, never historical records,
+//! chooses local callbacks. Default regressions explicitly unset the opt-in.
 #![allow(clippy::disallowed_methods)]
 include!("support/temp_root.rs");
 use std::fs;
@@ -77,6 +78,9 @@ payload = repository_rule(implementation=_payload, attrs={{'src':attr.label()}})
             .count()
     }
     fn command(&self) -> Command {
+        self.command_with_quiet(false)
+    }
+    fn command_with_quiet(&self, quiet: bool) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
         command
             .current_dir(&self.root)
@@ -84,19 +88,25 @@ payload = repository_rule(implementation=_payload, attrs={{'src':attr.label()}})
             .env("LOCAL_VALUE", "one")
             .env("BAZEL_RS_MAX_MEMORY_MB", "1024")
             .env("BAZEL_RS_SNAPSHOT", "on")
+            .env("BAZEL_RS_CQUERY_CURRENT_LOADING", "1")
             .env("BAZEL_RS_SNAPSHOT_EXPLAIN", "1")
             .args([
                 "--ignore_all_rc_files",
                 &format!("--cache-dir={}", self.cache.display()),
-                "cquery",
-                "--experimental-builtin-modules=false",
-                "--lockfile_mode=off",
-                "--repository_disable_download",
-                "--platforms=//:platform",
-                "--host_platform=//:platform",
-                "--output=proto",
-                "deps(//:top)",
             ]);
+        if quiet {
+            command.arg("--quiet");
+        }
+        command.args([
+            "cquery",
+            "--experimental-builtin-modules=false",
+            "--lockfile_mode=off",
+            "--repository_disable_download",
+            "--platforms=//:platform",
+            "--host_platform=//:platform",
+            "--output=proto",
+            "deps(//:top)",
+        ]);
         command
     }
     fn query(&self, state: &str) -> Vec<u8> {
@@ -200,17 +210,26 @@ fn no_history_corrupt_history_and_changed_current_tool_resume_the_completed_loca
 fn current_prefix_output_is_emitted_once_on_every_fallback() {
     let f = Fixture::new();
     f.write("BUILD.bazel","load('@defs//:defs.bzl','targets')\nprint('current-prefix-note')\nplatform(name='platform')\nexports_files(['.bazelignore'])\ntargets()\n");
-    for expected in 1..=3 {
-        let out = f.command().output().unwrap();
+    for (index, quiet) in [false, true, false].into_iter().enumerate() {
+        let mut command = f.command_with_quiet(quiet);
+        let out = command.output().unwrap();
         assert!(
             out.status.success(),
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(stderr.matches("current-prefix-note").count(), 1, "{stderr}");
+        assert_eq!(
+            stderr.matches("current-prefix-note").count(),
+            usize::from(!quiet),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("miss: current loading prefix is not silent and eligible"),
+            "{stderr}"
+        );
         assert!(!stderr.contains("cquery-snapshot: hit"), "{stderr}");
-        assert_eq!(f.count("local"), expected);
+        assert_eq!(f.count("local"), index + 1);
         assert_eq!(f.count("nonlocal"), 1);
     }
 }
@@ -219,7 +238,9 @@ fn current_prefix_output_is_emitted_once_on_every_fallback() {
 fn nonempty_saved_analysis_events_are_not_replayed_after_current_loading() {
     let f = Fixture::new();
     // Printing in configured analysis, not in the current loading prefix.
-    f.write("analysis.bzl", "def impl(ctx):\n    print('analysis-note')\n    return [DefaultInfo(files=depset())]\nr=rule(implementation=impl)\n");
+    let marker = f.temp.path().join("analysis-action-ran");
+    let command = serde_json::to_string(&format!("touch '{}'", marker.display())).unwrap();
+    f.write("analysis.bzl", &format!("def impl(ctx):\n    print('analysis-note')\n    out=ctx.actions.declare_file('never-executed')\n    ctx.actions.run_shell(outputs=[out],command={command})\n    return [DefaultInfo(files=depset([out]))]\nr=rule(implementation=impl)\n"));
     f.write("BUILD.bazel", "load('@defs//:defs.bzl','targets')\nload(':analysis.bzl','r')\nplatform(name='platform')\nexports_files(['.bazelignore'])\nr(name='top')\n");
     for expected in 1..=3 {
         let out = f.command().output().unwrap();
@@ -229,6 +250,10 @@ fn nonempty_saved_analysis_events_are_not_replayed_after_current_loading() {
         assert_eq!(stderr.matches("analysis-note").count(), 1, "{stderr}");
         assert_eq!(f.count("local"), expected);
         assert_eq!(f.count("nonlocal"), 0);
+        assert!(
+            !marker.exists(),
+            "experimental fallback must not execute actions"
+        );
     }
 }
 
@@ -491,4 +516,203 @@ fn cancelling_required_current_loading_cannot_fall_through_to_a_saved_graph() {
     f.query("hit");
     assert_eq!(f.count("local"), 3);
     assert_eq!(f.count("nonlocal"), 1);
+}
+
+const CURRENT_LOADING: &str = "BAZEL_RS_CQUERY_CURRENT_LOADING";
+
+#[test]
+fn default_warm_hit_replays_diagnostics_once_without_reloading_the_package_prefix() {
+    let f = Fixture::new();
+    let build = fs::read_to_string(f.root.join("BUILD.bazel")).unwrap();
+    f.write(
+        "BUILD.bazel",
+        &format!("{build}\nprint('default-prefix-note')\n"),
+    );
+    let run = |quiet| {
+        let mut command = f.command_with_quiet(quiet);
+        command
+            .env_remove(CURRENT_LOADING)
+            .env("BAZEL_RS_TIMING_MODULES", "1");
+        let out = command.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    let cold = run(false);
+    let cold_stderr = String::from_utf8_lossy(&cold.stderr);
+    assert!(
+        cold_stderr.contains("cquery-snapshot: saved"),
+        "{cold_stderr}"
+    );
+    assert!(
+        cold_stderr.contains("PERF build parse="),
+        "cold must actually evaluate BUILD: {cold_stderr}"
+    );
+    for (index, quiet) in [false, true, false].into_iter().enumerate() {
+        let warm = run(quiet);
+        let stderr = String::from_utf8_lossy(&warm.stderr);
+        assert!(stderr.contains("cquery-snapshot: hit"), "{stderr}");
+        assert!(
+            !stderr.contains("PERF build parse="),
+            "default warm lookup must not evaluate a package: {stderr}"
+        );
+        assert_eq!(
+            stderr.matches("default-prefix-note").count(),
+            usize::from(!quiet),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("\u{1b}_bazel-rs:"), "{stderr}");
+        assert_eq!(warm.stdout, cold.stdout);
+        // The established ordinary local replay runs once; a new prefix plus
+        // replay would execute it twice and fail this count.
+        assert_eq!(f.count("local"), index + 2);
+        assert_eq!(f.count("nonlocal"), 1);
+    }
+}
+
+#[test]
+fn default_analysis_only_local_hit_is_preserved_while_opt_in_refuses_missing_coverage() {
+    let f = Fixture::new();
+    let module = fs::read_to_string(f.root.join("MODULE.bazel")).unwrap();
+    f.write(
+        "MODULE.bazel",
+        &module.replace("l(name='defs')", "l(name='defs')\nl(name='late')"),
+    );
+    let source = fs::read_to_string(f.root.join("repos.bzl")).unwrap();
+    f.write(
+        "repos.bzl",
+        &source.replace(
+            "srcs=[\"@payload//:data\"]",
+            "srcs=[\"@payload//:data\",\"@late//:defs.bzl\"]",
+        ),
+    );
+    let cold = f.command().env_remove(CURRENT_LOADING).output().unwrap();
+    assert!(
+        cold.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cold.stderr)
+    );
+    assert!(String::from_utf8_lossy(&cold.stderr).contains("cquery-snapshot: saved"));
+    assert_eq!(f.count("local"), 2);
+    let warm = f.command().env_remove(CURRENT_LOADING).output().unwrap();
+    assert!(
+        warm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&warm.stderr)
+    );
+    assert!(String::from_utf8_lossy(&warm.stderr).contains("cquery-snapshot: hit"));
+    assert_eq!(warm.stdout, cold.stdout);
+    assert_eq!(f.count("local"), 4);
+    assert_eq!(f.query("miss"), cold.stdout); // separate opt-in key, cold save
+    assert_eq!(f.count("local"), 6);
+    let experimental = f.command().output().unwrap();
+    let stderr = String::from_utf8_lossy(&experimental.stderr);
+    assert!(experimental.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(
+            "miss: current loading does not exactly cover the candidate's local repositories"
+        ),
+        "{stderr}"
+    );
+    assert_eq!(experimental.stdout, cold.stdout);
+    assert_eq!(
+        f.count("local"),
+        8,
+        "fallback must not replay the completed prefix local"
+    );
+    assert_eq!(f.count("nonlocal"), 1);
+    assert_eq!(f.count("unused"), 0);
+}
+
+#[test]
+fn explicit_profile_has_separate_history_and_keeps_snapshot_off_and_verify_semantics() {
+    let f = Fixture::new();
+    let default = f.command().env_remove(CURRENT_LOADING).output().unwrap();
+    assert!(
+        default.status.success(),
+        "{}",
+        String::from_utf8_lossy(&default.stderr)
+    );
+    assert!(String::from_utf8_lossy(&default.stderr).contains("cquery-snapshot: saved"));
+    assert_eq!(f.snapshots().len(), 1);
+    let opt_in = f.query("miss");
+    assert_eq!(opt_in, default.stdout);
+    assert_eq!(
+        f.snapshots().len(),
+        2,
+        "default and experimental keys must not alias"
+    );
+    let warm = f.command().env_remove(CURRENT_LOADING).output().unwrap();
+    assert!(
+        warm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&warm.stderr)
+    );
+    assert!(String::from_utf8_lossy(&warm.stderr).contains("cquery-snapshot: hit"));
+    assert_eq!(warm.stdout, default.stdout);
+    assert_eq!(f.query("hit"), opt_in);
+    let before = f.count("local");
+    let off = f
+        .command()
+        .env("BAZEL_RS_SNAPSHOT", "off")
+        .output()
+        .unwrap();
+    assert!(
+        off.status.success(),
+        "{}",
+        String::from_utf8_lossy(&off.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&off.stderr).contains("cquery-snapshot:"));
+    assert_eq!(off.stdout, opt_in);
+    assert_eq!(f.snapshots().len(), 2);
+    assert_eq!(f.count("local"), before + 1);
+    let verified = f
+        .command()
+        .env("BAZEL_RS_SNAPSHOT", "verify")
+        .output()
+        .unwrap();
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    assert_eq!(verified.stdout, opt_in);
+    assert_eq!(f.count("local"), before + 2);
+    assert_eq!(f.count("nonlocal"), 1);
+}
+
+#[test]
+fn invalid_opt_in_is_an_error_before_any_package_or_repository_demand() {
+    let f = Fixture::new();
+    for mode in ["on", "off", "verify"] {
+        let out = f
+            .command()
+            .env("BAZEL_RS_SNAPSHOT", mode)
+            .env(CURRENT_LOADING, "auto")
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr)
+                .contains("BAZEL_RS_CQUERY_CURRENT_LOADING must be")
+        );
+    }
+    use std::os::unix::ffi::OsStringExt;
+    let out = f
+        .command()
+        .env(CURRENT_LOADING, std::ffi::OsString::from_vec(vec![0xff]))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(f.count("local"), 0);
+    assert_eq!(f.count("nonlocal"), 0);
+    assert_eq!(f.count("unused"), 0);
 }

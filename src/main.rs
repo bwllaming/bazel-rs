@@ -737,6 +737,12 @@ fn run() -> Result<(), String> {
     } else {
         None
     };
+    let cquery_current_loading = if cquery_expression.is_some() {
+        bazel_rs::cquery_state::current_loading_enabled()
+            .map_err(bazel_rs::exit_code::command_line)?
+    } else {
+        false
+    };
     // Both full analysis and historical candidate proof open the current
     // lockfile choice through this factory. No pre-window frozen lock result
     // substitutes for the reads collected during private acceptance proof.
@@ -774,27 +780,43 @@ fn run() -> Result<(), String> {
         let patterns = cquery_options.universe(expression);
         let relative = relative_directory(&root, &cwd)?;
         let allow_yanked = std::env::var("BZLMOD_ALLOW_YANKED_VERSIONS").ok();
-        cquery_session = bazel_rs::cquery_state::begin(
-            bazel_rs::snapshot::key::Inputs {
-                command: "cquery",
-                workspace: &root,
-                cache: &cache,
-                cwd: &cwd,
-                relative_directory: &relative,
-                current_package: &current_package,
-                startup: &line.startup_args,
-                options: &options.priority,
-                targets: &patterns,
-                allow_yanked: allow_yanked.as_deref(),
-                full_validation: bazel_rs::repository_store::verify_mode()
-                    == bazel_rs::repository_store::VerifyMode::Full,
-            },
-            bazel_rs::snapshot::hit::ReplayInputs {
-                options: resolver_options.clone(),
-                environment: repository_environment.clone(),
-                downloads_enabled: repository_downloads_enabled,
-            },
-        )?;
+        let inputs = bazel_rs::snapshot::key::Inputs {
+            command: "cquery",
+            workspace: &root,
+            cache: &cache,
+            cwd: &cwd,
+            relative_directory: &relative,
+            current_package: &current_package,
+            startup: &line.startup_args,
+            options: &options.priority,
+            targets: &patterns,
+            allow_yanked: allow_yanked.as_deref(),
+            full_validation: bazel_rs::repository_store::verify_mode()
+                == bazel_rs::repository_store::VerifyMode::Full,
+        };
+        let replay = bazel_rs::snapshot::hit::ReplayInputs {
+            options: resolver_options.clone(),
+            environment: repository_environment.clone(),
+            downloads_enabled: repository_downloads_enabled,
+        };
+        if cquery_current_loading {
+            cquery_session = bazel_rs::cquery_state::begin(inputs, replay)?;
+        } else {
+            let started = bazel_rs::cquery_state::start(inputs, replay, &|| {
+                let mut options = resolver_options.clone();
+                options.registry_session = open_registry_session()?;
+                Ok(
+                    bazel_rs::repository::RepositorySet::with_options(root.clone(), options)
+                        .with_source_cache(cache.join("repositories"))
+                        .with_repository_downloads_enabled(false)
+                        .with_repository_environment(repository_environment.clone()),
+                )
+            })?;
+            cquery_session = started.session;
+            if let Some(graph) = started.hit {
+                return cquery_output(&graph, expression, &cquery_options, &relative, &cache);
+            }
+        }
     }
     match snapshot_mode {
         bazel_rs::snapshot::Mode::Record => {
@@ -924,6 +946,9 @@ fn run() -> Result<(), String> {
             .with_source_cache(cache.join("repositories"))
             .with_repository_environment(repository_environment),
     );
+    if cquery_current_loading {
+        repositories.enable_current_loading();
+    }
     // Never dropped (L2-W4, PLAN-L2 §5): the repository set holds only
     // memory (the module graph, repository specifications, the `.bzl`
     // module cache), which the process exit frees anyway; its drop at the
@@ -1110,19 +1135,23 @@ fn run() -> Result<(), String> {
     // (cmdline/TargetPattern.java:783-789).
     let relative_directory = relative_directory(&root, &cwd)?;
     if let Some(expression) = cquery_expression {
-        let loaded = engine
-            .load_cquery_patterns(&cquery_options.universe(&expression), &relative_directory)?;
-        let hit = match &mut cquery_session {
-            Some(session) => session.lookup(loaded.current())?,
-            None => None,
-        };
-        let graph = match hit {
-            Some(graph) => {
-                cquery_session = None;
-                drop(loaded);
-                graph
+        let graph = if cquery_current_loading {
+            let loaded = engine
+                .load_cquery_patterns(&cquery_options.universe(&expression), &relative_directory)?;
+            let hit = match &mut cquery_session {
+                Some(session) => session.lookup(loaded.current())?,
+                None => None,
+            };
+            match hit {
+                Some(graph) => {
+                    cquery_session = None;
+                    drop(loaded);
+                    graph
+                }
+                None => engine.cquery_graph_loaded(loaded)?,
             }
-            None => engine.cquery_graph_loaded(loaded)?,
+        } else {
+            engine.cquery_graph(&cquery_options.universe(&expression), &relative_directory)?
         };
         for warning in engine.take_warnings() {
             warn(&warning);

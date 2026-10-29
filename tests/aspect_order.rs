@@ -2,7 +2,6 @@
 //! implementation planning, including when config_setting flushes phase 2 early.
 #![allow(clippy::disallowed_methods)]
 include!("support/temp_root.rs");
-include!("support/cquery_current_scope.rs");
 use std::{
     collections::BTreeMap,
     fs,
@@ -151,7 +150,7 @@ fn cquery_records_selected_aspect_edges_and_reuses_and_verifies_the_graph() {
             "set(//:early //:twin //:z_late)",
         ],
     );
-    assert_current_loading_scope_miss(&warm, "current-loading history requires empty saved EVENTS");
+    assert!(String::from_utf8_lossy(&warm.stderr).contains("cquery-snapshot: hit"));
     assert!(markers(&warm).values().all(|count| *count == 1));
     let filtered = ws.ok("cquery", &["--noinclude_aspects", DEPS]);
     assert!(!String::from_utf8_lossy(&filtered.stdout).contains("//:witness.txt"));
@@ -176,10 +175,7 @@ fn configured_selection_and_source_and_bzl_changes_do_not_reuse_stale_aspect_edg
     assert!(String::from_utf8_lossy(&removed.stderr).contains("cquery-snapshot: miss"));
     fs::write(ws.path().join("selected.txt"), "restored\n").unwrap();
     let restored = ws.ok("cquery", &[DEPS]);
-    assert_current_loading_scope_miss(
-        &restored,
-        "current-loading history requires empty saved EVENTS",
-    );
+    assert!(String::from_utf8_lossy(&restored.stderr).contains("cquery-snapshot: hit"));
     assert_eq!(restored.stdout, original.stdout);
     let path = ws.path().join("defs.bzl");
     let source = fs::read_to_string(&path).unwrap();
