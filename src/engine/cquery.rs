@@ -313,6 +313,15 @@ impl Options {
 
 type Nodes = BTreeSet<u32>;
 
+/// The ordinary target-pattern selection/expansion work, before configured
+/// analysis. Owned by the same engine's repository set; consuming it resumes
+/// that engine without repeating package loading or repository callbacks.
+pub struct LoadedQuery {
+    roots: Vec<Label>,
+    expanded: BTreeMap<String, Vec<Label>>,
+    repositories: std::sync::Arc<crate::repository::RepositorySet>,
+}
+
 impl Graph {
     fn checksum(&self, node: &Node) -> &str {
         node.configuration.map_or("null", |id| {
@@ -802,6 +811,15 @@ impl Engine {
         patterns: &[String],
         relative_directory: &str,
     ) -> Result<Graph, String> {
+        let loaded = self.load_cquery_patterns(patterns, relative_directory)?;
+        self.cquery_graph_loaded(loaded)
+    }
+
+    pub fn load_cquery_patterns(
+        &mut self,
+        patterns: &[String],
+        relative_directory: &str,
+    ) -> Result<LoadedQuery, String> {
         if self.keep_going {
             return Err(
                 "cquery --keep_going is not implemented; configured query errors fail closed"
@@ -814,6 +832,22 @@ impl Engine {
             let labels = self.select(std::slice::from_ref(pattern), relative_directory)?;
             expanded.insert(pattern.clone(), labels);
         }
+        Ok(LoadedQuery {
+            roots,
+            expanded,
+            repositories: self.repositories.clone(),
+        })
+    }
+
+    pub fn cquery_graph_loaded(&mut self, loaded: LoadedQuery) -> Result<Graph, String> {
+        if !std::sync::Arc::ptr_eq(&loaded.repositories, &self.repositories) {
+            return Err(
+                "configured-query continuation belongs to another engine repository set".into(),
+            );
+        }
+        let LoadedQuery {
+            roots, expanded, ..
+        } = loaded;
         self.cquery_capture = Some(Capture::default());
         // Engine instances may issue more than one configured request. These
         // semantic platform memos otherwise bypass the new graph's capture.
