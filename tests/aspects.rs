@@ -990,6 +990,15 @@ fn aspects_propagate_to_base_target_toolchains() {
     compare_genuine_builtin("aspect_toolchains_aspects", &["TA ", "TF "], true);
 }
 
+/// An aspect-applied dependency keeps its base target's FilesToRunProvider
+/// and runfiles: the executable, default runfiles and files `target` and
+/// `target[DefaultInfo]` show are the same with and without an aspect on
+/// the attribute (tests/fixtures/aspect_merged_files_to_run/genuine.txt).
+#[test]
+fn aspect_applied_dependencies_keep_files_to_run() {
+    compare_genuine_builtin("aspect_merged_files_to_run", &["E "], false);
+}
+
 /// Subrules from aspects (tests/fixtures/aspect_subrules/genuine.txt): the
 /// aspect's declared subrules (and theirs) run under the aspect, with
 /// Bazel's undeclared-subrule texts for aspects and rules; a lifted

@@ -1,0 +1,21 @@
+load(":defs.bzl", "exe", "plain", "script", "with_asp", "with_empty", "wrap")
+
+exe(
+    name = "tool",
+    data = ["data.txt"],
+)
+
+script(name = "gen")
+
+wrap(
+    name = "wrapped",
+    src = ":gen",
+)
+
+DEPS = [":tool", ":gen", ":wrapped", "data.txt"]
+
+plain(name = "p", deps = DEPS)
+
+with_asp(name = "a", deps = DEPS)
+
+with_empty(name = "e", deps = DEPS)

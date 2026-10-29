@@ -723,8 +723,12 @@ pub(crate) fn merged_dependency(
     let providers = merged.with_groups();
     // A fresh Target value for the merged configured target: its providers
     // are the merged set, never the base target's identity (which carries
-    // the base providers only).
-    let runfiles: std::sync::Arc<crate::runfiles::TargetRunfiles> = Default::default();
+    // the base providers only). Its FilesToRunProvider and RunfilesProvider
+    // are the base target's: an aspect cannot return them, so the lookup
+    // falls through to the base (MergedConfiguredTarget.getProvider,
+    // MergedConfiguredTarget.java:131-140) and `target[DefaultInfo]`
+    // delegates to them (DefaultInfo.DelegatingDefaultInfo).
+    let runfiles = std::sync::Arc::clone(&base.runfiles);
     let identity = std::sync::Arc::new(crate::analysis::dependency_target_data(
         &base.label,
         &base.label,

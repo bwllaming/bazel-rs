@@ -1,0 +1,16 @@
+# Genuine Bazel 9.3.0 (--batch --ignore_all_rc_files, `build --nobuild --noshow_progress
+# --curses=no --color=no`), the sorted `print()` texts (DEBUG lines without their
+# `DEBUG: <WS>/defs.bzl:L:C: ` lead).
+### build //:p //:a //:e
+E asp data.txt exe=data.txt same=True runfiles=[] files=["data.txt"] asp=-
+E asp gen exe=gen.sh same=True runfiles=["gen.sh"] files=["gen.sh"] asp=@@//:gen
+E asp tool exe=tool.sh same=True runfiles=["data.txt", "tool.sh"] files=["tool.sh"] asp=@@//:tool
+E asp wrapped exe=wrapped same=True runfiles=["gen.sh", "wrapped"] files=["wrapped"] asp=@@//:wrapped
+E empty data.txt exe=data.txt same=True runfiles=[] files=["data.txt"] asp=-
+E empty gen exe=gen.sh same=True runfiles=["gen.sh"] files=["gen.sh"] asp=-
+E empty tool exe=tool.sh same=True runfiles=["data.txt", "tool.sh"] files=["tool.sh"] asp=-
+E empty wrapped exe=wrapped same=True runfiles=["gen.sh", "wrapped"] files=["wrapped"] asp=-
+E plain data.txt exe=data.txt same=True runfiles=[] files=["data.txt"] asp=-
+E plain gen exe=gen.sh same=True runfiles=["gen.sh"] files=["gen.sh"] asp=-
+E plain tool exe=tool.sh same=True runfiles=["data.txt", "tool.sh"] files=["tool.sh"] asp=-
+E plain wrapped exe=wrapped same=True runfiles=["gen.sh", "wrapped"] files=["wrapped"] asp=-
