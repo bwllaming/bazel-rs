@@ -604,6 +604,18 @@ pub(crate) fn immutable_slot(store: &Path, canonical: &str) -> bool {
         }
 }
 
+/// A snapshot fast path's current public view, not a planning observation.
+/// A complete mutable slot keeps its established ordinary validation path;
+/// an immutable selection must have the exact link. A mismatching view needs
+/// guarded adoption or full analysis, even if its pointer is already current.
+pub(crate) fn selected_view(store: &Path, canonical: &str, identity: &str) -> bool {
+    let slot = slot_path(store, canonical);
+    if fs::symlink_metadata(&slot).is_ok_and(|metadata| metadata.is_dir()) {
+        return marker(store, canonical).as_deref() == Some(identity);
+    }
+    fs::read_link(slot).ok() == Some(link_target(identity))
+}
+
 fn marker_path(store: &Path, canonical: &str) -> PathBuf {
     store.join("direct").join("slots").join(slug(canonical))
 }

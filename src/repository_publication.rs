@@ -90,13 +90,7 @@ pub(crate) fn needs_view_adoption(recording: &crate::observed_fs::Recording) -> 
         let Some(store) = root.parent().and_then(Path::parent).and_then(Path::parent) else {
             return true;
         };
-        let slot = crate::repository_slots::slot_path(store, &receipt.canonical);
-        if std::fs::symlink_metadata(&slot).is_ok_and(|metadata| metadata.is_dir()) {
-            return crate::repository_slots::marker(store, &receipt.canonical).as_deref()
-                != Some(receipt.publication.as_str());
-        }
-        std::fs::read_link(slot).ok()
-            != Some(crate::repository_slots::link_target(&receipt.publication))
+        !crate::repository_slots::selected_view(store, &receipt.canonical, &receipt.publication)
     })
 }
 

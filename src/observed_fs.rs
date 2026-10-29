@@ -130,6 +130,11 @@ pub(crate) fn record_private<R>(f: impl FnOnce() -> R) -> (R, Recording) {
             _ => {}
         }
     }
+    for repository in &mut recording.repositories {
+        for entry in &mut repository.entries {
+            entry.racy = true;
+        }
+    }
     (value, recording)
 }
 
