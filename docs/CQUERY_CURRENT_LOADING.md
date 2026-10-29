@@ -134,6 +134,6 @@ unmeasured; one continuation/candidate is retained, but loading need not be chea
 The application/large TD gate remains halted pending further implementation and
 a separately authorized measurement.
 
-A future configured-root checkpoint needs its own enter-prefix, successful-cut,
-continue-miss and accept-hit ownership hooks. This target-loading boundary does
-not implement that checkpoint or flush its queued warnings/transition output.
+The separate [registered-root checkpoint](CQUERY_ROOT_CHECKPOINT.md) has its own
+explicit opt-in, key and cut identity. This pattern-only profile keeps its
+target-loading boundary and never advances to a second lookup during analysis.

@@ -92,6 +92,9 @@ plain(name='z',message='{version}',deps=['//warn:old'])
         self.write("warn/BUILD.bazel", "load('//:defs.bzl','plain')\nplain(name='old',deprecation='SUFFIX-WARNING',visibility=['//visibility:public'])\n");
     }
     fn command(&self, expression: &str) -> Command {
+        self.command_with_quiet(expression, false)
+    }
+    fn command_with_quiet(&self, expression: &str, quiet: bool) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
         c.current_dir(&self.ws)
             .env("PATH", "/usr/bin:/bin")
@@ -104,16 +107,21 @@ plain(name='z',message='{version}',deps=['//warn:old'])
             .args([
                 "--ignore_all_rc_files",
                 &format!("--cache-dir={}", self.cache.display()),
-                "cquery",
-                "--experimental-builtin-modules=false",
-                "--lockfile_mode=off",
-                "--repository_disable_download",
-                "--loading_phase_threads=1",
-                "--platforms=//:platform",
-                "--host_platform=//:platform",
-                "--output=proto",
-                expression,
             ]);
+        if quiet {
+            c.arg("--quiet");
+        }
+        c.args([
+            "cquery",
+            "--experimental-builtin-modules=false",
+            "--lockfile_mode=off",
+            "--repository_disable_download",
+            "--loading_phase_threads=1",
+            "--platforms=//:platform",
+            "--host_platform=//:platform",
+            "--output=proto",
+            expression,
+        ]);
         c
     }
     fn run(&self, state: &str) -> Output {
@@ -325,6 +333,35 @@ fn root_order_named_groups_and_exec_configurations_keep_actual_first_registratio
         assert_eq!(outputs[2].stdout, outputs[1].stdout);
         assert_eq!(diagnostics(&outputs[0]), diagnostics(&outputs[1]));
         assert_eq!(diagnostics(&outputs[2]), diagnostics(&outputs[1]));
+        // Bind the saved marker to the configuration that actually requested
+        // collection (the exec child for an exec edge, delegated a otherwise),
+        // rather than assuming the invocation's first/top configuration.
+        use bazel_rs::snapshot::format::{self, Header, Section};
+        let bytes = fs::read(f.snapshots().pop().unwrap()).unwrap();
+        let header = Header::decode(&bytes, bytes.len() as u64).unwrap();
+        let section = |kind| {
+            let s = header.slot(kind).unwrap();
+            &bytes[s.offset as usize..(s.offset + s.len) as usize]
+        };
+        let events = format::decode_events(section(Section::Events)).unwrap();
+        let digest = events[16..48]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let graph: bazel_rs::engine::cquery::Graph = postcard::from_bytes(
+            &format::decompress_plan(section(Section::Plan).to_vec()).unwrap(),
+        )
+        .unwrap();
+        let caller = if kind == "exec_dep" {
+            "//:exec_child"
+        } else {
+            "//:a"
+        };
+        assert!(graph.nodes.iter().any(|node| matches!(&node.target,bazel_rs::cquery_proto::Target::Rule(rule) if rule.name==caller)
+            && node.configuration.is_some_and(|id|graph.configurations[id as usize].checksum==digest)),"{kind}: caller={caller} registration={digest}");
+        if kind == "exec_dep" {
+            assert_ne!(digest, graph.top_checksum);
+        }
     }
 }
 
@@ -473,4 +510,265 @@ fn queued_prefix_warnings_decline_without_early_flush_or_replay() {
         assert_eq!(diagnostics(&out), diagnostics(&fresh));
         assert!(f.snapshots().is_empty());
     }
+}
+
+fn rewrite_candidate(source: &Path, destination: &Path, damage: &str) {
+    use bazel_rs::snapshot::{
+        format::{self, Header, Section},
+        key::Key,
+    };
+    let bytes = fs::read(source).unwrap();
+    let header = Header::decode(&bytes, bytes.len() as u64).unwrap();
+    let mut parts: Vec<_> = [
+        Section::Inputs,
+        Section::Events,
+        Section::Plan,
+        Section::Stats,
+    ]
+    .into_iter()
+    .map(|kind| {
+        let s = header.slot(kind).unwrap();
+        (
+            kind,
+            bytes[s.offset as usize..(s.offset + s.len) as usize].to_vec(),
+        )
+    })
+    .collect();
+    let mut events = format::decode_events(&parts[1].1).unwrap();
+    assert_eq!(&events[..8], b"BZCQRC01");
+    assert_eq!(&events[48..56], b"BZCQEV01");
+    let prefix = u64::from_le_bytes(events[56..64].try_into().unwrap()) as usize;
+    assert!(!String::from_utf8_lossy(&events).contains("bazel-rs-cquery-root:"));
+    assert!(!String::from_utf8_lossy(&events).contains("bazel-rs-cquery-snapshot:"));
+    if damage != "graph" {
+        events.truncate(72 + prefix);
+        let poison = b"POISON-SAVED-SUFFIX\n";
+        events[64..72].copy_from_slice(&(poison.len() as u64).to_le_bytes());
+        events.extend_from_slice(poison);
+    }
+    match damage {
+        "ordinal" => events[8] ^= 1,
+        "config" => events[16] ^= 1,
+        "kind" => events[7] = b'9',
+        "length" => events[56..64].copy_from_slice(&u64::MAX.to_le_bytes()),
+        "prefix" => events[72] ^= 1,
+        "graph" => {
+            let mut graph: bazel_rs::engine::cquery::Graph =
+                postcard::from_bytes(&format::decompress_plan(parts[2].1.clone()).unwrap())
+                    .unwrap();
+            graph.patterns.insert("//:a".into(), vec![u32::MAX]);
+            parts[2].1 = format::compress_plan(&postcard::to_allocvec(&graph).unwrap());
+        }
+        _ => unreachable!(),
+    }
+    parts[1].1 = format::encode_events(&events);
+    let views: Vec<_> = parts
+        .iter()
+        .map(|(kind, part)| (*kind, part.as_slice()))
+        .collect();
+    let mut bytes = Header::new(
+        &Key {
+            g: header.key,
+            binary: header.binary,
+        },
+        header.created_ns + 1,
+        &views,
+    )
+    .encode()
+    .to_vec();
+    for (_, part) in parts {
+        bytes.extend(part);
+    }
+    fs::write(destination, bytes).unwrap();
+}
+
+#[test]
+fn bad_newest_cut_identity_or_events_cannot_emit_until_older_candidate_accepts() {
+    let f = Fixture::new();
+    let cold = f.run("saved");
+    let original = f.snapshots().pop().unwrap();
+    let newer = original.with_file_name(
+        original
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replace("cq0", "cq1"),
+    );
+    assert_ne!(original, newer);
+    for damage in ["ordinal", "config", "kind", "length", "prefix", "graph"] {
+        rewrite_candidate(&original, &newer, damage);
+        let before = f.count("local");
+        let out = f.run("hit");
+        assert_eq!(out.stdout, cold.stdout);
+        assert_eq!(diagnostics(&out), diagnostics(&cold));
+        assert_eq!(f.count("local"), before + 1);
+    }
+}
+
+#[test]
+fn late_graph_rejection_retains_early_provider_transition_and_local_state_on_live_stack() {
+    let f = Fixture::new();
+    let build=fs::read_to_string(f.ws.join("BUILD.bazel")).unwrap().replace("typed(name='a',message='A')","flag(name='flag',build_setting_default='on')\nconfig_setting(name='on',flag_values={':flag':'on'})\ntransitioned(name='a',message=select({':on':'yes','//conditions:default':'no'}))");
+    f.write("BUILD.bazel", &build);
+    let cold = f.run("saved");
+    let path = f.snapshots().pop().unwrap();
+    rewrite_candidate(&path, &path, "graph");
+    let before = f.count("local");
+    let miss = f.run("saved");
+    let err = String::from_utf8_lossy(&miss.stderr);
+    assert!(
+        err.contains("miss: invalid configured graph pattern index"),
+        "{err}"
+    );
+    assert_eq!(miss.stdout, cold.stdout);
+    assert_eq!(diagnostics(&miss), diagnostics(&cold));
+    assert_eq!(f.count("local"), before + 1);
+}
+
+#[test]
+fn root_profile_is_separate_and_quiet_color_output_verify_preserve_current_policy() {
+    let f = Fixture::new();
+    let sentinel = f.temp.path().join("ACTION-RAN");
+    let status = f.temp.path().join("STATUS-RAN");
+    let defs=fs::read_to_string(f.ws.join("defs.bzl")).unwrap().replace("    print('PROVIDER-'",&format!("    ctx.actions.run_shell(outputs=[ctx.actions.declare_file(ctx.label.name+'.out')],command={})\n    print('PROVIDER-'",serde_json::to_string(&format!("touch '{}'",sentinel.display())).unwrap()));
+    f.write("defs.bzl", &defs);
+    let query = "deps(//:a + //:z)";
+    for (quiet, color, output) in [
+        (false, "no", "proto"),
+        (true, "yes", "proto"),
+        (false, "yes", "label"),
+    ] {
+        let mut results = Vec::new();
+        for mode in ["on", "off", "on", "verify"] {
+            let before = f.count("local");
+            let out = f
+                .command_with_quiet(query, quiet)
+                .env("BAZEL_RS_SNAPSHOT", mode)
+                .args([
+                    format!("--color={color}"),
+                    format!("--output={output}"),
+                    format!("--workspace_status_command=touch {}", status.display()),
+                ])
+                .output()
+                .unwrap();
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "{err}");
+            if results.len() == 2 {
+                assert!(err.contains("cquery-snapshot: hit"), "{err}");
+            }
+            if mode == "verify" {
+                assert!(
+                    !err.contains("cquery-snapshot: hit"),
+                    "verify ran fresh analysis"
+                );
+            }
+            assert_eq!(f.count("local"), before + 1);
+            assert!(!sentinel.exists() && !status.exists());
+            results.push(out);
+        }
+        for out in &results {
+            assert_eq!(out.stdout, results[1].stdout);
+            assert_eq!(diagnostics(out), diagnostics(&results[1]));
+        }
+    }
+    // Independent keys even when all command options and current inputs match.
+    f.run("saved");
+    for profile in ["pattern", "default"] {
+        let mut c = f.command(query);
+        c.env_remove(ROOT);
+        if profile == "pattern" {
+            c.env("BAZEL_RS_CQUERY_CURRENT_LOADING", "1");
+        }
+        let out = c.output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{err}");
+        assert!(!err.contains("cquery-snapshot: hit"), "{profile}: {err}");
+        assert!(!err.contains("cquery-root: cut"));
+    }
+    f.run("hit");
+}
+
+#[test]
+fn root_local_freshness_source_and_module_changes_are_current_work_not_historical_demands() {
+    let f = Fixture::new();
+    f.run("saved");
+    f.run("hit");
+    let out = f
+        .command("deps(//:a + //:z)")
+        .env("ROOT_VALUE", "B")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("cquery-snapshot: miss"), "{err}");
+    f.run("hit");
+    let original = fs::read_to_string(f.ws.join("MODULE.bazel")).unwrap();
+    f.write(
+        "MODULE.bazel",
+        &format!("{original}\nprint('NEW-CURRENT-MODULE')\n"),
+    );
+    let out = f.run("saved");
+    assert_eq!(diagnostics(&out).matches("NEW-CURRENT-MODULE").count(), 1);
+    f.write("MODULE.bazel", &original);
+    f.run("hit");
+    let original = fs::read_to_string(f.ws.join("repos.bzl")).unwrap();
+    f.write(
+        "repos.bzl",
+        &original.replace(
+            "value=ctx.getenv",
+            "fail('CURRENT-REGISTRATION-FAILED')\n    value=ctx.getenv",
+        ),
+    );
+    let before = f.count("local");
+    let out = f.command("deps(//:a + //:z)").output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(err.contains("CURRENT-REGISTRATION-FAILED"));
+    assert!(!err.contains("cquery-root: cut") && !err.contains("cquery-snapshot: hit"));
+    assert_eq!(f.count("local"), before + 1);
+    assert_eq!(f.count("unused"), 0);
+}
+
+#[test]
+fn root_profile_and_admission_controls_are_explicit_and_invalid_values_precede_demand() {
+    let f = Fixture::new();
+    for (name, value) in [
+        (ROOT, "yes"),
+        ("BAZEL_RS_CQUERY_ROOT_MAX_MS", "30001"),
+        ("BAZEL_RS_CQUERY_ROOT_MAX_NODES", "-1"),
+        ("BAZEL_RS_CQUERY_ROOT_MAX_RSS_MB", "1025"),
+        ("BAZEL_RS_CQUERY_CURRENT_LOADING", "1"),
+    ] {
+        let out = f.command("deps(//:a)").env(name, value).output().unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&out.stderr).contains("MODULE-PREFIX"));
+        assert_eq!(f.count("local"), 0);
+    }
+    use std::os::unix::ffi::OsStringExt;
+    let out = f
+        .command("deps(//:a)")
+        .env(ROOT, std::ffi::OsString::from_vec(vec![0xff]))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(f.count("local"), 0);
+    for value in ["1", "on", "ON"] {
+        let out = f.command("deps(//:a)").env(ROOT, value).output().unwrap();
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("cquery-root: cut"));
+    }
+    // Other commands ignore this cquery-only native profile, including budgets.
+    let out = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
+        .current_dir(&f.ws)
+        .env(ROOT, "invalid")
+        .args(["--ignore_all_rc_files", "version"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
 }
