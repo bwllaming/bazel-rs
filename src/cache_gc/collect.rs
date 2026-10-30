@@ -866,10 +866,22 @@ fn scan(context: &Context<'_>) -> Scan {
                     .to_owned();
                 hex64(&id).then_some(id)
             });
+            // The `bazel_tools` slot links the embedded tools tree
+            // (crate::repository::RepositorySet::bind_builtin_tools_slot):
+            // kept while that tree is; a dangling one is swept below.
+            let builtin = target.as_deref().is_some_and(|target| {
+                target
+                    .strip_prefix("../builtins/trees")
+                    .ok()
+                    .and_then(Path::to_str)
+                    .is_some_and(hex64)
+                    && fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir())
+            });
             match identity {
                 Some(identity) if trees.contains(&identity) => {
                     links.entry(identity).or_default().push(name);
                 }
+                _ if builtin => {}
                 _ => sweeps.push(Sweep {
                     path,
                     category: "repositories",
@@ -1792,6 +1804,29 @@ mod tests {
         assert!(stamped.exists());
         assert_eq!(report.categories["actions"].deleted, 1);
         assert_eq!(report.categories["repositories"].deleted, 1);
+    }
+
+    #[test]
+    fn the_bazel_tools_slot_stays_while_its_builtin_tree_exists() {
+        let fixture = Fixture::new();
+        let slots = fixture.store().join("external");
+        fs::create_dir_all(&slots).unwrap();
+        fs::create_dir_all(fixture.store().join("direct/locks")).unwrap();
+        let builtins = fixture.store().join("builtins/trees");
+        fs::create_dir_all(builtins.join(id(1))).unwrap();
+        fs::write(builtins.join(id(1)).join("MODULE.bazel"), b"module()").unwrap();
+        fs::write(builtins.join(format!("{}.json", id(1))), b"{}").unwrap();
+        for (name, tree) in [("bazel_tools", 1), ("gone_tools", 2)] {
+            std::os::unix::fs::symlink(
+                crate::repository_slots::builtin_link_target(&id(tree)),
+                slots.join(name),
+            )
+            .unwrap();
+        }
+        fixture.collect(&policy(Budget::Off, None, None));
+        assert!(slots.join("bazel_tools").is_dir());
+        // A dangling one (its tree collected) goes like any other.
+        assert!(fs::symlink_metadata(slots.join("gone_tools")).is_err());
     }
 
     #[test]

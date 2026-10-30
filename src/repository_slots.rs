@@ -259,7 +259,12 @@ impl SlotWriter {
     /// the filesystem can, so a reader through the slot always finds a
     /// directory there).
     pub fn bind(&self, identity: &str) -> Result<(), String> {
-        let target = link_target(identity);
+        self.bind_to(&link_target(identity))
+    }
+
+    /// [`Self::bind`] to the link `target`.
+    fn bind_to(&self, target: &Path) -> Result<(), String> {
+        let target = target.to_path_buf();
         if fs::read_link(&self.slot).is_ok_and(|current| current == target) {
             return Ok(());
         }
@@ -546,6 +551,18 @@ fn temporary_link(store: &Path, target: &Path) -> Result<PathBuf, String> {
 /// this slot's writer already reuse that hold; callers holding a different
 /// slot never wait, avoiding dependency-lock inversion.
 pub fn bind(store: &Path, canonical: &str, identity: &str) -> Result<(), String> {
+    bind_to(store, canonical, &link_target(identity))
+}
+
+/// The link target of the `bazel_tools` slot: the embedded tools tree
+/// `builtins/trees/<identity>` of the store (crate::builtin_tools).
+pub fn builtin_link_target(identity: &str) -> PathBuf {
+    Path::new("../builtins/trees").join(identity)
+}
+
+/// [`bind`] to the link `target` (a store tree outside `direct/trees`: the
+/// embedded `@bazel_tools`, [`builtin_link_target`]).
+pub fn bind_to(store: &Path, canonical: &str, target: &Path) -> Result<(), String> {
     checked_name(canonical)?;
     let slot = slot_path(store, canonical);
     let writer = if writing(&slot) {
@@ -556,7 +573,7 @@ pub fn bind(store: &Path, canonical: &str, identity: &str) -> Result<(), String>
         };
         Some(writer)
     };
-    let target = link_target(identity);
+    let target = target.to_path_buf();
     match fs::read_link(&slot) {
         Ok(current) if current == target => return Ok(()),
         Ok(_) => {}
@@ -571,7 +588,7 @@ pub fn bind(store: &Path, canonical: &str, identity: &str) -> Result<(), String>
             let Some(writer) = &writer else {
                 return Ok(());
             };
-            return writer.bind(identity);
+            return writer.bind_to(&target);
         }
     }
     ensure_slots_directory(store)?;

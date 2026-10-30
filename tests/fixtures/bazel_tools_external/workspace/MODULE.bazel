@@ -1,0 +1,9 @@
+module(name = "bazel_tools_external")
+
+probe = use_repo_rule("//:probe.bzl", "probe")
+
+jdk_like = use_repo_rule("//:probe.bzl", "jdk_like")
+
+probe(name = "probe")
+
+jdk_like(name = "jdk")

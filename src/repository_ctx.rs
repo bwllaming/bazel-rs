@@ -4511,7 +4511,8 @@ fn replant_symlinks(
         out
     }
     /// `absolute` pinned: below a sibling slot that links a published
-    /// tree, the same path below that tree.
+    /// tree (or the embedded `@bazel_tools` tree), the same path below that
+    /// tree.
     fn pinned(slots: Option<&Path>, absolute: PathBuf) -> PathBuf {
         let Some(slots) = slots else {
             return absolute;
@@ -4524,8 +4525,12 @@ fn replant_symlinks(
             return absolute;
         };
         match fs::read_link(slots.join(name)) {
+            // `bazel_tools` links the embedded tools tree
+            // (crate::repository::RepositorySet::bind_builtin_tools_slot).
             Ok(target)
-                if target.starts_with("../direct/trees") && target.components().count() == 4 =>
+                if (target.starts_with("../direct/trees")
+                    || target.starts_with("../builtins/trees"))
+                    && target.components().count() == 4 =>
             {
                 lexical(&slots.join(target)).join(components.as_path())
             }
@@ -4866,6 +4871,8 @@ fn execute_with(
     stage: &Path,
     live: bool,
 ) -> Result<ExecutedRepository, String> {
+    // Genuine's `external/bazel_tools` beside the rule's directory.
+    repositories.bind_builtin_tools_slot()?;
     // What the rule watches are this repository's recorded inputs
     // (crate::snapshot::incremental).
     let _owner = crate::observed_fs::repository_owner(Some(canonical_name));

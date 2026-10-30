@@ -147,7 +147,9 @@ never fails the command.
   top-level entries or `external/` (genuine's execroot has them).
 * Repository directories are `<cache>/repositories/external/<name>`
   (docs/REPOSITORY_SLOTS.md), not `$(bazel-rs info output_base)/external/<name>`:
-  the repository store is the output base of repositories.
+  the repository store is the output base of repositories. Its
+  `external/bazel_tools` links the embedded tools tree like genuine's
+  (docs/REPOSITORY_SLOTS.md, "The bazel_tools slot").
 * `info --show_make_env` with an explicit `--platforms` fails explicitly:
   `$(TARGET_CPU)` is the target platform's CPU constraint, which needs the
   platform target loaded; for the default host platform it is the host CPU

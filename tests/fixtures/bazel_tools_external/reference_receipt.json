@@ -1,0 +1,17 @@
+{
+ "about": "Genuine Bazel 9.3.1 (capture.py): `query '@probe//:all + @jdk//:all' --repo_env=JAVA_HOME=../bazel_tools/jdk` on workspace/ with --registry=file://<builtin_modules registry> --repository_disable_download, --batch --ignore_all_rc_files, private output root, env -i PATH=/usr/bin:/bin HOME=<private> TMPDIR=<private> LC_ALL=C.UTF-8. results: each repository's result.txt (<EXTERNAL> is <output_base>/external). layout: what <output_base>/external/bazel_tools is.",
+ "binary": "bazel-9.3.1-linux-x86_64",
+ "layout": {
+  "bazel_tools_is_symlink": true,
+  "bazel_tools_link_basename": "embedded_tools",
+  "bazel_tools_marker": false,
+  "java_mode": "0o755",
+  "jdk_bin_link": "<EXTERNAL>/bazel_tools/jdk/bin"
+ },
+ "results": {
+  "jdk": "java_home=<EXTERNAL>/bazel_tools/jdk\nentries=ASSEMBLY_EXCEPTION,DISCLAIMER,bin,conf,legal,lib,readme.txt,release\njava_exists=True\nversion_rc=0\nversion_first=openjdk version \"25.0.2\" 2026-01-20 LTS\n",
+  "probe": "java_home=../bazel_tools/jdk\njava_path=<EXTERNAL>/bazel_tools/jdk/bin/java\njava_exists=True\njdk_release_exists=True\nmodule_exists=True\nversion_rc=0\nversion_first=openjdk version \"25.0.2\" 2026-01-20 LTS\njar_rc=0\njar_out=hello from java -jar a b java.home-tail=jdk\nsh_rc=0\nsh_out=1\n"
+ },
+ "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+ "stdout": "@probe//:show\n"
+}

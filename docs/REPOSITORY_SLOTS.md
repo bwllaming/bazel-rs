@@ -76,6 +76,30 @@ was `-L../<32-hex stage>` (TEST-SURVEY L2).
 * A canonical name longer than NAME_MAX (255 bytes; genuine fails with "File
   name too long") gets the slot `#long-<digest>`.
 
+## The bazel_tools slot
+
+Genuine's `<output_base>/external/bazel_tools` is a link to the install
+base's `embedded_tools` (no marker; capture
+`tests/fixtures/bazel_tools_external/reference_receipt.json`), so a rule's
+relative `../bazel_tools/...` names the embedded tools — ~/code's
+`build --repo_env=JAVA_HOME=../bazel_tools/jdk` is the bundled JDK for
+rules_jvm_external's coursier (`rctx.path(JAVA_HOME + "/bin/java")`,
+`java -jar coursier.jar`) and rules_java's `@local_jdk`
+(local_java_repository links the JDK's entries; `--java_runtime_version`
+still selects the runtime, e.g. `remotejdk_11`). Natively, before every
+repository rule runs (built-in profile), the slot `external/bazel_tools` is
+bound to the embedded tree: the link `../builtins/trees/<bundle identity>`
+(`RepositorySet::bind_builtin_tools_slot`, `repository_slots::bind_to`, the
+ordinary binding protocol). A slot already linking the current bundle is left
+as is without demanding `@bazel_tools`; otherwise the repository is demanded
+(the speculation sentinel propagates; other failures, e.g. no bundle for the
+platform, leave the slot as it was). The bundle keeps its modes (the JDK runs
+on glibc hosts: `libz.so.1` and the C library come from the host, as for
+genuine's). Links into it (`@local_jdk`'s) are pinned to the tree like a
+sibling's. The cache collection keeps the link while its tree exists and
+sweeps it dangling; the next repository rule binds it again. The execution
+root still has no `external/` (docs/INFO.md).
+
 ## Locks (all flocks, `direct/locks/`)
 
 * Writers — an execution, a local rule's replay, remaking a missing mutable

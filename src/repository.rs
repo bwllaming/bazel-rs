@@ -1368,6 +1368,52 @@ impl RepositorySet {
         self.state.options.builtin_profile == module_graph::BuiltinProfile::Bazel93Builtins
     }
 
+    /// Make the repository directory `external/bazel_tools` the embedded
+    /// `@bazel_tools` tree before a repository rule runs, as genuine's
+    /// `<output_base>/external/bazel_tools` (a link to the install base's
+    /// `embedded_tools`): a rule's relative `../bazel_tools/...` — `~/code`'s
+    /// `--repo_env=JAVA_HOME=../bazel_tools/jdk`, which rules_jvm_external's
+    /// coursier resolves as `rctx.path(JAVA_HOME + "/bin/java")` — finds
+    /// the bundled JDK (docs/REPOSITORY_SLOTS.md, "The bazel_tools slot").
+    /// A slot already linking the current bundle's tree is left as is
+    /// without demanding the repository (a speculation worker never
+    /// demands then); otherwise `@bazel_tools` is demanded (the no-demand
+    /// sentinel is returned) and the slot bound, best effort: any other
+    /// failure leaves the slot as it was.
+    pub(crate) fn bind_builtin_tools_slot(&self) -> Result<(), String> {
+        if !self.has_builtin_modules() {
+            return Ok(());
+        }
+        let (Ok(identity), Ok(store)) = (
+            crate::builtin_tools::bundle_identity(),
+            self.source_cache_path(),
+        ) else {
+            return Ok(());
+        };
+        let slot = crate::repository_slots::slot_path(store, "bazel_tools");
+        let relative = crate::repository_slots::builtin_link_target(&identity);
+        if std::fs::read_link(&slot).is_ok_and(|target| target == relative)
+            && std::fs::metadata(&slot).is_ok_and(|metadata| metadata.is_dir())
+        {
+            return Ok(());
+        }
+        let root = match self.root("bazel_tools") {
+            Ok(root) => root.to_path_buf(),
+            Err(error) if crate::repository_demand::is_needs_repository(&error) => {
+                return Err(error);
+            }
+            Err(_) => return Ok(()),
+        };
+        // The builtin cache is `<store>/builtins` (Self::external_root):
+        // the link is relative like an ordinary slot's, absolute otherwise.
+        let in_store = std::fs::canonicalize(store.join("builtins/trees"))
+            .is_ok_and(|trees| root.parent() == Some(trees.as_path()))
+            && root.file_name() == Some(std::ffi::OsStr::new(&identity));
+        let target = if in_store { relative } else { root };
+        let _ = crate::repository_slots::bind_to(store, "bazel_tools", &target);
+        Ok(())
+    }
+
     /// `--incompatible_disable_starlark_host_transitions` (ResolverOptions).
     pub(crate) fn disable_starlark_host_transitions(&self) -> bool {
         self.state.options.disable_starlark_host_transitions
