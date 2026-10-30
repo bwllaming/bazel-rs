@@ -1392,9 +1392,10 @@ impl RepositorySet {
         };
         let slot = crate::repository_slots::slot_path(store, "bazel_tools");
         let relative = crate::repository_slots::builtin_link_target(&identity);
-        if std::fs::read_link(&slot).is_ok_and(|target| target == relative)
-            && std::fs::metadata(&slot).is_ok_and(|metadata| metadata.is_dir())
-        {
+        // snapshot-unrecorded: slot maintenance on the raw filesystem; a slot is never an input (docs/REPOSITORY_SLOTS.md)
+        let linked = std::fs::read_link(&slot).is_ok_and(|target| target == relative);
+        // snapshot-unrecorded: slot maintenance on the raw filesystem; a slot is never an input (docs/REPOSITORY_SLOTS.md)
+        if linked && std::fs::metadata(&slot).is_ok_and(|metadata| metadata.is_dir()) {
             return Ok(());
         }
         let root = match self.root("bazel_tools") {
@@ -1406,6 +1407,7 @@ impl RepositorySet {
         };
         // The builtin cache is `<store>/builtins` (Self::external_root):
         // the link is relative like an ordinary slot's, absolute otherwise.
+        // snapshot-unrecorded: only spells the slot's link (relative or absolute), never an input
         let in_store = std::fs::canonicalize(store.join("builtins/trees"))
             .is_ok_and(|trees| root.parent() == Some(trees.as_path()))
             && root.file_name() == Some(std::ffi::OsStr::new(&identity));
