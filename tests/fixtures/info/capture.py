@@ -1,4 +1,4 @@
-"""Capture genuine Bazel 9.3.0 `info` outputs for tests/info_command.rs.
+"""Capture genuine Bazel 9.3.1 `info` outputs for tests/info_command.rs.
 
 Scratch only: a private workspace and --output_user_root under /tmp/opencode.
 Run: python3 tests/fixtures/info/capture.py (writes genuine_capture.json here).
@@ -7,10 +7,10 @@ import hashlib
 import json
 import os
 import subprocess
-GENUINE = "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64"
-WS = "/tmp/opencode/info-scratch/ws"
-OUR = "/tmp/opencode/info-scratch/our"
-HOME = "/tmp/opencode/info-scratch/home"
+GENUINE = "/home/coder/bazel/.direnv/reference/bazel-9.3.1-linux-x86_64"
+WS = "/tmp/opencode/w/info-scratch/ws"
+OUR = "/tmp/opencode/w/info-scratch/our"
+HOME = "/tmp/opencode/w/info-scratch/home"
 TARGET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "genuine_capture.json")
 os.makedirs(WS + "/pkg", exist_ok=True)
 with open(WS + "/MODULE.bazel", "w") as f:
@@ -38,7 +38,7 @@ def normalize(text):
     text = text.replace(WS, "<WORKSPACE>").replace(OUR, "<OUTPUT_USER_ROOT>")
     return text
 out = {
-    "about": "Genuine Bazel 9.3.0 `info` captures (tests/fixtures/info/capture.py, docs/INFO.md): --batch --ignore_all_rc_files --output_user_root=<OUTPUT_USER_ROOT>, env -i PATH=/usr/bin:/bin HOME=<private>, workspace = MODULE.bazel module(name='scratch') + pkg/BUILD genrule. Paths are normalized; stderr keeps only ERROR lines.",
+    "about": "Genuine Bazel 9.3.1 `info` captures (tests/fixtures/info/capture.py, docs/INFO.md): --batch --ignore_all_rc_files --output_user_root=<OUTPUT_USER_ROOT>, env -i PATH=/usr/bin:/bin HOME=<private>, workspace = MODULE.bazel module(name='scratch') + pkg/BUILD genrule. Paths are normalized; stderr keeps only ERROR lines.",
     "genuine_sha256": hashlib.sha256(open(GENUINE, "rb").read()).hexdigest(),
     "cases": {},
 }

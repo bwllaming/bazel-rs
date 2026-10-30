@@ -123,12 +123,12 @@ class VersionTest(unittest.TestCase):
         self.assertTrue((ROOT / "LICENSE").read_text().lstrip().startswith("Apache License"))
 
     def test_version_output(self):
-        line = "bazel-rs 1.2.3 (experimental; compatibility target Bazel 9.3.0)\n"
-        self.assertEqual(release.check_version_output(line, "1.2.3"), "9.3.0")
+        line = "bazel-rs 1.2.3 (experimental; compatibility target Bazel 9.3.1)\n"
+        self.assertEqual(release.check_version_output(line, "1.2.3"), "9.3.1")
         with self.assertRaises(release.ReleaseError):
             release.check_version_output(line, "1.2.4")
         with self.assertRaises(release.ReleaseError):
-            release.check_version_output("Build label: 9.3.0\n", "1.2.3")
+            release.check_version_output("Build label: 9.3.1\n", "1.2.3")
 
 
 class PreflightTest(unittest.TestCase):
@@ -576,7 +576,7 @@ class NotesTest(unittest.TestCase):
 
     def info(self, *assets):
         return release.NotesInfo(
-            version="0.2.0", commit=HEAD, commit_date="2026-10-26T18:40:41+00:00", compatibility="9.3.0",
+            version="0.2.0", commit=HEAD, commit_date="2026-10-26T18:40:41+00:00", compatibility="9.3.1",
             rustc="rustc 1.99.0", assets=[release.AssetInfo(**a) for a in assets], gh_repo="o/r", prerelease=True,
             previous_tag="v0.1.0",
         )
@@ -613,7 +613,7 @@ class NotesTest(unittest.TestCase):
         self.assertTrue(text.startswith("Read me first.\n\n# bazel-rs 0.2.0\n"))
         for needle in (
             f"| Commit | `{HEAD}` (2026-10-26T18:40:41+00:00) |",
-            "| Compatibility target | Bazel 9.3.0 |",
+            "| Compatibility target | Bazel 9.3.1 |",
             "glibc ≥ 2.39",
             "gh release download v0.2.0 --repo o/r --pattern 'bazel-rs-0.2.0-x86_64-unknown-linux-gnu.tar.gz*'",
             "sha256sum -c bazel-rs-0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256",
@@ -935,7 +935,7 @@ class TagNotesGitTest(unittest.TestCase):
 class StagesTest(unittest.TestCase):
     """--ci --stage build records and --stage publish collection."""
 
-    def write_build(self, root, triple, *, version="1.2.3", commit=HEAD, compat="9.3.0", data=None):
+    def write_build(self, root, triple, *, version="1.2.3", commit=HEAD, compat="9.3.1", data=None):
         t = release.TARGETS_BY_TRIPLE[triple]
         root.mkdir(parents=True, exist_ok=True)
         archive = root / f"{release.archive_stem(version, triple)}.tar.gz"
@@ -959,7 +959,7 @@ class StagesTest(unittest.TestCase):
             arm = self.write_build(built / "release-build-linux-arm64", "aarch64-unknown-linux-musl")
             pairs, compat, rustc = release.load_records(built, version="1.2.3", commit=HEAD, targets=targets)
             self.assertEqual([info.triple for info, _ in pairs], [t.triple for t in targets])
-            self.assertEqual((compat, rustc), ("9.3.0", "rustc 1.99.0"))
+            self.assertEqual((compat, rustc), ("9.3.1", "rustc 1.99.0"))
             self.assertEqual(pairs[2][0].platform, "Linux arm64")
             self.assertEqual(pairs[2][0].kernel, "4.1")
             # Only the selected targets may be present.

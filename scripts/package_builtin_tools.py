@@ -24,36 +24,36 @@ ROOT = Path(__file__).resolve().parents[1]
 # names). Each platform's outputs live in resources/bazel_tools/<platform>/.
 PLATFORMS = {
     "linux-x86_64": {
-        "bazel_version": "9.3.0",
+        "bazel_version": "9.3.1",
         "platform": "linux-x86_64",
-        "source_revision": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+        "source_revision": "fee2bf2d1c14bc2096068a4d46f1842472092044",
         "distribution_url": (
-            "https://releases.bazel.build/9.3.0/release/bazel-9.3.0-linux-x86_64"
+            "https://releases.bazel.build/9.3.1/release/bazel-9.3.1-linux-x86_64"
         ),
         "distribution_sha256": (
-            "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8"
+            "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"
         ),
         "module_sha256": (
             "a0fab7d7a9314cfba6d73f33c50643ba26dac9be28700ff35e88306dbd69fecd"
         ),
         "file_count": 421,
-        "total_size": 73326972,
+        "total_size": 73322435,
     },
     "linux-arm64": {
-        "bazel_version": "9.3.0",
+        "bazel_version": "9.3.1",
         "platform": "linux-arm64",
-        "source_revision": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
+        "source_revision": "fee2bf2d1c14bc2096068a4d46f1842472092044",
         "distribution_url": (
-            "https://releases.bazel.build/9.3.0/release/bazel-9.3.0-linux-arm64"
+            "https://releases.bazel.build/9.3.1/release/bazel-9.3.1-linux-arm64"
         ),
         "distribution_sha256": (
-            "615cc2509819047e4930fe6643c5f01ebd705ccadf75e8f0b85f9b83cc6a6ca0"
+            "10ba9cb76d4ee748d274dcc2981992bb12b74a203dc41a9c2eceeb8f29359366"
         ),
         "module_sha256": (
             "a0fab7d7a9314cfba6d73f33c50643ba26dac9be28700ff35e88306dbd69fecd"
         ),
         "file_count": 420,
-        "total_size": 71909364,
+        "total_size": 71904827,
     },
 }
 DEFAULT_PLATFORM = "linux-x86_64"
@@ -206,7 +206,7 @@ def main(argv=None):
                         help="pinned distribution to package (default: %(default)s)")
     parser.add_argument("--distribution", type=Path,
                         help="the official binary (default: "
-                             ".direnv/reference/bazel-9.3.0-<platform>)")
+                             ".direnv/reference/bazel-9.3.1-<platform>)")
     parser.add_argument("--output-dir", type=Path,
                         help="default: resources/bazel_tools/<platform>")
     parser.add_argument("--check", "--verify", action="store_true",

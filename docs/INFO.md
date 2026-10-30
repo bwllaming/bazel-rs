@@ -67,7 +67,7 @@ base `<state>` is the workspace's state directory in it,
 | `repository_cache` | `<output_user_root>/cache/repos/v1` | `<cache>/repositories/downloads` (the native download cache, `sha256/<hex>` entries) |
 | `install_base` | `<output_user_root>/install/<md5>` | the directory of the running bazel-rs binary |
 | `install_md5` (hidden) | MD5 of the install | first 16 bytes (32 hex digits) of the binary's BLAKE3, the identity of crate::snapshot::exe_id |
-| `release` | `release 9.3.0` | `release 9.3.0+bazel-rs.<version>` (semver build metadata preserves native identity and lets clients such as target-determinator parse the compatibility release) |
+| `release` | `release 9.3.1` | `release 9.3.1+bazel-rs.<version>` (semver build metadata preserves native identity and lets clients such as target-determinator parse the compatibility release) |
 | `workspace` | workspace root | same |
 | `package_path`, `default-package-path` (hidden) | `%workspace%` | same (only the default package path) |
 | `server_pid` | the server's (with `--batch`, the batch process's) pid | the bazel-rs process's pid |

@@ -1,5 +1,5 @@
 //! `bazel-rs info` (runtime/commands/InfoCommand.java; docs/INFO.md) against
-//! genuine Bazel 9.3.0 captures (tests/fixtures/info/genuine_capture.json,
+//! genuine Bazel 9.3.1 captures (tests/fixtures/info/genuine_capture.json,
 //! written by tests/fixtures/info/capture.py): item order, key set, value
 //! shapes, single-key and multi-key output, unknown keys, `--show_make_env`.
 //! Genuine `<output_base>` maps to the workspace's state directory in the
@@ -204,7 +204,7 @@ fn all_items_in_genuine_order_with_mapped_values() {
     );
     assert_eq!(
         native["release"],
-        format!("release 9.3.0+bazel-rs.{}", env!("CARGO_PKG_VERSION"))
+        format!("release 9.3.1+bazel-rs.{}", env!("CARGO_PKG_VERSION"))
     );
     assert_eq!(native["server_log"], "");
     // info neither creates the cache nor writes a lockfile.

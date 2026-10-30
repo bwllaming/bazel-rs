@@ -670,7 +670,7 @@ fn proxies_are_chosen_again_for_every_redirect_target() {
     assert!(target.requests().is_empty(), "{:?}", target.requests());
 }
 
-/// `--sandbox_add_mount_pair` against genuine 9.3.0
+/// `--sandbox_add_mount_pair` against genuine 9.3.1
 /// (tests/fixtures/sandbox_mount_pair/reference_receipt.json): identity
 /// mounts build (from the command line and an rc `--config`), the building
 /// commands and `info` take the option, `query` does not, converter errors
@@ -689,7 +689,7 @@ fn sandbox_add_mount_pair_follows_genuine() {
     }
     assert_eq!(
         ok(&f.run(&["info", "--sandbox_add_mount_pair=/tmp", "release"])),
-        format!("release 9.3.0+bazel-rs.{}\n", env!("CARGO_PKG_VERSION"))
+        format!("release 9.3.1+bazel-rs.{}\n", env!("CARGO_PKG_VERSION"))
     );
     let form = "Input must be a single path to mount inside the sandbox or a mounting pair in the form of 'source:target'";
     for (args, marker) in [

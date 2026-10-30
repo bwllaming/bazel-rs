@@ -662,7 +662,7 @@ def auxiliary_result(row, step, previous):
     if case == 'version':
         out = unblob(row['stdout']).decode()
         require((re.search(r'(?m)^Build label: 9\.3\.0$', out) if engine == 'reference'
-                 else re.search(r'(?m)^bazel-rs [\w.+-]+ \(experimental; compatibility target Bazel 9\.3\.0\)$', out)), 'version identity')
+                 else re.search(r'(?m)^bazel-rs [\w.+-]+ \(experimental; compatibility target Bazel 9\.3\.1\)$', out)), 'version identity')
         return 'VERSION'
     require(unblob(row['stderr']) == b'', 'auxiliary pin/status stderr')
     key = (engine, verb)

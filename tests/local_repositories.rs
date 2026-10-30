@@ -80,16 +80,16 @@ fn local_repository_transitive_version_bindings_are_phase_isolated() {
     );
     f.file("BUILD.bazel", "load(':helper.bzl','observed','current')\ngenrule(name='copy',srcs=['@made//:value'],outs=['copy.txt'],cmd=\"cat $(SRCS) > $@; printf '%s' 'BUILD=\"+observed+'|'+current()+\"' >> $@\")\n");
     let (outputs, _) = f.build(&["//:copy"]);
-    assert_eq!(outputs[0].1, b"9.3.0|9.3.0|9.3.0\nBUILD=absent|absent");
+    assert_eq!(outputs[0].1, b"9.3.1|9.3.1|9.3.1\nBUILD=absent|absent");
     // Reverse load order with the same RepositorySet, not merely fresh CLI state.
     let repos = std::sync::Arc::new(bazel_rs::repository::RepositorySet::new(
         f.0.path().to_owned(),
     ));
     let label = bazel_rs::label::Label::parse_canonical("//:helper.bzl").unwrap();
     for (globals, expected) in [
-        (bazel_rs::package::module_bzl_globals(), "9.3.0"),
+        (bazel_rs::package::module_bzl_globals(), "9.3.1"),
         (bazel_rs::package::bzl_globals(), "absent"),
-        (bazel_rs::package::module_bzl_globals(), "9.3.0"),
+        (bazel_rs::package::module_bzl_globals(), "9.3.1"),
     ] {
         let loaded =
             bazel_rs::loading::load_definition_in(repos.clone(), &label, "observed", &globals)
@@ -125,7 +125,7 @@ fn local_repository_cold_warm_callbacks_execute_once_per_demanded_repository() {
         assert_eq!(stderr.matches("LOCAL_CALLBACK_EXECUTED").count(), warm);
         assert_eq!(first, second);
         assert_eq!(first.len(), 2);
-        assert!(first.iter().all(|(_, bytes)| bytes == b"9.3.0"));
+        assert!(first.iter().all(|(_, bytes)| bytes == b"9.3.1"));
     }
 }
 

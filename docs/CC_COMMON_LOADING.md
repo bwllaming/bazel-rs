@@ -391,7 +391,7 @@ so both are accessible everywhere, as in Bazel's default configuration.
 
 ## Bazel version and the rules_cc compatibility proxy
 
-`native.bazel_version` is `9.3.0` (`COMPATIBILITY_VERSION`) in MODULE-loaded
+`native.bazel_version` is `9.3.1` (`COMPATIBILITY_VERSION`) in MODULE-loaded
 `.bzl` files and in repository-rule callbacks. bazel_features' `version_repo`
 records it, and rules_cc's `_compatibility_proxy_repo_impl` compares it with
 `_bazel_version_ge("9.0.0-pre.20250911")`, which selects the branch where

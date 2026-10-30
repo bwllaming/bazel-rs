@@ -1,8 +1,8 @@
 {
-  "archive_sha256": "cc052394af652a25b461e504a71e6cd2750f586b9a6c4a7d8f035da54c62a01f",
-  "bazel_version": "9.3.0",
-  "distribution_sha256": "615cc2509819047e4930fe6643c5f01ebd705ccadf75e8f0b85f9b83cc6a6ca0",
-  "distribution_url": "https://releases.bazel.build/9.3.0/release/bazel-9.3.0-linux-arm64",
+  "archive_sha256": "2527f59f4a3ca455d9b1613bcf22ae3870c4f04e2c3ad4509117a3023c3dd8d9",
+  "bazel_version": "9.3.1",
+  "distribution_sha256": "10ba9cb76d4ee748d274dcc2981992bb12b74a203dc41a9c2eceeb8f29359366",
+  "distribution_url": "https://releases.bazel.build/9.3.1/release/bazel-9.3.1-linux-arm64",
   "file_count": 420,
   "files": [
     {
@@ -620,8 +620,8 @@
     {
       "mode": 493,
       "path": "jdk/lib/security/cacerts",
-      "sha256": "707312d3e8018928f53d108e4534f628cbbfad18196df1a2e72884300be1a69f",
-      "size": 132316
+      "sha256": "57bd18389daf254bb1c056a8005592be17033fdbf747ccc42ed7075723bfa584",
+      "size": 127779
     },
     {
       "mode": 493,
@@ -2528,6 +2528,6 @@
   ],
   "platform": "linux-arm64",
   "schema_version": 1,
-  "source_revision": "e89755babf3e941bc1e9d8120b1cd48854ab9dfa",
-  "total_size": 71909364
+  "source_revision": "fee2bf2d1c14bc2096068a4d46f1842472092044",
+  "total_size": 71904827
 }

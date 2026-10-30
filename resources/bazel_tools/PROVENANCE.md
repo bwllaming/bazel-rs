@@ -1,7 +1,7 @@
 # Official Bazel tools resource bundle
 
 This directory retains the complete, unmodified `embedded_tools/` file trees from
-the official **Bazel 9.3.0** distributions of each supported host platform, one
+the official **Bazel 9.3.1** distributions of each supported host platform, one
 subdirectory per platform (Bazel's release names): `linux-x86_64/` and
 `linux-arm64/`, each holding `embedded_tools.tar.gz`, `manifest.json` and the
 `MODULE.bazel` sidecar. A bazel-rs binary compiles in only the bundle of its
@@ -13,16 +13,18 @@ shared.
 ## Pinned authorities
 
 - Distributions and SHA-256 (each also equal to the official `.sha256` file of
-  the GitHub release `bazelbuild/bazel` 9.3.0):
-  - linux-x86_64: <https://releases.bazel.build/9.3.0/release/bazel-9.3.0-linux-x86_64>,
-    `d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8`
-  - linux-arm64: <https://releases.bazel.build/9.3.0/release/bazel-9.3.0-linux-arm64>
-    (= <https://github.com/bazelbuild/bazel/releases/download/9.3.0/bazel-9.3.0-linux-arm64>),
-    `615cc2509819047e4930fe6643c5f01ebd705ccadf75e8f0b85f9b83cc6a6ca0`
-    (checked 2026-10-28 against both `bazel-9.3.0-linux-arm64.sha256` files)
-- Embedded `build-label.txt`: exactly `9.3.0` in both.
-- Upstream source revision:
-  `e89755babf3e941bc1e9d8120b1cd48854ab9dfa`
+  the GitHub release `bazelbuild/bazel` 9.3.1):
+  - linux-x86_64: <https://releases.bazel.build/9.3.1/release/bazel-9.3.1-linux-x86_64>
+    (= <https://github.com/bazelbuild/bazel/releases/download/9.3.1/bazel-9.3.1-linux-x86_64>),
+    `7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c`
+  - linux-arm64: <https://releases.bazel.build/9.3.1/release/bazel-9.3.1-linux-arm64>
+    (= <https://github.com/bazelbuild/bazel/releases/download/9.3.1/bazel-9.3.1-linux-arm64>),
+    `10ba9cb76d4ee748d274dcc2981992bb12b74a203dc41a9c2eceeb8f29359366`
+  (both downloaded from GitHub and checked 2026-10-30 against the GitHub and
+  releases.bazel.build `.sha256` files)
+- Embedded `build-label.txt`: exactly `9.3.1` in both.
+- Upstream source revision (tag `9.3.1`, "Release 9.3.1 (2026-10-20)"):
+  `fee2bf2d1c14bc2096068a4d46f1842472092044`
 - `MODULE.bazel` is byte-identical to the embedded file and upstream
   `src/MODULE.tools`; SHA-256:
   `a0fab7d7a9314cfba6d73f33c50643ba26dac9be28700ff35e88306dbd69fecd`.
@@ -32,11 +34,21 @@ shared.
   The local source snapshot's Git HEAD and committed LICENSE were checked against
   this revision, rather than relying on an unversioned working-tree copy.
 
+## 9.3.0 → 9.3.1
+
+The bundles were regenerated from the 9.3.1 distributions on 2026-10-30. Of the
+installed tree only `jdk/lib/security/cacerts` changed (both platforms, same
+bytes: 132,316 → 127,779 bytes, SHA-256 `707312d3…` → `57bd1838…`): 9.3.1
+removes the distrusted Sectigo "AAA Certificate Services" and eMudhra/emSign
+root CAs from the embedded JDK truststore (upstream #31920,
+`src/minimize_jdk.sh`). `MODULE.bazel`, all Starlark/BUILD/script files and the
+compiled helpers are byte-identical to 9.3.0's (docs/BAZEL_9_3_1.md).
+
 ## Complete installed tree
 
 linux-x86_64: `embedded_tools.tar.gz` contains exactly **421 regular files**,
-totaling **73,326,972 uncompressed content bytes**. linux-arm64: **420 regular
-files**, **71,909,364 bytes** (the arm64 JDK has no `lib/libsimdsort.so`). The
+totaling **73,322,435 uncompressed content bytes**. linux-arm64: **420 regular
+files**, **71,904,827 bytes** (the arm64 JDK has no `lib/libsimdsort.so`). The
 two trees have the same paths otherwise and byte-identical `MODULE.bazel`,
 Starlark, BUILD and script files; only 25 JDK files and the three compiled
 helpers below differ. Directories are implicit. Only the
@@ -44,7 +56,7 @@ helpers below differ. Directories are implicit. Only the
 as officially packaged, including already-renamed repository BUILD files.
 There are no synthetic BUILD files, provider shims, or omitted JDK files.
 
-The x86-64 JDK subtree contains 108 files / 71,311,548 bytes, including upstream
+The x86-64 JDK subtree contains 108 files / 71,307,011 bytes, including upstream
 legal materials. The other 313 files include the platform's compiled helpers
 `tools/cpp/modules_tools/aggregate-ddi`,
 `tools/cpp/modules_tools/generate-modmap`, and `tools/zip/zipper/zipper`.
@@ -62,13 +74,13 @@ metadata is normalized to uid/gid/mtime zero and empty user/group names.
 ## Reproduction and schema
 
 From the repository root, with the pinned distribution already available
-(default `.direnv/reference/bazel-9.3.0-<platform>`):
+(default `.direnv/reference/bazel-9.3.1-<platform>`):
 
 ```sh
 python3 scripts/package_builtin_tools.py                          # linux-x86_64
 python3 scripts/package_builtin_tools.py --check
-curl -fLO https://github.com/bazelbuild/bazel/releases/download/9.3.0/bazel-9.3.0-linux-arm64
-python3 scripts/package_builtin_tools.py --platform linux-arm64 --distribution bazel-9.3.0-linux-arm64 [--check]
+curl -fLO https://github.com/bazelbuild/bazel/releases/download/9.3.1/bazel-9.3.1-linux-arm64
+python3 scripts/package_builtin_tools.py --platform linux-arm64 --distribution bazel-9.3.1-linux-arm64 [--check]
 ```
 
 `--platform` selects one of the pinned distributions (`linux-x86_64`, the

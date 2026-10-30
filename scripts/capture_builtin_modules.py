@@ -23,7 +23,7 @@ from validate import ROOT, Reference, require_success, validate_executable, writ
 from validate_direct_repositories import RecordingRunner
 
 
-REFERENCE_SHA256 = "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8"
+REFERENCE_SHA256 = "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"
 BCR = "https://bcr.bazel.build"
 ROOT_MODULE = 'module(name = "opencode_builtin_fixture", version = "1.0")\n'
 CASES = (
@@ -144,7 +144,7 @@ def verify_fixture(directory):
     """Offline integrity/completeness check; not a native-versus-reference test."""
     expectations = json.loads((directory / "expectations.json").read_bytes())
     provenance = json.loads((directory / "provenance.json").read_bytes())
-    if any(value.get("reference_sha256") != REFERENCE_SHA256 or value.get("reference_version") != "9.3.0"
+    if any(value.get("reference_sha256") != REFERENCE_SHA256 or value.get("reference_version") != "9.3.1"
            for value in (expectations, provenance)):
         raise ValueError("fixture reference release mismatch")
     cases = expectations["cases"]
@@ -257,7 +257,7 @@ def capture(args):
             if not locks:
                 reference.started = True
                 version = runner.run("reference.version", reference.startup + ["version", "--gnu_format"], workspace)
-                if require_success(version).strip() != "bazel 9.3.0":
+                if require_success(version).strip() != "bazel 9.3.1":
                     raise ValueError("official reference version mismatch")
             flags = ["--registry=" + BCR, "--lockfile_mode=update",
                      "--repository_cache=" + str(args.repository_cache),
@@ -293,12 +293,12 @@ def capture(args):
                 path.write_bytes(data)
                 files["registry/" + relative] = evidence
         expectations = {"schema_version": 1, "reference_sha256": REFERENCE_SHA256,
-                        "reference_version": "9.3.0", "cases": case_records,
+                        "reference_version": "9.3.1", "cases": case_records,
                         "selection_order": "lexicographic name; not source declaration order",
                         "canonical_names": "not projected: mod graph JSON supplies apparentName only"}
         save_json(stage / "expectations.json", expectations)
         provenance = {"schema_version": 1, "reference_sha256": REFERENCE_SHA256,
-                      "reference_version": "9.3.0", "captured_at": report["captured_at"],
+                      "reference_version": "9.3.1", "captured_at": report["captured_at"],
                       "registry": BCR, "files": files,
                       "requested_module_count": sum(p.endswith("/MODULE.bazel") for p in files),
                       "metadata_count": sum(p.endswith("/metadata.json") for p in files),
@@ -339,7 +339,7 @@ def capture(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--reference", type=Path, default=ROOT / ".direnv/reference/bazel-9.3.0-linux-x86_64")
+    parser.add_argument("--reference", type=Path, default=ROOT / ".direnv/reference/bazel-9.3.1-linux-x86_64")
     parser.add_argument("--destination", type=Path, default=ROOT / "tests/fixtures/builtin_modules")
     parser.add_argument("--report", type=Path, default=ROOT / "artifacts/builtin-module-contract/registry-capture.json")
     cache = Path.home() / ".cache/bazel/_bazel_coder/cache/repos/v1"

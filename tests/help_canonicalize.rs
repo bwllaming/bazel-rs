@@ -1,4 +1,4 @@
-//! `help` and `canonicalize-flags` against genuine Bazel 9.3.0 captures
+//! `help` and `canonicalize-flags` against genuine Bazel captures (`help`: 9.3.1, re-captured; `canonicalize-flags`: 9.3.0)
 //! (tests/fixtures/help, tests/fixtures/canonicalize; capture.py there).
 //! `help`: every topic's text and option listing, line for line except the
 //! release header (blank lines not compared); `canonicalize-flags`: stdout,

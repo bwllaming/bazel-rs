@@ -1,7 +1,7 @@
-"""Capture genuine Bazel 9.3.0 `help` topics for tests/help_command.rs and
+"""Capture genuine Bazel 9.3.1 `help` topics for tests/help_command.rs and
 scripts/extract_help_topics.py (src/help_topics.rs).
 
-Scratch only (private HOME, --output_user_root and cwd under /tmp/opencode).
+Scratch only (private HOME, --output_user_root and cwd under /tmp/opencode/w).
 Run: python3 tests/fixtures/help/capture.py (writes reference_receipt.json here).
 """
 import hashlib
@@ -10,8 +10,8 @@ import os
 import shutil
 import subprocess
 
-GENUINE = "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64"
-SCRATCH = "/tmp/opencode/help-capture"
+GENUINE = "/home/coder/bazel/.direnv/reference/bazel-9.3.1-linux-x86_64"
+SCRATCH = "/tmp/opencode/w/help-capture"
 HERE = os.path.dirname(os.path.abspath(__file__))
 COMMANDS = ["aquery", "build", "canonicalize-flags", "clean", "config", "coverage", "cquery",
             "dump", "fetch", "help", "info", "license", "mobile-install", "mod", "print_action",

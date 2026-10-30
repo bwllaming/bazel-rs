@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Eight real-CLI built-in-module checks; NOT full Bazel compatibility.
 
-Two genuine 9.3.0 differentials and six native policy/cache checks. Native uses
+Two genuine 9.3.1 differentials and six native policy/cache checks. Native uses
 only the captured file registry, with remote access disabled by default. The
 reference may download genuine sources. Unit tests do not launch either engine.
 """
@@ -22,7 +22,9 @@ import tarfile
 import tempfile
 
 from validate import ROOT, COMMON_FLAGS, BUILD_FLAGS, reference_output_paths, write_report
-from validate_direct_repositories import DirectReference, REFERENCE_SHA256, validate_binaries
+from validate import file_evidence, validate_executable
+from validate_direct_repositories import DirectReference
+from capture_builtin_modules import REFERENCE_SHA256  # the 9.3.1 ELF of the fixture and bundle
 from validate_repository_rules import (RecordingRunner, evidence, valid_evidence, snapshot,
                                        success as common_success, native_paths, argument_parser as common_parser)
 
@@ -123,10 +125,10 @@ def load_inputs():
     manifest = json.loads((RESOURCES / 'manifest.json').read_bytes())
     expectations = json.loads((FIXTURE / 'expectations.json').read_bytes())
     provenance = json.loads((FIXTURE / 'provenance.json').read_bytes())
-    if (manifest['distribution_sha256'] != REFERENCE_SHA256 or manifest['bazel_version'] != '9.3.0'
+    if (manifest['distribution_sha256'] != REFERENCE_SHA256 or manifest['bazel_version'] != '9.3.1'
             or manifest['file_count'] != 421 or len(manifest['files']) != 421
             or expectations['reference_sha256'] != REFERENCE_SHA256
-            or expectations['reference_version'] != '9.3.0'):
+            or expectations['reference_version'] != '9.3.1'):
         raise ValueError('missing genuine pinned built-in/captured registry identity')
     entries = {v['path']: v for v in manifest['files']}
     if len(entries) != 421 or any(v['mode'] != 0o755 for v in entries.values()):
@@ -601,7 +603,7 @@ def report_passes(report):
                 or report['reference_shutdown_succeeded'] is not True or report['sources_unchanged'] is not True
                 or not report['sources_before'] or report['sources_before'] != report['sources_after']
                 or report['completed_checks'] != 8 or report['completed_differential_cases'] != 2
-                or report['reference_release'] != 'bazel 9.3.0'
+                or report['reference_release'] != 'bazel 9.3.1'
                 or report['executables']['reference']['sha256'] != REFERENCE_SHA256
                 or report['distributed_native']['sha256'] != report['executables']['native']['sha256']
                 or report['path_trap_not_invoked'] is not True):
@@ -618,7 +620,7 @@ def report_passes(report):
         scratch = Path(report['scratch_directory'])
         reference = DirectReference(Path(report['configuration']['reference']), scratch / 'workspace', scratch, None, 'builtin-modules')
         if (runs[0]['name'] != 'reference.version' or runs[0]['argv'] != reference.startup + ['version', '--gnu_format']
-                or success(runs[0]).strip() != 'bazel 9.3.0' or runs[-1]['name'] != 'builtin-modules.shutdown'
+                or success(runs[0]).strip() != 'bazel 9.3.1' or runs[-1]['name'] != 'builtin-modules.shutdown'
                 or runs[-1]['argv'] != reference.startup + ['shutdown'] + list(COMMON_FLAGS)):
             return False
         success(runs[-1])
@@ -639,8 +641,21 @@ def report_passes(report):
 def argument_parser():
     parser = common_parser()
     parser.description = __doc__
-    parser.set_defaults(output=ROOT / 'artifacts/builtin-modules-validation.json')
+    parser.set_defaults(output=ROOT / 'artifacts/builtin-modules-validation.json',
+                        reference=ROOT / '.direnv/reference/bazel-9.3.1-linux-x86_64')
     return parser
+
+
+def validate_binaries(args):
+    # Both must be direct ELF executables, never a shell wrapper. The reference
+    # is the release of the embedded bundle (9.3.1), not the 9.3.0 ELF that the
+    # other direct-repository harnesses replay.
+    validate_executable(args.native, official=True)
+    validate_executable(args.reference, official=True)
+    evidence = {name: file_evidence(getattr(args, name)) for name in ('native', 'reference')}
+    if evidence['reference']['sha256'] != REFERENCE_SHA256:
+        raise ValueError('reference SHA256 differs from pinned official Bazel 9.3.1 Linux x86_64')
+    return evidence
 
 
 def finish(reference, temporary, report):
@@ -724,7 +739,7 @@ def main(argv=None):
         reference.started = True
         version = runner.run('reference.version', reference.startup + ['version', '--gnu_format'], workspace)
         report['reference_release'] = success(version).strip()
-        if report['reference_release'] != 'bazel 9.3.0':
+        if report['reference_release'] != 'bazel 9.3.1':
             raise ValueError('reference version mismatch')
         for item in CASES:
             try:

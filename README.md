@@ -2,11 +2,13 @@
 
 **Experimental native Rust foundations for a Bazel-compatible build system. Not
 a replacement for Bazel, and not full feature parity.** Compatibility target:
-official Bazel **9.3.0**. No command delegates to upstream Bazel.
+official Bazel **9.3.1** (since 2026-10-30; 9.3.0 before, docs/BAZEL_9_3_1.md). No
+command delegates to upstream Bazel.
 
 The starting implementation evaluates a narrow BUILD subset and executes native
 local actions. It cannot build or test the main `bwllaming/code` application.
-That checkout currently pins **9.1.1**, independently of this project's 9.3 target.
+That checkout pins **9.3.1** (`.bazeliskrc` `USE_BAZEL_VERSION`), the same release as
+this project's compatibility target.
 
 ## Tooling
 
@@ -64,9 +66,9 @@ was built against (each release's notes give the checksums, requirements and
 install steps; from 0.2.0 on, arm64 after 0.2.0).
 
 Platform support: Linux x86_64 and Linux aarch64 (4, 16 or 64 KiB pages). Each
-binary embeds Bazel 9.3.0's `@bazel_tools` of its own platform
+binary embeds Bazel 9.3.1's `@bazel_tools` of its own platform
 (`resources/bazel_tools/<platform>/`, from the official
-`bazel-9.3.0-linux-x86_64` / `bazel-9.3.0-linux-arm64` release) and reports its
+`bazel-9.3.1-linux-x86_64` / `bazel-9.3.1-linux-arm64` release) and reports its
 host like genuine Bazel on that platform: `ctx.os.arch` `amd64` / `aarch64`,
 `@platforms//cpu:x86_64` / `@platforms//cpu:aarch64`, output roots
 `bazel-out/k8-*` / `bazel-out/aarch64-*` (docs/HOST_OS.md). Other systems
@@ -81,7 +83,7 @@ annotated tag (carrying optional extra notes) and pushes only the tag
 `scripts/bump_version.py` (docs/RELEASING.md).
 
 bazel-rs is licensed under the Apache License 2.0 (`LICENSE`); `NOTICE` names
-the bundled third-party code (the vendored starlark-rust, Bazel 9.3.0's
+the bundled third-party code (the vendored starlark-rust, Bazel 9.3.1's
 embedded tools incl. its JDK), and each release archive carries a generated
 `THIRD_PARTY_LICENSES.md` for all Rust crates.
 
@@ -413,7 +415,7 @@ identity without changing owner mappings or hiding invalid-label timing limits.
 [Label passthrough](docs/LABEL_PASSTHROUGH.md) preserves existing Label identity
 across lexical contexts while retaining explicit invalid-label timing limits.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are injected by default,
-like Bazel 9.3, using the complete verified Bazel 9.3.0 resources of the
+like Bazel 9.3, using the complete verified Bazel 9.3.1 resources of the
 binary's platform (Linux x86-64 or arm64); the native-only
 `--experimental-builtin-modules=false` selects the explicit-module profile
 (no `@bazel_tools` contents). Load caching is per package evaluation,
@@ -558,8 +560,8 @@ Tiny-fixture latency is **not evidence of full-repo performance**. See
 
 ## Source references
 
-- [Official Bazel 9.3.0 release](https://github.com/bazelbuild/bazel/releases/tag/9.3.0)
-- [Official release artifacts](https://releases.bazel.build/9.3.0/release/index.html)
+- [Official Bazel 9.3.1 release](https://github.com/bazelbuild/bazel/releases/tag/9.3.1)
+- [Official release artifacts](https://releases.bazel.build/9.3.1/release/index.html)
 - [Bazel architecture](https://bazel.build/contribute/codebase)
 - [Starlark embedding API](https://docs.rs/starlark/0.14.2/starlark/)
 - [Rustup project toolchains](https://rust-lang.github.io/rustup/overrides.html)

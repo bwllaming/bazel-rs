@@ -176,7 +176,7 @@ alternating runs on a shared 64-core machine (seconds wall, peak RSS):
 The warm no-op's extra ~35 MB is jemalloc arena memory (it shrinks to ~8 MB
 with `MALLOC_CONF=narenas:8`), not seen at the full-analysis peak.
 
-**Linux arm64.** The arm64 binary embeds Bazel 9.3.0's linux-arm64
+**Linux arm64.** The arm64 binary embeds Bazel 9.3.1's linux-arm64
 `@bazel_tools` (`resources/bazel_tools/linux-arm64/`, its JDK and compiled
 helpers) and reports the host like genuine Bazel on arm64 (`ctx.os.arch`
 `aarch64`, `@platforms//cpu:aarch64`, `bazel-out/aarch64-fastbuild`;

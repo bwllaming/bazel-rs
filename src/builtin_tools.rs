@@ -21,13 +21,13 @@ pub enum BuiltinId {
 
 pub const VERSION: &str = crate::COMPATIBILITY_VERSION;
 const MODULE_SHA256: &str = "a0fab7d7a9314cfba6d73f33c50643ba26dac9be28700ff35e88306dbd69fecd";
-const SOURCE_REVISION: &str = "e89755babf3e941bc1e9d8120b1cd48854ab9dfa";
+const SOURCE_REVISION: &str = "fee2bf2d1c14bc2096068a4d46f1842472092044";
 
-/// The official Bazel 9.3.0 distribution whose `embedded_tools/` tree is
+/// The official Bazel 9.3.1 distribution whose `embedded_tools/` tree is
 /// compiled in: one per supported host, selected by the compile target
 /// (resources/bazel_tools/<platform>/, scripts/package_builtin_tools.py).
 struct Pinned {
-    /// Bazel's release platform name (`bazel-9.3.0-<platform>`).
+    /// Bazel's release platform name (`bazel-9.3.1-<platform>`).
     platform: &'static str,
     distribution_url: &'static str,
     distribution_sha256: &'static str,
@@ -43,7 +43,7 @@ macro_rules! pinned {
         Pinned {
             platform: $platform,
             distribution_url: concat!(
-                "https://releases.bazel.build/9.3.0/release/bazel-9.3.0-",
+                "https://releases.bazel.build/9.3.1/release/bazel-9.3.1-",
                 $platform
             ),
             distribution_sha256: $sha256,
@@ -71,16 +71,16 @@ macro_rules! pinned {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const PINNED: Option<Pinned> = Some(pinned!(
     "linux-x86_64",
-    "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+    "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
     421,
-    73_326_972
+    73_322_435
 ));
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 const PINNED: Option<Pinned> = Some(pinned!(
     "linux-arm64",
-    "615cc2509819047e4930fe6643c5f01ebd705ccadf75e8f0b85f9b83cc6a6ca0",
+    "10ba9cb76d4ee748d274dcc2981992bb12b74a203dc41a9c2eceeb8f29359366",
     420,
-    71_909_364
+    71_904_827
 ));
 /// Other compile targets have no bundle: the built-in @bazel_tools
 /// repository is unavailable there (materialize fails).
@@ -91,7 +91,7 @@ const PINNED: Option<Pinned> = Some(pinned!(
 const PINNED: Option<Pinned> = None;
 
 const UNSUPPORTED: &str =
-    "embedded bazel_tools 9.3.0 supports only linux-x86_64 and linux-arm64 hosts";
+    "embedded bazel_tools 9.3.1 supports only linux-x86_64 and linux-arm64 hosts";
 const ARCHIVE: &[u8] = match &PINNED {
     Some(pinned) => pinned.archive,
     None => &[],
@@ -625,16 +625,16 @@ mod tests {
         let manifests: [(&str, &str, usize, u64, &[u8]); 2] = [
             (
                 "linux-x86_64",
-                "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+                "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
                 421,
-                73_326_972,
+                73_322_435,
                 include_bytes!("../resources/bazel_tools/linux-x86_64/manifest.json"),
             ),
             (
                 "linux-arm64",
-                "615cc2509819047e4930fe6643c5f01ebd705ccadf75e8f0b85f9b83cc6a6ca0",
+                "10ba9cb76d4ee748d274dcc2981992bb12b74a203dc41a9c2eceeb8f29359366",
                 420,
-                71_909_364,
+                71_904_827,
                 include_bytes!("../resources/bazel_tools/linux-arm64/manifest.json"),
             ),
         ];
@@ -646,7 +646,7 @@ mod tests {
                 assert_eq!(manifest.distribution_sha256, *sha256);
                 assert_eq!(
                     manifest.distribution_url,
-                    format!("https://releases.bazel.build/9.3.0/release/bazel-9.3.0-{platform}")
+                    format!("https://releases.bazel.build/9.3.1/release/bazel-9.3.1-{platform}")
                 );
                 assert_eq!(manifest.source_revision, SOURCE_REVISION);
                 assert_eq!(manifest.bazel_version, VERSION);

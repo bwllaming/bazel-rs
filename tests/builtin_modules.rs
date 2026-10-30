@@ -86,7 +86,7 @@ fn genuine_closure_matches_independent_bazel_selection_without_extracting_tools(
         serde_json::from_slice(&fs::read(fixtures().join("expectations.json")).unwrap()).unwrap();
     assert_eq!(
         expected["reference_sha256"],
-        "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8"
+        "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c"
     );
     let cases = expected["cases"].as_array().unwrap();
     assert!(cases.len() >= 2);

@@ -1,7 +1,7 @@
 {
   "implementation": "bazel-rs",
   "status": "experimental-verified-archive-loading",
-  "compatibility_target": "9.3.0",
+  "compatibility_target": "9.3.1",
   "full_feature_parity": false,
   "string_dictionary_attributes": "attr.string_dict with ordered owned scalar string pairs, independently frozen projections, constructor/BUILD/per-call snapshots and MODULE-end capture; nonempty enforcement only for ordinary analysis; configurable/select/macro and repository Unicode limits remain explicit; safe loaded BUILD constructor behavior intentionally differs from a recorded reference crash; see docs/STRING_DICT.md",
   "callback_host_metadata": "repository/module-extension ctx.os exposes immutable hashable repository_os metadata for the verified Linux/x86_64 compile-target view linux/amd64; selected extension host factors and unconditional versioned repository host inputs are keyed; repository_ctx/module_ctx.os.environ is a fresh mutable dict of the client environment per access (JVM-argv UTF-8 replacement decoding, no recorded dependency); other targets/emulation detection and OS SDKs remain unsupported; repository publications intentionally rekey once; see docs/HOST_OS.md",

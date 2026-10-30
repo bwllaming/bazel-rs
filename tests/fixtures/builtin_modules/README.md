@@ -2,10 +2,17 @@
 
 This offline file registry contains **unaltered public BCR response bytes**, not
 synthetic public MODULE files. It was captured with the official Linux x86_64
-Bazel 9.3.0 release executable:
+Bazel 9.3.0 release executable and re-captured on 2026-10-30 with the official
+Bazel 9.3.1 release executable, the pinned reference now:
 
-- Source: https://releases.bazel.build/9.3.0/release/bazel-9.3.0-linux-x86_64
-- SHA256: `d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8`
+- Source: https://releases.bazel.build/9.3.1/release/bazel-9.3.1-linux-x86_64
+- SHA256: `7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c`
+
+The 9.3.1 re-capture produced byte-identical `graph.json` and
+`MODULE.bazel.lock` files for both cases (9.3.1 left `MODULE.tools` unchanged);
+only `stderr.txt` (server version line, progress lines) and the reference
+identity in `expectations.json`/`provenance.json` changed. The registry snapshot
+(including the `metadata.json` files) is the original 2026-10-13 capture.
 
 `expectations.json` is the test API. Each `cases[]` entry contains `name`, the
 exact `root_module` string, `selected` name/version objects (root excluded,

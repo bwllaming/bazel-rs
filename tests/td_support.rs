@@ -228,7 +228,7 @@ fn dump_root_mapping_uses_real_module_aliases_and_extension_imports() {
             &registry,
         ],
     );
-    // Captured with genuine 9.3.0, same MODULE and .bzl fixture; compact JSON,
+    // Captured with genuine 9.3.1, same MODULE and .bzl fixture; compact JSON,
     // canonical root is empty and extension repository is not materialized.
     assert_eq!(
         text,
@@ -252,7 +252,7 @@ fn td_release_and_semantics_are_machine_readable_without_hiding_native_identity(
     let ws = Workspace::new();
     assert_eq!(
         ws.ok(&[], &["info", "release"]),
-        format!("release 9.3.0+bazel-rs.{}\n", env!("CARGO_PKG_VERSION"))
+        format!("release 9.3.1+bazel-rs.{}\n", env!("CARGO_PKG_VERSION"))
     );
     assert_eq!(
         ws.ok(&[], &["info", "starlark-semantics"]),

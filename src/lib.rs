@@ -4,7 +4,7 @@
 #[cfg(test)]
 include!("../tests/support/temp_root.rs");
 /// Semantics targeted by the native implementation, not a full-parity claim.
-pub const COMPATIBILITY_VERSION: &str = "9.3.0";
+pub const COMPATIBILITY_VERSION: &str = "9.3.1";
 
 pub mod action;
 pub mod action_env;

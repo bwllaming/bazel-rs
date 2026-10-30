@@ -938,7 +938,7 @@ def third_party_markdown(
         out.append(f"{title}:\n")
         out.append(text_block(data))
 
-    out.append(f"## Bazel 9.3.0 embedded tools, {bundle} (in the binary as @bazel_tools)\n")
+    out.append(f"## Bazel 9.3.1 embedded tools, {bundle} (in the binary as @bazel_tools)\n")
     emit("`resources/bazel_tools/LICENSE`", bazel_license)
     for name, data in bundle_files:
         emit(f"`embedded_tools/{name}`", data)

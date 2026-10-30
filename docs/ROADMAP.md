@@ -188,8 +188,10 @@ The preserved application loading probe next encounters the archive-source
 `docs_url` field; see `docs/BUILD_SETTINGS.md` for scope and evidence.
 
 The official 9.3.0 release was published 2026-10-07, with upstream tag commit
-`e89755babf3e941bc1e9d8120b1cd48854ab9dfa`. The main checkout's `.bazeliskrc` pins
-9.1.1. Changing that checkout's pin is outside this implementation.
+`e89755babf3e941bc1e9d8120b1cd48854ab9dfa`; the compatibility target moved to
+9.3.1 (published 2026-10-20, tag commit `fee2bf2d1c14bc2096068a4d46f1842472092044`)
+on 2026-10-30 (docs/BAZEL_9_3_1.md). The main checkout's `.bazeliskrc` pins
+9.3.1. Changing that checkout's pin is outside this implementation.
 
 ## Why a launcher is insufficient
 

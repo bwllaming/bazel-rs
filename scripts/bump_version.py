@@ -53,7 +53,7 @@ def _literal(needle_template: str) -> callable:
     return edit
 
 
-VERSION_TEXT = "bazel-rs {version} (experimental; compatibility target Bazel 9.3.0)"
+VERSION_TEXT = "bazel-rs {version} (experimental; compatibility target Bazel 9.3.1)"
 EDITS = {
     "Cargo.toml": _package_version,
     "Cargo.lock": _lock_root,

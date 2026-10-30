@@ -27,7 +27,7 @@ FILES = {"MODULE.bazel": b'module(name = "bazel_tools")\n',
          "tools/raw": bytes(range(256)) + b"\x00\xff\r\n"}
 
 
-def fixture(entries=None, *, label=b"9.3.0", prefix=b"native launcher\x00"):
+def fixture(entries=None, *, label=b"9.3.1", prefix=b"native launcher\x00"):
     if entries is None:
         entries = [("embedded_tools/" + path, data) for path, data in FILES.items()]
     buffer = io.BytesIO(prefix)
@@ -192,7 +192,7 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(sorted(packaging.PLATFORMS), ["linux-arm64", "linux-x86_64"])
         for platform, pinned in packaging.PLATFORMS.items():
             self.assertEqual(pinned["platform"], platform)
-            self.assertTrue(pinned["distribution_url"].endswith(f"/bazel-9.3.0-{platform}"))
+            self.assertTrue(pinned["distribution_url"].endswith(f"/bazel-9.3.1-{platform}"))
             manifest = json.loads((packaging.ROOT / "resources/bazel_tools" / platform
                                    / packaging.MANIFEST).read_text())
             for key in ("bazel_version", "platform", "source_revision", "distribution_url",
@@ -205,7 +205,7 @@ class PackagingTests(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(packaging.main(["--platform", "linux-arm64", "--check"]), 1)
         self.assertEqual(read.call_args_list[0].args[0],
-                         packaging.ROOT / ".direnv/reference/bazel-9.3.0-linux-arm64")
+                         packaging.ROOT / ".direnv/reference/bazel-9.3.1-linux-arm64")
 
     def test_stage_write_failure_preserves_previous_outputs(self):
         root = self.temporary()
