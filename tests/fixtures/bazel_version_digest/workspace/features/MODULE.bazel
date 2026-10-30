@@ -1,0 +1,4 @@
+module(name = "features", version = "1.0")
+
+version = use_extension("//private:extensions.bzl", "version_extension")
+use_repo(version, "features_version")

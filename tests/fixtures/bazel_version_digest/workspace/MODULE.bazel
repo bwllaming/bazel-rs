@@ -1,0 +1,10 @@
+module(name = "version_digest_root", version = "1.0")
+
+bazel_dep(name = "features", version = "1.0")
+local_path_override(
+    module_name = "features",
+    path = "features",
+)
+
+ext = use_extension("//:ext.bzl", "ext")
+use_repo(ext, "probe")

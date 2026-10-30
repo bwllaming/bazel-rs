@@ -1,0 +1,19 @@
+{
+ "about": "Genuine Bazel lockfiles of tests/fixtures/bazel_version_digest/workspace (capture.py): `query @probe//:all --lockfile_mode=update` with --registry=file://<builtin_modules registry> --repository_disable_download, --batch --ignore_all_rc_files, private output root, env -i PATH=/usr/bin:/bin HOME=<private> TMPDIR=<private> LC_ALL=C.UTF-8. The 9.3.1 lockfile is the expected native output; the 9.3.0 one differs only in the bzlTransitiveDigest of //:ext.bzl%ext.",
+ "references": {
+  "9.3.0": {
+   "binary": "bazel-9.3.0-linux-x86_64",
+   "lockfile": "{\n  \"lockFileVersion\": 28,\n  \"registryFileHashes\": {},\n  \"selectedYankedVersions\": {},\n  \"moduleExtensions\": {\n    \"//:ext.bzl%ext\": {\n      \"general\": {\n        \"bzlTransitiveDigest\": \"kQWspoFJhMb4F94FnWDAOZVzi6McheDBf8fGVmbe7c4=\",\n        \"usagesDigest\": \"o8nyowU+3jbcm8MWSemdhr8WhAK1zx3Jd0rB2txjVkY=\",\n        \"recordedInputs\": [\n          \"REPO_MAPPING:,features features+\",\n          \"REPO_MAPPING:features+,features_version features++version_extension+features_version\"\n        ],\n        \"generatedRepoSpecs\": {\n          \"probe\": {\n            \"repoRuleId\": \"@@//:ext.bzl%_repo\",\n            \"attributes\": {\n              \"version\": \"9.3.0\"\n            }\n          }\n        }\n      }\n    },\n    \"@@features+//private:extensions.bzl%version_extension\": {\n      \"general\": {\n        \"bzlTransitiveDigest\": \"JfGDr7lGy055UGJ48hswJa8XGmDEWv48YzSyFhdVTDQ=\",\n        \"usagesDigest\": \"+DAEBbCLKicIjLaIpEFAZ5plJYSej36L281HDYK5IpI=\",\n        \"recordedInputs\": [],\n        \"generatedRepoSpecs\": {\n          \"features_version\": {\n            \"repoRuleId\": \"@@features+//private:extensions.bzl%version_repo\",\n            \"attributes\": {}\n          }\n        }\n      }\n    }\n  },\n  \"facts\": {},\n  \"factsVersions\": {}\n}\n",
+   "lockfile_sha256": "f01f176cb190683e8c89678ba771e0c47d4c33f34f1a9a2f311093f556d6b157",
+   "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+   "stdout": ""
+  },
+  "9.3.1": {
+   "binary": "bazel-9.3.1-linux-x86_64",
+   "lockfile": "{\n  \"lockFileVersion\": 28,\n  \"registryFileHashes\": {},\n  \"selectedYankedVersions\": {},\n  \"moduleExtensions\": {\n    \"//:ext.bzl%ext\": {\n      \"general\": {\n        \"bzlTransitiveDigest\": \"KhcLF23B0ToIM0XXHVp0+b0odePfwwuYqMwySkNZzMU=\",\n        \"usagesDigest\": \"o8nyowU+3jbcm8MWSemdhr8WhAK1zx3Jd0rB2txjVkY=\",\n        \"recordedInputs\": [\n          \"REPO_MAPPING:,features features+\",\n          \"REPO_MAPPING:features+,features_version features++version_extension+features_version\"\n        ],\n        \"generatedRepoSpecs\": {\n          \"probe\": {\n            \"repoRuleId\": \"@@//:ext.bzl%_repo\",\n            \"attributes\": {\n              \"version\": \"9.3.1\"\n            }\n          }\n        }\n      }\n    },\n    \"@@features+//private:extensions.bzl%version_extension\": {\n      \"general\": {\n        \"bzlTransitiveDigest\": \"JfGDr7lGy055UGJ48hswJa8XGmDEWv48YzSyFhdVTDQ=\",\n        \"usagesDigest\": \"+DAEBbCLKicIjLaIpEFAZ5plJYSej36L281HDYK5IpI=\",\n        \"recordedInputs\": [],\n        \"generatedRepoSpecs\": {\n          \"features_version\": {\n            \"repoRuleId\": \"@@features+//private:extensions.bzl%version_repo\",\n            \"attributes\": {}\n          }\n        }\n      }\n    }\n  },\n  \"facts\": {},\n  \"factsVersions\": {}\n}\n",
+   "lockfile_sha256": "4694814341a297a37642999ea7b9b67769add4caec6765d7e0c65395cfd9a202",
+   "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+   "stdout": ""
+  }
+ }
+}
