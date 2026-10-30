@@ -28,6 +28,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+mod affected_scope;
 mod alloc_report;
 mod compatibility;
 pub mod cquery;
@@ -10739,7 +10740,8 @@ impl Engine {
         if speculating {
             self.repositories.stop_speculation();
         }
-        result
+        // `bazel-rs affected`'s analysis scope (crate::affected::SCOPE_VAR).
+        result.and_then(|phase| self.apply_affected_scope(phase))
     }
 
     /// The speculation pool of the target pattern phase

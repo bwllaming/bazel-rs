@@ -9,6 +9,7 @@ pub const COMPATIBILITY_VERSION: &str = "9.3.1";
 pub mod action;
 pub mod action_env;
 pub mod affected;
+pub mod affected_changes;
 pub mod analysis;
 mod analysis_ctx;
 mod analysis_ctx_surface;

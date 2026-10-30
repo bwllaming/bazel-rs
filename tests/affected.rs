@@ -185,3 +185,143 @@ fn a_test_property_affects_its_test() {
     let third = repo.commit(&[("t.sh", "#!/bin/sh\nexit 1\n")]);
     assert_eq!(repo.labels(&second, &third, &[]), ["//:g", "//:t"]);
 }
+
+impl Repo {
+    /// The affected labels and the stderr.
+    fn run(&self, base: &str, head: &str, extra: &[&str]) -> (Vec<String>, String) {
+        let mut args = vec![format!("--base={base}"), format!("--head={head}")];
+        args.extend(extra.iter().map(|arg| (*arg).to_owned()));
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = self.affected(&args);
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "{stderr}");
+        let labels = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        (labels, stderr)
+    }
+}
+
+const PACKAGES: &[(&str, &str)] = &[
+    (".gitignore", "bazel-rs-out\nMODULE.bazel.lock\n"),
+    ("MODULE.bazel", "module(name = 'main')\n"),
+    (".bazelrc", "build --run_under=//tools:runner\n"),
+    (
+        "tools/BUILD.bazel",
+        "filegroup(name = 'runner', srcs = ['run.sh'])\n",
+    ),
+    ("tools/run.sh", "#!/bin/sh\n"),
+    (
+        "a/BUILD.bazel",
+        "genrule(name = 'a', srcs = ['a.txt'], outs = ['a.out'], cmd = 'cat $< > $@', visibility = ['//visibility:public'])\n",
+    ),
+    ("a/a.txt", "a\n"),
+    ("a/unused.txt", "u\n"),
+    (
+        "b/BUILD.bazel",
+        "genrule(name = 'b', srcs = ['//a'], outs = ['b.out'], cmd = 'cat $< > $@')\n",
+    ),
+    (
+        "c/BUILD.bazel",
+        "genrule(name = 'c', srcs = ['c.txt'], outs = ['c.out'], cmd = 'cat $< > $@')\n",
+    ),
+    ("c/c.txt", "c\n"),
+];
+
+#[test]
+fn a_local_change_is_analysed_in_its_scope() {
+    let repo = Repo::new();
+    let build = ["--affected_command=build"];
+    let first = repo.commit(PACKAGES);
+    // A source: its consumers only are analysed, with the full analysis's
+    // answer.
+    let second = repo.commit(&[("a/a.txt", "a2\n")]);
+    let (labels, stderr) = repo.run(&first, &second, &build);
+    assert_eq!(labels, ["//a", "//b"]);
+    assert!(stderr.contains("scoped analysis"), "{stderr}");
+    assert!(
+        stderr.contains("scope 2 of 4 selected target(s)"),
+        "{stderr}"
+    );
+    let full = [build[0], "--scope=full"];
+    assert_eq!(repo.run(&first, &second, &full).0, labels);
+    // Both revisions at once: the same answer.
+    let concurrent = [build[0], "--concurrent_revisions"];
+    assert_eq!(repo.run(&first, &second, &concurrent).0, labels);
+    // A file no target reads: nothing is analysed, nothing affected.
+    let third = repo.commit(&[("a/unused.txt", "u2\n")]);
+    let (labels, stderr) = repo.run(&second, &third, &build);
+    assert!(labels.is_empty());
+    assert!(stderr.contains("scope 0 of 4"), "{stderr}");
+    // A configuration root's package (an rc flag's label): everything.
+    let fourth = repo.commit(&[(
+        "tools/BUILD.bazel",
+        "filegroup(name = 'runner', srcs = ['run.sh'])\n# a comment\n",
+    )]);
+    let (labels, stderr) = repo.run(&third, &fourth, &build);
+    assert!(labels.is_empty());
+    assert!(stderr.contains("full: //tools:runner"), "{stderr}");
+    // A global change: both revisions entirely.
+    let fifth = repo.commit(&[("MODULE.bazel", "module(name = 'main')\n# x\n")]);
+    let (labels, stderr) = repo.run(&fourth, &fifth, &build);
+    assert!(labels.is_empty());
+    assert!(stderr.contains("global change: MODULE.bazel"), "{stderr}");
+    // An rc line the command does not read is no change.
+    let sixth = repo.commit(&[(
+        ".bazelrc",
+        "build --run_under=//tools:runner\ntest:unused --x\n",
+    )]);
+    let (_, stderr) = repo.run(&fifth, &sixth, &build);
+    assert!(stderr.contains("scoped analysis"), "{stderr}");
+}
+
+#[test]
+fn stored_base_digests() {
+    let repo = Repo::new();
+    let build = "--affected_command=build";
+    let first = repo.commit(PACKAGES);
+    let second = repo.commit(&[("c/c.txt", "c2\n")]);
+    let third = repo.commit(&[("a/a.txt", "a2\n")]);
+    let file = repo.base().join("second.digests");
+    let write = format!("--write_digests={}", file.display());
+    // The main-branch run: the head's every digest is written.
+    assert_eq!(repo.run(&first, &second, &[build, &write]).0, ["//c"]);
+    let text = fs::read_to_string(&file).unwrap();
+    assert!(text.contains(&format!("#commit\t{second}")), "{text}");
+    assert_eq!(
+        text.lines().filter(|line| line.starts_with("//")).count(),
+        4
+    );
+    // A later run on top of it: only the head is planned.
+    let read = format!("--base_digests={}", file.display());
+    let (labels, stderr) = repo.run(&second, &third, &[build, &read]);
+    assert_eq!(labels, ["//a", "//b"]);
+    assert!(stderr.contains("base digests from"), "{stderr}");
+    assert_eq!(stderr.matches("bazel-rs affected: planning").count(), 1);
+    // Another base: the file is not used.
+    let (labels, stderr) = repo.run(&first, &third, &[build, &read]);
+    assert_eq!(labels, ["//a", "//b", "//c"]);
+    assert!(stderr.contains("does not hold this base"), "{stderr}");
+}
+
+#[test]
+fn a_working_copy_planned_in_place_compares_with_the_worktree() {
+    // The worktree and the working copy lie at paths of different lengths:
+    // the digests are still alike (the root is normalized per value).
+    let repo = Repo::new();
+    let first = repo.commit(PACKAGES);
+    fs::write(repo.main().join("c/c.txt"), "dirty\n").unwrap();
+    let (labels, stderr) = repo.run(&first, "HEAD", &["--affected_command=build"]);
+    let _ = stderr;
+    assert!(labels.is_empty(), "{labels:?}");
+    // Without --head: the dirty working copy itself.
+    let args = [
+        format!("--base={first}"),
+        "--affected_command=build".to_owned(),
+    ];
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = repo.affected(&args);
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "//c\n");
+}

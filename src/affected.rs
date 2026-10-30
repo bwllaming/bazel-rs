@@ -24,6 +24,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+mod value_hash;
+
 /// Names the file the planning process writes the target digests to.
 pub const DIGESTS_VAR: &str = "BAZEL_RS_TARGET_DIGESTS";
 
@@ -85,6 +87,31 @@ fn normalized(bytes: &[u8], root: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&bytes[at..]);
     out
 }
+
+/// Hashes `value`'s serialized data with every string and byte string
+/// normalized ([`normalized`], [`value_hash`]).
+fn normalized_value<T: serde::Serialize>(hash: &mut Sha256, value: &T, root: &[u8]) {
+    let mut scratch = Sha256::new();
+    let hashed = value.serialize(&mut value_hash::Hasher {
+        hash: &mut scratch,
+        root,
+    });
+    match hashed {
+        Ok(()) => hash.update(scratch.finalize()),
+        // A serializer error (none expected): the compact serialization,
+        // normalized as bytes (exact, but root-length dependent).
+        Err(_) => {
+            VALUE_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            match postcard::to_stdvec(value) {
+                Ok(bytes) => frame(hash, &normalized(&bytes, root)),
+                Err(error) => frame(hash, error.to_string().as_bytes()),
+            }
+        }
+    }
+}
+
+/// [`normalized_value`]s serialized compactly instead (`BAZEL_RS_TIMING`).
+static VALUE_FALLBACKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// target-determinator's spelling of a label (gazelle's `Label.String`):
 /// `//pkg` for `//pkg:pkg`.
@@ -277,10 +304,7 @@ impl Local<'_> {
         for dependency in &mut own.dependencies {
             dependency.action_id.clear();
         }
-        match postcard::to_stdvec(&own) {
-            Ok(bytes) => frame(&mut hash, &normalized(&bytes, self.root)),
-            Err(error) => frame(&mut hash, error.to_string().as_bytes()),
-        }
+        normalized_value(&mut hash, &own, self.root);
         for (source, _) in &node.action.inputs {
             self.source(&mut hash, source);
         }
@@ -555,9 +579,7 @@ pub fn target_digests(request: &PlannedRequest, root: &Path) -> BTreeMap<Label, 
                     None => frame(&mut hash, id.as_bytes()),
                 }
             }
-            if let Ok(bytes) = postcard::to_stdvec(&run.settings) {
-                frame(&mut hash, &normalized(&bytes, &digests.root));
-            }
+            normalized_value(&mut hash, &run.settings, &digests.root);
             if let Some(configuration) = request.configurations.get(run.configuration)
                 && let Ok(bytes) = postcard::to_stdvec(configuration)
             {
@@ -576,9 +598,10 @@ pub fn target_digests(request: &PlannedRequest, root: &Path) -> BTreeMap<Label, 
     }
     if std::env::var_os("BAZEL_RS_TIMING").is_some() {
         eprintln!(
-            "PERF-AFFECTED sources={} directory_entries={} local_ms={sources_ms} merkle_ms={}",
+            "PERF-AFFECTED sources={} directory_entries={} value_fallbacks={} local_ms={sources_ms} merkle_ms={}",
             digests.sources.len(),
             DIRECTORY_ENTRIES.load(std::sync::atomic::Ordering::Relaxed),
+            VALUE_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed),
             started.elapsed().as_millis() - sources_ms
         );
     }
@@ -629,18 +652,44 @@ pub fn write_if_requested(request: &PlannedRequest) -> Result<(), String> {
     Ok(())
 }
 
+/// Names the scope input of a planning process (crate::engine's
+/// `affected_scope`, docs/AFFECTED_TARGETS.md §8); the process writes the
+/// scope it computed to `<digests file>.scope`.
+pub const SCOPE_VAR: &str = "BAZEL_RS_AFFECTED_SCOPE";
+
+/// The first line of a scope input file.
+pub const SCOPE_HEADER: &str = "bazel-rs-affected-scope-v1";
+
+/// A digests file: the digests by label, and its `#name<TAB>value`
+/// metadata lines (`--write_digests`).
+struct DigestsFile {
+    digests: BTreeMap<String, String>,
+    meta: BTreeMap<String, String>,
+}
+
 /// Reads a digests file.
-fn read_digests(path: &Path) -> Result<BTreeMap<String, String>, String> {
+fn read_digests_file(path: &Path) -> Result<DigestsFile, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     let mut lines = text.lines();
     if lines.next() != Some(HEADER) {
         return Err(format!("{}: not a target digests file", path.display()));
     }
-    Ok(lines
-        .filter_map(|line| line.split_once('\t'))
-        .map(|(label, digest)| (label.to_owned(), digest.to_owned()))
-        .collect())
+    let mut file = DigestsFile {
+        digests: BTreeMap::new(),
+        meta: BTreeMap::new(),
+    };
+    for (label, digest) in lines.filter_map(|line| line.split_once('\t')) {
+        match label.strip_prefix('#') {
+            Some(name) => file.meta.insert(name.to_owned(), digest.to_owned()),
+            None => file.digests.insert(label.to_owned(), digest.to_owned()),
+        };
+    }
+    Ok(file)
+}
+
+fn read_digests(path: &Path) -> Result<BTreeMap<String, String>, String> {
+    read_digests_file(path).map(|file| file.digests)
 }
 
 /// Why `label` is affected (`None`: it is not).
@@ -666,6 +715,14 @@ struct Options {
     keep: Option<PathBuf>,
     explain: bool,
     include_incompatible: bool,
+    /// `--scope=auto` (the default): analyse only what a local change can
+    /// reach; `--scope=full`: both revisions entirely.
+    scope: bool,
+    base_digests: Option<PathBuf>,
+    write_digests: Option<PathBuf>,
+    /// `--concurrent_revisions`: plan both revisions at once (in two
+    /// worktrees; about twice the peak memory).
+    concurrent: bool,
     forwarded: Vec<String>,
     patterns: Vec<String>,
 }
@@ -673,6 +730,7 @@ struct Options {
 fn parse(args: &[String]) -> Result<Options, String> {
     let mut options = Options {
         command: "test".to_owned(),
+        scope: true,
         ..Options::default()
     };
     let mut args = args.iter();
@@ -693,7 +751,22 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--worktree" => options.worktree = Some(PathBuf::from(value("worktree")?)),
             "--affected_command" => options.command = value("affected_command")?,
             "--keep_digests" => options.keep = Some(PathBuf::from(value("keep_digests")?)),
+            "--base_digests" => {
+                options.base_digests = Some(PathBuf::from(value("base_digests")?));
+            }
+            "--write_digests" => {
+                options.write_digests = Some(PathBuf::from(value("write_digests")?));
+            }
+            "--scope" => {
+                options.scope = match value("scope")?.as_str() {
+                    "auto" => true,
+                    "full" => false,
+                    other => return Err(format!("--scope must be auto or full, not {other}")),
+                }
+            }
             "--explain_affected" => options.explain = true,
+            "--concurrent_revisions" => options.concurrent = true,
+            "--noconcurrent_revisions" => options.concurrent = false,
             "--include_incompatible" => options.include_incompatible = true,
             "--" => {
                 options.patterns.extend(args.by_ref().cloned());
@@ -768,19 +841,53 @@ fn checkout(top: &Path, dir: &Path, commit: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Plans `options.patterns` in `workspace` and returns its digests.
-fn plan(
+/// The scope a planning process used (`<digests>.scope`).
+#[derive(Debug)]
+enum Scope {
+    /// No scope: everything planned.
+    None,
+    /// The in-scope selected targets (planned alone when restricted).
+    Scoped(std::collections::BTreeSet<String>),
+    /// A root reached a change: everything planned.
+    Full(String),
+}
+
+/// One revision's planning result.
+struct Planned {
+    digests: BTreeMap<String, String>,
+    scope: Scope,
+}
+
+/// The scope request of a planning process: the input file and whether
+/// the selected targets are restricted to the scope (else only reported).
+struct ScopeRequest<'a> {
+    spec: &'a Path,
+}
+
+/// A planning process started by [`start_plan`].
+struct Running {
+    child: std::process::Child,
+    started: std::time::Instant,
+    workspace: PathBuf,
+    out: PathBuf,
+    scoped: bool,
+}
+
+/// Starts planning `options.patterns` in `workspace`.
+fn start_plan(
     binary: &Path,
     startup: &[String],
     options: &Options,
     workspace: &Path,
     out: &Path,
-) -> Result<BTreeMap<String, String>, String> {
+    scope: Option<&ScopeRequest<'_>>,
+) -> Result<Running, String> {
     let _ = std::fs::remove_file(out);
-    let started = std::time::Instant::now();
+    let _ = std::fs::remove_file(format!("{}.scope", out.display()));
     eprintln!(
-        "bazel-rs affected: planning {} in {}",
+        "bazel-rs affected: planning {}{} in {}",
         options.patterns.join(" "),
+        if scope.is_some() { " (scoped)" } else { "" },
         workspace.display()
     );
     let mut command = std::process::Command::new(binary);
@@ -793,6 +900,7 @@ fn plan(
         .args(&options.patterns)
         .current_dir(workspace)
         .env(DIGESTS_VAR, out)
+        .env_remove(SCOPE_VAR)
         // Our stdout is the affected labels: the planning's goes to stderr.
         .stdout(std::process::Stdio::from(
             std::io::stderr()
@@ -800,25 +908,114 @@ fn plan(
                 .try_clone_to_owned()
                 .map_err(|error| error.to_string())?,
         ));
-    let status = crate::spawn_lock::spawn(&mut command)
-        .and_then(|mut child| child.wait())
-        .map_err(|error| format!("cannot run {}: {error}", binary.display()))?;
-    eprintln!(
-        "bazel-rs affected: planned in {:.1} s (exit {})",
-        started.elapsed().as_secs_f64(),
-        status.code().unwrap_or(-1)
-    );
-    // `test --nobuild` exits 1 after planning ("Couldn't start the build.
-    // Unable to run tests", as Bazel does): the digests are written once
-    // planning succeeded, whatever the exit code.
-    if !status.success() && !out.exists() {
-        return Err(format!(
-            "planning in {} failed (exit {})",
-            workspace.display(),
-            status.code().unwrap_or(-1)
-        ));
+    if let Some(scope) = scope {
+        command.env(SCOPE_VAR, scope.spec);
     }
-    read_digests(out)
+    let child = crate::spawn_lock::spawn(&mut command)
+        .map_err(|error| format!("cannot run {}: {error}", binary.display()))?;
+    Ok(Running {
+        child,
+        started: std::time::Instant::now(),
+        workspace: workspace.to_path_buf(),
+        out: out.to_path_buf(),
+        scoped: scope.is_some(),
+    })
+}
+
+impl Running {
+    /// Waits for the planning and returns its digests and scope.
+    fn finish(mut self) -> Result<Planned, String> {
+        let status = self
+            .child
+            .wait()
+            .map_err(|error| format!("cannot wait for the planning: {error}"))?;
+        eprintln!(
+            "bazel-rs affected: planned {} in {:.1} s (exit {})",
+            self.workspace.display(),
+            self.started.elapsed().as_secs_f64(),
+            status.code().unwrap_or(-1)
+        );
+        // `test --nobuild` exits 1 after planning ("Couldn't start the build.
+        // Unable to run tests", as Bazel does): the digests are written once
+        // planning succeeded, whatever the exit code.
+        if !status.success() && !self.out.exists() {
+            return Err(format!(
+                "planning in {} failed (exit {})",
+                self.workspace.display(),
+                status.code().unwrap_or(-1)
+            ));
+        }
+        let scope = if self.scoped {
+            let scope_out = PathBuf::from(format!("{}.scope", self.out.display()));
+            let text = std::fs::read_to_string(&scope_out).map_err(|error| {
+                format!(
+                    "planning in {} wrote no scope: {error}",
+                    self.workspace.display()
+                )
+            })?;
+            let mut lines = text.lines();
+            match lines.next() {
+                Some("scoped") => Scope::Scoped(lines.map(str::to_owned).collect()),
+                Some(line) => Scope::Full(line.strip_prefix("full\t").unwrap_or(line).to_owned()),
+                None => Scope::Full("empty scope file".to_owned()),
+            }
+        } else {
+            Scope::None
+        };
+        Ok(Planned {
+            digests: read_digests(&self.out)?,
+            scope,
+        })
+    }
+}
+
+/// Plans `options.patterns` in `workspace` and returns its digests.
+fn plan(
+    binary: &Path,
+    startup: &[String],
+    options: &Options,
+    workspace: &Path,
+    out: &Path,
+    scope: Option<&ScopeRequest<'_>>,
+) -> Result<Planned, String> {
+    start_plan(binary, startup, options, workspace, out, scope)?.finish()
+}
+
+/// The identity of what a digests file holds besides its commit: this
+/// binary, the command, its options and patterns
+/// (`--base_digests` must match it).
+fn digests_key(binary: &Path, startup: &[String], options: &Options) -> Result<String, String> {
+    let mut hash = Sha256::new();
+    frame(&mut hash, HEADER.as_bytes());
+    let bytes = std::fs::read(binary)
+        .map_err(|error| format!("cannot read {}: {error}", binary.display()))?;
+    frame(&mut hash, &Sha256::digest(&bytes));
+    for arg in startup
+        .iter()
+        // The cache location changes no digest.
+        .filter(|arg| !arg.starts_with("--cache-dir="))
+        .chain([&options.command])
+        .chain(&options.forwarded)
+        .chain([&"--".to_owned()])
+        .chain(&options.patterns)
+    {
+        frame(&mut hash, arg.as_bytes());
+    }
+    Ok(hex(&hash.finalize().into()))
+}
+
+/// Writes the head's digests for a later `--base_digests`.
+fn write_digests_file(
+    path: &Path,
+    commit: &str,
+    key: &str,
+    digests: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let mut text = format!("{HEADER}\n#commit\t{commit}\n#key\t{key}\n");
+    for (label, digest) in digests {
+        text.push_str(&format!("{label}\t{digest}\n"));
+    }
+    std::fs::write(path, text).map_err(|error| format!("cannot write {}: {error}", path.display()))
 }
 
 use std::os::fd::AsFd;
@@ -831,6 +1028,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
         .base
         .clone()
         .ok_or("bazel-rs affected: --base=REV is required")?;
+    let started = std::time::Instant::now();
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     let root = crate::workspace::workspace_root(&cwd)?;
     let top = PathBuf::from(git(&root, &["rev-parse", "--show-toplevel"])?);
@@ -852,13 +1050,43 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             &root,
             &["rev-parse", "--verify", &format!("{head}^{{commit}}")],
         )?),
-        None => None,
-    };
-    // The worktree: given, else next to the repository's git directory.
-    let worktree = match &options.worktree {
-        Some(dir) if dir.is_absolute() => dir.clone(),
-        Some(dir) => cwd.join(dir),
         None => {
+            // Without --head: HEAD when the working copy is clean; the
+            // working copy itself (planned in place, never scoped) otherwise.
+            let dirty = git(&top, &["status", "--porcelain", "--untracked-files=no"])?;
+            if dirty.is_empty() {
+                Some(git(&top, &["rev-parse", "HEAD"])?)
+            } else {
+                None
+            }
+        }
+    };
+    // The worktree: given; else in an explicit cache directory (outside the
+    // checkout: genuine Bazel's `//...` does not skip `.git`, and would load
+    // a worktree's packages there); else next to the repository's git
+    // directory.
+    let explicit_cache = startup
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--cache-dir="))
+        .map(PathBuf::from);
+    let worktree = match (&options.worktree, explicit_cache) {
+        (Some(dir), _) if dir.is_absolute() => dir.clone(),
+        (Some(dir), _) => cwd.join(dir),
+        (None, Some(cache)) => {
+            let common = PathBuf::from(git(&top, &["rev-parse", "--git-common-dir"])?);
+            let common = if common.is_absolute() {
+                common
+            } else {
+                top.join(common)
+            };
+            let common = common.canonicalize().unwrap_or(common);
+            let id = hex(&Sha256::digest(common.as_os_str().as_encoded_bytes()).into());
+            cache
+                .join("affected-worktrees")
+                .join(&id[..16])
+                .join("checkout")
+        }
+        (None, None) => {
             let common = PathBuf::from(git(&top, &["rev-parse", "--git-common-dir"])?);
             let common = if common.is_absolute() {
                 common
@@ -872,57 +1100,337 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
     std::fs::create_dir_all(&scratch).map_err(|error| error.to_string())?;
     let keep = options.keep.clone().unwrap_or_else(|| scratch.clone());
     std::fs::create_dir_all(&keep).map_err(|error| error.to_string())?;
+    let key = if options.base_digests.is_some() || options.write_digests.is_some() {
+        Some(digests_key(binary, startup, &options)?)
+    } else {
+        None
+    };
     let result = (|| -> Result<i32, String> {
-        checkout(&top, &worktree, &base_commit)?;
-        let base_digests = match plan(
-            binary,
-            startup,
-            &options,
-            &worktree.join(&below),
-            &keep.join("base.digests"),
-        ) {
-            Ok(digests) => Some(digests),
-            Err(error) => {
-                // target-determinator's --before-query-error-behavior
-                // default: everything at the head revision is affected.
-                eprintln!(
-                    "bazel-rs affected: {error}: every target of the head revision is affected"
-                );
-                None
-            }
-        };
-        // The head revision: in the same worktree (an incremental analysis
-        // from the base's snapshot) when it is a commit; the working copy
-        // itself when it is not given and the working copy is not clean.
-        let head_workspace = match &head_commit {
-            Some(commit) => {
-                checkout(&top, &worktree, commit)?;
-                worktree.join(&below)
-            }
-            None => {
-                let dirty = git(&top, &["status", "--porcelain", "--untracked-files=no"])?;
-                if dirty.is_empty() {
-                    let commit = git(&top, &["rev-parse", "HEAD"])?;
-                    checkout(&top, &worktree, &commit)?;
-                    worktree.join(&below)
-                } else {
+        // The changes: a local change is analysed in its scope only.
+        let spec_path = keep.join("scope.spec");
+        let scoped = match &head_commit {
+            Some(head) if options.scope => {
+                let classified = crate::affected_changes::classify(
+                    &top,
+                    &below,
+                    &base_commit,
+                    head,
+                    &options.command,
+                    &options.forwarded,
+                )?;
+                if classified.global.is_empty() {
+                    let (files, packages, bzl, roots) = classified.counts;
                     eprintln!(
-                        "bazel-rs affected: the working copy has changes: planning it in place"
+                        "bazel-rs affected: local change ({files} file(s), {packages} package(s) with rule changes, {bzl} .bzl file(s); {roots} configuration root(s)): scoped analysis"
                     );
-                    root.clone()
+                    std::fs::write(
+                        &spec_path,
+                        format!("{SCOPE_HEADER}\nmode\trestrict\n{}", classified.spec),
+                    )
+                    .map_err(|error| format!("cannot write {}: {error}", spec_path.display()))?;
+                    true
+                } else {
+                    for reason in classified.global.iter().take(10) {
+                        eprintln!("bazel-rs affected: global change: {reason}");
+                    }
+                    if classified.global.len() > 10 {
+                        eprintln!(
+                            "bazel-rs affected: ... and {} more global change(s)",
+                            classified.global.len() - 10
+                        );
+                    }
+                    eprintln!("bazel-rs affected: full analysis of both revisions");
+                    false
                 }
             }
+            Some(_) => false,
+            None => {
+                eprintln!(
+                    "bazel-rs affected: the working copy has changes: full analysis, planned in place"
+                );
+                false
+            }
         };
-        let head_digests = plan(
-            binary,
-            startup,
-            &options,
-            &head_workspace,
-            &keep.join("head.digests"),
-        )?;
+        // The same scope, reported but not restricted: for the head of
+        // `--write_digests` (its every digest is kept) and for a revision
+        // whose scoped planning failed (planned entirely instead).
+        let report_path = keep.join("scope-report.spec");
+        if scoped {
+            let spec = std::fs::read_to_string(&spec_path).map_err(|error| error.to_string())?;
+            std::fs::write(
+                &report_path,
+                spec.replace("mode\trestrict\n", "mode\treport\n"),
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        let restrict = ScopeRequest { spec: &spec_path };
+        let report = ScopeRequest { spec: &report_path };
+        // A scoped (restricted) planning that failed: once more (a transient
+        // failure, e.g. a registry's 502), then entirely, its scope reported
+        // (the analysis of a subset must never decide the answer by failing).
+        let entire_after_retry = |workspace: &Path,
+                                  out: &Path,
+                                  name: &str,
+                                  error: String|
+         -> Result<(Planned, bool), String> {
+            eprintln!("bazel-rs affected: {name}: scoped planning failed ({error}): once more");
+            if let Ok(planned) = plan(binary, startup, &options, workspace, out, Some(&restrict)) {
+                return Ok((planned, false));
+            }
+            eprintln!(
+                "bazel-rs affected: {name}: scoped planning failed again: planning it entirely"
+            );
+            plan(binary, startup, &options, workspace, out, Some(&report))
+                .map(|planned| (planned, true))
+        };
+        // Plans a revision; a scoped (restricted) planning that fails is
+        // repeated entirely (its scope reported): the analysis of a subset
+        // must never decide the answer by failing.
+        let plan_revision = |tree: &Path,
+                             commit: Option<&str>,
+                             name: &str,
+                             scope: Option<&ScopeRequest<'_>>|
+         -> Result<(Planned, bool), String> {
+            let workspace = match commit {
+                Some(commit) => {
+                    checkout(&top, tree, commit)?;
+                    tree.join(&below)
+                }
+                None => root.clone(),
+            };
+            let out = keep.join(format!("{name}.digests"));
+            match plan(binary, startup, &options, &workspace, &out, scope) {
+                Ok(planned) => Ok((planned, false)),
+                Err(error) if scope.is_some_and(|scope| scope.spec == spec_path.as_path()) => {
+                    entire_after_retry(&workspace, &out, name, error)
+                }
+                Err(error) => Err(error),
+            }
+        };
+        // The base: a digests file of the base commit, else planned.
+        let stored = match &options.base_digests {
+            Some(path) => match read_digests_file(path) {
+                Ok(file)
+                    if file.meta.get("commit") == Some(&base_commit)
+                        && file.meta.get("key") == key.as_ref() =>
+                {
+                    eprintln!(
+                        "bazel-rs affected: base digests from {} ({} targets)",
+                        path.display(),
+                        file.digests.len()
+                    );
+                    Some(Planned {
+                        digests: file.digests,
+                        scope: Scope::None,
+                    })
+                }
+                Ok(file) => {
+                    eprintln!(
+                        "bazel-rs affected: {} does not hold this base (commit {}, key {}): planning the base",
+                        path.display(),
+                        file.meta.get("commit").map_or("none", String::as_str),
+                        file.meta
+                            .get("key")
+                            .map_or("none", |key| &key[..key.len().min(12)])
+                    );
+                    None
+                }
+                Err(error) => {
+                    eprintln!("bazel-rs affected: {error}: planning the base");
+                    None
+                }
+            },
+            None => None,
+        };
+        let from_file = stored.is_some();
+        let every = |error: String| {
+            // target-determinator's --before-query-error-behavior default:
+            // everything at the head revision is affected.
+            eprintln!("bazel-rs affected: {error}: every target of the head revision is affected");
+        };
+        // The head's worktree: the base's (the second planning starts from
+        // the first's state), or its own when both are planned at once.
+        let head_tree = if options.concurrent && !from_file && head_commit.is_some() {
+            let mut name = worktree.file_name().unwrap_or_default().to_os_string();
+            name.push("-head");
+            worktree.with_file_name(name)
+        } else {
+            worktree.clone()
+        };
+        let restricted = |scope: Option<&ScopeRequest<'_>>| {
+            scope.is_some_and(|scope| scope.spec == spec_path.as_path())
+        };
+        let mut base_entire = false;
+        let (mut base_planned, head) = if head_tree != worktree {
+            // Both at once: the base and the head restricted to the scope;
+            // the corrections below run sequentially (rare).
+            let head_scope = if !scoped {
+                None
+            } else if options.write_digests.is_some() {
+                Some(&report)
+            } else {
+                Some(&restrict)
+            };
+            let base_scope = scoped.then_some(&restrict);
+            let head_commit = head_commit.as_deref().unwrap_or_default();
+            checkout(&top, &worktree, &base_commit)?;
+            checkout(&top, &head_tree, head_commit)?;
+            eprintln!("bazel-rs affected: planning both revisions concurrently");
+            let base_run = start_plan(
+                binary,
+                startup,
+                &options,
+                &worktree.join(&below),
+                &keep.join("base.digests"),
+                base_scope,
+            );
+            let head_run = start_plan(
+                binary,
+                startup,
+                &options,
+                &head_tree.join(&below),
+                &keep.join("head.digests"),
+                head_scope,
+            );
+            let base_result = base_run.and_then(Running::finish);
+            let head_result = head_run.and_then(Running::finish);
+            let base_planned = match base_result {
+                Ok(planned) => Some(planned),
+                Err(error) if restricted(base_scope) => {
+                    match entire_after_retry(
+                        &worktree.join(&below),
+                        &keep.join("base.digests"),
+                        "base",
+                        error,
+                    ) {
+                        Ok((planned, entire)) => {
+                            base_entire = entire;
+                            Some(planned)
+                        }
+                        Err(error) => {
+                            every(error);
+                            None
+                        }
+                    }
+                }
+                Err(error) => {
+                    every(error);
+                    None
+                }
+            };
+            let head = match head_result {
+                Ok(planned) => planned,
+                Err(error) if restricted(head_scope) => {
+                    entire_after_retry(
+                        &head_tree.join(&below),
+                        &keep.join("head.digests"),
+                        "head",
+                        error,
+                    )?
+                    .0
+                }
+                Err(error) => return Err(error),
+            };
+            // A root reaching the change at the base: the head entirely too.
+            let head = match (&base_planned, &head.scope) {
+                (
+                    Some(Planned {
+                        scope: Scope::Full(reason),
+                        ..
+                    }),
+                    Scope::Scoped(_),
+                ) if restricted(head_scope) => {
+                    eprintln!("bazel-rs affected: base: full analysis: {reason}");
+                    plan_revision(&head_tree, Some(head_commit), "head", None)?.0
+                }
+                _ => head,
+            };
+            (base_planned, head)
+        } else {
+            let base_planned = match stored {
+                Some(planned) => Some(planned),
+                None => match plan_revision(
+                    &worktree,
+                    Some(&base_commit),
+                    "base",
+                    scoped.then_some(&restrict),
+                ) {
+                    Ok((planned, entire)) => {
+                        base_entire = entire;
+                        Some(planned)
+                    }
+                    Err(error) => {
+                        every(error);
+                        None
+                    }
+                },
+            };
+            // A root reaching the change at the base: the head entirely too.
+            let base_full = matches!(
+                base_planned.as_ref().map(|planned| &planned.scope),
+                Some(Scope::Full(_))
+            );
+            if let Some(Planned {
+                scope: Scope::Full(reason),
+                ..
+            }) = &base_planned
+            {
+                eprintln!("bazel-rs affected: base: full analysis: {reason}");
+            }
+            let head_scope = if !scoped || base_full {
+                None
+            } else if options.write_digests.is_some() || base_entire {
+                Some(&report)
+            } else {
+                Some(&restrict)
+            };
+            let (head, _) = plan_revision(&head_tree, head_commit.as_deref(), "head", head_scope)?;
+            (base_planned, head)
+        };
+        if let Scope::Full(reason) = &head.scope {
+            eprintln!("bazel-rs affected: head: full analysis: {reason}");
+            // The base was restricted to a scope the head does not confirm:
+            // plan it entirely.
+            if !from_file
+                && !base_entire
+                && matches!(
+                    base_planned.as_ref().map(|planned| &planned.scope),
+                    Some(Scope::Scoped(_))
+                )
+            {
+                base_planned = match plan_revision(&worktree, Some(&base_commit), "base", None) {
+                    Ok((planned, _)) => Some(planned),
+                    Err(error) => {
+                        every(error);
+                        None
+                    }
+                };
+            }
+        }
+        if let (Some(path), Some(commit), Some(key)) = (&options.write_digests, &head_commit, &key)
+        {
+            write_digests_file(path, commit, key, &head.digests)?;
+            eprintln!(
+                "bazel-rs affected: wrote {} digests to {}",
+                head.digests.len(),
+                path.display()
+            );
+        }
+        // The labels compared: the head's scope (a target outside it has
+        // the same digest at both revisions), else every head label.
+        let in_scope: Option<&std::collections::BTreeSet<String>> = match &head.scope {
+            Scope::Scoped(scope) => Some(scope),
+            Scope::None | Scope::Full(_) => None,
+        };
+        let base_digests = base_planned.map(|planned| planned.digests);
         let mut stdout = std::io::stdout().lock();
         let mut count = 0usize;
-        for (label, digest) in &head_digests {
+        let mut compared = 0usize;
+        for (label, digest) in &head.digests {
+            if in_scope.is_some_and(|scope| !scope.contains(label)) {
+                continue;
+            }
+            compared += 1;
             let why = match &base_digests {
                 Some(base) => reason(base, label, digest),
                 None => Some("base failed"),
@@ -945,8 +1453,8 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             }
         }
         eprintln!(
-            "bazel-rs affected: {count} of {} target(s) affected",
-            head_digests.len()
+            "bazel-rs affected: {count} of {compared} compared target(s) affected in {:.1} s",
+            started.elapsed().as_secs_f64()
         );
         Ok(0)
     })();

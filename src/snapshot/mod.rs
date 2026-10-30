@@ -97,6 +97,11 @@ impl Mode {
     /// otherwise (L2-W7: on by default); any other value is reported and
     /// ignored.
     pub fn from_env() -> Self {
+        // A scoped `bazel-rs affected` analysis plans fewer targets than its
+        // patterns name: never looked up or saved under their key.
+        if std::env::var_os(crate::affected::SCOPE_VAR).is_some() {
+            return Self::Off;
+        }
         Self::parse(std::env::var_os(MODE_VAR).as_deref())
     }
 
