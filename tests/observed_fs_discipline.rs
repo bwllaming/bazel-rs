@@ -87,6 +87,10 @@ const ALLOWED_MODULES: &[&str] = &[
     // (docs/COVERAGE.md): tracefiles read inside a test action and after
     // the tests, never during planning.
     "coverage",
+    // `affected` (docs/AFFECTED_TARGETS.md): the target digests hash the
+    // planned actions' source inputs after planning (the recording window
+    // is closed), and the orchestrator never plans itself.
+    "affected",
 ];
 const ALLOWED_PREFIXES: &[&str] = &[
     "test_",

@@ -176,6 +176,25 @@ fn run() -> Result<(), String> {
             return Ok(());
         }
         "shutdown" => return shutdown_command(&line, &path_to_binary),
+        // Hidden: the affected targets between two revisions
+        // (docs/AFFECTED_TARGETS.md), a target-determinator replacement.
+        "affected" => {
+            let binary = std::env::current_exe().map_err(|e| e.to_string())?;
+            let mut startup = line.startup_args.clone();
+            if let Some(cache) = &line.cache_dir {
+                let cache = Path::new(cache);
+                let cache = if cache.is_absolute() {
+                    cache.to_path_buf()
+                } else {
+                    std::env::current_dir()
+                        .map_err(|e| e.to_string())?
+                        .join(cache)
+                };
+                startup.insert(0, format!("--cache-dir={}", cache.display()));
+            }
+            let code = bazel_rs::affected::run(&binary, &startup, &rest)?;
+            std::process::exit(code);
+        }
         // CanonicalizeCommand (crate::canonicalize); rc options do not
         // reach the flags to canonicalize.
         "canonicalize-flags" => match bazel_rs::canonicalize::run(&rest) {

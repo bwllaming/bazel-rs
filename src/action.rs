@@ -1702,6 +1702,13 @@ fn hash_file_from(
     Ok((digest, before))
 }
 
+/// The SHA-256 of source file `path` whose (followed) metadata is
+/// `metadata`, through the digest memos like an action input's
+/// (crate::affected's target digests).
+pub fn source_file_digest(path: &Path, metadata: fs::Metadata) -> Result<[u8; 32], String> {
+    hash_file_from(path, metadata, false, false).map(|(digest, _)| digest.0)
+}
+
 /// After publication: `path`, a published output file below the action
 /// entry `entry` with the content of `input` (its digest and executable
 /// bits), is remembered ([`remember_owned`]) — so that its consumers in

@@ -921,6 +921,9 @@ pub fn execute_with_tests(
     options: &ExecuteOptions<'_>,
     tests: Option<&crate::test_runner::Session<'_>>,
 ) -> Result<Executed, String> {
+    // `bazel-rs affected` (docs/AFFECTED_TARGETS.md): the target digests,
+    // before finalize fills in the workspace status.
+    crate::affected::write_if_requested(&request)?;
     request.finalize(status)?;
     // The build event files' analysis events (crate::bep), from the plan:
     // a snapshot hit streams what its full analysis did.
