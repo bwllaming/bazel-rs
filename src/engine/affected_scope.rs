@@ -18,9 +18,10 @@
 //!    dependencies, an output file's generating rule, a package group's
 //!    includes; external repositories are leaves (not loaded: nothing is
 //!    fetched for them);
-//! 2. marks every label of a changed package, or of a package whose BUILD
-//!    file transitively loads a changed `.bzl` file, and propagates the
-//!    mark to its dependants;
+//! 2. marks every rule of a package with rule changes (its BUILD file, its
+//!    globs or its subpackages changed) or whose BUILD file transitively
+//!    loads a changed `.bzl` file, and every changed source file, and
+//!    propagates the marks to the dependants;
 //! 3. when a root reaches a mark, the change can reach any target through
 //!    toolchain resolution or the configuration: the scope is everything
 //!    (`full`); otherwise the selected targets are restricted to the marked

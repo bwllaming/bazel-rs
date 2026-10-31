@@ -1603,12 +1603,62 @@ pub(crate) mod map_each {
     use crate::command_line::Mapper;
     use crate::snapshot::mapper::MapperRef;
 
+    thread_local! {
+        /// Set while crate::affected digests a planned action.
+        static DIGEST_IDENTITY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// `f` with unportable map_each functions serialized by identity.
+    pub(crate) fn with_digest_identity<R>(f: impl FnOnce() -> R) -> R {
+        let before = DIGEST_IDENTITY.with(|flag| flag.replace(true));
+        let result = f();
+        DIGEST_IDENTITY.with(|flag| flag.set(before));
+        result
+    }
+
+    fn digest_identity(mapper: &Mapper) -> Vec<String> {
+        let Ok(function) = mapper.function() else {
+            // A decoded mapper not resolved yet: its description.
+            return vec![format!("{:?}", mapper.portable())];
+        };
+        let Some(frozen) = function.value().unpack_frozen() else {
+            return vec![function.value().to_repr()];
+        };
+        match starlark::eval::PortableDef::of(frozen) {
+            Ok(def) => {
+                let mut out = vec![
+                    def.file,
+                    def.name,
+                    def.begin.to_string(),
+                    def.end.to_string(),
+                ];
+                for (name, kind) in def.params {
+                    out.push(name);
+                    if let starlark::eval::PortableParamKind::Defaulted(value) = kind {
+                        out.push(value.to_value().to_repr());
+                    }
+                }
+                for value in def.captured {
+                    out.push(value.map_or_else(|| "-".to_owned(), |v| v.to_value().to_repr()));
+                }
+                out
+            }
+            Err(_) => vec![frozen.to_value().to_repr()],
+        }
+    }
+
     pub(crate) fn serialize<S: Serializer>(
         value: &Option<Mapper>,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         match value {
             None => None::<&MapperRef>.serialize(serializer),
+            // Digests (crate::affected): the function's identity (file,
+            // name, span) and the repr of its defaults and captured values,
+            // whether or not the snapshot described it (alike either way).
+            Some(mapper) if DIGEST_IDENTITY.with(std::cell::Cell::get) => {
+                Some(digest_identity(mapper)).serialize(serializer)
+            }
             Some(mapper) => match mapper.portable() {
                 Some(reference) => Some(&**reference).serialize(serializer),
                 None => Err(S::Error::custom(

@@ -14,10 +14,10 @@ directly: which requested targets would build or test differently. Code:
 `src/affected.rs`; tests: `tests/affected.rs`.
 
 The prototype is the hidden command `bazel-rs affected --base=REV`. It makes
-one analysis per revision instead of TD's two cqueries per revision. The
-analyses run in one git worktree, so the second one can be incremental, and
-nothing is checked out in place. It prints TD's output format: one label
-per line.
+at most one analysis per revision instead of TD's two cqueries per revision.
+For a local change, the analysis is restricted to the change's scope (§8).
+The analyses run in a git worktree, so nothing is checked out in place. It
+prints TD's output format: one label per line.
 
 On three ~/code commit pairs, its result agrees with TD's, with every
 difference explained (§4):
@@ -29,11 +29,24 @@ difference explained (§4):
 | prototype, head incremental | 6.2 min |
 | prototype, both snapshot hits | 0.5 min |
 
-The big win comes from the next phases (§6):
+**Cold CI (§8, this revision).** CI runs on an empty cache. So `affected`
+now analyzes only what a change can reach. A change inside main-repository
+packages is classified first. Both revisions are then analyzed restricted to
+the loading-phase reverse dependencies of the changed packages. External
+repositories are leaves, so nothing is fetched for them. Other changes
+(MODULE.bazel, the lockfile, manifests, rc options the command reads) still
+get a full analysis of both revisions. There are two further options:
+`--concurrent_revisions`, and stored digests (`--write_digests` /
+`--base_digests`). Cold, on the five validation pairs (fresh private cache,
+same set as the full analysis every time):
 
-- keep each main commit's target digests (or its snapshot), so a PR run
-  analyzes only its head, often incrementally;
-- plan the CI's `build`/`test` from the same head analysis.
+| pair | change | before (full + full) | now | genuine 9.3.1 + TD |
+|---|---|---|---|---|
+| P4 | one Go test file | 813 s | **104 s** (88 s with stored base digests) | 269 s |
+| P3 | `.bazelrc` (unused config) + Go | 823 s | **291 s** (219 s concurrent) | 267 s |
+| P1 | BUILD + testdata | 1001 s | **312 s** (227 s concurrent) | 259 s |
+| P2 | lockfile + requirements (global) | 827 s | 800 s; **528 s** concurrent; **537 s** stored base digests | 270 s |
+| P5 | one BUILD edit | 809 s | 783 s (analysis-order bug fallback, §8.6; ≈ 116 s once fixed) | 259 s |
 
 ## 1. target-determinator v0.34.0: exactly what it does
 
@@ -293,13 +306,19 @@ digests are both more precise than TD and cheaper.
 ```
 bazel-rs [STARTUP...] affected --base=REV [--head=REV] [--worktree=DIR]
     [--affected_command=test|build] [--keep_digests=DIR] [--explain_affected]
-    [--include_incompatible] [BUILD OPTIONS...] [PATTERNS... | -- PATTERNS...]
+    [--include_incompatible] [--scope=auto|full] [--concurrent_revisions]
+    [--write_digests=FILE] [--base_digests=FILE]
+    [BUILD OPTIONS...] [PATTERNS... | -- PATTERNS...]
 ```
 
 **What it does.**
 
 - It resolves the revisions in the current repository and checks out the
-  base in a worktree, `--worktree` or `<git-common-dir>/bazel-rs-affected`.
+  base in a worktree. That is `--worktree`, else
+  `<cache-dir>/affected-worktrees/<id>/checkout` with an explicit
+  `--cache-dir`, else `<git-common-dir>/bazel-rs-affected`. Keep it outside
+  the checkout: genuine Bazel's `//...` does not skip `.git` (bazel-rs's
+  does), so it would load the worktree's packages (seen in §8.5).
   The worktree is created or repaired as needed, with `checkout -f` and
   `clean -ffdx`.
 - It runs this binary with the startup options (including `--cache-dir`
@@ -311,10 +330,14 @@ bazel-rs [STARTUP...] affected --base=REV [--head=REV] [--worktree=DIR]
 
   `//...` is the default pattern. `BAZEL_RS_TARGET_DIGESTS` names the
   digests file.
-- It then checks out the head in the same worktree and plans again. That
-  run is an incremental analysis or a snapshot hit when possible. Without
-  `--head`, the head is `HEAD`. A working copy with uncommitted changes is
-  planned in place instead (its paths are normalized).
+- It then checks out the head in the same worktree and plans again. A full
+  (unscoped) run is an incremental analysis or a snapshot hit when
+  possible. Without `--head`, the head is `HEAD`. A working copy with
+  uncommitted changes is planned in place instead, never scoped. Its paths
+  are normalized; before this revision they never matched the worktree's,
+  see §8.4.
+- With a local change (§8), both plannings are restricted to the change's
+  scope (`BAZEL_RS_AFFECTED_SCOPE`).
 - It prints the affected labels in TD's spelling (`//pkg` for `//pkg:pkg`),
   sorted, one per line. The planning output goes to stderr.
 
@@ -338,7 +361,10 @@ with
 bazel-rs affected --base=<commit> <the storagebox overrides>
 ```
 
-The output contract is the same. One script detail matters:
+Use the same rc and flags the CI's later `build`/`test` uses. Then add
+`--cache-dir=<a directory outside the checkout>`, and optionally
+`--concurrent_revisions` (§8.3). The output contract is the same. One
+script detail matters, already done in bwllaming/code#13177:
 
 - TD also reports **manual** targets. A plain `build`/`test //...` never
   plans them, so the prototype does not.
@@ -408,19 +434,21 @@ specification reads.
 a `test` of the result. Each of those analyzes again, in genuine Bazel or
 in bazel-rs.
 
-**Without a restored cache.** The prototype is 2 analyses (≈ 8.5 min on
-~/code) against TD's 4 cqueries: about 1.4–1.7× faster on the slow pairs.
-It never touches the checkout (worktree), and its answer is more precise.
+**Without a restored cache.** The first prototype was 2 full analyses
+(13.5–17 min cold on ~/code). Since §8 a local change costs 1.5–5 min
+cold. A global change costs 9 min cold with `--concurrent_revisions`, or 9
+min with stored base digests. ~/code's CI runners keep `~/.cache` (and the
+checkout) between runs (`.github/selfhosted/docker-compose.yml`), so warm
+runs are common there; the cold path is the first run of a runner.
 
 **Phase 1 (this branch).** The prototype command and the digest hook, as a
 drop-in with the script tweak above.
 
 **Phase 2.**
 
-1. **Per-commit digests (c).** The main-branch CI run uploads
-   `head.digests` keyed by `(commit, bazel-rs version, flags, patterns)`,
-   and PR runs pass `--base_digests=<file>`. Only the head is analyzed:
-   ≈ 4.3 min cold, seconds to 2 min with a restored bazel-rs cache.
+1. **Per-commit digests (c).** Done (§8.3): `--write_digests` /
+   `--base_digests`, keyed by the commit and (binary, command, options,
+   patterns).
 2. **Restore the bazel-rs cache** (repositories, digest memo and the
    worktree state) between CI runs. With the snapshot of the previous main
    commit, the head is incremental. P1: 118 s; a typical
@@ -460,8 +488,324 @@ CI job, instead of TD's four cqueries plus two more analyses.
   `--action_env=NAME` values (only the name is keyed, before `finalize`),
   files outside the plan.
 - **Analysis cost.** The full `test --nobuild //...` analysis is about
-  the cost of one TD cquery. Its memory (≈ 8.7 GB peak for `//...`,
-  docs/INCREMENTAL_ANALYSIS.md) was not re-measured here.
+  the cost of one TD cquery. Its peak is 9.1–9.2 GB; a scoped run peaks at
+  4.2 GB, while loading `//...` (§8.5).
+- **The scope's assumptions** (§8.2) and the **analysis-order bug** that
+  scoped subsets hit (§8.6).
 - **Version alignment.** bazel-rs must report the lockfile's Bazel version
   (9.3.1 for ~/code, the other worker's branch). Otherwise every analysis
   rewrites the lockfile and is never saved.
+
+## 8. Cold CI: scoped analysis (this revision)
+
+Code: `src/affected_changes.rs` (classification, roots),
+`src/engine/affected_scope.rs` (the scope, after the target pattern phase),
+`src/affected.rs` (orchestration), `src/affected/value_hash.rs`. Tests:
+`tests/affected.rs` (scope, global change, root fallback, an rc line the
+command does not read, `--concurrent_revisions`, stored digests, the working
+copy planned in place).
+
+**~/code's CI.** `lint.yaml` runs `bin/build-changed-files` on self-hosted
+runners (`.github/selfhosted`). The checkout uses `fetch-depth: 2`, so the
+base `HEAD^` (the merge commit's first parent) is present. `GIT_BASE`
+overrides it. Each runner keeps `/home/runner/.cache` and its work
+directory on the host. Actions go to the storagebox HTTP cache
+(`--remote_cache`, never contacted here). Repository downloads are not
+uploaded anywhere: they live in the runner's `~/.cache`. A cold run is a
+fresh runner or a cleaned cache. The user's constraint was to optimize that
+case, so this section measures it.
+
+### 8.1 Where the cold time went
+
+A cold `test --nobuild //...` (fresh private cache, P4 head) took 530 s:
+
+| phase | time |
+|---|---|
+| loading `//...` (with the parallel fetch of what the BUILD files load) | 38 s |
+| analysis | 458 s |
+| actions and digests | 33 s |
+
+Warm, the analysis takes ≈ 195 s, so about 260 s of the cold analysis is
+repository fetching. That is 40 GB in the cache.
+
+A cold loading-phase `query 'rdeps(//..., X)'` is **no cheaper**: 537 s and
+50 GB. It loads every external package that `//...` reaches, through all
+`select()` branches. A cold `query //...` alone took 167 s, because query
+executes the 3,623 repository rules its loads need one by one (the build
+path runs them on 32 workers: 38 s). So the scope is computed inside the
+planning process, from the packages it loaded anyway, and external
+repositories are leaves.
+
+### 8.2 The scope and why it is sound
+
+**Classification** (`affected_changes.rs`), from `git diff --name-status
+--no-renames base head` and each revision's tree (`git ls-tree`). A change
+is **global**, which means a full analysis of both revisions, when it is:
+
+- MODULE.bazel or an include, the lockfile, `WORKSPACE*`, `REPO.bazel`,
+  `.bazelversion`, `.bazelignore` or `.bazeliskrc`;
+- an rc file (`.bazelrc` and its `%workspace%` imports) whose *effective
+  lines* for the command differ. Those are the `startup`, `common`,
+  `always`, `build` and `test` lines, unconfigured or of a config they or
+  the command line enable (transitively, plus the host platform configs),
+  with imports inlined. P3's new `test:replay` config changes none, so P3
+  is local now;
+- a package-manager manifest (`package.json`, `pnpm-lock.yaml`, `go.mod`,
+  `go.sum`, `Cargo.*`, `requirements*.txt`, `pyproject.toml`, …);
+- a file a repository is given or records: a label MODULE.bazel names, a
+  `@@//` path of the lockfile (and anything below it), the `.bzl` files of
+  module extensions and repository rules with their loads (textual
+  `load()`s), and the labels those files name;
+- a file in no package, or in an ignored directory, at both revisions;
+- outside the workspace.
+
+Anything else is **local**. Its packages get *rule changes* when their BUILD
+file changed, a file was added or removed in them (globs), or a subpackage
+appeared or disappeared below them. A modified source changes no rule:
+loading never reads contents. Changed `.bzl` files are listed, and so are
+changed files (with their directories, and with symbolic links into them).
+
+**Roots** are the main-repository labels that analysis reaches outside the
+loading graph:
+
+- every label in MODULE.bazel and its includes (`register_toolchains`,
+  `register_execution_platforms`, nogo, …);
+- the labels of every rc line and command-line option (`--platforms`,
+  `--extra_toolchains`, label flags, `--run_under`, …);
+- the label literals of `.bzl` files that contain `transition(`, whose
+  outputs can be labels (~/code's `fixed_platform_files` sets
+  `--platforms` from the string `"//platforms:linux_amd64"`);
+- the labels of the extension `.bzl` files.
+
+**The scope** (`affected_scope.rs`) is computed in each planning process,
+after the target pattern phase. It walks the main-repository graph forward
+from the selected targets and the roots. The edges are:
+
+- every label of every attribute: all `select()` branches *and keys* of any
+  attribute type, implicit and default values, `nodep` labels, visibility
+  and package groups;
+- toolchain types;
+- the dependencies of attribute aspects;
+- an output file's generating rule.
+
+External labels are not followed. Then it marks:
+
+- every rule of a package with rule changes, or of a package whose BUILD
+  file transitively loads a changed `.bzl` file;
+- every source file that changed (a source directory holding a change).
+
+Marks propagate to dependants. Then:
+
+- a root that reaches a mark means the change can reach any target through
+  toolchain resolution or the configuration: the scope is everything;
+- a root that is a source file counts only when it changed itself;
+- otherwise the selected targets are restricted to the marked ones.
+
+The analysis snapshot is off in a scoped process: it plans fewer targets
+than its patterns name.
+
+**Argument.** Take a target T selected at the head and not marked there.
+
+- Nothing in T's main-repository loading closure L(T) is in a package with
+  rule changes or loads a changed `.bzl` file, and no source in L(T)
+  changed.
+- So every BUILD file, glob result, transitively loaded `.bzl` file and
+  source file in L(T) is identical at the base. Hence L(T) is identical
+  there, every `select()` branch included, so a configuration-dependent
+  choice cannot reach anything outside L(T). Visibility and package groups
+  are edges too.
+- What analysis adds beyond the loading graph comes from four places. All
+  of them are unchanged:
+  - the configuration: rc and options are global if they differ;
+  - external repositories: MODULE.bazel, the lockfile and repository
+    inputs are global;
+  - toolchain resolution and execution platforms: every registered
+    toolchain, platform and flag-named target is a root, and a root
+    reaching a change means everything;
+  - transition outputs: the literal roots.
+- T's actions, and therefore its digest, are equal at both revisions.
+
+The same argument from the base shows the other direction. A head target
+that is marked and existed at the base was marked at the base too, with
+the same change set. So comparing the head's scope with the base's scoped
+digests misses nothing, and a missing base digest means the target is new.
+
+The assumptions, beyond those of §7:
+
+- an external repository's target depends on a main-repository target only
+  through a label the root module's files name (MODULE.bazel and the `.bzl`
+  files above are roots), not through a label its own code builds;
+- a repository rule reads main-repository files only through such labels,
+  the lockfile's records or the manifest names. Files it finds by path
+  under a directory it was given count only through the lockfile
+  `DIRENTS`/`DIRTREE` records;
+- an analysis-time label in a `.bzl` file without `transition(` is an
+  attribute value, so it is in the loading graph.
+
+A change that breaks these is reported conservatively only if it also
+touches a root. Otherwise it would be missed.
+
+### 8.3 Orchestration
+
+- **Order.** The base is planned with the scope, then the head. If either
+  revision's scope comes out as everything (a root), the other is planned
+  entirely too.
+- **Failures.** A scoped planning that fails runs once more, which absorbs
+  transient errors such as a registry 502. If it fails again, it is
+  planned entirely, with its scope only reported, and the comparison stays
+  within the head's scope. The analysis of a subset never decides the
+  answer by failing. A base that fails entirely makes everything affected,
+  as before.
+- **`--concurrent_revisions`.** Both revisions are planned at once, in two
+  worktrees sharing the cache: the repository store's stage lock
+  serializes a shared fetch. Peak memory is about twice a revision's (2 ×
+  9.2 GB for a global change, 2 × 4.2 GB scoped). It is not the default,
+  because CI hosts run four runners each. Avoid it for a branch that bumps
+  the Go SDK (docs/WORKTREES.md, hazard 3).
+- **Stored digests.** `--write_digests=FILE` (about 230 KB) plans the head
+  entirely and writes its digests. The file has `#commit` and `#key`
+  lines, where the key is the sha256 of the binary, command, options and
+  patterns. `--base_digests=FILE` then skips the base when the commit and
+  key match, and plans it otherwise. A main-branch job would run
+  `affected --base=HEAD^ --write_digests=main.digests` and upload the file
+  as an artifact; a PR job downloads the file of its base. Digests no
+  longer depend on the cache location: the cache prefix of
+  repository-store trees and of `<cache>/repositories/external/` is
+  dropped with the tree identity.
+
+**The script.** `bin/build-changed-files` (via `tools/build`) calls
+`target-determinator -filter-incompatible-targets=false <base>` today. The
+replacement is:
+
+```
+bazel-rs --cache-dir=$HOME/.cache/bazel-rs affected --base=<base> \
+    [--concurrent_revisions] [--base_digests=main.digests]
+```
+
+It prints one label per line. Since bwllaming/code#13177 the script drops
+every manual target from the `rdeps` set itself, so the prototype's omission
+of manual targets is harmless.
+
+### 8.4 Digest fixes found by this work
+
+- **Path-length-independent value digests.** Planned actions were digested
+  as postcard bytes with the root normalized afterwards. Postcard's length
+  prefixes kept the root's length, so two checkouts at paths of different
+  lengths never agreed. That covered a dirty working copy planned in place
+  against the worktree (every target reported), and the two worktrees of
+  `--concurrent_revisions`. Values are now hashed by a serde serializer
+  that normalizes each string or byte string and frames it with its new
+  length (`value_hash.rs`). Digest time is unchanged (≈ 14 s for 57,941
+  actions).
+- **Args `map_each` functions.** Before, a deferred Args expansion
+  (rules_js `js_image_layer`'s `layers#1`) could only be serialized after
+  the analysis snapshot had described its function. Snapshot off (every
+  scoped process) or before that description, the action's deferred part
+  degraded to a constant: its content was not digested. Now the function
+  is digested by identity: file, name, span, and the repr of its defaults
+  and captured values. With the snapshot on or off the digests are equal
+  (57,941 actions, 0 fallbacks). A change of the function's *body* that
+  keeps its span is not seen (§7 already excludes `.bzl` code from
+  digests).
+
+### 8.5 Measurements
+
+All runs used the private clone (`git clone git@github.com:bwllaming/code`),
+the real `.bazelrc` with the storagebox overrides, and
+`--repo_env=JAVA_HOME=…`. Each cold run had its own fresh cache, with
+nothing shared between runs. Runs were one at a time, under `nice -n 10`,
+on a shared 64-core machine. Network variance is ±10 %: one cold base took
+722 s instead of 545 s.
+
+**bazel-rs `affected`, cold.** Every set below equals the full-analysis
+set of the main binary:
+
+| pair | scope | before: main, full + full | now | `--concurrent_revisions` | stored base digests | peak RSS before / now |
+|---|---|---|---|---|---|---|
+| P4 `ff579ddf8d^→ff579ddf8d` (Go test file), 1 affected | 1 of 2479 | 813 s (542 + 268) | **104 s** (94 + 13) | 91 s | 88 s | 9.2 / 4.2 GB |
+| P3 `bccb9427→80859617` (`.bazelrc` + Go), 4 | 4 | 823 s | **291 s** (190 + 113) | 219 s | – | 9.1 / 4.2 GB |
+| P1 `470886f0→7ab6d35d` (BUILD + testdata), 20 | 20 | 1001 s | **312 s** (240 + 120) | 227 s | – | 9.2 / 4.2 GB |
+| P2 `e7b42879→9e6b547e` (lockfile: global), 53 | full | 827 s | 800 s | **528 s** | **537 s** | 9.2 / 9.2 GB (2 × with concurrent) |
+| P5 `65dd621332^→65dd621332` (BUILD edit), 3 | 16 | 809 s | 783 s (scoped planning fails, §8.6) | 905 s | – | 9.2 / 8.5 GB |
+
+A scope's head costs its forward closure's analysis. P1's and P3's
+`wcb_test` pulls in a Python closure whose `py_library` commits take
+≈ 100 s even warm (86.7 % of that planning). The cold base of a scoped run
+fetches only what its closure needs: 4–14 GB instead of 40.
+
+**bazel-rs `affected`, warm-ish.** These are second runs in the same cache:
+the scoped processes keep no snapshot, while full runs reuse their
+repositories and snapshots.
+
+| pair | cold | warm |
+|---|---|---|
+| P4 | 97 s | 22 s |
+| P1 | 300 s | 196 s |
+| P2 | 805 s | 510 s |
+
+**Genuine Bazel 9.3.1 + target-determinator v0.34.0 (baseline).** The
+user approved this for this measurement only, on the private clone. The
+setup:
+
+- client/server mode with a private `--output_user_root` and its fresh
+  repository cache;
+- `-bazel` pointed at a shim that adds the storagebox overrides to every
+  command taking build options;
+- `-filter-incompatible-targets=false -nocache_results`;
+- `shutdown` after each run.
+
+"Warm-ish" is the second run with the server restarted, on the same output
+base and repository cache, so all analysis is redone. Peak RSS is server
+plus clients, sampled every second.
+
+| pair | cold | warm-ish | peak RSS cold / warm | TD set |
+|---|---|---|---|---|
+| P4 | 269 s | 84 s | 10.4 / 10.1 GB | 1 |
+| P3 | 267 s | 82 s | 12.1 / 10.1 GB | 4 |
+| P1 | 259 s* | 83 s | 11.7 / 10.1 GB | 31 |
+| P5 | 259 s | 87 s | 12.6 / 10.4 GB | 3 |
+| P2 | 270 s | 99 s | 15.2 / 12.9 GB | 75 |
+
+\* The first cold P1 run lost the base cquery to a `proxy.golang.org` TLS
+handshake timeout. TD then reported all 18,002 targets
+(`ignore-and-build-all`); the repeat is shown.
+
+Genuine Bazel's cold `deps(//...)` cquery takes 185 s including the fetch.
+The head's cquery reuses the server's Skyframe (≈ 12 s), so TD pays about
+one cold analysis. Compared with bazel-rs `affected`:
+
+- a scoped bazel-rs run is faster cold for small changes (P4: 104 vs
+  269 s) and comparable for P1/P3 with `--concurrent_revisions`;
+- for global changes bazel-rs is about 2× slower. Its cold full analysis
+  (≈ 540 s) is twice genuine's;
+- warm, genuine's analysis is ≈ 70 s against bazel-rs's ≈ 195–260 s.
+
+**The sets.**
+
+- TD on genuine Bazel equals TD on bazel-rs exactly, for P1–P3 (the TD
+  runs of §4).
+- Native `affected` equals TD for P3, P4 and P5.
+- For P1 and P2 it is a subset, explained in §4: the manual `image_*`
+  targets (11 and 20), `//src/python:pytest` (a `test_suite`) and
+  `//src/python:bworker_env` (an action-less `py_library`).
+
+**A hazard found on the way.** The prototype's default worktree,
+`<git-common-dir>/bazel-rs-affected`, broke genuine Bazel's `//...` in the
+same checkout. Genuine Bazel loaded `.git/bazel-rs-affected/src/ts/...`,
+where rules_js's `npm_link_all_packages` fails. The default is now under an
+explicit `--cache-dir` (§4).
+
+### 8.6 Open: an analysis-order bug in subsets
+
+Analysing exactly
+`//src/ts/bport:_entrypoint_amd64 //src/ts/bport:app //src/ts/bport:app_next`
+at 65dd621332 fails with `internal analysis order error:
+@@platforms//os:linux`. That is plain `build --nobuild` on main, with no
+`affected` involved; `//...` works. The failing plan entry is the alias
+`@zig_config//:exec_os`, in the configuration of a toolchain resolution. It
+is committed by a nested `plan_pending` flush (a toolchain's
+`config_setting` with a Starlark `flag_values` key), but its actual
+`@platforms//os:linux` was planned only in two other configurations
+(`engine.rs` `shared_artifacts`). P5's scope (16 `bport` targets) hits it.
+The orchestrator then plans both revisions entirely (783 s instead of
+≈ 116 s), with the right answer. Fixing the engine is a separate task.

@@ -52,13 +52,18 @@ fn hex(digest: &Digest32) -> String {
 /// (`<cache>/repositories/<kind>/trees/<64 hex digits>/...`).
 const TREES: &[u8] = b"/trees/";
 const TREE_ID_LEN: usize = 64;
+/// The marker of the cache's external repository links.
+const EXTERNAL: &[u8] = b"/repositories/external/";
 
 /// `bytes` with every occurrence of the workspace root replaced by a fixed
 /// token (the same commit planned in two directories digests alike) and
 /// every repository store tree identity by another: a tree's identity
 /// covers its specification and its extension group (docs/WORKTREES.md),
 /// so an unrelated change of the group renames every tree of it while the
-/// files — whose contents the digests hold — stay the same.
+/// files — whose contents the digests hold — stay the same. The path before
+/// a tree identity (the cache directory: `--cache-dir`, or the default
+/// `<workspace>/bazel-rs-out`) is dropped with it, so digests written with
+/// one cache location (`--write_digests`) compare with another's.
 fn normalized(bytes: &[u8], root: &[u8]) -> Vec<u8> {
     // Both patterns begin with `/` (the root is absolute): copy the runs
     // between slashes whole.
@@ -71,13 +76,29 @@ fn normalized(bytes: &[u8], root: &[u8]) -> Vec<u8> {
         if !root.is_empty() && rest.starts_with(root) {
             out.extend_from_slice(b"<workspace>");
             at = slash + root.len();
+        } else if rest.starts_with(EXTERNAL) {
+            // The cache's link tree of external repositories
+            // (`<cache>/repositories/external/<name>/...`): from its start.
+            let start = out
+                .iter()
+                .rposition(|byte| !is_path_byte(*byte))
+                .map_or(0, |at| at + 1);
+            out.truncate(start);
+            out.extend_from_slice(b"<external>/");
+            at = slash + EXTERNAL.len();
         } else if rest.starts_with(TREES)
             && rest.len() >= TREES.len() + TREE_ID_LEN
             && rest[TREES.len()..TREES.len() + TREE_ID_LEN]
                 .iter()
                 .all(u8::is_ascii_hexdigit)
         {
-            out.extend_from_slice(b"/trees/<tree>");
+            // Back to where the path began (a delimiter, or the start).
+            let start = out
+                .iter()
+                .rposition(|byte| !is_path_byte(*byte))
+                .map_or(0, |at| at + 1);
+            out.truncate(start);
+            out.extend_from_slice(b"<tree>");
             at = slash + TREES.len() + TREE_ID_LEN;
         } else {
             out.push(b'/');
@@ -92,9 +113,11 @@ fn normalized(bytes: &[u8], root: &[u8]) -> Vec<u8> {
 /// normalized ([`normalized`], [`value_hash`]).
 fn normalized_value<T: serde::Serialize>(hash: &mut Sha256, value: &T, root: &[u8]) {
     let mut scratch = Sha256::new();
-    let hashed = value.serialize(&mut value_hash::Hasher {
-        hash: &mut scratch,
-        root,
+    let hashed = crate::snapshot::codec::map_each::with_digest_identity(|| {
+        value.serialize(&mut value_hash::Hasher {
+            hash: &mut scratch,
+            root,
+        })
     });
     match hashed {
         Ok(()) => hash.update(scratch.finalize()),
@@ -112,6 +135,12 @@ fn normalized_value<T: serde::Serialize>(hash: &mut Sha256, value: &T, root: &[u
 
 /// [`normalized_value`]s serialized compactly instead (`BAZEL_RS_TIMING`).
 static VALUE_FALLBACKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A byte of an absolute path as plans write it (the `<workspace>` token
+/// included).
+fn is_path_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"/._-+@~<>,%#".contains(&byte)
+}
 
 /// target-determinator's spelling of a label (gazelle's `Label.String`):
 /// `//pkg` for `//pkg:pkg`.
@@ -604,6 +633,36 @@ pub fn target_digests(request: &PlannedRequest, root: &Path) -> BTreeMap<Label, 
             VALUE_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed),
             started.elapsed().as_millis() - sources_ms
         );
+    }
+    // Diagnostics (hidden): every action's local and Merkle digest.
+    if let Some(path) = std::env::var_os("BAZEL_RS_AFFECTED_ACTIONS") {
+        let mut text = String::new();
+        for (at, node) in request.nodes.iter().enumerate() {
+            let merkle = digests.of(&node.action.id).map(|digest| hex(&digest));
+            text.push_str(&format!(
+                "{}\t{}\t{}\n",
+                node.action.id,
+                hex(&digests.local[at]),
+                merkle.unwrap_or_default()
+            ));
+        }
+        let _ = std::fs::write(&path, text);
+        if let Some(filter) = std::env::var_os("BAZEL_RS_AFFECTED_ACTIONS_JSON") {
+            let filter = filter.to_string_lossy().into_owned();
+            let mut json = String::new();
+            for node in &request.nodes {
+                if node.action.id.contains(&filter) {
+                    json.push_str(&format!(
+                        "{}\n{}\n",
+                        node.action.id,
+                        serde_json::to_string(&node.deferred).unwrap_or_default()
+                    ));
+                }
+            }
+            let mut json_path = path.clone();
+            json_path.push(".json");
+            let _ = std::fs::write(json_path, json);
+        }
     }
     for label in &request.skipped {
         out.insert(label.clone(), INCOMPATIBLE.to_owned());
@@ -1472,9 +1531,18 @@ mod tests {
     fn normalizes_store_tree_identities() {
         let id = "a".repeat(64);
         let path = format!("/c/repositories/direct/trees/{id}/x.go");
+        assert_eq!(normalized(path.as_bytes(), b"/ws"), b"<tree>/x.go".to_vec());
+        // The cache location is dropped with the identity.
+        let other = format!("--x=/other/cache/repositories/trees/{id}/x.go");
         assert_eq!(
-            normalized(path.as_bytes(), b"/ws"),
-            b"/c/repositories/direct/trees/<tree>/x.go".to_vec()
+            normalized(other.as_bytes(), b"/ws"),
+            b"--x=<tree>/x.go".to_vec()
+        );
+        let inside = format!("/ws/bazel-rs-out/repositories/trees/{id}/y");
+        assert_eq!(normalized(inside.as_bytes(), b"/ws"), b"<tree>/y".to_vec());
+        assert_eq!(
+            normalized(b"x=/c1/repositories/external/r+/bin/aws", b"/ws"),
+            b"x=<external>/r+/bin/aws".to_vec()
         );
         // Not 64 hex digits: kept.
         assert_eq!(
