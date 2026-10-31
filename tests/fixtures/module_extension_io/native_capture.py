@@ -27,7 +27,7 @@ CANONICAL_REPOSITORY = "+io+made"
 # since fix-digest-memo (v8 since the N41 x N42 merge, when key and manifest
 # moved together; the N36 schema {name,digest,mode,tree,symlink} is unchanged).
 ACTION_MANIFEST_FORMAT = "native-action-v9"
-NATIVE_VERSION = b"bazel-rs 0.4.0 (experimental; compatibility target Bazel 9.3.1)\n"
+NATIVE_VERSION = b"bazel-rs 0.4.1 (experimental; compatibility target Bazel 9.3.1)\n"
 SUMMARY = re.compile(rb"bazel-rs: ([0-9]+) actions executed, ([0-9]+) cache hits \(experimental local execution; not sandboxed\)")
 SCHEMA = "module-io-native-diagnostic-v2"
 FS_LIMITS = {"entries": 10000, "depth": 64, "file_bytes": 64 * 1024 * 1024,
