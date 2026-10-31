@@ -14,6 +14,7 @@
 //! | targets | the target patterns; for `run` only the target (its arguments are used after execution) |
 //! | `BZLMOD_ALLOW_YANKED_VERSIONS` | read before the window |
 //! | validation policy | per tree, or full under `--verify_repo_tampering` / `BAZEL_RS_VERIFY_REPOS=full` (the snapshot holds what its policy validates) |
+//! | `BAZEL_RS_AFFECTED_INCLUDE_MANUAL` | `bazel-rs affected --include_manual`: wildcards keep `manual` rules |
 //!
 //! [`EXCLUDED`] holds only options whose parsed value was traced to
 //! execution, reporting or the code before the check point; everything
@@ -288,6 +289,9 @@ struct Parts<'a> {
     targets: &'a [String],
     allow_yanked: Option<&'a str>,
     full_validation: bool,
+    /// `bazel-rs affected --include_manual`'s pattern semantics
+    /// (crate::affected::INCLUDE_MANUAL_VAR): other requested labels.
+    include_manual: bool,
 }
 
 /// A snapshot's key: G and the binary identity it includes.
@@ -339,6 +343,7 @@ pub fn compute(inputs: &Inputs<'_>, binary: [u8; 32]) -> Key {
         targets: inputs.targets,
         allow_yanked: inputs.allow_yanked,
         full_validation: inputs.full_validation,
+        include_manual: crate::affected::include_manual(),
     };
     let bytes = postcard::to_stdvec(&parts).expect("the key parts encode");
     Key {

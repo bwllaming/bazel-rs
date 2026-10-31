@@ -29,6 +29,19 @@ mod value_hash;
 /// Names the file the planning process writes the target digests to.
 pub const DIGESTS_VAR: &str = "BAZEL_RS_TARGET_DIGESTS";
 
+/// Set (by `bazel-rs affected --include_manual`) in a planning process:
+/// the target pattern phase's wildcards keep `manual` rules (and `test`'s
+/// FILTER_TESTS keeps `manual` tests), as `query` selects them. A snapshot
+/// key input (crate::snapshot::key).
+pub const INCLUDE_MANUAL_VAR: &str = "BAZEL_RS_AFFECTED_INCLUDE_MANUAL";
+
+/// Whether this process's wildcards keep `manual` rules
+/// ([`INCLUDE_MANUAL_VAR`]).
+pub fn include_manual() -> bool {
+    static INCLUDE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *INCLUDE.get_or_init(|| std::env::var_os(INCLUDE_MANUAL_VAR).is_some_and(|value| value == "1"))
+}
+
 /// The first line of a digests file.
 const HEADER: &str = "bazel-rs-target-digests-v1";
 
@@ -774,6 +787,12 @@ struct Options {
     keep: Option<PathBuf>,
     explain: bool,
     include_incompatible: bool,
+    /// `--include_manual`: wildcards select `manual` rules too
+    /// ([`INCLUDE_MANUAL_VAR`]).
+    include_manual: bool,
+    /// `--base_failure=all`: a base that fails to plan makes every head
+    /// target affected (target-determinator's default) instead of failing.
+    base_failure_all: bool,
     /// `--scope=auto` (the default): analyse only what a local change can
     /// reach; `--scope=full`: both revisions entirely.
     scope: bool,
@@ -823,10 +842,21 @@ fn parse(args: &[String]) -> Result<Options, String> {
                     other => return Err(format!("--scope must be auto or full, not {other}")),
                 }
             }
+            "--base_failure" => {
+                options.base_failure_all = match value("base_failure")?.as_str() {
+                    "error" => false,
+                    "all" => true,
+                    other => {
+                        return Err(format!("--base_failure must be error or all, not {other}"));
+                    }
+                }
+            }
             "--explain_affected" => options.explain = true,
             "--concurrent_revisions" => options.concurrent = true,
             "--noconcurrent_revisions" => options.concurrent = false,
             "--include_incompatible" => options.include_incompatible = true,
+            "--include_manual" => options.include_manual = true,
+            "--noinclude_manual" => options.include_manual = false,
             "--" => {
                 options.patterns.extend(args.by_ref().cloned());
             }
@@ -960,6 +990,7 @@ fn start_plan(
         .current_dir(workspace)
         .env(DIGESTS_VAR, out)
         .env_remove(SCOPE_VAR)
+        .env_remove(INCLUDE_MANUAL_VAR)
         // Our stdout is the affected labels: the planning's goes to stderr.
         .stdout(std::process::Stdio::from(
             std::io::stderr()
@@ -969,6 +1000,9 @@ fn start_plan(
         ));
     if let Some(scope) = scope {
         command.env(SCOPE_VAR, scope.spec);
+    }
+    if options.include_manual {
+        command.env(INCLUDE_MANUAL_VAR, "1");
     }
     let child = crate::spawn_lock::spawn(&mut command)
         .map_err(|error| format!("cannot run {}: {error}", binary.display()))?;
@@ -994,14 +1028,25 @@ impl Running {
             self.started.elapsed().as_secs_f64(),
             status.code().unwrap_or(-1)
         );
-        // `test --nobuild` exits 1 after planning ("Couldn't start the build.
-        // Unable to run tests", as Bazel does): the digests are written once
-        // planning succeeded, whatever the exit code.
-        if !status.success() && !self.out.exists() {
+        // A planning process exits 0 once its analysis succeeded and its
+        // digests are written (`test --nobuild` too: crate's main, under
+        // DIGESTS_VAR, instead of Bazel's `Unable to run tests` exit 1).
+        // Any other exit is a failure, whatever it wrote: a partial
+        // analysis (`--keep_going`, a skipped pattern) must never decide
+        // the answer.
+        if !status.success() {
             return Err(format!(
-                "planning in {} failed (exit {})",
+                "planning in {} failed (exit {}; its output is above)",
                 self.workspace.display(),
-                status.code().unwrap_or(-1)
+                status
+                    .code()
+                    .map_or_else(|| status.to_string(), |code| code.to_string())
+            ));
+        }
+        if !self.out.exists() {
+            return Err(format!(
+                "planning in {} wrote no digests (exit 0)",
+                self.workspace.display()
             ));
         }
         let scope = if self.scoped {
@@ -1041,14 +1086,26 @@ fn plan(
 }
 
 /// The identity of what a digests file holds besides its commit: this
-/// binary, the command, its options and patterns
-/// (`--base_digests` must match it).
+/// binary, the command, its options and patterns, and whether wildcards
+/// selected `manual` rules (`--base_digests` must match it).
 fn digests_key(binary: &Path, startup: &[String], options: &Options) -> Result<String, String> {
-    let mut hash = Sha256::new();
-    frame(&mut hash, HEADER.as_bytes());
     let bytes = std::fs::read(binary)
         .map_err(|error| format!("cannot read {}: {error}", binary.display()))?;
-    frame(&mut hash, &Sha256::digest(&bytes));
+    Ok(digests_key_of(
+        &Sha256::digest(&bytes).into(),
+        startup,
+        options,
+    ))
+}
+
+fn digests_key_of(binary: &Digest32, startup: &[String], options: &Options) -> String {
+    let mut hash = Sha256::new();
+    frame(&mut hash, HEADER.as_bytes());
+    frame(&mut hash, binary);
+    if options.include_manual {
+        // Before the arguments (none of them is a bare marker like this).
+        frame(&mut hash, b"#include_manual");
+    }
     for arg in startup
         .iter()
         // The cache location changes no digest.
@@ -1060,7 +1117,7 @@ fn digests_key(binary: &Path, startup: &[String], options: &Options) -> Result<S
     {
         frame(&mut hash, arg.as_bytes());
     }
-    Ok(hex(&hash.finalize().into()))
+    hex(&hash.finalize().into())
 }
 
 /// Writes the head's digests for a later `--base_digests`.
@@ -1302,10 +1359,18 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             None => None,
         };
         let from_file = stored.is_some();
-        let every = |error: String| {
-            // target-determinator's --before-query-error-behavior default:
-            // everything at the head revision is affected.
+        let every = |error: String| -> Result<Option<Planned>, String> {
+            // A base that fails to plan: an error, or with
+            // `--base_failure=all` target-determinator's
+            // --before-query-error-behavior default: everything at the head
+            // revision is affected.
+            if !options.base_failure_all {
+                return Err(format!(
+                    "base {base_commit}: {error} (--base_failure=all: report every target of the head instead)"
+                ));
+            }
             eprintln!("bazel-rs affected: {error}: every target of the head revision is affected");
+            Ok(None)
         };
         // The head's worktree: the base's (the second planning starts from
         // the first's state), or its own when both are planned at once.
@@ -1366,16 +1431,10 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                             base_entire = entire;
                             Some(planned)
                         }
-                        Err(error) => {
-                            every(error);
-                            None
-                        }
+                        Err(error) => every(error)?,
                     }
                 }
-                Err(error) => {
-                    every(error);
-                    None
-                }
+                Err(error) => every(error)?,
             };
             let head = match head_result {
                 Ok(planned) => planned,
@@ -1418,10 +1477,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                         base_entire = entire;
                         Some(planned)
                     }
-                    Err(error) => {
-                        every(error);
-                        None
-                    }
+                    Err(error) => every(error)?,
                 },
             };
             // A root reaching the change at the base: the head entirely too.
@@ -1459,10 +1515,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             {
                 base_planned = match plan_revision(&worktree, Some(&base_commit), "base", None) {
                     Ok((planned, _)) => Some(planned),
-                    Err(error) => {
-                        every(error);
-                        None
-                    }
+                    Err(error) => every(error)?,
                 };
             }
         }
@@ -1614,9 +1667,35 @@ mod tests {
             vec!["//src/...".to_owned(), "-//src/x/...".to_owned()]
         );
         assert_eq!(options.command, "test");
+        assert!(!options.include_manual);
         assert_eq!(
             parse(&["--base=x".to_owned()]).unwrap().patterns,
             vec!["//...".to_owned()]
+        );
+        let manual = parse(&["--base=x".to_owned(), "--include_manual".to_owned()]).unwrap();
+        assert!(manual.include_manual);
+        assert!(manual.forwarded.is_empty());
+        let again = parse(&[
+            "--base=x".to_owned(),
+            "--include_manual".to_owned(),
+            "--noinclude_manual".to_owned(),
+        ])
+        .unwrap();
+        assert!(!again.include_manual);
+    }
+
+    #[test]
+    fn the_digests_key_covers_include_manual() {
+        let binary = [7u8; 32];
+        let plain = parse(&["--base=x".to_owned()]).unwrap();
+        let manual = parse(&["--base=x".to_owned(), "--include_manual".to_owned()]).unwrap();
+        assert_eq!(
+            digests_key_of(&binary, &[], &plain),
+            digests_key_of(&binary, &[], &plain)
+        );
+        assert_ne!(
+            digests_key_of(&binary, &[], &plain),
+            digests_key_of(&binary, &[], &manual)
         );
     }
 }

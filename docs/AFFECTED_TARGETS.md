@@ -241,8 +241,9 @@ from the plan, before any execution:
    still placeholders then, so stamping never changes a digest.
 3. A target is **affected** when its digest differs from the base's, or it
    is new. Incompatible targets are not reported (`--include_incompatible`
-   reports those that became incompatible). A base revision that fails to
-   plan makes everything affected, as TD's default does.
+   reports those that became incompatible). A revision that fails to plan
+   fails the command; `--base_failure=all` makes a failed base report
+   everything instead, as TD's default does (§8.3).
 
 This is TD's question at the action level. A target is reported exactly
 when the build or test the CI would run for it can do something different.
@@ -306,8 +307,9 @@ digests are both more precise than TD and cheaper.
 ```
 bazel-rs [STARTUP...] affected --base=REV [--head=REV] [--worktree=DIR]
     [--affected_command=test|build] [--keep_digests=DIR] [--explain_affected]
-    [--include_incompatible] [--scope=auto|full] [--concurrent_revisions]
-    [--write_digests=FILE] [--base_digests=FILE]
+    [--include_incompatible] [--include_manual] [--scope=auto|full]
+    [--concurrent_revisions] [--write_digests=FILE] [--base_digests=FILE]
+    [--base_failure=error|all]
     [BUILD OPTIONS...] [PATTERNS... | -- PATTERNS...]
 ```
 
@@ -344,9 +346,29 @@ bazel-rs [STARTUP...] affected --base=REV [--head=REV] [--worktree=DIR]
 **Hook.** Any `build`/`test`/`run` with `BAZEL_RS_TARGET_DIGESTS=<file>`
 writes `label<TAB>digest` lines (header `bazel-rs-target-digests-v1`). It
 does so for a full analysis, a hit or a splice; the variable is read after
-planning and is no snapshot input. `test --nobuild` exits 1 as Bazel does
-("Couldn't start the build. Unable to run tests"); the orchestrator
-accepts a run whose digests were written.
+planning and is no snapshot input. Under it, a `test --nobuild` whose
+analysis succeeded exits 0 (`bazel-rs affected: analysis of N test(s)
+succeeded`) instead of Bazel's exit 1 ("Couldn't start the build. Unable
+to run tests") or exit 4 ("No test targets were found"). The orchestrator
+takes any other exit for a failure of that revision, whatever it wrote
+(§8.3). Through 0.4.1 it accepted any exit once digests were written, which
+logged `(exit 1)` for every successful planning and could not tell a
+failed analysis from a successful one.
+
+**`--include_manual`.** Wildcard patterns then also select `manual` rules
+(Bazel's `query` semantics), and `test`'s test determination keeps
+`manual` tests. The planning processes get
+`BAZEL_RS_AFFECTED_INCLUDE_MANUAL=1`, which the target pattern phase,
+incremental analysis's relabelling and the snapshot key read, so a
+snapshot of one mode never answers the other. Both the scoped and the full
+paths honour it, and the `--write_digests`/`--base_digests` key includes
+it. Manual targets selected this way are wildcard-selected: an
+incompatible one is skipped (reported only with `--include_incompatible`,
+as any other), and one that fails analysis fails the planning (TD's
+cquery of `//...` fails the same way). On ~/code it widens `//...` from
+about 2,500 to 18,571 targets, so a full analysis costs more (P2: 1,182 s
+and 14.4 GB instead of about 800 s and 9.2 GB); a scoped one costs little
+more (P1: 252 s).
 
 **As a drop-in for the script.** In `src/python/tools/build/__init__.py`,
 replace
@@ -361,6 +383,14 @@ with
 bazel-rs affected --base=<commit> <the storagebox overrides>
 ```
 
+`bin/push-changed-containers` (`get_changed_targets(include_manual=True)`)
+adds `--include_manual`: its `attr(tags, dockerpush, set(changed))` picks
+the push targets, which are `manual` (`src/docker/docker.bzl`,
+`src/ts/npm.bzl`, …), out of the affected set, and a change of only a
+push target's attributes (a docker macro argument) is reported only that
+way. `bin/build-changed-files` keeps the default: it drops manual targets
+anyway.
+
 Use the same rc and flags the CI's later `build`/`test` uses. Then add
 `--cache-dir=<a directory outside the checkout>`, and optionally
 `--concurrent_revisions` (§8.3). The output contract is the same. One
@@ -374,7 +404,7 @@ script detail matters, already done in bwllaming/code#13177:
   built.
 - So use `… except attr(tags, 'manual', //src/...)`. With TD's X the result
   is identical: every manual target in `rdeps` is affected, hence in X.
-  Alternatively, a phase-2 `--include_manual` plans the manual targets too.
+  Alternatively, `--include_manual` plans the manual targets too (§8.7).
 
 ### Validation against TD on ~/code
 
@@ -456,8 +486,7 @@ drop-in with the script tweak above.
 3. **Persist the action digests in the snapshot.** A hit then needs no
    digest work (12 s → < 1 s), and a splice recomputes only the dirty
    owners' closure.
-4. **`--include_manual`.** Plan `attr(tags, manual, PATTERNS)` explicitly,
-   for exact TD parity without the script tweak.
+4. **`--include_manual`.** Done (§4, §8.7): wildcards keep manual rules.
 5. **Keep the snapshot across lockfile-changing revisions.** Save after a
    hidden-lockfile-only write: the extension results are recorded inputs
    anyway.
@@ -472,7 +501,7 @@ CI job, instead of TD's four cqueries plus two more analyses.
 
 ## 7. Limits and risks
 
-- **Manual targets** are not planned (§4).
+- **Manual targets** are not planned without `--include_manual` (§4).
 - **Action-less targets.** Targets without actions or outputs, such as a
   `py_library` or a `config_setting`, are reported only when their
   reported outputs change. Their dependants are reported, and that is what
@@ -654,8 +683,12 @@ touches a root. Otherwise it would be missed.
   transient errors such as a registry 502. If it fails again, it is
   planned entirely, with its scope only reported, and the comparison stays
   within the head's scope. The analysis of a subset never decides the
-  answer by failing. A base that fails entirely makes everything affected,
-  as before.
+  answer by failing. A planning is successful only when it exits 0 (§4,
+  Hook); any other exit, `--keep_going` analysis failures and skipped
+  patterns included, is a failure. A head that fails fails `affected`
+  (non-zero exit, nothing on stdout). So does a base, unless
+  `--base_failure=all` asks for TD's default: every head target (within
+  the head's scope) is affected.
 - **`--concurrent_revisions`.** Both revisions are planned at once, in two
   worktrees sharing the cache: the repository store's stage lock
   serializes a shared fetch. Peak memory is about twice a revision's (2 ×
@@ -683,8 +716,9 @@ bazel-rs --cache-dir=$HOME/.cache/bazel-rs affected --base=<base> \
 ```
 
 It prints one label per line. Since bwllaming/code#13177 the script drops
-every manual target from the `rdeps` set itself, so the prototype's omission
-of manual targets is harmless.
+every manual target from the `rdeps` set itself, so the default's omission
+of manual targets is harmless there. `bin/push-changed-containers` passes
+`--include_manual` (§4).
 
 ### 8.4 Digest fixes found by this work
 
@@ -828,3 +862,37 @@ successfully (`has=True`, `toolchain=impl`) and main failed with the
 same error. On the clone, the action dump of `build --nobuild //src/...`
 is byte-identical before and after (6,121,706 lines). P5 cold is now
 scoped: 96 s, the same 3 targets, 4.9 GB cache, 4.2 GB peak RSS.
+
+### 8.7 `--include_manual` and the first CI run (0.4.1 → this revision)
+
+Private clone, release binary of this branch, one shared private cache
+(`aim-cache`; the first run cold), the storagebox overrides, `nice -n 10`.
+
+| pair | change | TD | native default | native `--include_manual` | differences to TD |
+|---|---|---|---|---|---|
+| CI `cf770c2c89 → d4ff4d0c57` (use-bazel-rs) | `bin/bazel`, workflows, `bin/push-changed-containers`, `bin/bazel-cache.test.sh` deleted, `src/python/tools/build/__init__.py` | 0 (inferred) | 0 of 2 scoped (68 s cold); 0 of 1,923 with `--scope=full` (778 s) | – | none |
+| P1 `470886f0 → 7ab6d35d` | `wcb/BUILD.bazel` + testdata | 31 | 20 | 29 (scope 31 of 18,571; 252 s) | `monolith:image_image_index_json`, `monolith:image_push_index_index_json` |
+| P2 `e7b42879 → 9e6b547e` | lockfile (global) | 75 | 53 | 69 (full; 1,182 s, 14.4 GB) | `//src/python:pytest`, `//src/python:bworker_env`, 4 × `…_index_json` |
+| throwaway `9e6b547e → 56faa52c0f` | `image_push(repo = …)` of `monolith` only | `image_push` (inferred) | 0 of 8 | **`monolith:image_push`** (1 of 22; 39 s) | none |
+
+- **The CI run.** Every planning of 0.4.1 logged `(exit 1)` (`test
+  --nobuild`'s "Unable to run tests") and was accepted: the result was
+  right but a failure would have looked the same. The changed files are in
+  no target: `bin/BUILD.bazel` only exports `bw-devenv*` and
+  `bwork-runner*`, no glob of `src/python/BUILD.bazel` covers
+  `tools/build/` (it has no BUILD file), and the workflows are not
+  referenced. The deleted `bin/bazel-cache.test.sh` changes `bin`'s file
+  list, so `bin`'s dependants are the scope: `bw_devenv_test` and
+  `bwork_runner_test`, both unchanged. The full analysis agrees (0 of
+  1,923). TD hashes only rules' attributes and the files they consume, so
+  it reports nothing either (not rerun).
+- **The remaining differences** are all action-less targets:
+  `…_index_json` are rules_oci's `directory_path` targets (no actions, no
+  files: the same empty digest at both revisions; their `…_index_json_cp`
+  copies are reported), `bworker_env` a `py_library` without actions, and
+  `pytest` a `test_suite` whose tests are reported. Every other TD label is
+  reported, and nothing beyond TD's set.
+- **A macro argument.** Changing only `image_push`'s `repo` in
+  `src/beyondwork.ai/bworker/cmd/monolith/BUILD.bazel` (a local commit in
+  the clone) is reported only with `--include_manual`; the push target is
+  what `attr(tags, dockerpush, …)` then selects.

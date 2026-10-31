@@ -325,3 +325,174 @@ fn a_working_copy_planned_in_place_compares_with_the_worktree() {
     assert!(output.status.success());
     assert_eq!(String::from_utf8_lossy(&output.stdout), "//c\n");
 }
+
+/// A `manual` image-like target (a docker macro's push target) beside
+/// ordinary ones, and a `manual` test.
+fn manual_packages(cmd: &str, size: &str) -> Vec<(&'static str, String)> {
+    let mut files: Vec<(&'static str, String)> = PACKAGES
+        .iter()
+        .map(|(path, content)| (*path, (*content).to_owned()))
+        .collect();
+    files.push(("img/defs.bzl", DEFS.to_owned()));
+    files.push((
+        "img/BUILD.bazel",
+        format!(
+            "load(':defs.bzl', 'my_test')\n\
+             genrule(name = 'push', srcs = ['//a'], outs = ['push.out'], cmd = '{cmd}', tags = ['manual'])\n\
+             my_test(name = 't', srcs = ['t.sh'], size = '{size}', tags = ['manual'])\n"
+        ),
+    ));
+    files.push(("img/t.sh", "#!/bin/sh\nexit 0\n".to_owned()));
+    files
+}
+
+#[test]
+fn include_manual_reports_manual_targets() {
+    let repo = Repo::new();
+    let commit = |files: Vec<(&'static str, String)>| {
+        let files: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(path, content)| (*path, content.as_str()))
+            .collect();
+        repo.commit(&files)
+    };
+    let first = commit(manual_packages("cat $< > $@", "small"));
+    // Only the manual target's own attribute (a macro argument): nothing
+    // without the option, the target with it, scoped or not.
+    let second = commit(manual_packages("cat $< $< > $@", "small"));
+    let build = "--affected_command=build";
+    let (labels, stderr) = repo.run(&first, &second, &[build]);
+    assert!(labels.is_empty(), "{labels:?}");
+    assert!(stderr.contains("scoped analysis"), "{stderr}");
+    let (labels, stderr) = repo.run(&first, &second, &[build, "--include_manual"]);
+    assert_eq!(labels, ["//img:push"]);
+    assert!(stderr.contains("scoped analysis"), "{stderr}");
+    assert_eq!(
+        repo.run(
+            &first,
+            &second,
+            &[build, "--include_manual", "--scope=full"]
+        )
+        .0,
+        ["//img:push"]
+    );
+    // `test` (the default command): a manual test's property too.
+    let third = commit(manual_packages("cat $< $< > $@", "medium"));
+    assert!(repo.run(&second, &third, &[]).0.is_empty());
+    assert_eq!(
+        repo.run(&second, &third, &["--include_manual"]).0,
+        ["//img:t"]
+    );
+    assert_eq!(
+        repo.run(&second, &third, &["--include_manual", "--scope=full"])
+            .0,
+        ["//img:t"]
+    );
+    // A source the manual target consumes: its dependants with it.
+    let mut files = manual_packages("cat $< $< > $@", "medium");
+    files.push(("a/a.txt", "a2\n".to_owned()));
+    let fourth = commit(files);
+    assert_eq!(repo.run(&third, &fourth, &[build]).0, ["//a", "//b"]);
+    assert_eq!(
+        repo.run(&third, &fourth, &[build, "--include_manual"]).0,
+        ["//a", "//b", "//img:push"]
+    );
+    // Stored digests are keyed by the option.
+    let file = repo.base().join("manual.digests");
+    let write = format!("--write_digests={}", file.display());
+    let read = format!("--base_digests={}", file.display());
+    repo.run(&second, &third, &[build, "--include_manual", &write]);
+    let text = fs::read_to_string(&file).unwrap();
+    assert!(text.contains("//img:push\t"), "{text}");
+    let (labels, stderr) = repo.run(&third, &fourth, &[build, &read]);
+    assert!(stderr.contains("does not hold this base"), "{stderr}");
+    assert_eq!(labels, ["//a", "//b"]);
+    let (labels, stderr) = repo.run(&third, &fourth, &[build, "--include_manual", &read]);
+    assert!(stderr.contains("base digests from"), "{stderr}");
+    assert_eq!(labels, ["//a", "//b", "//img:push"]);
+}
+
+#[test]
+fn a_test_nobuild_planning_exits_0_and_a_failed_one_fails_affected() {
+    let repo = Repo::new();
+    let first = repo.commit(PACKAGES);
+    let second = repo.commit(&[("a/a.txt", "a2\n")]);
+    // `test --nobuild` (the default command) without test targets in the
+    // scope, scoped and entirely: every planning exits 0.
+    for extra in [&[][..], &["--scope=full"][..]] {
+        let (labels, stderr) = repo.run(&first, &second, extra);
+        assert_eq!(labels, ["//a", "//b"], "{stderr}");
+        assert_eq!(stderr.matches("bazel-rs affected: planned ").count(), 2);
+        assert_eq!(stderr.matches(" (exit 0)").count(), 2, "{stderr}");
+        assert!(!stderr.contains("Unable to run tests"), "{stderr}");
+    }
+    // A head whose analysis fails: `affected` fails, it reports nothing.
+    let broken = repo.commit(&[(
+        "b/BUILD.bazel",
+        "genrule(name = 'b', srcs = ['//a:missing'], outs = ['b.out'], cmd = 'cat $< > $@')\n",
+    )]);
+    for extra in [&[][..], &["--scope=full"][..], &["--keep_going"][..]] {
+        let mut args = vec![format!("--base={second}"), format!("--head={broken}")];
+        args.extend(extra.iter().map(|arg| (*arg).to_owned()));
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = repo.affected(&args);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{extra:?}: {stderr}");
+        assert!(output.stdout.is_empty(), "{extra:?}: {stderr}");
+        assert!(stderr.contains("failed (exit 1"), "{extra:?}: {stderr}");
+        assert!(!stderr.contains("compared target(s) affected"), "{stderr}");
+    }
+    // A base that fails: an error too, unless `--base_failure=all` asks for
+    // target-determinator's answer (every target of the head).
+    let fixed = repo.commit(&[("b/BUILD.bazel", PACKAGES[8].1)]);
+    let args = [format!("--base={broken}"), format!("--head={fixed}")];
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = repo.affected(&args);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(output.stdout.is_empty(), "{stderr}");
+    assert!(stderr.contains("--base_failure=all"), "{stderr}");
+    // (Within the head's scope: //b's package changed.)
+    let (labels, stderr) = repo.run(&broken, &fixed, &["--base_failure=all"]);
+    assert_eq!(labels, ["//b"], "{stderr}");
+    assert!(
+        stderr.contains("every target of the head revision"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn files_in_no_target_affect_nothing() {
+    // ~/code's first CI run: workflow files, scripts in a package of
+    // `exports_files` (one deleted), a Python file in a directory no glob
+    // covers. The scope holds the dependants of the package whose file
+    // list changed; nothing is affected, and every planning exits 0.
+    let repo = Repo::new();
+    let mut files: Vec<(&str, &str)> = PACKAGES.to_vec();
+    files.extend([
+        ("BUILD.bazel", "# the root package\n"),
+        (".github/workflows/lint.yaml", "on: push\n"),
+        ("bin/BUILD.bazel", "exports_files(['tool.sh'])\n"),
+        ("bin/tool.sh", "#!/bin/sh\n"),
+        ("bin/bazel", "#!/bin/sh\n"),
+        ("bin/old.test.sh", "#!/bin/sh\n"),
+        (
+            "d/BUILD.bazel",
+            "genrule(name = 'd', srcs = ['//bin:tool.sh'], outs = ['d.out'], cmd = 'cat $< > $@')\n",
+        ),
+        ("a/tools/build/__init__.py", "x = 1\n"),
+    ]);
+    let first = repo.commit(&files);
+    repo.git(&["rm", "-q", "bin/old.test.sh"]);
+    let second = repo.commit(&[
+        (".github/workflows/lint.yaml", "on: pull_request\n"),
+        ("bin/bazel", "#!/bin/sh\nexit 0\n"),
+        ("a/tools/build/__init__.py", "x = 2\n"),
+    ]);
+    let (labels, stderr) = repo.run(&first, &second, &["--explain_affected"]);
+    assert!(labels.is_empty(), "{labels:?}: {stderr}");
+    assert!(stderr.contains("scope 1 of 5"), "{stderr}");
+    assert_eq!(stderr.matches(" (exit 0)").count(), 2, "{stderr}");
+    let (labels, _) = repo.run(&first, &second, &["--scope=full"]);
+    assert!(labels.is_empty(), "{labels:?}");
+}

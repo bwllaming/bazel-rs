@@ -3709,6 +3709,24 @@ fn test_tail(
             execution_note()
         );
     }
+    // A `bazel-rs affected` planning (docs/AFFECTED_TARGETS.md): the
+    // digests are written and the analysis succeeded, which is all it asks
+    // of `test --nobuild` — exit 0, so that its orchestrator can take any
+    // other exit for a failure (Bazel's `Unable to run tests` exit 1, or
+    // `No test targets were found` exit 4, would hide it).
+    if !execute
+        && !build_failed
+        && pattern_failure.is_none()
+        && std::env::var_os(bazel_rs::affected::DIGESTS_VAR).is_some()
+    {
+        bazel_rs::note!(
+            "bazel-rs affected: analysis of {} test(s) succeeded (test --nobuild)",
+            planned_tests.len()
+        );
+        write_lockfile();
+        bazel_rs::digest_memo::finish();
+        exit(0);
+    }
     if planned_tests.is_empty() {
         if let Some(result) = &keep_going {
             if let Some(message) = keep_going_failure_detail(result, pattern_failure) {

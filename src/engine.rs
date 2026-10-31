@@ -3559,6 +3559,19 @@ impl Engine {
         relative_directory: &str,
         filter_manual: bool,
     ) -> Result<Vec<Label>, String> {
+        self.select_filtered_as(patterns, relative_directory, filter_manual, filter_manual)
+    }
+
+    /// [`Self::select_filtered`] resolving like `build` (`build`) or not,
+    /// filtering `manual` rules out of positive wildcards (`filter_manual`)
+    /// or not.
+    fn select_filtered_as(
+        &mut self,
+        patterns: &[String],
+        relative_directory: &str,
+        filter_manual: bool,
+        build: bool,
+    ) -> Result<Vec<Label>, String> {
         let parsed = patterns
             .iter()
             .map(|pattern| crate::target_pattern::parse(pattern, relative_directory))
@@ -3567,7 +3580,7 @@ impl Engine {
         for (position, pattern) in parsed.iter().enumerate() {
             let filter = filter_manual && !pattern.negative;
             self.track_pattern(Some(position));
-            let targets = self.expand_pattern(pattern, filter, filter_manual);
+            let targets = self.expand_pattern(pattern, filter, build);
             self.track_pattern(None);
             let targets = targets.map_err(PatternError::into_message)?;
             if pattern.negative {
@@ -10801,10 +10814,13 @@ impl Engine {
         options: &TargetPatternPhaseOptions<'_>,
     ) -> Result<TargetPatternPhase, String> {
         let mut failures = PatternFailures::default();
+        // `bazel-rs affected --include_manual`: wildcards keep `manual`
+        // rules (crate::affected::INCLUDE_MANUAL_VAR, query's semantics).
+        let filter_manual = !crate::affected::include_manual();
         let selected = if self.keep_going {
-            self.select_keep_going(patterns, relative_directory, &mut failures)
+            self.select_keep_going(patterns, relative_directory, filter_manual, &mut failures)
         } else {
-            self.select_filtered(patterns, relative_directory, true)?
+            self.select_filtered_as(patterns, relative_directory, filter_manual, true)?
         };
         // mergeAll's TargetUtils.tagFilter(--build_tag_filters)
         // (TargetPatternPhaseFunction.java:372-373, TargetUtils.java:366-386):
@@ -10917,6 +10933,7 @@ impl Engine {
         &mut self,
         patterns: &[String],
         relative_directory: &str,
+        filter_manual: bool,
         failures: &mut PatternFailures,
     ) -> Vec<Label> {
         let mut parsed = Vec::new();
@@ -10930,7 +10947,7 @@ impl Engine {
         }
         let mut selected = BTreeSet::new();
         for pattern in &parsed {
-            let filter = !pattern.negative;
+            let filter = filter_manual && !pattern.negative;
             self.pattern_load_errors = Some(Vec::new());
             let expanded = self.expand_pattern(pattern, filter, true);
             for error in self.pattern_load_errors.take().unwrap_or_default() {
@@ -10980,7 +10997,13 @@ impl Engine {
             if self.keep_going {
                 self.pattern_load_errors = Some(Vec::new());
             }
-            let expanded = self.expand_pattern(pattern, !pattern.negative, true);
+            // FILTER_TESTS skips `manual` tests (FilteringPolicies.java
+            // :81-87) unless `affected --include_manual` asks for them.
+            let expanded = self.expand_pattern(
+                pattern,
+                !pattern.negative && !crate::affected::include_manual(),
+                true,
+            );
             if self.keep_going {
                 has_error |= self
                     .pattern_load_errors

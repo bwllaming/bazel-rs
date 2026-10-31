@@ -687,8 +687,8 @@ impl Engine {
     }
 
     /// What the plain `build` target pattern phase (crate::engine's
-    /// `select_filtered` with FILTER_MANUAL, no tag filters, tests or test
-    /// suites) selects of the loaded main-repository package `package` now:
+    /// `select_filtered` with FILTER_MANUAL — none under `affected
+    /// --include_manual` — no tag filters, tests or test suites) selects of the loaded main-repository package `package` now:
     /// `covered` names the patterns (positions) whose wildcards expanded it
     /// (the saved analysis's: the directory listings did not change). The
     /// error says why it cannot be computed this way (a test suite, an
@@ -707,7 +707,7 @@ impl Engine {
         let mut selected: BTreeSet<Label> = BTreeSet::new();
         for (position, text) in patterns.iter().enumerate() {
             let pattern = crate::target_pattern::parse(text, relative_directory)?;
-            let filter = !pattern.negative;
+            let filter = !pattern.negative && !crate::affected::include_manual();
             let covers = covered.contains(&(position as u32));
             let targets: BTreeSet<Label> = match &pattern.kind {
                 Kind::TargetsBelowDirectory { rules_only } => {
