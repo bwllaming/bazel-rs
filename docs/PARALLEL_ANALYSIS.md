@@ -70,7 +70,12 @@ not cover, so parallel loading — P2 — attacks both large spans.)
   `planned_validation`, N58 `plan_aspect_dependency`, the repositories and
   provider inserts, `restricted_to_error` and `check_transition_allowlist`
   in the commit; the NEEDS_TARGET_PLATFORM retry runs inline at the commit
-  slot; implementation prints emit from the commit (§1.8).
+  slot; implementation prints emit from the commit (§1.8). The platform
+  tree that retry analyzes is appended to the plan being walked and
+  planned right after the target (`Engine::deferred_target_platform`).
+  It used to go to a discarded plan: a later phase-1 edge to one of its
+  memoized nodes (an alias to a constraint value) then ended at a target
+  phase 2 never planned (docs/AFFECTED_TARGETS.md §8.6).
 - Loading runs as commit-ordered units: BUILD prints buffered, `.bzl`
   top-level prints buffered in the shared cache entry (failures included)
   and replayed once per module in the package's load-DFS order; the

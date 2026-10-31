@@ -46,7 +46,7 @@ same set as the full analysis every time):
 | P3 | `.bazelrc` (unused config) + Go | 823 s | **291 s** (219 s concurrent) | 267 s |
 | P1 | BUILD + testdata | 1001 s | **312 s** (227 s concurrent) | 259 s |
 | P2 | lockfile + requirements (global) | 827 s | 800 s; **528 s** concurrent; **537 s** stored base digests | 270 s |
-| P5 | one BUILD edit | 809 s | 783 s (analysis-order bug fallback, §8.6; ≈ 116 s once fixed) | 259 s |
+| P5 | one BUILD edit | 809 s | **96 s** (783 s before the analysis-order fix, §8.6) | 259 s |
 
 ## 1. target-determinator v0.34.0: exactly what it does
 
@@ -490,8 +490,8 @@ CI job, instead of TD's four cqueries plus two more analyses.
 - **Analysis cost.** The full `test --nobuild //...` analysis is about
   the cost of one TD cquery. Its peak is 9.1–9.2 GB; a scoped run peaks at
   4.2 GB, while loading `//...` (§8.5).
-- **The scope's assumptions** (§8.2) and the **analysis-order bug** that
-  scoped subsets hit (§8.6).
+- **The scope's assumptions** (§8.2). The **analysis-order bug** that
+  scoped subsets hit is fixed (§8.6).
 - **Version alignment.** bazel-rs must report the lockfile's Bazel version
   (9.3.1 for ~/code, the other worker's branch). Otherwise every analysis
   rewrites the lockfile and is never saved.
@@ -726,7 +726,7 @@ set of the main binary:
 | P3 `bccb9427→80859617` (`.bazelrc` + Go), 4 | 4 | 823 s | **291 s** (190 + 113) | 219 s | – | 9.1 / 4.2 GB |
 | P1 `470886f0→7ab6d35d` (BUILD + testdata), 20 | 20 | 1001 s | **312 s** (240 + 120) | 227 s | – | 9.2 / 4.2 GB |
 | P2 `e7b42879→9e6b547e` (lockfile: global), 53 | full | 827 s | 800 s | **528 s** | **537 s** | 9.2 / 9.2 GB (2 × with concurrent) |
-| P5 `65dd621332^→65dd621332` (BUILD edit), 3 | 16 | 809 s | 783 s (scoped planning fails, §8.6) | 905 s | – | 9.2 / 8.5 GB |
+| P5 `65dd621332^→65dd621332` (BUILD edit), 3 | 16 | 809 s | **96 s** (84 + 9; 783 s before the §8.6 fix) | 905 s | – | 9.2 / 4.2 GB |
 
 A scope's head costs its forward closure's analysis. P1's and P3's
 `wcb_test` pulls in a Python closure whose `py_library` commits take
@@ -795,17 +795,36 @@ same checkout. Genuine Bazel loaded `.git/bazel-rs-affected/src/ts/...`,
 where rules_js's `npm_link_all_packages` fails. The default is now under an
 explicit `--cache-dir` (§4).
 
-### 8.6 Open: an analysis-order bug in subsets
+### 8.6 Fixed: an analysis-order bug in subsets
 
 Analysing exactly
 `//src/ts/bport:_entrypoint_amd64 //src/ts/bport:app //src/ts/bport:app_next`
-at 65dd621332 fails with `internal analysis order error:
-@@platforms//os:linux`. That is plain `build --nobuild` on main, with no
-`affected` involved; `//...` works. The failing plan entry is the alias
-`@zig_config//:exec_os`, in the configuration of a toolchain resolution. It
-is committed by a nested `plan_pending` flush (a toolchain's
-`config_setting` with a Starlark `flag_values` key), but its actual
-`@platforms//os:linux` was planned only in two other configurations
-(`engine.rs` `shared_artifacts`). P5's scope (16 `bport` targets) hits it.
-The orchestrator then plans both revisions entirely (783 s instead of
-≈ 116 s), with the right answer. Fixing the engine is a separate task.
+at 65dd621332 failed with `internal analysis order error:
+@@platforms//os:linux`. That was plain `build --nobuild` on main, with no
+`affected` involved; `//...` worked. P5's scope (16 `bport` targets) hit
+it, and the orchestrator then planned both revisions entirely (783 s).
+
+**Cause.** A Starlark implementation that asks for the default host
+target platform (`ctx.target_platform_has_constraint`, or a genrule's
+`$(TARGET_CPU)`) gets it in phase 2: the NEEDS_TARGET_PLATFORM retry
+resolves the platform there. That analyzed the platform's tree into a
+throwaway plan, so its nodes (`@platforms//os:linux` in the build
+configuration) were memoized in phase 1's `configured` map but never
+planned. When this happened inside an early flush (a toolchain's
+`config_setting` with a Starlark `flag_values` key, `plan_pending`), the
+rest of phase 1 could still reach those nodes. Here a later toolchain's
+`exec_compatible_with` alias `@zig_config//:exec_os` did. The memo
+answered, the alias was planned, and its phase 2 found no planned actual.
+Larger target sets happened to analyze the constraint value first.
+
+**Fix.** Phase 2 now walks the plan from the engine
+(`Engine::planning_plan`), and `Engine::deferred_target_platform`
+appends the tree to it. The tree is planned right after the target that
+asked for it, before any later consumer. Regression test:
+`tests/platforms.rs` `a_platform_tree_analyzed_by_phase_two_is_planned`
+(three targets and an alias to `@platforms//os:linux` in a toolchain's
+`exec_compatible_with`). On that workspace genuine 9.3.1 builds
+successfully (`has=True`, `toolchain=impl`) and main failed with the
+same error. On the clone, the action dump of `build --nobuild //src/...`
+is byte-identical before and after (6,121,706 lines). P5 cold is now
+scoped: 96 s, the same 3 targets, 4.9 GB cache, 4.2 GB peak RSS.

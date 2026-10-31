@@ -2032,6 +2032,11 @@ pub struct Engine {
     action_executions: BTreeMap<String, crate::exec_groups::ActionExecution>,
     /// Phase-2 state of the current build (Self::plan_pending).
     action_planning: Option<ActionPlanning>,
+    /// The build's plan while phase 2 walks it (Self::plan_targets): a
+    /// phase-2 step that analyzes targets (a deferred target platform's
+    /// tree, Self::deferred_target_platform) appends them to it, so that
+    /// every configured node phase 1 can later find memoized is planned.
+    planning_plan: Option<Plan>,
     /// Targets analyzed as toolchain implementations, with their parent's
     /// execution platform (the PlatformInfo label), which their own
     /// resolution forces (ToolchainContextUtil.java:136-141; docs/TOOLCHAINS.md).
@@ -2200,6 +2205,7 @@ impl Engine {
             group_exec_configurations: BTreeMap::new(),
             action_executions: BTreeMap::new(),
             action_planning: None,
+            planning_plan: None,
             toolchain_implementations: BTreeMap::new(),
             deferred_duplicates: BTreeMap::new(),
             source_directories: BTreeMap::new(),
@@ -7490,6 +7496,27 @@ impl Engine {
             .clone();
         self.platform_info(&label, config, configured, plan)
             .map_err(|error| error.target_text())
+    }
+
+    /// [`Self::target_platform`] asked for by phase 2 (an implementation
+    /// or a genrule command that needs the deferred target platform). The
+    /// platform's tree is analyzed into the plan phase 2 is walking, after
+    /// the target being planned: a node memoized only in `configured` would
+    /// later end a phase-1 edge (e.g. an alias to one of the platform's
+    /// constraint values, reached by toolchain registration) at a target
+    /// phase 2 never plans.
+    fn deferred_target_platform(
+        &mut self,
+        config: ConfigId,
+        configured: &mut ConfiguredNodes,
+    ) -> Result<Arc<PlatformInfo>, String> {
+        let Some(mut plan) = self.planning_plan.take() else {
+            // Not inside phase 2's walk: there is no plan to extend.
+            return self.target_platform(config, configured, &mut Vec::new());
+        };
+        let platform = self.target_platform(config, configured, &mut plan);
+        self.planning_plan = Some(plan);
+        platform
     }
 
     /// Whether the target platform of `config` is the default host
@@ -13318,7 +13345,7 @@ impl Engine {
             .is_err_and(|error| error.contains(crate::platforms::NEEDS_TARGET_PLATFORM))
         {
             // The target's own configuration's target platform.
-            let platform = self.target_platform(config, configured, &mut Vec::new())?;
+            let platform = self.deferred_target_platform(config, configured)?;
             if let Some(custom) = snapshot.rule.custom.as_mut() {
                 // A rule without toolchain resolution keeps its absent
                 // platform (ctx.target_platform_has_constraint); the
@@ -14026,7 +14053,7 @@ impl Engine {
                     .to_string()
                     .contains(crate::platforms::NEEDS_TARGET_PLATFORM)
             }) {
-                let platform = self.target_platform(config, configured, &mut Vec::new())?;
+                let platform = self.deferred_target_platform(config, configured)?;
                 surface.target_platform = crate::platforms::TargetPlatform::Resolved(platform);
                 expanded = expand_genrule_command(
                     base_command,
@@ -14471,7 +14498,7 @@ impl Engine {
     fn plan_targets(
         &mut self,
         state: &mut ActionPlanning,
-        plan: &Plan,
+        plan: &mut Plan,
         configured: &mut ConfiguredNodes,
         // M5 span ownership, see plan_targets_timed callers.
         outer: bool,
@@ -14483,7 +14510,11 @@ impl Engine {
         // span starts at the first plan_targets entry either way.
         crate::plan_timings::note_span_start();
         let before = state.done;
-        let result = self.plan_targets_timed(state, plan, configured);
+        // The plan lives in `self` while phase 2 walks it: a target's phase
+        // 2 may analyze (and so plan) more targets (Self::planning_plan).
+        let outer_plan = self.planning_plan.replace(std::mem::take(plan));
+        let result = self.plan_targets_timed(state, configured);
+        *plan = std::mem::replace(&mut self.planning_plan, outer_plan).unwrap_or_default();
         crate::plan_timings::record_batch(outer, state.done.saturating_sub(before) as u64);
         if outer {
             crate::plan_timings::record_span();
@@ -14494,10 +14525,15 @@ impl Engine {
     fn plan_targets_timed(
         &mut self,
         state: &mut ActionPlanning,
-        plan: &Plan,
         configured: &mut ConfiguredNodes,
     ) -> Result<(), String> {
-        while let Some((key, rule)) = plan.get(state.done) {
+        while let Some((key, rule)) = self
+            .planning_plan
+            .as_ref()
+            .and_then(|plan| plan.get(state.done))
+            .cloned()
+        {
+            let (key, rule) = (&key, &rule);
             let index = state.done as u64;
             state.done += 1;
             crate::progress::analysis_configured(state.done);
@@ -14639,7 +14675,7 @@ impl Engine {
     fn plan_pending(
         &mut self,
         config_setting: &Rule,
-        plan: &Plan,
+        plan: &mut Plan,
         configured: &mut ConfiguredNodes,
     ) -> Result<(), String> {
         let Some(mut state) = self.action_planning.take() else {
@@ -15066,7 +15102,7 @@ impl Engine {
         // the same exec paths as the actual generated files. Targets planned
         // early (a Starlark flag_values key, Self::plan_pending) are kept.
         let mut state = self.action_planning.take().unwrap_or_default();
-        self.plan_targets(&mut state, &plan, &mut configured, true)?;
+        self.plan_targets(&mut state, &mut plan, &mut configured, true)?;
         // --keep_going: the requested targets whose analysis failed in
         // either phase (docs/KEEP_GOING.md), skipped from here on.
         let mut failed_labels = std::mem::take(&mut self.keep_going_state.failed_targets);

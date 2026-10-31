@@ -1030,6 +1030,99 @@ has(name = "has_linux", cv = "@platforms//os:linux")
     assert!(output.status.success(), "{}", errors(&output));
 }
 
+/// A deferred target platform resolved by phase 2 (an implementation that
+/// asks for it) inside an early flush (a Starlark `flag_values` key) analyzes
+/// the default host platform's tree, `@platforms//os:linux` included.
+const DEFERRED_PLATFORM_DEFS: &str = r#"
+def _write(ctx, text):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, text)
+    return [DefaultInfo(files = depset([out]))]
+
+def _has_impl(ctx):
+    return _write(ctx, "has=" + repr(ctx.target_platform_has_constraint(ctx.attr.cv[platform_common.ConstraintValueInfo])) + "\n")
+
+has = rule(implementation = _has_impl, attrs = {"cv": attr.label()})
+
+def _flag_impl(ctx):
+    return []
+
+flag = rule(implementation = _flag_impl, build_setting = config.string(flag = True))
+
+def _impl_impl(ctx):
+    return [platform_common.ToolchainInfo(name = ctx.label.name)]
+
+toolchain_impl = rule(implementation = _impl_impl)
+
+def _use_impl(ctx):
+    return _write(ctx, "toolchain=" + ctx.toolchains["//tc:type"].name + "\n")
+
+use = rule(implementation = _use_impl, toolchains = ["//tc:type"])
+"#;
+
+#[test]
+fn a_platform_tree_analyzed_by_phase_two_is_planned() {
+    // The requested targets are analyzed in label order. `a_has` is planned
+    // by `b_flag_on`'s flush and resolves the default host platform there;
+    // `c_use`'s toolchain registration then reaches the platform's
+    // constraint value through an alias in that configuration. Before the
+    // fix the platform's tree was analyzed into a discarded plan, so the
+    // alias was planned without its actual ("internal analysis order
+    // error: @@platforms//os:linux"; ~/code's
+    // `@zig_config//:exec_os`, docs/AFFECTED_TARGETS.md §8.6).
+    // Genuine Bazel 9.3.1 on this workspace (`--batch
+    // --ignore_all_rc_files`, BCR modules): `Build completed
+    // successfully, 3 total actions`, a_has.txt `has=True`, c_use.txt
+    // `toolchain=impl`.
+    let ws = Workspace::new(
+        "module(name = 'main')\nbazel_dep(name = 'platforms', version = '1.0.0')\nlocal_path_override(module_name = 'platforms', path = 'platforms')\nregister_toolchains('//tc:all')\n",
+        &[
+            (
+                "BUILD.bazel",
+                r#"load(":deferred.bzl", "flag", "has", "use")
+has(name = "a_has", cv = "@platforms//cpu:x86_64")
+flag(name = "flag", build_setting_default = "on")
+config_setting(name = "b_flag_on", flag_values = {":flag": "on"})
+use(name = "c_use")
+"#,
+            ),
+            ("deferred.bzl", DEFERRED_PLATFORM_DEFS),
+            (
+                "tc/BUILD.bazel",
+                r#"load("//:deferred.bzl", "toolchain_impl")
+toolchain_type(name = "type", visibility = ["//visibility:public"])
+toolchain_impl(name = "impl")
+alias(name = "exec_os", actual = "@platforms//os:linux")
+toolchain(
+    name = "linux",
+    exec_compatible_with = [":exec_os"],
+    toolchain = ":impl",
+    toolchain_type = ":type",
+)
+"#,
+            ),
+        ],
+    );
+    extract_platforms(&ws.path().join("platforms"));
+    let outputs = built_outputs(&ws, &["//:a_has", "//:b_flag_on", "//:c_use"]);
+    let contents = outputs
+        .iter()
+        .map(|(path, contents)| {
+            (
+                path.rsplit('/').next().unwrap().to_owned(),
+                contents.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        contents,
+        owned(&[
+            ("a_has.txt", "has=True\n"),
+            ("c_use.txt", "toolchain=impl\n")
+        ])
+    );
+}
+
 /// tests/fixtures/extra_execution_platforms in a fresh workspace: the
 /// genuine platforms 1.0.0 module extracted into `platforms`, and N30's
 /// builtin-closure stubs as `local_path_override`s, which keep the built-in
