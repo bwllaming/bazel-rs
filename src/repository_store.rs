@@ -1019,7 +1019,7 @@ fn reuse_through(
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return Ok(Reuse::Found(destination));
     }
-    let Some(outcome) = probe_loaded(&destination, spec_key, &existing, validate) else {
+    let Some(outcome) = probe_loaded(&destination, &existing, validate) else {
         return Ok(Reuse::Invalid);
     };
     if !outcome.refreshed.is_empty() {
@@ -1038,15 +1038,23 @@ fn reuse_through(
 
 /// Shared validation kernel. Neither manifest refresh, binding, REPO recording
 /// nor CARRIED shortcuts are part of this operation.
+///
+/// The manifest's `spec` is NOT compared with `spec_key` here: identical
+/// content published under another specification keeps the first
+/// specification's manifest (publication never rewrites it, see
+/// [`materialize_inner`]), and the pointer of `spec_key` naming the tree is
+/// that specification's claim, written only after `spec_key` executed and
+/// produced exactly this identity. Requiring the manifest's specification
+/// on the pointer path made every such repository execute again on every
+/// run (its pointer already named the tree, so nothing changed) and kept
+/// the analysis snapshot from ever being saved. Historical candidate
+/// probes, which may read a manifest without a pointer, check it
+/// themselves ([`probe_candidate`]).
 fn probe_loaded(
     destination: &Path,
-    spec_key: &str,
     existing: &Manifest,
     validate: Validate<'_>,
 ) -> Option<Verified> {
-    if existing.spec.as_deref() != Some(spec_key) {
-        return None;
-    }
     let recorded_ok = {
         let _m = timing::mark(&timing::PHASES.recorded_check);
         validate(
@@ -1111,6 +1119,7 @@ where
         if !matches!(recorded_version(recorded), Some(2 | 3))
             || manifest.identity != identity
             || manifest.self_ref == Some(true)
+            || manifest.spec.as_deref() != Some(receipt.spec.as_str())
         {
             return None;
         }
@@ -1119,12 +1128,7 @@ where
             (Scope::Workspace(_), Some(found)) if found == workspace_text => {}
             _ => return None,
         }
-        probe_loaded(
-            &direct.join("trees").join(identity),
-            &receipt.spec,
-            &manifest,
-            &validate,
-        )?;
+        probe_loaded(&direct.join("trees").join(identity), &manifest, &validate)?;
         Some(manifest)
     };
     let mut saw_pointer = false;
@@ -4957,6 +4961,68 @@ mod tests {
         .unwrap();
         assert_eq!(again, a);
         assert_eq!(status, Publication::Reused);
+        no_stages(cache.path());
+    }
+
+    /// The user's stuck cache (protobuf's prebuilt protoc): one tree, the
+    /// manifest of the specification that published it first, and a later
+    /// specification's pointer naming the same content identity. The later
+    /// specification must reuse it through its pointer — it executed and
+    /// produced exactly this identity — instead of executing again on
+    /// every run while publication changes nothing (which kept the analysis
+    /// snapshot from ever being saved).
+    #[test]
+    fn identical_content_of_another_specification_reuses_through_its_pointer() {
+        let cache = temp();
+        let count = AtomicUsize::new(0);
+        let run = |spec: &[u8]| {
+            publish_spec(cache.path(), spec, b"same-provenance", true, |stage| {
+                count.fetch_add(1, Ordering::SeqCst);
+                write(stage)?;
+                Ok(b"same-inputs".to_vec())
+            })
+            .unwrap()
+        };
+        let (a, first) = run(b"spec-1");
+        assert_eq!(first, Publication::Executed);
+        let (b, second) = run(b"spec-2");
+        assert_eq!(second, Publication::Executed);
+        assert_eq!(a, b);
+        let direct = cache.path().join("direct");
+        let identity = a.file_name().unwrap().to_str().unwrap().to_owned();
+        let manifest =
+            parse_manifest(&fs::read(direct.join(format!("manifests/{identity}.json"))).unwrap())
+                .unwrap();
+        // The bad state: the manifest keeps the first specification.
+        assert_eq!(manifest.spec, Some(spec_identity(b"spec-1")));
+        let pointer = direct.join("specs").join(spec_identity(b"spec-2"));
+        assert_eq!(
+            read_pointer_unobserved(&pointer).unwrap().as_deref(),
+            Some(identity.as_str())
+        );
+        for spec in [b"spec-2", b"spec-1", b"spec-2"] {
+            assert_eq!(
+                try_reuse(cache.path(), "test-key", &spec_identity(spec), |_, _| Ok(
+                    true
+                ))
+                .unwrap(),
+                Some(a.clone())
+            );
+            let (again, status) = run(spec);
+            assert_eq!((again, status), (a.clone(), Publication::Reused));
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        // A specification that never published it has no pointer: no reuse.
+        assert_eq!(
+            try_reuse(
+                cache.path(),
+                "test-key",
+                &spec_identity(b"spec-3"),
+                |_, _| Ok(true)
+            )
+            .unwrap(),
+            None
+        );
         no_stages(cache.path());
     }
 
