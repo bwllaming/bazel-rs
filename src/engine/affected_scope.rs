@@ -49,6 +49,7 @@ struct Spec {
 }
 
 fn read_spec(path: &std::path::Path) -> Result<Spec, String> {
+    // snapshot-unrecorded: the affected scope forces the analysis snapshot off (snapshot::Mode::from_env).
     let text = std::fs::read_to_string(path)
         .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     let mut lines = text.lines();
@@ -127,6 +128,7 @@ impl Engine {
         &mut self,
         mut phase: TargetPatternPhase,
     ) -> Result<TargetPatternPhase, String> {
+        // snapshot-unrecorded: the affected scope forces the analysis snapshot off (snapshot::Mode::from_env).
         let Some(input) = std::env::var_os(crate::affected::SCOPE_VAR) else {
             return Ok(phase);
         };
@@ -160,6 +162,7 @@ impl Engine {
                 }
             }
         }
+        // snapshot-unrecorded: the affected scope forces the analysis snapshot off (snapshot::Mode::from_env).
         if let Some(digests) = std::env::var_os(crate::affected::DIGESTS_VAR) {
             let mut path = std::path::PathBuf::from(digests).into_os_string();
             path.push(".scope");
