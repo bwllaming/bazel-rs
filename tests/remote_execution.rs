@@ -524,7 +524,14 @@ fn streams_reconnect_retry_and_report_failures() {
     });
     let fallback = ws.run(
         "c4",
-        &["build", &flag, "--remote_local_fallback", "//pkg:run"],
+        // No upload: the next run must reach the executor, not a cached result.
+        &[
+            "build",
+            &flag,
+            "--remote_local_fallback",
+            "--noremote_upload_local_results",
+            "//pkg:run",
+        ],
     );
     assert!(fallback.status.success(), "{}", stderr(&fallback));
     assert_eq!(outputs(&fallback)["//pkg:run"], "hello\n");

@@ -631,17 +631,9 @@ pub fn setup(
             "Cannot combine gRPC based remote execution with HTTP-based caching".into(),
         ));
     }
-    // Intentional safety divergence (docs/REMOTE_CACHE.md): until native
-    // execution parity with Bazel is established, native results are written
-    // to a shared cache only on explicit opt-in. Reads stay Bazel-like.
-    let upload_local_results = options.upload_local_results && upload_opt_in();
-    let warn_upload = || {
-        if options.upload_local_results && !upload_local_results {
-            crate::note!(
-                "WARNING: native remote cache uploads are disabled by default (a safety divergence from Bazel's --remote_upload_local_results); set {UPLOAD_OPT_IN}=1 to upload local results"
-            );
-        }
-    };
+    // Like Bazel, local results are uploaded unless
+    // --noremote_upload_local_results (docs/REMOTE_CACHE.md).
+    let upload_local_results = options.upload_local_results;
     if !http {
         // GrpcCacheClient.isRemoteCacheOptions: anything else is gRPC.
         let endpoint = |target: &str,
@@ -726,7 +718,6 @@ pub fn setup(
             )?;
             (cache, Some(executor))
         };
-        warn_upload();
         return Ok(Some(RemoteCache {
             backend: Backend::Grpc(cache),
             executor,
@@ -829,7 +820,6 @@ pub fn setup(
         .chain(&options.cache_headers)
         .cloned()
         .collect();
-    warn_upload();
     Ok(Some(RemoteCache {
         backend: Backend::Http(HttpCache {
             uri,
@@ -849,13 +839,6 @@ pub fn setup(
         hits: AtomicUsize::new(0),
         executions: AtomicUsize::new(0),
     }))
-}
-
-/// The environment variable that opts in to remote cache uploads.
-pub const UPLOAD_OPT_IN: &str = "BAZEL_RS_ALLOW_REMOTE_UPLOAD";
-
-fn upload_opt_in() -> bool {
-    std::env::var_os(UPLOAD_OPT_IN).is_some_and(|value| value == "1")
 }
 
 static ACTIVE: OnceLock<RemoteCache> = OnceLock::new();

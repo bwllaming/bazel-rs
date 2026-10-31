@@ -250,17 +250,15 @@ credential helper errors during a lookup fail the action.
 
 The build summary adds `N remote cache hits` when a remote cache is active.
 
-**Uploads are denied by default (intentional safety divergence).** Until
-native execution parity with Bazel is established, a native build writes to
-a shared cache only when `BAZEL_RS_ALLOW_REMOTE_UPLOAD=1` is set in its
-environment. Without it, `--remote_upload_local_results` (Bazel's default
-true) is treated as false and the build warns once:
-`native remote cache uploads are disabled by default (…); set
-BAZEL_RS_ALLOW_REMOTE_UPLOAD=1 to upload local results`. Reads
-(`--remote_accept_cached`) are unaffected. A binary before fix-digest-memo
-could publish, and with this opt-in upload, another action's output as an
-action's result: purge the Action Cache entries such a binary uploaded
-(docs/DIGEST_MEMO.md, "Upgrade note").
+**Uploads follow `--remote_upload_local_results`, like Bazel.** Local
+results are written to the remote cache by default (Bazel's default is true);
+`--noremote_upload_local_results` keeps the cache read-only for the client.
+Reads (`--remote_accept_cached`) are unaffected. Earlier bazel-rs releases
+(up to 0.4.1) only uploaded with `BAZEL_RS_ALLOW_REMOTE_UPLOAD=1`; that
+variable is no longer read. A binary before fix-digest-memo could publish
+another action's output as an action's result when uploads were enabled:
+purge the Action Cache entries such a binary uploaded (docs/DIGEST_MEMO.md,
+"Upgrade note").
 
 ## The gRPC remote cache
 

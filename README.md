@@ -258,8 +258,8 @@ Implemented:
   mode validation on cache hits; per-key cross-process locks; atomic publication.
 - An http(s) or REAPI gRPC (`grpc://`, `grpcs://`, `unix:`) `--remote_cache`
   with Bazel's action keys (entries are shared with genuine Bazel both ways) and Bazel's credential helpers for the cache and the
-  downloader ([`docs/REMOTE_CACHE.md`](docs/REMOTE_CACHE.md)); uploads need
-  the explicit opt-in `BAZEL_RS_ALLOW_REMOTE_UPLOAD=1` (safety divergence).
+  downloader ([`docs/REMOTE_CACHE.md`](docs/REMOTE_CACHE.md)); local results
+  are uploaded per `--remote_upload_local_results` (default true, like Bazel).
 - Remote execution with `--remote_executor` (build and test spawns, Bazel's
   Action digests, platforms from `exec_properties` and
   `--remote_default_exec_properties`, `--remote_local_fallback`;

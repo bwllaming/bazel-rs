@@ -980,25 +980,47 @@ fn strict_action_env_is_the_modelled_default() {
 }
 
 #[test]
-fn uploads_are_denied_by_default_and_reads_stay() {
+fn uploads_follow_remote_upload_local_results_like_bazel() {
     let ws = Workspace::new();
     let server = Server::new();
     let cache = format!("--remote_cache={}", server.url());
-    let denied = ws.run_with("c1", &["build", &cache, "//pkg:gen"], false);
-    assert!(denied.status.success(), "{}", stderr(&denied));
+    // Bazel's default --remote_upload_local_results uploads the local result.
+    let uploaded = ws.run_with("c1", &["build", &cache, "//pkg:gen"], false);
+    assert!(uploaded.status.success(), "{}", stderr(&uploaded));
     assert!(
-        stderr(&denied).contains("WARNING: native remote cache uploads are disabled by default"),
+        !stderr(&uploaded).contains("uploads are disabled"),
         "{}",
-        stderr(&denied)
+        stderr(&uploaded)
     );
-    assert_eq!(server.summary(), [format!("GET /ac/{GEN_KEY}")]);
-    // An entry written with the opt-in is read without it.
-    let written = ws.run("c2", &["build", &cache, "//pkg:gen"]);
-    assert!(written.status.success(), "{}", stderr(&written));
+    assert!(
+        server.summary().iter().any(|line| line.starts_with("PUT")),
+        "{:?}",
+        server.summary()
+    );
     server.take_log();
-    let read = ws.run_with("c3", &["build", &cache, "//pkg:gen"], false);
+    // A fresh client reads it.
+    let read = ws.run_with("c2", &["build", &cache, "//pkg:gen"], false);
     assert!(stderr(&read).contains("0 actions executed, 0 cache hits, 1 remote cache hits"));
     assert!(!server.summary().iter().any(|line| line.starts_with("PUT")));
+    // --noremote_upload_local_results reads but never writes.
+    server.take_log();
+    let no_upload = ws.run_with(
+        "c3",
+        &[
+            "build",
+            &cache,
+            "--noremote_upload_local_results",
+            "--remote_accept_cached=false",
+            "//pkg:gen",
+        ],
+        false,
+    );
+    assert!(no_upload.status.success(), "{}", stderr(&no_upload));
+    assert!(
+        !server.summary().iter().any(|line| line.starts_with("PUT")),
+        "{:?}",
+        server.summary()
+    );
 }
 
 fn exported(text: &str) -> BTreeMap<String, String> {
