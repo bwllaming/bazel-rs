@@ -472,7 +472,7 @@ already there is read from it, and concurrent fetches of one digest wait
 for the first (Bazel's in-flight download deduplication and output
 filesystem) — the same file in two configurations' copies of a tree
 artifact, a remote-only output materialized for a later consumer. The
-files of a tree artifact download concurrently (up to 32 per tree, 128 in
+files of a tree artifact download concurrently (up to 32 per tree, at least 8, 512 in
 all), as Bazel starts all of an action's downloads at once; a tree of
 thousands of small files is latency-bound otherwise. A runfiles manifest
 (which records paths only) no longer materializes its remote-only inputs.
@@ -484,8 +484,8 @@ read):
 
 | run | before (f68ecf0) | after | genuine 9.3.1 |
 |---|---|---|---|
-| all hits | 234 s, 32692 GETs, 4.78 GB | 30 s, 12234 GETs, 1.47 GB | 34 s, 13727 GETs, 1.26 GB |
-| `utils/str` comment changed (27 local Go compiles of rdeps, 3310 hits) | — | 39 s, 13131 GETs, 2.07 GB | 39 s, 15013 GETs, 2.12 GB |
+| all hits | 234 s, 32692 GETs, 4.78 GB | 29–30 s, 12234 GETs, 1.47 GB | 34 s, 13727 GETs, 1.26 GB |
+| `utils/str` comment changed (27 local Go compiles of rdeps, 3310 hits) | 235 s, 32622 GETs, 4.56 GB | 40 s, 13131 GETs, 2.07 GB | 39 s, 15013 GETs, 2.12 GB |
 
 Before, a hit downloaded every output with an HTTP cache, each tree file
 sequentially (happy-dom's 4957 files: 206 s on the critical path) and one

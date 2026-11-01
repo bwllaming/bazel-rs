@@ -2047,11 +2047,14 @@ impl RemoteCache {
 /// (Bazel's HTTP client allows `--remote_max_connections`, 100, and gRPC
 /// multiplexes; latency, not bandwidth, bounds a tree of small files).
 const TREE_FETCHES: usize = 32;
-const ALL_TREE_FETCHES: usize = 128;
+const ALL_TREE_FETCHES: usize = 512;
+/// A tree that starts while others download still gets this many.
+const MIN_TREE_FETCHES: usize = 8;
 static TREE_FETCH_THREADS: AtomicUsize = AtomicUsize::new(0);
 
-/// `fetch` over `items` in up to [`TREE_FETCHES`] threads (fewer while
-/// other trees download), results in item order; the first error wins.
+/// `fetch` over `items` in up to [`TREE_FETCHES`] threads (fewer, but at
+/// least [`MIN_TREE_FETCHES`], while other trees download), results in
+/// item order; the first error wins.
 fn parallel<I: Sync, T: Send>(
     items: &[I],
     fetch: impl Fn(&I) -> Result<T, CacheError> + Sync,
@@ -2059,6 +2062,7 @@ fn parallel<I: Sync, T: Send>(
     let busy = TREE_FETCH_THREADS.load(Ordering::Relaxed);
     let threads = TREE_FETCHES
         .min(ALL_TREE_FETCHES.saturating_sub(busy))
+        .max(MIN_TREE_FETCHES)
         .min(items.len());
     if threads <= 1 {
         return items.iter().map(&fetch).collect();
