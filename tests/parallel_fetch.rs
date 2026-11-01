@@ -675,3 +675,68 @@ fn the_snapshot_recording_is_the_sequential_engines() {
     );
     assert_eq!(record(8), sequential);
 }
+
+/// `query` visits every select() branch (its graph is unconfigured), so the
+/// repositories only select() branches name are demanded too: the package
+/// prefetch fetches them ahead of their sequential demand instead of one
+/// after another at it (~/code's cold `rdeps(//src/..., ...)` executed 497
+/// pip wheel repositories of other platforms on the coordinator). Output,
+/// stderr (a printing repository included), lockfile and trees stay the
+/// sequential engine's.
+#[test]
+fn query_fetches_the_repositories_of_every_select_branch_ahead() {
+    let server = Server::new(Duration::from_millis(300));
+    let ws = Workspace::new();
+    let mut module =
+        String::from("module(name = 'main')\nslow = use_repo_rule('//:defs.bzl', 'slow')\n");
+    let mut branches = Vec::new();
+    for index in 0..6 {
+        let name = format!("b{index}");
+        let extra = if index == 3 {
+            ", message = 'branch three'"
+        } else {
+            ""
+        };
+        module.push_str(&format!(
+            "slow(name = '{name}', {}{extra})\n",
+            source(&server, &name)
+        ));
+        branches.push(format!("':c{index}': ['@{name}//:data']"));
+    }
+    ws.file("MODULE.bazel", &module);
+    ws.file("defs.bzl", DEFS);
+    let settings: String = (0..6)
+        .map(|index| {
+            format!("config_setting(name = 'c{index}', values = {{'define': 'c={index}'}})\n")
+        })
+        .collect();
+    ws.file(
+        "BUILD.bazel",
+        &format!(
+            "{settings}filegroup(name = 'everything', srcs = select({{{}, '//conditions:default': []}}))\n",
+            branches.join(", ")
+        ),
+    );
+    let args = ["query", "deps(//:everything)"];
+    let reference = ws.cold(1, 0, &args);
+    assert!(
+        reference.output.status.success(),
+        "{}",
+        stderr(&reference.output)
+    );
+    let text = String::from_utf8_lossy(&reference.output.stdout).into_owned();
+    assert!(text.contains("@b5//:data"), "{text}");
+    let (paths, peak) = server.take();
+    assert_eq!(paths.len(), 6, "{paths:?}");
+    assert_eq!(peak, 1, "the sequential engine fetches one at a time");
+    for threads in [8, 32] {
+        let run = ws.cold(threads, 0, &args);
+        assert_same(&reference, &run, &format!("threads={threads}"));
+        let (paths, peak) = server.take();
+        assert_eq!(paths.len(), 6, "threads={threads}: {paths:?}");
+        assert!(
+            peak > 1,
+            "threads={threads}: the select() branches' downloads overlap (peak {peak})"
+        );
+    }
+}

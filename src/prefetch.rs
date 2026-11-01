@@ -119,11 +119,37 @@ struct State {
     counts: Counts,
     /// Whether each select() condition matched wherever the coordinator
     /// analyzed it (`None`: not in every configuration alike, or in error).
-    conditions: HashMap<Label, Option<bool>>,
+    conditions: Conditions,
     /// The certainly analyzed rules (package, name, depth of their labels)
     /// with a select() whose branch waits for the coordinator to analyze
     /// this condition: expanded again once it did.
     undecided: HashMap<Label, Vec<(PackageId, String, u32)>>,
+}
+
+/// What the coordinator's analysis decided of select() conditions
+/// ([`State::conditions`]), and whether every select() branch is demanded
+/// anyway.
+#[derive(Default)]
+struct Conditions {
+    decided: HashMap<Label, Option<bool>>,
+    /// `query` visits every select() branch (an unconfigured graph):
+    /// every label a certainly visited rule names is certainly demanded,
+    /// so its repository is fetched ahead too
+    /// ([`Prefetcher::visit_all_branches`]).
+    all_branches: bool,
+}
+
+impl std::ops::Deref for Conditions {
+    type Target = HashMap<Label, Option<bool>>;
+    fn deref(&self) -> &Self::Target {
+        &self.decided
+    }
+}
+
+impl std::ops::DerefMut for Conditions {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.decided
+    }
 }
 
 /// Select() conditions an expansion could not decide yet, with the rule
@@ -358,7 +384,7 @@ fn expansion(
     package: &Rules,
     wanted: &Wanted,
     depth: u32,
-    conditions: &HashMap<Label, Option<bool>>,
+    conditions: &Conditions,
     undecided: &mut Undecided,
 ) -> Vec<Reach> {
     let mut reached = Vec::new();
@@ -427,10 +453,13 @@ fn expansion(
 /// conditions the coordinator has not analyzed yet are added to `undecided`.
 fn certain_labels(
     rule: &Rule,
-    conditions: &HashMap<Label, Option<bool>>,
+    conditions: &Conditions,
     undecided: &mut Vec<Label>,
 ) -> HashSet<Label> {
     use crate::custom_rule::ConfigurablePart;
+    if conditions.all_branches {
+        return rule_dependency_labels(rule).into_iter().collect();
+    }
     let mut branches: HashSet<Label> = HashSet::new();
     let mut taken: Vec<Label> = Vec::new();
     let configurable =
@@ -586,6 +615,16 @@ impl Prefetcher {
         // `reach` pops from the end: keep the submission order.
         work.reverse();
         self.reach(work);
+    }
+
+    /// The coordinator visits every select() branch (`query`'s
+    /// unconfigured graph under the default dependency filter): the
+    /// labels of every branch are certain ([`Reach`]), so their
+    /// repositories are fetched ahead of the sequential demand instead of
+    /// one after another at it. Hints only, like every certainty: output
+    /// stays the sequential one.
+    pub(crate) fn visit_all_branches(&self) {
+        lock(&self.shared.state).conditions.all_branches = true;
     }
 
     /// Queue the targets `rule` (one the coordinator analyzes) names, at

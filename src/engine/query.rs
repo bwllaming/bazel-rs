@@ -760,7 +760,7 @@ impl Env<'_> {
         let top = expr as *const Expr;
         // Packages the evaluation demands next load ahead on the
         // prefetch workers (committed at the sequential demand point).
-        self.engine.start_query_prefetch();
+        self.engine.start_query_prefetch(self.visits_all_branches());
         match self.eval(expr, &mut Vec::new()) {
             Ok(result) => {
                 if self.has_errors && !self.options.keep_going {
@@ -952,6 +952,14 @@ impl Env<'_> {
 
     /// LabelVisitationUtils.visitTarget (packages/LabelVisitationUtils.java:58-80),
     /// filtered by the dependency filter.
+    /// Whether the visitations follow every dependency a rule names: the
+    /// default dependency filter keeps every attribute, and query visits
+    /// every select() branch, so the package prefetch fetches the
+    /// repositories of every branch ahead of their sequential demand.
+    fn visits_all_branches(&self) -> bool {
+        self.unfiltered || (self.options.implicit_deps && self.options.tool_deps)
+    }
+
     fn edges(&mut self, label: &Label) -> Eval<Arc<Vec<Edge>>> {
         if let Some(edges) = self.edges.get(label) {
             return Ok(edges.clone());
@@ -1874,7 +1882,7 @@ impl Env<'_> {
             }
         }
         self.unfiltered = true;
-        self.engine.start_query_prefetch();
+        self.engine.start_query_prefetch(true);
         let visited = self.visit(&roots, None);
         self.unfiltered = false;
         self.edges.clear();

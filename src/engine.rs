@@ -14957,9 +14957,14 @@ impl Engine {
     /// prefetcher (same workers, same commit at the sequential demand
     /// point, so output is the threads-1 one), seeded as the query
     /// discovers targets ([`Self::prefetch_query_label`]).
-    pub(crate) fn start_query_prefetch(&mut self) {
+    /// `all_branches`: the visitation follows every select() branch
+    /// (crate::prefetch::Prefetcher::visit_all_branches).
+    pub(crate) fn start_query_prefetch(&mut self, all_branches: bool) {
         if self.prefetch.is_none() {
             self.start_prefetch(&[]);
+        }
+        if all_branches && let Some(prefetch) = &self.prefetch {
+            prefetch.visit_all_branches();
         }
     }
 

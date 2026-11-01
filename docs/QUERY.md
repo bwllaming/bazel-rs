@@ -317,6 +317,26 @@ Cold (fresh cache, 9,739 repositories fetched, mostly pip wheels of every
 platform: a query follows every select() branch), `rdeps(//src/...,
 //src/python:docstar)`: 530 s with a per-root serial fetch sum of 2,619 s.
 
+**Every select() branch is fetched ahead (ci-pipeline-perf).** The
+prefetch speculates only the repositories of labels the coordinator
+*certainly* demands: in a build, a select() branch counts only once the
+coordinator's analysis decided its conditions, because a branch for another
+platform is a wasted download. Query decides no condition and visits every
+branch, so those repositories (pip wheels of other platforms, npm and
+crates for other hosts) were executed one after another by the coordinator
+at their demand. Under the default dependency filter (and for the SkyQuery
+universe) the query's prefetch now counts every label a certainly visited
+rule names as certain (`Prefetcher::visit_all_branches`); output is
+unchanged (speculations publish nothing a sequential run would not, test
+`parallel_fetch.rs` `query_fetches_the_repositories_of_every_select_branch_ahead`).
+~/code CI step 2 (`rdeps(//src/..., set(<475 affected labels>)) except
+attr(tags, 'manual', //src/...)`, `--output streamed_jsonproto`, after a cold
+`affected --base=HEAD^` of PR 13252 in the same fresh cache): 262–274 s →
+141 s, the coordinator's sequential executions 497 (214 s) → 234 (45 s,
+small module-extension repositories), the speculation pool at its 32
+workers for 100 s; what remains is the download of ~37 GB of trees.
+Warm (the same cache again): 18 s.
+
 bazel-gazelle (scripts/bench_genuine.py `query` scenario, 3 reps, medians;
 outputs identical as sets): `deps(//...) --keep_going` rs 1.86 s → 1.32 s
 (genuine batch 3.4 s, warm server 0.3 s); `rdeps(//..., //rule:rule)
