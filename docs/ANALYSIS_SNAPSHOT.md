@@ -404,7 +404,9 @@ with the snapshot's plan restricted to them.
   `--keep_going` plan without failures. A `--nobuild` snapshot serves an
   executing build only when no derived action reads the workspace status
   (its consumers have no producer there) or a source directory (never
-  traversed there); the status placeholders are added.
+  traversed there; the recording lists the roots reaching such actions, so
+  the candidate is passed over before anything is given up); the status
+  placeholders are added.
 * **What it prints**: `INFO: Analyzed N targets (P packages loaded, 0
   targets configured).` (P: what the target pattern phase loaded) and the
   `Found` line, like a warm Bazel server, which does not replay the
@@ -420,8 +422,9 @@ with the snapshot's plan restricted to them.
 * A derived run is **not saved** (its own key keeps missing; the family
   serves it). The candidate's recorded inputs are validated first, while
   the command can still save its own analysis: a candidate whose inputs
-  changed leaves its family (`derive ... miss: ... (the full analysis
-  runs)`) and the full analysis is saved as before. Only a candidate that
+  changed leaves its family (`derive G: not from S: <the change>`), the
+  next candidate is tried, and without one the full analysis is saved as
+  before. Only a candidate that
   validated but whose hit then fails (its replay, its local trees, its
   plan) leaves an unsaved full analysis. `BAZEL_RS_SNAPSHOT_DERIVE=0` turns
   recording and lookups off; verify mode and `bazel-rs affected`'s
@@ -430,10 +433,12 @@ with the snapshot's plan restricted to them.
 * **Limits.** A snapshot is stale once anything it read changed. In
   ~/code's cold CI the `query` between `affected` and `build` evaluates
   more module extensions (every `select()` branch) and so writes the hidden
-  lockfile `affected`'s head planning read: the `build` analyzes in full
-  (and saves), the `test` derives from it. With a persistent cache the
-  hidden lockfile already holds those results and the `build` derives from
-  `affected` too.
+  lockfile `affected`'s head planning read. And `affected` plans `test
+  --nobuild`, whose plan the CI's executing `build` cannot use where it
+  reaches a source directory (rules_js `sharp@…/lc` on ~/code). So there the
+  `build` analyzes in full (and saves) and the `test` derives from the
+  `build`; a workspace without those derives the `build` from `affected`
+  too (tests/affected.rs).
 
 | ~/code CI (PR 13252), cache of the steps before | before | derived |
 |---|---|---|

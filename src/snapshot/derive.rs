@@ -65,6 +65,11 @@ pub fn enabled() -> bool {
 pub struct Coverage {
     /// Whether the plan executes (planned without `--nobuild`).
     pub execute: bool,
+    /// Of a `--nobuild` plan: the roots whose actions read the workspace
+    /// status (which it does not produce) or a source directory (which it
+    /// never traversed), themselves or below — no executing build derives
+    /// them.
+    pub unexecutable: BTreeSet<String>,
     /// The requested labels in request order, each with the producers of
     /// what building it builds.
     pub targets: Vec<(Label, Vec<String>)>,
@@ -156,6 +161,33 @@ impl Coverage {
     /// Whether this snapshot can serve `request` as far as its labels go
     /// (the plan decides the rest, [`derive`]).
     pub fn covers(&self, request: &Request<'_>) -> Result<(), String> {
+        let runs_of: HashMap<&Label, &Run> =
+            self.runs.iter().map(|run| (&run.test.label, run)).collect();
+        if request.execute && !self.execute && !self.unexecutable.is_empty() {
+            let build: HashMap<&Label, &Vec<String>> = self
+                .targets
+                .iter()
+                .map(|(label, roots)| (label, roots))
+                .collect();
+            let unexecutable = |roots: Option<&Vec<String>>| {
+                roots.is_some_and(|roots| roots.iter().any(|id| self.unexecutable.contains(id)))
+            };
+            let label = request
+                .build
+                .iter()
+                .find(|label| unexecutable(build.get(label).copied()))
+                .or_else(|| {
+                    request
+                        .runs
+                        .iter()
+                        .find(|label| unexecutable(runs_of.get(label).map(|run| &run.roots)))
+                });
+            if let Some(label) = label {
+                return Err(format!(
+                    "{label} needs actions reading the workspace status or a source directory, which its --nobuild plan does not check"
+                ));
+            }
+        }
         let targets: HashSet<&Label> = self.targets.iter().map(|(label, _)| label).collect();
         if let Some(label) = request.build.iter().find(|label| !targets.contains(label)) {
             return Err(format!("{label} is not one of its targets"));
@@ -614,12 +646,19 @@ pub fn attempt(
         return Outcome::Uncovered(save);
     };
     let key = save.key();
+    // The most recent covering candidate whose recorded inputs hold — checked
+    // while this command can still save its own analysis: a stale one
+    // leaves its family.
     let mut chosen = None;
     for (candidate, coverage) in candidates(&lookup.cache, &family, key.binary) {
         if candidate == key {
             continue;
         }
-        match coverage.covers(&request) {
+        let checked = coverage.covers(&request).and_then(|()| {
+            crate::snapshot::hit::prevalidate(&lookup.cache, &candidate, &lookup.replay.environment)
+                .inspect_err(|_| unmark(&lookup.cache, &family, &candidate))
+        });
+        match checked {
             Ok(()) => {
                 chosen = Some((candidate, coverage));
                 break;
@@ -627,7 +666,7 @@ pub fn attempt(
             Err(reason) => {
                 if explain {
                     crate::observed_fs::diag(&format!(
-                        "derive {}: {} does not cover it: {reason}",
+                        "derive {}: not from {}: {reason}",
                         key.short(),
                         candidate.short()
                     ));
@@ -638,21 +677,6 @@ pub fn attempt(
     let Some((candidate, coverage)) = chosen else {
         return Outcome::Uncovered(save);
     };
-    // Its inputs first, while this command can still save its own analysis:
-    // a stale candidate leaves its family and the full analysis saves.
-    if let Err(reason) =
-        crate::snapshot::hit::prevalidate(&lookup.cache, &candidate, &lookup.replay.environment)
-    {
-        unmark(&lookup.cache, &family, &candidate);
-        if explain {
-            crate::observed_fs::diag(&format!(
-                "derive {} from {}: miss: {reason} (the full analysis runs)",
-                key.short(),
-                candidate.short()
-            ));
-        }
-        return Outcome::Uncovered(save);
-    }
     let log = save.log();
     save.abandon(&format!("derived from {}", candidate.short()));
     let targets = request.build.len();

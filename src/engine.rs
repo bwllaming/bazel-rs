@@ -10176,6 +10176,62 @@ impl Engine {
         if matches!(request.command, crate::request::RequestCommand::Run { .. }) {
             return None;
         }
+        // An executing build may derive from a `--nobuild` plan only where
+        // no action it needs reads the workspace status (no producer there)
+        // or a source directory (never traversed there): the roots reaching
+        // such an action.
+        let mut tainted: HashMap<&str, bool> = HashMap::new();
+        if !request.execute {
+            let by_id: HashMap<&str, &crate::scheduler::PlannedAction> = request
+                .nodes
+                .iter()
+                .map(|node| (node.action.id.as_str(), node))
+                .collect();
+            let reads = |node: &crate::scheduler::PlannedAction| {
+                !node.action.extra.source_directories.is_empty()
+                    || node.inputs().any(|(_, exec)| {
+                        exec == Path::new("bazel-out/stable-status.txt")
+                            || exec == Path::new("bazel-out/volatile-status.txt")
+                    })
+            };
+            // Whether a node reads one, or depends on a node that does
+            // (memoized, iteratively: plans are deep).
+            for node in &request.nodes {
+                let mut stack = vec![(node.action.id.as_str(), false)];
+                while let Some((id, expanded)) = stack.pop() {
+                    if tainted.contains_key(id) {
+                        continue;
+                    }
+                    let Some(node) = by_id.get(id) else {
+                        tainted.insert(id, false);
+                        continue;
+                    };
+                    if expanded {
+                        let bad = reads(node)
+                            || node.all_dependencies().any(|dependency| {
+                                tainted
+                                    .get(dependency.action_id.as_str())
+                                    .copied()
+                                    .unwrap_or(false)
+                            });
+                        tainted.insert(id, bad);
+                    } else {
+                        stack.push((id, true));
+                        for dependency in node.all_dependencies() {
+                            if !tainted.contains_key(dependency.action_id.as_str()) {
+                                stack.push((dependency.action_id.as_str(), false));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let unexecutable = |ids: &BTreeSet<String>| {
+            ids.iter()
+                .filter(|id| tainted.get(id.as_str()).copied().unwrap_or(false))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
         let mut coverage = crate::snapshot::derive::Coverage {
             execute: request.execute,
             ..Default::default()
@@ -10183,9 +10239,13 @@ impl Engine {
         // The requested labels in request order.
         for label in labels {
             let ids = roots.build.get(label)?;
+            coverage.unexecutable.extend(unexecutable(ids));
             coverage
                 .targets
                 .push((label.clone(), ids.iter().cloned().collect()));
+        }
+        for ids in roots.run.values() {
+            coverage.unexecutable.extend(unexecutable(ids));
         }
         // The tests the request runs.
         if let crate::request::RequestCommand::Test { tests, .. } = &request.command {

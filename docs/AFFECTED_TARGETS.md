@@ -926,3 +926,8 @@ three commands share one server; here each re-analyzed (~150 s each).
   before the head is planned in place it starts as the base planning's
   (without the results naming the worktree); its extension results are
   validated against their recorded inputs as always.
+* On ~/code this does not serve the CI's `build` yet: its `query` writes
+  the hidden lockfile after `affected` (cold cache), and the head's `test
+  --nobuild` plan reaches a source directory an executing build must check
+  (docs/ANALYSIS_SNAPSHOT.md "Derived hits", Limits). The `build` there is a
+  full analysis, saved, and the `test` derives from it.

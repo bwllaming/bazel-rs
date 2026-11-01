@@ -368,7 +368,7 @@ fn edits_are_seen_and_a_stale_snapshot_leaves_its_family() {
     let pair = twin.same(&test);
     pair.assert_success()
         .assert_full()
-        .assert_diagnostic("the full analysis runs)")
+        .assert_diagnostic("content changed")
         .assert_diagnostic("saved ");
     assert!(text(&pair.derive.stdout).contains("changed"));
     // Its own snapshot from now on; the stale one left the family.
@@ -406,7 +406,7 @@ fn a_nobuild_snapshot_serves_an_executing_build_without_status_readers() {
     twin.same(&["build", "//:stamped"])
         .assert_success()
         .assert_full()
-        .assert_diagnostic("reads the workspace status");
+        .assert_diagnostic("reading the workspace status");
 }
 
 /// `BAZEL_RS_SNAPSHOT_DERIVE=0` keeps every miss a full analysis.
