@@ -21,8 +21,9 @@
 //! Ctrl-C) the process-wrapper kills the command too. Captured output is
 //! buffered without a size cap like Bazel's (StarlarkExecutionResult.java:
 //! 201-203): the result is a Starlark string, so the memory is inherent.
-//! Unlike process-wrapper the child does not call `setsid()` or force
-//! `umask(022)` (no unsafe pre-exec hooks here). The library's in-process
+//! Like the process-wrapper's, the supervised child starts its own session
+//! (`setsid()`, crate::signals::new_session_in_child); unlike it, the
+//! umask is not forced to 022. The library's in-process
 //! users (unit tests) start the command directly with the former group
 //! discipline: its group is SIGKILLed after the leader exits or at the
 //! deadline, and a process that left the group is not reached.

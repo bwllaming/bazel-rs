@@ -124,6 +124,27 @@ pub fn reset_in_child(command: &mut Command, defaults: Defaults) {
     }
 }
 
+/// Makes `command` start as the leader of a new session (and so of a new
+/// process group): setsid(2) in the child, as Bazel's process-wrapper does
+/// before it execs the spawn (process-wrapper-legacy.cc:68-71). The spawn
+/// then shares neither the process group nor the session — nor a
+/// controlling terminal — with bazel-rs and the shell that started it.
+/// Call it instead of `process_group(0)`: setsid fails for a process that
+/// already leads its group.
+pub fn new_session_in_child(command: &mut Command) {
+    // SAFETY: runs in the child between fork and exec: setsid(2) is
+    // async-signal-safe (signal-safety(7)) and the hook touches no state
+    // shared with the parent; errno is read right after the call.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
 /// Bazel's exit code of an interrupted command (ExitCode.INTERRUPTED).
 pub const INTERRUPTED_EXIT_CODE: i32 = 8;
 

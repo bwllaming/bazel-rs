@@ -333,6 +333,83 @@ fn interrupting_bazel_rs_kills_its_running_test_and_daemons() {
     }
 }
 
+/// The session and process group of `pid` (/proc/<pid>/stat fields 6, 5).
+fn session_and_group(pid: u32) -> (u32, u32) {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let fields: Vec<&str> = stat.rsplit_once(") ").unwrap().1.split(' ').collect();
+    (fields[3].parse().unwrap(), fields[2].parse().unwrap())
+}
+
+/// A test runs in a session and process group of its own, like under Bazel's
+/// process-wrapper (whose child calls setsid(), process-wrapper-legacy.cc:
+/// 68-71): `kill -TERM 0` in a test (a cleanup trap, a Go test killing its
+/// group) ends the test only — never bazel-rs, the shell that started it, or
+/// that shell's job (the CI step) — and the test shares no session, and so
+/// no controlling terminal, with them.
+fn check_test_isolation(strategy: &str) {
+    let ws = Workspace::new();
+    let ids = ws.pid_file(&format!("{strategy}-ids"));
+    ws.file("MODULE.bazel", "module(name = 'process_cleanup')\n");
+    ws.file("pkg/defs.bzl", DEFS);
+    ws.file(
+        "pkg/BUILD.bazel",
+        &format!(
+            r##"load(":defs.bzl", "script_test")
+script_test(name = "group_kill_test", script = """#!/bin/sh
+set -- $(sed 's/.*) //' /proc/$$/stat)
+echo $4 $3 > {ids}.tmp && mv {ids}.tmp {ids}
+kill -TERM 0
+sleep 30
+"""
+)
+"##
+        ),
+    );
+    let output = ws.run(
+        "cache",
+        &[
+            "test",
+            &format!("--spawn_strategy={strategy}"),
+            "--test_output=errors",
+            "//pkg:group_kill_test",
+        ],
+    );
+    let out = stdout(&output);
+    // bazel-rs survived the test's group kill and reports the test's own
+    // failure (killed by its SIGTERM), well before the 30 s sleep.
+    assert_eq!(output.status.code(), Some(3), "{out}\n{}", stderr(&output));
+    assert!(
+        out.lines()
+            .any(|line| line.starts_with("//pkg:group_kill_test") && line.contains("FAILED")),
+        "{out}"
+    );
+    let text = fs::read_to_string(&ids).unwrap_or_else(|error| panic!("{ids}: {error}"));
+    let (session, group) = text
+        .trim()
+        .split_once(' ')
+        .map(|(session, group)| {
+            (
+                session.parse::<u32>().unwrap(),
+                group.parse::<u32>().unwrap(),
+            )
+        })
+        .unwrap();
+    // bazel-rs ran in this process's session and group (no setsid).
+    let (own_session, own_group) = session_and_group(std::process::id());
+    assert_ne!(session, own_session, "the test shares bazel-rs's session");
+    assert_ne!(group, own_group, "the test shares bazel-rs's process group");
+}
+
+#[test]
+fn a_test_killing_its_process_group_ends_only_itself_sandboxed() {
+    check_test_isolation("sandboxed");
+}
+
+#[test]
+fn a_test_killing_its_process_group_ends_only_itself_standalone() {
+    check_test_isolation("standalone");
+}
+
 #[test]
 fn action_and_repository_daemons_are_killed_and_statuses_are_exact() {
     let ws = Workspace::new();

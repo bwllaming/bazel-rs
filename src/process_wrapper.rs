@@ -26,7 +26,7 @@
 //!   socket pair as the supervisor's stdin — the control channel;
 //! - the supervisor half ([`main`], [`supervise`]), single-threaded in the
 //!   re-executed binary: it becomes a child subreaper, starts the command in
-//!   its own process group with an empty stdin, waits for it, then kills and
+//!   its own session and process group (setsid) with an empty stdin, waits for it, then kills and
 //!   reaps every remaining descendant and reports the command's exact wait
 //!   status.
 //!
@@ -499,12 +499,15 @@ fn become_subreaper() -> bool {
     rustix::process::set_child_subreaper(Some(rustix::process::getpid())).is_ok()
 }
 
-/// Starts the command the supervisor runs: an empty stdin and its own process
-/// group (the process-wrapper's child `setsid()`s; this one, like the former
-/// direct starts, only leaves the group), stdout, stderr, working directory
-/// and environment inherited.
+/// Starts the command the supervisor runs: an empty stdin and its own session
+/// and process group (the process-wrapper's child `setsid()`s,
+/// process-wrapper-legacy.cc:68-71), stdout, stderr, working directory and
+/// environment inherited. Without a PID namespace (crate::sandbox) the new
+/// session is the spawn's only separation from the session of bazel-rs and
+/// the shell that started it.
 fn start_command(command: &mut Command) -> io::Result<Child> {
-    command.stdin(Stdio::null()).process_group(0);
+    command.stdin(Stdio::null());
+    crate::signals::new_session_in_child(command);
     // Every signal at its default action (ClearSignalMask in the
     // process-wrapper's child, process-wrapper-legacy.cc:72).
     crate::signals::reset_in_child(command, crate::signals::Defaults::ProcessWrapper);

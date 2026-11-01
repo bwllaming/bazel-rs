@@ -55,8 +55,10 @@ PostgreSQL servers in one survey, /tmp/opencode/perf-research/TEST-SURVEY.md B1)
   `__sandbox-worker` (crate::sandbox) for sandboxed spawns — the worker applies
   the Landlock ruleset to itself and then supervises exactly the same way. The
   supervisor is single-threaded, becomes a child subreaper, starts the command in
-  its own process group (bazel-rs's former `process_group(0)`; Rust cannot
-  `setsid()` in the child without unsafe code) with an empty stdin and the
+  its own session and process group (`setsid()` in the child like genuine's
+  process-wrapper, crate::signals::new_session_in_child; until 0.4.4 only
+  `process_group(0)`, which left spawns in the session of bazel-rs and of
+  the shell that started it) with an empty stdin and the
   inherited working directory, environment, stdout and stderr, and waits on a
   pidfd (polling where pidfds are unavailable). While the command runs, a
   second thread reaps every reparented descendant as soon as it exits (the
@@ -104,6 +106,10 @@ PostgreSQL servers in one survey, /tmp/opencode/perf-research/TEST-SURVEY.md B1)
 
 * Processes that leave a spawn's process group no longer outlive the spawn
   (tests, actions, repository/module `execute`), as in genuine.
+* Spawns (tests, actions, repository `execute`) run in a session of their own
+  (setsid), as under genuine's process-wrapper; before 0.4.5 they shared
+  bazel-rs's session (in their own process group already, so `kill 0` in a
+  spawn never reached bazel-rs either way).
 * Ctrl-C (or any death of bazel-rs) now kills the running spawns, like genuine
   interrupting them; before they ran on as orphans.
 * A standalone spawn whose environment has no `PATH` and whose `argv[0]` has no
@@ -129,7 +135,10 @@ PostgreSQL servers in one survey, /tmp/opencode/perf-research/TEST-SURVEY.md B1)
   to bazel-rs's process group) still ends bazel-rs by the signal and its running
   test and daemons are killed; the supervisor's protocol (`S`/`E`/`X`, `T`, `K`,
   end-of-file, execvp candidates) and the prompt reaping of an exited daemon
-  (`kill -0` loop) directly. With the cleanup, the end-of-file abort or the
+  (`kill -0` loop) directly. A test that runs `kill -TERM 0` fails alone
+  (bazel-rs exits 3) and ran in a session and process group other than
+  bazel-rs's (sandboxed and standalone; the session check fails without
+  setsid). With the cleanup, the end-of-file abort or the
   reaper disabled, the corresponding tests fail.
 * ~/code (`test //src/beyondwork.ai/bworker/database/...`, survey recipe,
   `--memory-limit=20000`): before (s2-ca7e18b) the passing database_test left
