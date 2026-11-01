@@ -60,6 +60,11 @@ pub struct Save {
     /// snapshot's parts this save merges with what the partial analysis
     /// recorded.
     seed: Option<Box<Seed>>,
+    /// The family key of a `build` or `test` (crate::snapshot::derive): a
+    /// save with a DERIVE section is named there.
+    family: Option<[u8; 32]>,
+    /// The save holds a DERIVE section.
+    derivable: bool,
 }
 
 /// What an incremental analysis's save takes from the snapshot it started
@@ -101,6 +106,8 @@ pub fn start_with(key: Key, explain: bool, log: telemetry::Context, mode: captur
         finished: false,
         log,
         seed: None,
+        family: None,
+        derivable: false,
     };
     if !observed_fs::open_window() {
         save.skipped = Some("the recording window was already open".to_owned());
@@ -127,6 +134,37 @@ impl Save {
         observed_fs::close_window();
         if let Some(capture) = self.capture.take() {
             self.window = Some(capture.stop(CAPTURE_BOUND));
+        }
+    }
+
+    /// The family key of this command (crate::snapshot::derive).
+    pub fn set_family(&mut self, family: Option<[u8; 32]>) {
+        self.family = family;
+    }
+
+    /// This command's key.
+    pub fn key(&self) -> Key {
+        self.key
+    }
+
+    /// The event log's context of this command.
+    pub fn log(&self) -> telemetry::Context {
+        self.log.clone()
+    }
+
+    /// The family key of this command, if derived hits are recorded.
+    pub fn family(&self) -> Option<[u8; 32]> {
+        self.family
+    }
+
+    /// Give up this save (a derived hit serves the command): close the
+    /// window, stop the capture and log why nothing is saved.
+    pub fn abandon(mut self, reason: &str) {
+        self.end_window();
+        self.finished = true;
+        self.log.log_not_saved(&self.key.short(), reason);
+        if self.explain {
+            observed_fs::diag(&format!("not saved: {reason}"));
         }
     }
 
@@ -258,6 +296,10 @@ impl Save {
             Some(seed) => Some(seed.index.clone()),
             None => crate::snapshot::incremental::take_planned_index(),
         };
+        // An incremental save's plan was spliced: no derivation record.
+        let derive = crate::snapshot::derive::take_planned()
+            .filter(|_| seed.is_none() && self.family.is_some());
+        self.derivable = derive.is_some();
         let checked_at = started.elapsed();
         // The plan's parts are compressed as they are encoded, on the
         // encoding threads: a plan of GBs is never held uncompressed while
@@ -375,6 +417,12 @@ impl Save {
             {
                 sections.push((Section::Index, index));
             }
+            if let Some(derive) = derive
+                .as_ref()
+                .and_then(|derive| crate::snapshot::derive::encode(derive).ok())
+            {
+                sections.push((Section::Derive, derive));
+            }
             Ok((sections, note))
         }))
     }
@@ -388,6 +436,11 @@ impl Save {
         let outcome = match (pending, self.skipped.take()) {
             (Some(pending), _) => match pending.logged(self.log.clone()).commit() {
                 Ok((bytes, note)) => {
+                    if self.derivable
+                        && let Some(family) = &self.family
+                    {
+                        crate::snapshot::derive::mark(&self.cache, family, &self.key);
+                    }
                     let ms = self.started.elapsed().as_secs_f64() * 1000.0;
                     self.log.log_saved(
                         &self.key.short(),

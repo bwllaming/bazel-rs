@@ -216,6 +216,13 @@ pub fn analysis_lines(
     lines
 }
 
+/// The packages loaded so far (the `P packages loaded` of `INFO:
+/// Analyzed …`; a derived hit reports what its target pattern phase
+/// loaded, crate::snapshot::derive).
+pub fn loaded_packages() -> usize {
+    COUNTERS.packages.load(Ordering::Relaxed)
+}
+
 /// Arm the build summary as [`analysis_report`] does (an incremental
 /// analysis that kept the saved plan prints the saved report instead,
 /// crate::snapshot::incremental).

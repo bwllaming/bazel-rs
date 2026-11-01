@@ -334,6 +334,15 @@ pub enum Projection {
     /// `relative` (below the package), plus the BUILD markers a subpackage
     /// lookup consults and undecodable names (`glob::listing_keeps`).
     Glob { pattern: String, relative: String },
+    /// [`Projection::All`] or [`Projection::Glob`] (`pattern`) without the
+    /// regular files a `glob()`'s exclude patterns remove (at `relative`
+    /// below the package): they are never results, so a `.pyc` written
+    /// beside sources an exclude names changes nothing a glob used.
+    Excluding {
+        pattern: Option<String>,
+        relative: String,
+        excludes: Vec<String>,
+    },
 }
 
 impl Projection {
@@ -345,7 +354,30 @@ impl Projection {
             Self::All => true,
             Self::Directories => kind.is_none_or(|kind| kind == FileKind::Dir),
             Self::Glob { pattern, relative } => crate::glob::listing_keeps(pattern, relative, name),
+            Self::Excluding {
+                pattern, relative, ..
+            } => pattern
+                .as_ref()
+                .is_none_or(|pattern| crate::glob::listing_keeps(pattern, relative, name)),
         }
+    }
+
+    /// Whether the recorded digest of a listing holds an entry the
+    /// projection [`keeps`](Self::keeps): all of them, but the excluded
+    /// regular files of [`Projection::Excluding`] — the caller still sees
+    /// them (a `glob()`'s `allow_empty` check of each include counts them;
+    /// a listing whose digest they would change keeps every result).
+    pub fn digests(&self, name: &OsStr, kind: Option<FileKind>) -> bool {
+        self.keeps(name, kind)
+            && match self {
+                Self::Excluding {
+                    relative, excludes, ..
+                } => {
+                    !(kind == Some(FileKind::File)
+                        && crate::glob::excluded_entry(excludes, relative, name))
+                }
+                _ => true,
+            }
     }
 }
 
@@ -356,6 +388,21 @@ impl fmt::Display for Projection {
             Self::Directories => f.write_str("dirs"),
             Self::Glob { pattern, relative } => {
                 write!(f, "glob:{}@{}", escape_str(pattern), escape_str(relative))
+            }
+            Self::Excluding {
+                pattern,
+                relative,
+                excludes,
+            } => {
+                match pattern {
+                    Some(pattern) => write!(f, "glob:{}", escape_str(pattern))?,
+                    None => f.write_str("all")?,
+                }
+                write!(f, "@{}", escape_str(relative))?;
+                for exclude in excludes {
+                    write!(f, "-{}", escape_str(exclude))?;
+                }
+                Ok(())
             }
         }
     }
@@ -1004,7 +1051,9 @@ impl Recorder {
                     let name = entry.file_name();
                     let kind = entry.file_type().ok().map(FileKind::of);
                     if projection.keeps(&name, kind) {
-                        digested.push((name, kind.map_or(b'e', FileKind::letter)));
+                        if projection.digests(&name, kind) {
+                            digested.push((name, kind.map_or(b'e', FileKind::letter)));
+                        }
                         kept.push(Ok(entry));
                     }
                 }

@@ -43,6 +43,7 @@
 
 pub mod capture;
 pub mod codec;
+pub mod derive;
 pub mod diag;
 pub mod exe_id;
 pub mod format;
@@ -98,11 +99,13 @@ impl Mode {
     /// ignored.
     pub fn from_env() -> Self {
         // A scoped `bazel-rs affected` analysis plans fewer targets than its
-        // patterns name: never looked up or saved under their key.
-        if std::env::var_os(crate::affected::SCOPE_VAR).is_some() {
-            return Self::Off;
+        // patterns name: never looked up, and saved under a key of its own
+        // only for the requests of its targets that derive their plan from
+        // it (crate::snapshot::derive; [`check`]).
+        match Self::parse(std::env::var_os(MODE_VAR).as_deref()) {
+            Self::Verify if std::env::var_os(crate::affected::SCOPE_VAR).is_some() => Self::On,
+            mode => mode,
         }
-        Self::parse(std::env::var_os(MODE_VAR).as_deref())
     }
 
     /// The mode a value of [`MODE_VAR`] asks for (`None`: unset).
@@ -145,6 +148,9 @@ pub struct Scope {
     pub save: Option<Box<save::Save>>,
     pub hit: Option<hit::Session>,
     pub verify: Option<Box<verify::Verify>>,
+    /// A derived hit may serve this command once its labels are selected
+    /// (crate::snapshot::derive).
+    pub derive: Option<Box<derive::Lookup>>,
 }
 
 impl Scope {
@@ -186,6 +192,7 @@ impl Scope {
             save,
             hit,
             verify,
+            derive: _,
         } = self;
         // Concluded at the end of planning; one still here never was.
         drop(verify);
@@ -213,6 +220,7 @@ impl Scope {
             save,
             hit,
             verify,
+            derive: _,
         } = self;
         drop(verify);
         drop(record);
@@ -232,6 +240,7 @@ impl Scope {
             save,
             hit,
             verify,
+            derive: _,
         } = self;
         drop(verify);
         drop(record);
@@ -302,8 +311,47 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
             return Checked::Miss(None);
         }
     };
-    let key = key::compute(&inputs.key, binary);
+    let mut key = key::compute(&inputs.key, binary);
+    let family = if derive::enabled() {
+        key::family(&inputs.key, binary)
+    } else {
+        None
+    };
+    let with_family = |mut save: save::Save| {
+        save.set_family(family);
+        Box::new(save)
+    };
     let key_time = started.elapsed();
+    // A scoped `bazel-rs affected` planning: its own key (the scope's spec
+    // folded into G), never looked up — the scope it plans is only known
+    // after its target pattern phase —, saved for the requests that derive
+    // their plan from it (in place at the head revision: the `build` and
+    // `test` of the affected targets that follow).
+    if let Some(scope) = std::env::var_os(crate::affected::SCOPE_VAR) {
+        let mut bytes = b"affected-scope\0".to_vec();
+        bytes.extend_from_slice(&key.g);
+        bytes.extend(std::fs::read(&scope).unwrap_or_default());
+        key.g = *blake3::hash(&bytes).as_bytes();
+        if !derive::enabled()
+            || family.is_none()
+            || std::env::var_os(crate::affected::SAVE_VAR).is_none()
+        {
+            return Checked::Miss(None);
+        }
+        let log = telemetry::Context {
+            cache: inputs.cache.to_path_buf(),
+            mode: telemetry::MODE_ON,
+            command: inputs.key.command.to_owned(),
+            targets: inputs.key.targets.to_vec(),
+        };
+        if explain {
+            observed_fs_diag(&format!(
+                "scoped {}: not looked up (an affected scope), saved for derived hits",
+                key.short()
+            ));
+        }
+        return Checked::Miss(Some(with_family(save::start(key, explain, log))));
+    }
     // The event log's context (crate::snapshot::telemetry).
     let log = telemetry::Context {
         cache: inputs.cache.to_path_buf(),
@@ -324,7 +372,7 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
                 key.short()
             ));
         }
-        return Checked::Miss(Some(Box::new(save::start(key, explain, log))));
+        return Checked::Miss(Some(with_family(save::start(key, explain, log))));
     }
     let outcome = hit::attempt(hit::Attempt {
         cache: inputs.cache,
@@ -335,6 +383,7 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
         verify: inputs.verify,
         log: log.clone(),
         incremental: inputs.incremental && incremental::enabled(),
+        derive: None,
     });
     let timing = crate::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING"));
     let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
@@ -401,7 +450,7 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
             }
             match classified {
                 Ok(candidate) => Checked::Incremental(
-                    Box::new(save::start_with(key, explain, log, capture::Mode::Shadow)),
+                    with_family(save::start_with(key, explain, log, capture::Mode::Shadow)),
                     Box::new(candidate),
                 ),
                 Err(reason) => {
@@ -412,7 +461,7 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
                             incremental::one_line(&reason)
                         ));
                     }
-                    Checked::Miss(Some(Box::new(save::start(key, explain, log))))
+                    Checked::Miss(Some(with_family(save::start(key, explain, log))))
                 }
             }
         }

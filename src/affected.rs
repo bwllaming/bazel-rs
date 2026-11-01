@@ -814,7 +814,17 @@ struct Options {
     concurrent: bool,
     forwarded: Vec<String>,
     patterns: Vec<String>,
+    /// The working copy a planning in place runs in: its analysis snapshot
+    /// is saved for the commands after `affected` ([`SAVE_VAR`]).
+    in_place: Option<PathBuf>,
 }
+
+/// Set in a planning process that runs in the working copy (the head
+/// revision planned in place): its analysis snapshot is saved, under a key
+/// of its own, for the `build` and `test` of its targets that derive their
+/// plan from it (crate::snapshot::derive). Plannings in a worktree save
+/// none (nothing after `affected` runs there).
+pub const SAVE_VAR: &str = "BAZEL_RS_AFFECTED_SAVE";
 
 fn parse(args: &[String]) -> Result<Options, String> {
     let mut options = Options {
@@ -900,6 +910,41 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// Before the head is planned in place: the working copy's hidden lockfile
+/// (module extension results, crate::registry_session), when it has none,
+/// starts as the base planning's in the worktree, without the results that
+/// name the worktree. A planning that writes its hidden lockfile is not
+/// saved as an analysis snapshot (the write changes what it read), so a
+/// cold cache's head planning would otherwise never be the snapshot the
+/// `build` and `test` after `affected` derive their plan from. Its
+/// extensions are validated against their recorded inputs as always: a
+/// result that does not hold is evaluated again (and the head not saved).
+fn seed_hidden_lockfile(cache: &Path, base: &Path, workspace: &Path) {
+    let target = crate::registry_session::hidden_lockfile_path(cache, workspace);
+    if target.exists() {
+        return;
+    }
+    let source = crate::registry_session::hidden_lockfile_path(cache, base);
+    let Ok(lockfile) = crate::lockfile::read(&source, crate::lockfile::LockfileMode::Update) else {
+        return;
+    };
+    if !source.exists() {
+        return;
+    }
+    let lockfile = crate::registry_session::without_mentions(
+        lockfile,
+        &crate::worktree::WorkspaceMentions::except_cache(base, cache),
+    );
+    if let Some(parent) = target.parent()
+        && std::fs::create_dir_all(parent).is_ok()
+    {
+        let temporary = target.with_extension(format!("seed-{}", std::process::id()));
+        if std::fs::write(&temporary, lockfile.serialize()).is_ok() {
+            let _ = std::fs::rename(&temporary, &target);
+        }
+    }
 }
 
 /// Checks out `commit` in the worktree `dir` of the repository at `top`
@@ -1002,6 +1047,7 @@ fn start_plan(
         .env(DIGESTS_VAR, out)
         .env(QUIET_EVENTS_VAR, "1")
         .env_remove(SCOPE_VAR)
+        .env_remove(SAVE_VAR)
         .env_remove(INCLUDE_MANUAL_VAR)
         // Our stdout is the affected labels: the planning's goes to stderr.
         .stdout(std::process::Stdio::from(
@@ -1012,6 +1058,9 @@ fn start_plan(
         ));
     if let Some(scope) = scope {
         command.env(SCOPE_VAR, scope.spec);
+    }
+    if options.in_place.as_deref() == Some(workspace) {
+        command.env(SAVE_VAR, "1");
     }
     if options.include_manual {
         command.env(INCLUDE_MANUAL_VAR, "1");
@@ -1151,7 +1200,7 @@ use std::os::fd::AsFd;
 /// `bazel-rs [STARTUP...] affected --base=REV [--head=REV] [OPTIONS...] [PATTERNS...]`.
 /// Returns the exit code.
 pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, String> {
-    let options = parse(args)?;
+    let mut options = parse(args)?;
     let base = options
         .base
         .clone()
@@ -1189,6 +1238,19 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             }
         }
     };
+    // The head is planned in place when the working copy is HEAD exactly:
+    // no change to a tracked file and no untracked file (ignored files are
+    // the working copy's, which the commands after `affected` see too).
+    // `BAZEL_RS_AFFECTED_HEAD_IN_PLACE=0` checks HEAD out in the worktree.
+    let head_in_place = options.head.is_none()
+        && !options.concurrent
+        && head_commit.is_some()
+        && !matches!(
+            std::env::var_os("BAZEL_RS_AFFECTED_HEAD_IN_PLACE").as_deref(),
+            Some(value) if value == "0"
+        )
+        && git(&top, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty();
+    options.in_place = Some(root.clone());
     // The worktree: given; else in an explicit cache directory (outside the
     // checkout: genuine Bazel's `//...` does not skip `.git`, and would load
     // a worktree's packages there); else next to the repository's git
@@ -1197,6 +1259,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
         .iter()
         .find_map(|arg| arg.strip_prefix("--cache-dir="))
         .map(PathBuf::from);
+    let shared_cache = explicit_cache.clone();
     let worktree = match (&options.worktree, explicit_cache) {
         (Some(dir), _) if dir.is_absolute() => dir.clone(),
         (Some(dir), _) => cwd.join(dir),
@@ -1511,7 +1574,19 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             } else {
                 Some(&restrict)
             };
-            let (head, _) = plan_revision(&head_tree, head_commit.as_deref(), "head", head_scope)?;
+            // A clean working copy at HEAD is the head revision itself:
+            // planned in place, its analysis snapshot is the one a later
+            // `build`/`test` of its targets derives its plan from
+            // (crate::snapshot::derive) instead of analyzing them again.
+            let head_at = if head_in_place {
+                if let Some(cache) = &shared_cache {
+                    seed_hidden_lockfile(cache, &worktree.join(&below), &root);
+                }
+                None
+            } else {
+                head_commit.as_deref()
+            };
+            let (head, _) = plan_revision(&head_tree, head_at, "head", head_scope)?;
             (base_planned, head)
         };
         if let Scope::Full(reason) = &head.scope {

@@ -43,6 +43,17 @@ subpackage lookup consults (`glob::listing_keeps`); recorded repository inputs
 (`dirents`) record everything. While recording, the facade returns only the
 projected entries, so a caller cannot depend on an unrecorded entry.
 
+A `glob()` with excludes (ci-pipeline-perf, snapshot format 6) records its
+listings as `Projection::Excluding`: the digest leaves out the regular files
+an exclude pattern removes (never a BUILD marker), while the walker still
+sees them (each include's `allow_empty` check counts them, and the native
+host-entry cap). rules_python's interpreter trees glob `lib/**` without
+`**/__pycache__/*.pyc*`, whose `__pycache__` links into
+`/tmp/rules_python_pycache`, where every action running Python writes: on
+~/code a full listing there made every snapshot of a build that ran Python
+actions miss on its next lookup (`READDIR[all] .../encodings/__pycache__:
+listing changed`), so neither a re-run nor the `test` after a `build` hit.
+
 A READ answered by a digest memo instead of the facade's own read
 (integration-20) is recorded the same way by `observed_fs::note_read_digest`:
 the warm revalidation of recorded repository-rule inputs takes file digests

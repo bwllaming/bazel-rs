@@ -78,7 +78,13 @@ pub struct Attempt<'a> {
     /// decode, and a miss whose only failures are changed observations
     /// keeps the decoded snapshot ([`attempt`]'s second result).
     pub incremental: bool,
+    /// A derived hit (crate::snapshot::derive): the decoded plan becomes
+    /// the request's before the workspace status is computed.
+    pub derive: Option<Derivation<'a>>,
 }
+
+/// [`Attempt::derive`]: the saved plan to the derived request's.
+pub type Derivation<'a> = Box<dyn FnOnce(PlannedRequest) -> Result<PlannedRequest, String> + 'a>;
 
 /// What verify mode compares a hit's shadow full analysis with
 /// (crate::snapshot::verify).
@@ -132,6 +138,27 @@ fn miss(reason: impl Into<String>) -> Result<Box<Hit>, Miss> {
     Err(reason.into())
 }
 
+/// Validate the recorded inputs of the snapshot of `key` only (no replay,
+/// no decoding, no stderr capture): what a derived hit checks before it
+/// gives up the save of the command it serves (crate::snapshot::derive).
+pub fn prevalidate(
+    cache: &Path,
+    key: &Key,
+    environment: &[(OsString, OsString)],
+) -> Result<(), Miss> {
+    let reader = match Reader::open(cache, key) {
+        Ok(Some(reader)) => reader,
+        Ok(None) => return Err("no snapshot for this key".to_owned()),
+        Err(error) => return Err(format!("unreadable snapshot: {error}")),
+    };
+    let inputs = reader
+        .section(Section::Inputs)
+        .and_then(|bytes| format::decode_inputs(&bytes))
+        .map_err(|error| format!("unreadable snapshot: {error}"))?;
+    validate::validate_for_hit(&inputs.recording, &validate::Environment::new(environment))
+        .map(|_| ())
+}
+
 /// Try the snapshot of `attempt.key`. A miss with
 /// [`Attempt::incremental`] whose only failing checks are observations
 /// keeps the decoded snapshot and the changed observations.
@@ -146,10 +173,11 @@ pub fn attempt(
 }
 
 fn attempt_keeping(
-    attempt: Attempt<'_>,
+    mut attempt: Attempt<'_>,
     base: &mut Option<Box<crate::snapshot::incremental::Base>>,
 ) -> Result<Box<Hit>, Miss> {
     let started = Instant::now();
+    let derivation = attempt.derive.take();
     let reader = match Reader::open(attempt.cache, &attempt.key) {
         Ok(Some(reader)) => reader,
         Ok(None) => return miss("no snapshot for this key"),
@@ -396,6 +424,10 @@ fn attempt_keeping(
         timings.local_trees = wall;
     }
     let (request, plan_bytes, kept_plan, decode, mappers) = plan.map_err(plan_miss)?;
+    let request = match derivation {
+        Some(derive) => derive(request).map_err(|error| format!("derivation: {error}"))?,
+        None => request,
+    };
     timings.decode = decode;
     timings.mappers = mappers.elapsed;
     // The workspace status of the plan's status placeholders — or of a plan

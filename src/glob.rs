@@ -327,8 +327,18 @@ fn read_listing(
     pattern: &Pattern<'_>,
     relative: &str,
     host: bool,
+    excludes: &[String],
 ) -> Result<Vec<fs::DirEntry>, String> {
-    let projection = if host || pattern.subpackages {
+    let full = host || pattern.subpackages;
+    let projection = if !excludes.is_empty() && !pattern.subpackages {
+        // The regular files the excludes remove are never results: the
+        // recorded listing's digest leaves them out (the walker sees them).
+        crate::observed_fs::Projection::Excluding {
+            pattern: (!full).then(|| pattern.text.to_owned()),
+            relative: relative.to_owned(),
+            excludes: excludes.to_vec(),
+        }
+    } else if full {
         // The existing Glob projection implements glob's restricted dialect.
         // A full listing conservatively records BUILD additions/removals and
         // all names in subpackages' wider dialect without changing that schema.
@@ -344,6 +354,27 @@ fn read_listing(
         .into_iter()
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| jni_error_at(581, directory, &error))
+}
+
+/// Whether a `glob()`'s exclude patterns remove the entry `name` of the
+/// directory at `relative` (below the package), as a file
+/// (crate::observed_fs::Projection::Excluding).
+pub(crate) fn excluded_entry(excludes: &[String], relative: &str, name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    // A subpackage lookup consults the BUILD markers of a listing.
+    if matches!(name, "BUILD" | "BUILD.bazel") {
+        return false;
+    }
+    let path = if relative.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{relative}/{name}")
+    };
+    excludes
+        .iter()
+        .any(|text| Pattern::parse(text).is_ok_and(|pattern| pattern.matches(&path)))
 }
 
 /// Whether the glob walker uses the entry `name` of the directory at
@@ -430,6 +461,7 @@ pub fn glob(
         package,
         exclude_directories,
         subpackages: false,
+        excludes,
         ignored,
         links,
     };
@@ -584,6 +616,7 @@ pub(crate) fn subpackages(
         package,
         exclude_directories: false,
         subpackages: true,
+        excludes: &[],
         ignored,
         links,
     };
@@ -665,6 +698,10 @@ struct Walker<'a> {
     package: &'a str,
     exclude_directories: bool,
     subpackages: bool,
+    /// The exclude patterns of a `glob()` (none for `subpackages()`): the
+    /// digests of its recorded listings leave out the regular files they
+    /// remove ([`read_listing`]).
+    excludes: &'a [String],
     ignored: &'a crate::ignored::IgnoredSubdirectories,
     links: &'a crate::source_links::LinkPolicy,
 }
@@ -692,7 +729,13 @@ impl Walker<'_> {
             let mut entries = match current.listing {
                 Some(entries) => entries,
                 None => {
-                    match read_listing(&current.logical, pattern, &current.relative, current.host) {
+                    match read_listing(
+                        &current.logical,
+                        pattern,
+                        &current.relative,
+                        current.host,
+                        self.excludes,
+                    ) {
                         Ok(entries) => entries,
                         Err(error) => return Ok(Walk::Io(error)),
                     }
@@ -851,7 +894,7 @@ impl Walker<'_> {
                     // subpackage, and its dirents answer the BUILD lookup.
                     // (Bazel reads ignored directories too; native does not.)
                     let listing = if descend && pattern.wildcard_next(&state) {
-                        match read_listing(&logical, pattern, &path, host) {
+                        match read_listing(&logical, pattern, &path, host, self.excludes) {
                             Ok(entries) => Some(entries),
                             Err(error) => return Ok(Walk::Io(error)),
                         }

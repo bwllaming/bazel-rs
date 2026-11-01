@@ -707,6 +707,20 @@ struct RunPlan {
     baselines: Vec<(String, Artifact)>,
 }
 
+/// What a later request of a subset of a build's targets reuses
+/// (crate::snapshot::derive), per requested label: the producers of what
+/// building it builds (its requested and hidden top-level artifacts, as a
+/// target that is not run), and of what running it as a test builds, with
+/// its run plan (planned for a `test` run, or on the side for a test rule
+/// that was only built). The workspace status nodes are left out.
+#[derive(Default)]
+struct DeriveRoots {
+    build: BTreeMap<Label, BTreeSet<String>>,
+    run: BTreeMap<Label, BTreeSet<String>>,
+    /// Run plans of test rules this build did not run (`trees` false).
+    side: BTreeMap<Label, RunPlan>,
+}
+
 /// A test's coverage additions and its coverage inputs' artifacts by exec path.
 type PlannedTestCoverage = (Arc<crate::runfiles::TestCoverage>, Vec<(String, Artifact)>);
 
@@ -1320,6 +1334,16 @@ const RUN_UNDER_ATTRIBUTES: [&str; 2] = [":run_under_exec_config", ":run_under_t
 /// taggable `flaky`/`local`, `tags` and the rule class; `None` for any other
 /// rule. Never fails: `shard_count` is the plain value, unchecked (-1 when
 /// unspecified or a select()); [`test_rule_info_of`] checks it.
+/// Add the producer of `artifact` (a generated artifact; the workspace
+/// status nodes left out) to a derivation root set (crate::snapshot::derive).
+fn derive_note(ids: &mut BTreeSet<String>, artifact: &Artifact) {
+    if let Some((id, _)) = &artifact.producer
+        && !id.starts_with(crate::request::STATUS_ID_PREFIX)
+    {
+        ids.insert(id.clone());
+    }
+}
+
 fn test_rule_properties(rule: &Rule) -> Option<crate::test_command::TestRuleInfo> {
     use crate::custom_rule::AttrValue;
     use crate::test_command::{TestRuleInfo, TestSize, TestTimeout};
@@ -2109,6 +2133,11 @@ pub struct Engine {
     /// the runfiles artifacts (`test` stages them itself).
     run_trees: bool,
     run_plans: BTreeMap<Label, RunPlan>,
+    /// Record what a later request of a subset of these targets reuses
+    /// (crate::snapshot::derive): set while the analysis snapshot saves.
+    derive_recording: bool,
+    /// The last planned build's derivation roots (crate::snapshot::derive).
+    derive_roots: Option<DeriveRoots>,
     /// The ids of the actions whose planning evaluated a build-info
     /// translation callback in the current build (snapshot blockers when
     /// the plan keeps them, Self::plan_request).
@@ -2226,6 +2255,8 @@ impl Engine {
             bep_groups: Vec::new(),
             run_requests: BTreeSet::new(),
             run_trees: true,
+            derive_recording: false,
+            derive_roots: None,
             run_plans: BTreeMap::new(),
             build_info_actions: BTreeSet::new(),
             errors: Vec::new(),
@@ -2381,6 +2412,12 @@ impl Engine {
     /// output-group half.
     pub fn set_output_selection(&mut self, selection: OutputSelection) {
         self.output_selection = selection;
+    }
+
+    /// Record what a later request of a subset of this build's targets
+    /// reuses (crate::snapshot::derive), for the analysis snapshot's save.
+    pub fn set_derive_recording(&mut self, on: bool) {
+        self.derive_recording = on;
     }
 
     /// Whether the building command also runs the tests it builds
@@ -10035,71 +10072,10 @@ impl Engine {
         let mut configuration_index: BTreeMap<ConfigId, usize> = BTreeMap::new();
         let mut run_plans = Vec::new();
         for (label, plan) in plans {
-            // A plan without an executable runs nothing (no run target).
-            let Some(executable) = &plan.executable else {
-                continue;
-            };
-            let configuration = match configuration_index.get(&plan.config) {
-                Some(index) => *index,
-                None => {
-                    let native = &self.configurations.get(plan.config).native;
-                    configurations.push(crate::request::ConfigurationSummary {
-                        mnemonic: self.configurations.mnemonic(plan.config).to_owned(),
-                        action_env: native.action_environment(),
-                        test_env: native.test_environment(),
-                    });
-                    configuration_index.insert(plan.config, configurations.len() - 1);
-                    configurations.len() - 1
-                }
-            };
-            run_plans.push((
-                label,
-                crate::request::PlannedRun {
-                    executable: produced(executable),
-                    executable_exec: executable.exec.to_path_buf(),
-                    executable_short_path: executable.file.short_path.clone(),
-                    tree: plan.tree.as_ref().map(|tree| {
-                        (
-                            produced(tree),
-                            crate::request::PlannedPath(tree.exec.to_path_buf()),
-                        )
-                    }),
-                    entries: plan.entries.as_ref().map(|entries| {
-                        entries
-                            .iter()
-                            .map(|(path, artifact)| {
-                                (path.to_string(), artifact.as_ref().map(produced))
-                            })
-                            .collect()
-                    }),
-                    settings: plan.settings,
-                    configuration,
-                    completion: plan.completion,
-                    coverage: plan.coverage.as_ref().map(|(coverage, inputs)| {
-                        crate::request::PlannedCoverage {
-                            script: coverage
-                                .script
-                                .as_ref()
-                                .map(|file| file.path.clone())
-                                .unwrap_or_default(),
-                            inputs: inputs
-                                .iter()
-                                .map(|(exec, artifact)| (exec.clone(), produced(artifact)))
-                                .collect(),
-                            manifest_exec: coverage.manifest_exec.clone(),
-                            manifest: coverage.manifest.clone(),
-                            env: coverage.env.clone(),
-                            reported: coverage.reported.clone(),
-                            native_merger: coverage.native_merger,
-                            baselines: plan
-                                .baselines
-                                .iter()
-                                .map(|(exec, artifact)| (exec.clone(), produced(artifact)))
-                                .collect(),
-                        }
-                    }),
-                },
-            ));
+            if let Some(run) = self.planned_run(plan, &mut configurations, &mut configuration_index)
+            {
+                run_plans.push((label, run));
+            }
         }
         // The build-info actions the plan kept (it prunes unreachable ones).
         let planned_ids: HashSet<&str> = nodes.iter().map(|node| node.action.id.as_str()).collect();
@@ -10166,8 +10142,172 @@ impl Engine {
             let index = self.incremental_index(spec.build);
             crate::snapshot::incremental::set_planned_index(index);
         }
+        if self.derive_recording {
+            let coverage = self.derive_coverage(&request, spec.build, spec.trees);
+            crate::snapshot::derive::set_planned(coverage);
+        }
         crate::perf_mark("plan.end");
         Ok(request)
+    }
+
+    /// What a later request of a subset of `request`'s targets reuses
+    /// (crate::snapshot::derive): `None` for a request it cannot serve
+    /// (top-level aspects, skipped targets, analysis errors).
+    fn derive_coverage(
+        &mut self,
+        request: &PlannedRequest,
+        labels: &[Label],
+        trees: bool,
+    ) -> Option<crate::snapshot::derive::Coverage> {
+        let roots = self.derive_roots.take()?;
+        if !request.aspect_reports.is_empty()
+            || !request.skipped.is_empty()
+            || !request.errors.is_empty()
+            || request.keep_going.as_ref().is_some_and(|plan| {
+                !plan.incompatible.is_empty()
+                    || !plan.errors.is_empty()
+                    || !plan.failed.is_empty()
+                    || !plan.input_errors.is_empty()
+                    || !plan.unbuilt.is_empty()
+            })
+        {
+            return None;
+        }
+        if matches!(request.command, crate::request::RequestCommand::Run { .. }) {
+            return None;
+        }
+        let mut coverage = crate::snapshot::derive::Coverage {
+            execute: request.execute,
+            ..Default::default()
+        };
+        // The requested labels in request order.
+        for label in labels {
+            let ids = roots.build.get(label)?;
+            coverage
+                .targets
+                .push((label.clone(), ids.iter().cloned().collect()));
+        }
+        // The tests the request runs.
+        if let crate::request::RequestCommand::Test { tests, .. } = &request.command {
+            for test in tests {
+                let Some(ids) = roots.run.get(&test.label) else {
+                    continue;
+                };
+                if !request
+                    .run_plans
+                    .iter()
+                    .any(|(label, _)| *label == test.label)
+                {
+                    continue;
+                }
+                coverage.runs.push(crate::snapshot::derive::Run {
+                    test: test.clone(),
+                    roots: ids.iter().cloned().collect(),
+                    trees,
+                    side: None,
+                });
+            }
+        }
+        // The test rules it only built, planned on the side.
+        let mut configuration_index = BTreeMap::new();
+        for (label, plan) in roots.side {
+            let Some(ids) = roots.run.get(&label) else {
+                continue;
+            };
+            let Ok(Some((info, location))) = self.test_rule_info(&label) else {
+                continue;
+            };
+            let mut plan = plan;
+            plan.completion = ids.iter().cloned().collect();
+            let Some(run) =
+                self.planned_run(plan, &mut coverage.configurations, &mut configuration_index)
+            else {
+                continue;
+            };
+            coverage.runs.push(crate::snapshot::derive::Run {
+                test: crate::request::PlannedTest {
+                    label: label.clone(),
+                    info,
+                    location,
+                },
+                roots: ids.iter().cloned().collect(),
+                trees: false,
+                side: Some(run),
+            });
+        }
+        Some(coverage)
+    }
+
+    /// A run plan with its artifacts resolved ([`Self::plan_request`]), its
+    /// configuration's summary added to `configurations` once; `None` for a
+    /// plan without an executable (it runs nothing).
+    fn planned_run(
+        &self,
+        plan: RunPlan,
+        configurations: &mut Vec<crate::request::ConfigurationSummary>,
+        configuration_index: &mut BTreeMap<ConfigId, usize>,
+    ) -> Option<crate::request::PlannedRun> {
+        let produced = |artifact: &Artifact| crate::request::Produced {
+            real: artifact.real.to_path_buf(),
+            producer: artifact.producer.clone(),
+        };
+        let executable = plan.executable.as_ref()?;
+        let configuration = match configuration_index.get(&plan.config) {
+            Some(index) => *index,
+            None => {
+                let native = &self.configurations.get(plan.config).native;
+                configurations.push(crate::request::ConfigurationSummary {
+                    mnemonic: self.configurations.mnemonic(plan.config).to_owned(),
+                    action_env: native.action_environment(),
+                    test_env: native.test_environment(),
+                });
+                configuration_index.insert(plan.config, configurations.len() - 1);
+                configurations.len() - 1
+            }
+        };
+        Some(crate::request::PlannedRun {
+            executable: produced(executable),
+            executable_exec: executable.exec.to_path_buf(),
+            executable_short_path: executable.file.short_path.clone(),
+            tree: plan.tree.as_ref().map(|tree| {
+                (
+                    produced(tree),
+                    crate::request::PlannedPath(tree.exec.to_path_buf()),
+                )
+            }),
+            entries: plan.entries.as_ref().map(|entries| {
+                entries
+                    .iter()
+                    .map(|(path, artifact)| (path.to_string(), artifact.as_ref().map(produced)))
+                    .collect()
+            }),
+            settings: plan.settings,
+            configuration,
+            completion: plan.completion,
+            coverage: plan.coverage.as_ref().map(|(coverage, inputs)| {
+                crate::request::PlannedCoverage {
+                    script: coverage
+                        .script
+                        .as_ref()
+                        .map(|file| file.path.clone())
+                        .unwrap_or_default(),
+                    inputs: inputs
+                        .iter()
+                        .map(|(exec, artifact)| (exec.clone(), produced(artifact)))
+                        .collect(),
+                    manifest_exec: coverage.manifest_exec.clone(),
+                    manifest: coverage.manifest.clone(),
+                    env: coverage.env.clone(),
+                    reported: coverage.reported.clone(),
+                    native_merger: coverage.native_merger,
+                    baselines: plan
+                        .baselines
+                        .iter()
+                        .map(|(exec, artifact)| (exec.clone(), produced(artifact)))
+                        .collect(),
+                }
+            }),
+        })
     }
 
     /// The build event plan (crate::bep::plan, docs/BEP.md) of the last
@@ -15605,6 +15745,14 @@ impl Engine {
                 .map(|(owner, artifact)| (*owner, artifact.file())),
         );
         let mut top_baselines: Vec<(String, Artifact)> = Vec::new();
+        // crate::snapshot::derive: the hidden artifacts before this loop
+        // (hidden output groups) are every label's; the loop's build-mode
+        // additions and the side run plans of test rules not run are
+        // collected per label.
+        let derive_recording = self.derive_recording;
+        let initial_hidden = hidden.len();
+        let mut derive_build: HashMap<Label, BTreeSet<String>> = HashMap::new();
+        let mut derive_side: BTreeMap<Label, (RunPlan, BTreeSet<String>)> = BTreeMap::new();
         for label in labels {
             let key = self.configurations.top_key(label.clone());
             let actual = forwarded.get(&key).unwrap_or(label);
@@ -15618,6 +15766,9 @@ impl Engine {
                             file.path
                         )
                     })?;
+                    if derive_recording {
+                        derive_note(derive_build.entry(label.clone()).or_default(), &artifact);
+                    }
                     if seen.insert((owner, artifact.file())) {
                         hidden.push((owner, artifact));
                     }
@@ -15765,6 +15916,102 @@ impl Engine {
                 }
                 self.run_plans.insert(label.clone(), plan);
             }
+            if derive_recording {
+                let options = self.configured_runfiles_options(actual_key.config);
+                let support = runfiles_nodes.get(&actual_key);
+                let ids = derive_build.entry(label.clone()).or_default();
+                // The runfiles support files a target that is not run
+                // builds (the block above, `running` false).
+                if runfiles_requested && let Some(support) = support {
+                    derive_note(ids, &support.repo_mapping);
+                    if let Some(manifest) = &support.manifest {
+                        derive_note(ids, manifest);
+                    }
+                    if options.links()
+                        && let Some(tree) = &support.tree
+                    {
+                        derive_note(ids, tree);
+                    }
+                }
+                // A test rule this build does not run: what running it in
+                // a `test` would add (the blocks above with the label a
+                // run request and `trees` false), on the side.
+                let is_test = !self.run_requests.contains(label)
+                    && !self.skipped_incompatible.contains(label)
+                    && matches!(self.target(label), Ok(Target::Rule(rule)) if test_rule_properties(&rule).is_some());
+                let runfiles = runfiles_info.get(&actual_key);
+                if is_test
+                    && let Some(support) = support
+                    && runfiles.is_none_or(|runfiles| runfiles.test_coverage.is_none())
+                {
+                    let mut extra = BTreeSet::new();
+                    derive_note(&mut extra, &support.repo_mapping);
+                    if let Some(manifest) = &support.manifest {
+                        derive_note(&mut extra, manifest);
+                    }
+                    if options.links()
+                        && let Some(tree) = &support.tree
+                    {
+                        derive_note(&mut extra, tree);
+                    }
+                    derive_note(&mut extra, &support.executable);
+                    for artifact in support
+                        .entries
+                        .iter()
+                        .filter_map(|(_, artifact)| artifact.as_ref())
+                    {
+                        derive_note(&mut extra, artifact);
+                    }
+                    let mut settings = runfiles
+                        .map(|runfiles| runfiles.run.clone())
+                        .unwrap_or_default();
+                    settings.runfiles_options = Some(options);
+                    let plan = RunPlan {
+                        executable: Some(support.executable.clone()),
+                        tree: support.tree.clone().filter(|_| options.links()),
+                        entries: Some(support.entries.clone()),
+                        settings,
+                        config: actual_key.config,
+                        completion: Vec::new(),
+                        coverage: None,
+                        baselines: Vec::new(),
+                    };
+                    derive_side.insert(label.clone(), (plan, extra));
+                }
+            }
+        }
+        if derive_recording {
+            let mut roots = DeriveRoots::default();
+            let mut own: HashMap<&Label, BTreeSet<String>> = HashMap::new();
+            for (key, artifact) in &requested {
+                derive_note(own.entry(&key.label).or_default(), artifact);
+            }
+            let mut initial: HashMap<&Label, BTreeSet<String>> = HashMap::new();
+            let mut all: HashMap<&Label, BTreeSet<String>> = HashMap::new();
+            for (index, (owner, artifact)) in hidden.iter().enumerate() {
+                let label = &owners.keys[*owner].label;
+                if index < initial_hidden {
+                    derive_note(initial.entry(label).or_default(), artifact);
+                }
+                derive_note(all.entry(label).or_default(), artifact);
+            }
+            for label in labels {
+                let mut build = own.get(label).cloned().unwrap_or_default();
+                build.extend(initial.get(label).into_iter().flatten().cloned());
+                build.extend(derive_build.remove(label).into_iter().flatten());
+                if self.run_requests.contains(label) {
+                    let mut run = own.get(label).cloned().unwrap_or_default();
+                    run.extend(all.get(label).into_iter().flatten().cloned());
+                    roots.run.insert(label.clone(), run);
+                } else if let Some((plan, extra)) = derive_side.remove(label) {
+                    let mut run = build.clone();
+                    run.extend(extra);
+                    roots.run.insert(label.clone(), run);
+                    roots.side.insert(label.clone(), plan);
+                }
+                roots.build.insert(label.clone(), build);
+            }
+            self.derive_roots = Some(roots);
         }
         if let Some(plan) = self
             .run_plans

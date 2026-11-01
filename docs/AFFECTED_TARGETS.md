@@ -900,3 +900,29 @@ Private clone, release binary of this branch, one shared private cache
   `src/beyondwork.ai/bworker/cmd/monolith/BUILD.bazel` (a local commit in
   the clone) is reported only with `--include_manual`; the push target is
   what `attr(tags, dockerpush, …)` then selects.
+
+### 8.8 The head planned in place, saved for the commands after `affected` (ci-pipeline-perf)
+
+~/code's CI builds the affected targets' reverse dependencies and tests
+their tests right after `affected` (`bin/build-changed-files`), in the
+working copy whose HEAD `affected` just analyzed. With genuine Bazel the
+three commands share one server; here each re-analyzed (~150 s each).
+
+* Without `--head`, a working copy whose `git status --porcelain
+  --untracked-files=normal` is empty *is* the head revision: it is planned
+  in place instead of checked out in the worktree (`BAZEL_RS_AFFECTED_HEAD_IN_PLACE=0`
+  keeps the worktree). Ignored files are the working copy's; the commands
+  after `affected` see them too (an ignored file a glob matches can only
+  make a target affected, never hide one). `--concurrent_revisions` keeps
+  both revisions in worktrees.
+* That planning (`BAZEL_RS_AFFECTED_SAVE` set) saves its analysis snapshot
+  under a key of its own (the scope's spec folded into G: a scoped planning
+  is never looked up, its scope is only known after its target pattern
+  phase) with the derivation record of docs/ANALYSIS_SNAPSHOT.md "Derived
+  hits": the `build` of the affected targets and the `test` of their tests
+  derive their plans from it. Plannings in the worktree save nothing.
+* A planning that writes its hidden lockfile is never saved (the write
+  changes what it read). On a cold cache the working copy has none yet, so
+  before the head is planned in place it starts as the base planning's
+  (without the results naming the worktree); its extension results are
+  validated against their recorded inputs as always.

@@ -34,7 +34,9 @@ use std::path::Path;
 /// receipts; raw selection-pointer observations are still required.
 /// 5: selection-owned pointer read/absence operations are distinct from ordinary
 /// observations and can be discharged only by current guarded acceptance proof.
-pub const FORMAT: u32 = 5;
+/// 6: listings of a `glob()` with excludes drop the excluded regular files
+/// (crate::observed_fs::Projection::Excluding), and the DERIVE section.
+pub const FORMAT: u32 = 6;
 
 /// Options left out of G (PLAN-L2 §1a "Options left out of G"), by name
 /// (an `--[no]name` boolean's `no` form matches too). Each was traced to
@@ -350,6 +352,81 @@ pub fn compute(inputs: &Inputs<'_>, binary: [u8; 32]) -> Key {
         g: *blake3::hash(&bytes).as_bytes(),
         binary,
     }
+}
+
+/// Options of G that only select the targets (the target pattern phase,
+/// which a derived hit runs as before) or say whether to execute: left out
+/// of the family key F (crate::snapshot::derive).
+pub const FAMILY_EXCLUDED: &[&str] = &[
+    "keep_going",
+    "k",
+    "build",
+    "target_pattern_file",
+    "test_tag_filters",
+    "test_size_filters",
+    "test_timeout_filters",
+    "test_lang_filters",
+    "build_tests_only",
+    "build_tag_filters",
+    "expand_test_suites",
+];
+
+fn family_excluded(text: &str) -> bool {
+    let name = option_name(text);
+    FAMILY_EXCLUDED.contains(&name)
+        || name
+            .strip_prefix("no")
+            .is_some_and(|name| FAMILY_EXCLUDED.contains(&name))
+}
+
+/// The family key F of a `build` or `test` (crate::snapshot::derive): G
+/// without the command, the targets and [`FAMILY_EXCLUDED`]. The command
+/// stays when `--output_groups` is given (`test` keeps the `default`
+/// group, OutputGroupInfo.determineOutputGroups). `None` for any other
+/// command.
+pub fn family(inputs: &Inputs<'_>, binary: [u8; 32]) -> Option<[u8; 32]> {
+    if !matches!(inputs.command, "build" | "test") {
+        return None;
+    }
+    let groups = inputs
+        .options
+        .iter()
+        .any(|unit| option_name(&unit.option.text) == "output_groups");
+    let parts = Parts {
+        format: FORMAT,
+        version: env!("CARGO_PKG_VERSION"),
+        binary,
+        command: if groups { inputs.command } else { "build|test" },
+        workspace: inputs.workspace.as_os_str().as_bytes(),
+        cache: inputs.cache.as_os_str().as_bytes(),
+        cwd: inputs.cwd.as_os_str().as_bytes(),
+        relative_directory: inputs.relative_directory,
+        current_package: inputs.current_package,
+        startup: inputs
+            .startup
+            .iter()
+            .map(String::as_str)
+            .filter(|arg| !matches!(*arg, "--quiet" | "--noquiet"))
+            .collect(),
+        options: inputs
+            .options
+            .iter()
+            .filter(|unit| !excluded(&unit.option.text) && !family_excluded(&unit.option.text))
+            .map(|unit| {
+                (
+                    unit.option.text.as_str(),
+                    unit.value.as_ref().map(|value| value.text.as_str()),
+                )
+            })
+            .collect(),
+        targets: &[],
+        allow_yanked: inputs.allow_yanked,
+        full_validation: inputs.full_validation,
+        include_manual: crate::affected::include_manual(),
+    };
+    let mut bytes = b"family\0".to_vec();
+    bytes.extend(postcard::to_stdvec(&parts).expect("the key parts encode"));
+    Some(*blake3::hash(&bytes).as_bytes())
 }
 
 /// The test or debug hook that keeps this process from reading or writing

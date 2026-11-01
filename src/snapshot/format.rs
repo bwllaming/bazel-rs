@@ -73,15 +73,20 @@ pub enum Section {
     /// (crate::snapshot::incremental, compressed like the plan); a hit
     /// never reads it.
     Index = 5,
+    /// What a request of a subset of the targets reuses
+    /// (crate::snapshot::derive, compressed like the plan); a hit never
+    /// reads it.
+    Derive = 6,
 }
 
 impl Section {
-    pub const ALL: [Section; 5] = [
+    pub const ALL: [Section; 6] = [
         Section::Inputs,
         Section::Events,
         Section::Plan,
         Section::Stats,
         Section::Index,
+        Section::Derive,
     ];
 
     pub fn name(self) -> &'static str {
@@ -91,6 +96,7 @@ impl Section {
             Self::Plan => "PLAN",
             Self::Stats => "STATS",
             Self::Index => "INDEX",
+            Self::Derive => "DERIVE",
         }
     }
 }
@@ -325,7 +331,15 @@ const FACILITIES: [&str; 3] = ["download", "execute", "which"];
 enum ProjectionWire<'a> {
     All,
     Directories,
-    Glob { pattern: &'a str, relative: &'a str },
+    Glob {
+        pattern: &'a str,
+        relative: &'a str,
+    },
+    Excluding {
+        pattern: Option<&'a str>,
+        relative: &'a str,
+        excludes: Vec<&'a str>,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -874,6 +888,15 @@ pub fn encode_inputs(
                     Projection::Glob { pattern, relative } => {
                         ProjectionWire::Glob { pattern, relative }
                     }
+                    Projection::Excluding {
+                        pattern,
+                        relative,
+                        excludes,
+                    } => ProjectionWire::Excluding {
+                        pattern: pattern.as_deref(),
+                        relative,
+                        excludes: excludes.iter().map(String::as_str).collect(),
+                    },
                 }),
                 Op::Canon => OpWire::Canon,
                 Op::ReadLink => OpWire::ReadLink,
@@ -1030,6 +1053,18 @@ pub fn decode_inputs(bytes: &[u8]) -> Result<Inputs, String> {
                 ProjectionWire::Glob { pattern, relative } => Projection::Glob {
                     pattern: (*pattern).to_owned(),
                     relative: (*relative).to_owned(),
+                },
+                ProjectionWire::Excluding {
+                    pattern,
+                    relative,
+                    excludes,
+                } => Projection::Excluding {
+                    pattern: pattern.map(str::to_owned),
+                    relative: (*relative).to_owned(),
+                    excludes: excludes
+                        .iter()
+                        .map(|exclude| (*exclude).to_owned())
+                        .collect(),
                 },
             }),
             OpWire::Canon => Op::Canon,

@@ -211,6 +211,11 @@ impl Twin {
             .env("HOME", &home)
             .env("TMPDIR", &home)
             .env("LC_ALL", "C");
+        // Derived hits (crate::snapshot::derive, tests/snapshot_derive.rs)
+        // serve a new key from another key's snapshot, unsaved and with
+        // other `INFO: Analyzed` counts: these fixtures pin the snapshot of
+        // each command's own key.
+        command.env("BAZEL_RS_SNAPSHOT_DERIVE", "0");
         // The reference side turns the snapshot off explicitly: unset is
         // `on` (L2-W7, on by default).
         command.env(
@@ -726,6 +731,29 @@ fn glob_listings_see_matching_files_only() {
         miss.stderr()
     );
     twin.same(BUILD_ALL, &[]).assert_hit();
+}
+
+/// A glob's excluded regular files are not part of its listings
+/// (crate::observed_fs::Projection::Excluding): a `.pyc` written into an
+/// excluded `__pycache__` (rules_python's interpreter trees, by the
+/// actions running Python) still hits; a file the glob matches misses.
+#[test]
+fn glob_listings_leave_out_excluded_files() {
+    let twin = fixture();
+    twin.write(
+        "ex/BUILD.bazel",
+        "genrule(name = 'all', srcs = glob(['src/**'], exclude = ['**/__pycache__/*.pyc']), outs = ['all.txt'], cmd = 'cat $(SRCS) > $@')\n",
+    );
+    twin.write("ex/src/m.py", "m\n");
+    twin.write("ex/src/__pycache__/keep.txt", "k\n");
+    let build = &["build", "//ex:all"];
+    twin.same(build, &[]).assert_saved();
+    twin.same(build, &[]).assert_hit();
+    twin.write("ex/src/__pycache__/m.cpython-312.pyc", "pyc");
+    twin.same(build, &[]).assert_hit();
+    twin.write("ex/src/__pycache__/n.txt", "n\n");
+    twin.same(build, &[]).assert_miss("__pycache__");
+    twin.same(build, &[]).assert_hit();
 }
 
 /// Fixture 5: under `//...`, a new `.go` file in a package without globs

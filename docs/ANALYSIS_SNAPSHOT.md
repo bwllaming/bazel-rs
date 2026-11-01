@@ -352,6 +352,93 @@ after the exec (bazel-rs's process is the program then); `run
 --script_path` (the script runs later, outside bazel-rs); and tests that
 still pass on the damaged runfile.
 
+## Derived hits (ci-pipeline-perf)
+
+Code: `src/snapshot/derive.rs`, the recording in `Engine::plan_build`
+(`DeriveRoots`) and `Engine::derive_coverage`, the lookup `derived_hit` in
+`src/main.rs`. Tests: `tests/snapshot_derive.rs`, `tests/affected.rs`
+`the_build_and_test_after_affected_derive_their_plans`.
+
+An exact hit needs the same command and the same patterns. ~/code's CI runs
+`build --keep_going --target_pattern_file F1` and then `test --keep_going
+--test_output=errors --test_summary=terse --local_test_jobs=4
+--test_tag_filters=-nightly --target_pattern_file F2` of the test rules
+among F1's labels: the test paid the build's analysis again (~110–165 s),
+where genuine Bazel's one server configures nothing again (`INFO: Analyzed
+155 targets (0 packages loaded, 0 targets configured)`). A **derived hit**
+serves a `build` or `test` whose labels are a subset of a saved snapshot's
+with the snapshot's plan restricted to them.
+
+* **Family key F** (`snapshot::key::family`): G without the command (`build`
+  and `test` alike; with `--output_groups` the command stays, since `test`
+  keeps the `default` group), without the targets and without the options
+  that only select targets or say whether to execute
+  (`snapshot::key::FAMILY_EXCLUDED`: `--keep_going`/`-k`, `--[no]build`,
+  `--target_pattern_file`, the four test filters, `--build_tests_only`,
+  `--build_tag_filters`, `--expand_test_suites`). Every other option of G is
+  in F (`--define`, `--test_env`, ...): one family plans each configured
+  target alike.
+* **Recording** (the DERIVE section, compressed like the plan; a hit never
+  reads it): a full analysis of a `build` or `test` that saves records per
+  requested label the producers of what *building* it builds (its requested
+  and hidden top-level artifacts as a target that is not run) and, per test
+  rule, what *running* it in a `test` builds with its run plan — the one the
+  `test` planned, or one planned on the side (`trees` false, never added to
+  the build's own reachability roots: the build's plan is byte-identical,
+  checked on ~/code: 15,220 actions) for a test rule only built. A marker
+  `<state>/snapshots/derive/<F>/<G>` names the snapshot. Not recorded:
+  `run`, top-level aspects, skipped incompatible targets, analysis errors,
+  coverage (no snapshot), an incremental save's spliced plan.
+* **Lookup**, after the target pattern phase (which selects the labels,
+  expands test suites and applies the filters exactly as before): when the
+  request has no snapshot of its own (one that missed has changed inputs:
+  the family's would miss too, and the full analysis saves as before), the
+  most recent snapshot of the family whose labels cover the
+  request's (and whose run plans cover its tests with the same `trees`) is
+  validated like an exact hit — every recorded input unchanged, local
+  repositories replayed — and its decoded plan is **derived**: the actions
+  reachable from the requested labels' roots (and the workspace status
+  actions of an executing build), in the saved order; the requested
+  artifacts, results, build events (`--build_event_json_file`), run plans
+  and test properties of the requested labels, in request order; a
+  `--keep_going` plan without failures. A `--nobuild` snapshot serves an
+  executing build only when no derived action reads the workspace status
+  (its consumers have no producer there) or a source directory (never
+  traversed there); the status placeholders are added.
+* **What it prints**: `INFO: Analyzed N targets (P packages loaded, 0
+  targets configured).` (P: what the target pattern phase loaded) and the
+  `Found` line, like a warm Bazel server, which does not replay the
+  `print()`s and warnings of the configured targets it already has either.
+  The loading-phase prints of the pattern phase are printed as always.
+  Otherwise the derived plan is the full analysis's but for two things the
+  saved analysis decided: the plan order, and the owner of a shared action
+  (two targets declaring the same output: the first planned owns it). On
+  ~/code (the CI `test` of 152 labels from the `build` of 480) the derived
+  plan equals a full analysis's in its 13,392 actions but for the 54
+  actions `message-core/web:build_copy_srcs_to_bin` owns instead of
+  `message-core/web:check_types` and the 4 runfiles actions naming them.
+* A derived run is **not saved** (its own key keeps missing; the family
+  serves it). The candidate's recorded inputs are validated first, while
+  the command can still save its own analysis: a candidate whose inputs
+  changed leaves its family (`derive ... miss: ... (the full analysis
+  runs)`) and the full analysis is saved as before. Only a candidate that
+  validated but whose hit then fails (its replay, its local trees, its
+  plan) leaves an unsaved full analysis. `BAZEL_RS_SNAPSHOT_DERIVE=0` turns
+  recording and lookups off; verify mode and `bazel-rs affected`'s
+  plannings never derive. EXPLAIN says `derived G from S: N target(s), M
+  action(s); hit S: ...` or why a candidate did not cover the request.
+* **Limits.** A snapshot is stale once anything it read changed. In
+  ~/code's cold CI the `query` between `affected` and `build` evaluates
+  more module extensions (every `select()` branch) and so writes the hidden
+  lockfile `affected`'s head planning read: the `build` analyzes in full
+  (and saves), the `test` derives from it. With a persistent cache the
+  hidden lockfile already holds those results and the `build` derives from
+  `affected` too.
+
+| ~/code CI (PR 13252), cache of the steps before | before | derived |
+|---|---|---|
+| `test --nobuild` of the 152 test labels after `build --nobuild` of the 480 | 113 s | 7 s |
+
 ## Verify mode (L2-W6)
 
 `BAZEL_RS_SNAPSHOT=verify` is `on` (a miss saves exactly the same way),

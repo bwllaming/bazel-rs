@@ -993,7 +993,12 @@ pub fn classify(
                 return Err(format!("{what}: a .bzl file (its edits fall back)"));
             }
             Op::Read => return Err(format!("{what}: a file planning read")),
-            Op::ReadDir(Projection::Glob { .. }) => {
+            Op::ReadDir(
+                Projection::Glob { .. }
+                | Projection::Excluding {
+                    pattern: Some(_), ..
+                },
+            ) => {
                 loaded.insert(owner);
             }
             Op::ReadDir(_) => {

@@ -588,3 +588,85 @@ filegroup(name = 'uses_old', srcs = [':n'], data = ['//dep:old'])
     assert!(stderr.contains("failed (exit 1"), "{stderr}");
     assert!(!stderr.contains("noisy impl"), "{stderr}");
 }
+
+impl Repo {
+    /// `bazel-rs ARGS` in the working copy, with the snapshot diagnostics.
+    fn bazel(&self, args: &[&str]) -> Output {
+        let output = Command::new("timeout")
+            .args(["--kill-after=5s", "240s"])
+            .arg(env!("CARGO_BIN_EXE_bazel-rs"))
+            .arg("--ignore_all_rc_files")
+            .arg(format!(
+                "--cache-dir={}",
+                self.base().join("cache").display()
+            ))
+            .args(with_explicit_modules(args))
+            .current_dir(self.main())
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", self.home())
+            .env("TMPDIR", self.home())
+            .env("LC_ALL", "C")
+            .env("BAZEL_RS_SNAPSHOT_EXPLAIN", "1")
+            .output()
+            .unwrap();
+        assert_ne!(output.status.code(), Some(124), "CLI timed out");
+        output
+    }
+}
+
+/// ~/code's CI after `affected` (docs/AFFECTED_TARGETS.md §8.8): a clean
+/// working copy at HEAD is the head revision, planned in place, and its
+/// scoped analysis is saved, so the `build` of the affected targets and
+/// the `test` of their tests derive their plans from it
+/// (crate::snapshot::derive) instead of analyzing them again — and build
+/// and test what a full analysis does.
+#[test]
+fn the_build_and_test_after_affected_derive_their_plans() {
+    let repo = Repo::new();
+    let tests = "load(':defs.bzl', 'my_test')\nmy_test(name = 't', srcs = ['//a'])\n";
+    let mut files: Vec<(&str, &str)> = PACKAGES.to_vec();
+    files.push(("t/defs.bzl", DEFS));
+    files.push(("t/BUILD.bazel", tests));
+    let first = repo.commit(&files);
+    repo.commit(&[("a/a.txt", "a2\n")]);
+    // Without --head: the clean working copy is HEAD.
+    let affected = |base: &str| {
+        let output = repo.affected(&[&format!("--base={base}")]);
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "{stderr}");
+        let labels: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        (labels, stderr)
+    };
+    let (labels, stderr) = affected(&first);
+    assert_eq!(labels, ["//a", "//b", "//t"], "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "planning //... (scoped) in {}\n",
+            repo.main().display()
+        )),
+        "the head is planned in place:\n{stderr}"
+    );
+    let mut build = vec!["build", "--keep_going"];
+    build.extend(labels.iter().map(String::as_str));
+    let output = repo.bazel(&build);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("bazel-rs-snapshot: derived "), "{stderr}");
+    assert!(
+        stderr.contains("INFO: Analyzed 3 targets (") && stderr.contains("0 targets configured)."),
+        "{stderr}"
+    );
+    let output = repo.bazel(&["test", "--test_output=errors", "//t"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("bazel-rs-snapshot: derived "), "{stderr}");
+    // A head with a change in the working copy is not HEAD: planned in
+    // place as before, never saved for derivation from a scope.
+    fs::write(repo.main().join("c/c.txt"), "dirty\n").unwrap();
+    let (_, stderr) = affected(&first);
+    assert!(stderr.contains("the working copy has changes"), "{stderr}");
+}

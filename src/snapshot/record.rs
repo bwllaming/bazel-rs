@@ -467,6 +467,7 @@ pub fn summary(
                 observed_fs::Projection::All => "all",
                 observed_fs::Projection::Directories => "dirs",
                 observed_fs::Projection::Glob { .. } => "glob",
+                observed_fs::Projection::Excluding { .. } => "excluding",
             };
             *projections.entry(kind).or_default() += 1;
         }

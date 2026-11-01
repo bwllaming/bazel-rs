@@ -318,7 +318,7 @@ fn check(path: &Path, observation: &Observation) -> Result<Checked, String> {
                 let entry = entry.map_err(|error| format!("READDIR {}: {error}", shown()))?;
                 let name = entry.file_name();
                 let kind = entry.file_type().ok().map(FileKind::of);
-                if projection.keeps(&name, kind) {
+                if projection.digests(&name, kind) {
                     entries.push((name, kind.map_or(b'e', FileKind::letter)));
                 }
             }

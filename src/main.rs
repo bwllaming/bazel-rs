@@ -958,7 +958,40 @@ fn run() -> Result<(), String> {
                             }
                             .finish(planned, snapshot);
                         }
-                        bazel_rs::snapshot::Checked::Miss(save) => snapshot.save = save,
+                        bazel_rs::snapshot::Checked::Miss(save) => {
+                            // A derived hit may serve the command once the
+                            // target pattern phase selected its labels
+                            // (crate::snapshot::derive).
+                            if save.as_ref().is_some_and(|save| save.family().is_some())
+                                && !verify
+                                // `bazel-rs affected` plannings digest their
+                                // own analysis.
+                                && std::env::var_os(bazel_rs::affected::SCOPE_VAR).is_none()
+                                && std::env::var_os(bazel_rs::affected::DIGESTS_VAR).is_none()
+                                // A request with a snapshot of its own that
+                                // missed has changed inputs: the family's
+                                // would miss too, and the full analysis saves.
+                                && save.as_ref().is_some_and(|save| {
+                                    !bazel_rs::snapshot::store::path(&cache, &save.key()).exists()
+                                })
+                                && command != "run"
+                                && aspects.is_empty()
+                                && aspects_parameters.is_empty()
+                            {
+                                snapshot.derive =
+                                    Some(Box::new(bazel_rs::snapshot::derive::Lookup {
+                                        cache: cache.clone(),
+                                        replay: bazel_rs::snapshot::hit::ReplayInputs {
+                                            options: resolver_options.clone(),
+                                            environment: repository_environment.clone(),
+                                            downloads_enabled: repository_downloads_enabled,
+                                        },
+                                        workspace_status: workspace_status.clone(),
+                                        workspace: root.clone(),
+                                    }));
+                            }
+                            snapshot.save = save;
+                        }
                         bazel_rs::snapshot::Checked::Incremental(save, candidate) => {
                             snapshot.save = Some(save);
                             incremental_candidate = Some(candidate);
@@ -1065,6 +1098,17 @@ fn run() -> Result<(), String> {
         builds(&command)
             && snapshot.save.is_some()
             && bazel_rs::snapshot::incremental::switched_on(),
+    );
+    // What a later request of a subset of these targets reuses rides with
+    // the saved snapshot (crate::snapshot::derive).
+    engine.set_derive_recording(
+        snapshot
+            .save
+            .as_ref()
+            .is_some_and(|save| save.family().is_some())
+            && matches!(command.as_str(), "build" | "test")
+            && aspects.is_empty()
+            && aspects_parameters.is_empty(),
     );
     let status_options = workspace_status.clone();
     engine.set_compact_repo_mapping(runfiles_options.compact_repo_mapping);
@@ -1429,12 +1473,29 @@ fn run() -> Result<(), String> {
             },
         });
     }
-    // Plan -> PlannedRequest -> hand-over -> finalize -> execute (L2-W4).
-    let planned = plan_request(
-        std::mem::ManuallyDrop::into_inner(engine),
-        bazel_rs::engine::RequestSpec::build(&labels),
+    // Plan -> PlannedRequest -> hand-over -> finalize -> execute (L2-W4);
+    // or the plan of a saved snapshot covering these labels
+    // (crate::snapshot::derive).
+    let derived = derived_hit(
         &mut snapshot,
+        bazel_rs::snapshot::derive::Request {
+            command: bazel_rs::request::RequestCommand::Build,
+            build: &labels,
+            runs: &[],
+            trees: true,
+            execute: !no_build,
+            keep_going: test_options.keep_going,
+        },
+        None,
     );
+    let planned = match derived {
+        Some(planned) => planned,
+        None => plan_request(
+            std::mem::ManuallyDrop::into_inner(engine),
+            bazel_rs::engine::RequestSpec::build(&labels),
+            &mut snapshot,
+        ),
+    };
     build_tail(
         planned,
         BuildTail {
@@ -2699,6 +2760,45 @@ fn reexec(mode: &str) -> ! {
     exit(1)
 }
 
+/// A derived hit (crate::snapshot::derive): a saved snapshot of this
+/// command's family whose targets cover the selected labels serves the
+/// request. `None`: the full analysis runs (saved as before when no
+/// snapshot covers the labels; unsaved when a covering one failed).
+fn derived_hit(
+    snapshot: &mut bazel_rs::snapshot::Scope,
+    request: bazel_rs::snapshot::derive::Request<'_>,
+    tests: Option<usize>,
+) -> Option<Planned> {
+    let lookup = snapshot.derive.take()?;
+    let save = snapshot.save.take()?;
+    let labels = request.build.to_vec();
+    match bazel_rs::snapshot::derive::attempt(&lookup, save, request) {
+        bazel_rs::snapshot::derive::Outcome::Uncovered(save) => {
+            snapshot.save = Some(save);
+            None
+        }
+        bazel_rs::snapshot::derive::Outcome::Failed => None,
+        bazel_rs::snapshot::derive::Outcome::Hit(mut hit) => {
+            bazel_rs::perf_mark("snapshot.hit");
+            // Like a warm Bazel server: nothing configured again, the
+            // packages the target pattern phase loaded.
+            let mut window = Vec::new();
+            for line in bazel_rs::progress::analysis_lines(
+                &labels,
+                tests,
+                bazel_rs::progress::loaded_packages(),
+                0,
+                0,
+            ) {
+                window.extend_from_slice(line.as_bytes());
+                window.push(b'\n');
+            }
+            hit.window_stderr = window;
+            Some(planned_hit(hit, snapshot))
+        }
+    }
+}
+
 /// A snapshot hit's planned request (crate::snapshot::hit): what planning
 /// printed is written to stderr first, then the decoded request executes
 /// like a planned one, with the workspace status the hit computed; the
@@ -3520,20 +3620,37 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
     // for each test of `tests` (a subset) its executable and the artifacts
     // of its runfiles, which the test action stages by content
     // (crate::test_runner). The runfiles tree itself is built only like
-    // any `build` (`--build_runfile_links`).
-    let planned = plan_request(
-        std::mem::ManuallyDrop::into_inner(engine),
-        bazel_rs::engine::RequestSpec {
-            command: bazel_rs::request::RequestCommand::Test {
-                build: build.clone(),
-                tests: planned_tests,
-            },
+    // any `build` (`--build_runfile_links`). Or the plan of a saved
+    // snapshot covering these labels (crate::snapshot::derive).
+    let command = bazel_rs::request::RequestCommand::Test {
+        build: build.clone(),
+        tests: planned_tests,
+    };
+    let derived = derived_hit(
+        &mut tail.snapshot,
+        bazel_rs::snapshot::derive::Request {
+            command: command.clone(),
             build: &build,
             runs: &tests,
             trees: false,
+            execute: engine.execute_build(),
+            keep_going: options.keep_going,
         },
-        &mut tail.snapshot,
+        Some(tests.len()),
     );
+    let planned = match derived {
+        Some(planned) => planned,
+        None => plan_request(
+            std::mem::ManuallyDrop::into_inner(engine),
+            bazel_rs::engine::RequestSpec {
+                command,
+                build: &build,
+                runs: &tests,
+                trees: false,
+            },
+            &mut tail.snapshot,
+        ),
+    };
     test_tail(planned, tests, tail)
 }
 
