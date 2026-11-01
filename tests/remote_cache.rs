@@ -40,6 +40,10 @@ impl Request {
 struct State {
     blobs: BTreeMap<String, Vec<u8>>,
     log: Vec<Request>,
+    /// Transient faults: the next `unavailable` requests answer 503, the
+    /// next `dropped` ones close the connection without an answer.
+    unavailable: usize,
+    dropped: usize,
 }
 
 /// A minimal HTTP/1.1 cache: GET/PUT `/ac/H` and `/cas/H`, other GETs from
@@ -85,8 +89,15 @@ fn handle(mut stream: TcpStream, state: Arc<Mutex<State>>, fail: Arc<AtomicBool>
             path: path.clone(),
             headers,
         });
+        if state.dropped > 0 {
+            state.dropped -= 1;
+            return;
+        }
         let (status, payload) = if fail.load(Ordering::SeqCst) {
             ("500 Internal Server Error", b"broken".to_vec())
+        } else if state.unavailable > 0 {
+            state.unavailable -= 1;
+            ("503 Service Unavailable", b"busy".to_vec())
         } else if method == "PUT" {
             state.blobs.insert(path, body);
             ("200 OK", Vec::new())
@@ -131,6 +142,14 @@ impl Server {
             .unwrap()
             .blobs
             .insert(path.to_owned(), bytes.to_vec());
+    }
+    fn remove(&self, path: &str) -> bool {
+        self.state.lock().unwrap().blobs.remove(path).is_some()
+    }
+    fn faults(&self, unavailable: usize, dropped: usize) {
+        let mut state = self.state.lock().unwrap();
+        state.unavailable = unavailable;
+        state.dropped = dropped;
     }
     fn take_log(&self) -> Vec<Request> {
         std::mem::take(&mut self.state.lock().unwrap().log)
@@ -1450,4 +1469,156 @@ fn tree_outputs_and_aliased_execution_platforms_key_like_genuine() {
     // store holds regular files).
     assert_eq!(fs::read_to_string(root.join("link")).unwrap(), "hello\n");
     assert_eq!(fs::read_to_string(root.join("up")).unwrap(), "hello\n");
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    bazel_rs::reapi::Digest::of(bytes).hash
+}
+
+const BWOB_BUILD: &str = r#"genrule(name = "a", outs = ["a.txt"], cmd = "echo alpha > $@")
+genrule(name = "b", srcs = [":a"], outs = ["b.txt"], cmd = "cat $< > $@; echo beta >> $@")
+genrule(name = "c", srcs = [":a"], outs = ["c.txt"], cmd = "cat $< > $@; echo gamma >> $@", tags = ["no-remote"])
+"#;
+
+/// `bazel-bin/<relative>` of the output tree of `cache`, if it exists.
+fn bin_file(ws: &Workspace, cache: &str, relative: &str) -> Option<String> {
+    let info = ws.run_with(cache, &["info", "bazel-bin"], false);
+    let bin = String::from_utf8_lossy(&info.stdout).trim().to_owned();
+    fs::read_to_string(PathBuf::from(bin).join(relative)).ok()
+}
+
+/// Build without the Bytes with an HTTP cache (docs/REMOTE_CACHE.md):
+/// like Bazel (HttpCacheClient has no FindMissingBlobs) a hit is trusted
+/// and its intermediate outputs stay remote; only the requested target's
+/// output is downloaded, a local consumer fetches its input on demand, and
+/// a blob found missing then reruns its producer in a retried command.
+#[test]
+fn http_hits_download_toplevel_outputs_only() {
+    let ws = Workspace::new();
+    ws.file("bw/BUILD.bazel", BWOB_BUILD);
+    let server = Server::new();
+    let cache = format!("--remote_cache={}", server.url());
+    let populated = ws.run("p", &["build", &cache, "//bw:b", "//bw:c"]);
+    assert!(populated.status.success(), "{}", stderr(&populated));
+    let a = format!("GET /cas/{}", sha256_hex(b"alpha\n"));
+    let b = format!("GET /cas/{}", sha256_hex(b"alpha\nbeta\n"));
+    server.take_log();
+    let bep = ws.0.join("bep.json");
+    let hit = ws.run_with(
+        "r1",
+        &[
+            "build",
+            &cache,
+            &format!("--build_event_json_file={}", bep.display()),
+            "//bw:b",
+        ],
+        false,
+    );
+    assert!(hit.status.success(), "{}", stderr(&hit));
+    assert!(
+        stderr(&hit).contains("0 actions executed, 0 cache hits, 2 remote cache hits"),
+        "{}",
+        stderr(&hit)
+    );
+    let summary = server.summary();
+    assert!(summary.contains(&b), "{summary:?}");
+    assert!(!summary.contains(&a), "{summary:?}");
+    assert_eq!(
+        bin_file(&ws, "r1", "bw/b.txt").as_deref(),
+        Some("alpha\nbeta\n")
+    );
+    assert_eq!(bin_file(&ws, "r1", "bw/a.txt"), None);
+    let events = fs::read_to_string(&bep).unwrap();
+    assert!(events.contains("file://"), "{events}");
+    assert!(!events.contains("bytestream://"), "{events}");
+    // The native action cache keeps a's metadata: a later local consumer
+    // fetches a's blob before it runs.
+    let local = ws.run_with("r1", &["build", &cache, "//bw:c"], false);
+    assert!(local.status.success(), "{}", stderr(&local));
+    assert!(server.summary().contains(&a));
+    assert_eq!(
+        bin_file(&ws, "r1", "bw/c.txt").as_deref(),
+        Some("alpha\ngamma\n")
+    );
+    // An evicted blob: the consumer's fetch finds it missing, the command
+    // is retried with the blob known missing, and the producer reruns.
+    assert!(server.remove(&format!("/cas/{}", sha256_hex(b"alpha\n"))));
+    let lost = ws.run_with("r2", &["build", &cache, "//bw:c"], false);
+    assert!(lost.status.success(), "{}", stderr(&lost));
+    let text = stderr(&lost);
+    assert!(
+        text.contains("Lost inputs no longer available remotely: bazel-out/"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Found transient remote cache error, retrying the build..."),
+        "{text}"
+    );
+    assert!(text.contains("2 actions executed"), "{text}");
+    assert_eq!(
+        bin_file(&ws, "r2", "bw/c.txt").as_deref(),
+        Some("alpha\ngamma\n")
+    );
+    // --remote_download_outputs=all downloads every output of a hit.
+    server.take_log();
+    let all = ws.run_with(
+        "r3",
+        &["build", &cache, "--remote_download_outputs=all", "//bw:b"],
+        false,
+    );
+    assert!(all.status.success(), "{}", stderr(&all));
+    assert_eq!(bin_file(&ws, "r3", "bw/a.txt").as_deref(), Some("alpha\n"));
+}
+
+/// `--remote_retries` (RemoteRetrier with HTTP_RESULT_CLASSIFIER): 503s
+/// and dropped connections are retried with backoff, reads and writes;
+/// with no retries the first failure is a warning and a local execution.
+#[test]
+fn http_cache_requests_are_retried() {
+    let ws = Workspace::new();
+    let server = Server::new();
+    let cache = format!("--remote_cache={}", server.url());
+    // Uploads: the first PUTs answer 503 and are retried.
+    server.faults(2, 0);
+    let built = ws.run("p", &["build", &cache, "//pkg:gen"]);
+    assert!(built.status.success(), "{}", stderr(&built));
+    assert!(
+        !stderr(&built).contains("Remote Cache"),
+        "{}",
+        stderr(&built)
+    );
+    assert_eq!(server.keys("/ac/"), [GEN_KEY]);
+    // Reads: 503s, then a dropped connection, each retried.
+    for (unavailable, dropped, cache_dir) in [(3, 0, "r1"), (0, 2, "r2")] {
+        server.faults(unavailable, dropped);
+        server.take_log();
+        let hit = ws.run_with(cache_dir, &["build", &cache, "//pkg:gen"], false);
+        assert!(hit.status.success(), "{}", stderr(&hit));
+        assert!(!stderr(&hit).contains("Remote Cache"), "{}", stderr(&hit));
+        assert!(
+            stderr(&hit).contains("1 remote cache hits"),
+            "{}",
+            stderr(&hit)
+        );
+        let ac = server
+            .summary()
+            .iter()
+            .filter(|line| line.starts_with("GET /ac/"))
+            .count();
+        assert_eq!(ac, 1 + unavailable + dropped);
+    }
+    // --remote_retries=0: one failure, a warning and local execution.
+    server.faults(1, 0);
+    let once = ws.run_with(
+        "r3",
+        &["build", &cache, "--remote_retries=0", "//pkg:gen"],
+        false,
+    );
+    assert!(once.status.success(), "{}", stderr(&once));
+    assert!(
+        stderr(&once).contains("WARNING: Remote Cache: 503 Service Unavailable\nbusy"),
+        "{}",
+        stderr(&once)
+    );
+    assert_eq!(outputs(&once)["//pkg:gen"], "hello\ndone\n");
 }

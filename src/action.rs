@@ -2065,7 +2065,8 @@ fn materialize(cas: &Path, root: &Path, path: &Path) -> Result<(), String> {
 /// its producer's cache entry is invalidated (the producer reruns on the
 /// next attempt) and the command is marked for a retry.
 pub(crate) fn lost_remote_output(path: &Path) {
-    crate::remote_outputs::note_lost();
+    let hash = crate::remote_outputs::get(path).map(|file| file.hash);
+    crate::remote_outputs::note_lost(hash.as_deref().unwrap_or(""));
     let entry = crate::remote_outputs::entry_of(path).map(Path::to_path_buf);
     if let Some(entry) = entry {
         let _ = fs::remove_file(entry.join("manifest.json"));
@@ -6264,6 +6265,47 @@ fn store_bytes(cas: &Path, bytes: &[u8], executable: u32) -> Result<PathBuf, Str
     Ok(blob)
 }
 
+/// The content-addressed store of this invocation's remote downloads
+/// (set once a spawn may use the remote cache): a blob already stored is
+/// never fetched again, and a fetched blob is stored at once, so the same
+/// digest in several outputs (the same file in two configurations' tree
+/// artifacts, an output fetched again for a later consumer) crosses the
+/// network once — Bazel's CombinedCache deduplicates in-flight downloads
+/// (RemoteCacheClient's `downloadsInProgress`) and its output filesystem
+/// keeps fetched files.
+static DOWNLOAD_STORE: OnceLock<PathBuf> = OnceLock::new();
+
+fn note_download_store(cache_root: &Path) {
+    if DOWNLOAD_STORE.get().is_none() {
+        let _ = DOWNLOAD_STORE.set(cache_root.join("cas"));
+    }
+}
+
+/// The stored bytes of blob `hash` (`size` bytes) when this invocation's
+/// store holds it (either mode); the caller verifies them.
+pub(crate) fn stored_blob(hash: &str, size: u64) -> Option<Vec<u8>> {
+    let cas = DOWNLOAD_STORE.get()?;
+    let digest = Sha256Digest::from_hex(hash)?;
+    for mode in [0o444, 0o555] {
+        let blob = cas.join(format!("{digest}-{mode:o}"));
+        if let Ok(metadata) = fs::symlink_metadata(&blob)
+            && metadata.is_file()
+            && metadata.size() == size
+            && let Ok(bytes) = fs::read(&blob)
+        {
+            return Some(bytes);
+        }
+    }
+    None
+}
+
+/// Stores downloaded (verified) bytes for [`stored_blob`]; best effort.
+pub(crate) fn store_downloaded(bytes: &[u8]) {
+    if let Some(cas) = DOWNLOAD_STORE.get() {
+        let _ = store_bytes(cas, bytes, 0);
+    }
+}
+
 /// `action` with its embedded inputs stored in the content-addressed store
 /// `cas` and turned into ordinary inputs of their blobs (N41's
 /// genrule-setup.sh, staged through N36's store like every input).
@@ -6881,6 +6923,9 @@ pub fn execute_with_remote(
     } else {
         remote
     };
+    if remote.is_some() {
+        note_download_store(cache_root);
+    }
     let embedded;
     let action = if action.embedded_inputs.is_empty() {
         action
@@ -7252,9 +7297,12 @@ pub fn execute_with_remote(
         )?;
     } else if let Some(transform) = &action.extra.transform {
         // A native transform reads or links its inputs in place: remote-only
-        // ones are materialized first (a runfiles tree links every input).
-        for (source, _) in &action.inputs {
-            materialize(cas, root, source.as_path())?;
+        // ones are materialized first (a runfiles tree links every input);
+        // a runfiles manifest records paths only.
+        if !matches!(transform, Transform::RunfilesManifest { .. }) {
+            for (source, _) in &action.inputs {
+                materialize(cas, root, source.as_path())?;
+            }
         }
         run_transform(action, transform, &prepared, &execroot, (cas, root))?;
     } else if let Some(hit) = &remote_hit {

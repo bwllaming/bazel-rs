@@ -221,9 +221,58 @@ pub fn pattern(option: &str, text: &str) -> Result<fancy_regex::Regex, String> {
 /// is retried (`--experimental_remote_cache_eviction_retries`).
 static LOST: AtomicBool = AtomicBool::new(false);
 
-pub fn note_lost() {
+/// `hash` (a lost blob) was gone from the remote CAS.
+pub fn note_lost(hash: &str) {
     LOST.store(true, Ordering::Relaxed);
+    missing()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(hash.to_owned());
     crate::remote_cache::note_remote_failure();
+}
+
+/// The environment variable carrying the digests a previous attempt found
+/// missing to the retried command (RemoteModule's `knownMissingCasDigests`,
+/// which outlives the build it was found in).
+pub const MISSING: &str = "BAZEL_RS_REMOTE_MISSING";
+
+/// At most this many known-missing digests are handed to a retry.
+const MISSING_LIMIT: usize = 4096;
+
+fn missing() -> &'static std::sync::Mutex<HashSet<String>> {
+    static MISSING_DIGESTS: OnceLock<std::sync::Mutex<HashSet<String>>> = OnceLock::new();
+    MISSING_DIGESTS.get_or_init(|| {
+        // snapshot-unrecorded: a retried command's known-missing blobs,
+        // consulted at execution only.
+        let inherited = std::env::var(MISSING).unwrap_or_default();
+        std::sync::Mutex::new(
+            inherited
+                .split(',')
+                .filter(|hash| !hash.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        )
+    })
+}
+
+/// Whether blob `hash` is known to be missing from the remote CAS (found
+/// lost in this command or an earlier attempt): a cached result naming it
+/// as an output that would stay remote is a miss, so its producer reruns
+/// (RemoteSpawnCache with `knownMissingCasDigests`).
+pub fn known_missing(hash: &str) -> bool {
+    missing()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(hash)
+}
+
+/// The known-missing digests for the retried command's [`MISSING`].
+pub fn missing_for_retry() -> String {
+    let missing = missing().lock().unwrap_or_else(|e| e.into_inner());
+    let mut hashes: Vec<&str> = missing.iter().map(String::as_str).collect();
+    hashes.sort_unstable();
+    hashes.truncate(MISSING_LIMIT);
+    hashes.join(",")
 }
 
 pub fn lost() -> bool {

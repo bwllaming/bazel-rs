@@ -6402,7 +6402,11 @@ fn retry_after_lost_inputs() {
     process
         .arg0(program)
         .args(args)
-        .env(bazel_rs::remote_outputs::ATTEMPT, attempt.to_string());
+        .env(bazel_rs::remote_outputs::ATTEMPT, attempt.to_string())
+        .env(
+            bazel_rs::remote_outputs::MISSING,
+            bazel_rs::remote_outputs::missing_for_retry(),
+        );
     let error = bazel_rs::spawn_lock::exec(&mut process);
     eprintln!("bazel-rs: cannot retry the command: {error}");
 }

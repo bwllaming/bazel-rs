@@ -39,7 +39,7 @@ pub struct RemoteOptions {
     pub timeout: Duration,
     pub headers: Vec<(String, String)>,
     pub cache_headers: Vec<(String, String)>,
-    /// `--remote_retries` (gRPC; HTTP requests are not retried).
+    /// `--remote_retries` (gRPC and HTTP).
     pub retries: i32,
     pub retry_max_delay: Duration,
     pub max_connections: i32,
@@ -536,6 +536,26 @@ struct HttpCache {
     credential_uri: String,
     client: reqwest::blocking::Client,
     headers: Vec<(String, String)>,
+    /// `--remote_retries` and `--remote_retry_max_delay` (RemoteRetrier
+    /// with RemoteModule.HTTP_RESULT_CLASSIFIER).
+    retries: u32,
+    retry_max_delay: Duration,
+}
+
+/// One HTTP attempt's failure and whether HTTP_RESULT_CLASSIFIER calls it
+/// transient (retried with backoff).
+struct HttpFailure {
+    error: CacheError,
+    transient: bool,
+}
+
+impl HttpFailure {
+    fn permanent(error: CacheError) -> Self {
+        Self {
+            error,
+            transient: false,
+        }
+    }
 }
 
 enum Backend {
@@ -569,6 +589,8 @@ pub struct RemoteCache {
     /// In-flight uploads: concurrent uploads of one blob run once
     /// (CombinedCache/RemoteCacheClient upload deduplication).
     uploading: Mutex<HashMap<Digest, Arc<Mutex<()>>>>,
+    /// In-flight downloads: concurrent fetches of one blob run once.
+    downloading: Mutex<HashMap<Digest, Arc<Mutex<()>>>>,
     hits: AtomicUsize,
     /// Spawns executed remotely (ExecuteResponse without `cached_result`).
     executions: AtomicUsize,
@@ -728,6 +750,7 @@ pub fn setup(
             print_execution_messages: options.print_execution_messages,
             uploaded: Mutex::new(HashSet::new()),
             uploading: Mutex::new(HashMap::new()),
+            downloading: Mutex::new(HashMap::new()),
             present: Mutex::new(HashSet::new()),
             hits: AtomicUsize::new(0),
             executions: AtomicUsize::new(0),
@@ -826,6 +849,8 @@ pub fn setup(
             credential_uri,
             client,
             headers,
+            retries: options.retries.max(0) as u32,
+            retry_max_delay: options.retry_max_delay,
         }),
         executor: None,
         accept_cached: options.accept_cached,
@@ -835,6 +860,7 @@ pub fn setup(
         print_execution_messages: options.print_execution_messages,
         uploaded: Mutex::new(HashSet::new()),
         uploading: Mutex::new(HashMap::new()),
+        downloading: Mutex::new(HashMap::new()),
         present: Mutex::new(HashSet::new()),
         hits: AtomicUsize::new(0),
         executions: AtomicUsize::new(0),
@@ -1125,18 +1151,28 @@ impl HttpCache {
         }
     }
 
-    fn failure(response: reqwest::blocking::Response) -> CacheError {
-        // HttpException: the status line, a newline and the body.
+    /// An unexpected status: HttpException (the status line, a newline
+    /// and the body); 408, 429, 500, 502, 503 and 504 are transient
+    /// (HTTP_RESULT_CLASSIFIER).
+    fn failure(response: reqwest::blocking::Response) -> HttpFailure {
         let status = response.status();
+        let transient = matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504);
         let body = response.text().unwrap_or_default();
-        CacheError::Other(format!(
-            "{} {}\n{body}",
-            status.as_u16(),
-            status.canonical_reason().unwrap_or("")
-        ))
+        HttpFailure {
+            error: CacheError::Other(format!(
+                "{} {}\n{body}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("")
+            )),
+            transient,
+        }
     }
 
-    fn transport(error: reqwest::Error) -> CacheError {
+    /// A transport failure. Transient (HTTP_RESULT_CLASSIFIER: a closed
+    /// channel, a reset connection, a timeout) unless the connection could
+    /// not be established at all (refused, DNS, TLS: Bazel's
+    /// `ConnectException` is permanent).
+    fn transport(error: reqwest::Error) -> HttpFailure {
         // Never echo URLs (they may carry user info).
         let kind = if error.is_timeout() {
             "timed out"
@@ -1145,17 +1181,52 @@ impl HttpCache {
         } else {
             "request failed"
         };
-        CacheError::Other(format!("HTTP cache {kind}: {}", error.without_url()))
+        let transient = error.is_timeout() || !error.is_connect() || {
+            // A connection reset while connecting is retried too.
+            let text = format!("{error:?}").to_ascii_lowercase();
+            text.contains("connection reset") || text.contains("connectionreset")
+        };
+        HttpFailure {
+            error: CacheError::Other(format!("HTTP cache {kind}: {}", error.without_url())),
+            transient,
+        }
+    }
+
+    /// RemoteRetrier.execute: `attempt` again after a transient failure,
+    /// with exponential backoff (100 ms doubling up to
+    /// `--remote_retry_max_delay`, jitter 0.1), at most `--remote_retries`
+    /// times.
+    fn retrying<T>(
+        &self,
+        mut attempt: impl FnMut() -> Result<T, HttpFailure>,
+    ) -> Result<T, CacheError> {
+        let mut backoff = crate::remote_grpc::Backoff::with(self.retries, self.retry_max_delay);
+        loop {
+            match attempt() {
+                Ok(value) => return Ok(value),
+                Err(failure) if failure.transient => match backoff.next_delay() {
+                    Some(delay) => std::thread::sleep(delay),
+                    None => return Err(failure.error),
+                },
+                Err(failure) => return Err(failure.error),
+            }
+        }
     }
 
     /// GET `/ac/HASH` or `/cas/HASH`; `Ok(None)` for 404/204 (cacheMiss).
     pub fn get(&self, cas: bool, hash: &str) -> Result<Option<Vec<u8>>, CacheError> {
+        self.retrying(|| self.get_once(cas, hash))
+    }
+
+    fn get_once(&self, cas: bool, hash: &str) -> Result<Option<Vec<u8>>, HttpFailure> {
         for attempt in 0..2 {
-            let request = self.request(
-                self.client
-                    .get(self.url(cas, hash))
-                    .header(reqwest::header::ACCEPT_ENCODING, "gzip,deflate"),
-            )?;
+            let request = self
+                .request(
+                    self.client
+                        .get(self.url(cas, hash))
+                        .header(reqwest::header::ACCEPT_ENCODING, "gzip,deflate"),
+                )
+                .map_err(HttpFailure::permanent)?;
             let response = request.send().map_err(Self::transport)?;
             let status = response.status().as_u16();
             if status == 200 {
@@ -1167,7 +1238,7 @@ impl HttpCache {
                 let body = response.bytes().map_err(Self::transport)?.to_vec();
                 return decode_body(encoding.as_deref(), body)
                     .map(Some)
-                    .map_err(CacheError::Other);
+                    .map_err(|error| HttpFailure::permanent(CacheError::Other(error)));
             }
             if attempt == 0 && Self::token_expired(&response) {
                 if let Some(credentials) = crate::credentials::global() {
@@ -1185,8 +1256,14 @@ impl HttpCache {
 
     /// PUT `/ac/HASH` or `/cas/HASH`; 200/201/202/204 succeed.
     pub fn put(&self, cas: bool, hash: &str, body: &[u8]) -> Result<(), CacheError> {
+        self.retrying(|| self.put_once(cas, hash, body))
+    }
+
+    fn put_once(&self, cas: bool, hash: &str, body: &[u8]) -> Result<(), HttpFailure> {
         for attempt in 0..2 {
-            let request = self.request(self.client.put(self.url(cas, hash)))?;
+            let request = self
+                .request(self.client.put(self.url(cas, hash)))
+                .map_err(HttpFailure::permanent)?;
             let response = request
                 .header(reqwest::header::CONTENT_LENGTH, body.len())
                 .body(body.to_vec())
@@ -1264,7 +1341,7 @@ impl RemoteCache {
         let bytes = if !inline.is_empty() || digest.size == 0 {
             inline.to_vec()
         } else {
-            match self.read(digest, key)? {
+            match self.fetch_once(digest, key)? {
                 Some(bytes) => bytes,
                 None => return Ok(None),
             }
@@ -1279,11 +1356,49 @@ impl RemoteCache {
         Ok(Some(bytes))
     }
 
+    /// One blob, fetched at most once per invocation: a blob already in
+    /// the local store (crate::action's download store) is read from
+    /// there; concurrent fetches of one digest wait for the first, which
+    /// stores what it verified.
+    fn fetch_once(&self, digest: &Digest, key: &Digest) -> Result<Option<Vec<u8>>, CacheError> {
+        let local = || {
+            crate::action::stored_blob(&digest.hash, digest.size)
+                .filter(|bytes| Digest::of(bytes) == *digest)
+        };
+        if let Some(bytes) = local() {
+            return Ok(Some(bytes));
+        }
+        let flight = self
+            .downloading
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(digest.clone())
+            .or_default()
+            .clone();
+        let result = {
+            let _single = flight.lock().unwrap_or_else(|e| e.into_inner());
+            match local() {
+                Some(bytes) => Ok(Some(bytes)),
+                None => self.read(digest, key).inspect(|bytes| {
+                    if let Some(bytes) = bytes
+                        && Digest::of(bytes) == *digest
+                    {
+                        crate::action::store_downloaded(bytes);
+                    }
+                }),
+            }
+        };
+        let mut downloading = self.downloading.lock().unwrap_or_else(|e| e.into_inner());
+        if Arc::strong_count(&flight) == 2 {
+            downloading.remove(digest);
+        }
+        result
+    }
+
     /// RemoteSpawnCache.lookup: `Ok(None)` on a miss, including a failed
     /// cached action, a missing declared output or a missing CAS blob
-    /// (CacheNotFoundException). Every declared output is downloaded (the
-    /// native profile always materializes outputs, like
-    /// `--remote_download_outputs=all`).
+    /// (CacheNotFoundException). Every declared output that may not stay
+    /// remote is downloaded.
     /// `outputs`: the declared outputs and what each is: a file, an
     /// unresolved symlink artifact (read from `output_symlinks`) or a tree
     /// artifact (read from `output_directories` and its `Tree`).
@@ -1623,11 +1738,14 @@ impl RemoteCache {
     }
 
     /// Which of the `candidates` (output index, digest) stay remote-only
-    /// (Build without the Bytes): with a gRPC cache all of them, once one
+    /// (Build without the Bytes): all of them — with a gRPC cache once one
     /// FindMissingBlobs found every blob present (`None` when one is
     /// missing: the result is unusable, a cache miss, and the producer
-    /// runs instead of leaving a consumer a lost input); an HTTP cache
-    /// cannot tell, so its outputs are downloaded.
+    /// runs instead of leaving a consumer a lost input); an HTTP cache has
+    /// no such query (HttpCacheClient.findMissingDigests reports every
+    /// digest missing, which Bazel never asks for a hit), so its result is
+    /// trusted like Bazel does, and a blob found missing later is a lost
+    /// input (crate::action::materialize).
     fn remote_only(
         &self,
         candidates: impl Iterator<Item = (usize, Digest)>,
@@ -1637,8 +1755,16 @@ impl RemoteCache {
         if candidates.is_empty() {
             return Ok(Some(HashSet::new()));
         }
+        if candidates
+            .iter()
+            .any(|(_, digest)| crate::remote_outputs::known_missing(&digest.hash))
+        {
+            return Ok(None);
+        }
         let Backend::Grpc(grpc) = &self.backend else {
-            return Ok(Some(HashSet::new()));
+            return Ok(Some(
+                candidates.into_iter().map(|(index, _)| index).collect(),
+            ));
         };
         let mut digests: Vec<Digest> = candidates
             .iter()
@@ -1791,9 +1917,14 @@ impl RemoteCache {
             directories: entries.directories,
             ..DownloadedTree::default()
         };
-        for (name, digest, executable) in entries.files {
-            let what = format!("{path}/{name}");
-            match self.verified(&digest, &[], &what, key)? {
+        // The files download concurrently (Bazel starts every download of
+        // an action's outputs at once, RemoteExecutionService
+        // .downloadOutputs), in up to TREE_FETCHES threads.
+        let fetched = parallel(&entries.files, |(name, digest, _)| {
+            self.verified(digest, &[], &format!("{path}/{name}"), key)
+        })?;
+        for ((name, _, executable), bytes) in entries.files.into_iter().zip(fetched) {
+            match bytes {
                 Some(bytes) => downloaded.files.push((name, bytes, executable)),
                 None => return Ok(None),
             }
@@ -1910,6 +2041,71 @@ impl RemoteCache {
             stderr,
         }))
     }
+}
+
+/// Concurrent blob fetches of one tree artifact, and of all trees at once
+/// (Bazel's HTTP client allows `--remote_max_connections`, 100, and gRPC
+/// multiplexes; latency, not bandwidth, bounds a tree of small files).
+const TREE_FETCHES: usize = 32;
+const ALL_TREE_FETCHES: usize = 128;
+static TREE_FETCH_THREADS: AtomicUsize = AtomicUsize::new(0);
+
+/// `fetch` over `items` in up to [`TREE_FETCHES`] threads (fewer while
+/// other trees download), results in item order; the first error wins.
+fn parallel<I: Sync, T: Send>(
+    items: &[I],
+    fetch: impl Fn(&I) -> Result<T, CacheError> + Sync,
+) -> Result<Vec<T>, CacheError> {
+    let busy = TREE_FETCH_THREADS.load(Ordering::Relaxed);
+    let threads = TREE_FETCHES
+        .min(ALL_TREE_FETCHES.saturating_sub(busy))
+        .min(items.len());
+    if threads <= 1 {
+        return items.iter().map(&fetch).collect();
+    }
+    TREE_FETCH_THREADS.fetch_add(threads, Ordering::Relaxed);
+    struct Release(usize);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            TREE_FETCH_THREADS.fetch_sub(self.0, Ordering::Relaxed);
+        }
+    }
+    let _release = Release(threads);
+    let next = AtomicUsize::new(0);
+    let failed = std::sync::atomic::AtomicBool::new(false);
+    let mut slots: Vec<Option<Result<T, CacheError>>> = Vec::with_capacity(items.len());
+    slots.resize_with(items.len(), || None);
+    let slots = Mutex::new(slots);
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                loop {
+                    if failed.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(item) = items.get(index) else {
+                        break;
+                    };
+                    let result = fetch(item);
+                    if result.is_err() {
+                        failed.store(true, Ordering::Relaxed);
+                    }
+                    slots.lock().unwrap_or_else(|e| e.into_inner())[index] = Some(result);
+                }
+            });
+        }
+    });
+    let mut slots = slots.into_inner().unwrap_or_else(|e| e.into_inner());
+    if let Some(error) = slots.iter().position(|slot| matches!(slot, Some(Err(_))))
+        && let Some(Err(error)) = slots.swap_remove(error)
+    {
+        return Err(error);
+    }
+    slots
+        .into_iter()
+        .map(|slot| slot.unwrap_or_else(|| Err(CacheError::Other("download skipped".into()))))
+        .collect()
 }
 
 /// The `Remote Cache:` warning of a non-credential failure, once per

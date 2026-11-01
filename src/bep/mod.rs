@@ -1266,18 +1266,19 @@ fn artifact_file(exec: &str, location: &Path, execution_root: &Path, workspace: 
         execution_root.join(location)
     };
     // A remote-only output (Build without the Bytes): its remote CAS URI
-    // (ByteStreamBuildEventArtifactUploader's `bytestream://`).
+    // (ByteStreamBuildEventArtifactUploader's `bytestream://`) with a gRPC
+    // cache; with an HTTP cache Bazel keeps LocalFilesArtifactUploader
+    // (`file://`), the digest and length from the output's metadata.
     if !uri.exists()
         && let Some(file) = crate::remote_outputs::by_exec(Path::new(exec))
-        && let Some(remote) = crate::remote_cache::active().and_then(|r| r.bytestream_prefix())
     {
+        let location = match crate::remote_cache::active().and_then(|r| r.bytestream_prefix()) {
+            Some(remote) => format!("{remote}blobs/{}/{}", file.hash, file.size),
+            None => file_uri(&uri),
+        };
         return Msg::new()
             .str(1, "name", name)
-            .str(
-                2,
-                "uri",
-                format!("{remote}blobs/{}/{}", file.hash, file.size),
-            )
+            .str(2, "uri", location)
             .strs(4, "path_prefix", prefix)
             .str(5, "digest", file.hash)
             .i64(6, "length", file.size as i64);

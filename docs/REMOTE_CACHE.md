@@ -104,7 +104,7 @@ and `mod`:
 | `--remote_timeout` (default 60s; unitless means seconds) | connect and read timeout |
 | `--remote_header`, `--remote_cache_header` (`NAME=VALUE`) | sent with every request |
 | `--remote_instance_name` | gRPC requests and resource names; HTTP caches ignore it, like Bazel |
-| `--remote_retries` (old `--experimental_remote_retry_max_attempts`, default 5), `--remote_retry_max_delay` (5s) | gRPC retries (HTTP requests are not retried) |
+| `--remote_retries` (old `--experimental_remote_retry_max_attempts`, default 5), `--remote_retry_max_delay` (5s) | retries of transient failures, gRPC and HTTP (below) |
 | `--remote_max_connections` (100; 0 unlimited), `--remote_max_concurrency_per_connection` (100) | gRPC connection pool |
 | `--remote_download_outputs=all\|minimal\|toplevel` (default `toplevel`), `--remote_download_{all,minimal,toplevel}`, `--remote_download_regex`, `--experimental_remote_cache_ttl` (3h), `--experimental_remote_cache_eviction_retries` (5) | Build without the Bytes (below) |
 | `--[no]remote_cache_compression`, `--experimental_remote_cache_compression_threshold` (100) | gRPC zstd ByteStream (below); HTTP caches ignore it, like Bazel |
@@ -374,6 +374,16 @@ credential helper cache and runs once more (`refreshIfUnauthenticated`).
 Other failures are `WARNING: Remote Cache: CODE: description` and the
 action runs locally, as for HTTP.
 
+HTTP requests (GET and PUT, AC and CAS) use the same retrier with
+`RemoteModule.HTTP_RESULT_CLASSIFIER`: 408, 429, 500, 502, 503 and 504
+answers, timeouts and broken connections (reset, closed before the
+answer) are transient; 404 is a miss; a connection that cannot be
+established at all (refused, DNS, TLS) and every other status are not
+retried, like Bazel's `ConnectException`. A 401 still refreshes the
+helper cache and retries once on its own (`authTokenExpired`).
+`tests/remote_cache.rs::http_cache_requests_are_retried` (503s and dropped
+connections on reads and writes, `--remote_retries=0`).
+
 **Credentials.** The helper is asked for grpc-java's per-service URI
 `https://AUTHORITY/SERVICE` (`:443` omitted), e.g.
 `https://127.0.0.1:8980/build.bazel.remote.execution.v2.Capabilities`, so
@@ -442,8 +452,45 @@ consumer with `Lost inputs no longer available remotely: PATH (DIGEST)`; the
 command then runs again in a fresh process (`Found transient remote cache
 error, retrying the build...`), at most
 `--experimental_remote_cache_eviction_retries` times, else exits 34.
-An HTTP cache cannot tell whether a blob is present: its hits download
-everything (like `all`).
+The retried command inherits the digests found missing
+(`BAZEL_RS_REMOTE_MISSING`, Bazel's `knownMissingCasDigests`): a cached
+result naming one as an output that would stay remote is a miss, so the
+producer executes instead of being served the same lost result again.
+
+**HTTP caches** have no FindMissingBlobs (`HttpCacheClient
+.findMissingDigests` reports every digest missing, and Bazel never asks it
+for a hit): their hits are trusted like Bazel trusts them, the outputs
+that may stay remote are not downloaded, and a blob found missing later
+(a 404 when a local consumer fetches it) is a lost input as above.
+Build event files keep `file://` URIs for remote-only outputs with an HTTP
+cache (Bazel keeps LocalFilesArtifactUploader there), with the digest and
+length from the output's metadata.
+
+**Downloads.** A blob crosses the network once per invocation: what is
+fetched is stored in the native content-addressed store at once, a blob
+already there is read from it, and concurrent fetches of one digest wait
+for the first (Bazel's in-flight download deduplication and output
+filesystem) — the same file in two configurations' copies of a tree
+artifact, a remote-only output materialized for a later consumer. The
+files of a tree artifact download concurrently (up to 32 per tree, 128 in
+all), as Bazel starts all of an action's downloads at once; a tree of
+thousands of small files is latency-bound otherwise. A runfiles manifest
+(which records paths only) no longer materializes its remote-only inputs.
+
+`~/code` subset (11 patterns, 3337 remote cache hits from a loopback
+Python HTTP cache, fresh local caches, repositories prefetched; genuine
+9.3.1 after `clean`, `--batch`; wall seconds incl. analysis, CAS bytes
+read):
+
+| run | before (f68ecf0) | after | genuine 9.3.1 |
+|---|---|---|---|
+| all hits | 234 s, 32692 GETs, 4.78 GB | 30 s, 12234 GETs, 1.47 GB | 34 s, 13727 GETs, 1.26 GB |
+| `utils/str` comment changed (27 local Go compiles of rdeps, 3310 hits) | — | 39 s, 13131 GETs, 2.07 GB | 39 s, 15013 GETs, 2.12 GB |
+
+Before, a hit downloaded every output with an HTTP cache, each tree file
+sequentially (happy-dom's 4957 files: 206 s on the critical path) and one
+blob as often as it appeared. The remaining 0.2 GB are tree artifacts
+(GoStdlib's `pkg` in three configurations), which stay always downloaded.
 
 **Measurement** (release binary, NativeLink 1.8.2 local CAS+executor on
 loopback, a 691-genrule scratch build of ~150 kB outputs (10 layers),
@@ -495,14 +542,12 @@ both roots. Tracked receipts of earlier captures keep their `rust-*` paths.
 
 ## Remaining divergences
 
-* HTTP caches are not retried (`--remote_retries`, default 5 in Bazel): a
-  failing request is one warning and local execution. gRPC calls are.
-* Build without the Bytes: expired metadata reruns its action, a remote
-  cache hit with remote-only outputs costs one FindMissingBlobs, tree
-  artifacts are always downloaded, a native transform (runfiles tree,
-  symlink, template) materializes its inputs (Bazel's in-memory output
-  filesystem does not need to), and HTTP cache hits download everything
-  (above). Build event files name remote-only outputs by
+* Build without the Bytes: expired metadata reruns its action, a gRPC
+  remote cache hit with remote-only outputs costs one FindMissingBlobs
+  (HTTP hits are trusted, like Bazel), tree artifacts are always
+  downloaded, a native transform (runfiles tree, symlink, template)
+  materializes its inputs (Bazel's in-memory output filesystem does not
+  need to). With a gRPC cache build event files name remote-only outputs by
   `bytestream://AUTHORITY/[INSTANCE/]blobs/HASH/SIZE` (other files keep
   `file://`; Bazel converts every file with a remote cache).
   The execution log lists no `actual_outputs` entry for a remote-only

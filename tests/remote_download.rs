@@ -19,6 +19,7 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 const BUILD: &str = r#"genrule(name = "a", outs = ["a.txt"], cmd = "echo alpha > $@")
 genrule(name = "b", srcs = [":a"], outs = ["b.txt"], cmd = "cat $< > $@; echo beta >> $@")
 genrule(name = "c", srcs = [":a"], outs = ["c.txt"], cmd = "cat $< > $@; echo gamma >> $@", tags = ["no-remote"])
+genrule(name = "d", outs = ["d.txt"], cmd = "echo alpha > $@")
 load(":defs.bzl", "tool", "t_test")
 tool(name = "tool", data = [":a"])
 t_test(name = "t", data = [":a"])
@@ -285,4 +286,21 @@ fn run_and_local_tests_fetch_what_they_need() {
         &["test", &executor, "--remote_download_minimal", "//pkg:t"],
     );
     assert!(remote.status.success(), "{}", stderr(&remote));
+}
+
+#[test]
+fn one_blob_is_read_once_per_invocation() {
+    let ws = Workspace::new();
+    let server = Server::with_config(Config {
+        execution: true,
+        ..Config::default()
+    });
+    let executor = format!("--remote_executor={}", server.url());
+    // a.txt and d.txt have one digest: downloaded once, stored, and the
+    // second output is served from the native store.
+    let built = ws.run("c1", &["build", &executor, "//pkg:a", "//pkg:d"]);
+    assert!(built.status.success(), "{}", stderr(&built));
+    assert_eq!(reads(&server), 1, "{}", stderr(&built));
+    assert_eq!(ws.bin("c1", "a.txt").as_deref(), Some("alpha\n"));
+    assert_eq!(ws.bin("c1", "d.txt").as_deref(), Some("alpha\n"));
 }

@@ -453,12 +453,18 @@ pub struct Backoff {
 
 impl Backoff {
     fn new(options: &GrpcOptions) -> Self {
+        Self::with(options.retries, options.retry_max_delay)
+    }
+
+    /// `--remote_retries` attempts, delays capped at
+    /// `--remote_retry_max_delay` (the HTTP cache's retrier too).
+    pub fn with(retries: u32, retry_max_delay: Duration) -> Self {
         let initial = Duration::from_millis(100);
         Self {
             next: initial,
-            max: options.retry_max_delay.max(initial),
+            max: retry_max_delay.max(initial),
             attempts: 0,
-            max_attempts: options.retries,
+            max_attempts: retries,
         }
     }
 
