@@ -1,0 +1,12 @@
+module(name = "main")
+
+bazel_dep(name = "ext")
+local_path_override(module_name = "ext", path = "ext")
+
+gen = use_repo_rule("//:repo.bzl", "gen")
+
+gen(
+    name = "arc",
+    build = "//:arc_build.txt",
+    defs = "//:arc_defs.txt",
+)

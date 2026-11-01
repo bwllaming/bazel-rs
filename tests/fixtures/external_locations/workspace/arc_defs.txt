@@ -1,0 +1,7 @@
+def _impl(ctx):
+    print("arc impl")
+    return []
+
+arc_rule = rule(implementation = _impl)
+
+print("arc top")

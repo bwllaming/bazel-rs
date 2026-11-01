@@ -53,14 +53,52 @@ pub fn set_workspace(root: &Path) {
     let _ = WORKSPACE.set(root.to_path_buf());
 }
 
-/// Another repository's loaded `.bzl` files: label -> the file's path.
+/// This command's output base (`bazel-rs info output_base`): another
+/// repository's files print below its `external/` directory.
+static OUTPUT_BASE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Record this command's output base (once, by the CLI).
+pub fn set_output_base(path: &Path) {
+    let _ = OUTPUT_BASE.set(path.to_path_buf());
+}
+
+/// Where Bazel's locations name file `relative` of the external repository
+/// `repository` (a canonical name): `<output_base>/external/<repository>/
+/// <relative>` — the repository's root is that directory in Bazel
+/// (RepositoryDirectoryValue; Location.file is the Root-relative path's
+/// absolute form), whatever directory bazel-rs read it from (its
+/// repository store, a `local_path_override`'s path). `None` before the CLI
+/// set the output base (library use and unit tests keep the read path).
+pub(crate) fn external_path(repository: &str, relative: &Path) -> Option<PathBuf> {
+    let base = OUTPUT_BASE.get()?;
+    let mut path = base.join("external").join(repository);
+    if !relative.as_os_str().is_empty() {
+        path.push(relative);
+    }
+    Some(path)
+}
+
+/// The path a location names for the file `path`, read from the root
+/// `root` of `repository` (empty: the main repository, whose files keep
+/// their workspace path).
+pub(crate) fn displayed_path(repository: &str, root: &Path, path: &Path) -> PathBuf {
+    if repository.is_empty() {
+        return path.to_path_buf();
+    }
+    path.strip_prefix(root)
+        .ok()
+        .and_then(|relative| external_path(repository, relative))
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+/// Another repository's loaded `.bzl` files: label -> the file's path
+/// (where it was read from; what locations name before the output base is
+/// known).
 static SOURCES: LazyLock<std::sync::Mutex<std::collections::HashMap<String, PathBuf>>> =
     LazyLock::new(Default::default);
 
 /// Record where another repository's `.bzl` file `label` (its module's
-/// name) was read from: its prints name that path, as Bazel names
-/// `<output_base>/external/<repository>/<file>` (bazel-rs has no
-/// `external/` directory: the repository's own directory stands for it).
+/// name) was read from.
 pub(crate) fn record_source(label: &str, path: &Path) {
     if ["@@//", "@//", "//"]
         .iter()
@@ -74,12 +112,35 @@ pub(crate) fn record_source(label: &str, path: &Path) {
         .insert(label.to_owned(), path.to_path_buf());
 }
 
+/// `pkg/name` of a label's `pkg:name` part.
+fn label_path(relative: &str) -> PathBuf {
+    let (package, file) = relative.split_once(':').unwrap_or((relative, ""));
+    let mut path = PathBuf::new();
+    if !package.is_empty() {
+        path.push(package);
+    }
+    if !file.is_empty() {
+        path.push(file);
+    }
+    path
+}
+
 /// A source file as a location names it: a main-repository label
 /// (`//pkg:defs.bzl`, the name of a loaded `.bzl` module) as its path once
-/// the workspace is known, another repository's `.bzl` file as the path it
-/// was read from ([`record_source`]); anything else (a BUILD file's path)
-/// as it is.
-fn location_file(name: &str) -> String {
+/// the workspace is known, another repository's `.bzl` file
+/// (`@@repo//pkg:defs.bzl`) as `<output_base>/external/repo/pkg/defs.bzl`
+/// ([`external_path`]; before the output base is known, the path it was
+/// read from, [`record_source`]); anything else (a BUILD file's path) as
+/// it is.
+pub(crate) fn location_file(name: &str) -> String {
+    if let Some((repository, relative)) = name
+        .strip_prefix("@@")
+        .and_then(|rest| rest.split_once("//"))
+        && !repository.is_empty()
+        && let Some(path) = external_path(repository, &label_path(relative))
+    {
+        return path.display().to_string();
+    }
     if let Some(path) = SOURCES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -91,17 +152,7 @@ fn location_file(name: &str) -> String {
         .iter()
         .find_map(|prefix| name.strip_prefix(prefix));
     match (relative, WORKSPACE.get()) {
-        (Some(relative), Some(root)) => {
-            let (package, file) = relative.split_once(':').unwrap_or((relative, ""));
-            let mut path = root.clone();
-            if !package.is_empty() {
-                path.push(package);
-            }
-            if !file.is_empty() {
-                path.push(file);
-            }
-            path.display().to_string()
-        }
+        (Some(relative), Some(root)) => root.join(label_path(relative)).display().to_string(),
         _ => name.to_owned(),
     }
 }

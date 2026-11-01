@@ -496,3 +496,95 @@ fn files_in_no_target_affect_nothing() {
     let (labels, _) = repo.run(&first, &second, &["--scope=full"]);
     assert!(labels.is_empty(), "{labels:?}");
 }
+
+/// The planning analyses print none of their Starlark DEBUG, WARNING or
+/// INFO events (target-determinator's cquery shows none either): a
+/// `print()` of a rule implementation, a deprecation warning, the
+/// `INFO: Analyzed …` summary stay out of `affected`'s stderr, its own
+/// progress lines stay; an analysis error still shows its message.
+#[test]
+fn planning_events_stay_quiet_but_errors_show() {
+    let repo = Repo::new();
+    let defs = "\
+def _impl(ctx):
+    print('noisy impl ' + ctx.label.name)
+    if ctx.attr.boom:
+        fail('loud failure of ' + ctx.label.name)
+    out = ctx.actions.declare_file(ctx.label.name + '.out')
+    ctx.actions.run_shell(
+        inputs = [ctx.file.src],
+        outputs = [out],
+        command = 'cat $1 > $2',
+        arguments = [ctx.file.src.path, out.path],
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+noisy = rule(
+    implementation = _impl,
+    attrs = {'src': attr.label(allow_single_file = True), 'boom': attr.bool()},
+)
+";
+    let build = "\
+load(':defs.bzl', 'noisy')
+noisy(name = 'n', src = 'a.txt')
+filegroup(name = 'uses_old', srcs = [':n'], data = ['//dep:old'])
+";
+    let first = repo.commit(&[
+        (".gitignore", "bazel-rs-out\nMODULE.bazel.lock\n"),
+        ("MODULE.bazel", "module(name = 'main')\n"),
+        ("defs.bzl", defs),
+        ("BUILD.bazel", build),
+        (
+            "dep/BUILD.bazel",
+            "filegroup(name = 'old', deprecation = 'use new', visibility = ['//visibility:public'])\n",
+        ),
+        ("a.txt", "a\n"),
+    ]);
+    let second = repo.commit(&[("a.txt", "a2\n")]);
+    for extra in [&[][..], &["--scope=full"][..]] {
+        let (labels, stderr) = repo.run(&first, &second, extra);
+        assert_eq!(labels, ["//:n", "//:uses_old"], "{stderr}");
+        assert!(stderr.contains("bazel-rs affected: planning "), "{stderr}");
+        assert_eq!(stderr.matches(" (exit 0)").count(), 2, "{stderr}");
+        for noise in ["DEBUG: ", "noisy impl", "WARNING: ", "deprecated", "INFO: "] {
+            assert!(!stderr.contains(noise), "{noise:?} in {stderr}");
+        }
+    }
+    // The same analysis outside `affected` prints them.
+    let output = Command::new("timeout")
+        .args(["--kill-after=5s", "240s"])
+        .arg(env!("CARGO_BIN_EXE_bazel-rs"))
+        .arg("--ignore_all_rc_files")
+        .arg(format!(
+            "--cache-dir={}",
+            repo.base().join("cache").display()
+        ))
+        .args(["build", EXPLICIT_MODULES, "--nobuild", "//:all"])
+        .current_dir(repo.main())
+        .env_clear()
+        .envs(verifier_environment())
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", repo.home())
+        .env("TMPDIR", repo.home())
+        .env("LC_ALL", "C")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("noisy impl n"), "{stderr}");
+    assert!(stderr.contains("depends on deprecated target"), "{stderr}");
+    // A head whose analysis fails: the error and its message are shown.
+    let broken = repo.commit(&[(
+        "BUILD.bazel",
+        &build.replace("src = 'a.txt')", "src = 'a.txt', boom = True)"),
+    )]);
+    let args = [format!("--base={second}"), format!("--head={broken}")];
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = repo.affected(&args);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(output.stdout.is_empty(), "{stderr}");
+    assert!(stderr.contains("loud failure of n"), "{stderr}");
+    assert!(stderr.contains("failed (exit 1"), "{stderr}");
+    assert!(!stderr.contains("noisy impl"), "{stderr}");
+}

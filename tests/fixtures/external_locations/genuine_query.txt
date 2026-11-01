@@ -1,0 +1,1 @@
+<OUTPUT_BASE>/external/+gen+arc/BUILD.bazel:3:9: arc_rule rule @arc//:a

@@ -12,6 +12,5 @@ module's `.bzl` file by its path below `<output_base>/external/ext+/`; the
 .applyMapEach gives their thread a print handler that drops the text), in
 the main repository (`in map_each a`, `b`) and in `ext` alike.
 
-Declared native difference: bazel-rs has no `external/` directory; the
-location names the file where the repository's tree is (here the
-`local_path_override` directory `ext/`).
+bazel-rs names the same path below its own output base (`bazel-rs info
+output_base`).

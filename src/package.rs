@@ -728,9 +728,9 @@ pub(crate) fn java_call_stack(eval: &Evaluator<'_, '_, '_>) -> Vec<(String, Stri
             .ok()
             .and_then(|label| {
                 let root = repositories.as_ref()?.root(&label.repository).ok()?;
+                let path = root.join(&label.package).join(&label.name);
                 Some(
-                    root.join(&label.package)
-                        .join(&label.name)
+                    crate::debug_print::displayed_path(&label.repository, root, &path)
                         .to_string_lossy()
                         .into_owned(),
                 )
@@ -2263,9 +2263,12 @@ fn evaluate_in_with_prints(
     let build = crate::workspace::package_build_file(root, &package.package)?;
     let source = crate::observed_fs::read_to_string(&build)
         .map_err(|e| format!("cannot read {}: {e}", build.display()))?;
+    // Its locations name `<output_base>/external/<repo>/…` in another
+    // repository (crate::debug_print::displayed_path).
+    let shown = crate::debug_print::displayed_path(&package.repository, root, &build);
     evaluate_at(
         repositories,
-        &build.to_string_lossy(),
+        &shown.to_string_lossy(),
         package,
         source,
         &ignored,

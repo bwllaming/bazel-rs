@@ -149,7 +149,12 @@ never fails the command.
   (docs/REPOSITORY_SLOTS.md), not `$(bazel-rs info output_base)/external/<name>`:
   the repository store is the output base of repositories. Its
   `external/bazel_tools` links the embedded tools tree like genuine's
-  (docs/REPOSITORY_SLOTS.md, "The bazel_tools slot").
+  (docs/REPOSITORY_SLOTS.md, "The bazel_tools slot"). Event locations
+  (`print()` DEBUG lines, WARNING/ERROR events at a target, `query
+  --output=location`) still name an external repository's file as genuine
+  does, `<output_base>/external/<canonical name>/<path>`
+  (crate::debug_print::external_path), although that directory does not
+  exist.
 * `info --show_make_env` with an explicit `--platforms` fails explicitly:
   `$(TARGET_CPU)` is the target platform's CPU constraint, which needs the
   platform target loaded; for the default host platform it is the host CPU

@@ -1,0 +1,5 @@
+load(":defs.bzl", "arc_rule")
+
+arc_rule(name = "a", visibility = ["//visibility:public"])
+
+filegroup(name = "uses_old", srcs = ["//sub:old"], visibility = ["//visibility:public"])

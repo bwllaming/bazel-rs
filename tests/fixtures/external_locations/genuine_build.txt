@@ -1,0 +1,7 @@
+rc=0
+DEBUG: <OUTPUT_BASE>/external/ext+/e.bzl:7:6: ext top
+DEBUG: <WORKSPACE>/defs.bzl:2:10: main impl
+DEBUG: <OUTPUT_BASE>/external/ext+/e.bzl:2:10: ext impl
+DEBUG: <OUTPUT_BASE>/external/+gen+arc/defs.bzl:7:6: arc top
+DEBUG: <OUTPUT_BASE>/external/+gen+arc/defs.bzl:2:10: arc impl
+WARNING: <OUTPUT_BASE>/external/+gen+arc/BUILD.bazel:5:10: in filegroup rule @@+gen+arc//:uses_old: target '@@+gen+arc//:uses_old' depends on deprecated target '@@+gen+arc//sub:old': use new

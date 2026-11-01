@@ -35,6 +35,17 @@ pub const DIGESTS_VAR: &str = "BAZEL_RS_TARGET_DIGESTS";
 /// key input (crate::snapshot::key).
 pub const INCLUDE_MANUAL_VAR: &str = "BAZEL_RS_AFFECTED_INCLUDE_MANUAL";
 
+/// Set (by `bazel-rs affected`) in a planning process: its console drops
+/// the DEBUG, WARNING and INFO notes (crate::ui::set_hidden_kinds) — the
+/// `print()` output and warnings of the analysis and the build summary,
+/// which are no output of `affected` (target-determinator's cquery shows
+/// none of its events either). Errors and the `bazel-rs` progress notes
+/// stay. Console-only: no snapshot key input.
+pub const QUIET_EVENTS_VAR: &str = "BAZEL_RS_AFFECTED_QUIET_EVENTS";
+
+/// The event kinds a planning process hides ([`QUIET_EVENTS_VAR`]).
+pub const QUIET_EVENT_KINDS: &[&str] = &["DEBUG", "WARNING", "INFO"];
+
 /// Whether this process's wildcards keep `manual` rules
 /// ([`INCLUDE_MANUAL_VAR`]).
 pub fn include_manual() -> bool {
@@ -989,6 +1000,7 @@ fn start_plan(
         .args(&options.patterns)
         .current_dir(workspace)
         .env(DIGESTS_VAR, out)
+        .env(QUIET_EVENTS_VAR, "1")
         .env_remove(SCOPE_VAR)
         .env_remove(INCLUDE_MANUAL_VAR)
         // Our stdout is the affected labels: the planning's goes to stderr.

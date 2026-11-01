@@ -43,6 +43,31 @@ pub fn quiet() -> bool {
     QUIET.load(Ordering::Relaxed)
 }
 
+/// Event kinds whose notes the console drops (an internal
+/// `--ui_event_filters=-KIND` equivalent): the prefixes `KIND: ` of the
+/// notes. `bazel-rs affected` sets them for its planning processes
+/// (crate::affected::QUIET_EVENTS_VAR), whose Starlark DEBUG/WARNING/INFO
+/// events are no output of its own, as target-determinator's cquery
+/// events are not.
+static HIDDEN_KINDS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Drop the notes of the event `kinds` (`DEBUG`, `WARNING`, `INFO`, …)
+/// from the console (once, by the CLI). Errors are never notes.
+pub fn set_hidden_kinds(kinds: &[&str]) {
+    let _ = HIDDEN_KINDS.set(kinds.iter().map(|kind| format!("{kind}: ")).collect());
+}
+
+fn hidden_prefixes() -> &'static [String] {
+    HIDDEN_KINDS.get().map_or(&[], Vec::as_slice)
+}
+
+/// Whether the note `text` is of a hidden kind ([`set_hidden_kinds`]).
+fn hidden(text: &[u8]) -> bool {
+    hidden_prefixes()
+        .iter()
+        .any(|prefix| text.starts_with(prefix.as_bytes()))
+}
+
 /// The mark opening a note in stored stderr bytes: an APC escape sequence
 /// (`ESC _ … ESC \`), which terminals do not display should one ever leak.
 const START: &[u8] = b"\x1b_bazel-rs:note\x1b\\";
@@ -89,7 +114,7 @@ pub fn note(text: &str) {
     if crate::snapshot::capture::is_active() {
         let bytes = marked(text);
         let _ = std::io::stderr().lock().write_all(&bytes);
-    } else if !quiet() {
+    } else if !quiet() && !hidden(text.as_bytes()) {
         eprintln!("{text}");
     }
 }
@@ -168,14 +193,33 @@ pub struct Filter {
     in_note: bool,
     /// A chunk's tail that may be the start of a mark.
     held: Vec<u8>,
+    /// The note prefixes dropped ([`set_hidden_kinds`]).
+    hidden: Vec<Vec<u8>>,
+    /// Whether the current note is shown, once its start decided it.
+    note_shown: Option<bool>,
+    /// The start of the current note while undecided.
+    note_head: Vec<u8>,
 }
 
 impl Filter {
     pub fn new(quiet: bool) -> Self {
+        Self::with_hidden(
+            quiet,
+            hidden_prefixes()
+                .iter()
+                .map(|prefix| prefix.as_bytes().to_vec())
+                .collect(),
+        )
+    }
+
+    fn with_hidden(quiet: bool, hidden: Vec<Vec<u8>>) -> Self {
         Self {
             quiet,
             in_note: false,
             held: Vec::new(),
+            hidden,
+            note_shown: None,
+            note_head: Vec::new(),
         }
     }
 
@@ -194,6 +238,9 @@ impl Filter {
                 Some(at) => {
                     self.pass(&rest[..at], out);
                     rest = &rest[at + mark.len()..];
+                    if self.in_note {
+                        self.end_note(out);
+                    }
                     self.in_note = !self.in_note;
                 }
                 None => {
@@ -214,10 +261,48 @@ impl Filter {
         self.pass(&held, out);
     }
 
-    fn pass(&self, bytes: &[u8], out: &mut Vec<u8>) {
-        if !(self.in_note && self.quiet) {
+    fn pass(&mut self, bytes: &[u8], out: &mut Vec<u8>) {
+        if !self.in_note {
             out.extend_from_slice(bytes);
+            return;
         }
+        if self.quiet {
+            return;
+        }
+        match self.note_shown {
+            Some(true) => out.extend_from_slice(bytes),
+            Some(false) => {}
+            None if self.hidden.is_empty() => {
+                self.note_shown = Some(true);
+                out.extend_from_slice(bytes);
+            }
+            None => {
+                self.note_head.extend_from_slice(bytes);
+                let longest = self.hidden.iter().map(Vec::len).max().unwrap_or(0);
+                if self.note_head.len() >= longest {
+                    self.decide(out);
+                }
+            }
+        }
+    }
+
+    /// Decide the current note by its start (what arrived of it).
+    fn decide(&mut self, out: &mut Vec<u8>) {
+        let head = std::mem::take(&mut self.note_head);
+        let shown = !self.hidden.iter().any(|prefix| head.starts_with(prefix));
+        if shown {
+            out.extend_from_slice(&head);
+        }
+        self.note_shown = Some(shown);
+    }
+
+    /// The current note ended: a short one is decided now.
+    fn end_note(&mut self, out: &mut Vec<u8>) {
+        if self.note_shown.is_none() && !self.quiet {
+            self.decide(out);
+        }
+        self.note_shown = None;
+        self.note_head.clear();
     }
 }
 
@@ -298,6 +383,33 @@ mod tests {
                 b"ERROR: one\nDEBUG: two\nlines\nraw\nWARNING: three\n",
                 "split at {at}"
             );
+        }
+    }
+
+    #[test]
+    fn hidden_kinds_drop_their_notes() {
+        let mut bytes = b"ERROR: one\n".to_vec();
+        bytes.extend(marked("DEBUG: two\nlines"));
+        bytes.extend(marked("bazel-rs affected: kept"));
+        bytes.extend(marked("X"));
+        bytes.extend_from_slice(b"raw\n");
+        bytes.extend(marked("WARNING: three"));
+        bytes.extend(marked("INFO: four"));
+        let hidden = ["DEBUG: ", "WARNING: ", "INFO: "]
+            .iter()
+            .map(|prefix| prefix.as_bytes().to_vec())
+            .collect::<Vec<_>>();
+        let want: &[u8] = b"ERROR: one\nbazel-rs affected: kept\nX\nraw\n";
+        for at in 0..bytes.len() {
+            for second in at..bytes.len() {
+                let mut filter = Filter::with_hidden(false, hidden.clone());
+                let mut out = Vec::new();
+                filter.feed(&bytes[..at], &mut out);
+                filter.feed(&bytes[at..second], &mut out);
+                filter.feed(&bytes[second..], &mut out);
+                filter.finish(&mut out);
+                assert_eq!(out, want, "split at {at}, {second}");
+            }
         }
     }
 

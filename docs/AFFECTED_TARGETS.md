@@ -341,7 +341,11 @@ bazel-rs [STARTUP...] affected --base=REV [--head=REV] [--worktree=DIR]
 - With a local change (§8), both plannings are restricted to the change's
   scope (`BAZEL_RS_AFFECTED_SCOPE`).
 - It prints the affected labels in TD's spelling (`//pkg` for `//pkg:pkg`),
-  sorted, one per line. The planning output goes to stderr.
+  sorted, one per line. The planning output goes to stderr, without its
+  DEBUG, WARNING and INFO events (`BAZEL_RS_AFFECTED_QUIET_EVENTS=1`,
+  console-only like `--quiet`; TD's cquery shows none of its events):
+  `print()` output, warnings and the build summary of the analyses stay
+  hidden, errors and the `bazel-rs` progress notes are shown.
 
 **Hook.** Any `build`/`test`/`run` with `BAZEL_RS_TARGET_DIGESTS=<file>`
 writes `label<TAB>digest` lines (header `bazel-rs-target-digests-v1`). It

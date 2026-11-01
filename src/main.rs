@@ -607,6 +607,8 @@ fn run() -> Result<(), String> {
     bazel_rs::cache_gc::set_options(&rc_options.gc);
     // print()'s DEBUG lines name main-repository `.bzl` files by path.
     bazel_rs::debug_print::set_workspace(&root);
+    // ... and other repositories' files below `<output_base>/external`.
+    bazel_rs::debug_print::set_output_base(&bazel_rs::worktree::output_base_for(&cache, &root));
     // --attempt_to_print_relative_paths (LocationPrinter, crate::location_printer).
     bazel_rs::location_printer::set(bazel_rs::location_printer::LocationPrinter::new(
         rc_options.attempt_to_print_relative_paths,
@@ -5469,6 +5471,10 @@ fn evaluate_rc(
     // --quiet (crate::ui): the command line's value until the rc files'
     // `startup` lines are processed too.
     bazel_rs::ui::set_quiet(bazelrc::search_nullary(&line.startup_args, "quiet", false));
+    // An `affected` planning process (crate::affected::QUIET_EVENTS_VAR).
+    if std::env::var_os(bazel_rs::affected::QUIET_EVENTS_VAR).is_some_and(|value| value == "1") {
+        bazel_rs::ui::set_hidden_kinds(bazel_rs::affected::QUIET_EVENT_KINDS);
+    }
     let mut warnings = Vec::new();
     let rc_files = if bazelrc::search_nullary(&line.startup_args, "ignore_all_rc_files", false) {
         Vec::new()

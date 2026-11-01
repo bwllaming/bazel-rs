@@ -1,6 +1,6 @@
 //! `print()` locations like Bazel 9.3 (crate::debug_print; genuine capture
 //! in tests/fixtures/print_locations): another repository's `.bzl` file by
-//! its path, and nothing from an `Args.map_each` callback.
+//! its path below `<output_base>/external`, and nothing from an `Args.map_each` callback.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
@@ -49,18 +49,26 @@ fn prints_name_repository_files_by_path_and_map_each_prints_nothing() {
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let info = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
+        .arg("--ignore_all_rc_files")
+        .arg(format!(
+            "--cache-dir={}",
+            temp.path().join("cache").display()
+        ))
+        .args(["info", "output_base"])
+        .current_dir(&ws)
+        .env("BAZEL_RS_MAX_MEMORY_MB", "4096")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let output_base = String::from_utf8_lossy(&info.stdout).trim().to_owned();
+    assert!(!output_base.is_empty());
     let mut observed = vec![format!("rc={}", output.status.code().unwrap())];
     observed.extend(
         stderr
             .lines()
             .filter(|line| line.starts_with("DEBUG: "))
-            // The repository's directory stands for Bazel's external/ext+.
-            .map(|line| {
-                line.replace(
-                    &format!("{}/ext/", ws.display()),
-                    "<OUTPUT_BASE>/external/ext+/",
-                )
-            }),
+            .map(|line| line.replace(&output_base, "<OUTPUT_BASE>")),
     );
     let genuine: Vec<String> = fs::read_to_string(Path::new(FIXTURE).join("genuine.txt"))
         .unwrap()
