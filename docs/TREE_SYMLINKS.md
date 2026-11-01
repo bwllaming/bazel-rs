@@ -111,10 +111,10 @@ Citations are to the pinned Bazel 9.3.0 sources
   (`crate::action::read_content_source`, `crate::test_runner`), which also
   makes trees usable as test data at all (before, a tree in a test's runfiles
   failed with `expected regular file`).
-* **Remote cache.** Spawns with tree outputs stay local
-  (`output_directories are not modelled`, docs/REMOTE_CACHE.md); a tree
-  input's linked files enter the input root as files with their digests, as
-  genuine's do.
+* **Remote cache.** Spawns with tree outputs use `output_directories` and a
+  `Tree` (links inside the tree as genuine uploads them, docs/REMOTE_CACHE.md);
+  a tree input's linked files enter the input root as files with their
+  digests, as genuine's do.
 
 ## Evidence
 

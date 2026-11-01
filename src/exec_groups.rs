@@ -228,6 +228,11 @@ pub struct ActionExecution {
     /// Shared resolved constraints for native action construction (e.g. the
     /// Java UTF-8 locale). The resulting environment is already action-keyed.
     pub constraints: Option<Arc<crate::platforms::ConstraintCollection>>,
+    /// The execution platform's own `exec_properties` and
+    /// `remote_execution_properties` (PlatformUtils.getPlatformProto's
+    /// inputs) when its PlatformInfo is known: the toolchain context's
+    /// resolved platform, or the analyzed host platform.
+    pub platform_properties: Option<Arc<(ExecProperties, String)>>,
 }
 
 /// Exec properties in insertion order.

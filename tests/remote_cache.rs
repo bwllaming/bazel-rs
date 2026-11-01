@@ -1278,19 +1278,17 @@ tree = rule(_tree)
     let cache = format!("--remote_cache={}", server.url());
     let tree = ws.run("w", &["build", &cache, "//rc:t"]);
     assert!(tree.status.success(), "{}", stderr(&tree));
-    assert!(
-        stderr(&tree).contains("WARNING: Remote Cache: not used for //rc:t")
-            && stderr(&tree).contains("output_directories are not modelled"),
-        "{}",
-        stderr(&tree)
-    );
-    assert!(server.summary().is_empty(), "{:?}", server.summary());
+    // A tree artifact output enters the cache (output_directories and its
+    // Tree, tree_outputs_and_aliased_execution_platforms_key_like_genuine).
+    assert!(!stderr(&tree).contains("Remote Cache"), "{}", stderr(&tree));
+    assert_eq!(server.keys("/ac/").len(), 1);
+    server.take_log();
     let written = ws.run("w", &["build", &cache, "//rc:p"]);
     assert!(written.status.success(), "{}", stderr(&written));
     let params = &outputs(&written)["//rc:p"];
     assert!(params.starts_with("--flag\n"), "{params}");
-    // One ActionResult: the parameter-file spawn (its input root holds the
-    // parameter file at <output>-0.params, crate::action::remote_action).
+    // One more ActionResult: the parameter-file spawn (its input root holds
+    // the parameter file at <output>-0.params, crate::action::remote_action).
     let entries = server
         .state
         .lock()
@@ -1299,7 +1297,7 @@ tree = rule(_tree)
         .keys()
         .filter(|key| key.starts_with("/ac/"))
         .count();
-    assert_eq!(entries, 1);
+    assert_eq!(entries, 2);
     // A fresh native cache reads the entry: published through the store.
     let read = ws.run_with("r", &["build", &cache, "//rc:p"], false);
     assert!(read.status.success(), "{}", stderr(&read));
@@ -1321,4 +1319,135 @@ tree = rule(_tree)
         .map(|entry| entry.unwrap().path())
         .find(|blob| fs::metadata(blob).unwrap().ino() == metadata.ino());
     assert!(blob.is_some(), "no cas blob shares the output inode");
+}
+
+/// The genuine Bazel 9.3.1 capture of
+/// tests/fixtures/remote_cache/tree_platform_receipt.json.
+fn tree_platform_receipt() -> serde_json::Value {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/remote_cache/tree_platform_receipt.json");
+    serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The expanded execution log's spawns: (mnemonic, digest JSON).
+fn logged_digests(path: &Path) -> BTreeMap<String, serde_json::Value> {
+    let text = fs::read_to_string(path).unwrap();
+    serde_json::Deserializer::from_str(&text)
+        .into_iter::<serde_json::Value>()
+        .map(|spawn| {
+            let spawn = spawn.unwrap();
+            (
+                spawn["mnemonic"].as_str().unwrap().to_owned(),
+                spawn["digest"].clone(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn tree_outputs_and_aliased_execution_platforms_key_like_genuine() {
+    // On ~/code (2026-11) bazel-rs skipped the remote cache for every
+    // spawn with a tree artifact output (rules_js package extraction,
+    // copy_to_directory, the Go stdlib, OCI layouts) and for every spawn
+    // whose execution platform is reached through an alias (Bazel 9's
+    // @bazel_tools//tools:host_platform -> @platforms//host): 660 of 3337
+    // remote hits where genuine had all 3337.
+    let receipt = tree_platform_receipt();
+    let ws = Workspace::new();
+    for (path, text) in receipt["workspace"].as_object().unwrap() {
+        ws.file(path, text.as_str().unwrap());
+    }
+    let server = Server::new();
+    let cache = format!("--remote_cache={}", server.url());
+    let log = ws.0.join("exec.json");
+    let args = [
+        "build",
+        cache.as_str(),
+        "--platforms=//pkg:tp",
+        "--host_platform=//pkg:tp",
+        "--extra_execution_platforms=//pkg:pa",
+        "//pkg:t",
+        "//pkg:aliased",
+    ];
+    let mut logged = args.to_vec();
+    let log_flag = format!("--execution_log_json_file={}", log.display());
+    logged.push(&log_flag);
+    let first = ws.run("c1", &logged);
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert!(
+        !stderr(&first).contains("Remote Cache"),
+        "{}",
+        stderr(&first)
+    );
+    // The AC keys and the CAS set (the Tree blob included) are genuine's.
+    let genuine_keys: Vec<String> = receipt["ac"].as_object().unwrap().keys().cloned().collect();
+    assert_eq!(server.keys("/ac/"), genuine_keys);
+    let genuine_cas: Vec<String> = receipt["cas"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hash| hash.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(server.keys("/cas/"), genuine_cas);
+    let tree = &receipt["tree_blob"];
+    let uploaded = server.state.lock().unwrap().blobs
+        [&format!("/cas/{}", tree["hash"].as_str().unwrap())]
+        .clone();
+    assert_eq!(hex(&uploaded), tree["bytes"].as_str().unwrap());
+    // SpawnExec.digest: the action key, as genuine logs it.
+    let genuine_digests: BTreeMap<String, serde_json::Value> = receipt["execution_log_spawns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|spawn| {
+            (
+                spawn["mnemonic"].as_str().unwrap().to_owned(),
+                spawn["digest"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(logged_digests(&log), genuine_digests);
+    // A fresh native cache over genuine's entries: both spawns hit, the
+    // tree comes back with its symlinks (one leaves the tree for an input,
+    // staged for the hit like genuine's execution root holds it).
+    let genuine = Server::new();
+    for (key, result) in receipt["ac"].as_object().unwrap() {
+        let bytes = (0..result.as_str().unwrap().len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&result.as_str().unwrap()[i..i + 2], 16).unwrap())
+            .collect::<Vec<_>>();
+        genuine.serve(&format!("/ac/{key}"), &bytes);
+    }
+    for (path, bytes) in server.state.lock().unwrap().blobs.iter() {
+        if path.starts_with("/cas/") {
+            genuine.serve(path, bytes);
+        }
+    }
+    let cache = format!("--remote_cache={}", genuine.url());
+    let mut args = args.to_vec();
+    args[1] = &cache;
+    let second = ws.run_with("c2", &args, false);
+    assert!(second.status.success(), "{}", stderr(&second));
+    assert!(
+        stderr(&second).contains("0 actions executed, 0 cache hits, 2 remote cache hits"),
+        "{}",
+        stderr(&second)
+    );
+    let line = String::from_utf8_lossy(&second.stdout)
+        .lines()
+        .find(|line| line.starts_with("//pkg:t\t"))
+        .unwrap()
+        .to_owned();
+    let root = PathBuf::from(line.split_once('\t').unwrap().1);
+    assert_eq!(fs::read_to_string(root.join("f")).unwrap(), "hello\n");
+    assert_eq!(fs::read_to_string(root.join("sub/g")).unwrap(), "g\n");
+    assert!(root.join("empty").is_dir());
+    // Published like an executed tree: its symlinks resolved (the native
+    // store holds regular files).
+    assert_eq!(fs::read_to_string(root.join("link")).unwrap(), "hello\n");
+    assert_eq!(fs::read_to_string(root.join("up")).unwrap(), "hello\n");
 }

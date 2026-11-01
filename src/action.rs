@@ -6133,6 +6133,7 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
 /// inputs (sorted by exec path, directories expanded), declared and actual
 /// outputs (read from the execution root before publication), runner and
 /// exit code.
+#[allow(clippy::too_many_arguments)]
 fn log_spawn(
     action: &Action,
     prepared: &PreparedAction,
@@ -6141,6 +6142,7 @@ fn log_spawn(
     exit_code: i32,
     cache_hit: bool,
     (start, wall): (SystemTime, std::time::Duration),
+    key: Option<&crate::reapi::Digest>,
 ) {
     use crate::exec_log::LogFile;
     let text = |path: &Path| path.display().to_string();
@@ -6230,6 +6232,7 @@ fn log_spawn(
         },
         exit_code,
         target_label: action.id.split('#').next().unwrap_or(&action.id).to_owned(),
+        digest: key.map(|key| (key.hash.clone(), key.size)),
         start,
         wall,
     });
@@ -6436,6 +6439,71 @@ fn symlink_upload(path: &Path) -> Result<Option<crate::remote_cache::Output>, St
         ))),
         Ok(_) => Ok(None),
     }
+}
+
+/// How UploadManifest.DirectoryBuilder (remote/UploadManifest.java:
+/// 470-548) uploads a tree artifact output: regular files with their
+/// bytes, symlinks that are relative or dangling as symlinks, absolute ones
+/// as the file or directory they resolve to, and every directory (empty
+/// ones included). `None`: a special file, which genuine rejects
+/// (`ILLEGAL_OUTPUT`) and the native profile keeps off the cache.
+fn tree_upload(root: &Path) -> Result<Option<crate::remote_cache::DownloadedTree>, String> {
+    fn visit(
+        path: &Path,
+        relative: &str,
+        tree: &mut crate::remote_cache::DownloadedTree,
+        depth: usize,
+    ) -> Result<bool, String> {
+        if depth > 4096 {
+            return Err(format!("tree artifact {} is too deep", path.display()));
+        }
+        let entries = fs::read_dir(path).map_err(|e| io_error("cannot read directory", path, e))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| io_error("cannot read directory", path, e))?;
+            let name = entry.file_name();
+            let name = name
+                .to_str()
+                .ok_or_else(|| format!("non-UTF-8 file name in '{}'", path.display()))?;
+            let child = entry.path();
+            let child_relative = if relative.is_empty() {
+                name.to_owned()
+            } else {
+                format!("{relative}/{name}")
+            };
+            let mut kind = entry
+                .file_type()
+                .map_err(|e| io_error("cannot inspect", &child, e))?;
+            if kind.is_symlink() {
+                let text =
+                    fs::read_link(&child).map_err(|e| io_error("cannot read link", &child, e))?;
+                match fs::metadata(&child) {
+                    Ok(metadata) if text.is_absolute() => kind = metadata.file_type(),
+                    _ => {
+                        let text = text.to_str().ok_or_else(|| {
+                            format!("non-UTF-8 symlink target of '{}'", child.display())
+                        })?;
+                        tree.symlinks.push((child_relative, text.to_owned()));
+                        continue;
+                    }
+                }
+            }
+            if kind.is_dir() {
+                tree.directories.push(child_relative.clone());
+                if !visit(&child, &child_relative, tree, depth + 1)? {
+                    return Ok(false);
+                }
+            } else if kind.is_file() {
+                let bytes =
+                    fs::read(&child).map_err(|e| io_error("cannot read output", &child, e))?;
+                tree.files.push((child_relative, bytes, true));
+            } else {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+    let mut tree = crate::remote_cache::DownloadedTree::default();
+    Ok(visit(root, "", &mut tree, 0)?.then_some(tree))
 }
 
 /// Materializes one downloaded output at `path` in the execution root
@@ -6984,25 +7052,10 @@ pub fn execute_with_remote(
             .filter(|_| process && remote_policy(action).0)
             .filter(|remote| remote.accept_cached || remote.upload_local_results)
     };
-    // Tree artifact outputs need ActionResult.output_directories, which the
-    // native remote cache does not upload: such spawns stay off the cache
-    // (remote execution downloads them).
-    let tree_reason;
-    let unsupported = match (
-        &action.remote_unsupported,
-        action.extra.tree_outputs.first(),
-    ) {
-        (Some(reason), _) => Some(reason.as_str()),
-        (None, Some(tree)) if !remote_exec => {
-            tree_reason = format!(
-                "{} (tree artifact output {}; output_directories are not modelled)",
-                action.id,
-                tree.display()
-            );
-            Some(tree_reason.as_str())
-        }
-        (None, _) => None,
-    };
+    // Tree artifact outputs use ActionResult.output_directories and their
+    // `Tree` (UploadManifest.addDirectory; downloaded like
+    // RemoteExecutionService.downloadOutputs).
+    let unsupported = action.remote_unsupported.as_deref();
     let remote = match (remote, unsupported) {
         (Some(_), Some(reason)) => {
             crate::remote_cache::warn(&crate::remote_cache::CacheError::Other(format!(
@@ -7056,16 +7109,7 @@ pub fn execute_with_remote(
     } else if let (Some(remote), Some((spec, _))) = (remote, &remote_spec)
         && remote.accept_cached
     {
-        let declared = action
-            .outputs
-            .iter()
-            .map(|path| {
-                Ok((
-                    crate::remote_cache::path_string(path)?,
-                    action.extra.symlink_outputs.contains(path),
-                ))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        let declared = declared_outputs(action)?;
         let stay_remote = |index: usize| {
             crate::remote_outputs::may_stay_remote(&action.id, index, &action.outputs[index])
         };
@@ -7084,6 +7128,9 @@ pub fn execute_with_remote(
                             }
                             crate::remote_cache::Output::Remote(digest) => {
                                 crate::remote_cache::Downloaded::Remote(digest)
+                            }
+                            crate::remote_cache::Output::Directory(tree) => {
+                                crate::remote_cache::Downloaded::Directory(tree)
                             }
                         })
                         .collect(),
@@ -7160,8 +7207,15 @@ pub fn execute_with_remote(
     };
     // Only a process reads its inputs through the execution root; native
     // writes and transforms read the verified input files directly, and a
-    // remote hit runs nothing.
-    let staged = if process && remote_hit.is_none() && java_strategy.is_none() {
+    // remote hit runs nothing — unless a downloaded tree artifact holds
+    // symlinks: their targets may be inputs (an OCI layout's blobs link
+    // to its layers), which genuine's execution root always holds.
+    let hit_links = remote_hit.as_ref().is_some_and(|hit| {
+        hit.outputs.iter().any(|output| {
+            matches!(output, crate::remote_cache::Downloaded::Directory(tree) if !tree.symlinks.is_empty())
+        })
+    });
+    let staged = if process && (remote_hit.is_none() || hit_links) && java_strategy.is_none() {
         stage_inputs(cas, root, inputs, &execroot)?
     } else {
         Vec::new()
@@ -7240,6 +7294,7 @@ pub fn execute_with_remote(
                 0,
                 hit.cached,
                 (started, clock.elapsed()),
+                remote_spec.as_ref().map(|spec| &spec.key),
             );
         }
     } else if let Some(strategy) = java_strategy {
@@ -7290,6 +7345,7 @@ pub fn execute_with_remote(
                 response.exit_code,
                 false,
                 (started, clock.elapsed()),
+                remote_spec.as_ref().map(|spec| &spec.key),
             );
         }
         if response.exit_code != 0 {
@@ -7425,6 +7481,7 @@ pub fn execute_with_remote(
                 status.code().unwrap_or(1),
                 false,
                 (started, clock.elapsed()),
+                remote_spec.as_ref().map(|spec| &spec.key),
             );
         }
         if !status.success() {
@@ -7543,6 +7600,23 @@ pub fn execute_with_remote(
         crate::remote_outputs::expiration()
     };
     let mut registered = Vec::new();
+    // The tree outputs as the spawn left them (UploadManifest reads the
+    // execution root: a symlink stays one), read before publication
+    // normalizes them, for the remote cache upload below.
+    let mut tree_uploads: BTreeMap<&PathBuf, Option<crate::remote_cache::DownloadedTree>> =
+        BTreeMap::new();
+    if remote_hit.is_none()
+        && remote_spec.is_some()
+        && remote.is_some_and(|remote| remote.upload_local_results)
+    {
+        for name in &action.extra.tree_outputs {
+            let tree = tree_upload(&execroot.join(name)).unwrap_or_else(|error| {
+                crate::remote_cache::warn(&crate::remote_cache::CacheError::Other(error));
+                None
+            });
+            tree_uploads.insert(name, tree);
+        }
+    }
     let mut listings = BTreeMap::new();
     // Published tree outputs, for the tree memo once the entry is in place.
     let mut published_trees = Vec::new();
@@ -7747,6 +7821,8 @@ pub fn execute_with_remote(
                 let path = cached.join("outputs").join(name);
                 let output = if action.extra.symlink_outputs.contains(name) {
                     symlink_upload(&path)?
+                } else if let Some(tree) = tree_uploads.remove(name) {
+                    tree.map(crate::remote_cache::Output::Directory)
                 } else {
                     Some(crate::remote_cache::Output::File(
                         fs::read(&path).map_err(|e| io_error("cannot read output", &path, e))?,
@@ -7768,7 +7844,7 @@ pub fn execute_with_remote(
                 }
             }
             None => crate::remote_cache::warn(&crate::remote_cache::CacheError::Other(format!(
-                "not uploaded for {}: an absolute symlink output to a directory is uploaded as that directory, output_directories are not modelled",
+                "not uploaded for {}: an absolute symlink output to a directory or a special file in a tree artifact",
                 action.id
             ))),
         }

@@ -142,6 +142,7 @@ pub(super) fn run(
                 result.status.code().unwrap_or(1),
                 false,
                 (result.started, result.wall),
+                None,
             );
         }
         if !result.status.success() {

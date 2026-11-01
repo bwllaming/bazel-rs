@@ -1,0 +1,56 @@
+{
+ "ac": {
+  "c28a9adc6a8710dedfad296c3956ee86dd2086ca174a464111dd6290be5e4c86": "1a6b0a2062617a656c2d6f75742f6b382d666173746275696c642f62696e2f706b672f741a450a403539336138373731303063353638643464646238373331623661313364323166386365373234373465353430653764316532646163363364363039616537616610e702200132420a406533623063343432393866633163313439616662663463383939366662393234323761653431653436343962393334636134393539393162373835326238353542420a40653362306334343239386663316331343961666266346338393936666239323432376165343165343634396239333463613439353939316237383532623835354a381a0c08d0a39ad70610c797d89203220c08d0a39ad7061087d2f198033a0c08d0a39ad70610c797d89203420c08d0a39ad7061087d2f19803",
+  "ea650c4ffa54e892c6f6c897608f42d8cdc3b580df87b830e27b66ceca230abe": "12740a2a62617a656c2d6f75742f6b382d666173746275696c642f62696e2f706b672f616c69617365642e6f757412440a40336230396165623666356635333336626562323035643766373230333731626339323763643436633231393232653333346434376261323634616362356261341006200132420a406533623063343432393866633163313439616662663463383939366662393234323761653431653436343962393334636134393539393162373835326238353542420a40653362306334343239386663316331343961666266346338393936666239323432376165343165343634396239333463613439353939316237383532623835354a381a0c08d0a39ad70610e0f7d79203220c08d0a39ad70610e092c695033a0c08d0a39ad70610e0f7d79203420c08d0a39ad70610e092c69503"
+ },
+ "bazel": "9.3.1 (.direnv/reference/bazel-9.3.1-linux-x86_64)",
+ "cas": [
+  "3b09aeb6f5f5336beb205d7f720371bc927cd46c21922e334d47ba264acb5ba4",
+  "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+  "593a877100c568d4ddb8731b6a13d21f8ce72474e540e7d1e2dac63d609ae7af",
+  "756cfb795add9f0bee11a92c572590a8b2cb961948d1cef59d4e1fd26c4992c1",
+  "768c71d785bf6bbbf8c4d6af6582041f2659027140a962cd0c55b11eddfd5e3d",
+  "c28a9adc6a8710dedfad296c3956ee86dd2086ca174a464111dd6290be5e4c86",
+  "daef65402f41d893bfa9c1b4ff0349da9d14ba9aa5e990f86461c68f1452667d",
+  "ea650c4ffa54e892c6f6c897608f42d8cdc3b580df87b830e27b66ceca230abe"
+ ],
+ "command": "bazel --batch --ignore_all_rc_files --output_user_root=<fresh> build --remote_cache=http://127.0.0.1:<port> --platforms=//pkg:tp --host_platform=//pkg:tp --extra_execution_platforms=//pkg:pa --execution_log_json_file=<file> //pkg:t //pkg:aliased",
+ "execution_log_spawns": [
+  {
+   "digest": {
+    "hash": "ea650c4ffa54e892c6f6c897608f42d8cdc3b580df87b830e27b66ceca230abe",
+    "hashFunctionName": "SHA256",
+    "sizeBytes": "155"
+   },
+   "listedOutputs": [
+    "bazel-out/k8-fastbuild/bin/pkg/aliased.out"
+   ],
+   "mnemonic": "Action",
+   "runner": "processwrapper-sandbox"
+  },
+  {
+   "digest": {
+    "hash": "c28a9adc6a8710dedfad296c3956ee86dd2086ca174a464111dd6290be5e4c86",
+    "hashFunctionName": "SHA256",
+    "sizeBytes": "156"
+   },
+   "listedOutputs": [
+    "bazel-out/k8-fastbuild/bin/pkg/t"
+   ],
+   "mnemonic": "Tree",
+   "runner": "processwrapper-sandbox"
+  }
+ ],
+ "notes": "AC keys: Tree c28a9adc\u2026 (a tree artifact output: f, link -> f, up -> ../../../../../pkg/in.txt leaving the tree, sub/g, empty/), Action ea650c4f\u2026 (execution platform //pkg:p reached through the alias //pkg:pa, not the target platform; exec_properties {k: v} in its Platform). The native upload's ActionResults differ only in execution timestamps; the CAS sets are equal.",
+ "server": "a plain HTTP cache (GET/PUT /ac/H, /cas/H) logging every request",
+ "tree_blob": {
+  "bytes": "0a93020a4b0a016612440a403538393162356235323264356466303836643066663062313130666264396432316262346663373136336166333464303832383661326538343666366265303310062001124b0a05656d70747912420a4065336230633434323938666331633134396166626634633839393666623932343237616534316534363439623933346361343935393931623738353262383535124b0a0373756212440a4036613161333563323433663937383937313863353866323037613233376237646434353163626162303663666539313537636433323965653766633763366534104d1a090a046c696e6b1201661a1f0a02757012192e2e2f2e2e2f2e2e2f2e2e2f2e2e2f706b672f696e2e7478741200124d0a4b0a016712440a403736386337316437383562663662626266386334643661663635383230343166323635393032373134306139363263643063353562313165646466643565336410022001",
+  "hash": "593a877100c568d4ddb8731b6a13d21f8ce72474e540e7d1e2dac63d609ae7af"
+ },
+ "workspace": {
+  "MODULE.bazel": "module(name = \"rc\")\n",
+  "pkg/BUILD.bazel": "load(\":defs.bzl\", \"shell\", \"tree\")\ntree(name = \"t\", src = \"in.txt\")\nconstraint_setting(name = \"cs\")\nconstraint_value(name = \"cv\", constraint_setting = \":cs\")\nplatform(name = \"p\", constraint_values = [\":cv\"], exec_properties = {\"k\": \"v\"})\nalias(name = \"pa\", actual = \":p\")\nshell(name = \"aliased\", src = \"in.txt\", exec_compatible_with = [\":cv\"])\nplatform(name = \"tp\")\n",
+  "pkg/defs.bzl": "def _tree(ctx):\n    out = ctx.actions.declare_directory(ctx.label.name)\n    ctx.actions.run_shell(\n        command = \"mkdir -p $1/sub $1/empty && cp $2 $1/f && echo g > $1/sub/g && ln -s f $1/link && ln -s ../../../../../$2 $1/up\",\n        arguments = [out.path, ctx.file.src.path],\n        inputs = [ctx.file.src],\n        outputs = [out],\n        mnemonic = \"Tree\",\n    )\n    return [DefaultInfo(files = depset([out]))]\ntree = rule(_tree, attrs = {\"src\": attr.label(allow_single_file = True)})\ndef _shell(ctx):\n    out = ctx.actions.declare_file(ctx.label.name + \".out\")\n    ctx.actions.run_shell(command = \"tr a-z A-Z < $1 > $2\", arguments = [ctx.file.src.path, out.path], inputs = [ctx.file.src], outputs = [out])\n    return [DefaultInfo(files = depset([out]))]\nshell = rule(_shell, attrs = {\"src\": attr.label(allow_single_file = True)})\n",
+  "pkg/in.txt": "hello\n"
+ }
+}

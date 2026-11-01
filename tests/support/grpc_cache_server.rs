@@ -1017,6 +1017,7 @@ mod grpc_cache_server {
                 result.output_directories.push(reapi::OutputDirectory {
                     path: path.clone(),
                     tree_digest,
+                    is_topologically_sorted: false,
                 });
             } else {
                 use std::os::unix::fs::PermissionsExt as _;

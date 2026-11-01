@@ -595,11 +595,105 @@ pub struct TreeEntries {
     pub directories: Vec<String>,
 }
 
-/// `ActionResult.output_directories` entry (path, tree_digest).
+/// `ActionResult.output_directories` entry (path, tree_digest,
+/// is_topologically_sorted).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutputDirectory {
     pub path: String,
     pub tree_digest: Digest,
+    /// The `Tree` lists parents before children ([`output_tree`]'s order).
+    pub is_topologically_sorted: bool,
+}
+
+/// UploadManifest.DirectoryBuilder.build (remote/UploadManifest.java:
+/// 416-468): the `Tree` of an output directory from its regular files
+/// (`files`: path below the tree and digest; every FileNode
+/// `is_executable`, `--incompatible_remote_preserve_executable_bit` being
+/// off), symlinks (path, link text) and directories (every one, empty
+/// ones included). Each Directory lists its entries sorted by name; the
+/// Directory messages are computed children first (paths in reverse
+/// order), deduplicated keeping the first, and written parents first —
+/// the root, then the children (topologically sorted).
+pub fn output_tree(
+    files: &[(String, Digest)],
+    symlinks: &[(String, String)],
+    directories: &[String],
+) -> Vec<u8> {
+    #[derive(Default)]
+    struct Node {
+        files: BTreeMap<String, Digest>,
+        symlinks: BTreeMap<String, String>,
+        directories: std::collections::BTreeSet<String>,
+    }
+    fn split(path: &str) -> (&str, &str) {
+        path.rsplit_once('/').unwrap_or(("", path))
+    }
+    fn ensure<'a>(nodes: &'a mut BTreeMap<String, Node>, path: &str) -> &'a mut Node {
+        if !nodes.contains_key(path) {
+            nodes.insert(path.to_owned(), Node::default());
+            if !path.is_empty() {
+                let (parent, name) = split(path);
+                ensure(nodes, parent).directories.insert(name.to_owned());
+            }
+        }
+        nodes.get_mut(path).expect("inserted above")
+    }
+    let mut nodes: BTreeMap<String, Node> = BTreeMap::new();
+    ensure(&mut nodes, "");
+    for directory in directories {
+        ensure(&mut nodes, directory);
+    }
+    for (path, digest) in files {
+        let (parent, name) = split(path);
+        ensure(&mut nodes, parent)
+            .files
+            .insert(name.to_owned(), digest.clone());
+    }
+    for (path, target) in symlinks {
+        let (parent, name) = split(path);
+        ensure(&mut nodes, parent)
+            .symlinks
+            .insert(name.to_owned(), target.clone());
+    }
+    let mut digests: BTreeMap<&str, Digest> = BTreeMap::new();
+    let mut blobs: Vec<Vec<u8>> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (path, node) in nodes.iter().rev() {
+        let child = |name: &str| {
+            if path.is_empty() {
+                name.to_owned()
+            } else {
+                format!("{path}/{name}")
+            }
+        };
+        let blob = Directory {
+            files: node
+                .files
+                .iter()
+                .map(|(name, digest)| (name.clone(), digest.clone(), true))
+                .collect(),
+            directories: node
+                .directories
+                .iter()
+                .map(|name| (name.clone(), digests[child(name).as_str()].clone()))
+                .collect(),
+            symlinks: node
+                .symlinks
+                .iter()
+                .map(|(name, target)| (name.clone(), target.clone()))
+                .collect(),
+        }
+        .encode();
+        digests.insert(path, Digest::of(&blob));
+        if seen.insert(blob.clone()) {
+            blobs.push(blob);
+        }
+    }
+    let mut out = Vec::new();
+    for (index, blob) in blobs.iter().rev().enumerate() {
+        message(&mut out, if index == 0 { 1 } else { 2 }, blob);
+    }
+    out
 }
 
 /// `ActionResult.output_files` entry.
@@ -673,6 +767,7 @@ impl ActionResult {
             let mut entry = Vec::new();
             string(&mut entry, 1, &directory.path);
             message(&mut entry, 3, &directory.tree_digest.encode());
+            varint_field(&mut entry, 4, u64::from(directory.is_topologically_sorted));
             message(&mut out, 3, &entry);
         }
         varint_field(&mut out, 4, i64::from(self.exit_code) as u64);
@@ -766,12 +861,16 @@ impl ActionResult {
                     let mut directory = OutputDirectory {
                         path: String::new(),
                         tree_digest: Digest::of(b""),
+                        is_topologically_sorted: false,
                     };
                     for field in fields(entry)? {
                         match field {
                             (1, Value::Bytes(value)) => directory.path = utf8(value)?,
                             (3, Value::Bytes(value)) => {
                                 directory.tree_digest = Digest::decode(value)?
+                            }
+                            (4, Value::Varint(value)) => {
+                                directory.is_topologically_sorted = value != 0
                             }
                             _ => {}
                         }

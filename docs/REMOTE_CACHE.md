@@ -200,11 +200,18 @@ the spawns (the paired capture confirms every point):
   local where Bazel fails it; docs/SOURCE_DIRECTORIES.md,
   `tests/remote_cache.rs::source_directory_inputs_enter_the_remote_input_root`
   pins genuine's key).
-* Tree artifact outputs need `ActionResult.output_directories`, which is not
-  modelled: such spawns stay local (`WARNING: Remote Cache: not used for …
-  output_directories are not modelled`). Cached entries with
-  `output_directories`, or `output_symlinks` for a declared file output, are
-  rejected. Symlink outputs (`ctx.actions.symlink`) are native transforms,
+* Tree artifact outputs are `ActionResult.output_directories` entries with
+  a `Tree` blob (UploadManifest.addDirectory/DirectoryBuilder): read from
+  the execution root before publication, files `is_executable`, relative or
+  dangling links as `SymlinkNode`s, absolute ones followed, the Directory
+  messages deduplicated and topologically sorted — the Tree bytes equal
+  genuine's. A hit downloads the Tree and its files; when the tree holds
+  symlinks the spawn's inputs are staged too (their targets may be inputs,
+  an OCI layout's blobs link to its layers). Cached entries with
+  `output_symlinks` for a declared file output are rejected.
+  `tests/remote_cache.rs::tree_outputs_and_aliased_execution_platforms_key_like_genuine`
+  pins genuine 9.3.1's keys, CAS set and Tree bytes
+  (tests/fixtures/remote_cache/tree_platform_receipt.json). Symlink outputs (`ctx.actions.symlink`) are native transforms,
   never spawns, so they never use the remote cache.
 * Unresolved symlink artifacts (`declare_symlink`): inputs are input-root
   `SymlinkNode`s with their link text, a spawn's symlink outputs are
@@ -217,9 +224,16 @@ the spawns (the paired capture confirms every point):
   `exec_properties`/`remote_execution_properties`, and
   `--remote_default_exec_properties`) enter the key as the Command's and
   the Action's `Platform` (PlatformUtils.getPlatformProto,
-  docs/REMOTE_EXECUTION.md). An execution platform that analysis did not
-  resolve counts as unknown: such spawns never use the remote cache
-  (`WARNING: Remote Cache: not used for …`). A spawn's `timeout`
+  docs/REMOTE_EXECUTION.md). The execution platform's properties come from
+  the toolchain context's resolved PlatformInfo, so a platform reached
+  through an alias (Bazel 9's default `@bazel_tools//tools:host_platform`
+  -> `@platforms//host`) counts as known. An execution platform that
+  analysis did not resolve counts as unknown: such spawns never use the
+  remote cache (`WARNING: Remote Cache: not used for …`).
+* The expanded execution logs carry `SpawnExec.digest` (the Action digest,
+  `hash_function_name: "SHA256"`; the compact log's `digest` without it)
+  for every spawn that had a remote key, like genuine's
+  SpawnResult.getDigest — the field to diff keys against a genuine log. A spawn's `timeout`
   requirement is the Action's `timeout`.
 * Output roots are Bazel's `k8-<mode>` (D1 closed, below).
 * Execution-requirement tags (`packages/TargetUtils.java:53-63, 241-301`):

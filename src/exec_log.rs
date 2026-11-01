@@ -127,6 +127,9 @@ pub struct Spawn {
     pub status: String,
     pub exit_code: i32,
     pub target_label: String,
+    /// The action cache key (SpawnResult.getDigest): SHA-256 hex and size
+    /// of the REAPI `Action`, when the remote cache served the spawn.
+    pub digest: Option<(String, u64)>,
     pub start: SystemTime,
     pub wall: Duration,
 }
@@ -354,6 +357,18 @@ fn spawn_exec(spawn: &Spawn) -> Msg {
         .raw(15, "exit_code", Value::I32(spawn.exit_code))
         .raw(16, "remote_cacheable", Value::Bool(spawn.remote_cacheable))
         .raw(18, "target_label", Value::Str(spawn.target_label.clone()))
+        .opt_msg(
+            19,
+            "digest",
+            spawn.digest.as_ref().map(|digest| {
+                // DigestFunction.Value's name, unlike the files' "SHA-256".
+                digest_message(digest, false).raw(
+                    3,
+                    "hash_function_name",
+                    Value::Str("SHA256".to_owned()),
+                )
+            }),
+        )
         .msg(20, "metrics", metrics(spawn))
 }
 
@@ -588,6 +603,14 @@ impl Compact {
             .bool(13, "remotable", spawn.remotable)
             .bool(14, "cacheable", spawn.cacheable)
             .bool(15, "remote_cacheable", spawn.remote_cacheable)
+            .opt_msg(
+                16,
+                "digest",
+                spawn
+                    .digest
+                    .as_ref()
+                    .map(|digest| digest_message(digest, false)),
+            )
             .msg(18, "metrics", metrics);
         self.entry(0, (7, "spawn", message));
     }
@@ -711,6 +734,7 @@ mod tests {
             status: String::new(),
             exit_code: 0,
             target_label: "//pkg:a".to_owned(),
+            digest: None,
             start: SystemTime::UNIX_EPOCH,
             wall: Duration::from_millis(6),
         }

@@ -943,6 +943,8 @@ pub enum Output {
     Symlink(String),
     /// A file left in the remote CAS (Build without the Bytes).
     Remote(Digest),
+    /// A tree artifact (`output_directories` and its `Tree`).
+    Directory(DownloadedTree),
 }
 
 /// The REAPI form of one spawn.
@@ -1282,14 +1284,15 @@ impl RemoteCache {
     /// (CacheNotFoundException). Every declared output is downloaded (the
     /// native profile always materializes outputs, like
     /// `--remote_download_outputs=all`).
-    /// `outputs`: the declared outputs and whether each is an unresolved
-    /// symlink artifact (read from `output_symlinks`).
+    /// `outputs`: the declared outputs and what each is: a file, an
+    /// unresolved symlink artifact (read from `output_symlinks`) or a tree
+    /// artifact (read from `output_directories` and its `Tree`).
     /// `stay_remote(index)`: whether a non-empty file output may stay in
     /// the remote CAS (crate::remote_outputs).
     pub fn lookup(
         &self,
         action: &RemoteAction,
-        outputs: &[(String, bool)],
+        outputs: &[(String, OutputKind)],
         stay_remote: &dyn Fn(usize) -> bool,
     ) -> Result<Option<Hit>, CacheError> {
         let Some(bytes) = self.action_result(&action.key)? else {
@@ -1305,12 +1308,12 @@ impl RemoteCache {
             outputs
                 .iter()
                 .enumerate()
-                .filter_map(|(index, (output, symlink))| {
+                .filter_map(|(index, (output, kind))| {
                     let file = result
                         .output_files
                         .iter()
                         .find(|file| &file.path == output)?;
-                    (!symlink && file.digest.size != 0 && stay_remote(index))
+                    (*kind == OutputKind::File && file.digest.size != 0 && stay_remote(index))
                         .then(|| (index, file.digest.clone()))
                 }),
             &action.key,
@@ -1319,7 +1322,24 @@ impl RemoteCache {
             None => return Ok(None),
         };
         let mut downloaded = Vec::new();
-        for (index, (output, symlink)) in outputs.iter().enumerate() {
+        for (index, (output, kind)) in outputs.iter().enumerate() {
+            if *kind == OutputKind::Directory {
+                // A declared tree artifact must come back as a directory
+                // (else a missing mandatory output, a miss).
+                let Some(directory) = result
+                    .output_directories
+                    .iter()
+                    .find(|directory| &directory.path == output)
+                else {
+                    return Ok(None);
+                };
+                match self.tree(&directory.tree_digest, output, &action.key)? {
+                    Some(tree) => downloaded.push(Output::Directory(tree)),
+                    None => return Ok(None),
+                }
+                continue;
+            }
+            let symlink = &(*kind == OutputKind::Symlink);
             let linked = result
                 .output_symlinks
                 .iter()
@@ -1383,12 +1403,15 @@ impl RemoteCache {
         start: SystemTime,
         wall: Duration,
     ) -> Result<(), CacheError> {
+        // The `Tree` blobs of tree outputs (outliving `blobs`).
+        let mut trees: Vec<Vec<u8>> = Vec::new();
         let mut blobs: Vec<(Digest, &[u8])> = vec![
             (action.key.clone(), &action.action),
             (action.command_digest.clone(), &action.command),
         ];
         let mut files = Vec::new();
         let mut symlinks = Vec::new();
+        let mut directories = Vec::new();
         for (path, output) in outputs {
             match output {
                 Output::File(bytes) => {
@@ -1410,7 +1433,26 @@ impl RemoteCache {
                         "remote-only output {path} cannot be uploaded"
                     )));
                 }
+                Output::Directory(tree) => {
+                    let mut tree_files = Vec::new();
+                    for (name, bytes, _) in &tree.files {
+                        let digest = Digest::of(bytes);
+                        blobs.push((digest.clone(), bytes));
+                        tree_files.push((name.clone(), digest));
+                    }
+                    let blob = reapi::output_tree(&tree_files, &tree.symlinks, &tree.directories);
+                    let tree_digest = Digest::of(&blob);
+                    trees.push(blob);
+                    directories.push(reapi::OutputDirectory {
+                        path: path.clone(),
+                        tree_digest,
+                        is_topologically_sorted: true,
+                    });
+                }
             }
+        }
+        for blob in &trees {
+            blobs.push((Digest::of(blob), blob));
         }
         let stdout_digest = Digest::of(stdout);
         let stderr_digest = Digest::of(stderr);
@@ -1432,6 +1474,7 @@ impl RemoteCache {
         let result = reapi::ActionResult {
             output_files: files,
             output_symlinks: symlinks,
+            output_directories: directories,
             stdout_digest: Some(stdout_digest),
             stderr_digest: Some(stderr_digest),
             execution,
@@ -1728,6 +1771,36 @@ impl RemoteCache {
         Ok(())
     }
 
+    /// The tree artifact `path` of an ActionResult: its `Tree` and every
+    /// file below it, verified; `Ok(None)` when a blob is missing.
+    fn tree(
+        &self,
+        tree_digest: &Digest,
+        path: &str,
+        key: &Digest,
+    ) -> Result<Option<DownloadedTree>, CacheError> {
+        let Some(bytes) = self.verified(tree_digest, &[], path, key)? else {
+            return Ok(None);
+        };
+        let tree = reapi::Tree::decode(&bytes).map_err(|error| {
+            CacheError::Other(format!("Failed to parse the Tree of {path}: {error}"))
+        })?;
+        let entries = tree.entries().map_err(CacheError::Other)?;
+        let mut downloaded = DownloadedTree {
+            symlinks: entries.symlinks,
+            directories: entries.directories,
+            ..DownloadedTree::default()
+        };
+        for (name, digest, executable) in entries.files {
+            let what = format!("{path}/{name}");
+            match self.verified(&digest, &[], &what, key)? {
+                Some(bytes) => downloaded.files.push((name, bytes, executable)),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(downloaded))
+    }
+
     /// One downloaded blob, verified (`--remote_verify_downloads`);
     /// `Ok(None)` when the CAS lacks it (CacheNotFoundException).
     fn verified(
@@ -1801,26 +1874,10 @@ impl RemoteCache {
                     Downloaded::Symlink(link.target.clone())
                 }
                 (OutputKind::Directory, None, None, Some(directory)) => {
-                    let Some(bytes) = self.verified(&directory.tree_digest, &[], path, key)? else {
-                        return Ok(None);
-                    };
-                    let tree = reapi::Tree::decode(&bytes).map_err(|error| {
-                        CacheError::Other(format!("Failed to parse the Tree of {path}: {error}"))
-                    })?;
-                    let entries = tree.entries().map_err(CacheError::Other)?;
-                    let mut downloaded = DownloadedTree {
-                        symlinks: entries.symlinks,
-                        directories: entries.directories,
-                        ..DownloadedTree::default()
-                    };
-                    for (name, digest, executable) in entries.files {
-                        let what = format!("{path}/{name}");
-                        match self.verified(&digest, &[], &what, key)? {
-                            Some(bytes) => downloaded.files.push((name, bytes, executable)),
-                            None => return Ok(None),
-                        }
+                    match self.tree(&directory.tree_digest, path, key)? {
+                        Some(tree) => Downloaded::Directory(tree),
+                        None => return Ok(None),
                     }
-                    Downloaded::Directory(downloaded)
                 }
                 (_, None, None, None) => Downloaded::Missing,
                 (kind, ..) => {

@@ -5818,18 +5818,27 @@ impl Engine {
                 context.exec_platform.label.clone(),
                 context.exec_platform.exec_properties.clone(),
                 Some(context.exec_platform.constraints.clone()),
+                Some(Arc::new((
+                    context.exec_platform.exec_properties.clone(),
+                    context.exec_platform.remote_execution_properties.clone(),
+                ))),
             ),
             None => {
-                let (properties, constraints) = match self
+                let (properties, constraints, platform) = match self
                     .platforms
                     .get(&ConfiguredTargetKey::new(host.clone(), config))
                 {
-                    Some(Ok(info)) => {
-                        (info.exec_properties.clone(), Some(info.constraints.clone()))
-                    }
-                    _ => (Vec::new(), None),
+                    Some(Ok(info)) => (
+                        info.exec_properties.clone(),
+                        Some(info.constraints.clone()),
+                        Some(Arc::new((
+                            info.exec_properties.clone(),
+                            info.remote_execution_properties.clone(),
+                        ))),
+                    ),
+                    _ => (Vec::new(), None, None),
                 };
-                (host.clone(), properties, constraints)
+                (host.clone(), properties, constraints, platform)
             }
         };
         let mut platforms = Vec::new();
@@ -5845,7 +5854,7 @@ impl Engine {
         let collection = platforms
             .iter()
             .map(
-                |(name, (_, properties, _))| crate::exec_groups::GroupPlatform {
+                |(name, (_, properties, _, _))| crate::exec_groups::GroupPlatform {
                     name,
                     platform_properties: properties,
                 },
@@ -5862,12 +5871,15 @@ impl Engine {
             .map(|(name, properties)| {
                 let execution = platforms.iter().find(|(group, _)| *group == name);
                 let platform =
-                    execution.map_or_else(|| host.clone(), |(_, (label, _, _))| label.clone());
+                    execution.map_or_else(|| host.clone(), |(_, (label, _, _, _))| label.clone());
                 crate::exec_groups::ActionExecution {
                     exec_group: name,
                     platform,
                     properties,
-                    constraints: execution.and_then(|(_, (_, _, constraints))| constraints.clone()),
+                    constraints: execution
+                        .and_then(|(_, (_, _, constraints, _))| constraints.clone()),
+                    platform_properties: execution
+                        .and_then(|(_, (_, _, _, platform))| platform.clone()),
                 }
             })
             .collect())
@@ -10323,10 +10335,16 @@ impl Engine {
     ) -> Result<crate::remote_execution::SpawnPlatform, String> {
         let host = &self.configurations.get(config).native.host_platform;
         let label = execution.map_or(host, |execution| &execution.platform);
+        let known = execution.and_then(|execution| execution.platform_properties.as_deref());
         let (exec_properties, remote_execution_properties) = if *label
             == crate::configuration::default_host_platform()
         {
             (Vec::new(), String::new())
+        } else if let Some((exec_properties, remote_execution_properties)) = known {
+            // The resolved execution platform's PlatformInfo (an aliased
+            // platform, such as Bazel 9's @platforms//host, is analyzed as a
+            // dependency and never enters `self.platforms`).
+            (exec_properties.clone(), remote_execution_properties.clone())
         } else {
             match self
                 .platforms
@@ -20182,6 +20200,7 @@ m = macro(implementation=emit)
                 platform: test_label("//p:linux"),
                 properties: pairs(properties),
                 constraints: execution(0).constraints.clone(),
+                platform_properties: execution(0).platform_properties.clone(),
             };
         assert_eq!(
             execution(0),
