@@ -1837,3 +1837,40 @@ fn native_action_summary_needs_the_result_lines() {
         stderr(&output)
     );
 }
+
+/// The XML spawn's duration argument of a remotely cached test is the
+/// cached result's own wall time (its ExecutedActionMetadata, like
+/// Utils.createSpawnResult): a test longer than a second hits both spawns.
+#[test]
+fn xml_spawn_of_a_cached_slow_test_hits() {
+    let receipt = test_receipt();
+    let ws = test_workspace(&receipt);
+    ws.file(
+        "pkg/BUILD.bazel",
+        "load(\":tests.bzl\", \"t_test\")\nt_test(name = \"slow\", data = [\"in.txt\"], args = [\"0\"], env = {\"SLEEP\": \"1\"})\n",
+    );
+    ws.file(
+        "pkg/tests.bzl",
+        &receipt["files"]["pkg/tests.bzl"]
+            .as_str()
+            .unwrap()
+            .replace("echo testing;", "echo testing; sleep 1.3;"),
+    );
+    let server = Server::new();
+    let cache = format!("--remote_cache={}", server.url());
+    let registry = format!(
+        "--registry=file://{}/tests/fixtures/builtin_modules/registry",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let first = ws.run_with("c1", &test_args(&registry, &cache, &[]), false);
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert_eq!(server.keys("/ac/").len(), 2);
+    server.take_log();
+    let second = ws.run_with("c2", &test_args(&registry, &cache, &[]), false);
+    let text = String::from_utf8_lossy(&second.stdout).into_owned() + &stderr(&second);
+    assert!(second.status.success(), "{text}");
+    assert!(text.contains(" 2 remote cache hit, "), "{text}");
+    assert!(text.contains("(cached) PASSED"), "{text}");
+    let log = server.summary();
+    assert!(!log.iter().any(|l| l.starts_with("PUT /ac/")), "{log:?}");
+}

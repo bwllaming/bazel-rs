@@ -714,7 +714,7 @@ pub struct OutputSymlink {
 }
 
 /// `Timestamp`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Timestamp {
     pub seconds: i64,
     pub nanos: i32,
@@ -726,6 +726,18 @@ impl Timestamp {
         varint_field(&mut out, 1, self.seconds as u64);
         varint_field(&mut out, 2, self.nanos as u32 as u64);
         out
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, String> {
+        let mut timestamp = Timestamp::default();
+        for field in fields(bytes)? {
+            match field {
+                (1, Value::Varint(value)) => timestamp.seconds = value as i64,
+                (2, Value::Varint(value)) => timestamp.nanos = value as i32,
+                _ => {}
+            }
+        }
+        Ok(timestamp)
     }
 }
 
@@ -892,6 +904,19 @@ impl ActionResult {
                 (6, Value::Bytes(value)) => result.stdout_digest = Some(Digest::decode(value)?),
                 (7, Value::Bytes(value)) => result.stderr_raw = value.to_vec(),
                 (8, Value::Bytes(value)) => result.stderr_digest = Some(Digest::decode(value)?),
+                // ExecutedActionMetadata: the execution start and completion
+                // (fields 7 and 8), Utils.createSpawnResult's wall time.
+                (9, Value::Bytes(metadata)) => {
+                    let (mut start, mut end) = (None, None);
+                    for field in fields(metadata)? {
+                        match field {
+                            (7, Value::Bytes(value)) => start = Some(Timestamp::decode(value)?),
+                            (8, Value::Bytes(value)) => end = Some(Timestamp::decode(value)?),
+                            _ => {}
+                        }
+                    }
+                    result.execution = start.zip(end);
+                }
                 _ => {}
             }
         }
@@ -1070,9 +1095,7 @@ mod tests {
         let bytes = result.encode();
         // The genuine entry of //pkg:gen is 304 bytes with these fields.
         assert_eq!(bytes.len(), 304);
-        let mut decoded = ActionResult::decode(&bytes).unwrap();
-        decoded.execution = result.execution;
-        assert_eq!(decoded, result);
+        assert_eq!(ActionResult::decode(&bytes).unwrap(), result);
         assert!(ActionResult::decode(&[0x0a, 0x05, 0x01]).is_err());
     }
 }
