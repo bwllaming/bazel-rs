@@ -167,8 +167,8 @@ fn flags_test_command_and_rc_are_not_silently_ignored() {
     let ws = Workspace::new("filegroup(name='ok')\n");
     for args in [
         &["test", ":ok"][..],
-        // N41 models an http(s) --remote_cache; the disk cache is not.
-        &["build", "--disk_cache=/tmp/n41-unmodelled-cache", ":ok"],
+        // --distdir (extra archive directories) is not modelled.
+        &["build", "--distdir=/tmp/n41-unmodelled-cache", ":ok"],
         // Stardoc rule_class_info (--proto:rule_classes) is not implemented.
         &["query", "--output=proto", "--proto:rule_classes", ":ok"],
     ] {

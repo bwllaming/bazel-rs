@@ -50,6 +50,10 @@ const ALLOWED_MODULES: &[&str] = &[
     "builtin_tools",
     "patching",
     "repository_ctx",
+    // The shared `--repository_cache`: content-addressed blobs verified
+    // against their digests, like the native download store; a miss is a
+    // network fetch, which taints (docs/REPOSITORY_CACHE.md).
+    "repository_cache",
     "download_proxy",
     "credentials",
     "remote_cache",
