@@ -66,13 +66,13 @@ One concurrency group per tag (never cancelled). Two stages:
 
   | Matrix entry | Runner | Targets |
   |---|---|---|
-  | `linux-x86_64` | `ubuntu-24.04` (glibc 2.39, the glibc archive's requirement) | `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl` |
-  | `linux-arm64` | `ubuntu-24.04-arm` (GitHub-hosted arm64, also for private repositories) | `aarch64-unknown-linux-musl` |
+  | `linux-x86_64` | `self-hosted` (the organisation's x86_64 Linux runners; the glibc archive needs their glibc or newer, printed by the job's "Build machine" step) | `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl` |
+  | `linux-arm64` | `ubuntu-24.04-arm` (GitHub-hosted arm64, also for private repositories; there is no self-hosted arm64 runner) | `aarch64-unknown-linux-musl` |
 
   `fail-fast`, timeout 75 minutes, `permissions: contents: read`: check out
   the tag with full history (`fetch-depth: 0`); install the toolchain of
   `rust-toolchain.toml` with the entry's targets (rustup itself if the image
-  lacks it); zig via `scripts/setup-zig.sh` (cached on the script's hash and
+  lacks it); the pinned GitHub CLI if the runner lacks `gh`; zig via `scripts/setup-zig.sh` (cached on the script's hash and
   the runner's architecture); `Swatinem/rust-cache` (keyed per matrix entry on
   `Cargo.lock`, `rust-toolchain.toml` and the rustc version); then
   `scripts/release.py --ci --stage build --smoke-network --target … --version
@@ -80,7 +80,7 @@ One concurrency group per tag (never cancelled). Two stages:
   preflight's "no such release yet" check). Its `dist/` — the archives, their
   `.sha256` files and one build record each — becomes the artifact
   `release-build-<entry>` (14 days).
-- **`publish`**, one job on `ubuntu-24.04` after every build job succeeded,
+- **`publish`**, one job on a self-hosted runner after every build job succeeded,
   the only one with `permissions: contents: write`, timeout 30 minutes: check
   out the tag (full history, for the changelog), download every
   `release-build-*` artifact and run `scripts/release.py --ci --stage publish

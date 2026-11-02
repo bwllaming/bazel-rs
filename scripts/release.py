@@ -64,10 +64,11 @@ class Target:
     zig: str | None
     static: bool
     default: bool
-    # The GitHub-hosted runner of the workflow's build job for this target
-    # (.github/workflows/release.yml matrix; native, so the smoke test runs
-    # the binary directly).
-    runner: str = "ubuntu-24.04"
+    # The runner label of the workflow's build job for this target
+    # (.github/workflows/release.yml matrix: the organisation's self-hosted
+    # x86_64 runners, GitHub-hosted arm64; native, so the smoke test runs the
+    # binary directly).
+    runner: str = "self-hosted"
     # The `@platforms//cpu` value of a host running it (the network smoke
     # test checks the detected host platform).
     cpu: str = "x86_64"

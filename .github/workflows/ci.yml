@@ -30,13 +30,20 @@ env:
 jobs:
   check:
     name: fmt, clippy, unit and hermetic integration tests
-    runs-on: ubuntu-latest
+    # The organisation's self-hosted runners (x86_64 Linux containers).
+    runs-on: self-hosted
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - name: Rust toolchain from rust-toolchain.toml
         run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
           rustup toolchain install --no-self-update
           rustc --version
           cargo --version

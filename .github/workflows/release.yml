@@ -47,10 +47,13 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          # glibc 2.39: the glibc archive needs the same or a newer glibc.
+          # The organisation's self-hosted runners (x86_64 Linux containers).
+          # The glibc archive needs the build machine's glibc or newer; the
+          # build step prints it.
           - name: linux-x86_64
-            runner: ubuntu-24.04
+            runner: self-hosted
             targets: x86_64-unknown-linux-gnu x86_64-unknown-linux-musl
+          # GitHub-hosted: there is no self-hosted arm64 runner.
           - name: linux-arm64
             runner: ubuntu-24.04-arm
             targets: aarch64-unknown-linux-musl
@@ -62,6 +65,26 @@ jobs:
           ref: refs/tags/${{ env.TAG }}
           # All history and tags: the changelog starts at the previous tag.
           fetch-depth: 0
+
+      - name: Build machine
+        run: |
+          uname -srm
+          ldd --version | head -1
+
+      - name: GitHub CLI
+        # Self-hosted runners may not have gh: install the pinned release.
+        run: |
+          if ! command -v gh >/dev/null; then
+            [ "$(uname -m)" = x86_64 ] || { echo "no pinned gh for $(uname -m)" >&2; exit 1; }
+            arch=amd64
+            version=2.103.3
+            sha256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
+            archive="$RUNNER_TEMP/gh.tar.gz"
+            curl -fsSL -o "$archive" "https://github.com/cli/cli/releases/download/v$version/gh_${version}_linux_$arch.tar.gz"
+            echo "$sha256  $archive" | sha256sum -c -
+            tar -xzf "$archive" -C "$RUNNER_TEMP"
+            echo "$RUNNER_TEMP/gh_${version}_linux_$arch/bin" >> "$GITHUB_PATH"
+          fi
 
       - name: Rust toolchain from rust-toolchain.toml
         # Installs the pinned channel with its components and the musl
@@ -120,7 +143,7 @@ jobs:
   publish:
     name: publish ${{ inputs.tag || github.ref_name }}
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 30
     # gh release create/upload with GITHUB_TOKEN; nothing else.
     permissions:
@@ -130,6 +153,19 @@ jobs:
         with:
           ref: refs/tags/${{ env.TAG }}
           fetch-depth: 0
+
+      - name: GitHub CLI
+        # Self-hosted runners may not have gh: install the pinned release.
+        run: |
+          if ! command -v gh >/dev/null; then
+            version=2.103.3
+            sha256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
+            archive="$RUNNER_TEMP/gh.tar.gz"
+            curl -fsSL -o "$archive" "https://github.com/cli/cli/releases/download/v$version/gh_${version}_linux_amd64.tar.gz"
+            echo "$sha256  $archive" | sha256sum -c -
+            tar -xzf "$archive" -C "$RUNNER_TEMP"
+            echo "$RUNNER_TEMP/gh_${version}_linux_amd64/bin" >> "$GITHUB_PATH"
+          fi
 
       - name: Collect the build jobs' archives
         uses: actions/download-artifact@v4

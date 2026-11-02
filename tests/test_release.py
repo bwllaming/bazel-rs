@@ -1010,7 +1010,8 @@ class WorkflowTest(unittest.TestCase):
             'tags: ["v*"]',
             "workflow_dispatch:",
             "runs-on: ${{ matrix.runner }}",
-            "runs-on: ubuntu-24.04\n",
+            # The publish job runs on the organisation's self-hosted runners.
+            "runs-on: self-hosted\n",
             "contents: write",
             "contents: read",
             "fetch-depth: 0",
