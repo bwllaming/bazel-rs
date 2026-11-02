@@ -1476,6 +1476,9 @@ pub struct RunResult {
     pub status: TestStatus,
     /// Whether the result came from the test cache.
     pub cached: bool,
+    /// Whether the test spawn's result came from the remote cache
+    /// (TestResultData.remotely_cached): cached, but the action ran.
+    pub remote_cached: bool,
     /// TestResultData.test_times: one per attempt, in milliseconds.
     pub test_times: Vec<u64>,
     pub passed_log: Option<PathBuf>,
@@ -1493,6 +1496,9 @@ pub struct TestSummary {
     /// TestSummary.isSkipped, distinct from a test action that returned NO_STATUS.
     pub skipped: bool,
     pub num_cached: usize,
+    /// Results of the local action cache (TestSummary.numLocalActionCached;
+    /// TerminalTestResultNotifier prints their logs).
+    pub num_local_cached: usize,
     pub action_ran: bool,
     pub test_times: Vec<u64>,
     pub passed_logs: Vec<PathBuf>,
@@ -1516,6 +1522,7 @@ impl TestSummary {
             status: TestStatus::NoStatus,
             skipped: false,
             num_cached: 0,
+            num_local_cached: 0,
             action_ran: false,
             test_times: Vec::new(),
             passed_logs: Vec::new(),
@@ -1526,10 +1533,14 @@ impl TestSummary {
         };
         for result in results {
             summary.cases.collect(result.test_case.as_ref());
-            if result.cached {
+            // TestResultAggregator.incrementalAnalyze (:173-182).
+            if result.cached || result.remote_cached {
                 summary.num_cached += 1;
             } else {
                 summary.action_ran = true;
+            }
+            if result.cached {
+                summary.num_local_cached += 1;
             }
             if result.status > summary.status {
                 summary.status = result.status;
@@ -2503,6 +2514,7 @@ mod tests {
                 shard: 0,
                 status: TestStatus::Passed,
                 cached: true,
+                remote_cached: false,
                 test_times: vec![10],
                 passed_log: None,
                 failed_logs: vec![],
@@ -2517,6 +2529,7 @@ mod tests {
                 shard: 0,
                 status: TestStatus::Flaky,
                 cached: false,
+                remote_cached: false,
                 test_times: vec![10, 20],
                 passed_log: Some(PathBuf::from("/nonexistent/test.log")),
                 failed_logs: vec![PathBuf::from("/nonexistent/attempt_1.log")],

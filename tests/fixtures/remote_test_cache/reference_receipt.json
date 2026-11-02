@@ -1,0 +1,66 @@
+{
+  "description": "Genuine Bazel 9.3.1 (bazel-9.3.1-linux-x86_64, --batch --ignore_all_rc_files, PATH=/usr/bin:/bin, --registry=tests/fixtures/builtin_modules/registry --lockfile_mode=off) `test //pkg:all --remote_cache=http://127.0.0.1:PORT` against an empty HTTP cache, then again with a fresh output root against the populated cache. Test spawns go through RemoteSpawnCache: the AC keys of the TestRunner spawns (test-setup.sh) and the XML generating spawns (generate-xml.sh) per target, from --execution_log_json_file. //pkg:bad fails (its test spawn is not uploaded), //pkg:nrc is tagged no-remote-cache (neither spawn uses the cache), //pkg:ext is tagged external (its test spawn carries no-cache; its XML spawn is cached).",
+  "files": {
+    "MODULE.bazel": "module(name = \"rtc\")\n",
+    "pkg/BUILD.bazel": "load(\":tests.bzl\", \"t_test\")\nt_test(name = \"ok\", data = [\"in.txt\"], args = [\"0\"])\nt_test(name = \"bad\", data = [\"in.txt\"], args = [\"1\"])\nt_test(name = \"xml\", data = [\"in.txt\"], args = [\"0\"], env = {\"WRITE_XML\": \"1\"})\nt_test(name = \"nrc\", data = [\"in.txt\"], args = [\"0\"], tags = [\"no-remote-cache\"])\nt_test(name = \"ext\", data = [\"in.txt\"], args = [\"0\"], tags = [\"external\"])\nt_test(name = \"sharded\", data = [\"in.txt\"], args = [\"0\"], shard_count = 2)\n",
+    "pkg/tests.bzl": "def _t(ctx):\n    out = ctx.actions.declare_file(ctx.label.name + \".sh\")\n    ctx.actions.write(out, \"#!/bin/bash\\necho testing; cat pkg/in.txt; echo out > $TEST_UNDECLARED_OUTPUTS_DIR/u.txt; echo err >&2; if [ -n \\\"$WRITE_XML\\\" ]; then echo '<testsuites/>' > $XML_OUTPUT_FILE; fi; [ -n \\\"$TEST_SHARD_STATUS_FILE\\\" ] && touch $TEST_SHARD_STATUS_FILE; exit $1\\n\", is_executable = True)\n    return [DefaultInfo(executable = out, runfiles = ctx.runfiles(files = ctx.files.data)), RunEnvironmentInfo(environment = ctx.attr.env)]\nt_test = rule(_t, test = True, attrs = {\"data\": attr.label_list(allow_files = True), \"env\": attr.string_dict()})\n",
+    "pkg/in.txt": "hello\n"
+  },
+  "test_spawn_keys": {
+    "//pkg:ok": "59f4bb4b6e3ed70fb2eb2eb4cdaf755696b885dd926b678ea0de0c4f7b3eb329",
+    "//pkg:xml": "fa7b3d19b258046570308f69c9b6924d44b5ed54ed9f7d02e96030c900a641a3",
+    "//pkg:sharded shard 0": "203bccdb36854f54f524608000a60be672ac83a194c811986ede108cad0d9577",
+    "//pkg:sharded shard 1": "4c8a0a1b6d25750db75a9f49db12b4cdd7bb6365ba94f0ad8cbae4af608910d6",
+    "//pkg:bad": "58b424f15d7e4d12669904f212feb167cf8e74ef1a2c401132c4457c1e72cb71"
+  },
+  "xml_spawn_keys": {
+    "//pkg:ok": "137999bd4f5cdb739ac10e2f4b3add49899d1b67862b4ac1f1be1d6162aedcab",
+    "//pkg:bad": "652270286846547b62b3225de93c14771481d929c01b8385043a3bb183bed124",
+    "//pkg:ext": "c00c534eeb46376264198739f2b2f455501e9faf9497417a109d9e7dcf4d2611",
+    "//pkg:sharded shard 0": "4e4197e22f6017469d27b1b3607315402c285a27e1f463c8ed4d7bd6153c3d99",
+    "//pkg:sharded shard 1": "35f5864d6064c7d801ee37154c9bf6ef6a69d460e9f2798ca38e6fa7c03aab21"
+  },
+  "uploaded_ac_keys": [
+    "137999bd4f5cdb739ac10e2f4b3add49899d1b67862b4ac1f1be1d6162aedcab",
+    "203bccdb36854f54f524608000a60be672ac83a194c811986ede108cad0d9577",
+    "35f5864d6064c7d801ee37154c9bf6ef6a69d460e9f2798ca38e6fa7c03aab21",
+    "4c8a0a1b6d25750db75a9f49db12b4cdd7bb6365ba94f0ad8cbae4af608910d6",
+    "4e4197e22f6017469d27b1b3607315402c285a27e1f463c8ed4d7bd6153c3d99",
+    "59f4bb4b6e3ed70fb2eb2eb4cdaf755696b885dd926b678ea0de0c4f7b3eb329",
+    "652270286846547b62b3225de93c14771481d929c01b8385043a3bb183bed124",
+    "c00c534eeb46376264198739f2b2f455501e9faf9497417a109d9e7dcf4d2611",
+    "fa7b3d19b258046570308f69c9b6924d44b5ed54ed9f7d02e96030c900a641a3"
+  ],
+  "first": {
+    "http": {
+      "get_miss_ac": 10,
+      "put_ac": 9,
+      "put_cas": 30
+    },
+    "processes": "INFO: 38 processes: 31 internal, 13 processwrapper-sandbox.",
+    "executed": "Executed 6 out of 6 tests: 5 tests pass and 1 fails locally."
+  },
+  "second_fresh_output_root": {
+    "http": {
+      "get_hit_ac": 9,
+      "get_miss_ac": 1,
+      "put_ac": 0,
+      "get_hit_cas": 22
+    },
+    "processes": "INFO: 38 processes: 9 remote cache hit, 31 internal, 4 processwrapper-sandbox.",
+    "summary": [
+      "//pkg:ok                                                        (cached) PASSED in 0.0s",
+      "//pkg:sharded                                                   (cached) PASSED in 0.0s",
+      "//pkg:xml                                                       (cached) PASSED in 0.0s",
+      "//pkg:ext                                                                PASSED in 0.0s",
+      "//pkg:nrc                                                                PASSED in 0.0s",
+      "//pkg:bad                                                                FAILED in 0.0s"
+    ],
+    "executed": "Executed 3 out of 6 tests: 5 tests pass and 1 fails locally."
+  },
+  "nocache_test_results_fresh_output_root": {
+    "processes": "INFO: 8 processes: 30 action cache hit, 5 remote cache hit, 1 internal, 8 processwrapper-sandbox.",
+    "executed": "Executed 6 out of 6 tests: 5 tests pass and 1 fails locally.",
+    "note": "same output root as the first run (action cache hits); the 5 hits are the XML spawns"
+  }
+}

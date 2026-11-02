@@ -1622,3 +1622,218 @@ fn http_cache_requests_are_retried() {
     );
     assert_eq!(outputs(&once)["//pkg:gen"], "hello\ndone\n");
 }
+
+// --- Test actions through the remote spawn cache (genuine receipt:
+// tests/fixtures/remote_test_cache/reference_receipt.json) ---
+
+fn test_receipt() -> serde_json::Value {
+    serde_json::from_slice(
+        &fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/remote_test_cache/reference_receipt.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+/// The receipt's workspace (the built-in module profile with the offline
+/// registry, like the genuine capture).
+fn test_workspace(receipt: &serde_json::Value) -> Workspace {
+    let ws = Workspace::new();
+    for (path, text) in receipt["files"].as_object().unwrap() {
+        ws.file(path, text.as_str().unwrap());
+    }
+    ws
+}
+
+fn test_args<'a>(registry: &'a str, cache: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "test",
+        "--experimental-builtin-modules",
+        registry,
+        "--lockfile_mode=off",
+        cache,
+    ];
+    args.extend_from_slice(extra);
+    args.push("//pkg:all");
+    args
+}
+
+fn keys(receipt: &serde_json::Value, field: &str) -> BTreeMap<String, String> {
+    receipt[field]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(name, key)| (name.clone(), key.as_str().unwrap().to_owned()))
+        .collect()
+}
+
+/// StandaloneTestStrategy's spawns go through RemoteSpawnCache like any
+/// spawn: with only `--remote_cache`, the test and XML spawns' keys are
+/// genuine Bazel's, a failing test is not uploaded, `no-remote-cache` and
+/// `external` tests skip the cache, and a fresh client's unchanged tests
+/// are remote cache hits — `(cached) PASSED`, `remote cache hit` in the
+/// processes line, nothing executed.
+#[test]
+fn test_spawns_use_the_remote_cache_with_genuine_keys() {
+    let receipt = test_receipt();
+    let ws = test_workspace(&receipt);
+    let server = Server::new();
+    let cache = format!("--remote_cache={}", server.url());
+    let registry = format!(
+        "--registry=file://{}/tests/fixtures/builtin_modules/registry",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let first = ws.run_with("c1", &test_args(&registry, &cache, &[]), false);
+    let text = String::from_utf8_lossy(&first.stdout).into_owned() + &stderr(&first);
+    assert_eq!(first.status.code(), Some(3), "{text}");
+    assert!(
+        text.contains(receipt["first"]["executed"].as_str().unwrap()),
+        "{text}"
+    );
+    // Genuine's uploads exactly: every passing test spawn and every XML
+    // spawn but //pkg:nrc's.
+    let mut uploaded: Vec<String> = receipt["uploaded_ac_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|key| key.as_str().unwrap().to_owned())
+        .collect();
+    uploaded.sort();
+    let mut keys_put = server.keys("/ac/");
+    keys_put.sort();
+    assert_eq!(keys_put, uploaded, "{text}");
+    let tests = keys(&receipt, "test_spawn_keys");
+    let xmls = keys(&receipt, "xml_spawn_keys");
+    assert!(!keys_put.contains(&tests["//pkg:bad"]));
+    assert!(keys_put.contains(&xmls["//pkg:bad"]));
+    let log = server.summary();
+    // Lookups: every spawn but //pkg:nrc's two and //pkg:ext's test spawn.
+    assert_eq!(
+        log.iter().filter(|l| l.starts_with("GET /ac/")).count(),
+        10,
+        "{log:?}"
+    );
+    assert!(log.contains(&format!("GET /ac/{}", tests["//pkg:bad"])));
+    // A fresh native cache: genuine's second run.
+    let second = ws.run_with("c2", &test_args(&registry, &cache, &[]), false);
+    let stdout = String::from_utf8_lossy(&second.stdout).into_owned();
+    let text = stdout.clone() + &stderr(&second);
+    assert_eq!(second.status.code(), Some(3), "{text}");
+    for line in receipt["second_fresh_output_root"]["summary"]
+        .as_array()
+        .unwrap()
+    {
+        let line = line.as_str().unwrap();
+        let (label, status) = line.split_once(' ').unwrap();
+        let status = status.trim_start();
+        let status = status.split(" in ").next().unwrap();
+        assert!(
+            stdout
+                .lines()
+                .any(|l| l.starts_with(label) && l.contains(status)),
+            "{line}: {text}"
+        );
+    }
+    assert!(
+        text.contains(
+            receipt["second_fresh_output_root"]["executed"]
+                .as_str()
+                .unwrap()
+        ),
+        "{text}"
+    );
+    assert!(text.contains(" 9 remote cache hit, "), "{text}");
+    let log = server.summary();
+    assert!(!log.iter().any(|l| l.starts_with("PUT /ac/")), "{log:?}");
+    assert_eq!(
+        log.iter().filter(|l| l.starts_with("GET /ac/")).count(),
+        10,
+        "{log:?}"
+    );
+    // The remote hit's logs are the test's: stdout and stderr in test.log.
+    let testlogs = ws.0.join("c2/tests");
+    let ok_log = fs::read_dir(&testlogs)
+        .unwrap()
+        .flatten()
+        .map(|entry| {
+            entry
+                .path()
+                .join("bazel-out/k8-fastbuild/testlogs/pkg/ok/test.log")
+        })
+        .find(|path| path.is_file())
+        .unwrap();
+    let ok_log = fs::read_to_string(ok_log).unwrap();
+    assert!(ok_log.contains("testing\nhello\n"), "{ok_log}");
+    assert!(ok_log.contains("err\n"), "{ok_log}");
+    // The native test cache holds the remote result: no lookup next time.
+    let third = ws.run_with("c2", &test_args(&registry, &cache, &[]), false);
+    let text = String::from_utf8_lossy(&third.stdout).into_owned() + &stderr(&third);
+    assert!(text.contains("Executed 2 out of 6 tests"), "{text}");
+    // --nocache_test_results: every test spawn carries no-cache; the XML
+    // spawns still hit (genuine: `5 remote cache hit`).
+    server.take_log();
+    let uncached = ws.run_with(
+        "c3",
+        &test_args(&registry, &cache, &["--nocache_test_results"]),
+        false,
+    );
+    let text = String::from_utf8_lossy(&uncached.stdout).into_owned() + &stderr(&uncached);
+    assert!(text.contains("Executed 6 out of 6 tests"), "{text}");
+    assert!(text.contains(" 5 remote cache hit, "), "{text}");
+    assert!(
+        !server.summary().iter().any(|l| l.starts_with("PUT /ac/")),
+        "{text}"
+    );
+    // --noremote_accept_cached: nothing is read; --noremote_upload_local_results:
+    // nothing is written.
+    let unread = ws.run_with(
+        "c4",
+        &test_args(
+            &registry,
+            &cache,
+            &[
+                "--noremote_accept_cached",
+                "--noremote_upload_local_results",
+            ],
+        ),
+        false,
+    );
+    let text = String::from_utf8_lossy(&unread.stdout).into_owned() + &stderr(&unread);
+    assert!(text.contains("Executed 6 out of 6 tests"), "{text}");
+    assert!(!text.contains(" remote cache hit, "), "{text}");
+    let log = server.summary();
+    assert!(!log.iter().any(|l| l.contains(" /ac/")), "{log:?}");
+}
+
+/// Without the native result lines the `bazel-rs: N actions executed, …`
+/// line (no genuine counterpart) is not printed; Bazel's `INFO: N
+/// processes: …` line reports the spawns.
+#[test]
+fn native_action_summary_needs_the_result_lines() {
+    let ws = Workspace::new();
+    let server = Server::new();
+    let cache = format!("--remote_cache={}", server.url());
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
+    command
+        .arg("--ignore_all_rc_files")
+        .arg(format!("--cache-dir={}", ws.0.join("c").display()))
+        .args(["build", &cache, "//pkg:gen"])
+        .current_dir(ws.0.join("ws"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", ws.0.join("home"));
+    let output = command.explicit_modules().output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        !stderr(&output).contains("actions executed"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("INFO: 2 processes: 1 internal, 1 "),
+        "{}",
+        stderr(&output)
+    );
+}

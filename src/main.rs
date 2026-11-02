@@ -1850,21 +1850,8 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
     }
     if fetch {
         // No native summary: fetch reports the fetched repositories only.
-    } else if remote_enabled {
-        bazel_rs::note!(
-            "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; {})",
-            summary.executed,
-            summary.cache_hits,
-            summary.remote_hits,
-            execution_note()
-        );
     } else {
-        bazel_rs::note!(
-            "bazel-rs: {} actions executed, {} cache hits (experimental local execution; {})",
-            summary.executed,
-            summary.cache_hits,
-            execution_note()
-        );
+        action_summary(&summary, remote_enabled);
     }
     bazel_rs::memory_limit::report_peak(memory_limit_mb);
     // --keep_going: a build with failures fails once everything else built.
@@ -3341,22 +3328,7 @@ fn run_tail(
     // Bazel reports built targets on stderr; stdout carries the
     // program's or the tests' output.
     bazel_rs::build_results::print(&summary, bazel_rs::build_results::NativeLines::Stderr)?;
-    if remote_enabled {
-        bazel_rs::note!(
-            "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; {})",
-            summary.executed,
-            summary.cache_hits,
-            summary.remote_hits,
-            execution_note()
-        );
-    } else {
-        bazel_rs::note!(
-            "bazel-rs: {} actions executed, {} cache hits (experimental local execution; {})",
-            summary.executed,
-            summary.cache_hits,
-            execution_note()
-        );
-    }
+    action_summary(&summary, remote_enabled);
     // A test suite's expansion error fails the build once it ran
     // (BuildView.createAnalysisFailureDetail, analysis/BuildView.java:760-776),
     // so RunCommand.runBuild does not run the target (:421-426; genuine 9.3
@@ -3538,8 +3510,8 @@ struct TestTail<'a> {
     jobs: usize,
     root: &'a Path,
     options: &'a bazel_rs::test_command::TestOptions,
-    /// Whether the remote cache is set up (N41): the build summary names its
-    /// hits. Test actions themselves are local-only (docs/TEST_COMMAND.md).
+    /// Whether the remote cache is set up (N41): the native build summary
+    /// names its hits (test spawns use it too, docs/REMOTE_CACHE.md).
     remote_enabled: bool,
     /// The target pattern phase's failure ([`pattern_phase_failure`]): the
     /// tests run, then the command fails. Always `None` on a snapshot hit.
@@ -3812,22 +3784,7 @@ fn test_tail(
         let (blobs, bytes) = bazel_rs::remote_grpc::read_totals();
         bazel_rs::note!("bazel-rs: remote downloads: {blobs} blobs, {bytes} bytes");
     }
-    if remote_enabled {
-        bazel_rs::note!(
-            "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; {})",
-            summary.executed,
-            summary.cache_hits,
-            summary.remote_hits,
-            execution_note()
-        );
-    } else {
-        bazel_rs::note!(
-            "bazel-rs: {} actions executed, {} cache hits (experimental local execution; {})",
-            summary.executed,
-            summary.cache_hits,
-            execution_note()
-        );
-    }
+    action_summary(&summary, remote_enabled);
     // A `bazel-rs affected` planning (docs/AFFECTED_TARGETS.md): the
     // digests are written and the analysis succeeded, which is all it asks
     // of `test --nobuild` — exit 0, so that its orchestrator can take any
@@ -3966,7 +3923,9 @@ fn test_tail(
     use std::io::Write;
     let mut stdout = std::io::stdout().lock();
     for summary in sorted {
-        if summary.num_cached > 0 && should_output_log(options.output, summary.status.passed()) {
+        if summary.num_local_cached > 0
+            && should_output_log(options.output, summary.status.passed())
+        {
             let _ = stdout.write_all(&bazel_rs::test_runner::cached_output(summary, options));
         }
     }
@@ -4182,7 +4141,9 @@ fn test_build_failure(
     let mut sorted: Vec<&TestSummary> = summaries.iter().collect();
     sorted.sort_by(|a, b| a.compare(b));
     for summary in sorted {
-        if summary.num_cached > 0 && should_output_log(options.output, summary.status.passed()) {
+        if summary.num_local_cached > 0
+            && should_output_log(options.output, summary.status.passed())
+        {
             text.extend(bazel_rs::test_runner::cached_output(summary, options));
         }
     }
@@ -6575,6 +6536,33 @@ impl Drop for ProgressGuard {
 /// processwrapper-sandbox` process counts).
 /// With a remote executor it starts with the number of remotely executed
 /// spawns (docs/REMOTE_EXECUTION.md).
+/// The native `bazel-rs: N actions executed, …` line of a build's actions
+/// (no genuine counterpart: Bazel's `INFO: N processes: …` reports the
+/// spawns, test spawns and remote cache hits included). Printed only with
+/// the native result lines (`BAZEL_RS_RESULT_LINES=1`, scripts and the
+/// test suite).
+fn action_summary(summary: &bazel_rs::engine::BuildSummary, remote_enabled: bool) {
+    if !bazel_rs::build_results::native_lines() {
+        return;
+    }
+    if remote_enabled {
+        bazel_rs::note!(
+            "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; {})",
+            summary.executed,
+            summary.cache_hits,
+            summary.remote_hits,
+            execution_note()
+        );
+    } else {
+        bazel_rs::note!(
+            "bazel-rs: {} actions executed, {} cache hits (experimental local execution; {})",
+            summary.executed,
+            summary.cache_hits,
+            execution_note()
+        );
+    }
+}
+
 fn execution_note() -> String {
     let local = match bazel_rs::sandbox::executed_counts() {
         (sandboxed, 0) if sandboxed > 0 => "sandboxed".to_owned(),

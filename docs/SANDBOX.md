@@ -8,7 +8,7 @@ is supported), and on Linux the implementation is the `linux-sandbox` tool
 (`SandboxModule.java:326`, `src/main/tools/linux-sandbox.cc`). This engine
 implements the same semantics: `sandboxed` is the default, `--spawn_strategy`
 and `--strategy=<mnemonic>=` select strategies per spawn, and test actions
-run sandboxed like any action (test actions stay local-only, the N23g note).
+run sandboxed like any action.
 
 ## Strategy plumbing
 

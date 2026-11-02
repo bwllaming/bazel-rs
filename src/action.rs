@@ -6489,7 +6489,9 @@ fn symlink_upload(path: &Path) -> Result<Option<crate::remote_cache::Output>, St
 /// as the file or directory they resolve to, and every directory (empty
 /// ones included). `None`: a special file, which genuine rejects
 /// (`ILLEGAL_OUTPUT`) and the native profile keeps off the cache.
-fn tree_upload(root: &Path) -> Result<Option<crate::remote_cache::DownloadedTree>, String> {
+pub(crate) fn tree_upload(
+    root: &Path,
+) -> Result<Option<crate::remote_cache::DownloadedTree>, String> {
     fn visit(
         path: &Path,
         relative: &str,

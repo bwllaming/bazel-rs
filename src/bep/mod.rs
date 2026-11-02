@@ -483,6 +483,7 @@ struct TestRecord {
     attempt: i32,
     status: crate::test_command::TestStatus,
     cached: bool,
+    cached_remotely: bool,
     start: SystemTime,
     duration: Duration,
     log: Option<PathBuf>,
@@ -1186,6 +1187,7 @@ pub fn test_result(
             attempt: result.test_times.len().max(1) as i32,
             status: result.status,
             cached: result.cached,
+            cached_remotely: result.remote_cached,
             start,
             duration,
             log,
@@ -1774,7 +1776,11 @@ fn test_result_event(test: &TestRecord, configuration: &str) -> Event {
         .msg(
             8,
             "execution_info",
-            Msg::new().str(2, "strategy", test.strategy.clone()),
+            Msg::new().str(2, "strategy", test.strategy.clone()).bool(
+                6,
+                "cached_remotely",
+                test.cached_remotely,
+            ),
         )
         .timestamp_millis(10, "test_attempt_start", millis(test.start))
         .duration(11, "test_attempt_duration", test.duration);

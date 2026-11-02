@@ -15,9 +15,9 @@
 //! file; `--cache_test_results` decides when a previous result is reused
 //! (TestRunnerAction.executeUnconditionally, :565-601).
 //!
-//! Test actions are local-only: results are never looked up in or uploaded
-//! to a remote/disk cache (Bazel's shouldAcceptCachedResult path) until a
-//! REAPI encoding of test outputs (testlogs, status) exists.
+//! With `--remote_cache`, the test and XML spawns go through the remote
+//! spawn cache like any spawn (RemoteSpawnCache, docs/REMOTE_CACHE.md "Test
+//! actions"); the native test cache is consulted first.
 //!
 //! Paths below are under src/main/java/com/google/devtools/build/lib/ of the
 //! pinned Bazel 9.3 sources.
@@ -586,7 +586,9 @@ impl<'a> Session<'a> {
                 xml,
                 // TestResult.execution_info.strategy: the resolved one
                 // (a remote spawn's "remote").
-                if matches!(
+                if result.remote_cached {
+                    "remote cache hit"
+                } else if matches!(
                     self.runner.strategy(&action),
                     Ok((crate::sandbox::Strategy::Remote, _))
                 ) {
@@ -1180,6 +1182,7 @@ impl Runner<'_> {
                 shard: unit.shard,
                 status: status_from(&status.status),
                 cached: true,
+                remote_cached: false,
                 test_times: status.test_times.clone(),
                 passed_log: status.passed_log.as_ref().map(|log| entry.join(log)),
                 failed_logs: status
@@ -1248,7 +1251,16 @@ impl Runner<'_> {
                 spec.label
             ));
         }
-        let remote_inputs = if crate::sandbox::remote_executor() {
+        // With only `--remote_cache`, the test spawns go through the remote
+        // spawn cache like any spawn (StandaloneTestStrategy's spawns through
+        // the SpawnStrategyResolver, RemoteSpawnCache.lookup/store) when it
+        // reads or writes (RemoteSpawnCache.java:85-92). Coverage test
+        // actions stay local (their coverage spawn is not modelled remotely).
+        let spawn_cache = !crate::sandbox::remote_executor()
+            && spec.coverage.is_none()
+            && crate::remote_cache::active()
+                .is_some_and(|remote| remote.accept_cached || remote.upload_local_results);
+        let remote_inputs = if crate::sandbox::remote_executor() || spawn_cache {
             let mut remote = RemoteTestInputs {
                 spec: crate::remote_cache::SpawnSpec::default(),
                 blobs: BTreeMap::new(),
@@ -1380,6 +1392,7 @@ impl Runner<'_> {
                     shard: unit.shard,
                     status,
                     cached: false,
+                    remote_cached: attempt.remote_cached,
                     test_times,
                     passed_log: saved.passed_log.as_ref().map(|log| entry.join(log)),
                     failed_logs: failed_logs.iter().map(|log| entry.join(log)).collect(),
@@ -1564,8 +1577,8 @@ impl Runner<'_> {
             .map(String::as_str)
             .unwrap_or("/tmp");
         // Test spawns run under the same spawn strategy selection as build
-        // actions (N59, TestRunnerAction.java:112's TestRunner mnemonic; test
-        // actions stay local-only, N23g): sandboxed tests go through the
+        // actions (N59, TestRunnerAction.java:112's TestRunner mnemonic):
+        // sandboxed tests go through the
         // sandbox worker, standalone ones start directly. A sandbox setup
         // failure is an infrastructure failure of the attempt; a non-zero
         // test exit under the sandbox is an ordinary test failure, without
@@ -1588,17 +1601,49 @@ impl Runner<'_> {
         if let Some(RemoteTestRun::Failed(message)) = remote_run {
             return Ok(Attempted::Failed(message));
         }
-        let remote_done = match remote_run {
+        let mut remote_done = match remote_run {
             Some(RemoteTestRun::Done {
                 exit_code,
                 timed_out,
                 millis,
-            }) => Some((millis, exit_code, timed_out)),
+                cached,
+            }) => Some((millis, exit_code, timed_out, cached)),
             _ => None,
         };
+        // A locally run spawn's remote spawn cache (RemoteSpawnCache): a
+        // usable cached result replaces the execution, else the handle
+        // stores a successful one.
+        let mut store = None;
+        // The cached result's own wall time (Utils.createSpawnResult from
+        // its ExecutedActionMetadata), the XML spawn's duration argument.
+        let mut cached_wall = None;
+        if strategy != crate::sandbox::Strategy::Remote
+            && let Some(remote_inputs) = remote
+            && let Some(module) = crate::remote_cache::active()
+        {
+            let (spec, declared) = self.test_spawn_spec(unit, paths, env, args, remote_inputs)?;
+            let start = Instant::now();
+            let info = self.spawn_info(unit, remote_inputs);
+            match spawn_cache_lookup(module, spec, declared.clone(), &info)? {
+                SpawnCacheLookup::Hit { result, wall, .. } => {
+                    materialize(execroot, &paths.base, &declared, &result, true)?;
+                    cached_wall = Some(wall);
+                    remote_done = Some((start.elapsed().as_millis() as u64, 0, false, true));
+                }
+                SpawnCacheLookup::Miss(handle) => store = handle,
+            }
+        }
+        let remote_cached = remote_done.is_some_and(|(_, _, _, cached)| cached);
+        let remote_done =
+            remote_done.map(|(millis, exit_code, timed_out, _)| (millis, exit_code, timed_out));
         let sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
-        // The attempt's spawn (`INFO: N processes: …`, crate::spawn_stats).
-        crate::spawn_stats::spawn(strategy.runner_name());
+        // The attempt's spawn (`INFO: N processes: …`, crate::spawn_stats):
+        // a cached result's runner is `remote cache hit`.
+        crate::spawn_stats::spawn(if remote_cached {
+            "remote cache hit"
+        } else {
+            strategy.runner_name()
+        });
         let (millis, exit_code, timed_out) = if let Some(done) = remote_done {
             drop((log, err));
             done
@@ -1710,6 +1755,18 @@ impl Runner<'_> {
             };
             (millis, exit_code, timed_out)
         };
+        // CacheHandle.store: a successful local execution (SUCCESS, exit 0;
+        // RemoteExecutionService.commitResultAndDecideWhetherToUpload) is
+        // uploaded with test.log and test.err as its stdout and stderr,
+        // before the test strategy post-processes them.
+        if let Some(handle) = store
+            && exit_code == 0
+            && !timed_out
+        {
+            let stdout = fs::read(&log_path).map_err(|e| io("cannot read", &log_path, e))?;
+            let stderr = fs::read(&err_path).unwrap_or_default();
+            spawn_cache_store(&handle, execroot, &stdout, &stderr, millis)?;
+        }
         let mut test_status = if timed_out {
             TestStatus::Timeout
         } else if exit_code == 0 {
@@ -1754,13 +1811,59 @@ impl Runner<'_> {
         }
         // The XML generating spawn when the test wrote no test.xml (:784-813).
         let xml = base.join("test.xml");
+        // The XML spawn's duration argument: the test spawn result's wall
+        // time (a cached result's from its metadata).
+        let xml_millis = cached_wall.unwrap_or(millis);
+        // Through the remote spawn cache like the test spawn (with the
+        // action's execution info: no `no-cache`).
+        let mut xml_store = None;
+        let mut xml_cached = false;
         if !xml.exists()
+            && strategy != crate::sandbox::Strategy::Remote
+            && let Some(remote_inputs) = remote
+            && let Some(module) = crate::remote_cache::active()
+        {
+            let spec = self.xml_spec(
+                unit,
+                paths,
+                env,
+                test_name,
+                remote_inputs,
+                execroot,
+                xml_millis,
+                exit_code,
+            )?;
+            let declared = vec![(
+                format!("{}/test.xml", paths.base),
+                crate::remote_cache::OutputKind::File,
+            )];
+            let info = self.requirements(unit);
+            match spawn_cache_lookup(module, spec, declared.clone(), &info)? {
+                // The XML spawn's test.xml is mandatory: a cached result
+                // without it is a miss (maybeGetMissingMandatoryOutput).
+                SpawnCacheLookup::Hit { result, .. }
+                    if !matches!(
+                        result.outputs.first(),
+                        Some(crate::remote_cache::Downloaded::Missing) | None
+                    ) =>
+                {
+                    materialize(execroot, &paths.base, &declared, &result, false)?;
+                    crate::spawn_stats::spawn("remote cache hit");
+                    xml_cached = true;
+                }
+                SpawnCacheLookup::Hit { handle, .. } => xml_store = handle,
+                SpawnCacheLookup::Miss(handle) => xml_store = handle,
+            }
+        }
+        if xml_cached {
+        } else if !xml.exists()
+            && strategy == crate::sandbox::Strategy::Remote
             && let (Some(remote), Some(_)) = (remote, remote_done)
         {
-            crate::spawn_stats::spawn("remote");
-            self.xml_remotely(
+            let cached = self.xml_remotely(
                 unit, paths, env, test_name, remote, execroot, millis, exit_code,
             )?;
+            crate::spawn_stats::spawn(if cached { "remote cache hit" } else { "remote" });
         } else if !xml.exists() {
             crate::spawn_stats::spawn(strategy.runner_name());
             let mut xml_env = env.clone();
@@ -1808,16 +1911,21 @@ impl Runner<'_> {
                 .current_dir(execroot)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
+            let xml_start = Instant::now();
             let output = launch
                 .start()
                 .and_then(crate::process_wrapper::Spawned::wait_with_output)
                 .map_err(|e| format!("cannot start {XML_EXEC_PATH}: {e}"))?;
+            let xml_wall = xml_start.elapsed().as_millis() as u64;
             if !output.status.success() {
                 return Err(format!(
                     "{test_name}: generating test.xml failed ({}): {}",
                     output.status,
                     String::from_utf8_lossy(&output.stderr)
                 ));
+            }
+            if let Some(handle) = xml_store {
+                spawn_cache_store(&handle, execroot, &output.stdout, &output.stderr, xml_wall)?;
             }
         }
         let test_case = if parse_xml {
@@ -1833,6 +1941,7 @@ impl Runner<'_> {
             millis,
             cachable,
             test_case,
+            remote_cached,
         }))
     }
 }
@@ -1853,6 +1962,9 @@ struct AttemptResult {
     millis: u64,
     cachable: bool,
     test_case: Option<TestCase>,
+    /// The test spawn's result came from the remote cache
+    /// (TestResultData.remotely_cached).
+    remote_cached: bool,
 }
 
 /// A test action's inputs as a remote spawn's input root, and whether a
@@ -1870,6 +1982,8 @@ enum RemoteTestRun {
         exit_code: i32,
         timed_out: bool,
         millis: u64,
+        /// A remote cache hit (`remote cache hit`).
+        cached: bool,
     },
     Fallback,
     Failed(String),
@@ -1882,6 +1996,230 @@ fn remotely_cacheable(info: &std::collections::BTreeSet<String>) -> bool {
         .all(|tag| !info.contains(*tag))
 }
 
+/// Spawns.mayBeExecutedRemotely (the CacheSalt's may_be_executed_remotely).
+fn remotely_executable(info: &std::collections::BTreeSet<String>) -> bool {
+    ["local", "no-remote", "no-remote-exec"]
+        .iter()
+        .all(|tag| !info.contains(*tag))
+}
+
+/// The declared outputs of a test spawn (TestRunnerAction.getSpawnOutputs,
+/// none mandatory), in declaration order.
+fn test_outputs(
+    base: &str,
+    shards: u32,
+    zip_undeclared_outputs: bool,
+) -> Vec<(String, crate::remote_cache::OutputKind)> {
+    use crate::remote_cache::OutputKind;
+    let undeclared = if zip_undeclared_outputs {
+        (format!("{base}/test.outputs/outputs.zip"), OutputKind::File)
+    } else {
+        (format!("{base}/test.outputs"), OutputKind::Directory)
+    };
+    let mut declared = vec![
+        (format!("{base}/test.xml"), OutputKind::File),
+        (format!("{base}/test.exited_prematurely"), OutputKind::File),
+    ];
+    if shards > 1 {
+        declared.push((format!("{base}/test.shard"), OutputKind::File));
+    }
+    declared.extend([
+        (format!("{base}/test.warnings"), OutputKind::File),
+        (
+            format!("{base}/test.raw_splitlogs/test.splitlogs"),
+            OutputKind::File,
+        ),
+        (format!("{base}/test.unused_runfiles_log"), OutputKind::File),
+        (
+            format!("{base}/test.infrastructure_failure"),
+            OutputKind::File,
+        ),
+        undeclared,
+        (
+            format!("{base}/test.outputs_manifest/MANIFEST"),
+            OutputKind::File,
+        ),
+        (
+            format!("{base}/test.outputs_manifest/ANNOTATIONS"),
+            OutputKind::File,
+        ),
+        (
+            format!("{base}/test.outputs_manifest/ANNOTATIONS.pb"),
+            OutputKind::File,
+        ),
+    ]);
+    declared
+}
+
+/// What a locally run spawn's remote cache handle stores
+/// (RemoteSpawnCache's CacheHandle.store).
+struct SpawnCacheStore {
+    action: crate::remote_cache::RemoteAction,
+    declared: Vec<(String, crate::remote_cache::OutputKind)>,
+}
+
+/// RemoteSpawnCache.lookup for a test action's spawn that runs locally.
+enum SpawnCacheLookup {
+    /// A usable cached result (exit code 0, every output downloaded); `wall`
+    /// is its recorded execution time in milliseconds.
+    Hit {
+        result: crate::remote_cache::DownloadedResult,
+        wall: u64,
+        handle: Option<SpawnCacheStore>,
+    },
+    /// No usable result; the handle stores a successful execution
+    /// (`--remote_upload_local_results`).
+    Miss(Option<SpawnCacheStore>),
+}
+
+/// RemoteSpawnCache.lookup (remote/RemoteSpawnCache.java:85-307) for a
+/// spawn with execution requirements `info`: the read policy
+/// (`--remote_accept_cached`, Spawns.mayBeCachedRemotely) and the write
+/// policy (`--remote_upload_local_results`, mayBeCachedRemotely, no
+/// `no-remote-cache-upload`; Utils.shouldUploadLocalResultsToRemoteCache);
+/// the key is the spawn's REAPI Action like any spawn's
+/// (RemoteExecutionService.buildRemoteAction). A failed cached action, a
+/// missing blob or a cache error is a miss (errors warn); credential helper
+/// and capability failures fail the spawn.
+fn spawn_cache_lookup(
+    remote: &crate::remote_cache::RemoteCache,
+    mut spec: crate::remote_cache::SpawnSpec,
+    declared: Vec<(String, crate::remote_cache::OutputKind)>,
+    info: &std::collections::BTreeSet<String>,
+) -> Result<SpawnCacheLookup, String> {
+    use crate::remote_cache::CacheError;
+    let cacheable = remotely_cacheable(info);
+    let read = remote.accept_cached && cacheable;
+    let write =
+        remote.upload_local_results && cacheable && !info.contains("no-remote-cache-upload");
+    if !read && !write {
+        return Ok(SpawnCacheLookup::Miss(None));
+    }
+    spec.use_output_paths = match remote.output_paths() {
+        Ok(output_paths) => output_paths,
+        Err(error) => return Err(error.to_string()),
+    };
+    spec.platform = crate::remote_execution::platform_properties(
+        &crate::remote_execution::SpawnPlatform::default(),
+        &remote.default_exec_properties,
+    )?;
+    spec.cacheable = cacheable;
+    spec.may_be_executed_remotely = remotely_executable(info);
+    let action = crate::remote_cache::remote_action_of(&spec)?;
+    let credentials = |error: crate::credentials::HelperError| {
+        format!("Exec failed due to CredentialHelperException: {error}")
+    };
+    let handle = |action, declared| write.then_some(SpawnCacheStore { action, declared });
+    if read {
+        match remote.cached_result(&action.key) {
+            Ok(Some(result)) if result.exit_code == 0 => {
+                match remote.download(&result, &declared, &action.key, &|_| false, false) {
+                    Ok(Some(downloaded)) => {
+                        remote.count_hit();
+                        let wall = result.execution.as_ref().map_or(0, |(start, end)| {
+                            let millis = |stamp: &crate::reapi::Timestamp| {
+                                stamp.seconds as i128 * 1000 + stamp.nanos as i128 / 1_000_000
+                            };
+                            (millis(end) - millis(start)).max(0) as u64
+                        });
+                        return Ok(SpawnCacheLookup::Hit {
+                            result: downloaded,
+                            wall,
+                            handle: handle(action, declared),
+                        });
+                    }
+                    Ok(None) => {}
+                    Err(CacheError::Credentials(error)) => return Err(credentials(error)),
+                    Err(error) => crate::remote_cache::warn(&error),
+                }
+            }
+            Ok(_) => {}
+            Err(CacheError::Credentials(error)) => return Err(credentials(error)),
+            Err(CacheError::Capabilities(error)) => return Err(error),
+            Err(error) => crate::remote_cache::warn(&error),
+        }
+    }
+    Ok(SpawnCacheLookup::Miss(handle(action, declared)))
+}
+
+/// CacheHandle.store (RemoteExecutionService.uploadOutputs): the declared
+/// outputs the spawn left in `execroot` (absent ones are skipped), its
+/// stdout and stderr; upload failures are warnings
+/// (RemoteExecutionService.reportUploadError).
+fn spawn_cache_store(
+    handle: &SpawnCacheStore,
+    execroot: &Path,
+    stdout: &[u8],
+    stderr: &[u8],
+    millis: u64,
+) -> Result<(), String> {
+    use crate::remote_cache::{Output, OutputKind};
+    let Some(remote) = crate::remote_cache::active() else {
+        return Ok(());
+    };
+    let mut outputs = Vec::new();
+    for (path, kind) in &handle.declared {
+        let full = execroot.join(path);
+        match kind {
+            OutputKind::Directory if full.is_dir() => match crate::action::tree_upload(&full)? {
+                Some(tree) => outputs.push((path.clone(), Output::Directory(tree))),
+                None => {
+                    crate::remote_cache::warn(&crate::remote_cache::CacheError::Other(format!(
+                        "not uploaded: a special file in {path}"
+                    )));
+                    return Ok(());
+                }
+            },
+            OutputKind::File | OutputKind::Symlink if full.is_file() => outputs.push((
+                path.clone(),
+                Output::File(fs::read(&full).map_err(|e| io("cannot read", &full, e))?),
+            )),
+            _ => {}
+        }
+    }
+    let wall = Duration::from_millis(millis);
+    let start = std::time::SystemTime::now()
+        .checked_sub(wall)
+        .unwrap_or_else(std::time::SystemTime::now);
+    if let Err(error) = remote.upload(&handle.action, &outputs, stdout, stderr, start, wall) {
+        crate::remote_cache::warn(&error);
+    }
+    Ok(())
+}
+
+/// Writes a remote result's declared outputs into the execution root and,
+/// with `streams` (the test spawn's FileOutErr; the XML spawn's are
+/// discarded), its stdout and stderr as `base`'s test.log and test.err.
+fn materialize(
+    execroot: &Path,
+    base: &str,
+    declared: &[(String, crate::remote_cache::OutputKind)],
+    result: &crate::remote_cache::DownloadedResult,
+    streams: bool,
+) -> Result<(), String> {
+    for ((path, _), output) in declared.iter().zip(&result.outputs) {
+        let full = execroot.join(path);
+        if matches!(output, crate::remote_cache::Downloaded::Missing) {
+            continue;
+        }
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent).map_err(|e| io("cannot create", parent, e))?;
+        }
+        if !matches!(output, crate::remote_cache::Downloaded::Directory(_)) {
+            let _ = fs::remove_file(&full);
+        }
+        crate::action::write_downloaded(&full, output)?;
+    }
+    if streams {
+        let root = execroot.join(base);
+        for (name, bytes) in [("test.log", &result.stdout), ("test.err", &result.stderr)] {
+            let path = root.join(name);
+            fs::write(&path, bytes).map_err(|e| io("cannot write", &path, e))?;
+        }
+    }
+    Ok(())
+}
+
 impl Runner<'_> {
     /// The test's execution requirements (its tags and the rule's
     /// testing.ExecutionInfo, TargetUtils.getExecutionInfo).
@@ -1889,6 +2227,21 @@ impl Runner<'_> {
         let mut info: std::collections::BTreeSet<String> =
             unit.spec.info.tags.iter().cloned().collect();
         info.extend(unit.spec.execution_info().into_keys());
+        info
+    }
+
+    /// The test spawn's execution info: the requirements, `no-cache` when
+    /// a cached result is not acceptable (StandaloneTestStrategy.java:
+    /// 113-120).
+    fn spawn_info(
+        &self,
+        unit: &Unit<'_>,
+        remote_inputs: &RemoteTestInputs<'_>,
+    ) -> std::collections::BTreeSet<String> {
+        let mut info = self.requirements(unit);
+        if !remote_inputs.accept {
+            info.insert("no-cache".to_owned());
+        }
         info
     }
 
@@ -1910,10 +2263,10 @@ impl Runner<'_> {
         })
     }
 
-    /// The common SpawnSpec fields of a test action's spawns: the
-    /// environment, the `Platform` (`--remote_default_exec_properties`; a
-    /// test target's own exec_properties are not recorded natively) and the
-    /// REAPI output form.
+    /// The common SpawnSpec fields of a test action's spawns on the remote
+    /// executor: the environment, the `Platform`
+    /// (`--remote_default_exec_properties`; a test target's own
+    /// exec_properties are not recorded natively) and the REAPI output form.
     fn remote_base(
         &self,
         remote_inputs: &RemoteTestInputs<'_>,
@@ -1933,12 +2286,46 @@ impl Runner<'_> {
         Ok(spec)
     }
 
+    /// The test spawn (StandaloneTestStrategy.createTestRunnerSpawn): the
+    /// arguments, environment and inputs, TestRunnerAction.getSpawnOutputs
+    /// (none mandatory) and the `timeout` requirement as `Action.timeout`.
+    fn test_spawn_spec(
+        &self,
+        unit: &Unit<'_>,
+        paths: &Paths,
+        env: &BTreeMap<String, String>,
+        args: &[String],
+        remote_inputs: &RemoteTestInputs<'_>,
+    ) -> Result<
+        (
+            crate::remote_cache::SpawnSpec,
+            Vec<(String, crate::remote_cache::OutputKind)>,
+        ),
+        String,
+    > {
+        let mut spec = remote_inputs.spec.clone();
+        spec.environment = env.clone();
+        spec.arguments = args.to_vec();
+        let declared = test_outputs(
+            &paths.base,
+            unit.shards,
+            self.options.zip_undeclared_outputs,
+        );
+        for (path, kind) in &declared {
+            spec.outputs.push(path.clone());
+            if *kind == crate::remote_cache::OutputKind::Directory {
+                spec.output_directories.insert(path.clone());
+                spec.directories.insert(path.clone());
+            }
+        }
+        spec.timeout_seconds = Some(self.options.timeout_seconds(unit.spec.info.timeout));
+        Ok((spec, declared))
+    }
+
     /// The test spawn on the remote executor (StandaloneTestStrategy
-    /// .createTestRunnerSpawn through RemoteSpawnRunner): TestRunnerAction
-    /// .getSpawnOutputs (none mandatory), the `timeout` requirement as
-    /// `Action.timeout`; stdout becomes test.log and stderr test.err, the
-    /// outputs land in the attempt's execution root.
-    #[allow(clippy::too_many_arguments)]
+    /// .createTestRunnerSpawn through RemoteSpawnRunner): stdout becomes
+    /// test.log and stderr test.err, the outputs land in the attempt's
+    /// execution root.
     fn run_test_remotely(
         &self,
         unit: &Unit<'_>,
@@ -1948,59 +2335,17 @@ impl Runner<'_> {
         remote_inputs: &RemoteTestInputs<'_>,
         execroot: &Path,
     ) -> Result<RemoteTestRun, String> {
-        use crate::remote_cache::OutputKind;
-        let base = &paths.base;
-        let mut spec = self.remote_base(remote_inputs, env)?;
-        spec.arguments = args.to_vec();
-        let undeclared = if self.options.zip_undeclared_outputs {
-            (format!("{base}/test.outputs/outputs.zip"), OutputKind::File)
-        } else {
-            (format!("{base}/test.outputs"), OutputKind::Directory)
-        };
-        let mut declared = vec![
-            (format!("{base}/test.xml"), OutputKind::File),
-            (format!("{base}/test.exited_prematurely"), OutputKind::File),
-        ];
-        if unit.shards > 1 {
-            declared.push((format!("{base}/test.shard"), OutputKind::File));
-        }
-        declared.extend([
-            (format!("{base}/test.warnings"), OutputKind::File),
-            (
-                format!("{base}/test.raw_splitlogs/test.splitlogs"),
-                OutputKind::File,
-            ),
-            (format!("{base}/test.unused_runfiles_log"), OutputKind::File),
-            (
-                format!("{base}/test.infrastructure_failure"),
-                OutputKind::File,
-            ),
-            undeclared,
-            (
-                format!("{base}/test.outputs_manifest/MANIFEST"),
-                OutputKind::File,
-            ),
-            (
-                format!("{base}/test.outputs_manifest/ANNOTATIONS"),
-                OutputKind::File,
-            ),
-            (
-                format!("{base}/test.outputs_manifest/ANNOTATIONS.pb"),
-                OutputKind::File,
-            ),
-        ]);
-        for (path, kind) in &declared {
-            spec.outputs.push(path.clone());
-            if *kind == OutputKind::Directory {
-                spec.output_directories.insert(path.clone());
-                spec.directories.insert(path.clone());
+        let (spec, declared) = self.test_spawn_spec(unit, paths, env, args, remote_inputs)?;
+        let spec = {
+            let base = self.remote_base(remote_inputs, env)?;
+            crate::remote_cache::SpawnSpec {
+                platform: base.platform,
+                use_output_paths: base.use_output_paths,
+                may_be_executed_remotely: base.may_be_executed_remotely,
+                ..spec
             }
-        }
-        spec.timeout_seconds = Some(self.options.timeout_seconds(unit.spec.info.timeout));
-        let mut info = self.requirements(unit);
-        if !remote_inputs.accept {
-            info.insert("no-cache".to_owned());
-        }
+        };
+        let info = self.spawn_info(unit, remote_inputs);
         let start = Instant::now();
         let outcome = self.remote_test_spawn(
             spec,
@@ -2009,11 +2354,6 @@ impl Runner<'_> {
             remotely_cacheable(&info),
         )?;
         let millis = start.elapsed().as_millis() as u64;
-        let root = execroot.join(base);
-        let write = |name: &str, bytes: &[u8]| {
-            let path = root.join(name);
-            fs::write(&path, bytes).map_err(|e| io("cannot write", &path, e))
-        };
         match outcome {
             crate::action::RemoteSpawn::Fallback => Ok(RemoteTestRun::Fallback),
             crate::action::RemoteSpawn::Failed(message) => Ok(RemoteTestRun::Failed(message)),
@@ -2021,36 +2361,73 @@ impl Runner<'_> {
                 exit_code: TIMEOUT_EXIT_CODE,
                 timed_out: true,
                 millis,
+                cached: false,
             }),
-            crate::action::RemoteSpawn::Done { result, .. } => {
-                for ((path, _), output) in declared.iter().zip(&result.outputs) {
-                    let full = execroot.join(path);
-                    if matches!(output, crate::remote_cache::Downloaded::Missing) {
-                        continue;
-                    }
-                    if let Some(parent) = full.parent() {
-                        fs::create_dir_all(parent).map_err(|e| io("cannot create", parent, e))?;
-                    }
-                    if !matches!(output, crate::remote_cache::Downloaded::Directory(_)) {
-                        let _ = fs::remove_file(&full);
-                    }
-                    crate::action::write_downloaded(&full, output)?;
-                }
-                write("test.log", &result.stdout)?;
-                write("test.err", &result.stderr)?;
+            crate::action::RemoteSpawn::Done { result, cached } => {
+                materialize(execroot, &paths.base, &declared, &result, true)?;
                 Ok(RemoteTestRun::Done {
                     exit_code: result.exit_code,
                     timed_out: false,
                     millis,
+                    cached,
                 })
             }
         }
     }
 
-    /// The XML generating spawn on the remote executor
-    /// (StandaloneTestStrategy.createXmlGeneratingSpawn: the test log and
-    /// generate-xml.sh as inputs, test.xml the only output, the action's
-    /// execution info without `no-cache` or a timeout).
+    /// The XML generating spawn (StandaloneTestStrategy
+    /// .createXmlGeneratingSpawn: the test log and generate-xml.sh as
+    /// inputs, test.xml the only output, the action's execution info
+    /// without `no-cache` or a timeout).
+    #[allow(clippy::too_many_arguments)]
+    fn xml_spec(
+        &self,
+        unit: &Unit<'_>,
+        paths: &Paths,
+        env: &BTreeMap<String, String>,
+        test_name: &str,
+        remote_inputs: &RemoteTestInputs<'_>,
+        execroot: &Path,
+        millis: u64,
+        exit_code: i32,
+    ) -> Result<crate::remote_cache::SpawnSpec, String> {
+        let base = &paths.base;
+        let mut xml_env = env.clone();
+        xml_env.insert("TEST_NAME".to_owned(), test_name.to_owned());
+        if unit.shards <= 1 {
+            xml_env.insert("TEST_SHARD_INDEX".to_owned(), "0".to_owned());
+            xml_env.insert("TEST_TOTAL_SHARDS".to_owned(), "0".to_owned());
+        }
+        let mut spec = remote_inputs.spec.clone();
+        spec.environment = xml_env;
+        let script = spec
+            .inputs
+            .get(XML_EXEC_PATH)
+            .cloned()
+            .ok_or("generate-xml.sh is not a test input")?;
+        spec.inputs.clear();
+        spec.symlinks.clear();
+        spec.directories.clear();
+        spec.inputs.insert(XML_EXEC_PATH.to_owned(), script);
+        let log_path = execroot.join(base).join("test.log");
+        let log = fs::read(&log_path).map_err(|e| io("cannot read", &log_path, e))?;
+        spec.inputs
+            .insert(format!("{base}/test.log"), crate::reapi::Digest::of(&log));
+        spec.arguments = vec![
+            XML_EXEC_PATH.to_owned(),
+            format!("{base}/test.log"),
+            format!("{base}/test.xml"),
+            (millis / 1000).to_string(),
+            exit_code.to_string(),
+        ];
+        spec.outputs = vec![format!("{base}/test.xml")];
+        spec.output_directories.clear();
+        spec.timeout_seconds = None;
+        Ok(spec)
+    }
+
+    /// The XML generating spawn on the remote executor; whether its result
+    /// was a remote cache hit.
     #[allow(clippy::too_many_arguments)]
     fn xml_remotely(
         &self,
@@ -2062,51 +2439,44 @@ impl Runner<'_> {
         execroot: &Path,
         millis: u64,
         exit_code: i32,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         use crate::remote_cache::{BlobSource, OutputKind};
         let base = &paths.base;
-        let mut xml_env = env.clone();
-        xml_env.insert("TEST_NAME".to_owned(), test_name.to_owned());
-        if unit.shards <= 1 {
-            xml_env.insert("TEST_SHARD_INDEX".to_owned(), "0".to_owned());
-            xml_env.insert("TEST_TOTAL_SHARDS".to_owned(), "0".to_owned());
-        }
-        let mut spec = self.remote_base(remote_inputs, &xml_env)?;
-        let script = spec
-            .inputs
-            .get(XML_EXEC_PATH)
-            .cloned()
-            .ok_or("generate-xml.sh is not a test input")?;
-        spec.inputs.clear();
-        spec.symlinks.clear();
-        spec.directories.clear();
-        spec.inputs.insert(XML_EXEC_PATH.to_owned(), script.clone());
+        let spec = self.xml_spec(
+            unit,
+            paths,
+            env,
+            test_name,
+            remote_inputs,
+            execroot,
+            millis,
+            exit_code,
+        )?;
+        let spec = {
+            let remote_base = self.remote_base(remote_inputs, &spec.environment)?;
+            crate::remote_cache::SpawnSpec {
+                platform: remote_base.platform,
+                use_output_paths: remote_base.use_output_paths,
+                may_be_executed_remotely: remote_base.may_be_executed_remotely,
+                ..spec
+            }
+        };
+        let script = spec.inputs[XML_EXEC_PATH].clone();
         let log_path = execroot.join(base).join("test.log");
         let log = fs::read(&log_path).map_err(|e| io("cannot read", &log_path, e))?;
-        let log_digest = crate::reapi::Digest::of(&log);
-        spec.inputs
-            .insert(format!("{base}/test.log"), log_digest.clone());
         let mut blobs = BTreeMap::new();
         if let Some(source) = remote_inputs.blobs.get(&script) {
             blobs.insert(script, *source);
         }
-        blobs.insert(log_digest, BlobSource::Bytes(&log));
-        spec.arguments = vec![
-            XML_EXEC_PATH.to_owned(),
-            format!("{base}/test.log"),
-            format!("{base}/test.xml"),
-            (millis / 1000).to_string(),
-            exit_code.to_string(),
-        ];
+        blobs.insert(crate::reapi::Digest::of(&log), BlobSource::Bytes(&log));
         let declared = vec![(format!("{base}/test.xml"), OutputKind::File)];
-        spec.outputs = vec![declared[0].0.clone()];
         let info = self.requirements(unit);
         match self.remote_test_spawn(spec, &blobs, &declared, remotely_cacheable(&info))? {
-            crate::action::RemoteSpawn::Done { result, .. } if result.exit_code == 0 => {
+            crate::action::RemoteSpawn::Done { result, cached } if result.exit_code == 0 => {
                 if let Some(output) = result.outputs.first() {
                     crate::action::write_downloaded(&execroot.join(&declared[0].0), output)?;
                 }
-                Ok(())
+                Ok(cached)
             }
             crate::action::RemoteSpawn::Done { result, .. } => Err(format!(
                 "{test_name}: generating test.xml failed (exit status: {}): {}",

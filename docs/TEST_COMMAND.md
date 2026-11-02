@@ -252,11 +252,14 @@ execution root `<cache>/tests/work/<key>-<pid>/execroot`:
   `--test_summary=detailed` counts a result cached under another format as
   one unknown case (`(some targets did not have test case information)`);
   the stored test.xml is not re-parsed (genuine Bazel behaves the same).
-* **local only:** native test actions are never looked up in or uploaded to
-  a remote or disk cache (Bazel's `shouldAcceptCachedResult` path for
-  `--remote_cache`/`--disk_cache`); the native test cache is the local
-  `<cache>/tests` store until a REAPI encoding of test outputs (testlogs and
-  the result status) exists.
+* **remote cache:** with `--remote_cache` (no executor) the test spawn and
+  the XML generating spawn go through the remote spawn cache like any spawn
+  (StandaloneTestStrategy's spawns through RemoteSpawnCache, docs/REMOTE_CACHE.md
+  "Test actions"): a usable cached result is `(cached) PASSED` and a
+  `remote cache hit` in the processes line, a passing local run is uploaded;
+  the native test cache (`<cache>/tests`) is consulted first, like Bazel's
+  action cache. The disk cache stays unsupported; coverage test actions stay
+  local.
 * exclusive tests (and `--test_strategy=exclusive`, streamed output) run after
   the others, one at a time; the others run inside the build (Scheduling).
 
@@ -383,8 +386,8 @@ against the logged reference reproduces every recorded verdict (M36: EXACT).
 
 Coverage; the runner's executable is not staged at its exec path (only in
 the runfiles tree, where the command uses it); the non-executable runner
-check covers Starlark rules only; remote caching/execution of test
-actions (local-only, see above); worker test strategies (test actions
+check covers Starlark rules only; remote caching of coverage test
+actions; worker test strategies (test actions
 themselves run through the spawn strategy selection and are sandboxed by
 default, docs/SANDBOX.md; runfiles other than external repository files
 are hardlinks where Bazel's sandbox shows symlinks); Bazel's

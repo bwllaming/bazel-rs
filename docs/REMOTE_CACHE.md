@@ -262,7 +262,34 @@ invocation), then the `ActionResult` (`output_files` with `is_executable`,
 are `WARNING: Remote Cache: …` and the action runs (or stays) local;
 credential helper errors during a lookup fail the action.
 
-The build summary adds `N remote cache hits` when a remote cache is active.
+Bazel's `INFO: N processes: …` line counts the hits as `remote cache hit`.
+The native `bazel-rs: N actions executed, M cache hits[, K remote cache
+hits] (…)` line (no genuine counterpart; build actions only) is printed only
+with the native result lines (`BAZEL_RS_RESULT_LINES=1`, set for scripts and
+the test suite).
+
+**Test actions.** StandaloneTestStrategy's spawns go through
+RemoteSpawnCache like any spawn: with only `--remote_cache`, the TestRunner
+spawn (test-setup.sh; its arguments, the test environment, the runfiles and
+both runner scripts as the input root, TestRunnerAction.getSpawnOutputs as
+outputs, none mandatory, the test timeout as `Action.timeout`) and the XML
+generating spawn (generate-xml.sh and test.log; test.xml mandatory) are
+looked up with genuine Bazel's keys (tests/fixtures/remote_test_cache). A
+usable result (exit code 0) is materialized — its stdout and stderr become
+test.log and test.err — and the test is `(cached) PASSED`, a `remote cache
+hit` in the processes line and not counted as executed (TestResultData
+.remotely_cached; BEP `cached_remotely`, strategy `remote cache hit`); only
+the local action cache prints the cached-output block. A local run with exit
+code 0 is uploaded (RemoteExecutionService.commitResultAndDecideWhetherToUpload:
+failed and timed-out tests never are) with test.log and test.err as stdout
+and stderr. `no-cache`, `local`, `no-remote`, `no-remote-cache` tags skip
+both directions, `no-remote-cache-upload` the upload; a result Bazel would
+not accept (`external`, `--cache_test_results=no`, `--runs_per_test` > 1
+under `auto`) adds `no-cache` to the test spawn (StandaloneTestStrategy
+.java:113-120) while its XML spawn still uses the cache. Each shard, run and
+flaky attempt is its own spawn. The native test cache (`<cache>/tests`) is
+consulted before the remote cache, like Bazel's action cache. Coverage test
+actions stay local.
 
 **Uploads follow `--remote_upload_local_results`, like Bazel.** Local
 results are written to the remote cache by default (Bazel's default is true);
