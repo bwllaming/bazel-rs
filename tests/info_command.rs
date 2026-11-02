@@ -361,7 +361,7 @@ fn bazel_bin_holds_the_built_outputs() {
         // A cache hit links the same output again.
         let rebuilt = ws.run(&["build", &flag, "//pkg:g"]);
         assert!(
-            stderr(&rebuilt).contains("0 actions executed"),
+            stderr(&rebuilt).contains("INFO: 1 process: 1 action cache hit, 1 internal."),
             "{}",
             stderr(&rebuilt)
         );

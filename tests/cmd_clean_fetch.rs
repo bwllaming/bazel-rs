@@ -353,7 +353,7 @@ fn shutdown_clean_and_fetch_match_genuine_bazel() {
         // survives `clean`, so it hits.
         if name == "build_after_clean" || name == "build_after_expunge" {
             assert!(
-                stderr.contains("0 actions executed, 1 cache hits"),
+                stderr.contains("INFO: 1 process: 1 action cache hit, 1 internal."),
                 "{name}: {stderr}"
             );
         }
@@ -424,7 +424,7 @@ fn clean_keeps_the_shared_store_and_other_workspaces() {
     let output = workspace.run(&["build", "--experimental-builtin-modules=false", "//pkg:g"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("0 actions executed, 1 cache hits"),
+        stderr.contains("INFO: 1 process: 1 action cache hit, 1 internal."),
         "{stderr}"
     );
     assert!(
