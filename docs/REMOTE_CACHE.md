@@ -110,7 +110,8 @@ and `mod`:
 | `--[no]remote_cache_compression`, `--experimental_remote_cache_compression_threshold` (100) | gRPC zstd ByteStream (below); HTTP caches ignore it, like Bazel |
 | `--tls_certificate`, `--tls_client_certificate`, `--tls_client_key`, `--tls_authority_override` | grpcs:// (and the root/client certificate for https://) |
 | `--[no]incompatible_strict_action_env` (build) | both values, N42's action environment (docs/ACTION_ENV.md) |
-| anything else (`--disk_cache`, `--remote_local_fallback`, `--remote_proxy`…) | unmodelled option error |
+| `--disk_cache` | the disk cache, alone or read before the remote cache (docs/REPOSITORY_CACHE.md) |
+| anything else (`--remote_proxy`…) | unmodelled option error |
 
 **Setup** (`RemoteModule.java:429-640, 1458-1490`). An absent port becomes the
 scheme's default, so credentials are requested for `https://host:443`
