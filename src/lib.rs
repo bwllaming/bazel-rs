@@ -133,6 +133,7 @@ pub mod remote_outputs;
 pub mod repo_env;
 pub mod repository;
 mod repository_budget;
+pub mod repository_cache;
 pub mod repository_catalog;
 pub mod repository_ctx;
 pub mod repository_demand;

@@ -350,6 +350,35 @@ fn report_subcommand(action: &Action, execroot: &Path, runner: &str) {
 /// Spawns.mayBeCachedRemotely and mayBeExecutedRemotely
 /// (actions/Spawns.java:34-56) over the rule tags and the action's
 /// execution requirements.
+/// `Spawns.mayBeCached`: no `no-cache` and no `local` (the disk cache's
+/// policy; [`remote_policy`]'s first value adds `no-remote` and
+/// `no-remote-cache`).
+pub fn may_be_cached(action: &Action) -> bool {
+    let has = |key: &str| {
+        action.execution_info.contains(key) || action.extra.execution_info.contains_key(key)
+    };
+    !has("no-cache") && !has("local")
+}
+
+/// The write policy of a locally executed spawn's results: the spawn
+/// cache's, or after a remote execution's `--remote_local_fallback`
+/// (RemoteSpawnRunner.execLocallyAndUpload) the remote cache's under
+/// `--remote_upload_local_results`.
+fn remote_write(
+    remote_exec: bool,
+    fallback: bool,
+    write: crate::remote_cache::CachePolicy,
+) -> crate::remote_cache::CachePolicy {
+    if remote_exec && fallback {
+        crate::remote_cache::CachePolicy {
+            remote: crate::remote_cache::active().is_some_and(|remote| remote.upload_local_results),
+            disk: false,
+        }
+    } else {
+        write
+    }
+}
+
 pub fn remote_policy(action: &Action) -> (bool, bool) {
     let has = |key: &str| {
         action.execution_info.contains(key) || action.extra.execution_info.contains_key(key)
@@ -6612,6 +6641,8 @@ struct RemoteDone {
     /// A cache hit (GetActionResult, or an ExecuteResponse with
     /// `cached_result`): counted as a remote cache hit.
     cached: bool,
+    /// The hit came from the `--disk_cache` (runner `disk cache hit`).
+    disk: bool,
 }
 
 /// How a remote spawn ended.
@@ -6879,6 +6910,7 @@ fn run_remotely(
             String::from_utf8_lossy(&result.stderr)
         )),
         RemoteSpawn::Done { result, cached } => Ok(RemoteRun::Done(RemoteDone {
+            disk: false,
             outputs: result.outputs,
             stdout: result.stdout,
             stderr: result.stderr,
@@ -7092,12 +7124,23 @@ pub fn execute_with_remote(
     let mut remote_exec = early_strategy == Some(crate::sandbox::Strategy::Remote);
     // The remote cache applies to cacheable process actions only
     // (RemoteSpawnCache.java:85-92).
+    // The read and write policies of the spawn cache (the remote cache for
+    // remotely cacheable spawns, the `--disk_cache` for cacheable ones).
+    let (read, write) = match module {
+        Some(module) if process => {
+            let (remotely, _) = remote_policy(action);
+            let cacheable = may_be_cached(action);
+            (
+                module.read_policy(cacheable, remotely),
+                module.write_policy(cacheable, remotely),
+            )
+        }
+        _ => Default::default(),
+    };
     let remote = if remote_exec {
         module
     } else {
-        module
-            .filter(|_| process && remote_policy(action).0)
-            .filter(|remote| remote.accept_cached || remote.upload_local_results)
+        module.filter(|_| process && (read.any() || write.any()))
     };
     // Tree artifact outputs use ActionResult.output_directories and their
     // `Tree` (UploadManifest.addDirectory; downloaded like
@@ -7154,15 +7197,16 @@ pub fn execute_with_remote(
             RemoteRun::Fallback => fallback = true,
         }
     } else if let (Some(remote), Some((spec, _))) = (remote, &remote_spec)
-        && remote.accept_cached
+        && read.any()
     {
         let declared = declared_outputs(action)?;
         let stay_remote = |index: usize| {
             crate::remote_outputs::may_stay_remote(&action.id, index, &action.outputs[index])
         };
-        match remote.lookup(spec, &declared, &stay_remote) {
+        match remote.lookup(spec, &declared, &stay_remote, read, write) {
             Ok(hit) => {
                 remote_hit = hit.map(|hit| RemoteDone {
+                    disk: hit.source == crate::remote_cache::CacheSource::Disk,
                     outputs: hit
                         .outputs
                         .into_iter()
@@ -7308,7 +7352,9 @@ pub fn execute_with_remote(
         }
         run_transform(action, transform, &prepared, &execroot, (cas, root))?;
     } else if let Some(hit) = &remote_hit {
-        runner = Some(if hit.cached && !remote_exec {
+        runner = Some(if hit.cached && hit.disk {
+            "disk cache hit"
+        } else if hit.cached && !remote_exec {
             "remote cache hit"
         } else {
             "remote"
@@ -7336,7 +7382,9 @@ pub fn execute_with_remote(
                 action,
                 &prepared,
                 &execroot,
-                if hit.cached && !remote_exec {
+                if hit.cached && hit.disk {
+                    "disk cache hit"
+                } else if hit.cached && !remote_exec {
                     "remote cache hit"
                 } else {
                     "remote"
@@ -7657,7 +7705,7 @@ pub fn execute_with_remote(
         BTreeMap::new();
     if remote_hit.is_none()
         && remote_spec.is_some()
-        && remote.is_some_and(|remote| remote.upload_local_results)
+        && remote.is_some_and(|_| remote_write(remote_exec, fallback, write).any())
     {
         for name in &action.extra.tree_outputs {
             let tree = tree_upload(&execroot.join(name)).unwrap_or_else(|error| {
@@ -7862,7 +7910,7 @@ pub fn execute_with_remote(
         return Ok(done);
     }
     if let (Some(remote), Some(spec)) = (remote, &remote_spec)
-        && remote.upload_local_results
+        && remote_write(remote_exec, fallback, write).any()
     {
         let uploads = action
             .outputs
@@ -7889,7 +7937,15 @@ pub fn execute_with_remote(
                     .into_iter()
                     .map(|(name, output)| Ok((name?, output)))
                     .collect::<Result<Vec<_>, String>>()?;
-                if let Err(error) = remote.upload(spec, &uploads, &logs.0, &logs.1, started, wall) {
+                if let Err(error) = remote.upload(
+                    spec,
+                    &uploads,
+                    &logs.0,
+                    &logs.1,
+                    started,
+                    wall,
+                    remote_write(remote_exec, fallback, write),
+                ) {
                     crate::remote_cache::warn(&error);
                 }
             }

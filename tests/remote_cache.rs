@@ -1874,3 +1874,67 @@ fn xml_spawn_of_a_cached_slow_test_hits() {
     let log = server.summary();
     assert!(!log.iter().any(|l| l.starts_with("PUT /ac/")), "{log:?}");
 }
+
+/// `--disk_cache` with `--remote_cache` (CombinedCache, docs/REPOSITORY_CACHE.md):
+/// uploads go to both, the disk cache is read first, and a remote hit
+/// enters the disk cache.
+#[test]
+fn disk_cache_is_combined_with_the_remote_cache() {
+    let ws = Workspace::new();
+    let server = Server::new();
+    let cache = format!("--remote_cache={}", server.url());
+    let disk = ws.0.join("disk");
+    let disk_flag = format!("--disk_cache={}", disk.display());
+    let first = ws.run("c1", &["build", &cache, &disk_flag, "//pkg:all"]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    let built = outputs(&first);
+    assert_eq!(server.keys("/ac/"), [SH_KEY, RUN_KEY, GEN_KEY]);
+    for key in [GEN_KEY, RUN_KEY, SH_KEY] {
+        assert!(disk.join("ac").join(&key[..2]).join(key).is_file(), "{key}");
+    }
+    server.take_log();
+    // A fresh native cache: every hit comes from the disk cache; the
+    // remote cache is not asked.
+    let second = ws.run("c2", &["build", &cache, &disk_flag, "//pkg:all"]);
+    assert!(second.status.success(), "{}", stderr(&second));
+    assert!(
+        stderr(&second).contains("INFO: 4 processes: 3 disk cache hit, 1 internal."),
+        "{}",
+        stderr(&second)
+    );
+    assert_eq!(outputs(&second), built);
+    assert!(server.summary().is_empty());
+    // An empty disk cache: remote hits, written into the disk cache.
+    let empty = ws.0.join("disk2");
+    let empty_flag = format!("--disk_cache={}", empty.display());
+    let third = ws.run("c3", &["build", &cache, &empty_flag, "//pkg:all"]);
+    assert!(third.status.success(), "{}", stderr(&third));
+    assert!(
+        stderr(&third).contains("INFO: 4 processes: 3 remote cache hit, 1 internal."),
+        "{}",
+        stderr(&third)
+    );
+    assert_eq!(outputs(&third), built);
+    for key in [GEN_KEY, RUN_KEY, SH_KEY] {
+        assert!(
+            empty.join("ac").join(&key[..2]).join(key).is_file(),
+            "{key}"
+        );
+    }
+    // `no-remote-cache` keeps a spawn out of the remote cache, not out of
+    // the disk cache (Spawns.mayBeCached).
+    ws.file(
+        "pkg/BUILD.bazel",
+        "genrule(name = \"tagged\", srcs = [\"in.txt\"], outs = [\"tagged.txt\"], cmd = \"cat $< > $@\", tags = [\"no-remote-cache\"])\n",
+    );
+    server.take_log();
+    let fourth = ws.run("c4", &["build", &cache, &disk_flag, "//pkg:tagged"]);
+    assert!(fourth.status.success(), "{}", stderr(&fourth));
+    assert!(server.summary().is_empty());
+    let fifth = ws.run("c5", &["build", &cache, &disk_flag, "//pkg:tagged"]);
+    assert!(
+        stderr(&fifth).contains("1 disk cache hit"),
+        "{}",
+        stderr(&fifth)
+    );
+}

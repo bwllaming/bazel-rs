@@ -1,0 +1,20 @@
+module(name = "rcache")
+
+bazel_dep(name = "dep", version = "1.0")
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+
+http_archive(
+    name = "arch",
+    sha256 = "6c1e00914738245ffad7c8319e7aac8e2d5846783d528f88c4250620c8c0e191",
+    strip_prefix = "arch",
+    urls = ["http://127.0.0.1:@PORT@/files/arch.tar.gz"],
+)
+
+http_file(
+    name = "blob",
+    integrity = "sha384-DCtfA+3F6bhtdVInNHI0gGy3y9wxYdtQKe71FmctlceQChklxluvmx8Mj9wyUAJX",
+    urls = ["http://127.0.0.1:@PORT@/files/blob.txt"],
+)

@@ -1,0 +1,5 @@
+
+	/bin/bash
+-c
+¨source external/bazel_tools/tools/genrule/genrule-setup.sh; cat pkg/in.txt > bazel-out/k8-fastbuild/bin/pkg/gen.txt; echo done >> bazel-out/k8-fastbuild/bin/pkg/gen.txt$
+PATH/bin:/usr/bin:/usr/local/bin:&bazel-out/k8-fastbuild/bin/pkg/gen.txt

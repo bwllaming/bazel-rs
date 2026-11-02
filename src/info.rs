@@ -47,6 +47,10 @@ pub struct Context {
     /// The memory ceiling in MB (`--memory-limit`, `BAZEL_RS_MAX_MEMORY_MB`
     /// or the default cap): `max-heap-size`.
     pub memory_limit_mb: Option<u64>,
+    /// `--repository_cache` (crate::repository_cache): `None` when unset
+    /// (the native download store is the cache), `Some(None)` for the empty
+    /// value (genuine prints `null`).
+    pub repository_cache: Option<Option<PathBuf>>,
 }
 
 /// One info item: its name, whether `info` without keys skips it
@@ -379,7 +383,12 @@ fn value(context: &Context, kind: &Kind) -> Result<Vec<u8>, String> {
             crate::COMPATIBILITY_VERSION,
             env!("CARGO_PKG_VERSION")
         )),
-        Kind::RepositoryCache => path_line(&context.cache.join("repositories").join("downloads")),
+        Kind::RepositoryCache => match &context.repository_cache {
+            Some(Some(path)) => path_line(path),
+            // RepositoryCacheInfoItem: print(null).
+            Some(None) => line("null"),
+            None => path_line(&context.cache.join("repositories").join("downloads")),
+        },
         // DebugLoggerConfigurator.getServerLogPath().orElse(""): no log file.
         Kind::ServerLog => line(""),
         // The process that answers (genuine `--batch`: the batch JVM's pid).
@@ -452,6 +461,7 @@ mod tests {
             client_test_env: Vec::new(),
             starlark_semantics: Vec::new(),
             memory_limit_mb: Some(65536),
+            repository_cache: None,
         }
     }
 

@@ -53,6 +53,9 @@ pub struct RemoteOptions {
     pub cache_ttl: Duration,
     /// `--experimental_remote_cache_eviction_retries` (default 5).
     pub eviction_retries: i32,
+    /// `--disk_cache` as given (RemoteOptions.java:400-406; empty: none),
+    /// resolved against the working directory (crate::remote_cache::DiskCache).
+    pub disk_cache: String,
     /// `--tls_certificate`, `--tls_client_certificate`, `--tls_client_key`,
     /// `--tls_authority_override` (AuthAndTLSOptions).
     pub tls: TlsOptions,
@@ -123,6 +126,7 @@ impl Default for RemoteOptions {
             download_regex: Vec::new(),
             cache_ttl: Duration::from_secs(3 * 3600),
             eviction_retries: 5,
+            disk_cache: String::new(),
         }
     }
 }
@@ -201,6 +205,12 @@ impl RemoteOptions {
         if let Some(found) = value_option(arg, next, &["remote_cache", "remote_http_cache"]) {
             return Some(found.map(|(value, used)| {
                 self.cache = value.to_owned();
+                used
+            }));
+        }
+        if let Some(found) = value_option(arg, next, &["disk_cache"]) {
+            return Some(found.map(|(value, used)| {
+                self.disk_cache = value.to_owned();
                 used
             }));
         }
@@ -561,6 +571,150 @@ impl HttpFailure {
 enum Backend {
     Http(HttpCache),
     Grpc(Arc<crate::remote_grpc::GrpcCache>),
+    /// Only a `--disk_cache`.
+    None,
+}
+
+/// Bazel's disk cache (`--disk_cache`, remote/disk/DiskCacheClient.java):
+/// `<root>/ac/<first two hex digits>/<hash>` holds ActionResult protos,
+/// `<root>/cas/<..>/<hash>` blobs, written through `<root>/tmp/<random>`
+/// renamed into place; a read or a CAS write of an existing blob refreshes
+/// the entry's mtime (the garbage collector's LRU order). The layout of the
+/// default SHA-256 digest function, so genuine Bazel and bazel-rs share one
+/// directory.
+pub struct DiskCache {
+    root: PathBuf,
+}
+
+impl DiskCache {
+    /// DiskCacheClient's constructor: the root and `tmp/` exist.
+    pub fn new(root: PathBuf) -> Result<Self, String> {
+        std::fs::create_dir_all(root.join("tmp"))
+            .map_err(|error| format!("{}: {error}", root.display()))?;
+        Ok(Self { root })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// DiskCacheClient.toPath.
+    fn path(&self, cas: bool, hash: &str) -> PathBuf {
+        self.root
+            .join(if cas { "cas" } else { "ac" })
+            .join(hash.get(..2).unwrap_or(hash))
+            .join(hash)
+    }
+
+    /// DiskCacheClient.refresh: touch an existing entry.
+    fn refresh(path: &Path) -> bool {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .and_then(|file| file.set_modified(SystemTime::now()))
+            .is_ok()
+    }
+
+    /// An entry's bytes (refreshed), `None` when absent.
+    fn get(&self, cas: bool, hash: &str) -> Result<Option<Vec<u8>>, CacheError> {
+        let path = self.path(cas, hash);
+        if !Self::refresh(&path) {
+            return Ok(None);
+        }
+        match std::fs::read(&path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            // Deleted by a concurrent collection: a miss.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(CacheError::Other(format!(
+                "Disk cache: {}: {error}",
+                path.display()
+            ))),
+        }
+    }
+
+    /// Whether the CAS holds `digest` (refreshing it; the empty blob always).
+    fn contains(&self, digest: &Digest) -> bool {
+        digest.size == 0 || Self::refresh(&self.path(true, &digest.hash))
+    }
+
+    /// DiskCacheClient.save: a CAS entry that exists is only refreshed;
+    /// otherwise a temporary file under `tmp/`, synced, renamed into place.
+    fn put(&self, cas: bool, hash: &str, bytes: &[u8]) -> Result<(), CacheError> {
+        let path = self.path(cas, hash);
+        if cas && Self::refresh(&path) {
+            return Ok(());
+        }
+        let store = || -> std::io::Result<()> {
+            let mut temp = tempfile::Builder::new()
+                .prefix("")
+                .tempfile_in(self.root.join("tmp"))?;
+            std::io::Write::write_all(temp.as_file_mut(), bytes)?;
+            temp.as_file().sync_all()?;
+            // An entry stays readable by every user of a shared cache.
+            std::fs::set_permissions(
+                temp.path(),
+                std::os::unix::fs::PermissionsExt::from_mode(0o644),
+            )?;
+            std::fs::create_dir_all(path.parent().expect("entry parent"))?;
+            temp.persist(&path).map_err(|error| error.error)?;
+            Ok(())
+        };
+        store()
+            .map_err(|error| CacheError::Other(format!("Disk cache: {}: {error}", path.display())))
+    }
+
+    /// DiskCacheClient.refreshActionResult (without the integrity check:
+    /// `--rewind_lost_inputs` is on by default, and a lost blob is a miss
+    /// when it is downloaded): the referenced blobs' mtimes.
+    fn refresh_result(&self, result: &reapi::ActionResult) {
+        for file in &result.output_files {
+            self.contains(&file.digest);
+        }
+        for digest in result.stdout_digest.iter().chain(&result.stderr_digest) {
+            self.contains(digest);
+        }
+        for directory in &result.output_directories {
+            self.contains(&directory.tree_digest);
+        }
+    }
+}
+
+/// Where a cache read may go (RemoteExecutionService.getReadCachePolicy /
+/// getWriteCachePolicy, CachePolicy): the remote cache and the disk cache.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CachePolicy {
+    pub remote: bool,
+    pub disk: bool,
+}
+
+impl CachePolicy {
+    pub fn any(self) -> bool {
+        self.remote || self.disk
+    }
+
+    /// The remote cache only (remote execution's own lookups).
+    pub const REMOTE: Self = Self {
+        remote: true,
+        disk: false,
+    };
+}
+
+/// Which cache served an action result (`cacheName`: the runner is
+/// `disk cache hit` or `remote cache hit`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheSource {
+    Disk,
+    Remote,
+}
+
+impl CacheSource {
+    /// The SpawnResult runner name of a hit from this cache.
+    pub fn runner(self) -> &'static str {
+        match self {
+            Self::Disk => "disk cache hit",
+            Self::Remote => "remote cache hit",
+        }
+    }
 }
 
 impl From<crate::grpc_channel::Status> for CacheError {
@@ -572,6 +726,8 @@ impl From<crate::grpc_channel::Status> for CacheError {
 /// The configured remote cache (and remote executor) of this invocation.
 pub struct RemoteCache {
     backend: Backend,
+    /// `--disk_cache` (consulted before the remote cache).
+    disk: Option<DiskCache>,
     /// The `--remote_executor` endpoint (the cache's own when both options
     /// name one target).
     executor: Option<Arc<crate::remote_grpc::GrpcCache>>,
@@ -604,6 +760,10 @@ impl std::fmt::Debug for RemoteCache {
                 .field("uri", &http.credential_uri)
                 .finish(),
             Backend::Grpc(grpc) => f.debug_struct("RemoteCache").field("grpc", grpc).finish(),
+            Backend::None => f
+                .debug_struct("RemoteCache")
+                .field("disk", &self.disk.as_ref().map(DiskCache::root))
+                .finish(),
         }
     }
 }
@@ -624,11 +784,86 @@ fn netrc_file() -> Option<PathBuf> {
     path.exists().then_some(path)
 }
 
-/// RemoteModule.setup for the modelled subset. `Ok(None)` without a cache.
+/// The `--disk_cache` directory (CombinedCacheClientFactory.createDiskCache:
+/// relative to the working directory; PathFragmentConverter's `~/`).
+pub fn disk_cache_path(value: &str, working_directory: &Path) -> Option<PathBuf> {
+    if value.is_empty() {
+        return None;
+    }
+    let path = match value.strip_prefix("~/") {
+        Some(rest) => match std::env::var_os("HOME") {
+            Some(home) => Path::new(&home).join(rest),
+            None => PathBuf::from(value),
+        },
+        None => PathBuf::from(value),
+    };
+    let path = if path.is_absolute() {
+        path
+    } else {
+        working_directory.join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    Some(normalized)
+}
+
+/// RemoteModule.setup for the modelled subset. `Ok(None)` without any
+/// cache. A `--disk_cache` alone is a cache without a remote backend; with
+/// a remote cache both are used, the disk cache first (CombinedCache).
 /// Prints the http:// plaintext-credentials warning like
 /// RemoteModule.createCredentials (:1458-1490), which also invokes the
 /// helper for the cache URI once at startup.
 pub fn setup(
+    options: &RemoteOptions,
+    credentials: Option<&Credentials>,
+) -> Result<Option<RemoteCache>, SetupError> {
+    let fail = |error: String| SetupError {
+        errors: Vec::new(),
+        exit: error,
+    };
+    let disk = match std::env::current_dir()
+        .ok()
+        .and_then(|cwd| disk_cache_path(&options.disk_cache, &cwd))
+    {
+        // CombinedCacheClientFactory: an IOException is a CACHE_INIT_FAILURE.
+        Some(path) => Some(DiskCache::new(path).map_err(fail)?),
+        None => None,
+    };
+    let remote = setup_remote(options, credentials)?;
+    Ok(match (remote, disk) {
+        (Some(mut remote), disk) => {
+            remote.disk = disk;
+            Some(remote)
+        }
+        (None, Some(disk)) => Some(RemoteCache {
+            backend: Backend::None,
+            disk: Some(disk),
+            executor: None,
+            accept_cached: options.accept_cached,
+            upload_local_results: options.upload_local_results,
+            local_fallback: options.local_fallback,
+            default_exec_properties: options.default_exec_properties.clone(),
+            print_execution_messages: options.print_execution_messages,
+            uploaded: Mutex::new(HashSet::new()),
+            uploading: Mutex::new(HashMap::new()),
+            downloading: Mutex::new(HashMap::new()),
+            present: Mutex::new(HashSet::new()),
+            hits: AtomicUsize::new(0),
+            executions: AtomicUsize::new(0),
+        }),
+        (None, None) => None,
+    })
+}
+
+fn setup_remote(
     options: &RemoteOptions,
     credentials: Option<&Credentials>,
 ) -> Result<Option<RemoteCache>, SetupError> {
@@ -742,6 +977,7 @@ pub fn setup(
         };
         return Ok(Some(RemoteCache {
             backend: Backend::Grpc(cache),
+            disk: None,
             executor,
             accept_cached: options.accept_cached,
             upload_local_results,
@@ -844,6 +1080,7 @@ pub fn setup(
         .cloned()
         .collect();
     Ok(Some(RemoteCache {
+        disk: None,
         backend: Backend::Http(HttpCache {
             uri,
             credential_uri,
@@ -959,6 +1196,8 @@ pub struct Hit {
     pub outputs: Vec<Output>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
+    /// The cache the action result came from.
+    pub source: CacheSource,
 }
 
 /// One output of a spawn as the cache holds it: a file's bytes, or a
@@ -1296,6 +1535,88 @@ impl RemoteCache {
         self.hits.load(Ordering::Relaxed)
     }
 
+    /// Whether a remote cache (HTTP or gRPC) is configured.
+    pub fn has_remote(&self) -> bool {
+        !matches!(self.backend, Backend::None)
+    }
+
+    /// Whether a `--disk_cache` is configured.
+    pub fn has_disk(&self) -> bool {
+        self.disk.is_some()
+    }
+
+    /// RemoteExecutionService.getReadCachePolicy (:342-352): the remote
+    /// cache under `--remote_accept_cached` for a spawn that may be cached
+    /// remotely (`Spawns.mayBeCachedRemotely`), the disk cache for any
+    /// spawn that may be cached (`Spawns.mayBeCached`: no `no-cache`, no
+    /// `local`).
+    pub fn read_policy(&self, cacheable: bool, remotely_cacheable: bool) -> CachePolicy {
+        CachePolicy {
+            remote: self.has_remote() && self.accept_cached && remotely_cacheable,
+            disk: self.has_disk() && cacheable,
+        }
+    }
+
+    /// RemoteExecutionService.getWriteCachePolicy (:354-366): the remote
+    /// cache under `--remote_upload_local_results`, the disk cache always.
+    pub fn write_policy(&self, cacheable: bool, remotely_cacheable: bool) -> CachePolicy {
+        CachePolicy {
+            remote: self.has_remote() && self.upload_local_results && remotely_cacheable,
+            disk: self.has_disk() && cacheable,
+        }
+    }
+
+    /// CombinedCache.downloadActionResultAsync: the disk cache first, then
+    /// the remote cache, whose hit enters the disk cache (when it may be
+    /// written).
+    fn action_result_from(
+        &self,
+        key: &Digest,
+        read: CachePolicy,
+        write: CachePolicy,
+    ) -> Result<Option<(Vec<u8>, CacheSource)>, CacheError> {
+        if read.disk
+            && let Some(disk) = &self.disk
+            && let Some(bytes) = disk.get(false, &key.hash)?
+        {
+            return Ok(Some((bytes, CacheSource::Disk)));
+        }
+        if read.remote
+            && let Some(bytes) = self.action_result(key)?
+        {
+            if write.disk
+                && let Some(disk) = &self.disk
+                && let Err(error) = disk.put(false, &key.hash, &bytes)
+            {
+                warn(&error);
+            }
+            return Ok(Some((bytes, CacheSource::Remote)));
+        }
+        Ok(None)
+    }
+
+    /// [`Self::cached_result`] under the read and write policies of a
+    /// spawn: the disk cache first (CombinedCache), and which cache hit.
+    pub fn cached_result_from(
+        &self,
+        key: &Digest,
+        read: CachePolicy,
+        write: CachePolicy,
+    ) -> Result<Option<(reapi::ActionResult, CacheSource)>, CacheError> {
+        let Some((bytes, source)) = self.action_result_from(key, read, write)? else {
+            return Ok(None);
+        };
+        let result = reapi::ActionResult::decode(&bytes).map_err(|error| {
+            CacheError::Other(format!("Failed to parse the ActionResult: {error}"))
+        })?;
+        if source == CacheSource::Disk
+            && let Some(disk) = &self.disk
+        {
+            disk.refresh_result(&result);
+        }
+        Ok(Some((result, source)))
+    }
+
     /// Whether `Command` lists `output_paths` (REAPI >= 2.1) rather than
     /// `output_files`: always for HTTP; for gRPC it needs the capability
     /// check, whose failure fails the action (CacheError::Capabilities).
@@ -1307,7 +1628,7 @@ impl RemoteCache {
             None => true,
         };
         let cache = match &self.backend {
-            Backend::Http(_) => true,
+            Backend::Http(_) | Backend::None => true,
             Backend::Grpc(grpc) => grpc.capabilities().map_err(capability_failure)?,
         };
         Ok(executor && cache)
@@ -1315,6 +1636,7 @@ impl RemoteCache {
 
     fn action_result(&self, key: &Digest) -> Result<Option<Vec<u8>>, CacheError> {
         match &self.backend {
+            Backend::None => Ok(None),
             Backend::Http(http) => http.get(false, &key.hash),
             Backend::Grpc(grpc) => {
                 grpc.capabilities().map_err(capability_failure)?;
@@ -1323,11 +1645,27 @@ impl RemoteCache {
         }
     }
 
+    /// CombinedCache.downloadBlob: the disk cache, then the remote cache,
+    /// whose blob enters the disk cache (captureFile).
     fn read(&self, digest: &Digest, key: &Digest) -> Result<Option<Vec<u8>>, CacheError> {
-        match &self.backend {
-            Backend::Http(http) => http.get(true, &digest.hash),
-            Backend::Grpc(grpc) => Ok(grpc.read_blob(digest, &key.hash)?),
+        if let Some(disk) = &self.disk
+            && let Some(bytes) = disk.get(true, &digest.hash)?
+            && Digest::of(&bytes) == *digest
+        {
+            return Ok(Some(bytes));
         }
+        let bytes = match &self.backend {
+            Backend::Http(http) => http.get(true, &digest.hash)?,
+            Backend::Grpc(grpc) => grpc.read_blob(digest, &key.hash)?,
+            Backend::None => None,
+        };
+        if let (Some(disk), Some(bytes)) = (&self.disk, &bytes)
+            && Digest::of(bytes) == *digest
+            && let Err(error) = disk.put(true, &digest.hash, bytes)
+        {
+            warn(&error);
+        }
+        Ok(bytes)
     }
 
     fn blob(
@@ -1409,13 +1747,20 @@ impl RemoteCache {
         action: &RemoteAction,
         outputs: &[(String, OutputKind)],
         stay_remote: &dyn Fn(usize) -> bool,
+        read: CachePolicy,
+        write: CachePolicy,
     ) -> Result<Option<Hit>, CacheError> {
-        let Some(bytes) = self.action_result(&action.key)? else {
+        let Some((bytes, source)) = self.action_result_from(&action.key, read, write)? else {
             return Ok(None);
         };
         let result = reapi::ActionResult::decode(&bytes).map_err(|error| {
             CacheError::Other(format!("Failed to parse the cached ActionResult: {error}"))
         })?;
+        if source == CacheSource::Disk
+            && let Some(disk) = &self.disk
+        {
+            disk.refresh_result(&result);
+        }
         if result.exit_code != 0 {
             return Ok(None);
         }
@@ -1503,12 +1848,14 @@ impl RemoteCache {
             outputs: downloaded,
             stdout,
             stderr,
+            source,
         }))
     }
 
     /// UploadManifest.create + upload: every non-empty blob not yet uploaded
     /// in this invocation (the Action and Command protos, outputs, stdout
     /// and stderr), then the ActionResult.
+    #[allow(clippy::too_many_arguments)]
     pub fn upload(
         &self,
         action: &RemoteAction,
@@ -1517,6 +1864,7 @@ impl RemoteCache {
         stderr: &[u8],
         start: SystemTime,
         wall: Duration,
+        write: CachePolicy,
     ) -> Result<(), CacheError> {
         // The `Tree` blobs of tree outputs (outliving `blobs`).
         let mut trees: Vec<Vec<u8>> = Vec::new();
@@ -1573,7 +1921,19 @@ impl RemoteCache {
         let stderr_digest = Digest::of(stderr);
         blobs.push((stdout_digest.clone(), stdout));
         blobs.push((stderr_digest.clone(), stderr));
-        self.upload_blobs(&blobs, &action.key)?;
+        // CombinedCache.uploadFile/uploadBlob: the disk cache, then the
+        // remote cache (each under the spawn's write policy).
+        let disk = self.disk.as_ref().filter(|_| write.disk);
+        if let Some(disk) = disk {
+            for (digest, bytes) in &blobs {
+                if digest.size != 0 {
+                    disk.put(true, &digest.hash, bytes)?;
+                }
+            }
+        }
+        if write.remote {
+            self.upload_blobs(&blobs, &action.key)?;
+        }
         // UploadManifest.create: timestamps only when the wall time is
         // nonzero (milliseconds).
         let millis = wall.as_millis() as u64;
@@ -1595,9 +1955,17 @@ impl RemoteCache {
             execution,
             ..reapi::ActionResult::default()
         };
+        let encoded = result.encode();
+        if let Some(disk) = disk {
+            disk.put(false, &action.key.hash, &encoded)?;
+        }
+        if !write.remote {
+            return Ok(());
+        }
         match &self.backend {
-            Backend::Http(http) => http.put(false, &action.key.hash, &result.encode()),
-            Backend::Grpc(grpc) => Ok(grpc.update_action_result(&action.key, &result.encode())?),
+            Backend::Http(http) => http.put(false, &action.key.hash, &encoded),
+            Backend::Grpc(grpc) => Ok(grpc.update_action_result(&action.key, &encoded)?),
+            Backend::None => Ok(()),
         }
     }
 
@@ -1655,6 +2023,7 @@ impl RemoteCache {
                     once(&digest, &|| Ok(grpc.write_blob(&digest, bytes, &key.hash)?))?;
                 }
             }
+            Backend::None => {}
         }
         Ok(())
     }
@@ -1733,7 +2102,7 @@ impl RemoteCache {
     pub fn bytestream_prefix(&self) -> Option<String> {
         match &self.backend {
             Backend::Grpc(grpc) => Some(grpc.bytestream_prefix()),
-            Backend::Http(_) => None,
+            Backend::Http(_) | Backend::None => None,
         }
     }
 
@@ -1761,15 +2130,29 @@ impl RemoteCache {
         {
             return Ok(None);
         }
-        let Backend::Grpc(grpc) = &self.backend else {
+        // Blobs the disk cache holds stay there (a disk-only cache with
+        // Build without the Bytes); the others must be remote.
+        let elsewhere: Vec<&Digest> = candidates
+            .iter()
+            .map(|(_, digest)| digest)
+            .filter(|digest| !self.disk.as_ref().is_some_and(|disk| disk.contains(digest)))
+            .collect();
+        if elsewhere.is_empty() {
             return Ok(Some(
                 candidates.into_iter().map(|(index, _)| index).collect(),
             ));
+        }
+        let grpc = match &self.backend {
+            Backend::Grpc(grpc) => grpc,
+            // Not in the disk cache and no remote cache: a miss.
+            Backend::None => return Ok(None),
+            Backend::Http(_) => {
+                return Ok(Some(
+                    candidates.into_iter().map(|(index, _)| index).collect(),
+                ));
+            }
         };
-        let mut digests: Vec<Digest> = candidates
-            .iter()
-            .map(|(_, digest)| digest.clone())
-            .collect();
+        let mut digests: Vec<Digest> = elsewhere.into_iter().cloned().collect();
         digests.sort_by(|a, b| a.hash.cmp(&b.hash));
         digests.dedup();
         if !grpc.find_missing(&digests, &key.hash)?.is_empty() {

@@ -506,6 +506,20 @@ impl RegistrySession {
     }
 
     fn cas_get(&self, hash: &str) -> Option<Vec<u8>> {
+        let native = self.cas_get_native(hash);
+        if native.is_some() {
+            return native;
+        }
+        // The shared `--repository_cache` (genuine's layout,
+        // crate::repository_cache): DownloadManager reads registry files
+        // with a known checksum from the repository cache.
+        let digest = crate::extension_download::Algorithm::Sha256;
+        let bytes = crate::repository_cache::get_bytes(digest, &decode_hex(hash)?)?;
+        self.cas_put_native(hash, &bytes);
+        Some(bytes)
+    }
+
+    fn cas_get_native(&self, hash: &str) -> Option<Vec<u8>> {
         let path = self.cas.as_ref()?.join(hash);
         // snapshot-unrecorded: content-addressed blob, checked against its hash below; a miss is a network fetch, which taints (PLAN-L2 §1b).
         let metadata = std::fs::symlink_metadata(&path).ok()?;
@@ -517,13 +531,25 @@ impl RegistrySession {
         (sha256_hex(&bytes) == hash).then_some(bytes)
     }
 
-    /// Best effort, like DownloadCache.put after a download.
+    /// Best effort, like DownloadCache.put after a download; also into the
+    /// shared `--repository_cache` (crate::repository_cache).
     fn cas_put(&self, hash: &str, bytes: &[u8]) {
+        if let Some(digest) = decode_hex(hash) {
+            let _ = crate::repository_cache::put_bytes(
+                crate::extension_download::Algorithm::Sha256,
+                &digest,
+                bytes,
+            );
+        }
+        self.cas_put_native(hash, bytes);
+    }
+
+    fn cas_put_native(&self, hash: &str, bytes: &[u8]) {
         let Some(directory) = &self.cas else {
             return;
         };
         let path = directory.join(hash);
-        if self.cas_get(hash).is_some() {
+        if self.cas_get_native(hash).is_some() {
             return;
         }
         let publish = || -> std::io::Result<()> {
@@ -1080,6 +1106,17 @@ fn valid_module_name(name: &str) -> bool {
             b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')
         })
         && bytes[bytes.len() - 1].is_ascii_alphanumeric()
+}
+
+/// Lowercase hex to bytes (a registry file's recorded SHA-256).
+fn decode_hex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(text.get(index..index + 2)?, 16).ok())
+        .collect()
 }
 
 #[cfg(test)]

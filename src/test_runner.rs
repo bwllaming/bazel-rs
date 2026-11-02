@@ -1258,8 +1258,9 @@ impl Runner<'_> {
         // actions stay local (their coverage spawn is not modelled remotely).
         let spawn_cache = !crate::sandbox::remote_executor()
             && spec.coverage.is_none()
-            && crate::remote_cache::active()
-                .is_some_and(|remote| remote.accept_cached || remote.upload_local_results);
+            && crate::remote_cache::active().is_some_and(|remote| {
+                remote.accept_cached || remote.upload_local_results || remote.has_disk()
+            });
         let remote_inputs = if crate::sandbox::remote_executor() || spawn_cache {
             let mut remote = RemoteTestInputs {
                 spec: crate::remote_cache::SpawnSpec::default(),
@@ -1617,6 +1618,7 @@ impl Runner<'_> {
         // The cached result's own wall time (Utils.createSpawnResult from
         // its ExecutedActionMetadata), the XML spawn's duration argument.
         let mut cached_wall = None;
+        let mut cache_runner = "remote cache hit";
         if strategy != crate::sandbox::Strategy::Remote
             && let Some(remote_inputs) = remote
             && let Some(module) = crate::remote_cache::active()
@@ -1625,9 +1627,15 @@ impl Runner<'_> {
             let start = Instant::now();
             let info = self.spawn_info(unit, remote_inputs);
             match spawn_cache_lookup(module, spec, declared.clone(), &info)? {
-                SpawnCacheLookup::Hit { result, wall, .. } => {
+                SpawnCacheLookup::Hit {
+                    result,
+                    wall,
+                    source,
+                    ..
+                } => {
                     materialize(execroot, &paths.base, &declared, &result, true)?;
                     cached_wall = Some(wall);
+                    cache_runner = source.runner();
                     remote_done = Some((start.elapsed().as_millis() as u64, 0, false, true));
                 }
                 SpawnCacheLookup::Miss(handle) => store = handle,
@@ -1640,7 +1648,7 @@ impl Runner<'_> {
         // The attempt's spawn (`INFO: N processes: …`, crate::spawn_stats):
         // a cached result's runner is `remote cache hit`.
         crate::spawn_stats::spawn(if remote_cached {
-            "remote cache hit"
+            cache_runner
         } else {
             strategy.runner_name()
         });
@@ -1841,14 +1849,14 @@ impl Runner<'_> {
             match spawn_cache_lookup(module, spec, declared.clone(), &info)? {
                 // The XML spawn's test.xml is mandatory: a cached result
                 // without it is a miss (maybeGetMissingMandatoryOutput).
-                SpawnCacheLookup::Hit { result, .. }
+                SpawnCacheLookup::Hit { result, source, .. }
                     if !matches!(
                         result.outputs.first(),
                         Some(crate::remote_cache::Downloaded::Missing) | None
                     ) =>
                 {
                     materialize(execroot, &paths.base, &declared, &result, false)?;
-                    crate::spawn_stats::spawn("remote cache hit");
+                    crate::spawn_stats::spawn(source.runner());
                     xml_cached = true;
                 }
                 SpawnCacheLookup::Hit { handle, .. } => xml_store = handle,
@@ -2056,6 +2064,8 @@ fn test_outputs(
 struct SpawnCacheStore {
     action: crate::remote_cache::RemoteAction,
     declared: Vec<(String, crate::remote_cache::OutputKind)>,
+    /// The spawn's write policy (remote and disk cache).
+    write: crate::remote_cache::CachePolicy,
 }
 
 /// RemoteSpawnCache.lookup for a test action's spawn that runs locally.
@@ -2066,6 +2076,8 @@ enum SpawnCacheLookup {
         result: crate::remote_cache::DownloadedResult,
         wall: u64,
         handle: Option<SpawnCacheStore>,
+        /// The cache that hit.
+        source: crate::remote_cache::CacheSource,
     },
     /// No usable result; the handle stores a successful execution
     /// (`--remote_upload_local_results`).
@@ -2089,10 +2101,14 @@ fn spawn_cache_lookup(
 ) -> Result<SpawnCacheLookup, String> {
     use crate::remote_cache::CacheError;
     let cacheable = remotely_cacheable(info);
-    let read = remote.accept_cached && cacheable;
-    let write =
-        remote.upload_local_results && cacheable && !info.contains("no-remote-cache-upload");
-    if !read && !write {
+    // Spawns.mayBeCached: the disk cache's policy.
+    let local_cacheable = !info.contains("no-cache") && !info.contains("local");
+    let read = remote.read_policy(local_cacheable, cacheable);
+    let write = remote.write_policy(
+        local_cacheable,
+        cacheable && !info.contains("no-remote-cache-upload"),
+    );
+    if !read.any() && !write.any() {
         return Ok(SpawnCacheLookup::Miss(None));
     }
     spec.use_output_paths = match remote.output_paths() {
@@ -2109,10 +2125,16 @@ fn spawn_cache_lookup(
     let credentials = |error: crate::credentials::HelperError| {
         format!("Exec failed due to CredentialHelperException: {error}")
     };
-    let handle = |action, declared| write.then_some(SpawnCacheStore { action, declared });
-    if read {
-        match remote.cached_result(&action.key) {
-            Ok(Some(result)) if result.exit_code == 0 => {
+    let handle = |action, declared| {
+        write.any().then_some(SpawnCacheStore {
+            action,
+            declared,
+            write,
+        })
+    };
+    if read.any() {
+        match remote.cached_result_from(&action.key, read, write) {
+            Ok(Some((result, source))) if result.exit_code == 0 => {
                 match remote.download(&result, &declared, &action.key, &|_| false, false) {
                     Ok(Some(downloaded)) => {
                         remote.count_hit();
@@ -2125,6 +2147,7 @@ fn spawn_cache_lookup(
                         return Ok(SpawnCacheLookup::Hit {
                             result: downloaded,
                             wall,
+                            source,
                             handle: handle(action, declared),
                         });
                     }
@@ -2181,7 +2204,15 @@ fn spawn_cache_store(
     let start = std::time::SystemTime::now()
         .checked_sub(wall)
         .unwrap_or_else(std::time::SystemTime::now);
-    if let Err(error) = remote.upload(&handle.action, &outputs, stdout, stderr, start, wall) {
+    if let Err(error) = remote.upload(
+        &handle.action,
+        &outputs,
+        stdout,
+        stderr,
+        start,
+        wall,
+        handle.write,
+    ) {
         crate::remote_cache::warn(&error);
     }
     Ok(())

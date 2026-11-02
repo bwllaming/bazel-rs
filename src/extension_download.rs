@@ -105,7 +105,6 @@ impl Algorithm {
             Self::Sha512 => 64,
         }
     }
-    #[cfg(test)]
     pub(crate) fn hash(self, bytes: &[u8]) -> Vec<u8> {
         match self {
             Self::Sha1 => sha1::Sha1::digest(bytes).to_vec(),

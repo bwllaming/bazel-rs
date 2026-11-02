@@ -1,0 +1,5 @@
+{
+    "integrity": "sha256-DZSoFt5fTI0jHj+m5iieE51kMF6cTHRG2tOfqh+fHFE=",
+    "strip_prefix": "dep",
+    "url": "http://127.0.0.1:@PORT@/files/dep.tar.gz"
+}

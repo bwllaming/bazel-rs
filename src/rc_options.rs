@@ -23,6 +23,20 @@ pub struct RcOptions {
     /// (`--experimental_disk_cache_gc_*`, `--repo_contents_cache_gc_*`;
     /// crate::cache_gc, docs/CACHE_GC.md).
     pub gc: crate::cache_gc::GcOptions,
+    /// `--repository_cache` (old name `--experimental_repository_cache`;
+    /// RepositoryOptions.java:40-54) as given: `None` unset, `""`
+    /// disabled (crate::repository_cache, docs/REPOSITORY_CACHE.md).
+    pub repository_cache: Option<String>,
+    /// `--repo_contents_cache` (old name `--repository_contents_cache`;
+    /// RepositoryOptions.java:56-72) as given.
+    pub repo_contents_cache: Option<String>,
+    /// `--experimental_repository_cache_hardlinks`
+    /// (RepositoryOptions.java:155-163): accepted, cache hits are copied
+    /// (crate::repository_cache::materialize_hit).
+    pub repository_cache_hardlinks: bool,
+    /// `--experimental_repository_downloader_retries`
+    /// (RepositoryOptions.java:179-188; default 5).
+    pub repository_downloader_retries: Option<i32>,
 }
 
 /// `ARG :: MESSAGE` (BlazeOptionHandler.java:104, 628-637).
@@ -101,6 +115,63 @@ impl RcOptions {
         let build = matches!(command, "build" | "run" | "test");
         let unrecognized = || invalid_argument(arg, format!("Unrecognized option: {arg}"));
         if let Some(used) = gc_option(&mut self.gc, arg, next)? {
+            return Ok(Some(used));
+        }
+        // RepositoryOptions (every command): the repository cache options
+        // (crate::repository_cache, docs/REPOSITORY_CACHE.md).
+        for (names, slot) in [
+            (
+                ["repository_cache", "experimental_repository_cache"],
+                &mut self.repository_cache,
+            ),
+            (
+                ["repo_contents_cache", "repository_contents_cache"],
+                &mut self.repo_contents_cache,
+            ),
+        ] {
+            for name in names {
+                if let Some(parsed) = value_option(arg, next, name) {
+                    let (_, value, used) = parsed?;
+                    *slot = Some(value.to_owned());
+                    return Ok(Some(used));
+                }
+            }
+        }
+        if let Some(value) = boolean(arg, &["experimental_repository_cache_hardlinks"]) {
+            self.repository_cache_hardlinks = value?;
+            return Ok(Some(false));
+        }
+        // RemoteOptions.remoteDownloader (:145-155): the Remote Asset API
+        // download proxy changes where every download comes from; only its
+        // default (empty) is modelled. Its two booleans are consulted only
+        // with a downloader.
+        if let Some(parsed) = value_option(arg, next, "experimental_remote_downloader") {
+            let (form, value, used) = parsed?;
+            if !value.is_empty() {
+                return Err(format!(
+                    "unsupported option {form:?}{origin}: the Remote Asset API downloader is not implemented by the native profile; options are never silently ignored"
+                ));
+            }
+            return Ok(Some(used));
+        }
+        if let Some(value) = boolean(
+            arg,
+            &[
+                "experimental_remote_downloader_local_fallback",
+                "experimental_remote_downloader_propagate_credentials",
+            ],
+        ) {
+            value?;
+            return Ok(Some(false));
+        }
+        if let Some(parsed) = value_option(arg, next, "experimental_repository_downloader_retries")
+        {
+            let (form, value, used) = parsed?;
+            // Converters.IntegerConverter.
+            let retries = value
+                .parse::<i32>()
+                .map_err(|_| format!("While parsing option {form}: '{value}' is not an int"))?;
+            self.repository_downloader_retries = Some(retries);
             return Ok(Some(used));
         }
         if let Some(parsed) = value_option(arg, next, "repo_env") {
@@ -292,10 +363,6 @@ const SERVER_STATE_BOOLEANS: &[(&str, &str)] = &[
         "runtime/CommonCommandOptions.java:472-480",
     ),
     ("watchfs", "skyframe/LocalDiffAwareness.java:50-60"),
-    (
-        "experimental_repository_cache_hardlinks",
-        "bazel/repository/RepositoryOptions.java:154-163",
-    ),
 ];
 
 /// Boolean options accepted at their Bazel 9.3 default only (the other
@@ -373,6 +440,39 @@ mod tests {
             }
         }
         Ok(options)
+    }
+
+    #[test]
+    fn repository_cache_options_parse() {
+        let options = parse(
+            "info",
+            &[
+                "--repository_cache=/a",
+                "--experimental_repository_cache",
+                "/b",
+                "--repo_contents_cache=",
+                "--experimental_repository_cache_hardlinks",
+                "--experimental_repository_downloader_retries=3",
+                "--experimental_remote_downloader=",
+                "--noexperimental_remote_downloader_local_fallback",
+                "--experimental_remote_downloader_propagate_credentials",
+            ],
+        )
+        .unwrap();
+        assert_eq!(options.repository_cache.as_deref(), Some("/b"));
+        assert_eq!(options.repo_contents_cache.as_deref(), Some(""));
+        assert!(options.repository_cache_hardlinks);
+        assert_eq!(options.repository_downloader_retries, Some(3));
+        assert_eq!(
+            parse("build", &["--experimental_repository_downloader_retries=x"]).unwrap_err(),
+            "While parsing option --experimental_repository_downloader_retries=x: 'x' is not an int"
+        );
+        assert!(
+            parse("build", &["--experimental_remote_downloader=grpc://x"])
+                .unwrap_err()
+                .contains("the Remote Asset API downloader is not implemented")
+        );
+        assert!(parse("build", &["--norepository_cache"]).is_err());
     }
 
     #[test]

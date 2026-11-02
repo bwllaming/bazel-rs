@@ -2528,15 +2528,52 @@ impl Context {
         let Some((blob, marker)) = self.cache_paths(expected, canonical_id) else {
             return Ok(None);
         };
-        if !fs::symlink_metadata(&blob).is_ok_and(|metadata| metadata.is_file()) {
-            return Ok(None);
-        }
-        let Ok((digest, size)) = expected.algorithm.hash_file(&blob) else {
-            return Ok(None);
+        let native = |blob: &Path| -> Option<u64> {
+            if !fs::symlink_metadata(blob).is_ok_and(|metadata| metadata.is_file()) {
+                return None;
+            }
+            let (digest, size) = expected.algorithm.hash_file(blob).ok()?;
+            (digest == expected.bytes && (canonical_id.is_empty() || marker.exists()))
+                .then_some(size)
         };
-        if digest != expected.bytes || (!canonical_id.is_empty() && !marker.exists()) {
-            return Ok(None);
-        }
+        let size = match native(&blob) {
+            Some(size) => {
+                // Shared with genuine Bazel (`--repository_cache`,
+                // crate::repository_cache).
+                crate::repository_cache::offer(
+                    expected.algorithm,
+                    &expected.bytes,
+                    canonical_id,
+                    &blob,
+                );
+                size
+            }
+            // The shared `--repository_cache` (genuine's layout) serves a
+            // native miss; the hit enters the native store with its marker.
+            None if crate::repository_cache::fetch_into(
+                expected.algorithm,
+                &expected.bytes,
+                canonical_id,
+                &blob,
+            ) =>
+            {
+                if !canonical_id.is_empty()
+                    && let Some(parent) = marker.parent()
+                    && fs::create_dir_all(parent).is_ok()
+                {
+                    let _ = OpenOptions::new()
+                        .create(true)
+                        .truncate(false)
+                        .write(true)
+                        .open(&marker);
+                }
+                match native(&blob) {
+                    Some(size) => size,
+                    None => return Ok(None),
+                }
+            }
+            None => return Ok(None),
+        };
         // DownloadCache.get touches the entry it serves (java:214): its
         // last use (docs/CACHE_GC.md).
         crate::cache_gc::note_used_path(&blob);
@@ -2546,13 +2583,9 @@ impl Context {
             if fs::symlink_metadata(target).is_ok_and(|metadata| !metadata.is_dir()) {
                 fs::remove_file(target)?;
             }
-            let mut source = fs::File::open(&blob)?;
-            let mut destination = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(target)?;
-            std::io::copy(&mut source, &mut destination)?;
-            Ok(())
+            // DownloadCache.get: a copy, or a hard link under
+            // --experimental_repository_cache_hardlinks.
+            crate::repository_cache::materialize_hit(&blob, target)
         })();
         Ok(copied.ok().map(|()| size))
     }
@@ -2830,7 +2863,21 @@ fn cache_put_at(
             blob.display(),
             io_reason(&error)
         )
-    })
+    })?;
+    // The shared `--repository_cache` in genuine's layout
+    // (crate::repository_cache): the same IOException class on failure.
+    crate::repository_cache::put(checksum.algorithm, &checksum.bytes, canonical_id, &blob).map_err(
+        |error| {
+            anyhow!(
+                "java.io.IOException: {} ({})",
+                crate::repository_cache::path()
+                    .map(Path::display)
+                    .map(|path| path.to_string())
+                    .unwrap_or_default(),
+                io_reason(&error)
+            )
+        },
+    )
 }
 
 struct DownloadFailure {

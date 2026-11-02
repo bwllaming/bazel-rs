@@ -605,6 +605,15 @@ fn run() -> Result<(), String> {
     bazel_rs::cache_gc::install(&cache);
     bazel_rs::cache_gc::record_workspace(&root);
     bazel_rs::cache_gc::set_options(&rc_options.gc);
+    // --repository_cache, --repo_contents_cache and
+    // --experimental_repository_cache_hardlinks (BazelRepositoryModule
+    // .beforeCommand :309-401; crate::repository_cache).
+    install_repository_cache(
+        &rc_options,
+        &root,
+        &bazel_rs::worktree::output_base_for(&cache, &root),
+        &repository_environment,
+    )?;
     // print()'s DEBUG lines name main-repository `.bzl` files by path.
     bazel_rs::debug_print::set_workspace(&root);
     // ... and other repositories' files below `<output_base>/external`.
@@ -623,6 +632,20 @@ fn run() -> Result<(), String> {
             warn(warning);
         }
         return Err(bazel_rs::exit_code::command_line(error));
+    }
+    // RemoteModule.beforeCommand (:478-510): the output base must not be
+    // inside the `--disk_cache` directory (its garbage collection).
+    if let Some(disk) = bazel_rs::remote_cache::disk_cache_path(&remote_options.disk_cache, &cwd) {
+        let resolve = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        let output_base = resolve(&bazel_rs::worktree::output_base_for(&cache, &root));
+        let disk = resolve(&disk);
+        if output_base.starts_with(&disk) {
+            return Err(bazel_rs::exit_code::command_line(format!(
+                "The output base [{}] cannot be a subdirectory of the --disk_cache directory [{}]",
+                output_base.display(),
+                disk.display()
+            )));
+        }
     }
     // Credential helpers and the remote cache (N41) for every command.
     let remote_enabled = setup_credentials_and_remote(&root, &credential_options, &remote_options);
@@ -1734,6 +1757,7 @@ fn info_command(
     // output base (docs/WORKTREES.md); read only, nothing is created.
     let cache = command_cache(line, cwd, &root);
     let output_base = bazel_rs::worktree::output_base_for(&cache, &root);
+    let root_for_info = root.clone();
     let context = bazel_rs::info::Context {
         workspace: root,
         cache,
@@ -1746,6 +1770,11 @@ fn info_command(
         client_test_env: client(&test_inherited),
         starlark_semantics,
         memory_limit_mb,
+        repository_cache: native
+            .rc
+            .repository_cache
+            .as_deref()
+            .map(|value| bazel_rs::repository_cache::resolve(value, &root_for_info)),
     };
     let keys: Vec<String> = options.residue.iter().map(|arg| arg.text.clone()).collect();
     let outcome = bazel_rs::info::run(&context, &info, &keys, &mut std::io::stdout().lock())?;
@@ -5456,6 +5485,59 @@ fn unmodelled_option(arg: &bazelrc::Arg) -> String {
     bazel_rs::configuration::unrecognized_option(text).unwrap_or_else(|| {
         format!("unsupported option {text:?}{suffix}; options are never silently ignored")
     })
+}
+
+/// BazelRepositoryModule.beforeCommand's repository cache settings
+/// (:309-401): the shared download cache (crate::repository_cache) and the
+/// repo contents cache's checks. bazel-rs keeps fetched repositories in its
+/// own repository store, so the repo contents cache is accepted without
+/// being written (docs/REPOSITORY_CACHE.md); its location is still checked
+/// like genuine's, which fails a command whose repo contents cache is inside
+/// the workspace or contains the output base.
+fn install_repository_cache(
+    rc: &bazel_rs::rc_options::RcOptions,
+    root: &Path,
+    output_base: &Path,
+    repository_environment: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Result<(), String> {
+    let path = rc
+        .repository_cache
+        .as_deref()
+        .and_then(|value| bazel_rs::repository_cache::resolve(value, root));
+    let contents = match rc.repo_contents_cache.as_deref() {
+        Some(value) => bazel_rs::repository_cache::resolve(value, root),
+        None => path
+            .as_ref()
+            .map(|path| path.join(bazel_rs::repository_cache::CONTENTS_DIR)),
+    };
+    if let Some(contents) = &contents {
+        let resolve = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        let resolved_output_base = resolve(output_base);
+        let resolved_contents = resolve(contents);
+        // BAD_REPO_CONTENTS_CACHE (exit 2).
+        if resolved_output_base.starts_with(&resolved_contents) {
+            return Err(bazel_rs::exit_code::command_line(format!(
+                "The output base [{}] is inside the repo contents cache [{}]. This can cause spurious failures. Disable the repo contents cache with `--repo_contents_cache=`, or specify `--repo_contents_cache=<path that doesn't contain the output base>`.",
+                resolved_output_base.display(),
+                resolved_contents.display()
+            )));
+        }
+        if contents.starts_with(root) {
+            return Err(bazel_rs::exit_code::command_line(format!(
+                "The repo contents cache [{}] is inside the main repo [{}]. This can cause spurious failures. Disable the repo contents cache with `--repo_contents_cache=`, or specify `--repo_contents_cache=<path outside the main repo>`.",
+                contents.display(),
+                root.display()
+            )));
+        }
+    }
+    let no_default_canonical_id = repository_environment.iter().any(|(name, value)| {
+        name == "BAZEL_HTTP_RULES_URLS_AS_DEFAULT_CANONICAL_ID" && value == "0"
+    });
+    bazel_rs::repository_cache::install(bazel_rs::repository_cache::Settings {
+        path,
+        no_default_canonical_id,
+    });
+    Ok(())
 }
 
 /// Credential helpers and the remote cache (CredentialModule,

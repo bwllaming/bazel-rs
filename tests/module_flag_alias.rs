@@ -147,7 +147,7 @@ fn unsupported_command_options_fail_before_bootstrap_and_later_parse_errors() {
     for args in [
         vec!["--compile_one_dependency", "//:read"],
         vec![
-            "--disk_cache=private",
+            "--distdir=private",
             "--sandbox_add_mount_pair=/a::/b",
             "//:read",
         ],
@@ -166,13 +166,13 @@ fn unsupported_command_options_fail_before_bootstrap_and_later_parse_errors() {
     }
     f.write(
         ".bazelrc",
-        "build --disk_cache=private\nbuild:cross --sandbox_add_mount_pair=/a::/b\n",
+        "build --distdir=private\nbuild:cross --sandbox_add_mount_pair=/a::/b\n",
     );
     let out = f.run("build", &["--config=cross", "//:read"]);
     let error = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success());
     assert!(
-        error.contains("--disk_cache=private") && error.contains(".bazelrc:1"),
+        error.contains("--distdir=private") && error.contains(".bazelrc:1"),
         "{error}"
     );
     assert!(

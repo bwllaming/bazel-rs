@@ -477,7 +477,13 @@ fn materialize_registry(
         crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryMaterialized, || {
             format!("registry archive {name}@{version}")
         });
-        let blob = cached_download(&cache, &urls, &integrity, downloads_enabled)?;
+        let blob = cached_download(
+            &cache,
+            &urls,
+            &integrity,
+            downloads_enabled,
+            &crate::repository_cache::default_canonical_id(&urls),
+        )?;
         crate::module_root_warm::check()?;
         let staging = tempfile::Builder::new()
             .prefix(".stage-")
@@ -513,7 +519,7 @@ fn materialize_registry(
             let integrity = Integrity::parse(value.as_str().expect("validated overlay integrity"))?;
             let location =
                 registry.download_location(&format!("modules/{name}/{version}/overlay/{path}"))?;
-            let blob = cached_download(&cache, &[location], &integrity, downloads_enabled)?;
+            let blob = cached_download(&cache, &[location], &integrity, downloads_enabled, "")?;
             copy_source_file(staging.path(), &relative, &blob, true)?;
         }
         // Preserve descriptor insertion order, not lexical patch-name order.
@@ -522,7 +528,7 @@ fn materialize_registry(
             let integrity = Integrity::parse(value.as_str().expect("validated patch integrity"))?;
             let location =
                 registry.download_location(&format!("modules/{name}/{version}/patches/{path}"))?;
-            let blob = cached_download(&cache, &[location], &integrity, downloads_enabled)?;
+            let blob = cached_download(&cache, &[location], &integrity, downloads_enabled, "")?;
             // PatchUtil reads the patch text into memory; that is inherent.
             let bytes = fs::read(&blob).map_err(|e| format!("cannot read registry patch: {e}"))?;
             crate::patching::parse(&bytes, patch_strip)
@@ -662,6 +668,7 @@ fn cached_download(
     urls: &[String],
     integrity: &Integrity,
     downloads_enabled: bool,
+    canonical_id: &str,
 ) -> Result<PathBuf, String> {
     crate::module_root_warm::check()?;
     let directory = download_cache_dir(cache, &integrity.algorithm);
@@ -674,6 +681,14 @@ fn cached_download(
     {
         // The download's last use (DownloadCache.get touches it;
         // docs/CACHE_GC.md).
+        crate::cache_gc::note_used_path(&path);
+        crate::repository_cache::offer(integrity.kind(), &integrity.digest, canonical_id, &path);
+        return Ok(path);
+    }
+    // The shared `--repository_cache` (genuine's layout) before the network.
+    if crate::repository_cache::fetch_into(integrity.kind(), &integrity.digest, canonical_id, &path)
+        && integrity.verify_file(&path).is_ok()
+    {
         crate::cache_gc::note_used_path(&path);
         return Ok(path);
     }
@@ -706,6 +721,13 @@ fn cached_download(
                 File::open(&directory)
                     .and_then(|f| f.sync_all())
                     .map_err(|e| e.to_string())?;
+                crate::repository_cache::put(
+                    integrity.kind(),
+                    &integrity.digest,
+                    canonical_id,
+                    &path,
+                )
+                .map_err(|e| format!("cannot store the download in --repository_cache: {e}"))?;
                 return Ok(path);
             }
             Err(error) => failures.push(error),
