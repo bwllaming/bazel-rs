@@ -1,0 +1,7 @@
+filegroup rule //other:c
+source file //other:u.txt
+genrule rule //pkg:a
+filegroup rule //pkg:b
+source file //pkg:s.txt
+source file //pkg:t.txt
+source file @@bazel_tools//tools/genrule:genrule-setup.sh

@@ -493,6 +493,8 @@ struct Env<'a> {
     universe_parents: Option<Arc<HashMap<Label, Vec<Label>>>>,
     /// SkyQuery pattern failures, raised when the literal is evaluated.
     pattern_failures: HashMap<String, String>,
+    /// Labels print as Label.toString (genquery's legacy label printer).
+    legacy_labels: bool,
 }
 
 /// QueryOptionHelper.readQuery (runtime/commands/QueryOptionHelper.java:
@@ -634,6 +636,7 @@ impl Engine {
             universe_packages: HashSet::new(),
             universe_parents: None,
             pattern_failures: HashMap::new(),
+            legacy_labels: false,
         };
         let result = env.evaluate_query(&expr);
         env.engine.stop_query_prefetch();
@@ -703,6 +706,139 @@ impl Engine {
         outcome.events = events;
         outcome.exit_code = if success { 0 } else { 3 };
         Ok(outcome)
+    }
+}
+
+impl Engine {
+    /// GenQuery.doQuery (rules/genquery/GenQuery.java:62-230): `expression`
+    /// over the transitive closure of `scope` with the genquery-allowed
+    /// `opts`, ordered deterministically (a streamed formatter sorts
+    /// lexicographically unless the expression is a top-level somepath;
+    /// the others order fully). A result target outside the closure fails
+    /// (`strict`) or is skipped with a warning; the closure is checked on
+    /// the result, not on every target the evaluation visits (docs/AQUERY.md
+    /// genquery). Returns the output bytes and the warnings.
+    pub(crate) fn genquery(
+        &mut self,
+        expression: &str,
+        opts: &[String],
+        scope: &[Label],
+        strict: bool,
+    ) -> Result<(Vec<u8>, Vec<String>), String> {
+        let mut options = QueryOptions {
+            // GenQuery excludes nodep dependencies unless asked.
+            nodep_deps: false,
+            ..QueryOptions::default()
+        };
+        let mut index = 0;
+        while index < opts.len() {
+            let arg = &opts[index];
+            for (name, forbidden) in [
+                ("--keep_going", "keep_going"),
+                ("-k", "keep_going"),
+                ("--universe_scope", "universe_scope"),
+                ("--order_results", "order_results"),
+                ("--noorder_results", "noorder_results"),
+                ("--order_output", "order_output"),
+                (
+                    "--experimental_graphless_query",
+                    "experimental_graphless_query",
+                ),
+            ] {
+                if arg == name || arg.starts_with(&format!("{name}=")) {
+                    return Err(format!("option --{forbidden} is not allowed"));
+                }
+            }
+            match options.parse(arg, opts.get(index + 1).map(String::as_str)) {
+                Ok(Some(used)) => index += 1 + usize::from(used),
+                Ok(None) => {
+                    return Err(format!(
+                        "error while parsing query options: Unrecognized option: {arg}"
+                    ));
+                }
+                Err(error) => return Err(format!("error while parsing query options: {error}")),
+            }
+        }
+        options.relative_locations = true;
+        if !FORMATTERS.contains(&options.output.as_str()) {
+            return Err(format!(
+                "Invalid output format '{}'. Valid values are: {}",
+                options.output,
+                FORMATTERS.join(", ")
+            ));
+        }
+        let streamed = is_streamed(&options.output);
+        options.order_output = if streamed {
+            OrderOutput::No
+        } else {
+            OrderOutput::Full
+        };
+        let expr =
+            language::parse(expression).map_err(|error| format!("query syntax error: {error}"))?;
+        let mut env = Env {
+            engine: self,
+            options: &options,
+            relative_directory: String::new(),
+            kinds: HashMap::new(),
+            attributes: HashMap::new(),
+            edges: HashMap::new(),
+            load_targets: BTreeMap::new(),
+            patterns: HashMap::new(),
+            graph_nodes: Set::default(),
+            graph_edges: HashMap::new(),
+            events: Vec::new(),
+            has_errors: false,
+            package_errors: HashMap::new(),
+            unresolved: HashMap::new(),
+            main_mapping_order: Vec::new(),
+            digests: HashMap::new(),
+            sky: false,
+            unfiltered: false,
+            universe: Set::default(),
+            universe_packages: HashSet::new(),
+            universe_parents: None,
+            pattern_failures: HashMap::new(),
+            legacy_labels: true,
+        };
+        let failure = |failure: Failure| match failure {
+            Failure::Query(error) => format!("query failed: {}", error.message),
+            Failure::Fatal(error) => error,
+        };
+        // GenQueryPackageProviderFactory.constructPackageMap: the scope
+        // targets must exist; their transitive closure is the scope.
+        for label in scope {
+            match env.lookup(label) {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => return Err(error),
+                Err(error) => return Err(failure(error)),
+            }
+        }
+        let roots = Set::from_labels(scope.iter().cloned());
+        let (closure, _) = env.visit(&roots, None).map_err(failure)?;
+        let result = env.evaluate_query(&expr).map_err(failure)?;
+        env.engine.stop_query_prefetch();
+        let mut kept = Set::default();
+        let mut warnings = Vec::new();
+        for label in &result.items {
+            if closure.contains(label) {
+                kept.insert(label.clone());
+            } else if strict {
+                return Err(format!(
+                    "query failed: Evaluation failed: target '{}' is not within the scope of the query",
+                    env.print_label(label)
+                ));
+            } else {
+                warnings.push(format!(
+                    "target '{}' is not within the scope of the query. Skipping",
+                    env.print_label(label)
+                ));
+            }
+        }
+        // QueryOptions.getLabelPrinterLegacy: Label.toString (no main
+        // repository display names), so the main mapping order stays empty.
+        let sort = streamed && !matches!(&expr, Expr::Function(Function::SomePath, _));
+        let bytes = env.output(&kept, streamed, sort).map_err(failure)?;
+        Ok((bytes, warnings))
     }
 }
 
@@ -2301,6 +2437,10 @@ impl Env<'_> {
     }
 
     fn repository_form(&self, repository: &str) -> String {
+        // genquery's QueryOptions.getLabelPrinterLegacy: Label.toString.
+        if self.legacy_labels && !repository.is_empty() {
+            return format!("@@{repository}");
+        }
         if self.options.consistent_labels {
             return format!("@@{repository}");
         }

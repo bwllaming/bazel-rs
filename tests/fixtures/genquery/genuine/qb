@@ -1,0 +1,10 @@
+# <WS>/pkg/BUILD:1:8
+genrule(
+  name = "a",
+  srcs = ["//pkg:s.txt", "//pkg:b"],
+  outs = ["//pkg:a.out"],
+  cmd = "cat $(SRCS) > $@",
+)
+# Rule a instantiated at (most recent call last):
+#   <WS>/pkg/BUILD:1:8 in <toplevel>
+

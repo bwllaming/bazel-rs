@@ -33,6 +33,7 @@ mod alloc_report;
 pub mod aquery;
 mod compatibility;
 pub mod cquery;
+mod genquery;
 mod incremental;
 mod keep_going;
 pub mod query;
@@ -14024,6 +14025,12 @@ impl Engine {
         exec_config: ConfigId,
         main_ignored: Arc<IgnoredSubdirectories>,
     ) -> Result<(), String> {
+        // genquery runs its query at analysis, before the commit borrows
+        // the planning state (crate::engine::genquery).
+        let genquery = match rule.kind {
+            RuleKind::Native("genquery") => Some(self.genquery_output(rule)?),
+            _ => None,
+        };
         let ActionPlanning {
             dry,
             custom_providers,
@@ -14442,6 +14449,64 @@ impl Engine {
                 ),
             );
             dry.insert(key, Arc::new(artifacts));
+        } else if let Some(genquery) = genquery {
+            // QueryResultAction: the rule's one output, named like the rule.
+            let output = rule.label.generated_exec_path(&output_root);
+            if !self.semantic_only() {
+                let producer = OutputProducer::native(&key.label.to_string());
+                register_output(producers, &output, &producer)?;
+                let action = Action {
+                    id: action_owner.clone(),
+                    outputs: vec![output.clone()],
+                    write: Some(action::WriteAction {
+                        content: genquery.content,
+                        executable: false,
+                    }),
+                    extra: action::ActionExtra {
+                        mnemonic: "GenQuery".into(),
+                        ..Default::default()
+                    },
+                    ..Action::default()
+                };
+                let mut commit = ActionCommit {
+                    artifact_index,
+                    workspace_status,
+                    nodes,
+                    producers,
+                    source_inputs,
+                    client_environment,
+                    status_client_environment,
+                    input_groups,
+                    listed_tree_actions,
+                };
+                self.commit_action(
+                    action,
+                    Vec::new(),
+                    &[],
+                    None,
+                    &key.label.to_string(),
+                    &main_ignored,
+                    &mut commit,
+                )?;
+            }
+            let artifact = Artifact::new(
+                output.clone(),
+                output,
+                Some((action_owner.clone(), 0)),
+                rule.label.to_string(),
+                false,
+                false,
+            );
+            register_artifact(artifact_index, &artifact.file, &artifact);
+            declared.insert((config, artifact.exec.to_path_buf()), artifact.clone());
+            runfiles_info.insert(
+                key.clone(),
+                Arc::new(
+                    crate::runfiles::TargetRunfiles::genrule(&[artifact.file()], false)
+                        .map_err(|error| format!("{}: {error:#}", rule.label))?,
+                ),
+            );
+            dry.insert(key, Arc::new(vec![artifact]));
         } else {
             restricted_to_error(rule)?;
             // The native platform providers, visible to Starlark as
@@ -18200,6 +18265,7 @@ fn native_analysis_gate(rule: &Rule) -> Result<(), String> {
                 | "config_feature_flag"
                 | "test_suite"
                 | "java_plugins_flag_alias"
+                | "genquery"
         )
     {
         return Err(format!(
