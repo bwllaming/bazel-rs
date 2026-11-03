@@ -2250,6 +2250,55 @@ pub fn taint(kind: Taint, detail: impl FnOnce() -> String) {
     }
 }
 
+/// The network taints of one non-local repository rule execution
+/// (crate::repository_store's `ExecutedTaint`): its downloads only shaped
+/// the tree it publishes, so a warm re-probe that reuses that publication
+/// settles them with its `repository-rule-executed` taint; otherwise they
+/// are recorded ([`NetworkSink::taint`]). Its non-blocking downloads carry
+/// it to their worker threads ([`network_sink`], [`with_network_sink`]),
+/// each holding a reference while it transfers.
+#[derive(Debug, Default)]
+pub struct NetworkSink(Mutex<Vec<String>>);
+
+impl NetworkSink {
+    /// Record the collected network taints.
+    pub fn taint(&self) {
+        for detail in std::mem::take(&mut *lock(&self.0)) {
+            taint(Taint::Network, || detail);
+        }
+    }
+}
+
+thread_local! {
+    static NETWORK_SINK: std::cell::RefCell<Option<Arc<NetworkSink>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A network access ([`Taint::Network`]): into the running repository rule
+/// execution's [`NetworkSink`], if any, else recorded.
+pub fn network_taint(detail: impl FnOnce() -> String) {
+    if active().is_none() {
+        return;
+    }
+    match NETWORK_SINK.with(|sink| sink.borrow().clone()) {
+        Some(sink) => lock(&sink.0).push(detail()),
+        None => taint(Taint::Network, detail),
+    }
+}
+
+/// The [`NetworkSink`] of this thread's repository rule execution.
+pub fn network_sink() -> Option<Arc<NetworkSink>> {
+    NETWORK_SINK.with(|sink| sink.borrow().clone())
+}
+
+/// Run `work` with `sink` as this thread's [`NetworkSink`].
+pub fn with_network_sink<R>(sink: Option<Arc<NetworkSink>>, work: impl FnOnce() -> R) -> R {
+    let previous = NETWORK_SINK.with(|current| current.replace(sink));
+    let result = work();
+    NETWORK_SINK.with(|current| current.replace(previous));
+    result
+}
+
 /// Record a taint even after the window closed (end-of-command conditions:
 /// errors, a pending lockfile write).
 pub fn taint_after_window(kind: Taint, detail: impl FnOnce() -> String) {

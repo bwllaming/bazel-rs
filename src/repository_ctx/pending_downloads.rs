@@ -79,6 +79,9 @@ struct Job {
     /// The speculation's cancellation (crate::repository_speculation), when
     /// a speculative repository fetch issued the download.
     cancel: Option<Arc<AtomicBool>>,
+    /// The issuing repository rule execution's network taints
+    /// (crate::observed_fs::NetworkSink), held while transferring.
+    network: Option<Arc<crate::observed_fs::NetworkSink>>,
     done: Arc<Done>,
 }
 
@@ -166,20 +169,25 @@ fn work(queue: &Queue) {
     }
 }
 
-fn run(job: Job) {
+fn run(mut job: Job) {
     let mut failures = Vec::new();
     let temp = job.temp.clone();
+    // Released before the transfer is handed back (the execution's
+    // publication counts the references still transferring).
+    let network = job.network.take();
     let fetched = crate::repository_speculation::with_cancel(job.cancel.clone(), || {
-        transport::fetch_to_file(
-            &job.client,
-            &job.urls,
-            job.expected.as_ref(),
-            job.sri,
-            &job.headers,
-            &mut |_| temp.clone(),
-            true,
-            &mut |url, failure| failures.push((url.clone(), failure.clone())),
-        )
+        crate::observed_fs::with_network_sink(network, || {
+            transport::fetch_to_file(
+                &job.client,
+                &job.urls,
+                job.expected.as_ref(),
+                job.sri,
+                &job.headers,
+                &mut |_| temp.clone(),
+                true,
+                &mut |url, failure| failures.push((url.clone(), failure.clone())),
+            )
+        })
     });
     let cached = fetched.as_ref().ok().map(|fetched| {
         cache_put_at(
@@ -262,6 +270,7 @@ pub(super) fn submit(request: Request<'_>) -> Arc<Slot> {
         cache: request.cache,
         canonical_id: request.canonical_id.to_owned(),
         cancel: crate::repository_speculation::cancel_token(),
+        network: crate::observed_fs::network_sink(),
         done: done.clone(),
     };
     PENDING.with(|pending| {

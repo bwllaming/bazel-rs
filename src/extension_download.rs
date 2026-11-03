@@ -543,7 +543,7 @@ pub(crate) fn open_with_headers(
     original: &Url,
     headers: &RequestHeaders,
 ) -> Result<Box<dyn Read>, OpenFailure> {
-    crate::observed_fs::taint(crate::observed_fs::Taint::Network, || original.to_string());
+    crate::observed_fs::network_taint(|| original.to_string());
     // Only a validated 301 updates the next attempt's origin. The immutable
     // original URL still controls original-path gzip suffix suppression.
     let mut retry_origin: Option<Url> = None;

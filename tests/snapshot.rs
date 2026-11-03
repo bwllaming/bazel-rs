@@ -5856,3 +5856,50 @@ fn the_hidden_lockfile_is_recorded_by_the_entries_used() {
     });
     twin.same(args, &[]).assert_miss("LOCKFILE_ENTRIES");
 }
+
+const DOWNLOADING: &str = r#"def _fetch(ctx):
+    ctx.download(url = ctx.attr.url, output = "v.txt", sha256 = ctx.attr.sha256)
+    token = ctx.download(url = ctx.attr.url, output = "w.txt", sha256 = ctx.attr.sha256, block = False)
+    token.wait()
+    ctx.file("BUILD.bazel", "exports_files(['v.txt', 'w.txt'])\n")
+
+fetch_rule = repository_rule(implementation = _fetch, attrs = {"url": attr.string(), "sha256": attr.string()})
+"#;
+
+/// A repository rule's downloads (blocking and not) only shape the tree it
+/// publishes: the warm re-probe that settles its `repository-rule-executed`
+/// taint settles their `network` taints too, so the run that downloaded is
+/// saved (`bazel-rs affected`'s concurrent head planning on a cache missing
+/// a new dependency) and its hit fetches nothing.
+#[test]
+fn a_repository_rules_downloads_settle_with_its_publication() {
+    use sha2::Digest as _;
+    let twin = fixture();
+    let served = twin.base.path().join("served");
+    fs::create_dir_all(&served).unwrap();
+    fs::write(served.join("blob.txt"), "downloaded\n").unwrap();
+    let sha256: String = sha2::Sha256::digest(b"downloaded\n")
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let server = Registry::serve(served);
+    twin.write("fetch.bzl", DOWNLOADING);
+    twin.write(
+        "MODULE.bazel",
+        &format!(
+            "{MODULE}\nfr = use_repo_rule('//:fetch.bzl', 'fetch_rule')\nfr(name = 'fetched', url = '{}/blob.txt', sha256 = '{sha256}')\n",
+            server.url
+        ),
+    );
+    twin.write(
+        "fetch/BUILD.bazel",
+        "genrule(name = 'f', srcs = ['@fetched//:v.txt', '@fetched//:w.txt'], outs = ['f.txt'], cmd = 'cat $(SRCS) > $@')\n",
+    );
+    let args = &["build", "//fetch:f"];
+    let cold = twin.same(args, &[]);
+    cold.assert_success().assert_saved();
+    assert!(server.requests() > 0);
+    let before = server.requests();
+    twin.same(args, &[]).assert_hit();
+    assert_eq!(server.requests(), before, "a hit fetches nothing");
+}

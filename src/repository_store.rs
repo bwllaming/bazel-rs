@@ -1760,6 +1760,9 @@ enum Probe<'a> {
 struct ExecutedTaint {
     /// `None` once settled without a taint.
     detail: Option<String>,
+    /// The execution's network taints (its downloads), settled with it:
+    /// they only shaped the published tree the re-probe validates.
+    network: Option<std::sync::Arc<crate::observed_fs::NetworkSink>>,
 }
 
 impl ExecutedTaint {
@@ -1803,11 +1806,20 @@ impl ExecutedTaint {
             return;
         }
         observed_fs::supersede_selection(pointer, stage_key);
-        if matches!(
-            try_reuse_in(cache, stage_key, spec_key, workspace, validate),
-            Ok(Some(found)) if found == destination
-        ) {
+        // A download still transferring holds the execution's network
+        // taints: it is no part of what the re-probe validates.
+        let transferring = self
+            .network
+            .as_ref()
+            .is_some_and(|network| std::sync::Arc::strong_count(network) > 1);
+        if !transferring
+            && matches!(
+                try_reuse_in(cache, stage_key, spec_key, workspace, validate),
+                Ok(Some(found)) if found == destination
+            )
+        {
             self.detail = None;
+            self.network = None;
         }
     }
 }
@@ -1816,6 +1828,9 @@ impl Drop for ExecutedTaint {
     fn drop(&mut self) {
         if let Some(detail) = self.detail.take() {
             crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryRuleExecuted, || detail);
+        }
+        if let Some(network) = self.network.take() {
+            network.taint();
         }
     }
 }
@@ -1890,12 +1905,15 @@ where
     // Removes the slot's directory on every early return below.
     let scratch = crate::repository_slots::SlotScratch::new(&writer);
     let started = std::time::Instant::now();
+    // A non-local execution's downloads taint with it ([`ExecutedTaint`]).
+    let network = matches!(probe, Probe::Warm { .. })
+        .then(|| std::sync::Arc::new(crate::observed_fs::NetworkSink::default()));
     let executed = {
         let _m = timing::mark(&timing::PHASES.execute);
         let _tainted = crate::observed_fs::tainted_section();
         // `Fetching repository @@name` in the progress display (when on).
         let _fetching = crate::progress::fetching_repository(stage_key);
-        execute(&slot)
+        crate::observed_fs::with_network_sink(network.clone(), || execute(&slot))
     };
     // A local rule's execution is recorded for replay by the caller instead.
     // A non-local one taints the analysis snapshot unless the warm probe,
@@ -1907,6 +1925,7 @@ where
                 "{stage_key} ({:.1} ms)",
                 started.elapsed().as_secs_f64() * 1000.0
             )),
+            network,
         }),
         Probe::Local(_) => None,
     };
