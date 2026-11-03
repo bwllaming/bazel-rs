@@ -38,8 +38,6 @@ pub struct Meta {
     pub progress: Option<String>,
     /// The fixed environment in Bazel's insertion order.
     pub environment: Option<Vec<(String, String)>>,
-    /// The execution info in Bazel's insertion order.
-    pub execution_info: Option<Vec<(String, String)>>,
     /// The spawn's CommandLines as SpawnAction.computeKey sees them.
     pub command_lines: Option<Vec<CommandLinePart>>,
     /// CommandAction.getArguments (CommandLines.allArguments: parameter
@@ -47,8 +45,8 @@ pub struct Meta {
     pub arguments: Option<Vec<String>>,
     /// A ParameterFileWriteAction (`ctx.actions.write` of an Args).
     pub param_write: Option<ParamWrite>,
-    /// SymlinkAction.toExecutable (`is_executable = True`).
-    pub executable_symlink: bool,
+    /// A RepoMappingManifestAction (`py_internal.create_repo_mapping_manifest`).
+    pub repo_mapping: bool,
 }
 
 /// A ParameterFileWriteAction's file type, fingerprint and arguments.
@@ -327,6 +325,8 @@ pub struct Aspect {
 pub struct ActionRecord {
     /// The owner's label (Label.toString) and rule class.
     pub target: String,
+    /// The owner's label in display form (the text output's `Target:`).
+    pub display_target: String,
     pub rule_class: Option<String>,
     /// Index into [`Dump::configurations`].
     pub configuration: usize,
@@ -354,6 +354,14 @@ pub struct ActionRecord {
     pub unresolved_symlink: Option<String>,
     /// A ParameterFileWriteAction's arguments.
     pub param_file: Option<Vec<String>>,
+    /// The action's whole description line when it is not `action 'DESC'`
+    /// (RunfilesTreeAction.prettyPrint: `runfiles for LABEL`).
+    pub pretty: Option<String>,
+    /// A RunfilesSupport action (listed after the rule's own actions).
+    pub runfiles_support: bool,
+    /// The text output's fixed environment when it differs from the proto's
+    /// effective one (CppCompileAction: the configuration's environment).
+    pub text_environment: Option<Vec<(String, String)>>,
 }
 
 /// The selected actions with their configurations.
@@ -394,7 +402,17 @@ pub fn progress_message(
 
 /// Artifact.getRootRelativePath of an exec path.
 pub fn root_relative(exec_path: &str) -> &str {
-    crate::label::split_generated_root(exec_path).map_or(exec_path, |(_, relative)| relative)
+    if let Some((_, relative)) = crate::label::split_generated_root(exec_path) {
+        return relative;
+    }
+    // A source of an external repository: below its `external/REPO` root.
+    match exec_path
+        .strip_prefix("external/")
+        .and_then(|rest| rest.split_once('/'))
+    {
+        Some((_, relative)) => relative,
+        None => exec_path,
+    }
 }
 
 /// `internalToEscapedUnicode` (ActionGraphTextOutputFormatterCallback):
@@ -520,9 +538,12 @@ fn write_text(
             continue;
         }
         let configuration = &dump.configurations[action.configuration];
-        out.push_str(&format!("action '{}'\n", java_string(&action.description)));
+        match &action.pretty {
+            Some(pretty) => out.push_str(&format!("{}\n", java_string(pretty))),
+            None => out.push_str(&format!("action '{}'\n", java_string(&action.description))),
+        }
         out.push_str(&format!("  Mnemonic: {}\n", action.mnemonic));
-        out.push_str(&format!("  Target: {}\n", action.target));
+        out.push_str(&format!("  Target: {}\n", action.display_target));
         out.push_str(&format!("  Configuration: {}\n", configuration.mnemonic));
         if let Some(platform) = &action.execution_platform {
             out.push_str(&format!("  Execution platform: {platform}\n"));
@@ -565,9 +586,12 @@ fn write_text(
             outputs.sort();
             out.push_str(&format!("  Outputs: [{}]\n", outputs.join(", ")));
         }
-        if !action.environment.is_empty() {
-            let mut environment: Vec<String> = action
-                .environment
+        let environment = action
+            .text_environment
+            .as_ref()
+            .unwrap_or(&action.environment);
+        if !environment.is_empty() {
+            let mut environment: Vec<String> = environment
                 .iter()
                 .map(|(key, value)| escaped_unicode(&format!("{key}={value}")))
                 .collect();

@@ -612,6 +612,13 @@ impl Context {
         if registered.repo_mapping.is_none() {
             registered.repo_mapping = Some(runfiles);
         }
+        if crate::aquery::capturing() {
+            // aquery: a RepoMappingManifestAction, not a FileWriteAction.
+            registered.action.extra.aquery = Some(Arc::new(crate::aquery::Meta {
+                repo_mapping: true,
+                ..Default::default()
+            }));
+        }
         Ok(())
     }
 }
@@ -1165,16 +1172,6 @@ fn register_spawn(
         (true, _) => Some(Vec::new()),
         (false, _) => None,
     };
-    let requirement_order: Option<Vec<String>> =
-        match (crate::aquery::capturing(), options.execution_requirements) {
-            (true, Some(value)) if !value.is_none() => DictRef::from_value(value).map(|dict| {
-                dict.iter()
-                    .filter_map(|(key, _)| key.unpack_str().map(str::to_owned))
-                    .collect()
-            }),
-            (true, _) => Some(Vec::new()),
-            (false, _) => None,
-        };
     let raw_progress = options.progress_message.clone();
     // VectorArg.expandDirectories (StarlarkCustomCommandLine.java:456-485): an
     // expanded directory that is not an input fails when the action executes,
@@ -1240,27 +1237,9 @@ fn register_spawn(
                 .get(key)
                 .map(|value| (key.clone(), value.clone()))
         }));
-        let order = requirement_order.unwrap_or_default();
-        let mut info: Vec<(String, String)> = order
-            .iter()
-            .filter_map(|key| {
-                extra
-                    .execution_info
-                    .get(key)
-                    .map(|value| (key.clone(), value.clone()))
-            })
-            .collect();
-        info.extend(
-            extra
-                .execution_info
-                .iter()
-                .filter(|(key, _)| !order.contains(key))
-                .map(|(key, value)| (key.clone(), value.clone())),
-        );
         Arc::new(crate::aquery::Meta {
             progress: raw_progress,
             environment: Some(fixed),
-            execution_info: Some(info),
             command_lines: Some(command_lines),
             arguments: Some(bazel_arguments),
             ..Default::default()

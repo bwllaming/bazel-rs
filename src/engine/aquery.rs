@@ -49,12 +49,17 @@ impl Analysis {
             let Some(records) = by_node.get(&id) else {
                 continue;
             };
-            actions.extend(
-                records
-                    .iter()
-                    .filter(|record| record.aspects.is_empty())
-                    .map(|record| (*record).clone()),
-            );
+            // RunfilesSupport registers its actions after the rule's own.
+            for support in [false, true] {
+                actions.extend(
+                    records
+                        .iter()
+                        .filter(|record| {
+                            record.aspects.is_empty() && record.runfiles_support == support
+                        })
+                        .map(|record| (*record).clone()),
+                );
+            }
             if include_aspects {
                 actions.extend(
                     records
@@ -184,6 +189,28 @@ impl Engine {
                 );
             }
         }
+        // Label.getDisplayForm(main repository mapping): the text output's
+        // `Target:` spelling (LabelPrinter.displayForm).
+        let mut apparent: BTreeMap<&str, &str> = BTreeMap::new();
+        for (name, canonical) in &graph.repository_mapping {
+            let shorter = apparent
+                .get(canonical.as_str())
+                .is_none_or(|known| name.len() < known.len());
+            if shorter {
+                apparent.insert(canonical.as_str(), name.as_str());
+            }
+        }
+        let display = |label: &Label| -> String {
+            if label.repository.is_empty() {
+                return format!("//{}:{}", label.package, label.name);
+            }
+            match apparent.get(label.repository.as_str()) {
+                Some(name) if !name.is_empty() => {
+                    format!("@{name}//{}:{}", label.package, label.name)
+                }
+                _ => label.to_string(),
+            }
+        };
         let mut configurations = Vec::new();
         let mut configuration_index: BTreeMap<ConfigId, usize> = BTreeMap::new();
         let mut actions = Vec::new();
@@ -216,9 +243,13 @@ impl Engine {
                 crate::cquery_proto::Target::Rule(rule) => Some(rule.rule_class.clone()),
                 _ => None,
             };
-            let record =
-                self.aquery_record(node, owner, rule_class, configuration, &configurations);
-            actions.push((graph_node, record));
+            let display_target = display(&owner.key.label);
+            for mut record in
+                self.aquery_records(node, owner, rule_class, configuration, &configurations)
+            {
+                record.display_target = display_target.clone();
+                actions.push((graph_node, record));
+            }
         }
         Ok(Analysis {
             graph,
@@ -253,14 +284,14 @@ impl Engine {
             .find_map(|(_, info)| info.as_ref().ok().cloned())
     }
 
-    fn aquery_record(
+    fn aquery_records(
         &self,
         node: &PlannedAction,
         owner: &Owner,
         rule_class: Option<String>,
         configuration: usize,
         configurations: &[crate::aquery::Configuration],
-    ) -> ActionRecord {
+    ) -> Vec<ActionRecord> {
         let action = &node.action;
         let meta: Meta = action.extra.aquery.as_deref().cloned().unwrap_or_default();
         let tool = configurations[configuration].is_tool;
@@ -299,7 +330,12 @@ impl Engine {
         let primary_output = outputs.first().map(|(path, _)| path.as_str());
         let primary_input = inputs.first().map(String::as_str);
         let suffix = action.id.rsplit_once('#').map(|(_, suffix)| suffix);
+        let mut extra_records = Vec::new();
         let mut record = ActionRecord {
+            runfiles_support: matches!(
+                suffix,
+                Some("repo_mapping" | "runfiles_manifest" | "runfiles_tree")
+            ),
             target: label.clone(),
             rule_class,
             configuration,
@@ -357,7 +393,7 @@ impl Engine {
                     );
                     record.file_write = Some((write.executable, contents));
                 }
-                if suffix == Some("repo_mapping") {
+                if suffix == Some("repo_mapping") || meta.repo_mapping {
                     record.mnemonic = "RepoMappingManifest".into();
                     record.description = progress("Writing repo mapping manifest for %{label}");
                 } else {
@@ -375,7 +411,12 @@ impl Engine {
                     ..
                 }),
             ) => {
-                record.mnemonic = if *require_executable {
+                record.mnemonic = if !action.extra.mnemonic.is_empty() {
+                    action.extra.mnemonic.clone()
+                } else if message.starts_with("SolibSymlink ") {
+                    // cc_common's solib symlinks (SolibSymlinkAction).
+                    "SolibSymlink".into()
+                } else if *require_executable {
                     "ExecutableSymlink".into()
                 } else {
                     "Symlink".into()
@@ -404,21 +445,23 @@ impl Engine {
                     &properties,
                 );
             }
+            (None, Some(crate::action::Transform::TemplateKeyed { volatile, .. })) => {
+                // BuildInfoFileWriteAction (TranslateBuildInfo): its key is
+                // over the translation callback (not reproduced).
+                record.mnemonic = "TranslateBuildInfo".into();
+                record.description = progress(&format!(
+                    "Translating {} BuildInfo file",
+                    if *volatile { "volatile" } else { "stable" }
+                ));
+                record.action_key = self.aquery_native_key(&record, key_platform, &properties);
+            }
             (
                 None,
-                Some(
-                    crate::action::Transform::Template {
-                        template,
-                        substitutions,
-                        executable,
-                    }
-                    | crate::action::Transform::TemplateKeyed {
-                        template,
-                        substitutions,
-                        executable,
-                        ..
-                    },
-                ),
+                Some(crate::action::Transform::Template {
+                    template,
+                    substitutions,
+                    executable,
+                }),
             ) => {
                 record.mnemonic = if action.extra.mnemonic.is_empty() {
                     "TemplateExpand".into()
@@ -442,43 +485,72 @@ impl Engine {
                 );
                 record.template = Some((content, substitutions));
             }
+            (None, Some(crate::action::Transform::RunfilesManifest { .. })) => {
+                // SourceManifestAction: no inputs, a FileContentsProvider
+                // (its contents name absolute paths; not reproduced).
+                record.mnemonic = "SourceSymlinkManifest".into();
+                record.description = progress("Creating source manifest for %{label}");
+                record.inputs.clear();
+                record.file_write = Some((false, String::new()));
+                record.action_key = self.aquery_native_key(&record, key_platform, &properties);
+            }
+            (
+                None,
+                Some(crate::action::Transform::RunfilesTree {
+                    entries, manifest, ..
+                }),
+            ) => {
+                // SymlinkTreeAction over the input manifest, then Bazel 9's
+                // RunfilesTreeAction over the runfiles and the MANIFEST.
+                let manifest_input = manifest.to_string_lossy().into_owned();
+                let tree_manifest = primary_output.unwrap_or_default().to_owned();
+                let directory = tree_manifest
+                    .strip_suffix("/MANIFEST")
+                    .unwrap_or(&tree_manifest)
+                    .to_owned();
+                record.mnemonic = "SymlinkTree".into();
+                record.description = progress(&format!("Creating runfiles tree {directory}"));
+                record.inputs = vec![manifest_input];
+                record.environment = self
+                    .configurations
+                    .get(owner.key.config)
+                    .native
+                    .action_environment()
+                    .fixed
+                    .into_iter()
+                    .collect();
+                record.action_key = self.aquery_native_key(&record, key_platform, &properties);
+                let mut tree = ActionRecord {
+                    mnemonic: "RunfilesTree".into(),
+                    pretty: Some(format!("runfiles for {label}")),
+                    inputs: crate::aquery::dedup(
+                        entries
+                            .iter()
+                            .filter_map(|(_, path)| {
+                                path.as_ref().map(|path| path.to_string_lossy().into_owned())
+                            })
+                            .chain(std::iter::once(tree_manifest.clone())),
+                    ),
+                    outputs: vec![(directory.clone(), false)],
+                    environment: Vec::new(),
+                    ..record.clone()
+                };
+                tree.description = format!("runfiles for {label}");
+                tree.action_key = self.aquery_native_key(&tree, key_platform, &properties);
+                extra_records.push(tree);
+            }
             (None, Some(transform)) => {
-                // Native runfiles support and other transforms: described by
-                // their Bazel mnemonics; their keys are not Bazel's.
-                let (mnemonic, message) = match transform {
-                    crate::action::Transform::RunfilesManifest { .. } => (
-                        "SourceSymlinkManifest",
-                        "Creating source manifest for %{label}".to_owned(),
-                    ),
-                    crate::action::Transform::RunfilesTree { .. } => (
-                        "SymlinkTree",
-                        format!(
-                            "Creating runfiles tree {}",
-                            primary_output
-                                .map(|output| output.trim_end_matches("/MANIFEST").to_owned())
-                                .unwrap_or_default()
-                        ),
-                    ),
-                    _ => ("Action", "%{output}".to_owned()),
+                let mnemonic = match transform {
+                    crate::action::Transform::BuildInfo { .. } => "TranslateBuildInfo",
+                    _ => "Action",
                 };
                 record.mnemonic = if action.extra.mnemonic.is_empty() {
                     mnemonic.to_owned()
                 } else {
                     action.extra.mnemonic.clone()
                 };
-                record.description = progress(&message);
-                let lines = [CommandLinePart::Flat(vec![record.mnemonic.clone()])];
-                record.action_key = crate::aquery_key::action_key(
-                    &KeyKind::Spawn {
-                        command_lines: &lines,
-                        mnemonic: &record.mnemonic,
-                        environment: &[],
-                        inherited: &[],
-                        execution_info: &[],
-                    },
-                    key_platform,
-                    &properties,
-                );
+                record.description = progress(&format!("{} %{{output}}", record.mnemonic));
+                record.action_key = self.aquery_native_key(&record, key_platform, &properties);
             }
             (None, None) => {
                 record.mnemonic = action.extra.mnemonic.clone();
@@ -489,9 +561,26 @@ impl Engine {
                 let raw = match (&meta.progress, record.mnemonic.as_str()) {
                     (Some(raw), _) => raw.clone(),
                     (None, "Genrule") => "Executing genrule %{label}".to_owned(),
+                    // CppCompileAction: "Compiling " + the source file.
+                    (None, "CppCompile" | "ObjcCompile") => "Compiling %{input}".to_owned(),
                     (None, mnemonic) => format!("{mnemonic} %{{output}}"),
                 };
-                record.description = progress(&raw);
+                let source = arguments
+                    .iter()
+                    .position(|argument| argument == "-c")
+                    .and_then(|index| arguments.get(index + 1));
+                record.description = match (record.mnemonic.as_str(), source) {
+                    ("CppCompile" | "ObjcCompile", Some(source)) => {
+                        crate::aquery::progress_message(
+                            &raw,
+                            &label,
+                            primary_output,
+                            Some(source),
+                            tool,
+                        )
+                    }
+                    _ => progress(&raw),
+                };
                 record.environment = meta.environment.clone().unwrap_or_else(|| {
                     action
                         .environment
@@ -499,19 +588,20 @@ impl Engine {
                         .map(|(key, value)| (key.clone(), value.clone()))
                         .collect()
                 });
-                let mut info = meta.execution_info.clone().unwrap_or_else(|| {
-                    action
-                        .extra
-                        .execution_info
-                        .iter()
-                        .map(|(key, value)| (key.clone(), value.clone()))
-                        .collect()
-                });
+                // TargetUtils.getFilteredExecutionInfo (packages/TargetUtils.java
+                // :285-306): the legal requirements, then each propagated tag
+                // as `tag: ""`, sorted (crate::shared_actions keys the same map).
+                let mut merged: BTreeMap<String, String> = action
+                    .extra
+                    .execution_info
+                    .iter()
+                    .filter(|(key, _)| legal_execution_info_key(key))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect();
                 for tag in &action.execution_info {
-                    if !info.iter().any(|(key, _)| key == tag) {
-                        info.push((tag.clone(), String::new()));
-                    }
+                    merged.entry(tag.clone()).or_default();
                 }
+                let info: Vec<(String, String)> = merged.into_iter().collect();
                 record.execution_info = info;
                 let lines = meta
                     .command_lines
@@ -532,9 +622,51 @@ impl Engine {
                 );
                 record.discovers_inputs =
                     matches!(record.mnemonic.as_str(), "CppCompile" | "ObjcCompile");
+                if record.discovers_inputs {
+                    // CppCompileAction.getEnvironment is the configuration's;
+                    // the toolchain's variables are only in its effective
+                    // environment (the proto output's).
+                    record.text_environment = Some(
+                        self.configurations
+                            .get(owner.key.config)
+                            .native
+                            .action_environment()
+                            .fixed
+                            .into_iter()
+                            .collect(),
+                    );
+                }
                 record.arguments = Some(arguments);
             }
         }
-        record
+        let mut records = vec![record];
+        records.extend(extra_records);
+        records
+    }
+
+    /// A deterministic key for an action class whose Bazel key the native
+    /// profile does not reproduce (docs/AQUERY.md): a spawn-shaped
+    /// fingerprint of its description.
+    fn aquery_native_key(
+        &self,
+        record: &ActionRecord,
+        platform: KeyPlatform<'_>,
+        properties: &[(String, String)],
+    ) -> String {
+        let mut description = vec![record.mnemonic.clone()];
+        description.extend(record.inputs.iter().cloned());
+        description.extend(record.outputs.iter().map(|(path, _)| path.clone()));
+        let lines = [CommandLinePart::Flat(description)];
+        crate::aquery_key::action_key(
+            &KeyKind::Spawn {
+                command_lines: &lines,
+                mnemonic: &record.mnemonic,
+                environment: &record.environment,
+                inherited: &[],
+                execution_info: &[],
+            },
+            platform,
+            properties,
+        )
     }
 }
