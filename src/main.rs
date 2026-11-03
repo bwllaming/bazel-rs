@@ -786,12 +786,13 @@ fn run() -> Result<(), String> {
         None
     };
     // AqueryCommand.exec: the expression with the aquery functions.
+    // AqueryProcessor's action filters are built before the analysis.
     let aquery_expression = if command == "aquery" {
-        Some(
-            aquery_options
-                .expression(&rest[0])
-                .map_err(bazel_rs::exit_code::command_line)?,
-        )
+        let expression = aquery_options
+            .expression(&rest[0])
+            .map_err(bazel_rs::exit_code::command_line)?;
+        let filters = bazel_rs::aquery::Filters::of(&expression)?;
+        Some((expression, filters))
     } else {
         None
     };
@@ -1249,7 +1250,7 @@ fn run() -> Result<(), String> {
     // the workspace root, whether or not it is a package
     // (cmdline/TargetPattern.java:783-789).
     let relative_directory = relative_directory(&root, &cwd)?;
-    if let Some(expression) = aquery_expression {
+    if let Some((expression, filters)) = aquery_expression {
         let analysis =
             engine.aquery_analysis(&aquery_options.universe(&expression), &relative_directory)?;
         for warning in engine.take_warnings() {
@@ -1258,7 +1259,13 @@ fn run() -> Result<(), String> {
         drop(std::mem::ManuallyDrop::into_inner(engine));
         lockfile_gate.open();
         bazel_rs::observed_fs::close_window();
-        aquery_output(&analysis, &expression, &aquery_options, &relative_directory)?;
+        aquery_output(
+            &analysis,
+            &expression,
+            &filters,
+            &aquery_options,
+            &relative_directory,
+        )?;
         snapshot.finish();
         return Ok(());
     }
@@ -3082,11 +3089,15 @@ fn analyzes(command: &str) -> bool {
 fn aquery_output(
     analysis: &bazel_rs::engine::aquery::Analysis,
     expression: &bazel_rs::query_language::Expr,
+    filters: &bazel_rs::aquery::Filters,
     options: &bazel_rs::aquery::Options,
     relative: &str,
 ) -> Result<(), String> {
-    let filters = bazel_rs::aquery::Filters::of(expression)?;
-    let stripped = bazel_rs::aquery::strip_filters(expression)?;
+    let stripped = bazel_rs::aquery::strip_filters(expression).map_err(|error| {
+        format!(
+            "Error doing post analysis query: Evaluation of query \"{expression}\" failed: {error}"
+        )
+    })?;
     let selected = analysis.graph.evaluate(
         &stripped,
         &options.query,
@@ -3097,7 +3108,7 @@ fn aquery_output(
     let output_file = &options.query.common.output_file;
     if output_file.is_empty() {
         let mut stdout = std::io::stdout().lock();
-        bazel_rs::aquery::write(&dump, &filters, options, &mut stdout)
+        bazel_rs::aquery::write(&dump, filters, options, &mut stdout)
             .and_then(|()| std::io::Write::flush(&mut stdout))
             .map_err(|error| format!("Error while emitting output: {error}"))?;
     } else {
@@ -3107,7 +3118,7 @@ fn aquery_output(
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
-        bazel_rs::aquery::write(&dump, &filters, options, &mut file)
+        bazel_rs::aquery::write(&dump, filters, options, &mut file)
             .map_err(|error| format!("Error while emitting output: {error}"))?;
         file.persist(path).map_err(|e| e.to_string())?;
     }

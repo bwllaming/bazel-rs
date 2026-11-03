@@ -1,0 +1,52 @@
+action 'Shelling //pkg:k to pkg/k.a'
+  Mnemonic: Shell
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 177a5a2944d7f34159f6b8aeee86b0fe5bfb6c6403dbcf5ecf9b813363767c89
+  Inputs: [pkg/in.txt, pkg/in2.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/k.a]
+  Environment: [A=x y, Z=1]
+  Command Line: (exec /bin/bash \
+    -c \
+    'cat $1 > $2' \
+    '' \
+    pkg/in.txt \
+    bazel-out/k8-fastbuild/bin/pkg/k.a)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {no-sandbox: 1}
+
+action 'RunTool pkg/k.c'
+  Mnemonic: RunTool
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 95f8ca076f67f60eb25ab0b3ce7fa25731d3c409c99c7415a5963dc29e22ca73
+  Inputs: [bazel-out/k8-opt-exec/bin/pkg/tool.sh, pkg/in.txt, pkg/in2.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/k.c]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    plain \
+    --out \
+    bazel-out/k8-fastbuild/bin/pkg/k.c \
+    pkg/in.txt \
+    pkg/in2.txt)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Params pkg/k.p'
+  Mnemonic: Params
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 59526ef0cbf2aa6e90f3645a128583d2d8a00ab27120baaa3732bb0a80a8cfd4
+  Inputs: [bazel-out/k8-opt-exec/bin/pkg/tool.sh, pkg/in.txt, pkg/in2.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/k.p]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    --flag \
+    pkg/in.txt \
+    pkg/in2.txt)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+

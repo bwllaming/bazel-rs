@@ -1,0 +1,33 @@
+action 'Writing file pkg/pw.params'
+  Mnemonic: FileWrite
+  Target: //pkg:pw
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: bfeb1129a2045cd2a7c3fa49d7b9e64e9063bf5d6b7e37fdd5eea5b31d468d7d
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/pw.params]
+
+action 'UsesParams pkg/pw.out'
+  Mnemonic: UsesParams
+  Target: //pkg:pw
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 1220590d03ba62aee5a272f78217185768d1fe324f73ea72ac8a4e1d8537f882
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/pw.params, bazel-out/k8-opt-exec/bin/pkg/tool.sh, pkg/in.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/pw.out]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, Q=1]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    @bazel-out/k8-fastbuild/bin/pkg/pw.params \
+    bazel-out/k8-fastbuild/bin/pkg/pw.out)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+  Params File Content (bazel-out/k8-fastbuild/bin/pkg/pw.params):
+    --x \
+    y z \
+    --src=pkg/in.txt \
+    --j \
+    a,b \
+    lbl \
+    //pkg:pw
+  ExecutionInfo: {no-cache: ''}
+

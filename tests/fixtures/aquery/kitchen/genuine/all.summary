@@ -1,0 +1,23 @@
+16 total actions.
+
+Mnemonics:
+  UsesParams: 1
+  Action: 1
+  Shell: 1
+  Symlink: 1
+  RunTool: 1
+  Params: 1
+  UnresolvedSymlink: 1
+  TemplateExpand: 1
+  Genrule: 3
+  FileWrite: 5
+
+Configurations:
+  k8-opt-exec: 1
+  k8-fastbuild: 15
+
+Execution Platforms:
+  @@platforms//host:host: 16
+
+Aspects:
+  //pkg:defs.bzl%asp: 2

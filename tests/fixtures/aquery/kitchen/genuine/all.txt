@@ -1,0 +1,212 @@
+action 'Executing genrule //pkg:g'
+  Mnemonic: Genrule
+  Target: //pkg:g
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 98ee0e36b38d18e45d264891996a2b37e6243de7c17c48c389489e13a3df6593
+  Inputs: [bazel-out/k8-opt-exec/bin/pkg/tool.sh, external/bazel_tools/tools/genrule/genrule-setup.sh, pkg/in.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/g1.txt, bazel-out/k8-fastbuild/bin/pkg/g2.txt]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /bin/bash \
+    -c \
+    'source external/bazel_tools/tools/genrule/genrule-setup.sh; bazel-out/k8-opt-exec/bin/pkg/tool.sh pkg/in.txt > bazel-out/k8-fastbuild/bin/pkg/g1.txt; touch bazel-out/k8-fastbuild/bin/pkg/g2.txt')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Writing file pkg/g.aspect'
+  Mnemonic: FileWrite
+  Target: //pkg:g
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  AspectDescriptors: [//pkg:defs.bzl%asp()]
+  ActionKey: ac09aa56ca8353826b781e6c4e021a2b014c9b2f235896fcce3ed1b781515ecf
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/g.aspect]
+  IsExecutable: false
+
+action 'Shelling //pkg:k to pkg/k.a'
+  Mnemonic: Shell
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 177a5a2944d7f34159f6b8aeee86b0fe5bfb6c6403dbcf5ecf9b813363767c89
+  Inputs: [pkg/in.txt, pkg/in2.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/k.a]
+  Environment: [A=x y, Z=1]
+  Command Line: (exec /bin/bash \
+    -c \
+    'cat $1 > $2' \
+    '' \
+    pkg/in.txt \
+    bazel-out/k8-fastbuild/bin/pkg/k.a)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {no-sandbox: 1}
+
+action 'Action pkg/k.b'
+  Mnemonic: Action
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 66cf23a4e990846e451e7a2cf4a951c816e1fb48dd09770e1ffeb7444024b3b3
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/k.b]
+  Command Line: (exec /bin/bash \
+    -c \
+    'touch bazel-out/k8-fastbuild/bin/pkg/k.b')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'RunTool pkg/k.c'
+  Mnemonic: RunTool
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 95f8ca076f67f60eb25ab0b3ce7fa25731d3c409c99c7415a5963dc29e22ca73
+  Inputs: [bazel-out/k8-opt-exec/bin/pkg/tool.sh, pkg/in.txt, pkg/in2.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/k.c]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    plain \
+    --out \
+    bazel-out/k8-fastbuild/bin/pkg/k.c \
+    pkg/in.txt \
+    pkg/in2.txt)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Writing script pkg/k.w'
+  Mnemonic: FileWrite
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: c2a9645e666db064ba3d2704c38794183b6652291bac0cce90ae48067df9c3ce
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/k.w]
+  IsExecutable: true
+
+action 'Expanding template pkg/k.t'
+  Mnemonic: TemplateExpand
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 0f605bc8cd8b568d1f3f7dd58d8b6b3f7ae141cbb567c4305f31584e7b087780
+  Inputs: [pkg/t.tmpl]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/k.t]
+  Template: {X} {Y}
+
+  Substitutions: [
+    {{X}: x}
+    {{Y}: yy}
+  ]
+
+action 'Creating symlink pkg/k.s'
+  Mnemonic: Symlink
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: c90914cc1e7ea06f84518cf4f179e63dbd20dad9358a550644494828e4a4ed28
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/k.a]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/k.s]
+
+action 'Creating symlink pkg/k.u'
+  Mnemonic: UnresolvedSymlink
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 7d2c82a5149116bb2d33096d079881fc6021cce8883c7029142299b871c0d051
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/k.u]
+  UnresolvedSymlinkTarget: ../some/where
+
+action 'Params pkg/k.p'
+  Mnemonic: Params
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 59526ef0cbf2aa6e90f3645a128583d2d8a00ab27120baaa3732bb0a80a8cfd4
+  Inputs: [bazel-out/k8-opt-exec/bin/pkg/tool.sh, pkg/in.txt, pkg/in2.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/k.p]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    --flag \
+    pkg/in.txt \
+    pkg/in2.txt)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Writing file pkg/k.aspect'
+  Mnemonic: FileWrite
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  AspectDescriptors: [//pkg:defs.bzl%asp()]
+  ActionKey: 1fbbf32fa351776fef245ce7c7a453521873c7d6a0242751ad216d5eabdfdaa8
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/k.aspect]
+  IsExecutable: false
+
+action 'Writing file pkg/pw.params'
+  Mnemonic: FileWrite
+  Target: //pkg:pw
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: bfeb1129a2045cd2a7c3fa49d7b9e64e9063bf5d6b7e37fdd5eea5b31d468d7d
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/pw.params]
+
+action 'UsesParams pkg/pw.out'
+  Mnemonic: UsesParams
+  Target: //pkg:pw
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 1220590d03ba62aee5a272f78217185768d1fe324f73ea72ac8a4e1d8537f882
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/pw.params, bazel-out/k8-opt-exec/bin/pkg/tool.sh, pkg/in.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/pw.out]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, Q=1]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    @bazel-out/k8-fastbuild/bin/pkg/pw.params \
+    bazel-out/k8-fastbuild/bin/pkg/pw.out)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {no-cache: ''}
+
+action 'Executing genrule //pkg:tool_gen [for tool]'
+  Mnemonic: Genrule
+  Target: //pkg:tool_gen
+  Configuration: k8-opt-exec
+  Execution platform: @@platforms//host:host
+  ActionKey: 097ba294516087c3e0ff0bacf95da5e8cf9a016a5fde369182f53523a4f85a39
+  Inputs: [external/bazel_tools/tools/genrule/genrule-setup.sh]
+  Outputs: [bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /bin/bash \
+    -c \
+    'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo '\''#!/bin/sh'\'' > bazel-out/k8-opt-exec/bin/pkg/tool.sh')
+# Configuration: 04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067
+# Execution platform: @@platforms//host:host
+
+action 'Executing genrule //pkg:tool_gen'
+  Mnemonic: Genrule
+  Target: //pkg:tool_gen
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 8502406d6fd846ba741cf24491fa7313913c43f0bbf54195e3f203a172e831d2
+  Inputs: [external/bazel_tools/tools/genrule/genrule-setup.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/tool.sh]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /bin/bash \
+    -c \
+    'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo '\''#!/bin/sh'\'' > bazel-out/k8-fastbuild/bin/pkg/tool.sh')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Writing file pkg/u1.out'
+  Mnemonic: FileWrite
+  Target: //pkg:u1
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 86073a80033ccb3da66d4d3cd0fbce2ef349f2d81e09def2e03fb6eb9f0c92d7
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/u1.out]
+  IsExecutable: false
+

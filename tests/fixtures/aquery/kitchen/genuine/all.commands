@@ -1,0 +1,8 @@
+/bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; bazel-out/k8-opt-exec/bin/pkg/tool.sh pkg/in.txt > bazel-out/k8-fastbuild/bin/pkg/g1.txt; touch bazel-out/k8-fastbuild/bin/pkg/g2.txt'
+/bin/bash -c 'cat $1 > $2' '' pkg/in.txt bazel-out/k8-fastbuild/bin/pkg/k.a
+/bin/bash -c 'touch bazel-out/k8-fastbuild/bin/pkg/k.b'
+bazel-out/k8-opt-exec/bin/pkg/tool.sh plain --out bazel-out/k8-fastbuild/bin/pkg/k.c pkg/in.txt pkg/in2.txt
+bazel-out/k8-opt-exec/bin/pkg/tool.sh --flag pkg/in.txt pkg/in2.txt
+bazel-out/k8-opt-exec/bin/pkg/tool.sh @bazel-out/k8-fastbuild/bin/pkg/pw.params bazel-out/k8-fastbuild/bin/pkg/pw.out
+/bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo '\''#!/bin/sh'\'' > bazel-out/k8-opt-exec/bin/pkg/tool.sh'
+/bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo '\''#!/bin/sh'\'' > bazel-out/k8-fastbuild/bin/pkg/tool.sh'

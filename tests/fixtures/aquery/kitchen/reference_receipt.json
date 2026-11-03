@@ -1,0 +1,25 @@
+{
+  "bazel": "9.3.1 (/home/coder/bazel/.direnv/reference/bazel-9.3.1-linux-x86_64)",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "invocation": "bazel --batch --ignore_all_rc_files --output_user_root=<private> aquery EXPR [FLAGS] in ws/ (MODULE.bazel module(name='g2'))",
+  "captured": "2026-11-03",
+  "outputs": {
+    "all.txt": "//pkg:all",
+    "all.summary": "//pkg:all --output=summary",
+    "all.commands": "//pkg:all --output=commands",
+    "all.jsonproto": "//pkg:all --output=jsonproto --noexperimental_parallel_aquery_output",
+    "deps.txt": "deps(//pkg:u1)",
+    "filters.txt": "mnemonic('Genrule|FileWrite', deps(//pkg:u1))",
+    "io.txt": "inputs('.*in2.*', outputs('.*k\\..*', //pkg:all))",
+    "pw.txt": "//pkg:pw --include_param_files --include_file_write_contents",
+    "pw.jsonproto": "//pkg:pw --include_param_files --include_file_write_contents --output=jsonproto --noexperimental_parallel_aquery_output",
+    "noaspects.txt": "'//pkg:u1 + //pkg:g' --noinclude_aspects",
+    "noartifacts.txt": "//pkg:k --noinclude_artifacts --noinclude_commandline"
+  },
+  "errors": {
+    "deps(mnemonic(Genrule, //pkg:g))": "exit 1: ERROR: aquery filter functions (inputs, outputs, mnemonic) produce actions, and therefore can't be the input of other function types: deps\ndeps(mnemonic('Genrule', //pkg:g))",
+    "--output=xml": "exit 2: ERROR: Invalid output format 'xml'. Valid values are: proto, streamed_proto, textproto, jsonproto, text, commands, summary",
+    "mnemonic('Gen')": "exit 1: ERROR: Error doing post analysis query: Evaluation of query \"mnemonic('Gen')\" failed: aquery filter functions (inputs, outputs, mnemonics) must have exactly 2 arguments,except when --skyframe_state is used."
+  },
+  "normalized": "'# Configuration: <BuildOptions checksum>' lines and the configuration checksum field (native ConfigIds); the relative order of one label's configurations; dep_set_of_files structure (compared flattened)"
+}

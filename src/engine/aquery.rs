@@ -527,7 +527,8 @@ impl Engine {
                         entries
                             .iter()
                             .filter_map(|(_, path)| {
-                                path.as_ref().map(|path| path.to_string_lossy().into_owned())
+                                path.as_ref()
+                                    .map(|path| path.to_string_lossy().into_owned())
                             })
                             .chain(std::iter::once(tree_manifest.clone())),
                     ),

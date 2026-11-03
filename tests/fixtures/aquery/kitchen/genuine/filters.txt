@@ -1,0 +1,72 @@
+action 'Writing file pkg/u1.out'
+  Mnemonic: FileWrite
+  Target: //pkg:u1
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 86073a80033ccb3da66d4d3cd0fbce2ef349f2d81e09def2e03fb6eb9f0c92d7
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/u1.out]
+  IsExecutable: false
+
+action 'Writing script pkg/k.w'
+  Mnemonic: FileWrite
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: c2a9645e666db064ba3d2704c38794183b6652291bac0cce90ae48067df9c3ce
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/k.w]
+  IsExecutable: true
+
+action 'Writing file pkg/k.aspect'
+  Mnemonic: FileWrite
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  AspectDescriptors: [//pkg:defs.bzl%asp()]
+  ActionKey: 1fbbf32fa351776fef245ce7c7a453521873c7d6a0242751ad216d5eabdfdaa8
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/k.aspect]
+  IsExecutable: false
+
+action 'Executing genrule //pkg:g'
+  Mnemonic: Genrule
+  Target: //pkg:g
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 98ee0e36b38d18e45d264891996a2b37e6243de7c17c48c389489e13a3df6593
+  Inputs: [bazel-out/k8-opt-exec/bin/pkg/tool.sh, external/bazel_tools/tools/genrule/genrule-setup.sh, pkg/in.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/g1.txt, bazel-out/k8-fastbuild/bin/pkg/g2.txt]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /bin/bash \
+    -c \
+    'source external/bazel_tools/tools/genrule/genrule-setup.sh; bazel-out/k8-opt-exec/bin/pkg/tool.sh pkg/in.txt > bazel-out/k8-fastbuild/bin/pkg/g1.txt; touch bazel-out/k8-fastbuild/bin/pkg/g2.txt')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Writing file pkg/g.aspect'
+  Mnemonic: FileWrite
+  Target: //pkg:g
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  AspectDescriptors: [//pkg:defs.bzl%asp()]
+  ActionKey: ac09aa56ca8353826b781e6c4e021a2b014c9b2f235896fcce3ed1b781515ecf
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/g.aspect]
+  IsExecutable: false
+
+action 'Executing genrule //pkg:tool_gen [for tool]'
+  Mnemonic: Genrule
+  Target: //pkg:tool_gen
+  Configuration: k8-opt-exec
+  Execution platform: @@platforms//host:host
+  ActionKey: 097ba294516087c3e0ff0bacf95da5e8cf9a016a5fde369182f53523a4f85a39
+  Inputs: [external/bazel_tools/tools/genrule/genrule-setup.sh]
+  Outputs: [bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /bin/bash \
+    -c \
+    'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo '\''#!/bin/sh'\'' > bazel-out/k8-opt-exec/bin/pkg/tool.sh')
+# Configuration: 04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067
+# Execution platform: @@platforms//host:host
+

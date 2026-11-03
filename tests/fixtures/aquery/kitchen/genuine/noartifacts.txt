@@ -1,0 +1,67 @@
+action 'Shelling //pkg:k to pkg/k.a'
+  Mnemonic: Shell
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 177a5a2944d7f34159f6b8aeee86b0fe5bfb6c6403dbcf5ecf9b813363767c89
+  Environment: [A=x y, Z=1]
+  ExecutionInfo: {no-sandbox: 1}
+
+action 'Action pkg/k.b'
+  Mnemonic: Action
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 66cf23a4e990846e451e7a2cf4a951c816e1fb48dd09770e1ffeb7444024b3b3
+
+action 'RunTool pkg/k.c'
+  Mnemonic: RunTool
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 95f8ca076f67f60eb25ab0b3ce7fa25731d3c409c99c7415a5963dc29e22ca73
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+
+action 'Writing script pkg/k.w'
+  Mnemonic: FileWrite
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: c2a9645e666db064ba3d2704c38794183b6652291bac0cce90ae48067df9c3ce
+  IsExecutable: true
+
+action 'Expanding template pkg/k.t'
+  Mnemonic: TemplateExpand
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 0f605bc8cd8b568d1f3f7dd58d8b6b3f7ae141cbb567c4305f31584e7b087780
+  Template: {X} {Y}
+
+  Substitutions: [
+    {{X}: x}
+    {{Y}: yy}
+  ]
+
+action 'Creating symlink pkg/k.s'
+  Mnemonic: Symlink
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: c90914cc1e7ea06f84518cf4f179e63dbd20dad9358a550644494828e4a4ed28
+
+action 'Creating symlink pkg/k.u'
+  Mnemonic: UnresolvedSymlink
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 7d2c82a5149116bb2d33096d079881fc6021cce8883c7029142299b871c0d051
+  UnresolvedSymlinkTarget: ../some/where
+
+action 'Params pkg/k.p'
+  Mnemonic: Params
+  Target: //pkg:k
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 59526ef0cbf2aa6e90f3645a128583d2d8a00ab27120baaa3732bb0a80a8cfd4
+

@@ -1,0 +1,118 @@
+{
+  "artifacts": [{
+    "id": 1,
+    "pathFragmentId": 1
+  }, {
+    "id": 2,
+    "pathFragmentId": 6
+  }, {
+    "id": 3,
+    "pathFragmentId": 8
+  }, {
+    "id": 4,
+    "pathFragmentId": 12
+  }],
+  "actions": [{
+    "targetId": 1,
+    "actionKey": "bfeb1129a2045cd2a7c3fa49d7b9e64e9063bf5d6b7e37fdd5eea5b31d468d7d",
+    "mnemonic": "FileWrite",
+    "configurationId": 1,
+    "outputIds": [1],
+    "primaryOutputId": 1,
+    "executionPlatform": "@@platforms//host:host"
+  }, {
+    "targetId": 1,
+    "actionKey": "1220590d03ba62aee5a272f78217185768d1fe324f73ea72ac8a4e1d8537f882",
+    "mnemonic": "UsesParams",
+    "configurationId": 1,
+    "arguments": ["bazel-out/k8-opt-exec/bin/pkg/tool.sh", "@bazel-out/k8-fastbuild/bin/pkg/pw.params", "bazel-out/k8-fastbuild/bin/pkg/pw.out"],
+    "environmentVariables": [{
+      "key": "PATH",
+      "value": "/bin:/usr/bin:/usr/local/bin"
+    }, {
+      "key": "Q",
+      "value": "1"
+    }],
+    "inputDepSetIds": [1],
+    "outputIds": [4],
+    "executionInfo": [{
+      "key": "no-cache"
+    }],
+    "paramFiles": [{
+      "execPath": "bazel-out/k8-fastbuild/bin/pkg/pw.params",
+      "arguments": ["--x", "y z", "--src\u003dpkg/in.txt", "--j", "a,b", "lbl", "//pkg:pw"]
+    }],
+    "primaryOutputId": 4,
+    "executionPlatform": "@@platforms//host:host"
+  }],
+  "targets": [{
+    "id": 1,
+    "label": "//pkg:pw",
+    "ruleClassId": 1
+  }],
+  "depSetOfFiles": [{
+    "id": 2,
+    "directArtifactIds": [1, 2]
+  }, {
+    "id": 1,
+    "transitiveDepSetIds": [2],
+    "directArtifactIds": [3]
+  }],
+  "configuration": [{
+    "id": 1,
+    "mnemonic": "k8-fastbuild",
+    "platformName": "k8",
+    "checksum": "a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18"
+  }],
+  "ruleClasses": [{
+    "id": 1,
+    "name": "pw"
+  }],
+  "pathFragments": [{
+    "id": 5,
+    "label": "bazel-out"
+  }, {
+    "id": 4,
+    "label": "k8-fastbuild",
+    "parentId": 5
+  }, {
+    "id": 3,
+    "label": "bin",
+    "parentId": 4
+  }, {
+    "id": 2,
+    "label": "pkg",
+    "parentId": 3
+  }, {
+    "id": 1,
+    "label": "pw.params",
+    "parentId": 2
+  }, {
+    "id": 7,
+    "label": "pkg"
+  }, {
+    "id": 6,
+    "label": "in.txt",
+    "parentId": 7
+  }, {
+    "id": 11,
+    "label": "k8-opt-exec",
+    "parentId": 5
+  }, {
+    "id": 10,
+    "label": "bin",
+    "parentId": 11
+  }, {
+    "id": 9,
+    "label": "pkg",
+    "parentId": 10
+  }, {
+    "id": 8,
+    "label": "tool.sh",
+    "parentId": 9
+  }, {
+    "id": 12,
+    "label": "pw.out",
+    "parentId": 2
+  }]
+}
