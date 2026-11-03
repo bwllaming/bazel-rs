@@ -464,6 +464,8 @@ impl Fingerprint {
             transform,
             constant_metadata,
             java_compile,
+            // Description only (crate::aquery), never compared.
+            aquery: _,
         } = extra;
         self.paths(tree_outputs.iter());
         self.paths(tree_inputs.iter());

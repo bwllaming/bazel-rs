@@ -30,6 +30,7 @@ use std::sync::Arc;
 
 mod affected_scope;
 mod alloc_report;
+pub mod aquery;
 mod compatibility;
 pub mod cquery;
 mod incremental;
@@ -1930,6 +1931,9 @@ pub struct Engine {
     skip_teardown: bool,
     /// Opt-in configured-query capture. Ordinary builds retain no query graph.
     cquery_capture: Option<cquery::Capture>,
+    /// aquery: the cquery capture also plans every action, and the planned
+    /// actions with their owners are kept (crate::engine::aquery).
+    aquery_capture: Option<aquery::Capture>,
     /// `.bzl` labels whose buffered top-level print lines the coordinator
     /// already emitted (one emission per evaluated module, review §1.4);
     /// lookups only, never iterated.
@@ -2200,6 +2204,7 @@ impl Engine {
             prefetch_platforms: None,
             skip_teardown: false,
             cquery_capture: None,
+            aquery_capture: None,
             declared_inputs: HashMap::new(),
             source_targets: HashMap::new(),
             analyzed_sources: HashSet::new(),
@@ -12256,6 +12261,14 @@ impl Engine {
                 .action_environment(),
         );
         let action_owner = key.action_owner(top);
+        self.aquery_owner(&action_owner, base_key, || {
+            collection
+                .path_aspects(&aspect.descriptor)
+                .iter()
+                .rev()
+                .map(|aspect| aquery::aspect_descriptor(aspect))
+                .collect()
+        });
         let loaded_functions = self.loaded_functions.clone();
         let outputs = analysis::ConfiguredOutputs {
             output_root: &output_root,
@@ -12490,7 +12503,7 @@ impl Engine {
             self.note_analysis_print(&line);
         }
         let analyzed = analyzed?;
-        if self.cquery_capture.is_some() {
+        if self.semantic_only() {
             cquery::register_outputs(
                 analyzed.actions.iter().flat_map(|action| &action.outputs),
                 base_key.config,
@@ -12844,7 +12857,7 @@ impl Engine {
         // Repository closures are inputs to execution-time manifest content,
         // not provider analysis. Cquery retains the real RepositorySet and
         // semantic support Files but never renders those manifests.
-        let execution_plan = self.cquery_capture.is_none();
+        let execution_plan = !self.semantic_only();
         let top = self.configurations.top();
         let main_ignored = self.ignored("")?;
         let ActionPlanning {
@@ -12914,6 +12927,7 @@ impl Engine {
         // configuration (SHELL_ACTION_ENV; crate::action_env).
         let action_env = Arc::new(self.configurations.get(config).native.action_environment());
         let action_owner = key.action_owner(top);
+        self.aquery_owner(&action_owner, &key, Vec::new);
         // The configuration of the target's exec-transition edges.
         let exec_config = self
             .exec_configurations
@@ -13396,7 +13410,7 @@ impl Engine {
         // The transitive repositories of the configured target (Starlark
         // rules' refined closure; both sequential inserts collapse to
         // this final value, and only later targets read it).
-        if self.cquery_capture.is_none() {
+        if !self.semantic_only() {
             state
                 .repositories
                 .insert(key.clone(), Arc::new(transitive.clone()));
@@ -13660,7 +13674,7 @@ impl Engine {
         // Semantic commit is distinct from execution-plan lowering. Cquery
         // needs providers, file identities and runfiles, but never action keys,
         // status commands, input digests, runfiles manifests or scheduler nodes.
-        if self.cquery_capture.is_some() {
+        if self.semantic_only() {
             let package_output = PathBuf::from(&output_root).join(rule.label.package_exec_path());
             cquery::register_outputs(
                 analyzed.actions.iter().flat_map(|action| &action.outputs),
@@ -13883,7 +13897,7 @@ impl Engine {
         main_ignored: &IgnoredSubdirectories,
         commit: &mut ActionCommit<'_>,
     ) -> Result<(), String> {
-        if self.cquery_capture.is_some() {
+        if self.semantic_only() {
             return Ok(());
         }
         let mut groups: Vec<Arc<scheduler::InputGroup>> = Vec::new();
@@ -14081,7 +14095,7 @@ impl Engine {
         }
         // A native rule's source inputs join the index here (W1b
         // registration invariant); generated ones are registered already.
-        let mut inputs = if self.cquery_capture.is_some() {
+        let mut inputs = if self.semantic_only() {
             self.semantic_inputs(rule, config, dry, declared)?
         } else {
             // Build and --nobuild retain strict execution-path normalization
@@ -14323,7 +14337,7 @@ impl Engine {
                     )
                 })?;
             restricted_to_error(rule)?;
-            if self.cquery_capture.is_none() {
+            if !self.semantic_only() {
                 let producer = OutputProducer::native(&key.label.to_string());
                 for output in &outputs {
                     register_output(producers, output, &producer)?;
@@ -14347,7 +14361,7 @@ impl Engine {
                     ),
                 ));
             }
-            if self.cquery_capture.is_none() {
+            if !self.semantic_only() {
                 let mut execution_info = rule_execution_info(rule);
                 if native_bool(rule, "local") {
                     execution_info.insert("local".to_owned());
@@ -15505,6 +15519,8 @@ impl Engine {
         }
         crate::perf_mark("plan.phase2_actions_done");
         if self.cquery_capture.is_some() {
+            // aquery keeps the planned actions of the whole universe.
+            self.aquery_nodes(&mut state.nodes);
             // Full provider analysis (including top-level aspects) succeeded.
             // Nothing below this boundary is part of configured querying.
             crate::perf_mark("cquery.analysis_done");
@@ -17733,7 +17749,7 @@ impl Engine {
         status_client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
         artifact_index: &mut BTreeMap<File, Artifact>,
     ) -> Result<[Artifact; 2], String> {
-        if self.cquery_capture.is_some() {
+        if self.semantic_only() {
             let artifacts = [
                 Artifact::workspace_status("stable-status.txt", None, false),
                 Artifact::workspace_status("volatile-status.txt", None, true),

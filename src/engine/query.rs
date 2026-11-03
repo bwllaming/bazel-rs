@@ -1566,6 +1566,9 @@ impl Env<'_> {
     ) -> Eval<Set> {
         match function {
             Function::Config => unreachable!("config is only parsed for cquery"),
+            Function::Inputs | Function::Outputs | Function::Mnemonic => {
+                unreachable!("action filters are only parsed for aquery")
+            }
             // AllRdepsFunction over the SkyQuery universe graph.
             Function::AllRdeps => {
                 let from = self.eval(Self::expression_arg(args, 0), context)?;

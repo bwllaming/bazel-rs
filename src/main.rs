@@ -204,8 +204,8 @@ fn run() -> Result<(), String> {
             }
             Err(error) => fail_with(2, &error),
         },
-        "query" | "cquery" | "config" | "build" | "mod" | "run" | "test" | "coverage" | "info"
-        | "clean" | "fetch" | "gc" => {}
+        "query" | "cquery" | "aquery" | "config" | "build" | "mod" | "run" | "test"
+        | "coverage" | "info" | "clean" | "fetch" | "gc" => {}
         "vendor" => {
             return Err(
                 "the vendor command is not implemented in the native profile (Bazel 9.3 `vendor --vendor_dir=DIR` copies the fetched repositories into DIR for later builds to read); `bazel-rs fetch` materializes repositories into the shared repository store"
@@ -283,6 +283,7 @@ fn run() -> Result<(), String> {
     let configuration_options;
     let query_options;
     let cquery_options;
+    let aquery_options;
     let lockfile_mode;
     let lockfile_target;
     let action_dump: Option<PathBuf>;
@@ -404,6 +405,7 @@ fn run() -> Result<(), String> {
         configuration_options = native.configuration;
         query_options = native.query;
         cquery_options = native.cquery;
+        aquery_options = native.aquery;
         rc_options = native.rc;
         credential_options = native.credentials;
         remote_options = native.remote;
@@ -694,9 +696,11 @@ fn run() -> Result<(), String> {
     // expression. Type 'bazel help query' for syntax and help", ...) are the
     // command's failure detail without an event: exit 2, silent, like
     // genuine Bazel 9.3 (tests/fixtures/query_language, error.no_expression).
-    let rest = if command == "query" || command == "cquery" {
+    let rest = if command == "query" || command == "cquery" || command == "aquery" {
         let query = if command == "cquery" {
             &cquery_options.common
+        } else if command == "aquery" {
+            &aquery_options.query.common
         } else {
             &query_options
         };
@@ -778,6 +782,16 @@ fn run() -> Result<(), String> {
     bazel_rs::snapshot::incremental::restore_after_check_point();
     let cquery_expression = if command == "cquery" {
         Some(cquery_options.expression(&rest[0])?)
+    } else {
+        None
+    };
+    // AqueryCommand.exec: the expression with the aquery functions.
+    let aquery_expression = if command == "aquery" {
+        Some(
+            aquery_options
+                .expression(&rest[0])
+                .map_err(bazel_rs::exit_code::command_line)?,
+        )
     } else {
         None
     };
@@ -1153,7 +1167,7 @@ fn run() -> Result<(), String> {
         engine.set_run_under(label, test_options.run_under_exec);
     }
     engine.set_workspace_status(workspace_status);
-    engine.set_execute_build(!no_build && command != "cquery");
+    engine.set_execute_build(!no_build && command != "cquery" && command != "aquery");
     engine.set_keep_going(test_options.keep_going && analyzes(&command));
     engine.set_skip_incompatible_explicit_targets(test_options.skip_incompatible_explicit_targets);
     // --loading_phase_threads (LoadingPhaseThreadsOption.java, P2 of the
@@ -1235,6 +1249,19 @@ fn run() -> Result<(), String> {
     // the workspace root, whether or not it is a package
     // (cmdline/TargetPattern.java:783-789).
     let relative_directory = relative_directory(&root, &cwd)?;
+    if let Some(expression) = aquery_expression {
+        let analysis =
+            engine.aquery_analysis(&aquery_options.universe(&expression), &relative_directory)?;
+        for warning in engine.take_warnings() {
+            warn(&warning);
+        }
+        drop(std::mem::ManuallyDrop::into_inner(engine));
+        lockfile_gate.open();
+        bazel_rs::observed_fs::close_window();
+        aquery_output(&analysis, &expression, &aquery_options, &relative_directory)?;
+        snapshot.finish();
+        return Ok(());
+    }
     if let Some(expression) = cquery_expression {
         let graph = if let Some(budget) = cquery_root_budget {
             use bazel_rs::engine::root_checkpoint::Outcome;
@@ -3047,7 +3074,44 @@ fn builds(command: &str) -> bool {
 
 /// Configuration and provider analysis does not imply an execution phase.
 fn analyzes(command: &str) -> bool {
-    builds(command) || command == "cquery"
+    builds(command) || command == "cquery" || command == "aquery"
+}
+
+/// AqueryProcessor: the action filters, the configured targets the
+/// expression selects and their actions in the requested format.
+fn aquery_output(
+    analysis: &bazel_rs::engine::aquery::Analysis,
+    expression: &bazel_rs::query_language::Expr,
+    options: &bazel_rs::aquery::Options,
+    relative: &str,
+) -> Result<(), String> {
+    let filters = bazel_rs::aquery::Filters::of(expression)?;
+    let stripped = bazel_rs::aquery::strip_filters(expression)?;
+    let selected = analysis.graph.evaluate(
+        &stripped,
+        &options.query,
+        relative,
+        &mut std::collections::BTreeMap::new(),
+    )?;
+    let dump = analysis.dump(&selected, options.query.include_aspects);
+    let output_file = &options.query.common.output_file;
+    if output_file.is_empty() {
+        let mut stdout = std::io::stdout().lock();
+        bazel_rs::aquery::write(&dump, &filters, options, &mut stdout)
+            .and_then(|()| std::io::Write::flush(&mut stdout))
+            .map_err(|error| format!("Error while emitting output: {error}"))?;
+    } else {
+        let path = Path::new(output_file);
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+        bazel_rs::aquery::write(&dump, &filters, options, &mut file)
+            .map_err(|error| format!("Error while emitting output: {error}"))?;
+        file.persist(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn cquery_output(
@@ -4560,6 +4624,8 @@ struct NativeOptions {
     /// QueryCommand's own options (QueryOptions/CommonQueryOptions).
     query: bazel_rs::engine::query::QueryOptions,
     cquery: bazel_rs::engine::cquery::Options,
+    /// AqueryOptions (crate::aquery).
+    aquery: bazel_rs::aquery::Options,
     /// --lockfile_mode (N37, docs/REGISTRY_LOCKFILE.md).
     lockfile_mode: bazel_rs::lockfile::LockfileMode,
     /// Native-only --native-lockfile.
@@ -4646,7 +4712,7 @@ impl NativeOptions {
                 // Every lockfile mode supports remote registries (N37).
                 allow_remote: matches!(
                     command,
-                    "build" | "query" | "cquery" | "run" | "test" | "mod"
+                    "build" | "query" | "cquery" | "aquery" | "run" | "test" | "mod"
                 ),
                 // Bazel 9.3 always injects @bazel_tools and its MODULE
                 // closure (ModuleFileFunction, BazelRepositoryModule); the
@@ -4685,6 +4751,7 @@ impl NativeOptions {
             },
             query: bazel_rs::engine::query::QueryOptions::default(),
             cquery: bazel_rs::engine::cquery::Options::default(),
+            aquery: bazel_rs::aquery::Options::default(),
             lockfile_mode: bazel_rs::lockfile::LockfileMode::default(),
             lockfile_target: bazel_rs::registry_session::LockfileTarget::Workspace,
             action_dump: None,
@@ -4710,6 +4777,8 @@ impl NativeOptions {
             self.query.parse(arg, next)?
         } else if command == "cquery" {
             self.cquery.parse(arg, next)?
+        } else if command == "aquery" {
+            self.aquery.parse(arg, next)?
         } else {
             None
         };
@@ -4719,7 +4788,12 @@ impl NativeOptions {
         // Cquery inherits TestCommand options, but only the explicit
         // analysis dispatch above decides whether anything executes.
         let registered_command = command;
-        let command = if command == "cquery" { "test" } else { command };
+        // AqueryCommand inherits BuildCommand's options.
+        let command = match command {
+            "cquery" => "test",
+            "aquery" => "build",
+            command => command,
+        };
         let used_next = if let Some(used) = query {
             used
         } else if let Some(used) = (command == "mod")

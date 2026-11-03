@@ -423,7 +423,8 @@ impl Graph {
         found
     }
 
-    fn evaluate(
+    /// The configured targets `expression` selects (also aquery's, crate::aquery).
+    pub fn evaluate(
         &self,
         expression: &Expr,
         options: &Options,

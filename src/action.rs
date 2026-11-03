@@ -477,6 +477,11 @@ pub struct ActionExtra {
     pub constant_metadata: Vec<PathBuf>,
     /// JavaBuilder's semantic intent, distinct from either staged attempt.
     pub java_compile: Option<Box<crate::java_compile::JavaCompileSpec>>,
+    /// The registration's aquery description (crate::aquery::Meta),
+    /// recorded only while the aquery command captures: never keyed,
+    /// executed or persisted.
+    #[serde(skip)]
+    pub aquery: Option<std::sync::Arc<crate::aquery::Meta>>,
 }
 
 /// A runfiles mapping: each runfiles path with its input's execution path

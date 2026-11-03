@@ -1787,6 +1787,7 @@ mod tests {
                 transform: None,
                 constant_metadata: vec!["bazel-out/volatile-status.txt".into()],
                 java_compile: None,
+                aquery: None,
             },
             shell_pad: true,
             executable_file: false,

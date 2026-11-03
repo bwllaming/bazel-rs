@@ -15,6 +15,8 @@ mod analysis_ctx;
 mod analysis_ctx_surface;
 mod analysis_runtime;
 mod apple_xcode;
+pub mod aquery;
+pub mod aquery_key;
 pub mod archive;
 pub mod args;
 mod aspect_propagation;

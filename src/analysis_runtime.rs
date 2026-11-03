@@ -1150,6 +1150,32 @@ fn register_spawn(
         Some(arguments) => crate::args::command_line_parts(arguments)?,
         None => Vec::new(),
     };
+    // aquery's description of the spawn (crate::aquery::Meta).
+    let key_parts = match (crate::aquery::capturing(), options.arguments) {
+        (false, _) => None,
+        (true, Some(arguments)) => Some(crate::args::key_parts(arguments)?),
+        (true, None) => Some(Vec::new()),
+    };
+    let env_order: Option<Vec<String>> = match (crate::aquery::capturing(), options.env) {
+        (true, Some(env)) if !env.is_none() => DictRef::from_value(env).map(|dict| {
+            dict.iter()
+                .filter_map(|(key, _)| key.unpack_str().map(str::to_owned))
+                .collect()
+        }),
+        (true, _) => Some(Vec::new()),
+        (false, _) => None,
+    };
+    let requirement_order: Option<Vec<String>> =
+        match (crate::aquery::capturing(), options.execution_requirements) {
+            (true, Some(value)) if !value.is_none() => DictRef::from_value(value).map(|dict| {
+                dict.iter()
+                    .filter_map(|(key, _)| key.unpack_str().map(str::to_owned))
+                    .collect()
+            }),
+            (true, _) => Some(Vec::new()),
+            (false, _) => None,
+        };
+    let raw_progress = options.progress_message.clone();
     // VectorArg.expandDirectories (StarlarkCustomCommandLine.java:456-485): an
     // expanded directory that is not an input fails when the action executes,
     // prefixed by the action's progress message (AbstractAction.java:380-400,
@@ -1187,6 +1213,60 @@ fn register_spawn(
         ..ActionExtra::default()
     };
     let environment = environment.fixed;
+    let aquery = key_parts.map(|key_parts| {
+        let mut command_lines = vec![crate::aquery_key::CommandLinePart::Flat(
+            spec.executable.clone(),
+        )];
+        command_lines.extend(key_parts);
+        let mut bazel_arguments = spec.executable.clone();
+        for part in &spec.parts {
+            // Directories stay unexpanded at analysis (maybeExpandDirectories
+            // without input metadata), like genuine aquery's.
+            bazel_arguments.extend(
+                crate::command_line::expand_groups(&part.groups, part.flag_per_line, None)
+                    .unwrap_or_default(),
+            );
+        }
+        // SpawnAction's fixed environment: the default shell environment's
+        // variables, then the `env` dict's in insertion order.
+        let order = env_order.unwrap_or_default();
+        let mut fixed: Vec<(String, String)> = environment
+            .iter()
+            .filter(|(key, _)| !order.contains(key))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        fixed.extend(order.iter().filter_map(|key| {
+            environment
+                .get(key)
+                .map(|value| (key.clone(), value.clone()))
+        }));
+        let order = requirement_order.unwrap_or_default();
+        let mut info: Vec<(String, String)> = order
+            .iter()
+            .filter_map(|key| {
+                extra
+                    .execution_info
+                    .get(key)
+                    .map(|value| (key.clone(), value.clone()))
+            })
+            .collect();
+        info.extend(
+            extra
+                .execution_info
+                .iter()
+                .filter(|(key, _)| !order.contains(key))
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+        Arc::new(crate::aquery::Meta {
+            progress: raw_progress,
+            environment: Some(fixed),
+            execution_info: Some(info),
+            command_lines: Some(command_lines),
+            arguments: Some(bazel_arguments),
+            ..Default::default()
+        })
+    });
+    let extra = ActionExtra { aquery, ..extra };
     let (arguments, param_files, deferred) = if spec.deferred() {
         if spec.deferred_map_each() {
             crate::observed_fs::taint(crate::observed_fs::Taint::MapEach, || {
@@ -1450,6 +1530,25 @@ fn action_methods(builder: &mut MethodsBuilder) {
         // the action executes.
         let snapshot = crate::args::snapshot(content)?
             .ok_or_else(|| anyhow!("write content must be a string or Args"))?;
+        // aquery: a ParameterFileWriteAction (crate::aquery::ParamWrite).
+        let aquery = crate::aquery::capturing()
+            .then(|| crate::args::write_recipe(content))
+            .flatten()
+            .map(|(recipe, file_type)| {
+                Arc::new(crate::aquery::Meta {
+                    param_write: Some(crate::aquery::ParamWrite {
+                        file_type,
+                        recipe,
+                        arguments: crate::command_line::expand_groups(
+                            &snapshot.groups,
+                            snapshot.flag_per_line,
+                            None,
+                        )
+                        .unwrap_or_default(),
+                    }),
+                    ..Default::default()
+                })
+            });
         let directories = snapshot.directories();
         let (content, deferred) = if directories.is_empty() {
             (
@@ -1479,7 +1578,10 @@ fn action_methods(builder: &mut MethodsBuilder) {
             program: None,
             arguments: Vec::new(),
             environment: BTreeMap::new(),
-            extra: ActionExtra::default(),
+            extra: ActionExtra {
+                aquery,
+                ..ActionExtra::default()
+            },
             shell_pad: false,
             executable_file: false,
             deferred,

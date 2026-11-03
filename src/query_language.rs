@@ -209,6 +209,11 @@ pub enum Function {
     SomePath,
     Tests,
     Visible,
+    /// Aquery's action filters (query2/engine/InputsFunction.java,
+    /// OutputsFunction.java, MnemonicFunction.java; ActionFilterFunction).
+    Inputs,
+    Outputs,
+    Mnemonic,
 }
 
 impl Function {
@@ -235,6 +240,9 @@ impl Function {
     /// and RBuildFilesFunction.
     pub const SKY: [Function; 2] = [Self::AllRdeps, Self::RBuildFiles];
 
+    /// ActionGraphQueryEnvironment.AQUERY_FUNCTIONS.
+    pub const AQUERY: [Function; 3] = [Self::Inputs, Self::Outputs, Self::Mnemonic];
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Config => "config",
@@ -256,6 +264,9 @@ impl Function {
             Self::SomePath => "somepath",
             Self::Tests => "tests",
             Self::Visible => "visible",
+            Self::Inputs => "inputs",
+            Self::Outputs => "outputs",
+            Self::Mnemonic => "mnemonic",
         }
     }
 
@@ -292,6 +303,9 @@ impl Function {
             Self::RBuildFiles => &[W],
             Self::Rdeps => &[E, E, I],
             Self::Filter | Self::Kind | Self::Labels => &[W, E],
+            // ActionFilterFunction: one mandatory argument (for
+            // --skyframe_state); evaluation requires exactly two.
+            Self::Inputs | Self::Outputs | Self::Mnemonic => &[W, E],
             Self::BuildFiles
             | Self::Executables
             | Self::LoadFiles
@@ -520,6 +534,7 @@ struct Parser {
     index: usize,
     configured: bool,
     sky: bool,
+    aquery: bool,
 }
 
 /// QueryParser.parse (QueryParser.java:68-80).
@@ -530,6 +545,19 @@ pub fn parse(query: &str) -> Result<Expr, SyntaxError> {
 /// Cquery adds config(expr, target|null|checksum-prefix) to the language.
 pub fn parse_cquery(query: &str) -> Result<Expr, SyntaxError> {
     parse_with_mode(query, true)
+}
+
+/// Aquery's language (AqueryCommand.getFunctionsMap): the default functions
+/// plus `inputs`, `outputs` and `mnemonic`.
+pub fn parse_aquery(query: &str) -> Result<Expr, SyntaxError> {
+    let mut parser = Parser {
+        tokens: scan(query)?,
+        index: 0,
+        configured: false,
+        sky: false,
+        aquery: true,
+    };
+    parser.finish()
 }
 
 /// SkyQuery's language: the default functions plus `allrdeps` and `rbuildfiles`.
@@ -547,16 +575,24 @@ fn parse_in(query: &str, configured: bool, sky: bool) -> Result<Expr, SyntaxErro
         index: 0,
         configured,
         sky,
+        aquery: false,
     };
-    let expr = parser.expression()?;
-    if parser.kind() != TokenKind::Eof {
-        return Err(SyntaxError(format!(
-            "unexpected token '{}' after query expression '{}'",
-            parser.tokens[parser.index],
-            expr.truncated()
-        )));
+    parser.finish()
+}
+
+impl Parser {
+    fn finish(&mut self) -> Result<Expr, SyntaxError> {
+        let parser = self;
+        let expr = parser.expression()?;
+        if parser.kind() != TokenKind::Eof {
+            return Err(SyntaxError(format!(
+                "unexpected token '{}' after query expression '{}'",
+                parser.tokens[parser.index],
+                expr.truncated()
+            )));
+        }
+        Ok(expr)
     }
-    Ok(expr)
 }
 
 impl Parser {
@@ -647,6 +683,12 @@ impl Parser {
                 }
                 let function = if self.configured && word == "config" {
                     Some(Function::Config)
+                } else if self.aquery {
+                    Function::lookup(&word).or_else(|| {
+                        Function::AQUERY
+                            .into_iter()
+                            .find(|function| function.name() == word)
+                    })
                 } else if self.sky {
                     Function::lookup(&word).or_else(|| {
                         Function::SKY
@@ -660,6 +702,9 @@ impl Parser {
                     let mut names = Function::ALL.map(Function::name).to_vec();
                     if self.sky {
                         names.extend(Function::SKY.map(Function::name));
+                    }
+                    if self.aquery {
+                        names.extend(Function::AQUERY.map(Function::name));
                     }
                     names.sort_unstable();
                     return Err(SyntaxError(format!(

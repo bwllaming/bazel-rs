@@ -57,12 +57,19 @@ mod owned {
         #[allocative(skip)]
         #[trace(static)]
         pub(super) active: Arc<AtomicBool>,
+        /// The fingerprint operations of Bazel's StarlarkCustomCommandLine
+        /// (crate::aquery_key::ArgsRecipe), recorded only while aquery
+        /// captures.
+        #[allocative(skip)]
+        #[trace(static)]
+        pub(super) recipe: RefCell<Option<crate::aquery_key::ArgsRecipe>>,
     }
 }
 pub(crate) use owned::Args;
 
 /// Append one literal string group to an Args value (Args.add of each string).
 pub(crate) fn add_strings(args: &Args, values: Vec<String>) -> anyhow::Result<()> {
+    args.record(|recipe| recipe.unmodelled("a natively built command line"));
     args.push(Group::Strings(values))
 }
 
@@ -96,6 +103,13 @@ impl Args {
             "Args is no longer active: rule analysis has ended"
         );
         Ok(())
+    }
+
+    /// Record fingerprint operations while aquery captures.
+    fn record(&self, f: impl FnOnce(&mut crate::aquery_key::ArgsRecipe)) {
+        if let Some(recipe) = self.recipe.borrow_mut().as_mut() {
+            f(recipe);
+        }
     }
 
     fn push(&self, group: Group) -> anyhow::Result<()> {
@@ -209,6 +223,7 @@ pub fn alloc_args<'v>(heap: Heap<'v>, active: Arc<AtomicBool>) -> Value<'v> {
         groups: RefCell::new(Vec::new()),
         param: RefCell::new(ParamState::default()),
         active,
+        recipe: RefCell::new(crate::aquery::capturing().then(Default::default)),
     })
 }
 
@@ -297,6 +312,90 @@ pub(crate) fn command_line_parts(value: Value<'_>) -> anyhow::Result<Vec<Part>> 
         });
     }
     Ok(parts)
+}
+
+/// The CommandLines of a spawn's `arguments` as SpawnAction.computeKey
+/// fingerprints them (StarlarkActionFactory.buildCommandLine): a run of
+/// strings is a flat command line, each Args its StarlarkCustomCommandLine
+/// with its ParamFileInfo.
+pub(crate) fn key_parts(
+    value: Value<'_>,
+) -> anyhow::Result<Vec<crate::aquery_key::CommandLinePart>> {
+    use crate::aquery_key::CommandLinePart;
+    let mut parts = Vec::new();
+    let mut strings: Option<Vec<String>> = None;
+    for item in sequence(value)? {
+        if let Some(text) = item.unpack_str() {
+            strings.get_or_insert_with(Vec::new).push(text.to_owned());
+        } else if let Some(args) = item.downcast_ref::<Args>() {
+            if let Some(run) = strings.take() {
+                parts.push(CommandLinePart::Flat(run));
+            }
+            parts.push(CommandLinePart::Args(args.recipe(), args.param_key()));
+        }
+    }
+    if let Some(run) = strings {
+        parts.push(CommandLinePart::Flat(run));
+    }
+    Ok(parts)
+}
+
+/// The fingerprint recipe and file type of an Args written by
+/// `ctx.actions.write` (ParameterFileWriteAction).
+pub(crate) fn write_recipe(
+    value: Value<'_>,
+) -> Option<(crate::aquery_key::ArgsRecipe, &'static str)> {
+    let args = value.downcast_ref::<Args>()?;
+    Some((args.recipe(), file_type_name(args.file_type())))
+}
+
+/// ParameterFileType.toString of the Starlark-reachable types.
+fn file_type_name(file_type: ParamFileType) -> &'static str {
+    match file_type {
+        ParamFileType::Shell => "SHELL_QUOTED",
+        ParamFileType::Unquoted => "UNQUOTED",
+    }
+}
+
+impl Args {
+    fn recipe(&self) -> crate::aquery_key::ArgsRecipe {
+        self.recipe.borrow().clone().unwrap_or_else(|| {
+            let mut recipe = crate::aquery_key::ArgsRecipe::default();
+            recipe.unmodelled("an Args created before aquery capture");
+            recipe
+        })
+    }
+
+    fn param_key(&self) -> Option<crate::aquery_key::ParamFileKey> {
+        self.param_file_info()
+            .map(|info| crate::aquery_key::ParamFileKey {
+                flag_format: info.flag_format,
+                file_type: file_type_name(info.file_type),
+            })
+    }
+}
+
+/// addSingleObjectToFingerprint's view of one Args value.
+fn object_op(value: Value<'_>, eval: &Evaluator<'_, '_, '_>) -> crate::aquery_key::ArgsOp {
+    use crate::aquery_key::ArgsOp;
+    if let Some(text) = value.unpack_str() {
+        ArgsOp::Object {
+            file: false,
+            text: text.to_owned(),
+        }
+    } else if let Ok(file) = crate::starlark_types::unpack_file(value) {
+        ArgsOp::Object {
+            file: true,
+            text: file.path.clone(),
+        }
+    } else if let Some(label) = crate::starlark_types::label_command_line_form(value, eval) {
+        ArgsOp::Label(label)
+    } else {
+        ArgsOp::Object {
+            file: false,
+            text: value.to_str(),
+        }
+    }
 }
 
 /// Snapshot a list/tuple of strings and active Args objects without tree
@@ -435,7 +534,9 @@ fn map_one<'v>(
 
 /// One add_all/add_joined call as a group: eager unless a value is a tree
 /// artifact and expand_directories is set (VectorArg.maybeExpandDirectories).
+#[allow(clippy::too_many_arguments)]
 fn vector_group<'v>(
+    builder: &Args,
     method: &str,
     values: Value<'v>,
     shape: VectorShape,
@@ -449,6 +550,7 @@ fn vector_group<'v>(
     check_mapper(map_each, allow_closure, method, eval)?;
     formatted(shape.format_each.as_deref(), "")?;
     formatted(shape.format_joined.as_deref(), "")?;
+    let is_depset = values.get_type() == "depset";
     let values = if values.get_type() == "depset" {
         let to_list = values
             .get_attr_error("to_list", eval.heap())
@@ -471,7 +573,18 @@ fn vector_group<'v>(
     let expander = !map_each.is_none() && wants_expander(map_each);
     let mut items: Vec<Item> = Vec::new();
     let mut deferred = false;
+    let mut ops: Option<Vec<crate::aquery_key::ArgsOp>> =
+        builder.recipe.borrow().is_some().then(Vec::new);
+    if is_depset {
+        builder
+            .record(|recipe| recipe.unmodelled("a depset value (NestedSet structure fingerprint)"));
+    }
     for item in values {
+        if map_each.is_none()
+            && let Some(ops) = ops.as_mut()
+        {
+            ops.push(object_op(item, eval));
+        }
         if let Some(file) = File::from_value(item)
             && file.is_directory
         {
@@ -489,10 +602,46 @@ fn vector_group<'v>(
             }
         }
         let strings = map_one(item, map_each, expander, eval)?;
+        if !map_each.is_none()
+            && let Some(ops) = ops.as_mut()
+        {
+            ops.extend(strings.iter().cloned().map(crate::aquery_key::ArgsOp::Text));
+        }
         match items.last_mut() {
             Some(Item::Strings(previous)) => previous.extend(strings),
             _ => items.push(Item::Strings(strings)),
         }
+    }
+    if let Some(mut ops) = ops {
+        use crate::aquery_key::{self as key, ArgsOp};
+        if deferred && !map_each.is_none() {
+            builder.record(|recipe| recipe.unmodelled("map_each over a directory"));
+        }
+        let text = |uuid, value: &Option<String>, ops: &mut Vec<ArgsOp>| {
+            if let Some(value) = value {
+                ops.push(ArgsOp::Uuid(uuid));
+                ops.push(ArgsOp::Text(value.clone()));
+            }
+        };
+        if expand_directories {
+            ops.push(ArgsOp::Uuid(key::EXPAND_DIRECTORIES_UUID));
+        }
+        if shape.uniquify {
+            ops.push(ArgsOp::Uuid(key::UNIQUIFY_UUID));
+        }
+        if shape.omit_if_empty {
+            ops.push(ArgsOp::Uuid(key::OMIT_IF_EMPTY_UUID));
+        }
+        text(key::ARG_NAME_UUID, &shape.arg_name, &mut ops);
+        text(key::FORMAT_EACH_UUID, &shape.format_each, &mut ops);
+        if shape.before_each.is_some() {
+            text(key::BEFORE_EACH_UUID, &shape.before_each, &mut ops);
+        } else if shape.join_with.is_some() {
+            text(key::JOIN_WITH_UUID, &shape.join_with, &mut ops);
+            text(key::FORMAT_JOINED_UUID, &shape.format_joined, &mut ops);
+        }
+        text(key::TERMINATE_WITH_UUID, &shape.terminate_with, &mut ops);
+        builder.record(|recipe| recipe.ops.extend(ops));
     }
     if deferred {
         let map_each = if map_each.is_none() {
@@ -547,6 +696,17 @@ fn args_methods(builder: &mut MethodsBuilder) {
                 "Cannot add directories to Args#add since they may expand to multiple values. Either use Args#add_all (if you want expansion) or args.add(directory.path) (if you do not)."
             );
         }
+        builder.record(|recipe| {
+            use crate::aquery_key::ArgsOp;
+            if let Some(name) = &name {
+                recipe.object(false, name);
+            }
+            recipe.push(object_op(value, eval));
+            if let Some(format) = format.into_option() {
+                recipe.push(ArgsOp::Text(format.to_owned()));
+                recipe.push(ArgsOp::Uuid(crate::aquery_key::SINGLE_FORMATTED_ARG_UUID));
+            }
+        });
         let mut values: Vec<_> = name.into_iter().collect();
         values.push(formatted(
             format.into_option(),
@@ -582,6 +742,7 @@ fn args_methods(builder: &mut MethodsBuilder) {
             ..VectorShape::default()
         };
         if let Some(group) = vector_group(
+            builder,
             "add_all",
             values,
             shape,
@@ -621,6 +782,7 @@ fn args_methods(builder: &mut MethodsBuilder) {
             ..VectorShape::default()
         };
         if let Some(group) = vector_group(
+            builder,
             "add_joined",
             values,
             shape,
