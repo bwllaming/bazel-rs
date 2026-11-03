@@ -809,9 +809,9 @@ struct Options {
     scope: bool,
     base_digests: Option<PathBuf>,
     write_digests: Option<PathBuf>,
-    /// `--concurrent_revisions`: plan both revisions at once (in two
-    /// worktrees; about twice the peak memory).
-    concurrent: bool,
+    /// `--[no]concurrent_revisions`: plan both revisions at once (about
+    /// twice the peak memory). Unset: [`auto_concurrent`] decides.
+    concurrent: Option<bool>,
     forwarded: Vec<String>,
     patterns: Vec<String>,
     /// The working copy a planning in place runs in: its analysis snapshot
@@ -873,8 +873,19 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 }
             }
             "--explain_affected" => options.explain = true,
-            "--concurrent_revisions" => options.concurrent = true,
-            "--noconcurrent_revisions" => options.concurrent = false,
+            "--concurrent_revisions" => {
+                options.concurrent = match arg.split_once('=').map(|(_, value)| value) {
+                    None | Some("true" | "yes" | "1") => Some(true),
+                    Some("false" | "no" | "0") => Some(false),
+                    Some("auto") => None,
+                    Some(other) => {
+                        return Err(format!(
+                            "--concurrent_revisions must be true, false or auto, not {other}"
+                        ));
+                    }
+                }
+            }
+            "--noconcurrent_revisions" => options.concurrent = Some(false),
             "--include_incompatible" => options.include_incompatible = true,
             "--include_manual" => options.include_manual = true,
             "--noinclude_manual" => options.include_manual = false,
@@ -1195,6 +1206,46 @@ fn write_digests_file(
     std::fs::write(path, text).map_err(|error| format!("cannot write {}: {error}", path.display()))
 }
 
+/// The memory a host must have available (MemAvailable) for `affected` to
+/// plan both revisions of a local change at once by default: two scoped
+/// plannings of ~/code peak at about 4.5 GB each, a full one at about
+/// 9.2 GB (docs/AFFECTED_TARGETS.md §8.5). `BAZEL_RS_AFFECTED_CONCURRENT_MB`
+/// overrides it (0: always, when not asked otherwise).
+const AUTO_CONCURRENT_MB: u64 = 20 * 1024;
+
+/// MemAvailable of `/proc/meminfo` text, in MB.
+fn available_mb(meminfo: &str) -> Option<u64> {
+    meminfo.lines().find_map(|line| {
+        let rest = line.strip_prefix("MemAvailable:")?;
+        let kb: u64 = rest.trim().trim_end_matches("kB").trim().parse().ok()?;
+        Some(kb / 1024)
+    })
+}
+
+/// Whether to plan both revisions at once when neither
+/// `--concurrent_revisions` nor `--noconcurrent_revisions` was given: when
+/// the host has [`AUTO_CONCURRENT_MB`] available.
+fn auto_concurrent() -> bool {
+    let needed = std::env::var("BAZEL_RS_AFFECTED_CONCURRENT_MB")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(AUTO_CONCURRENT_MB);
+    let available = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .as_deref()
+        .and_then(available_mb);
+    match available {
+        Some(available) if available >= needed => true,
+        Some(available) => {
+            eprintln!(
+                "bazel-rs affected: planning the revisions one after the other ({available} MB available, {needed} MB for both at once)"
+            );
+            false
+        }
+        None => needed == 0,
+    }
+}
+
 use std::os::fd::AsFd;
 
 /// `bazel-rs [STARTUP...] affected --base=REV [--head=REV] [OPTIONS...] [PATTERNS...]`.
@@ -1243,7 +1294,6 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
     // the working copy's, which the commands after `affected` see too).
     // `BAZEL_RS_AFFECTED_HEAD_IN_PLACE=0` checks HEAD out in the worktree.
     let head_in_place = options.head.is_none()
-        && !options.concurrent
         && head_commit.is_some()
         && !matches!(
             std::env::var_os("BAZEL_RS_AFFECTED_HEAD_IN_PLACE").as_deref(),
@@ -1447,9 +1497,20 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             eprintln!("bazel-rs affected: {error}: every target of the head revision is affected");
             Ok(None)
         };
+        // Both revisions at once: as asked, else (auto) for a local change
+        // when the host has the memory for two plannings. A global change
+        // stays sequential unless asked (its revisions' repository
+        // specifications differ: docs/WORKTREES.md, hazard 3).
+        let concurrent = !from_file
+            && head_commit.is_some()
+            && match options.concurrent {
+                Some(asked) => asked,
+                None => scoped && auto_concurrent(),
+            };
         // The head's worktree: the base's (the second planning starts from
-        // the first's state), or its own when both are planned at once.
-        let head_tree = if options.concurrent && !from_file && head_commit.is_some() {
+        // the first's state), or its own when both are planned at once
+        // (unless the head is planned in place).
+        let head_tree = if concurrent && !head_in_place {
             let mut name = worktree.file_name().unwrap_or_default().to_os_string();
             name.push("-head");
             worktree.with_file_name(name)
@@ -1460,7 +1521,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             scope.is_some_and(|scope| scope.spec == spec_path.as_path())
         };
         let mut base_entire = false;
-        let (mut base_planned, head) = if head_tree != worktree {
+        let (mut base_planned, head) = if concurrent {
             // Both at once: the base and the head restricted to the scope;
             // the corrections below run sequentially (rare).
             let head_scope = if !scoped {
@@ -1472,8 +1533,17 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             };
             let base_scope = scoped.then_some(&restrict);
             let head_commit = head_commit.as_deref().unwrap_or_default();
+            // A clean working copy at HEAD is planned in place (its
+            // snapshot saved for the commands after `affected`).
+            let head_at = (!head_in_place).then_some(head_commit);
             checkout(&top, &worktree, &base_commit)?;
-            checkout(&top, &head_tree, head_commit)?;
+            let head_workspace = match head_at {
+                Some(commit) => {
+                    checkout(&top, &head_tree, commit)?;
+                    head_tree.join(&below)
+                }
+                None => root.clone(),
+            };
             eprintln!("bazel-rs affected: planning both revisions concurrently");
             let base_run = start_plan(
                 binary,
@@ -1487,7 +1557,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 binary,
                 startup,
                 &options,
-                &head_tree.join(&below),
+                &head_workspace,
                 &keep.join("head.digests"),
                 head_scope,
             );
@@ -1514,13 +1584,8 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             let head = match head_result {
                 Ok(planned) => planned,
                 Err(error) if restricted(head_scope) => {
-                    entire_after_retry(
-                        &head_tree.join(&below),
-                        &keep.join("head.digests"),
-                        "head",
-                        error,
-                    )?
-                    .0
+                    entire_after_retry(&head_workspace, &keep.join("head.digests"), "head", error)?
+                        .0
                 }
                 Err(error) => return Err(error),
             };
@@ -1534,7 +1599,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                     Scope::Scoped(_),
                 ) if restricted(head_scope) => {
                     eprintln!("bazel-rs affected: base: full analysis: {reason}");
-                    plan_revision(&head_tree, Some(head_commit), "head", None)?.0
+                    plan_revision(&head_tree, head_at, "head", None)?.0
                 }
                 _ => head,
             };
@@ -1769,6 +1834,32 @@ mod tests {
         ])
         .unwrap();
         assert!(!again.include_manual);
+    }
+
+    #[test]
+    fn concurrent_revisions_options() {
+        let parsed = |args: &[&str]| {
+            let mut all = vec!["--base=x".to_owned()];
+            all.extend(args.iter().map(|arg| (*arg).to_owned()));
+            parse(&all).map(|options| options.concurrent)
+        };
+        assert_eq!(parsed(&[]), Ok(None));
+        assert_eq!(parsed(&["--concurrent_revisions"]), Ok(Some(true)));
+        assert_eq!(parsed(&["--concurrent_revisions=true"]), Ok(Some(true)));
+        assert_eq!(parsed(&["--concurrent_revisions=auto"]), Ok(None));
+        assert_eq!(parsed(&["--noconcurrent_revisions"]), Ok(Some(false)));
+        assert_eq!(parsed(&["--concurrent_revisions=false"]), Ok(Some(false)));
+        assert!(parsed(&["--concurrent_revisions=maybe"]).is_err());
+        // Not forwarded to the plannings (nor in the digests key).
+        let options = parse(&["--base=x".to_owned(), "--concurrent_revisions".to_owned()]).unwrap();
+        assert!(options.forwarded.is_empty());
+    }
+
+    #[test]
+    fn available_memory() {
+        let meminfo = "MemTotal:       263751720 kB\nMemFree:        11531464 kB\nMemAvailable:   143691468 kB\n";
+        assert_eq!(available_mb(meminfo), Some(140323));
+        assert_eq!(available_mb("MemTotal: 1 kB\n"), None);
     }
 
     #[test]

@@ -73,6 +73,10 @@ impl Repo {
     }
 
     fn affected(&self, args: &[&str]) -> Output {
+        self.affected_with(args, &[])
+    }
+
+    fn affected_with(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         let output = Command::new("timeout")
             .args(["--kill-after=5s", "240s"])
             .arg(env!("CARGO_BIN_EXE_bazel-rs"))
@@ -91,6 +95,7 @@ impl Repo {
             .env("HOME", self.home())
             .env("TMPDIR", self.home())
             .env("LC_ALL", "C")
+            .envs(env.iter().copied())
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out");
@@ -669,4 +674,68 @@ fn the_build_and_test_after_affected_derive_their_plans() {
     fs::write(repo.main().join("c/c.txt"), "dirty\n").unwrap();
     let (_, stderr) = affected(&first);
     assert!(stderr.contains("the working copy has changes"), "{stderr}");
+}
+
+/// A local change plans both revisions at once when the host has the
+/// memory for it (`BAZEL_RS_AFFECTED_CONCURRENT_MB`, 20 GB by default), the
+/// head still in place (its snapshot saved for the commands after
+/// `affected`); otherwise, or with `--noconcurrent_revisions`, one after
+/// the other. A global change stays sequential unless asked. The answer is
+/// the same every way.
+#[test]
+fn a_local_change_plans_both_revisions_at_once_when_memory_allows() {
+    let repo = Repo::new();
+    let first = repo.commit(PACKAGES);
+    repo.commit(&[("a/a.txt", "a2\n")]);
+    let run = |extra: &[&str], needed: &str| {
+        let mut args = vec![
+            format!("--base={first}"),
+            "--affected_command=build".to_owned(),
+        ];
+        args.extend(extra.iter().map(|arg| (*arg).to_owned()));
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = repo.affected_with(&args, &[("BAZEL_RS_AFFECTED_CONCURRENT_MB", needed)]);
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "{stderr}");
+        let labels: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(labels, ["//a", "//b"], "{stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "planning //... (scoped) in {}\n",
+                repo.main().display()
+            )),
+            "the head is planned in place:\n{stderr}"
+        );
+        stderr
+    };
+    let stderr = run(&[], "0");
+    assert!(
+        stderr.contains("planning both revisions concurrently"),
+        "{stderr}"
+    );
+    let stderr = run(&[], "999999999");
+    assert!(!stderr.contains("concurrently"), "{stderr}");
+    assert!(stderr.contains("one after the other"), "{stderr}");
+    let stderr = run(&["--noconcurrent_revisions"], "0");
+    assert!(!stderr.contains("concurrently"), "{stderr}");
+    let stderr = run(&["--concurrent_revisions"], "999999999");
+    assert!(
+        stderr.contains("planning both revisions concurrently"),
+        "{stderr}"
+    );
+    // A global change: sequential by default.
+    let third = repo.commit(&[("MODULE.bazel", "module(name = 'main')\n# x\n")]);
+    let args = [
+        format!("--base={third}~1"),
+        "--affected_command=build".to_owned(),
+    ];
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = repo.affected_with(&args, &[("BAZEL_RS_AFFECTED_CONCURRENT_MB", "0")]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("global change: MODULE.bazel"), "{stderr}");
+    assert!(!stderr.contains("concurrently"), "{stderr}");
 }
