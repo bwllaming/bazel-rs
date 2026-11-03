@@ -224,11 +224,12 @@ impl Lockfile {
 
     /// The SHA-256 of what this lockfile holds for the module extensions
     /// `ids` (deduplicated, in order): per id its `moduleExtensions`,
-    /// `facts` (as written: without null members) and `factsVersions`
-    /// members, an absent member framed as such. The analysis snapshot
+    /// `facts` and `factsVersions` members exactly as parsed (null members
+    /// included: crate::repository's extension_lock reads them so), an
+    /// absent member framed as such. The analysis snapshot
     /// records the hidden lockfile by this projection over the extensions
     /// a command used (crate::registry_session::RegistrySession::
-    /// hidden_lockfile_projection), so another command adding or changing
+    /// note_hidden_lockfile), so another command adding or changing
     /// other extensions' entries keeps it valid.
     pub fn entries_digest(&self, ids: &std::collections::BTreeSet<String>) -> [u8; 32] {
         use sha2::Digest as _;
@@ -237,21 +238,13 @@ impl Lockfile {
             hash.update((bytes.len() as u64).to_le_bytes());
             hash.update(bytes);
         };
-        let member = |members: &[(String, Json)], id: &str, facts: bool| {
+        let member = |members: &[(String, Json)], id: &str| {
             members
                 .iter()
                 .find(|(name, _)| name == id)
                 .map(|(_, value)| {
                     let mut text = String::new();
-                    if facts {
-                        write_pretty(
-                            &mut text,
-                            &crate::lockfile_extensions::drop_null_members(value),
-                            0,
-                        );
-                    } else {
-                        write_pretty(&mut text, value, 0);
-                    }
+                    write_pretty(&mut text, value, 0);
                     text
                 })
         };
@@ -259,9 +252,9 @@ impl Lockfile {
         for id in ids {
             frame(id.as_bytes());
             for value in [
-                member(&self.module_extensions, id, false),
-                member(&self.facts, id, true),
-                member(&self.facts_versions, id, false),
+                member(&self.module_extensions, id),
+                member(&self.facts, id),
+                member(&self.facts_versions, id),
             ] {
                 match value {
                     Some(text) => {
@@ -845,6 +838,11 @@ mod tests {
         facts.facts.clear();
         assert_ne!(facts.entries_digest(&ids(&["//:a.bzl%a"])), a);
         assert_ne!(Lockfile::default().entries_digest(&ids(&["//:a.bzl%a"])), a);
+        // A null facts member is part of what a reader parses (and
+        // crate::repository's extension_lock hands over): it counts.
+        let mut nulls = lockfile.clone();
+        nulls.facts = vec![("//:a.bzl%a".into(), entry(r#"{"k": "v"}"#))];
+        assert_ne!(nulls.entries_digest(&ids(&["//:a.bzl%a"])), a);
         // The recorded projection is of the written file as a reader
         // parses it; writing that again changes nothing.
         let real = Lockfile {

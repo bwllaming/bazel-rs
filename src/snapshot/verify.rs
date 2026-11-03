@@ -259,6 +259,10 @@ impl Verify {
                 Vec::new(),
             );
         }
+        // Recorded like the save records it (crate::registry_session).
+        if let Some(session) = self.registry.as_ref().and_then(SessionHandle::session) {
+            session.note_hidden_lockfile();
+        }
         let recording = observed_fs::recorder().map(|recorder| recorder.take());
         let observed = match recording {
             Some(recording) => {

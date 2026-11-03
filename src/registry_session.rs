@@ -105,6 +105,16 @@ pub struct RegistrySession {
     /// is written to its own path at the end even when nothing changed, so
     /// the next command reads it there.
     hidden_seeded: bool,
+    /// How the hidden lockfile was read without being observed, for the
+    /// analysis snapshot's record of it ([`Self::note_hidden_lockfile`]);
+    /// `None` when its read was observed (a publication proof's session)
+    /// or none happened.
+    hidden_read: Option<HiddenRead>,
+    /// The module extensions whose hidden lockfile entry or facts this
+    /// invocation consulted (crate::repository's extension_lock), in every
+    /// lockfile mode: what the snapshot's record of it covers, with
+    /// `extension_results`.
+    hidden_consulted: Mutex<std::collections::BTreeSet<String>>,
     /// The SingleExtensionValues done in this invocation, in completion order.
     extension_results: Mutex<Vec<crate::lockfile_extensions::ExtensionResult>>,
     /// `--native-lockfile=readonly`: a stateless probe mode that writes no
@@ -218,6 +228,8 @@ impl RegistrySession {
             spellings: BTreeMap::new(),
             hidden: None,
             hidden_seeded: false,
+            hidden_read: None,
+            hidden_consulted: Mutex::default(),
             extension_results: Mutex::default(),
             readonly: *target == LockfileTarget::ReadOnly,
         })
@@ -247,58 +259,143 @@ impl RegistrySession {
             return self;
         }
         // Not observed: the analysis snapshot records the entries this
-        // command used instead ([`Self::hidden_lockfile_projection`]).
-        crate::observed_fs::discard(|| self.read_hidden_lockfile(path, seeds))
+        // command used instead ([`Self::note_hidden_lockfile`]).
+        crate::observed_fs::discard(|| self.read_hidden_lockfile(path, seeds, false))
     }
 
-    fn read_hidden_lockfile(mut self, path: PathBuf, seeds: &[crate::worktree::Seed]) -> Self {
+    /// [`Self::with_hidden_lockfile`] with the read observed like any file
+    /// (a publication proof's private recording keeps it).
+    fn with_observed_hidden_lockfile(mut self, path: PathBuf) -> Self {
+        if self.mode == LockfileMode::Off {
+            self.hidden = Some((path, Lockfile::default()));
+            return self;
+        }
+        self.read_hidden_lockfile(path, &[], true)
+    }
+
+    fn read_hidden_lockfile(
+        mut self,
+        path: PathBuf,
+        seeds: &[crate::worktree::Seed],
+        observed: bool,
+    ) -> Self {
+        // The stat key before the read, as a READ records it.
+        let read = |path: &Path| {
+            let key = crate::observed_fs::stat_key(path);
+            let bytes = crate::observed_fs::read(path);
+            let digest = bytes.as_ref().ok().map(|bytes| {
+                use sha2::Digest as _;
+                <[u8; 32]>::from(sha2::Sha256::digest(bytes))
+            });
+            let lockfile = match bytes {
+                Ok(bytes) => {
+                    Lockfile::parse(&String::from_utf8_lossy(&bytes), LockfileMode::Update)
+                        .unwrap_or_default()
+                }
+                Err(_) => Lockfile::default(),
+            };
+            (lockfile, key, digest)
+        };
         if !crate::observed_fs::exists(&path)
             && let Some(seed) = seeds
                 .iter()
                 .find(|seed| crate::observed_fs::exists(&seed.path))
         {
-            let mut lockfile = lockfile::read(&seed.path, LockfileMode::Update).unwrap_or_default();
+            let (mut lockfile, key, digest) = read(&seed.path);
             if let Some(foreign) = &seed.foreign {
                 lockfile = without_mentions(lockfile, foreign);
+            }
+            if !observed {
+                self.hidden_read = Some(match digest {
+                    Some(sha256) => HiddenRead::Seed {
+                        path: seed.path.clone(),
+                        key,
+                        sha256,
+                    },
+                    None => HiddenRead::SeedUnreadable(seed.path.clone()),
+                });
             }
             self.hidden = Some((path, lockfile));
             self.hidden_seeded = true;
             return self;
         }
-        let lockfile = lockfile::read(&path, LockfileMode::Update).unwrap_or_default();
+        let (lockfile, key, _) = read(&path);
+        if !observed {
+            self.hidden_read = Some(HiddenRead::Own { key });
+        }
         self.hidden = Some((path, lockfile));
         self
     }
 
-    /// What the analysis snapshot records of the hidden lockfile (instead
-    /// of its bytes, which another command — a `query` evaluating other
-    /// extensions — rewrites): its path, the module extensions this command
-    /// resolved, the digest of their entries in the hidden lockfile as it
-    /// stands once this command wrote it ([`Lockfile::entries_digest`] of
-    /// its serialized form, exactly what a later reader parses), and
-    /// whether a write is pending (then a validation always reads it). A
-    /// later command reads the same entries for the same extensions, and
-    /// resolves them alike. `None` without a hidden lockfile read.
-    pub fn hidden_lockfile_projection(
-        &self,
-    ) -> Option<(PathBuf, std::collections::BTreeSet<String>, [u8; 32], bool)> {
-        if self.mode == LockfileMode::Off {
-            return None;
-        }
-        let (path, read) = self.hidden.as_ref()?;
-        let ids: std::collections::BTreeSet<String> = self
-            .extension_results
+    /// Module extension `id`'s hidden lockfile entry or facts were consulted.
+    pub(crate) fn note_hidden_consulted(&self, id: &str) {
+        self.hidden_consulted
             .lock()
-            .expect("extension results")
-            .iter()
-            .map(|result| result.id.clone())
-            .collect();
-        let updated = self.updated_hidden_lockfile();
-        let written = updated.as_ref().map_or(read, |(_, lockfile)| lockfile);
-        let reparsed =
-            Lockfile::parse(&written.serialize(), LockfileMode::Update).unwrap_or_default();
-        let digest = reparsed.entries_digest(&ids);
-        Some((path.clone(), ids, digest, updated.is_some()))
+            .expect("hidden lockfile consultations")
+            .insert(id.to_owned());
+    }
+
+    /// Record the hidden lockfile for the analysis snapshot (instead of its
+    /// bytes, which another command — a `query` evaluating other extensions
+    /// — rewrites), once this command decided what it writes: by the entries
+    /// of the module extensions it resolved or consulted
+    /// ([`Lockfile::entries_digest`], crate::observed_fs::note_lockfile_entries)
+    /// in the hidden lockfile as it stands once this command wrote it (its
+    /// serialized form parsed again, exactly what a later reader parses;
+    /// always parsed on validation), else as it read it (with the stat key
+    /// of that read). A hidden lockfile read from a seed and not written is
+    /// recorded as the seed's READ with its own path absent. A later
+    /// command reads the same entries for the same extensions and resolves
+    /// them alike. Every save path calls it; a repeat changes nothing.
+    pub fn note_hidden_lockfile(&self) {
+        if self.mode == LockfileMode::Off {
+            return;
+        }
+        let (Some((path, read)), Some(how)) = (&self.hidden, &self.hidden_read) else {
+            return;
+        };
+        let mut ids = self
+            .hidden_consulted
+            .lock()
+            .expect("hidden lockfile consultations")
+            .clone();
+        ids.extend(
+            self.extension_results
+                .lock()
+                .expect("extension results")
+                .iter()
+                .map(|result| result.id.clone()),
+        );
+        match (self.updated_hidden_lockfile(), how) {
+            (Some((_, written)), _) => {
+                let reparsed =
+                    Lockfile::parse(&written.serialize(), LockfileMode::Update).unwrap_or_default();
+                let digest = reparsed.entries_digest(&ids);
+                crate::observed_fs::note_lockfile_entries(path, ids, digest, None);
+            }
+            (None, HiddenRead::Own { key }) => {
+                let digest = read.entries_digest(&ids);
+                crate::observed_fs::note_lockfile_entries(path, ids, digest, Some(*key));
+            }
+            (
+                None,
+                HiddenRead::Seed {
+                    path: seed,
+                    key,
+                    sha256,
+                },
+            ) => {
+                crate::observed_fs::note_seeded_lockfile(path, seed, *key, *sha256);
+            }
+            (None, HiddenRead::SeedUnreadable(seed)) => {
+                crate::observed_fs::taint_after_window(crate::observed_fs::Taint::Unstable, || {
+                    format!(
+                        "hidden lockfile seed {} could not be read",
+                        crate::observed_fs::escape(seed.as_os_str())
+                    )
+                });
+            }
+        }
     }
 
     /// The hidden lockfile's value (empty without one).
@@ -860,6 +957,23 @@ impl RegistrySession {
     }
 }
 
+/// How a hidden lockfile was read without being observed
+/// ([`RegistrySession::note_hidden_lockfile`]).
+#[derive(Debug)]
+enum HiddenRead {
+    /// From its own path, whose stat key was `key` before the read.
+    Own { key: crate::observed_fs::StatKey },
+    /// From a seed (its own path absent): the seed's path, stat key and
+    /// bytes' SHA-256.
+    Seed {
+        path: PathBuf,
+        key: crate::observed_fs::StatKey,
+        sha256: [u8; 32],
+    },
+    /// From a seed that existed but could not be read (the empty lockfile).
+    SeedUnreadable(PathBuf),
+}
+
 /// The native hidden lockfile of `workspace` under `--cache-dir` (Bazel:
 /// `<output_base>/MODULE.bazel.lock`; an output base is per workspace): in
 /// the workspace's state directory, `<cache>/worktrees/<name>-<hash>/`
@@ -957,7 +1071,7 @@ impl SessionHandle {
         fresh.cas = session.cas.clone();
         fresh.spellings = session.spellings.clone();
         if let Some((path, _)) = &session.hidden {
-            fresh = fresh.with_hidden_lockfile(path.clone());
+            fresh = fresh.with_observed_hidden_lockfile(path.clone());
         }
         Ok(Self::new(fresh))
     }

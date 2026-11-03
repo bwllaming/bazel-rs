@@ -624,3 +624,57 @@ repo = repository_rule(implementation = _impl, environ = ['HISTORY_NAME'], local
         ws.sentinels_absent();
     }
 }
+
+/// A cquery graph snapshot records the hidden lockfile by the entries of
+/// the extensions it used (the file is read unobserved): a reproducible
+/// extension's reused entry gone misses (the extension runs again).
+#[test]
+fn a_graph_snapshot_records_the_hidden_lockfile_entries_it_used() {
+    let ws = Workspace::new();
+    ws.write(
+        "ext.bzl",
+        r#"def _repo(ctx):
+    ctx.file("BUILD.bazel", "exports_files(['v.txt'])\n")
+    ctx.file("v.txt", "v\n")
+
+_repo_rule = repository_rule(implementation = _repo)
+
+def _ext(module_ctx):
+    _repo_rule(name = "extrepo")
+    return module_ctx.extension_metadata(reproducible = True)
+
+ext = module_extension(implementation = _ext)
+"#,
+    );
+    ws.write(
+        "MODULE.bazel",
+        "module(name='history')\next = use_extension('//:ext.bzl', 'ext')\nuse_repo(ext, 'extrepo')\n",
+    );
+    ws.write(
+        "e/BUILD.bazel",
+        "filegroup(name = 'e', srcs = ['@extrepo//:v.txt'])\n",
+    );
+    let args = &["--lockfile_mode=update", "deps(//e:e)"];
+    let hidden = || {
+        fs::read_dir(ws.cache.join("worktrees"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path().join("MODULE.bazel.lock"))
+            .filter(|path| path.exists())
+            .collect::<Vec<_>>()
+    };
+    // The cold run evaluates the extension and writes the hidden lockfile.
+    let cold = ws.query(args);
+    assert_eq!(hidden().len(), 1);
+    let warm = ws.query(args);
+    state(&warm, "saved");
+    hit_eq(&ws.query(args), &warm);
+    assert_eq!(cold.stdout, warm.stdout);
+    for path in hidden() {
+        fs::remove_file(path).unwrap();
+    }
+    let again = ws.query(args);
+    state(&again, "miss");
+    assert_eq!(again.stdout, warm.stdout);
+}

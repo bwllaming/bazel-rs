@@ -556,6 +556,11 @@ impl Session {
             {
                 return Err("lockfile write pending".into());
             }
+            // The hidden lockfile, read unobserved, is recorded by the
+            // entries this cquery used (crate::registry_session).
+            if let Some(registry) = registry.session() {
+                registry.note_hidden_lockfile();
+            }
             let recorder = crate::observed_fs::recorder().ok_or("no input observations")?;
             if !recorder.taints().is_empty() {
                 return Err(format!("tainted analysis: {:?}", recorder.taints()));

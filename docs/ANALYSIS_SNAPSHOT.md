@@ -876,15 +876,21 @@ could not reproduce; the phase taints the run with `errors`), the capture
 is complete and below 16 MiB, and the snapshot stays below 512 MiB.
 
 **The hidden lockfile** (affected-cold-speed) is not recorded by its bytes:
-reading it is not observed, and the save records a `LOCKFILE_ENTRIES`
-observation of its path instead (crate::observed_fs::Op::LockfileEntries):
-the module extensions the command resolved and the digest of their
-`moduleExtensions`, `facts` (without null members, as written) and
-`factsVersions` members in the hidden lockfile as it stands once the
-command wrote it — its serialized form parsed again, exactly what a later
-reader parses (crate::lockfile::Lockfile::entries_digest). A hit parses the
-file (absent or unreadable: empty) and compares that digest; a pending
-write forces the parse. So the run that writes the hidden lockfile is
+reading it is not observed, and every save path (the snapshot's save, the
+record report, a cquery graph's save, a verify shadow;
+crate::registry_session::RegistrySession::note_hidden_lockfile) records a
+`LOCKFILE_ENTRIES` observation of its path instead
+(crate::observed_fs::Op::LockfileEntries): the module extensions the
+command resolved or whose entry or facts it consulted (in every lockfile
+mode) and the digest of their `moduleExtensions`, `facts` and
+`factsVersions` members exactly as parsed — in the hidden lockfile as it
+stands once the command wrote it (its serialized form parsed again,
+exactly what a later reader parses; always parsed on validation), else as
+the command read it (with that read's stat key). A hit parses the file
+(absent or unreadable: empty) and compares that digest. A hidden lockfile
+read from a seed (docs/WORKTREES.md) and not written is recorded as the
+seed's READ with its own path absent (STAT); a publication proof's private
+session reads it observed, as before. So the run that writes the hidden lockfile is
 saved (a later run reads the entries it wrote and resolves the same
 extensions alike), another command's entries for other extensions (~/code's
 CI: the `query` between `affected` and `build` evaluates the extensions of

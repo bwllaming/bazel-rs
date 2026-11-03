@@ -2116,37 +2116,65 @@ pub(crate) fn note_selection_read(path: &Path, bytes: &[u8], canonical: &str) {
     note_read_as(path, bytes, Op::SelectionRead(canonical.to_owned()));
 }
 
+/// The stat key a READ of `path` records (its lstat; the default when it
+/// is absent), taken before the read.
+pub fn stat_key(path: &Path) -> StatKey {
+    fs::symlink_metadata(path)
+        .ok()
+        .map(|metadata| StatKey::of(&metadata))
+        .unwrap_or_default()
+}
+
+/// The recorder an end-of-command record goes to: the window's, or once it
+/// closed the process's.
+fn after_window() -> Option<&'static Recorder> {
+    active().or_else(|| RECORDER.get())
+}
+
 /// Record the hidden lockfile `path` by the entries of the module
-/// extensions `ids` ([`Op::LockfileEntries`], their digest `sha256`), at the
-/// end of the command (after the window: the command decided what it
-/// writes). `pending`: the command has yet to write it, so a validation
-/// always parses it (its stat key now says nothing about what it will
-/// hold).
+/// extensions `ids` ([`Op::LockfileEntries`], their digest `sha256`), once
+/// the command decided what it writes (also after the window). `key`: the
+/// file's stat key when the command read it, which validation may trust;
+/// `None` when the command has yet to write it, so a validation always
+/// parses it. The outcome depends on the arguments only: every save path
+/// of a process may note it (the snapshot's save, the record report, a
+/// cquery graph's save, a verify shadow), and a repeat changes nothing.
 pub fn note_lockfile_entries(
     path: &Path,
     ids: impl IntoIterator<Item = String>,
     sha256: [u8; 32],
-    pending: bool,
+    key: Option<StatKey>,
 ) {
-    // Once per process: the save and the record report both note it.
-    static NOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let Some(recorder) = RECORDER.get() else {
+    let Some(recorder) = after_window() else {
         return;
     };
-    if NOTED.swap(true, Ordering::AcqRel) {
-        return;
-    }
-    let key = fs::symlink_metadata(path)
-        .ok()
-        .map(|metadata| StatKey::of(&metadata))
-        .unwrap_or_default();
-    let racy = pending || recorder.racy(&key);
+    let racy = key.as_ref().is_none_or(|key| recorder.racy(key));
     recorder.store_observation(
         path,
         Op::LockfileEntries(ids.into_iter().collect()),
-        Outcome::Read { sha256, key, racy },
+        Outcome::Read {
+            sha256,
+            key: key.unwrap_or_default(),
+            racy,
+        },
     );
 }
+
+/// Record a hidden lockfile the command read from a seed (crate::worktree)
+/// and does not write: its own `path` was absent (STAT) and the seed's
+/// bytes (`sha256`, read with stat key `key`) are what a later command
+/// reads as long as it stays absent.
+pub fn note_seeded_lockfile(path: &Path, seed: &Path, key: StatKey, sha256: [u8; 32]) {
+    let Some(recorder) = after_window() else {
+        return;
+    };
+    recorder.store_observation(path, Op::Stat, Outcome::Error(ENOENT));
+    let racy = recorder.racy(&key);
+    recorder.store_observation(seed, Op::Read, Outcome::Read { sha256, key, racy });
+}
+
+/// ENOENT (Linux), the errno an absent path's STAT records.
+const ENOENT: i32 = 2;
 
 pub(crate) fn note_selection_absent(path: &Path, canonical: &str) {
     if let Some(recorder) = active() {
@@ -2483,6 +2511,74 @@ pub(crate) mod tests_support {
 mod tests {
     use super::tests_support::record_this_thread;
     use super::*;
+
+    /// Every save path of a process notes the hidden lockfile (the
+    /// snapshot's save, the record report, a cquery graph's, a verify
+    /// shadow): a repeat changes nothing, and another set of extensions is
+    /// its own observation (no once-per-process gate drops it).
+    #[test]
+    fn hidden_lockfile_notes_repeat_without_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("MODULE.bazel.lock");
+        fs::write(&path, b"{}").unwrap();
+        let window = record_this_thread();
+        let key = stat_key(&path);
+        let ids = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect::<Vec<_>>()
+        };
+        note_lockfile_entries(&path, ids(&["a"]), [1; 32], Some(key));
+        note_lockfile_entries(&path, ids(&["a"]), [1; 32], Some(key));
+        note_lockfile_entries(&path, ids(&["a", "b"]), [2; 32], None);
+        note_lockfile_entries(&path, ids(&["a", "b"]), [2; 32], None);
+        let recording = window.recorder.snapshot();
+        let ops: Vec<&Op> = recording
+            .observations
+            .iter()
+            .map(|(_, observation)| &observation.op)
+            .collect();
+        assert_eq!(
+            ops,
+            [
+                &Op::LockfileEntries(ids(&["a"])),
+                &Op::LockfileEntries(ids(&["a", "b"]))
+            ]
+        );
+        assert!(recording.taints.is_empty(), "{:?}", recording.taints);
+        // A pending write: always parsed (racy), whatever the key.
+        assert!(
+            recording
+                .observations
+                .iter()
+                .any(|(_, observation)| matches!(
+                    observation.outcome,
+                    Outcome::Read { racy: true, .. }
+                ))
+        );
+    }
+
+    /// An extension evaluated while a repository rule executes taints the
+    /// run with its downloads itself, never through the rule's sink
+    /// (crate::repository wraps the evaluation in `with_network_sink(None)`).
+    #[test]
+    fn no_network_sink_records_downloads_as_taints() {
+        let window = record_this_thread();
+        let sink = Arc::new(NetworkSink::default());
+        with_network_sink(Some(sink.clone()), || {
+            network_taint(|| "in the rule".to_owned());
+            with_network_sink(None, || network_taint(|| "in an extension".to_owned()));
+        });
+        assert_eq!(*lock(&sink.0), ["in the rule".to_owned()]);
+        let taints = window.recorder.snapshot().taints;
+        assert_eq!(
+            taints
+                .get(&Taint::Network)
+                .map(|record| record.details.clone()),
+            Some(vec!["in an extension".to_owned()])
+        );
+    }
 
     fn paths_of(recording: &Recording) -> Vec<(String, &'static str)> {
         recording

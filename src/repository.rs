@@ -4259,11 +4259,16 @@ impl RepositorySet {
                     });
                     let facts = lock.as_ref().map(|lock| lock.facts.clone()).unwrap_or_default();
                     let tainted = crate::observed_fs::tainted_section();
-                    let mut execution = crate::extension_ctx::execute(
-                        Arc::new(self.clone()), &definition, &loaded.functions, &group.label,
-                        &group.symbol, &group.prefix, &group.participants,
-                        group.root_has_non_dev_dependency, facts,
-                    )?;
+                    // Its downloads taint the run as such, never as a running
+                    // repository rule's (an extension evaluated while one
+                    // executes: crate::observed_fs::NetworkSink).
+                    let mut execution = crate::observed_fs::with_network_sink(None, || {
+                        crate::extension_ctx::execute(
+                            Arc::new(self.clone()), &definition, &loaded.functions, &group.label,
+                            &group.symbol, &group.prefix, &group.participants,
+                            group.root_has_non_dev_dependency, facts,
+                        )
+                    })?;
                     drop(tainted);
                     let recorded = std::mem::take(&mut execution.repositories);
                     (recorded, execution.metadata.clone(), Some(execution))
@@ -5157,6 +5162,9 @@ impl RepositorySet {
         let facts_version = i64::from(definition.facts_version);
         let workspace = session.lockfile();
         let hidden = session.hidden_lockfile();
+        // Its entry and facts are consulted in every mode: the analysis
+        // snapshot's record of the hidden lockfile covers them.
+        session.note_hidden_consulted(&id);
         let facts_of = |lockfile: &crate::lockfile::Lockfile| {
             lockfile
                 .facts

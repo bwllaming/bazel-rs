@@ -5903,3 +5903,80 @@ fn a_repository_rules_downloads_settle_with_its_publication() {
     twin.same(args, &[]).assert_hit();
     assert_eq!(server.requests(), before, "a hit fetches nothing");
 }
+
+/// [`the_hidden_lockfile_is_recorded_by_the_entries_used`]'s workspace.
+fn reproducible_extension_twin() -> Twin {
+    let twin = fixture();
+    twin.write("ext.bzl", REPRODUCIBLE_EXTENSION);
+    twin.write(
+        "MODULE.bazel",
+        &format!("{MODULE}\next = use_extension('//:ext.bzl', 'ext')\nuse_repo(ext, 'extrepo')\n"),
+    );
+    twin.write(
+        "ext/BUILD.bazel",
+        "genrule(name = 'e', srcs = ['@extrepo//:v.txt'], outs = ['e.txt'], cmd = 'cp $< $@')\n",
+    );
+    let args = &["build", "//ext:e"];
+    let cold = twin.same(args, &[]);
+    cold.assert_success();
+    if cold.line("saved ").is_none() {
+        twin.same(args, &[]).assert_saved();
+    }
+    twin.each(|root| assert_eq!(hidden_lockfiles(root).len(), 1, "{}", root.display()));
+    twin
+}
+
+/// `--lockfile_mode=error` reads the hidden lockfile's entries without
+/// recording results: the snapshot still records the entries it consulted.
+#[test]
+fn error_mode_records_the_hidden_lockfile_entries_it_consulted() {
+    let twin = reproducible_extension_twin();
+    let args = &["build", "--lockfile_mode=error", "//ext:e"];
+    let first = twin.same(args, &[]);
+    first.assert_success();
+    if first.line("saved ").is_none() {
+        twin.same(args, &[]).assert_saved();
+    }
+    twin.same(args, &[]).assert_hit();
+    twin.each(|root| {
+        for path in hidden_lockfiles(root) {
+            fs::remove_file(path).unwrap();
+        }
+    });
+    twin.same(args, &[]).assert_miss("LOCKFILE_ENTRIES");
+}
+
+/// A hidden lockfile read from a seed (here the flat layout's,
+/// docs/WORKTREES.md) and not written (`--lockfile_mode=error`) is recorded
+/// as the seed's read with its own path absent: the seed gone misses.
+#[test]
+fn a_seeded_hidden_lockfile_not_written_records_the_seed() {
+    use sha2::Digest as _;
+    let twin = reproducible_extension_twin();
+    // Every side runs at <base>/run: its workspace's flat-layout path.
+    let workspace = fs::canonicalize(twin.base.path()).unwrap().join("run/ws");
+    let hash: String = sha2::Sha256::digest(workspace.as_os_str().as_encoded_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let seed = |root: &Path| {
+        root.join("cache/hidden-lockfiles")
+            .join(&hash)
+            .join("MODULE.bazel.lock")
+    };
+    twin.each(|root| {
+        let [own] = hidden_lockfiles(root).try_into().unwrap();
+        fs::create_dir_all(seed(root).parent().unwrap()).unwrap();
+        fs::rename(own, seed(root)).unwrap();
+    });
+    let args = &["build", "--lockfile_mode=error", "//ext:e"];
+    let first = twin.same(args, &[]);
+    first.assert_success();
+    if first.line("saved ").is_none() {
+        twin.same(args, &[]).assert_saved();
+    }
+    twin.each(|root| assert!(hidden_lockfiles(root).is_empty(), "error mode writes none"));
+    twin.same(args, &[]).assert_hit();
+    twin.each(|root| fs::remove_file(seed(root)).unwrap());
+    twin.same(args, &[]).assert_miss("MODULE.bazel.lock");
+}
