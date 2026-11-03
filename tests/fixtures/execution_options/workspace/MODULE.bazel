@@ -1,0 +1,3 @@
+module(name='tc')
+register_toolchains("//:mac_tc", "//:fancy_tc", "//:linux_tc")
+register_execution_platforms("//:e2")

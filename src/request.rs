@@ -380,6 +380,9 @@ impl PlannedRequest {
     ///   client environment (ActionEnvironment.resolve; the encoding never
     ///   holds the values).
     pub fn finalize(&mut self, status: StatusSource) -> Result<(), String> {
+        // --modify_execution_info (crate::execution_options): keyed like
+        // the rest of the execution requirements.
+        crate::execution_options::apply_execution_info_modifiers(&mut self.nodes);
         let placeholders = self.nodes.iter().any(|node| {
             matches!(
                 node.action.extra.transform,

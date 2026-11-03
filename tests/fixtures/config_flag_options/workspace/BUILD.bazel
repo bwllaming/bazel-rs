@@ -8,6 +8,7 @@ report(
     name = "top",
     features = ["rule_feature", "-race"],
     tool = ":tool",
+    src = "MODULE.bazel",
 )
 
 report(name = "plain")

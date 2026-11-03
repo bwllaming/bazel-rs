@@ -102,7 +102,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime};
 
@@ -288,6 +288,42 @@ pub fn set_subcommands(mode: u8) {
     SUBCOMMANDS.store(mode, Ordering::Relaxed);
 }
 
+/// `--check_up_to_date` (ExecutionOptions.checkUpToDate, :200-211):
+/// CheckUpToDateFilter prohibits executing any action the action cache
+/// does not hold (exec/CheckUpToDateFilter.java).
+static CHECK_UP_TO_DATE: AtomicBool = AtomicBool::new(false);
+
+/// Set `--check_up_to_date` for this command.
+pub fn set_check_up_to_date(value: bool) {
+    CHECK_UP_TO_DATE.store(value, Ordering::Relaxed);
+}
+
+/// The action's progress text as `-s` prints it (Bazel's describe():
+/// `Executing genrule L` for genrules, `MNEMONIC primary-output` otherwise).
+fn progress_text(action: &Action) -> String {
+    let label = action.id.split('#').next().unwrap_or(&action.id);
+    let mnemonic = action.extra.mnemonic.as_str();
+    if mnemonic == "Genrule" {
+        format!("Executing genrule {label}")
+    } else if mnemonic == "BazelWorkspaceStatusAction" {
+        // WorkspaceStatusAction's progress message names the file.
+        let name = action
+            .outputs
+            .first()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        format!("{mnemonic} {name}")
+    } else {
+        let primary = action
+            .outputs
+            .first()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        format!("{mnemonic} {primary}")
+    }
+}
+
 /// ActionExecutionContext.maybeReportSubcommand (:459-499) with
 /// CommandFailureUtils.describeCommand's COMPLETE form (:76-170) and the
 /// Linux ScriptUtil emitter: a SUBCOMMAND event before a spawn reaches its
@@ -308,11 +344,7 @@ fn report_subcommand(action: &Action, execroot: &Path, runner: &str) {
         .first()
         .map(|path| path.display().to_string())
         .unwrap_or_default();
-    let progress = if mnemonic == "Genrule" {
-        format!("Executing genrule {label}")
-    } else {
-        format!("{mnemonic} {primary}")
-    };
+    let progress = progress_text(action);
     let configuration = primary
         .strip_prefix("bazel-out/")
         .and_then(|rest| rest.split('/').next())
@@ -6632,6 +6664,17 @@ pub fn write_downloaded(
 
 fn replay_logs(id: &str, stdout: &str, stderr: &str) {
     if !stdout.is_empty() || !stderr.is_empty() {
+        // `--output_filter`/`--auto_output_filter`: a successful action's
+        // output shows only when its owner label matches
+        // (SkyframeActionExecutor.java:1305-1315, crate::output_filter).
+        let owner = id.split('#').next().unwrap_or(id);
+        if !crate::output_filter::shows_output(owner) {
+            return;
+        }
+        // `--experimental_ui_max_stdouterr_bytes` (UiEventHandler
+        // .getContentIfSmallEnough): an oversized stream is replaced.
+        let stdout = crate::output_filter::small_enough("stdout", id, stdout);
+        let stderr = crate::output_filter::small_enough("stderr", id, stderr);
         // Bazel's `INFO: From …` event, the output bound to it: dropped
         // with it under --quiet (crate::ui).
         crate::note!("action '{id}' logs:\nstdout:\n{stdout}\nstderr:\n{stderr}");
@@ -7086,6 +7129,14 @@ pub fn execute_with_remote(
         return Ok(result(listings, true, false));
     }
     count_check(3, &mut clock);
+    // SkyframeActionExecutor.executeAction (:646-656): an action the
+    // action cache misses must not run under --check_up_to_date.
+    if CHECK_UP_TO_DATE.load(Ordering::Relaxed) {
+        return Err(format!(
+            "action '{}' is not up-to-date",
+            progress_text(action)
+        ));
+    }
     CHECKS[5].fetch_add(1, Ordering::Relaxed);
     // This entry's trees and files are no longer what the memos hold: they
     // are removed now and published again below.

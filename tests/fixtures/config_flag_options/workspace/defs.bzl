@@ -22,6 +22,9 @@ def _report_impl(ctx):
     out = ctx.actions.declare_file(ctx.label.name + ".txt")
     lines = _lines(ctx)
     files = [out]
+    if ctx.file.src:
+        # Artifact.getDirname: `.` for a top-level source path.
+        lines.append("src_dirname=%r" % ctx.file.src.dirname)
     if ctx.attr.tool:
         lines.append("--- exec tool")
         lines.extend(ctx.attr.tool[ReportInfo].lines)
@@ -35,6 +38,7 @@ report = rule(
     fragments = ["cpp", "java"],
     attrs = {
         "tool": attr.label(cfg = "exec", providers = [ReportInfo]),
+        "src": attr.label(allow_single_file = True),
     },
 )
 

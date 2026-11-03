@@ -1,0 +1,26 @@
+{
+ "bazel": "9.3.1",
+ "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+ "toolchain_debug": {
+  "exit": 1,
+  "lines": [
+   "      ToolchainResolution:     Compatible execution platform //:p",
+   "      ToolchainResolution:     Incompatible execution platform //:e2; mismatching values: linux",
+   "      ToolchainResolution:   Rejected toolchain //:fancy_tc (resolves to //:fancy_impl) ; mismatching values: fancy",
+   "      ToolchainResolution:   Rejected toolchain //:mac_tc (resolves to //:mac_impl) ; mismatching values: mac",
+   "      ToolchainResolution:   Selected //:linux_impl to run on execution platform //:p",
+   "      ToolchainResolution:   Toolchain //:linux_tc (resolves to //:linux_impl) is compatible with target platform, searching for execution platforms:",
+   "      ToolchainResolution: No //:t toolchain found for target platform //:p.",
+   "      ToolchainResolution: Recap of selected //:t toolchains for target platform //:p:",
+   "INFO: ToolchainResolution: Performing resolution of //:t for target platform //:p",
+   "INFO: ToolchainResolution: Removed execution platform //:p from available execution platforms, it is missing constraint //:mac",
+   "INFO: ToolchainResolution: Target platform //:p: Selected execution platform //:p, type //:t -> toolchain //:linux_impl"
+  ]
+ },
+ "check_up_to_date": {
+  "exit": 1,
+  "errors": [
+   "ERROR: action 'BazelWorkspaceStatusAction stable-status.txt' is not up-to-date"
+  ]
+ }
+}

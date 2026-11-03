@@ -119,7 +119,7 @@ def probes(option, defaults):
     name = option['name']
     if option['boolean']:
         return [f'--{name}', f'--no{name}']
-    if option['expansion'] or option['converter'] in ('Void', ''):
+    if option['expansion'] or option['converter'] == 'Void':
         return [f'--{name}']
     value = NAME_VALUES.get(name)
     if value is None:
@@ -132,16 +132,25 @@ def setup(scratch):
     for directory in (workspace, os.path.join(scratch, 'home'), os.path.join(scratch, 'tmp')):
         os.makedirs(directory, exist_ok=True)
     open(os.path.join(workspace, 'MODULE.bazel'), 'w').close()
+    with open(os.path.join(workspace, 'defs.bzl'), 'w') as defs:
+        defs.write('def _impl(ctx):\n'
+                   '    out = ctx.actions.declare_file(ctx.label.name + ".sh")\n'
+                   '    ctx.actions.write(out, "#!/bin/sh\\nexit 0\\n", is_executable = True)\n'
+                   '    return [DefaultInfo(executable = out)]\n\n'
+                   'probe_test = rule(implementation = _impl, test = True)\n')
     with open(os.path.join(workspace, 'BUILD'), 'w') as build:
-        build.write('filegroup(name = "x", srcs = [])\n')
+        build.write('load(":defs.bzl", "probe_test")\n\n'
+                    'probe_test(name = "x")\n\n'
+                    'platform(name = "p")\n')
     return workspace
 
 
 def run(binary, scratch, workspace, command, arg):
-    target = ['//:x'] if command in ('query', 'cquery') else ['--nobuild', '//:x']
+    target = ['--nobuild', '//:x'] if command == 'build' else ['//:x']
+    platforms = [] if command == 'query' else ['--platforms=//:p', '--host_platform=//:p']
     argv = [binary, '--ignore_all_rc_files', f'--cache-dir={scratch}/cache', command,
-            '--experimental-builtin-modules=false', '--lockfile_mode=off', '--memory-limit=1024',
-            arg] + target
+            '--experimental-builtin-modules=false', '--lockfile_mode=off', '--memory-limit=1024'
+            ] + platforms + [arg] + target
     env = dict(PATH='/usr/bin:/bin', HOME=f'{scratch}/home', TMPDIR=f'{scratch}/tmp',
                BAZEL_RS_CACHE_GC='off')
     try:

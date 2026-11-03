@@ -361,21 +361,203 @@ pub fn single_resolution(
     target_platform: &PlatformInfo,
     exec_platforms: &[Arc<PlatformInfo>],
 ) -> Vec<(usize, Label)> {
+    single_resolution_traced(
+        type_label,
+        registered,
+        target_platform,
+        exec_platforms,
+        None,
+    )
+}
+
+/// `--toolchain_resolution_debug` (PlatformOptions.toolchainResolutionDebug,
+/// a RegexFilter, default `-.*`): which toolchain types and targets print
+/// resolution debug messages (PlatformConfiguration.debugToolchainResolution,
+/// analysis/PlatformConfiguration.java:105-121). `None`: the default.
+static DEBUG_FILTER: std::sync::RwLock<Option<crate::coverage::RegexFilter>> =
+    std::sync::RwLock::new(None);
+
+/// Set this command's `--toolchain_resolution_debug` filter.
+pub fn set_debug_filter(filter: Option<crate::coverage::RegexFilter>) {
+    *DEBUG_FILTER
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = filter;
+}
+
+/// PlatformConfiguration.debugToolchainResolution(labels): any canonical
+/// form included; no label tests the empty string.
+pub fn debug_resolution(labels: &[&Label]) -> bool {
+    let guard = DEBUG_FILTER
+        .read()
+        .unwrap_or_else(|error| error.into_inner());
+    let Some(filter) = guard.as_ref() else {
+        return false;
+    };
+    if labels.is_empty() {
+        return filter.is_included("");
+    }
+    labels.iter().any(|label| filter.is_included(&shown(label)))
+}
+
+/// One INFO event (crate::ui notes), printed once per identical text:
+/// Bazel evaluates each resolution SkyKey once per build.
+fn debug_event(text: String) {
+    static PRINTED: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+        std::sync::Mutex::new(None);
+    let mut printed = PRINTED.lock().unwrap_or_else(|error| error.into_inner());
+    if printed
+        .get_or_insert_with(Default::default)
+        .insert(text.clone())
+    {
+        crate::ui::note(&format!("INFO: {text}"));
+    }
+}
+
+/// ToolchainResolutionDebugPrinter.reportRemovedExecutionPlatform.
+pub fn removed_execution_platform(platform: &Label, constraint: &Label) {
+    debug_event(format!(
+        "ToolchainResolution: Removed execution platform {} from available execution platforms, it is missing constraint {}",
+        shown(platform),
+        shown(constraint)
+    ));
+}
+
+/// SingleToolchainResolutionDebugPrinter.EventHandlerImpl's trace lines.
+struct Trace(Vec<String>);
+
+impl Trace {
+    /// debugMessage: the first line starts `ToolchainResolution: `, the
+    /// others are padded by `"INFO: ".length()`; three indent levels.
+    fn line(&mut self, indent: usize, text: String) {
+        let padding = if self.0.is_empty() { "" } else { "      " };
+        self.0.push(format!(
+            "{padding}ToolchainResolution: {}{text}",
+            "  ".repeat(indent)
+        ));
+    }
+
+    /// reportMismatchedSettings (:233-275) for a failed checkConstraints.
+    fn mismatch(
+        &mut self,
+        toolchain: &ConstraintCollection,
+        platform: &PlatformInfo,
+        target_platform: bool,
+        declared: &DeclaredToolchainInfo,
+    ) {
+        let settings: Vec<_> = toolchain
+            .diff(&platform.constraints)
+            .into_iter()
+            .filter(|setting| toolchain.has_without_default(setting))
+            .collect();
+        if settings.is_empty() {
+            return;
+        }
+        let values = settings
+            .iter()
+            .filter(|setting| toolchain.has(setting))
+            .filter_map(|setting| toolchain.get(setting).map(|value| value.label.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let missing = settings
+            .iter()
+            .filter(|setting| !toolchain.has(setting))
+            .map(|setting| setting.label.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut detail = String::new();
+        if !values.is_empty() {
+            detail.push_str(&format!("; mismatching values: {values}"));
+        }
+        if !missing.is_empty() {
+            detail.push_str(&format!("; missing: {missing}"));
+        }
+        if target_platform {
+            self.line(
+                1,
+                format!(
+                    "Rejected toolchain {} (resolves to {}) {detail}",
+                    shown(&declared.target_label),
+                    shown(&declared.resolved)
+                ),
+            );
+        } else {
+            self.line(
+                2,
+                format!(
+                    "Incompatible execution platform {}{detail}",
+                    shown(&platform.label)
+                ),
+            );
+        }
+    }
+}
+
+/// [`single_resolution`] with SingleToolchainResolutionFunction's debug
+/// trace (SingleToolchainResolutionDebugPrinter) when `trace` is given.
+fn single_resolution_traced(
+    type_label: &Label,
+    registered: &RegisteredToolchains,
+    target_platform: &PlatformInfo,
+    exec_platforms: &[Arc<PlatformInfo>],
+    mut trace: Option<&mut Trace>,
+) -> Vec<(usize, Label)> {
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.line(
+            0,
+            format!(
+                "Performing resolution of {} for target platform {}",
+                shown(type_label),
+                shown(&target_platform.label)
+            ),
+        );
+    }
     let mut found: Vec<(usize, Label)> = Vec::new();
     for toolchain in registered.by_type(type_label) {
         // A toolchain with use_target_platform_constraints matches any
         // target platform (:171-181).
         if !toolchain.use_target_platform && !constraints_match(&toolchain.target, target_platform)
         {
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.mismatch(&toolchain.target, target_platform, true, toolchain);
+            }
             continue;
+        }
+        if let Some(trace) = trace.as_deref_mut() {
+            trace.line(
+                1,
+                format!(
+                    "Toolchain {} (resolves to {}) is compatible with target platform, searching for execution platforms:",
+                    shown(&toolchain.target_label),
+                    shown(&toolchain.resolved)
+                ),
+            );
         }
         let mut done = true;
         for (index, exec) in exec_platforms.iter().enumerate() {
             if found.iter().any(|(seen, _)| *seen == index) {
+                if let Some(trace) = trace.as_deref_mut() {
+                    trace.line(
+                        2,
+                        format!(
+                            "Skipping execution platform {}; it has already selected a toolchain",
+                            shown(&exec.label)
+                        ),
+                    );
+                }
                 continue;
             }
             // allowed_toolchain_types (:195-205).
             if exec.check_toolchain_types && !exec.allowed_toolchain_types.contains(type_label) {
+                if let Some(trace) = trace.as_deref_mut() {
+                    trace.line(
+                        2,
+                        format!(
+                            "Skipping execution platform {}; its allowed toolchain types does not contain the current toolchain type {}",
+                            shown(&exec.label),
+                            shown(type_label)
+                        ),
+                    );
+                }
                 done = false;
                 continue;
             }
@@ -385,13 +567,65 @@ pub fn single_resolution(
                 &toolchain.exec
             };
             if !constraints_match(exec_constraints, exec) {
+                if let Some(trace) = trace.as_deref_mut() {
+                    trace.mismatch(exec_constraints, exec, false, toolchain);
+                }
                 done = false;
                 continue;
+            }
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.line(
+                    2,
+                    format!("Compatible execution platform {}", shown(&exec.label)),
+                );
             }
             found.push((index, toolchain.resolved.clone()));
         }
         if done {
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.line(
+                    1,
+                    format!(
+                        "All execution platforms have been assigned a {} toolchain, stopping",
+                        shown(type_label)
+                    ),
+                );
+            }
             break;
+        }
+    }
+    if let Some(trace) = trace {
+        if found.is_empty() {
+            trace.line(
+                0,
+                format!(
+                    "No {} toolchain found for target platform {}.",
+                    shown(type_label),
+                    shown(&target_platform.label)
+                ),
+            );
+        } else {
+            trace.line(
+                0,
+                format!(
+                    "Recap of selected {} toolchains for target platform {}:",
+                    shown(type_label),
+                    shown(&target_platform.label)
+                ),
+            );
+            // ImmutableMap insertion order: the execution platform order.
+            let mut recap = found.clone();
+            recap.sort_by_key(|(index, _)| *index);
+            for (index, label) in recap {
+                trace.line(
+                    1,
+                    format!(
+                        "Selected {} to run on execution platform {}",
+                        shown(&label),
+                        shown(&exec_platforms[index].label)
+                    ),
+                );
+            }
         }
     }
     found
@@ -523,6 +757,9 @@ pub struct Platforms<'a> {
     /// The forced execution platform (an index into `exec`, or the target
     /// platform when it has the same label; PlatformKeys.find, :230-245).
     pub forced: Option<Arc<PlatformInfo>>,
+    /// ToolchainContextKey.debugTarget: the target's label matches
+    /// `--toolchain_resolution_debug` (ToolchainContextUtil.java:131).
+    pub debug_target: bool,
 }
 
 /// ToolchainResolutionFunction.determineToolchainImplementations (:189-283)
@@ -553,12 +790,19 @@ pub fn resolve(
         candidates.push(forced.clone());
     }
     for resolved in types {
-        let found = single_resolution(
-            &resolved.requirement.label,
+        let type_label = &resolved.requirement.label;
+        let mut trace =
+            (platforms.debug_target || debug_resolution(&[type_label])).then(|| Trace(Vec::new()));
+        let found = single_resolution_traced(
+            type_label,
             registered,
             platforms.target,
             platforms.exec,
+            trace.as_mut(),
         );
+        if let Some(trace) = trace {
+            debug_event(trace.0.join("\n"));
+        }
         if found.is_empty() && resolved.requirement.mandatory && !missing.contains(&resolved.info) {
             missing.push(resolved.info.clone());
         }
@@ -621,6 +865,27 @@ pub fn resolve(
         {
             resolved.push((resolved_type.info.clone(), label.clone()));
         }
+    }
+    // ToolchainResolutionDebugPrinter.reportSelectedToolchains.
+    let type_labels = types
+        .iter()
+        .map(|resolved| &resolved.requirement.label)
+        .collect::<Vec<_>>();
+    if platforms.debug_target || debug_resolution(&type_labels) {
+        debug_event(format!(
+            "ToolchainResolution: Target platform {}: Selected execution platform {}, {}",
+            shown(&platforms.target.label),
+            shown(&candidates[selected].label),
+            resolved
+                .iter()
+                .map(|(info, label)| format!(
+                    "type {} -> toolchain {}",
+                    shown(&info.type_label),
+                    shown(label)
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
     Ok(UnloadedToolchainContext {
         target_platform: platforms.target.clone(),
@@ -1073,6 +1338,7 @@ mod tests {
                 target: &host,
                 exec: std::slice::from_ref(&host),
                 forced: None,
+                debug_target: false,
             },
             &registered,
         )
@@ -1101,6 +1367,7 @@ mod tests {
                 target: &host,
                 exec: std::slice::from_ref(&host),
                 forced: None,
+                debug_target: false,
             },
             &registered,
         )
@@ -1121,6 +1388,7 @@ mod tests {
                     target: &quiet,
                     exec: std::slice::from_ref(&host),
                     forced: None,
+                    debug_target: false,
                 },
                 &registered,
             )
@@ -1136,6 +1404,7 @@ mod tests {
                     target: &host,
                     exec: &[],
                     forced: None,
+                    debug_target: false,
                 },
                 &registered,
             )
@@ -1145,6 +1414,7 @@ mod tests {
         // check_toolchain_types without types: unsuitable unless forced.
         let strict = platform_with("//p:strict", vec![], |a| a.check_toolchain_types = true);
         let platforms = |forced: Option<Arc<PlatformInfo>>| Platforms {
+            debug_target: false,
             target: &host,
             exec: std::slice::from_ref(&strict),
             forced,
@@ -1177,6 +1447,7 @@ mod tests {
                 target: &host,
                 exec: std::slice::from_ref(&host),
                 forced: None,
+                debug_target: false,
             },
             &registered,
         )

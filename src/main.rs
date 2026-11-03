@@ -163,6 +163,39 @@ fn run() -> Result<(), String> {
             }
             Err(error) => fail_with(2, &error),
         },
+        // VersionCommand with --[no]gnu_format (VersionOptions): `PRODUCT
+        // VERSION`, the version being `info release`'s.
+        "version" if !rest.is_empty() => {
+            let mut gnu = false;
+            for arg in &rest {
+                match bazel_rs::configuration::boolean_option(arg, "gnu_format") {
+                    Some(Ok(value)) => gnu = value,
+                    Some(Err(error)) => fail_with(2, &error),
+                    None => fail_with(
+                        2,
+                        &bazel_rs::configuration::unrecognized_option(arg).unwrap_or_else(|| {
+                            format!(
+                                "unsupported version option {arg:?}: only --[no]gnu_format is modelled; options are never silently ignored"
+                            )
+                        }),
+                    ),
+                }
+            }
+            if gnu {
+                println!(
+                    "bazel {}+bazel-rs.{}",
+                    bazel_rs::COMPATIBILITY_VERSION,
+                    env!("CARGO_PKG_VERSION")
+                );
+            } else {
+                println!(
+                    "bazel-rs {} (experimental; compatibility target Bazel {})",
+                    env!("CARGO_PKG_VERSION"),
+                    bazel_rs::COMPATIBILITY_VERSION,
+                );
+            }
+            return Ok(());
+        }
         "version" | "--version" if rest.is_empty() => {
             println!(
                 "bazel-rs {} (experimental; compatibility target Bazel {})",
@@ -302,6 +335,7 @@ fn run() -> Result<(), String> {
     let run_options;
     let test_options;
     let mut deferred = None;
+    let execution_options;
     let ui_options;
     let bep_options;
     let profile_options;
@@ -415,6 +449,7 @@ fn run() -> Result<(), String> {
         workspace_status = native.workspace_status;
         no_build = native.no_build;
         ui_options = native.ui;
+        execution_options = native.execution;
         bep_options = native.bep;
         profile_options = native.profile;
         exec_log_options = native.exec_log;
@@ -658,6 +693,43 @@ fn run() -> Result<(), String> {
     // executor; only an executor makes it usable and the default.
     spawn_options.remote_registered = remote_enabled;
     spawn_options.remote_executor = !remote_options.executor.is_empty();
+    // crate::execution_options: --check_up_to_date, the output filters,
+    // --toolchain_resolution_debug, --modify_execution_info, the
+    // convenience symlink modes and --local_resources.
+    bazel_rs::action::set_check_up_to_date(execution_options.check_up_to_date);
+    bazel_rs::output_filter::install(
+        &execution_options.output,
+        bazel_rs::worktree::output_base_for(&cache, &root)
+            .join("execroot/_main/bazel-out/_tmp/actions"),
+    );
+    bazel_rs::toolchains::set_debug_filter(
+        execution_options
+            .toolchain_resolution_debug
+            .as_deref()
+            .map(|filter| {
+                bazel_rs::coverage::RegexFilter::parse(filter).expect("validated when parsed")
+            }),
+    );
+    bazel_rs::execution_options::install_modifiers(
+        execution_options.modify_execution_info.clone(),
+        execution_options.modify_execution_info_additive,
+    );
+    if builds(&command) {
+        match execution_options.check_convenience_symlinks() {
+            Ok(Some(prefix)) => {
+                bazel_rs::execution_options::clean_convenience_symlinks(&root, &prefix)
+            }
+            Ok(None) => {}
+            Err(error) => return Err(error),
+        }
+        // Local actions need 1 CPU and 250 MB each (ResourceManager);
+        // remote executions are not bounded by local resources.
+        if let Some(cap) = execution_options.local_action_cap()
+            && remote_options.executor.is_empty()
+        {
+            jobs = jobs.min(cap);
+        }
+    }
     // The spawn strategy and sandbox options (N59) for every executing
     // command. Unknown strategy identifiers are rejected once here, at
     // startup, with Bazel's STRATEGY_NOT_FOUND text and exit code 2
@@ -1858,6 +1930,16 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
         run,
     } = tail;
     report_keep_going_errors(&planned.request);
+    // OutputFilteringModule.targetParsingComplete: --auto_output_filter's
+    // packages of the requested targets (crate::output_filter).
+    if let Ok(request) = &planned.request {
+        bazel_rs::output_filter::set_targets(
+            request
+                .requested
+                .iter()
+                .map(|(label, _)| label.package.as_str()),
+        );
+    }
     // Planning succeeded: a failure below is execution's, and the analysis
     // is saved anyway (crate::snapshot::Scope::execution_failed).
     let planned_ok = planned.request.is_ok();
@@ -4563,15 +4645,27 @@ fn parse_memory_limit_mb(value: &str) -> Result<u64, String> {
     })
 }
 
-fn parse_jobs(value: &str) -> Result<usize, String> {
-    if !value.is_empty()
-        && value.bytes().all(|byte| byte.is_ascii_digit())
-        && let Ok(jobs) = value.parse::<usize>()
-        && jobs > 0
-    {
-        return Ok(jobs);
+/// BuildRequestOptions.JobsConverter (a ResourceConverter.IntegerConverter,
+/// 1..=MAX_JOBS 5000): an integer, or `auto` (the default: `None`, the
+/// native default bound) or `HOST_CPUS`/`HOST_RAM` optionally followed by
+/// `-<float>`/`*<float>`, rounded.
+fn parse_jobs(value: &str) -> Result<Option<usize>, String> {
+    let bad = || format!("--jobs requires a positive integer, got {value:?}");
+    if value == "auto" {
+        return Ok(None);
     }
-    Err(format!("--jobs requires a positive integer, got {value:?}"))
+    let jobs = if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        value.parse::<usize>().map_err(|_| bad())?
+    } else if value.starts_with("HOST_") {
+        let number = bazel_rs::execution_options::resource_value(value).map_err(|_| bad())?;
+        number.round().max(0.0) as usize
+    } else {
+        return Err(bad());
+    };
+    if jobs == 0 || jobs > 5000 {
+        return Err(bad());
+    }
+    Ok(Some(jobs))
 }
 
 /// One comma-separated strategy list value
@@ -4699,6 +4793,8 @@ struct NativeOptions {
     /// `--deleted_packages` (PackageOptions.deletedPackages, allowMultiple):
     /// crate::ignored::set_deleted_packages.
     deleted_packages: Vec<(String, String)>,
+    /// Build request, execution and output options (crate::execution_options).
+    execution: bazel_rs::execution_options::ExecutionOptions,
 }
 
 impl NativeOptions {
@@ -4769,6 +4865,7 @@ impl NativeOptions {
             allowed_yanked_flags: Vec::new(),
             deleted_packages: Vec::new(),
             raw_registries: Vec::new(),
+            execution: Default::default(),
         }
     }
 
@@ -4821,6 +4918,10 @@ impl NativeOptions {
             used
         } else if let Some(used) = self.ui.parse(arg, next) {
             // UiOptions (every command): the progress display's.
+            used?
+        } else if let Some(used) = self.execution.parse(builds(command), arg, next) {
+            // crate::execution_options (build request, execution, output
+            // filtering; `--modify_execution_info` for every command).
             used?
         } else if let Some(disabled) =
             bazel_rs::module_cli::repository_disable_download_argument(arg)?
@@ -5035,12 +5136,10 @@ impl NativeOptions {
             self.target_pattern_file = Some(value.to_owned());
             used
         } else if builds(command) && arg == "--jobs" {
-            self.jobs = Some(parse_jobs(
-                next.ok_or("--jobs requires a positive integer")?,
-            )?);
+            self.jobs = parse_jobs(next.ok_or("--jobs requires a positive integer")?)?;
             true
         } else if let Some(value) = arg.strip_prefix("--jobs=").filter(|_| builds(command)) {
-            self.jobs = Some(parse_jobs(value)?);
+            self.jobs = parse_jobs(value)?;
             false
         } else if builds(command) && arg == "--loading_phase_threads" {
             self.loading_phase_threads = Some(parse_loading_phase_threads(
@@ -5289,6 +5388,15 @@ impl NativeOptions {
             arg,
             &unit.option.origin_suffix(),
         ) {
+            used?
+        } else if let Some(used) = bazel_rs::option_defaults::default_option(
+            registered_command,
+            arg,
+            next,
+            &unit.option.origin_suffix(),
+        ) {
+            // An unmodelled option spelled at its genuine default
+            // (crate::option_defaults).
             used?
         } else {
             return Err(unmodelled_option(&unit.option));

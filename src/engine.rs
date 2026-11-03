@@ -8104,9 +8104,35 @@ impl Engine {
             constraints.push(value);
         }
         let required = constraints.iter().collect::<Vec<_>>();
+        // ToolchainResolutionDebugPrinter.reportRemovedExecutionPlatform
+        // (PlatformKeys.filterPlatform :207-228) under
+        // --toolchain_resolution_debug.
+        let debug = crate::toolchains::debug_resolution(&[&rule.label])
+            || crate::toolchains::debug_resolution(
+                &key.types
+                    .iter()
+                    .map(|requirement| &requirement.label)
+                    .collect::<Vec<_>>(),
+            );
         let exec = candidates
             .into_iter()
-            .filter(|platform| platform.constraints.contains_all(&required))
+            .filter(|platform| {
+                let missing = required
+                    .iter()
+                    .filter(|value| {
+                        platform.constraints.get(&value.setting).as_ref() != Some(**value)
+                    })
+                    .collect::<Vec<_>>();
+                if debug {
+                    for value in &missing {
+                        crate::toolchains::removed_execution_platform(
+                            &platform.label,
+                            &value.label,
+                        );
+                    }
+                }
+                missing.is_empty()
+            })
             .collect::<Vec<_>>();
         let mut lookups = Vec::new();
         for requirement in &key.types {
@@ -8154,6 +8180,7 @@ impl Engine {
                 target: &target,
                 exec: &exec,
                 forced,
+                debug_target: crate::toolchains::debug_resolution(&[&rule.label]),
             },
             &registered,
         )
