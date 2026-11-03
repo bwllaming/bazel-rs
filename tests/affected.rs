@@ -739,3 +739,64 @@ fn a_local_change_plans_both_revisions_at_once_when_memory_allows() {
     assert!(stderr.contains("global change: MODULE.bazel"), "{stderr}");
     assert!(!stderr.contains("concurrently"), "{stderr}");
 }
+
+/// An action reading a source directory (rules_js's `sharp@…/lc` on
+/// ~/code): `affected`'s saved head planning (`test --nobuild`) traverses
+/// it as an executing build would, so the CI's executing `build` of the
+/// affected targets still derives its plan instead of analyzing again
+/// (docs/ANALYSIS_SNAPSHOT.md "Derived hits"); and builds what a full
+/// analysis builds, the directory's contents included.
+#[test]
+fn an_executing_build_derives_source_directory_actions_from_affected() {
+    let repo = Repo::new();
+    let mut files: Vec<(&str, &str)> = PACKAGES.to_vec();
+    files.push((
+        "s/BUILD.bazel",
+        "genrule(name = 's', srcs = ['d', '//a'], outs = ['s.out'], cmd = 'ls $(location d) > $@; cat $(location //a) >> $@')\n",
+    ));
+    files.push(("s/d/one.txt", "1\n"));
+    let first = repo.commit(&files);
+    repo.commit(&[("a/a.txt", "a2\n")]);
+    let output = repo.affected(&[&format!("--base={first}"), "--affected_command=build"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    let labels: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(labels, ["//a", "//b", "//s"], "{stderr}");
+    let mut build = vec!["build", "--keep_going"];
+    build.extend(labels.iter().map(String::as_str));
+    let output = repo.bazel(&build);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("bazel-rs-snapshot: derived "), "{stderr}");
+    // The output, materialized in the cache's action outputs.
+    let mut stack = vec![repo.base().join("cache/actions")];
+    let mut out = None;
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().is_some_and(|name| name == "s.out") {
+                out = Some(fs::read_to_string(&path).unwrap());
+            }
+        }
+    }
+    assert_eq!(out.as_deref(), Some("one.txt\na2\n"));
+    // A directory an executing build fails to traverse (a package below
+    // it): the --nobuild planning still succeeds, the build does not
+    // derive from it and fails like a full analysis.
+    let second = repo.git(&["rev-parse", "HEAD"]);
+    repo.commit(&[("s/d/sub/BUILD.bazel", ""), ("s/d/two.txt", "2\n")]);
+    let output = repo.affected(&[&format!("--base={second}"), "--affected_command=build"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "//s\n", "{stderr}");
+    let output = repo.bazel(&["build", "//s"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(!stderr.contains("bazel-rs-snapshot: derived "), "{stderr}");
+    assert!(stderr.contains("error traversing directory"), "{stderr}");
+}

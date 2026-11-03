@@ -2178,6 +2178,12 @@ pub struct Engine {
     /// :154-160; the workspace status action is an execution-phase
     /// artifact, so it is not planned under --nobuild).
     execute_build: bool,
+    /// A `--nobuild` planning saved for derived executing builds
+    /// (`bazel-rs affected`'s head, crate::affected::SAVE_VAR) traversed
+    /// every source directory an executing build of its plan would, and
+    /// none failed: its source-directory actions may serve such a build
+    /// (crate::snapshot::derive::Coverage::source_directories_checked).
+    source_directories_checked: bool,
     /// `--keep_going`/`-k` (KeepGoingOption, docs/KEEP_GOING.md): loading
     /// and analysis failures skip the targets they fail instead of failing
     /// the build.
@@ -2285,6 +2291,7 @@ impl Engine {
             workspace_status: crate::workspace_status::WorkspaceStatusOptions::default(),
             workspace_status_once: std::sync::OnceLock::new(),
             execute_build: true,
+            source_directories_checked: false,
             keep_going: false,
             keep_going_state: keep_going::State::default(),
             keep_going_plan: None,
@@ -10237,8 +10244,9 @@ impl Engine {
                 .iter()
                 .map(|node| (node.action.id.as_str(), node))
                 .collect();
+            let checked = self.source_directories_checked;
             let reads = |node: &crate::scheduler::PlannedAction| {
-                !node.action.extra.source_directories.is_empty()
+                (!checked && !node.action.extra.source_directories.is_empty())
                     || node.inputs().any(|(_, exec)| {
                         exec == Path::new("bazel-out/stable-status.txt")
                             || exec == Path::new("bazel-out/volatile-status.txt")
@@ -10284,6 +10292,7 @@ impl Engine {
         };
         let mut coverage = crate::snapshot::derive::Coverage {
             execute: request.execute,
+            source_directories_checked: !request.execute && self.source_directories_checked,
             ..Default::default()
         };
         // The requested labels in request order.
@@ -16378,8 +16387,16 @@ impl Engine {
         let mut traversals: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
         let mut events: Vec<String> = Vec::new();
         let execute_build = self.execute_build;
+        // `bazel-rs affected`'s saved head planning (`--nobuild`) traverses
+        // what an executing build would, without failing: a traversal
+        // failure only keeps an executing build from deriving from it.
+        let check_directories = !execute_build && {
+            // snapshot-unrecorded: set only in affected's saved head planning, keyed by its scope and never looked up by key (snapshot::Mode::from_env); the traversals' reads are recorded.
+            std::env::var_os(crate::affected::SAVE_VAR).is_some()
+        };
+        let unchecked = std::cell::Cell::new(false);
         let mut traversal_error = |real: &Path| -> Option<String> {
-            if !execute_build || !is_directory(real) {
+            if !(execute_build || check_directories) || !is_directory(real) {
                 return None;
             }
             traversals
@@ -16402,6 +16419,10 @@ impl Engine {
                         &root_relative,
                         label.repository.is_empty().then_some(&boundaries),
                     )?;
+                    if !execute_build {
+                        unchecked.set(true);
+                        return None;
+                    }
                     events.extend(error.events);
                     Some(error.message)
                 })
@@ -16594,6 +16615,7 @@ impl Engine {
         // ActionExecutionFunction errors under keepGoing): those actions and
         // every action above them do not run, the targets they name are not
         // built, everything else is.
+        self.source_directories_checked = check_directories && !unchecked.get();
         let mut input_unbuilt: Vec<Label> = Vec::new();
         let input_errors = if self.keep_going && !errors.is_empty() {
             let mut failed: HashSet<String> = missing_nodes.into_iter().collect();

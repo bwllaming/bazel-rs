@@ -65,6 +65,12 @@ pub fn enabled() -> bool {
 pub struct Coverage {
     /// Whether the plan executes (planned without `--nobuild`).
     pub execute: bool,
+    /// Of a `--nobuild` plan: it traversed every source directory an
+    /// executing build of it would, without a failure (`bazel-rs affected`'s
+    /// saved head planning, crate::affected::SAVE_VAR): its actions reading
+    /// a source directory may serve an executing build (the traversal's
+    /// reads are recorded inputs, validated like any).
+    pub source_directories_checked: bool,
     /// Of a `--nobuild` plan: the roots whose actions read the workspace
     /// status (which it does not produce) or a source directory (which it
     /// never traversed), themselves or below — no executing build derives
@@ -393,7 +399,9 @@ pub fn derive(
                     "{id} reads the workspace status, which the saved --nobuild plan does not produce"
                 ));
             }
-            if !node.action.extra.source_directories.is_empty() {
+            if !coverage.source_directories_checked
+                && !node.action.extra.source_directories.is_empty()
+            {
                 return Err(format!(
                     "{id} reads a source directory, which the saved --nobuild plan never checked"
                 ));
