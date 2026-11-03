@@ -239,6 +239,53 @@ fn check(path: &Path, observation: &Observation) -> Result<Checked, String> {
             };
             same(path, op, expected, got)
         }
+        (Op::LockfileEntries(ids), Outcome::Read { sha256, key, racy }) => {
+            // The hidden lockfile as its reader takes it: absent or
+            // unreadable is empty (crate::registry_session).
+            let stat = || {
+                fs::symlink_metadata(path)
+                    .ok()
+                    .map(|metadata| StatKey::of(&metadata))
+                    .unwrap_or_default()
+            };
+            let current = stat();
+            if !racy && current == *key {
+                return Ok(Checked::Stat);
+            }
+            let start = now_ns();
+            let lockfile = fs::read(path)
+                .ok()
+                .and_then(|bytes| {
+                    crate::lockfile::Lockfile::parse(
+                        &String::from_utf8_lossy(&bytes),
+                        crate::lockfile::LockfileMode::Update,
+                    )
+                    .ok()
+                })
+                .unwrap_or_default();
+            if stat() != current {
+                return Err(format!(
+                    "LOCKFILE_ENTRIES {}: changed while validated (Unstable)",
+                    shown()
+                ));
+            }
+            let ids: BTreeSet<String> = ids.iter().cloned().collect();
+            if lockfile.entries_digest(&ids) != *sha256 {
+                return Err(format!(
+                    "LOCKFILE_ENTRIES {}: the entries of {} module extension(s) changed",
+                    shown(),
+                    ids.len()
+                ));
+            }
+            Ok(Checked::Content {
+                refresh: !current.racy(start),
+                key: current,
+            })
+        }
+        (Op::LockfileEntries(_), _) => Err(format!(
+            "LOCKFILE_ENTRIES {}: not a recorded digest",
+            shown()
+        )),
         (Op::Read | Op::SelectionRead(_), Outcome::Error(code)) => match fs::read(path) {
             Err(error) if errno(&error) == *code => Ok(Checked::Plain),
             Err(error) => Err(format!(

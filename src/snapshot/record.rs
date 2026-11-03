@@ -164,10 +164,12 @@ impl Session {
                     "MODULE.bazel.lock (workspace or --native-lockfile target)".to_owned()
                 });
             }
-            if let Some((path, _)) = session.updated_hidden_lockfile() {
-                observed_fs::taint_after_window(Taint::LockfileWritePending, || {
-                    format!("hidden lockfile {}", escape(path.as_os_str()))
-                });
+            // The hidden lockfile is recorded by the entries this command
+            // resolved, as it will stand once written: its pending write
+            // keeps the run saveable, and another command's write of other
+            // extensions' entries keeps the snapshot valid.
+            if let Some((path, ids, digest, pending)) = session.hidden_lockfile_projection() {
+                observed_fs::note_lockfile_entries(&path, ids, digest, pending);
             }
         }
         let Some(recorder) = observed_fs::recorder() else {

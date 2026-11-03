@@ -352,6 +352,7 @@ enum OpWire<'a> {
     ReadLink,
     SelectionRead(&'a str),
     SelectionAbsent(&'a str),
+    LockfileEntries(#[serde(borrow)] Vec<&'a str>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -902,6 +903,9 @@ pub fn encode_inputs(
                 Op::ReadLink => OpWire::ReadLink,
                 Op::SelectionRead(owner) => OpWire::SelectionRead(owner),
                 Op::SelectionAbsent(owner) => OpWire::SelectionAbsent(owner),
+                Op::LockfileEntries(ids) => {
+                    OpWire::LockfileEntries(ids.iter().map(String::as_str).collect())
+                }
             },
             outcome: match &observation.outcome {
                 Outcome::Error(errno) => OutcomeWire::Error(*errno),
@@ -1071,6 +1075,9 @@ pub fn decode_inputs(bytes: &[u8]) -> Result<Inputs, String> {
             OpWire::ReadLink => Op::ReadLink,
             OpWire::SelectionRead(owner) => Op::SelectionRead((*owner).to_owned()),
             OpWire::SelectionAbsent(owner) => Op::SelectionAbsent((*owner).to_owned()),
+            OpWire::LockfileEntries(ids) => {
+                Op::LockfileEntries(ids.iter().map(|id| (*id).to_owned()).collect())
+            }
         };
         let outcome = match &observation.outcome {
             OutcomeWire::Error(errno) => Outcome::Error(*errno),

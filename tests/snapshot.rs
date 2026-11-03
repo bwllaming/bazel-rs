@@ -5777,3 +5777,82 @@ mod verify_mode {
 }
 
 include!("support/executable_script.rs");
+
+const REPRODUCIBLE_EXTENSION: &str = r#"def _repo(ctx):
+    ctx.file("BUILD.bazel", "exports_files(['v.txt'])\n")
+    ctx.file("v.txt", "from the extension\n")
+
+_repo_rule = repository_rule(implementation = _repo)
+
+def _ext(module_ctx):
+    _repo_rule(name = "extrepo")
+    return module_ctx.extension_metadata(reproducible = True)
+
+ext = module_extension(implementation = _ext)
+"#;
+
+/// The hidden lockfiles (`<cache>/worktrees/*/MODULE.bazel.lock`) of a copy.
+fn hidden_lockfiles(root: &Path) -> Vec<PathBuf> {
+    fs::read_dir(root.join("cache/worktrees"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path().join("MODULE.bazel.lock"))
+        .filter(|path| path.exists())
+        .collect()
+}
+
+/// A reproducible extension's result goes to the hidden lockfile. The
+/// snapshot records the entries of the extensions the command used, not
+/// the file: the run that writes it is saved, another command's entries
+/// (a `query` evaluating other extensions, ~/code's CI between `affected`
+/// and `build`) keep it valid, a change of a used entry misses.
+#[test]
+fn the_hidden_lockfile_is_recorded_by_the_entries_used() {
+    let twin = fixture();
+    twin.write("ext.bzl", REPRODUCIBLE_EXTENSION);
+    twin.write(
+        "MODULE.bazel",
+        &format!("{MODULE}\next = use_extension('//:ext.bzl', 'ext')\nuse_repo(ext, 'extrepo')\n"),
+    );
+    twin.write(
+        "ext/BUILD.bazel",
+        "genrule(name = 'e', srcs = ['@extrepo//:v.txt'], outs = ['e.txt'], cmd = 'cp $< $@')\n",
+    );
+    let args = &["build", "//ext:e"];
+    let cold = twin.same(args, &[]);
+    cold.assert_success();
+    assert!(
+        !cold
+            .line("not saved")
+            .is_some_and(|line| line.contains("hidden lockfile")),
+        "{:?}",
+        cold.explain()
+    );
+    twin.each(|root| assert_eq!(hidden_lockfiles(root).len(), 1, "{}", root.display()));
+    if cold.line("saved ").is_none() {
+        twin.same(args, &[]).assert_saved();
+    }
+    twin.same(args, &[]).assert_hit();
+    // Another extension's entry added (a later command's write): a hit.
+    twin.each(|root| {
+        for path in hidden_lockfiles(root) {
+            let text = fs::read_to_string(&path).unwrap();
+            let edited = text.replacen(
+                "\"moduleExtensions\": {",
+                "\"moduleExtensions\": {\n    \"//:other.bzl%other\": {},",
+                1,
+            );
+            assert_ne!(edited, text);
+            fs::write(&path, edited).unwrap();
+        }
+    });
+    twin.same(args, &[]).assert_hit();
+    // The used entry gone: a miss (the extension is evaluated again).
+    twin.each(|root| {
+        for path in hidden_lockfiles(root) {
+            fs::remove_file(path).unwrap();
+        }
+    });
+    twin.same(args, &[]).assert_miss("LOCKFILE_ENTRIES");
+}

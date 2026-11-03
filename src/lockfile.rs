@@ -222,6 +222,59 @@ impl Lockfile {
         out
     }
 
+    /// The SHA-256 of what this lockfile holds for the module extensions
+    /// `ids` (deduplicated, in order): per id its `moduleExtensions`,
+    /// `facts` (as written: without null members) and `factsVersions`
+    /// members, an absent member framed as such. The analysis snapshot
+    /// records the hidden lockfile by this projection over the extensions
+    /// a command used (crate::registry_session::RegistrySession::
+    /// hidden_lockfile_projection), so another command adding or changing
+    /// other extensions' entries keeps it valid.
+    pub fn entries_digest(&self, ids: &std::collections::BTreeSet<String>) -> [u8; 32] {
+        use sha2::Digest as _;
+        let mut hash = sha2::Sha256::new();
+        let mut frame = |bytes: &[u8]| {
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(bytes);
+        };
+        let member = |members: &[(String, Json)], id: &str, facts: bool| {
+            members
+                .iter()
+                .find(|(name, _)| name == id)
+                .map(|(_, value)| {
+                    let mut text = String::new();
+                    if facts {
+                        write_pretty(
+                            &mut text,
+                            &crate::lockfile_extensions::drop_null_members(value),
+                            0,
+                        );
+                    } else {
+                        write_pretty(&mut text, value, 0);
+                    }
+                    text
+                })
+        };
+        frame(b"bazel-rs-lockfile-entries-v1");
+        for id in ids {
+            frame(id.as_bytes());
+            for value in [
+                member(&self.module_extensions, id, false),
+                member(&self.facts, id, true),
+                member(&self.facts_versions, id, false),
+            ] {
+                match value {
+                    Some(text) => {
+                        frame(b"+");
+                        frame(text.as_bytes());
+                    }
+                    None => frame(b"-"),
+                }
+            }
+        }
+        hash.finalize().into()
+    }
+
     /// BazelLockFileFunction.getLockfileValue (:298-337) on file contents.
     /// Errors are complete user messages.
     pub fn parse(text: &str, mode: LockfileMode) -> Result<Self, String> {
@@ -759,6 +812,55 @@ mod tests {
         assert_eq!(
             Lockfile::default().serialize(),
             "{\n  \"lockFileVersion\": 28,\n  \"registryFileHashes\": {},\n  \"selectedYankedVersions\": {},\n  \"moduleExtensions\": {},\n  \"facts\": {},\n  \"factsVersions\": {}\n}\n"
+        );
+    }
+
+    #[test]
+    fn entries_digest_covers_only_the_given_extensions() {
+        let entry = |text: &str| parse_json(text).unwrap();
+        let lockfile = Lockfile {
+            module_extensions: vec![
+                ("//:a.bzl%a".into(), entry(r#"{"general": {"x": 1}}"#)),
+                ("//:b.bzl%b".into(), entry(r#"{"general": {"y": 2}}"#)),
+            ],
+            facts: vec![("//:a.bzl%a".into(), entry(r#"{"k": "v", "n": null}"#))],
+            ..Lockfile::default()
+        };
+        let ids = |names: &[&str]| -> std::collections::BTreeSet<String> {
+            names.iter().map(|name| (*name).to_owned()).collect()
+        };
+        let a = lockfile.entries_digest(&ids(&["//:a.bzl%a"]));
+        // Another extension's entry changed or added: the same digest.
+        let mut other = lockfile.clone();
+        other.module_extensions[1].1 = entry(r#"{"general": {"y": 3}}"#);
+        other
+            .module_extensions
+            .push(("//:c.bzl%c".into(), entry("{}")));
+        assert_eq!(other.entries_digest(&ids(&["//:a.bzl%a"])), a);
+        // Its own entry or facts changed, or gone: another digest.
+        let mut changed = lockfile.clone();
+        changed.module_extensions[0].1 = entry(r#"{"general": {"x": 2}}"#);
+        assert_ne!(changed.entries_digest(&ids(&["//:a.bzl%a"])), a);
+        let mut facts = lockfile.clone();
+        facts.facts.clear();
+        assert_ne!(facts.entries_digest(&ids(&["//:a.bzl%a"])), a);
+        assert_ne!(Lockfile::default().entries_digest(&ids(&["//:a.bzl%a"])), a);
+        // The recorded projection is of the written file as a reader
+        // parses it; writing that again changes nothing.
+        let real = Lockfile {
+            module_extensions: vec![(
+                "//:a.bzl%a".into(),
+                entry(
+                    r#"{"general": {"bzlTransitiveDigest": "x", "usagesDigest": "y", "recordedInputs": [], "generatedRepoSpecs": {}}}"#,
+                ),
+            )],
+            ..Lockfile::default()
+        };
+        let once = Lockfile::parse(&real.serialize(), LockfileMode::Update).unwrap();
+        let twice = Lockfile::parse(&once.serialize(), LockfileMode::Update).unwrap();
+        assert_eq!(
+            once.entries_digest(&ids(&["//:a.bzl%a"])),
+            twice.entries_digest(&ids(&["//:a.bzl%a"]))
         );
     }
 

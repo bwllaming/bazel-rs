@@ -428,6 +428,11 @@ pub enum Op {
     SelectionRead(String),
     /// The shared pointer was absent before selecting a workspace pointer.
     SelectionAbsent(String),
+    /// The hidden lockfile's entries of these module extensions (sorted):
+    /// a READ whose digest is crate::lockfile::Lockfile::entries_digest of
+    /// the file parsed (an absent or unreadable file is an empty lockfile),
+    /// not of its bytes ([`note_lockfile_entries`]).
+    LockfileEntries(Vec<String>),
 }
 
 impl Op {
@@ -441,6 +446,7 @@ impl Op {
             Self::ReadLink => "READLINK",
             Self::SelectionRead(_) => "SELECTION_READ",
             Self::SelectionAbsent(_) => "SELECTION_ABSENT",
+            Self::LockfileEntries(_) => "LOCKFILE_ENTRIES",
         }
     }
 }
@@ -2108,6 +2114,38 @@ pub fn note_read(path: &Path, bytes: &[u8]) {
 
 pub(crate) fn note_selection_read(path: &Path, bytes: &[u8], canonical: &str) {
     note_read_as(path, bytes, Op::SelectionRead(canonical.to_owned()));
+}
+
+/// Record the hidden lockfile `path` by the entries of the module
+/// extensions `ids` ([`Op::LockfileEntries`], their digest `sha256`), at the
+/// end of the command (after the window: the command decided what it
+/// writes). `pending`: the command has yet to write it, so a validation
+/// always parses it (its stat key now says nothing about what it will
+/// hold).
+pub fn note_lockfile_entries(
+    path: &Path,
+    ids: impl IntoIterator<Item = String>,
+    sha256: [u8; 32],
+    pending: bool,
+) {
+    // Once per process: the save and the record report both note it.
+    static NOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let Some(recorder) = RECORDER.get() else {
+        return;
+    };
+    if NOTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let key = fs::symlink_metadata(path)
+        .ok()
+        .map(|metadata| StatKey::of(&metadata))
+        .unwrap_or_default();
+    let racy = pending || recorder.racy(&key);
+    recorder.store_observation(
+        path,
+        Op::LockfileEntries(ids.into_iter().collect()),
+        Outcome::Read { sha256, key, racy },
+    );
 }
 
 pub(crate) fn note_selection_absent(path: &Path, canonical: &str) {

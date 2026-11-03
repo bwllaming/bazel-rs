@@ -246,6 +246,12 @@ impl RegistrySession {
             self.hidden = Some((path, Lockfile::default()));
             return self;
         }
+        // Not observed: the analysis snapshot records the entries this
+        // command used instead ([`Self::hidden_lockfile_projection`]).
+        crate::observed_fs::discard(|| self.read_hidden_lockfile(path, seeds))
+    }
+
+    fn read_hidden_lockfile(mut self, path: PathBuf, seeds: &[crate::worktree::Seed]) -> Self {
         if !crate::observed_fs::exists(&path)
             && let Some(seed) = seeds
                 .iter()
@@ -262,6 +268,37 @@ impl RegistrySession {
         let lockfile = lockfile::read(&path, LockfileMode::Update).unwrap_or_default();
         self.hidden = Some((path, lockfile));
         self
+    }
+
+    /// What the analysis snapshot records of the hidden lockfile (instead
+    /// of its bytes, which another command — a `query` evaluating other
+    /// extensions — rewrites): its path, the module extensions this command
+    /// resolved, the digest of their entries in the hidden lockfile as it
+    /// stands once this command wrote it ([`Lockfile::entries_digest`] of
+    /// its serialized form, exactly what a later reader parses), and
+    /// whether a write is pending (then a validation always reads it). A
+    /// later command reads the same entries for the same extensions, and
+    /// resolves them alike. `None` without a hidden lockfile read.
+    pub fn hidden_lockfile_projection(
+        &self,
+    ) -> Option<(PathBuf, std::collections::BTreeSet<String>, [u8; 32], bool)> {
+        if self.mode == LockfileMode::Off {
+            return None;
+        }
+        let (path, read) = self.hidden.as_ref()?;
+        let ids: std::collections::BTreeSet<String> = self
+            .extension_results
+            .lock()
+            .expect("extension results")
+            .iter()
+            .map(|result| result.id.clone())
+            .collect();
+        let updated = self.updated_hidden_lockfile();
+        let written = updated.as_ref().map_or(read, |(_, lockfile)| lockfile);
+        let reparsed =
+            Lockfile::parse(&written.serialize(), LockfileMode::Update).unwrap_or_default();
+        let digest = reparsed.entries_digest(&ids);
+        Some((path.clone(), ids, digest, updated.is_some()))
     }
 
     /// The hidden lockfile's value (empty without one).
