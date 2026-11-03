@@ -1288,6 +1288,20 @@ pub struct EnvInputs<'a> {
     pub runfiles_enabled: bool,
 }
 
+/// PathFragment.getCallablePathString (vfs/PathFragment.java:735-745), the
+/// form TestRunnerAction gives TEST_BINARY: a single-segment relative path
+/// (a test of the main repository's root package) gains `./`, so a shell
+/// running `$TEST_BINARY` does not search PATH for it.
+fn callable_path(path: &str) -> std::borrow::Cow<'_, str> {
+    if path.is_empty() {
+        ".".into()
+    } else if !path.starts_with('/') && !path.contains('/') {
+        format!("./{path}").into()
+    } else {
+        path.into()
+    }
+}
+
 /// ActionEnvironment.resolve (actions/ActionEnvironment.java:113-122): the
 /// fixed values, then the inherited names the client environment sets.
 fn resolve_into(
@@ -1344,7 +1358,7 @@ pub fn test_environment(inputs: &EnvInputs<'_>) -> BTreeMap<String, String> {
         &inputs.timeout_seconds.to_string(),
     );
     put(&mut env, "TEST_WORKSPACE", inputs.workspace);
-    put(&mut env, "TEST_BINARY", inputs.binary);
+    put(&mut env, "TEST_BINARY", &callable_path(inputs.binary));
     if inputs.total_runs > 1 {
         env.entry("TEST_RANDOM_SEED".to_owned())
             .or_insert_with(|| (inputs.run + 1).to_string());
@@ -2291,6 +2305,17 @@ mod tests {
             local: false,
             tags: Vec::new(),
         }
+    }
+
+    /// TEST_BINARY of a root-package test is `./name` (genuine 9.3.1:
+    /// `TEST_BINARY=./unit_tests` for `//:unit_tests`, docs/SELF_BUILD.md).
+    #[test]
+    fn test_binary_is_the_callable_runfiles_path() {
+        assert_eq!(callable_path("unit_tests"), "./unit_tests");
+        assert_eq!(callable_path("pkg/pass_test.sh"), "pkg/pass_test.sh");
+        assert_eq!(callable_path("../repo/t"), "../repo/t");
+        assert_eq!(callable_path("/abs/t"), "/abs/t");
+        assert_eq!(callable_path(""), ".");
     }
 
     /// PerLabelOptions (RegexFilter `find`, `-` excludes, the last matching
