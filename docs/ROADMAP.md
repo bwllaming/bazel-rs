@@ -264,8 +264,8 @@ cannot accidentally publish telemetry or change the checkout during testing.
 ### 2. Configured target and rule analysis
 
 Status: analysis of all of `//src/...` succeeds; `cquery` subset with
-target-determinator support (docs/CQUERY.md). Open: `aquery`, `cquery
---output=starlark`, the remaining aspect features (PLAN.md), one toolchain on two
+target-determinator support (docs/CQUERY.md); `aquery` (docs/AQUERY.md).
+Open: `cquery --output=starlark`, the remaining aspect features (PLAN.md), one toolchain on two
 execution platforms in one configuration.
 
 - Custom rules/attributes/providers, `depset`, aspects, `ctx.actions`, `Args`,

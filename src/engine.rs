@@ -14463,7 +14463,8 @@ impl Engine {
                         executable: false,
                     }),
                     extra: action::ActionExtra {
-                        mnemonic: "GenQuery".into(),
+                        // QueryResultAction is an AbstractFileWriteAction.
+                        mnemonic: "FileWrite".into(),
                         ..Default::default()
                     },
                     ..Action::default()

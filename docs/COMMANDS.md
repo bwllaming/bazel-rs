@@ -194,8 +194,16 @@ inputs, VENDOR.bazel `ignore()`/`pin()`, vendored registry files under
 `_registries/`); the native store has neither genuine's marker files nor that
 read path, so a native `vendor` could produce a directory neither genuine nor
 native builds use. Bazel commands that the native
-profile lacks (`cquery`, `aquery`, ...) keep `unsupported command or startup
-option`.
+profile lacks (`dump`, `print_action`, `mobile-install`, ...) keep
+`unsupported command or startup option`.
+
+## `aquery`
+
+The action graph of the configured targets an expression selects, in every
+Bazel 9.3.1 output format (text, commands, summary, proto, streamed_proto,
+textproto, jsonproto) with the aquery filter functions and options; Bazel
+action keys where the native action models the genuine one. Scope,
+divergences and the native `genquery` rule: docs/AQUERY.md.
 
 ## The progress display
 

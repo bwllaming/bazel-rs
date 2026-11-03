@@ -192,9 +192,14 @@ Done since the last increment recorded under "History", one line each:
 ### Commands that are rejected today
 
 - [x] `clean` (incl. `--expunge`/`--async`) and `shutdown` (docs/COMMANDS.md).
-- [ ] `aquery`. The supported `cquery` subset is listed in docs/CQUERY.md;
-      Starlark formatting/default TD compatibility filtering, full transition
-      output and several query functions remain explicit errors.
+- [x] `aquery`: every output format, the filter functions and options over
+      the cquery expression subset (docs/AQUERY.md); Bazel action keys for
+      genrule/Starlark spawns (list-based Args)/writes/templates/symlinks;
+      depset-based Args, compressed writes and native C++/runfiles action
+      keys are native-only. `genquery` is native (result-based scope check);
+      `starlark_doc_extract` remains an explicit analysis error
+      (docs/AQUERY.md lists what it needs). The supported `cquery` subset is
+      listed in docs/CQUERY.md.
 - [x] `fetch` (`sync` is not a 9.3 command; `vendor` fails explicitly: no vendor-directory read path or genuine marker files, docs/COMMANDS.md).
 - [x] `coverage` (docs/COVERAGE.md; Go/sh/Starlark-rule lcov, native output generator, combined report; C++ gcov, split post-processing and other generators explicit).
 - [x] `mod`: every subcommand and option on the built-in profile
