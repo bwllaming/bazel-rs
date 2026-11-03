@@ -103,6 +103,9 @@ const ALLOWED_PREFIXES: &[&str] = &[
     "snapshot/",
     "action/",
     "cache_gc/",
+    // The namespace sandbox (sandbox/namespaces.rs): the spawn's mount plan
+    // and the worker's mounts, at execution.
+    "sandbox/",
     // The build event files (docs/BEP.md): opened before the recording
     // window, the built outputs' digests read after execution.
     "bep/",
