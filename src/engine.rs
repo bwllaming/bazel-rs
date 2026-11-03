@@ -80,6 +80,12 @@ struct ArtifactData {
     exec: SharedPath,
     producer: Option<(String, usize)>,
     owner: String,
+    /// A source artifact (no producer) whose `owner` is the canonical label
+    /// of an external repository's file (`Label::parse_canonical` succeeds
+    /// with a non-empty repository): computed once at construction for
+    /// [`planted`] and the File's short path, which tested every input of
+    /// every action again.
+    external: bool,
     /// A tree artifact (declared directory).
     directory: bool,
     /// A constant-metadata artifact (Artifact.isConstantMetadata): its
@@ -106,6 +112,7 @@ impl Artifact {
             real: exec.clone(),
             exec,
             producer: None,
+            external: external_owner(&file.owner),
             owner: file.owner.clone(),
             directory: file.is_directory,
             constant_metadata: false,
@@ -121,11 +128,13 @@ impl Artifact {
         directory: bool,
         constant_metadata: bool,
     ) -> Self {
-        let file = Self::compute_file(&exec, producer.is_some(), &owner, directory);
+        let external = producer.is_none() && external_owner(&owner);
+        let file = Self::compute_file(&exec, producer.is_some(), external, &owner, directory);
         Self(Arc::new(ArtifactData {
             real: real.into(),
             exec: exec.into(),
             producer,
+            external,
             owner,
             directory,
             constant_metadata,
@@ -158,6 +167,7 @@ impl Artifact {
         Self(Arc::new(ArtifactData {
             real: exec.clone(),
             exec,
+            external: producer.is_none() && external_owner(&file.owner),
             producer,
             owner: file.owner.clone(),
             directory: file.is_directory,
@@ -168,7 +178,13 @@ impl Artifact {
 
     /// The File of an artifact at `exec` (the algorithm `file()` ran on
     /// every call before W1a).
-    fn compute_file(exec_path: &Path, generated: bool, owner: &str, directory: bool) -> File {
+    fn compute_file(
+        exec_path: &Path,
+        generated: bool,
+        external: bool,
+        owner: &str,
+        directory: bool,
+    ) -> File {
         // W0-A work counter: one File computed (a source owner's label
         // parsing dominates it; since W1a once per Artifact, `file()` only
         // clones the cache).
@@ -183,7 +199,7 @@ impl Artifact {
             let relative =
                 crate::label::split_generated_root(&exec).map_or(&*exec, |(_, relative)| relative);
             crate::label::generated_short_path(relative)
-        } else if Label::parse_canonical(owner).is_ok_and(|label| !label.repository.is_empty()) {
+        } else if external {
             exec_path
                 .strip_prefix("external")
                 .map(|path| PathBuf::from("..").join(path))
@@ -13978,12 +13994,16 @@ impl Engine {
             scheduler::groups_apart(&action, &groups) && action::validate_structure(&action).is_ok()
         };
         if shared_groups {
-            let sources = source_paths(&own);
             let id = action.id.clone();
-            let mut planned = plan_action(action, own, main_ignored, commit.client_environment)?;
-            commit
-                .source_inputs
-                .insert(id, SourceInputs::planned(sources, &planned, groups.clone()));
+            let (mut planned, sources) = plan_action_sources(
+                action,
+                &own,
+                main_ignored,
+                commit.client_environment,
+                true,
+                groups.clone(),
+            )?;
+            commit.source_inputs.insert(id, sources);
             planned.groups = groups;
             planned.deferred = deferred;
             commit.nodes.push(planned);
@@ -14008,7 +14028,6 @@ impl Engine {
                 }
             }
         }
-        let sources = source_paths(&inputs);
         let id = action.id.clone();
         let empties: Vec<(PathBuf, Vec<u8>)> = action
             .extra
@@ -14022,10 +14041,15 @@ impl Engine {
             })
             .cloned()
             .collect();
-        let mut planned = plan_action(action, inputs, main_ignored, commit.client_environment)?;
-        commit
-            .source_inputs
-            .insert(id, SourceInputs::planned(sources, &planned, Vec::new()));
+        let (mut planned, sources) = plan_action_sources(
+            action,
+            &inputs,
+            main_ignored,
+            commit.client_environment,
+            false,
+            Vec::new(),
+        )?;
+        commit.source_inputs.insert(id, sources);
         // A deferred command line recomputes the parameter files;
         // the runfiles empty files are kept.
         planned.deferred = match (deferred, empties.is_empty()) {
@@ -17258,10 +17282,14 @@ fn native_bool(rule: &Rule, name: &str) -> bool {
     })
 }
 
+/// Whether `owner` is the canonical label of an external repository's
+/// target ([`ArtifactData::external`]).
+fn external_owner(owner: &str) -> bool {
+    Label::parse_canonical(owner).is_ok_and(|label| !label.repository.is_empty())
+}
+
 fn planted(artifact: &Artifact, main_ignored: &IgnoredSubdirectories) -> bool {
-    if artifact.producer.is_some()
-        || Label::parse_canonical(&artifact.owner).is_ok_and(|l| !l.repository.is_empty())
-    {
+    if artifact.producer.is_some() || artifact.external {
         return true;
     }
     match artifact.exec.components().next() {
@@ -17723,7 +17751,7 @@ impl Engine {
         let input_manifest = suffixed_file(executable, ".runfiles_manifest");
         let manifest_artifact = if options.build_runfile_manifests {
             let id = format!("{action_owner}#runfiles_manifest");
-            let planned = plan_action(
+            let (planned, sources) = plan_action_sources(
                 action(
                     &id,
                     vec![PathBuf::from(&input_manifest.path)],
@@ -17731,14 +17759,13 @@ impl Engine {
                         entries: entries.clone(),
                     },
                 ),
-                inputs.clone(),
+                &inputs,
                 main_ignored,
                 &no_client_environment,
+                false,
+                Vec::new(),
             )?;
-            planning.source_inputs.insert(
-                id.clone(),
-                SourceInputs::planned(source_paths(&inputs), &planned, Vec::new()),
-            );
+            planning.source_inputs.insert(id.clone(), sources);
             planning.nodes.push(planned);
             Some(planning.output(key, &id, &input_manifest)?)
         } else {
@@ -17754,7 +17781,7 @@ impl Engine {
                 let mut tree_inputs = inputs.clone();
                 tree_inputs.push(manifest.clone());
                 tree_inputs.push(executable_artifact.clone());
-                let planned = plan_action(
+                let (planned, sources) = plan_action_sources(
                     action(
                         &tree_id,
                         vec![PathBuf::from(&tree_file.path)],
@@ -17765,14 +17792,13 @@ impl Engine {
                             create: options.enable_runfiles,
                         },
                     ),
-                    tree_inputs.clone(),
+                    &tree_inputs,
                     main_ignored,
                     &no_client_environment,
+                    false,
+                    Vec::new(),
                 )?;
-                planning.source_inputs.insert(
-                    tree_id.clone(),
-                    SourceInputs::planned(source_paths(&tree_inputs), &planned, Vec::new()),
-                );
+                planning.source_inputs.insert(tree_id.clone(), sources);
                 planning.nodes.push(planned);
                 Some(planning.output(key, &tree_id, &tree_file)?)
             }
@@ -18163,12 +18189,61 @@ fn list_artifacts(action: &mut Action, inputs: &[Artifact]) {
         .collect();
 }
 
+#[cfg(test)]
 fn plan_action(
-    mut action: Action,
+    action: Action,
     inputs: Vec<Artifact>,
     main_ignored: &IgnoredSubdirectories,
     client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
 ) -> Result<PlannedAction, String> {
+    plan_listed_action(action, &inputs, main_ignored, client_environment, false)
+        .map(|(planned, _)| planned)
+}
+
+/// [`plan_action`] with the action's [`SourceInputs`] (its `groups`
+/// shared): [`SourceInputs::planned`] of [`source_paths`], derived without
+/// listing or comparing the paths when planning dropped no source input
+/// (then the planned action lists exactly the sources, in order, so both
+/// deduplicate to the same paths). `listed`: `action` already lists
+/// `inputs` ([`list_artifacts`]) and passed [`action::validate_structure`]
+/// so (the shared-group check of [`Engine::commit_action`]); resolving the
+/// inherited environment then changes nothing that check covers.
+fn plan_action_sources(
+    action: Action,
+    inputs: &[Artifact],
+    main_ignored: &IgnoredSubdirectories,
+    client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    listed: bool,
+    groups: Vec<Arc<scheduler::InputGroup>>,
+) -> Result<(PlannedAction, SourceInputs), String> {
+    let (planned, dropped_source) =
+        plan_listed_action(action, inputs, main_ignored, client_environment, listed)?;
+    let sources = if dropped_source {
+        SourceInputs::planned(source_paths(inputs), &planned, groups)
+    } else {
+        debug_assert!(
+            SourceInputs::planned(source_paths(inputs), &planned, Vec::new())
+                .own
+                .is_none(),
+            "internal error: the source inputs of {} differ from its planned ones",
+            planned.action.id
+        );
+        SourceInputs { own: None, groups }
+    };
+    Ok((planned, sources))
+}
+
+/// The planning of [`plan_action`] over borrowed inputs, and whether it
+/// dropped a source input (a later occurrence of an execution path, or a
+/// source execroot planting leaves out).
+fn plan_listed_action(
+    mut action: Action,
+    inputs: &[Artifact],
+    main_ignored: &IgnoredSubdirectories,
+    client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    listed: bool,
+) -> Result<(PlannedAction, bool), String> {
+    use std::os::unix::ffi::OsStrExt;
     // The inherited values are resolved here, keyed and fixed for the
     // execution (ActionExecutionFunction.java:221-242 reads them per action).
     if !action.extra.inherited_environment.is_empty() {
@@ -18177,8 +18252,10 @@ fn plan_action(
             client_environment.get_or_init(crate::action_env::client_environment),
         );
     }
-    list_artifacts(&mut action, &inputs);
-    action::validate_structure(&action)?;
+    if !listed {
+        list_artifacts(&mut action, inputs);
+        action::validate_structure(&action)?;
+    }
     action.inputs.clear();
     // Inputs at one execution path must be one artifact without its owner
     // (Artifact.equalsWithoutOwner); later occurrences are dropped. A
@@ -18189,14 +18266,15 @@ fn plan_action(
     // never the cached File: a staged tool runfile's `exec` is its
     // runfiles-tree destination (commit_custom_target), not the path its
     // File was computed from. Lookups only: dependencies and inputs keep the
-    // declaration order.
+    // declaration order. The execution paths passed validate_structure
+    // (relative, normal, single separators): equal paths are equal bytes.
     let mut first = Vec::with_capacity(inputs.len());
     {
-        type Identity<'a> = (&'a std::ffi::OsStr, bool, Option<(&'a str, usize)>, &'a str);
-        let mut seen: HashMap<&Path, Identity<'_>> = HashMap::new();
-        for artifact in &inputs {
+        type Identity<'a> = (bool, Option<(&'a str, usize)>, &'a str);
+        let mut seen: crate::fast_hash::FxHashMap<&[u8], Identity<'_>> =
+            crate::fast_hash::FxHashMap::with_capacity_and_hasher(inputs.len(), Default::default());
+        for artifact in inputs {
             let identity = (
-                artifact.exec.as_os_str(),
                 artifact.directory,
                 artifact
                     .producer
@@ -18208,7 +18286,7 @@ fn plan_action(
                     artifact.owner.as_str()
                 },
             );
-            match seen.entry(artifact.exec.as_path()) {
+            match seen.entry(artifact.exec.as_os_str().as_bytes()) {
                 std::collections::hash_map::Entry::Occupied(previous) => {
                     if *previous.get() != identity {
                         return Err(format!(
@@ -18226,8 +18304,10 @@ fn plan_action(
         }
     }
     let mut dependencies = Vec::new();
-    for (artifact, first) in inputs.into_iter().zip(first) {
+    let mut dropped_source = false;
+    for (artifact, first) in inputs.iter().zip(first) {
         if !first {
+            dropped_source |= artifact.producer.is_none();
             continue;
         }
         // Constant-metadata inputs (N63) key without their digest
@@ -18244,17 +18324,19 @@ fn plan_action(
                 output_index: *output_index,
                 destination: artifact.exec.clone(),
             });
-        } else if planted(&artifact, main_ignored) {
+        } else if planted(artifact, main_ignored) {
             action
                 .inputs
                 .push((artifact.real.clone(), artifact.exec.clone()));
+        } else {
+            dropped_source = true;
         }
     }
     // The input list was sized for every input, generated ones included,
     // and is kept for the rest of the build (MEM4).
     action.inputs.shrink_to_fit();
     dependencies.shrink_to_fit();
-    Ok(PlannedAction::new(action, dependencies))
+    Ok((PlannedAction::new(action, dependencies), dropped_source))
 }
 
 /// Load-time gates and pre-dependency gaps: native rules that loading
