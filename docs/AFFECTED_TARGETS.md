@@ -48,6 +48,12 @@ same set as the full analysis every time):
 | P2 | lockfile + requirements (global) | 827 s | 800 s; **528 s** concurrent; **537 s** stored base digests | 270 s |
 | P5 | one BUILD edit | 809 s | **96 s** (783 s before the analysis-order fix, §8.6) | 259 s |
 
+Since §8.9 a local change plans both revisions at once by default, the
+planning itself is ~25% faster, and the CI's `build` after `affected`
+derives its plan from it: PR 13252's CI sequence (`affected`, `query`,
+`build`) takes 501 s cold (690 s with 0.4.7), 287 s lukewarm (467 s) and
+151 s warm (379 s) on the private clone.
+
 ## 1. target-determinator v0.34.0: exactly what it does
 
 Source: github.com/bazel-contrib/target-determinator at tag `v0.34.0`
@@ -308,7 +314,7 @@ digests are both more precise than TD and cheaper.
 bazel-rs [STARTUP...] affected --base=REV [--head=REV] [--worktree=DIR]
     [--affected_command=test|build] [--keep_digests=DIR] [--explain_affected]
     [--include_incompatible] [--include_manual] [--scope=auto|full]
-    [--concurrent_revisions] [--write_digests=FILE] [--base_digests=FILE]
+    [--[no]concurrent_revisions] [--write_digests=FILE] [--base_digests=FILE]
     [--base_failure=error|all]
     [BUILD OPTIONS...] [PATTERNS... | -- PATTERNS...]
 ```
@@ -693,12 +699,21 @@ touches a root. Otherwise it would be missed.
   (non-zero exit, nothing on stdout). So does a base, unless
   `--base_failure=all` asks for TD's default: every head target (within
   the head's scope) is affected.
-- **`--concurrent_revisions`.** Both revisions are planned at once, in two
-  worktrees sharing the cache: the repository store's stage lock
-  serializes a shared fetch. Peak memory is about twice a revision's (2 ×
-  9.2 GB for a global change, 2 × 4.2 GB scoped). It is not the default,
-  because CI hosts run four runners each. Avoid it for a branch that bumps
-  the Go SDK (docs/WORKTREES.md, hazard 3).
+- **`--[no]concurrent_revisions`** (`=auto`, the default since §8.9). Both
+  revisions are planned at once, sharing the cache: the repository store's
+  stage lock serializes a shared fetch. The head is still planned in place
+  when the working copy is HEAD (§8.8), else in a second worktree. It
+  starts once the base selected its targets (its `.scope` file), so the
+  base is past module resolution and loading and fetches first. Peak
+  memory is about twice a revision's (2 × 9.2 GB for a global change,
+  2 × 5 GB scoped). By default (`auto`) a **local** change is planned
+  concurrently when the host has 20 GB available (`MemAvailable`;
+  `BAZEL_RS_AFFECTED_CONCURRENT_MB` overrides it, 0 = always), otherwise
+  one revision after the other (`bazel-rs affected: planning the revisions
+  one after the other (N MB available, M MB for both at once)`). A global
+  change stays sequential unless `--concurrent_revisions` asks: its
+  revisions' repository specifications differ (docs/WORKTREES.md, hazard
+  3: avoid it for a branch that bumps the Go SDK).
 - **Stored digests.** `--write_digests=FILE` (about 230 KB) plans the head
   entirely and writes its digests. The file has `#commit` and `#key`
   lines, where the key is the sha256 of the binary, command, options and
@@ -716,7 +731,7 @@ replacement is:
 
 ```
 bazel-rs --cache-dir=$HOME/.cache/bazel-rs affected --base=<base> \
-    [--concurrent_revisions] [--base_digests=main.digests]
+    [--noconcurrent_revisions] [--base_digests=main.digests]
 ```
 
 It prints one label per line. Since bwllaming/code#13177 the script drops
@@ -913,21 +928,108 @@ three commands share one server; here each re-analyzed (~150 s each).
   in place instead of checked out in the worktree (`BAZEL_RS_AFFECTED_HEAD_IN_PLACE=0`
   keeps the worktree). Ignored files are the working copy's; the commands
   after `affected` see them too (an ignored file a glob matches can only
-  make a target affected, never hide one). `--concurrent_revisions` keeps
-  both revisions in worktrees.
+  make a target affected, never hide one). Planned concurrently (§8.3), it
+  stays in place.
 * That planning (`BAZEL_RS_AFFECTED_SAVE` set) saves its analysis snapshot
   under a key of its own (the scope's spec folded into G: a scoped planning
   is never looked up, its scope is only known after its target pattern
   phase) with the derivation record of docs/ANALYSIS_SNAPSHOT.md "Derived
   hits": the `build` of the affected targets and the `test` of their tests
   derive their plans from it. Plannings in the worktree save nothing.
-* A planning that writes its hidden lockfile is never saved (the write
-  changes what it read). On a cold cache the working copy has none yet, so
-  before the head is planned in place it starts as the base planning's
+* Planned after the base (sequentially) on a cache where the working copy
+  has no hidden lockfile yet, the head's starts as the base planning's
   (without the results naming the worktree); its extension results are
-  validated against their recorded inputs as always.
-* On ~/code this does not serve the CI's `build` yet: its `query` writes
-  the hidden lockfile after `affected` (cold cache), and the head's `test
-  --nobuild` plan reaches a source directory an executing build must check
-  (docs/ANALYSIS_SNAPSHOT.md "Derived hits", Limits). The `build` there is a
-  full analysis, saved, and the `test` derives from it.
+  validated against their recorded inputs as always. (Through 0.4.7 a
+  planning that wrote its hidden lockfile was never saved; since §8.9 the
+  snapshot records the entries it used instead.)
+* Since §8.9 this serves ~/code's CI `build` too: the `query` between
+  `affected` and `build` no longer invalidates the snapshot by writing the
+  hidden lockfile, and the head's `test --nobuild` plan traverses the
+  source directories an executing build checks (docs/ANALYSIS_SNAPSHOT.md
+  "Derived hits"). Warm: the `build` of the 480 labels analyzes nothing
+  (`INFO: Analyzed 480 targets (206 packages loaded, 0 targets
+  configured)`), 128 → 30 s. Where the head planning cannot be saved (it
+  evaluated a module extension, e.g. `pip` after a requirements bump, or
+  downloaded registry files), the `build` analyzes in full and saves, and
+  the `test` derives from the `build`.
+
+### 8.9 Cold, lukewarm and warm CI cost (affected-cold-speed)
+
+~/code's CI (PR bwllaming/code#13252) runs `bazel affected --base=HEAD^`,
+then `query rdeps(...)`, then the `build` of the affected targets on
+self-hosted runners whose bazel-rs cache is often cold (a runner's first
+run) or lukewarm (main moved since its last run). There `affected` took
+695–900 s cold (base 494–638 s: loading ~150 s, analysis 350–480 s; head
+200–260 s), the most expensive step left.
+
+**Where the time went** (private clone at the PR's merge `4445d0f`, base
+`2c7b638`; scope 482 of 2,504 targets; `BAZEL_RS_TIMING=1`):
+
+* **Analysis CPU.** A scoped planning spent ~105 s in `plan_span`, 63 s of
+  it committing `py_library` targets: rules_python precompiles every `.py`
+  of every wheel (~20,000 `PyCompile` actions here), and each action's
+  inputs include the 1,657 files of the Python runtime, so the commit's
+  per-input passes ran over 33 M inputs: the shared-group check listed and
+  validated each action, `plan_action` listed and validated it again,
+  `source_paths` copied and hashed every path, `SourceInputs::planned`
+  hashed and compared them again, and `planted` parsed every input's owner
+  label. Now the second listing and validation are skipped, the source
+  inputs are derived without hashing when planning dropped no source,
+  the execution-path deduplication hashes the validated bytes (Fx), and an
+  artifact knows whether its owner is external: commit 70 → 42 s, the
+  planning 124 → ~96 s (action dumps and digests byte-identical, 15,228
+  actions). Registration (`compute`, 31 s: flattening, validating and
+  keying the same inputs) and phase 1 are unchanged.
+* **Base and head.** The two plannings fetch the same repositories (a
+  local change changes no MODULE/lockfile), and the head reused the base's
+  fetches, but each analyzed its scope on its own: ~110 s each warm. They
+  now run at once by default (§8.3): wall time is the slower of the two.
+* **Fetching** (cold). The base's loading takes 41 s instead of 3 s
+  (module resolution and the repositories `//...` loads), its analysis
+  ~180 s instead of ~90 s (the coordinator waits ~35 s on fetches; the
+  remainder is fetch and extraction contention). The configured analysis
+  fetches only the `select()` branches it takes (4–16 GB, not the query's
+  37–50 GB). Not changed here.
+* **Lukewarm.** After a requirements bump on main every wheel repository of
+  the `pip` extension group is re-executed from the download cache (a
+  tree's identity covers its extension group): ~270–500 executions, ~25 s
+  per planning. Not changed here.
+* **The build after `affected`** analyzed again (115 s): fixed (§8.8).
+
+**Measured** (one run each, `nice -n 10`, shared 64-core host; the exact CI
+sequence `affected --base=HEAD^`, `query --keep_going --query_file ...
+--output streamed_jsonproto`, `build --keep_going --target_pattern_file
+... --build_event_json_file ...` with the storagebox replaced by a local
+HTTP cache; cold = fresh cache, lukewarm = cache of the same sequence at
+main `513556c7c` (three dependency bumps older), warm = cache of the same
+commit; affected's output identical in every run):
+
+| cache | 0.4.7: affected / query / build | this revision | 
+|---|---|---|
+| cold | 391 (base 256 + head 133) / 131 / 168 = **690 s** | 222 (concurrent: 218 ∥ 179) / 138 / 141 = **501 s** |
+| lukewarm | 276 (147 + 129) / 26 / 165 = **467 s** | 123 (120 ∥ 114) / 23 / 141 = **287 s** |
+| warm | 236 (113 + 122) / 15 / 128 = **379 s** | 104 (86 ∥ 96) / 17 / 30 (derived) = **151 s** |
+| lukewarm, `--noconcurrent_revisions` | – | 254 (149 + 102) / 22 / 138 = 414 s |
+
+Peak RSS per planning is unchanged (4.7–5.0 GB scoped); concurrent
+`affected` holds two (~10 GB). P1 (20 targets) and P2 (53, global) give the
+same sets as 0.4.7; P2 (full + full, sequential) 757 → 420 s on a
+lukewarm cache.
+
+**The head's snapshot on a cold or lukewarm cache.** The `build` derives
+from `affected` only when the head planning was saved. On a cold cache it
+is not (it evaluates the module extensions and downloads registry files),
+and after a dependency bump it re-evaluates `pip`
+(`extension-evaluated`), concurrent or not. A repository rule's downloads
+no longer keep it from saving (docs/ANALYSIS_SNAPSHOT.md: they settle with
+the execution's warm re-probe). Sequential planning does not help there
+(the lukewarm row: the head re-evaluates `pip` too), so concurrency stays
+the default: it is never slower than sequential by more than the build's
+analysis, and saves the head's whole planning.
+
+**On CI** (an extrapolation, not measured there) the runners are 1.5–2×
+slower than this host (0.4.7's head 200 vs 133 s, base 494 vs 256 s): cold
+`affected` should take about the base's planning alone, ~400–450 s instead
+of 695–900 s; warm ~150–200 s, plus a derived `build` when the head was
+saved. What remains: fetching (cold), the lukewarm re-executions, and
+registration and phase 1 of the analysis (~60 of ~96 s per planning here).

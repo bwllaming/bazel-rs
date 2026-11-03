@@ -430,19 +430,29 @@ with the snapshot's plan restricted to them.
   recording and lookups off; verify mode and `bazel-rs affected`'s
   plannings never derive. EXPLAIN says `derived G from S: N target(s), M
   action(s); hit S: ...` or why a candidate did not cover the request.
-* **Limits.** A snapshot is stale once anything it read changed. In
-  ~/code's cold CI the `query` between `affected` and `build` evaluates
-  more module extensions (every `select()` branch) and so writes the hidden
-  lockfile `affected`'s head planning read. And `affected` plans `test
-  --nobuild`, whose plan the CI's executing `build` cannot use where it
-  reaches a source directory (rules_js `sharp@…/lc` on ~/code). So there the
-  `build` analyzes in full (and saves) and the `test` derives from the
-  `build`; a workspace without those derives the `build` from `affected`
-  too (tests/affected.rs).
+* **Source directories** (affected-cold-speed). The `--nobuild` planning
+  `bazel-rs affected` saves for derivation (crate::affected::SAVE_VAR)
+  traverses every source directory an executing build of its plan would
+  (requested artifacts and action inputs, crate::source_directories),
+  without failing: when none fails (the traversals' reads are recorded
+  inputs), the DERIVE record says so (`Coverage::source_directories_checked`)
+  and its actions reading a source directory may serve an executing build.
+  A failed traversal keeps the rule above.
+* **Limits.** A snapshot is stale once anything it read changed. ~/code's
+  CI `build` used to analyze in full after `affected` for two reasons, both
+  gone: the `query` between them rewrote the hidden lockfile `affected`'s
+  head planning read (now recorded by the entries it used, "The hidden
+  lockfile" above), and the head's `test --nobuild` plan reaches a source
+  directory (rules_js `sharp@…/lc`; now traversed, above). It still
+  analyzes in full when `affected`'s head planning could not be saved: a
+  cold or lukewarm cache where it evaluated a module extension (a bumped
+  requirements lock re-evaluates `pip`) or downloaded outside a repository
+  rule (registry files), docs/AFFECTED_TARGETS.md §8.9.
 
 | ~/code CI (PR 13252), cache of the steps before | before | derived |
 |---|---|---|
 | `test --nobuild` of the 152 test labels after `build --nobuild` of the 480 | 113 s | 7 s |
+| `build` of the 480 after `affected` and `query` (warm cache; affected-cold-speed) | 128 s (115 s analysis) | 30 s (16 s) |
 
 ## Verify mode (L2-W6)
 
@@ -855,13 +865,32 @@ printing protocol —, an evaluated extension, a
 callbacks or a `map_each` of a planned action without a portable
 description — see "Args map_each functions" —, Unstable, and the new
 `workspace-status-stderr`: a status command that wrote to stderr would
-print twice on a hit), no lockfile or hidden lockfile write is pending, the
+print twice on a hit), no workspace lockfile write is pending (a pending
+hidden lockfile write does not keep a run from saving: see "The hidden
+lockfile" below), the
 request has no analysis error, the target pattern phase reported no
 test-suite expansion error (integration-21: such a `build`, `test` or `run`
 fails after its build with `command succeeded, but there were ... errors`,
 which a hit — it skips the phase and replays what the phase printed —
 could not reproduce; the phase taints the run with `errors`), the capture
 is complete and below 16 MiB, and the snapshot stays below 512 MiB.
+
+**The hidden lockfile** (affected-cold-speed) is not recorded by its bytes:
+reading it is not observed, and the save records a `LOCKFILE_ENTRIES`
+observation of its path instead (crate::observed_fs::Op::LockfileEntries):
+the module extensions the command resolved and the digest of their
+`moduleExtensions`, `facts` (without null members, as written) and
+`factsVersions` members in the hidden lockfile as it stands once the
+command wrote it — its serialized form parsed again, exactly what a later
+reader parses (crate::lockfile::Lockfile::entries_digest). A hit parses the
+file (absent or unreadable: empty) and compares that digest; a pending
+write forces the parse. So the run that writes the hidden lockfile is
+saved (a later run reads the entries it wrote and resolves the same
+extensions alike), another command's entries for other extensions (~/code's
+CI: the `query` between `affected` and `build` evaluates the extensions of
+every `select()` branch) keep the snapshot valid, and a change of a used
+entry misses. Before, any write tainted the run `lockfile-write-pending`
+and any change of the file missed.
 
 **An executed non-local repository rule is re-probed** (snapshot-real-hits):
 once its publication is complete (tree, manifest, specification pointer),
@@ -876,7 +905,13 @@ and tree, so a later hit is valid exactly when the next full analysis
 would reuse the publication. What the execution itself read only shaped
 the tree and its recorded inputs, both validated through the probe; what
 it printed taints (`repository-rule-executed`, "printed N bytes": the next
-invocation would reuse the publication and print nothing). A failed probe,
+invocation would reuse the publication and print nothing). What it
+downloaded is such a read too (affected-cold-speed): the execution's
+`network` taints (its `ctx.download`s, also the non-blocking ones, whose
+worker threads carry them) go to a crate::observed_fs::NetworkSink that the
+re-probe settles with the execution; any other outcome records them (also
+while one of its downloads still transfers). Registry, module extension
+and Git downloads taint as before. A failed probe,
 a verify shadow (crate::observed_fs::mark_shadow_window: an execution is a
 difference from the hit, which executed none), or a run already tainted
 otherwise keeps the taint. On ~/code this is the run after every

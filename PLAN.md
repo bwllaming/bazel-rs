@@ -287,7 +287,19 @@ Done since the last increment recorded under "History", one line each:
 - [x] Snapshot-miss repository-tree checks: measured ≤ 0.2 s of wall time (the
       3.5 s is summed over threads); not worth weakening tamper detection.
 - [ ] Analysis speed on a snapshot miss: phase 1 is 46 of 51 s on
-      `//src/beyondwork.ai/...` and 95 of 138 s on `//src/...`.
+      `//src/beyondwork.ai/...` and 95 of 138 s on `//src/...`. On ~/code's
+      `affected` scope (482 targets) the commit of rules_python's ~20k
+      `PyCompile` actions (1,657 runtime inputs each) dominated: commit 70 → 42 s
+      (planning 124 → ~96 s, docs/AFFECTED_TARGETS.md §8.9); registration of
+      those inputs (31 s compute) and phase 1 remain.
+- [x] CI `affected` (PR 13252 sequence affected/query/build, private clone):
+      cold 690 → 501 s, lukewarm 467 → 287 s, warm 379 → 151 s: both revisions
+      at once by default when memory allows, the faster commit, and the `build`
+      deriving from affected's head (hidden lockfile recorded by the entries
+      used, source directories traversed; docs/AFFECTED_TARGETS.md §8.9).
+- [ ] Lukewarm `affected`: a requirements bump re-executes every wheel
+      repository of the `pip` extension group (~270–500 executions, ~25 s per
+      planning) and re-evaluates `pip`, so the head is not saved for the build.
 
 ### Known parity gaps (documented, not blocking ~/code)
 
