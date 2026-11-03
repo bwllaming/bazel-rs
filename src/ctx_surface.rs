@@ -82,6 +82,8 @@ pub struct CtxSurface {
     /// JavaOptions.javacOpts (`--javacopt`), as given
     /// (`ctx.fragments.java.default_javac_flags[_depset]`).
     pub javacopts: Vec<String>,
+    /// The configuration's effective `--jvmopt` (`default_jvm_opts`).
+    pub jvmopts: Vec<String>,
     /// Package.Metadata buildFilename relative to its source root
     /// (StarlarkRuleContext.getBuildFileRelativePath, StarlarkRuleContext.java:1007-1016).
     pub build_file_path: String,
@@ -136,6 +138,7 @@ impl Default for CtxSurface {
             features: FeatureSet::default(),
             disabled_default_features: Vec::new(),
             javacopts: Vec::new(),
+            jvmopts: Vec::new(),
             build_file_path: String::new(),
             apple_sdk_versions: Default::default(),
             action_env: Arc::new(
@@ -1164,12 +1167,10 @@ fn single_arch_platform<'v>(_: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Va
 /// `--jvmopt`, which the exec transition sets to `-XX:ErrorFile=/dev/stderr`
 /// when `--host_jvmopt` is empty (builtin_exec_platforms.bzl:350-354; both
 /// options are rejected natively, so at their defaults).
+/// JavaConfiguration.getDefaultJvmFlags (:116, 225-228): `--jvmopt`
+/// (an exec configuration's `--host_jvmopt` or `-XX:ErrorFile=/dev/stderr`).
 fn default_jvm_opts<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
-    Ok(if surface.is_exec {
-        frozen_strings(heap, &["-XX:ErrorFile=/dev/stderr"])
-    } else {
-        crate::subrule_fragments::empty_list()
-    })
+    Ok(frozen_owned_strings(heap, &surface.jvmopts))
 }
 
 /// ObjcConfiguration.useDeviceDebugEntitlements (rules/objc/ObjcConfiguration.java:150-157):

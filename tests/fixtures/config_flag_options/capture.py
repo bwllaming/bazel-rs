@@ -26,18 +26,21 @@ FLAGS = [
     '--host_copt=-DH', '--host_cxxopt=-DHX', '--host_conlyopt=-DHC', '--host_linkopt=-lhl',
     '--javacopt=-Xlint:all -Werror', '--javacopt=-g', "--javacopt=it's",
     '--javacopt=-Dx="a b"', '--host_javacopt=-DHJ', '--dynamic_mode=FULLY',
+    '--jvmopt=-Xmx1g', '--jvmopt=-Dy=1', '--host_jvmopt=-Xss4m',
 ]
 
 CASES = {
     'default': [],
     'flags': FLAGS,
-    'dynamic_off': ['--dynamic_mode=off', '--features=-pkg_feature'],
+    'dynamic_off': ['--dynamic_mode=off', '--features=-pkg_feature', '--platform_suffix=sfx',
+                    '--jvmopt=-Xmx2g'],
 }
 
 ERRORS = {
     'bad_dynamic_mode': ['--dynamic_mode=static'],
     'no_prefix_copt': ['--nocopt'],
     'bad_per_file_copt': ['--per_file_copt=[@-O0'],
+    'bad_platform_suffix': ['--platform_suffix=a/b'],
 }
 
 COMMON = ['build', '--platforms=//:p', '--host_platform=//:p']

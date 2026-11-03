@@ -16,6 +16,7 @@ def _lines(ctx):
         "dynamic_mode=%r" % cpp.dynamic_mode(),
         "default_javac_flags=%r" % java.default_javac_flags,
         "default_javac_flags_depset=%r" % java.default_javac_flags_depset.to_list(),
+        "default_jvm_opts=%r" % java.default_jvm_opts,
     ]
 
 def _report_impl(ctx):

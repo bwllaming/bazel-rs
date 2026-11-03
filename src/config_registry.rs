@@ -379,6 +379,11 @@ pub fn mnemonic(configuration: &Configuration, baseline: &Configuration) -> Resu
     }
     let mut mnemonic = format!("{cpu}-{}", native.compilation_mode);
     if let Some(suffix) = native.platform_suffix.filter(|suffix| !suffix.is_empty()) {
+        if suffix.contains('/') {
+            return Err(format!(
+                "Platform suffix '{suffix}' is invalid as part of a path: must not contain /"
+            ));
+        }
         mnemonic.push('-');
         mnemonic.push_str(suffix);
     }
@@ -506,6 +511,10 @@ pub fn exec_transition(
         // `--host_javacopt`, which propagates (:381).
         javacopts: from.native.host_javacopts.clone(),
         host_javacopts: from.native.host_javacopts.clone(),
+        // `_java_options` (:350-354): `--host_jvmopt`, or (empty, implicit
+        // here) `-XX:ErrorFile=/dev/stderr`; `--host_jvmopt` propagates.
+        jvmopts: from.native.host_jvmopts.clone(),
+        host_jvmopts: from.native.host_jvmopts.clone(),
         // The table-driven options (crate::configuration::VALUE_OPTIONS):
         // each row's exec rule (propagated, default or set).
         values: from.native.exec_values(),
@@ -605,6 +614,8 @@ pub(crate) fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static
     options.insert("host_features", list(&native.host_features));
     options.insert("javacopt", list(&native.javacopts));
     options.insert("host_javacopt", list(&native.host_javacopts));
+    options.insert("jvmopt", list(&native.effective_jvmopts()));
+    options.insert("host_jvmopt", list(&native.host_jvmopts));
     let per_label_options = |items: &[String]| {
         let entries = items
             .iter()

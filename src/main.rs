@@ -697,6 +697,12 @@ fn run() -> Result<(), String> {
     // --toolchain_resolution_debug, --modify_execution_info, the
     // convenience symlink modes and --local_resources.
     bazel_rs::action::set_check_up_to_date(execution_options.check_up_to_date);
+    // --ui_event_filters: the note kinds the console drops (crate::ui).
+    let hidden_kinds =
+        bazel_rs::execution_options::filtered_event_kinds(&execution_options.ui_event_filters)?;
+    if !hidden_kinds.is_empty() {
+        bazel_rs::ui::set_hidden_kinds(&hidden_kinds);
+    }
     bazel_rs::output_filter::install(
         &execution_options.output,
         bazel_rs::worktree::output_base_for(&cache, &root)

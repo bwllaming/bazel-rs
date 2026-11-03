@@ -1146,6 +1146,18 @@ pub struct NativeOptions {
     /// propagates to exec configurations (builtin_exec_platforms.bzl:381).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub host_javacopts: Vec<String>,
+    /// JavaOptions.jvmOpts (`--jvmopt`, JavaOptions.java:71-80):
+    /// `ctx.fragments.java.default_jvm_opts` (JavaConfiguration.java:116).
+    /// The exec transition sets it to `--host_jvmopt`, or to
+    /// `-XX:ErrorFile=/dev/stderr` when that is empty
+    /// (builtin_exec_platforms.bzl:350-354); that exec default is kept
+    /// implicit here (empty in an exec configuration, [`Self::effective_jvmopts`])
+    /// so existing identities are unchanged.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub jvmopts: Vec<String>,
+    /// JavaOptions.hostJvmOpts (`--host_jvmopt`); propagates to exec.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub host_jvmopts: Vec<String>,
     /// The table-driven [`VALUE_OPTIONS`] whose value differs from the
     /// default, by name ([`NativeOptions::value`] gives the default for the
     /// others). Serialized as `NAME: toString` and omitted from the
@@ -1441,6 +1453,8 @@ impl Default for NativeOptions {
             host_features: Vec::new(),
             javacopts: Vec::new(),
             host_javacopts: Vec::new(),
+            jvmopts: Vec::new(),
+            host_jvmopts: Vec::new(),
             values: BTreeMap::new(),
             collect_code_coverage: false,
             instrumentation: Instrumentation::default(),
@@ -1456,6 +1470,16 @@ impl Default for NativeOptions {
 }
 
 impl NativeOptions {
+    /// The configured `--jvmopt` list ([`Self::jvmopts`], the exec
+    /// configuration's implicit `-XX:ErrorFile=/dev/stderr`).
+    pub fn effective_jvmopts(&self) -> Vec<String> {
+        if self.is_exec && self.jvmopts.is_empty() {
+            vec!["-XX:ErrorFile=/dev/stderr".to_owned()]
+        } else {
+            self.jvmopts.clone()
+        }
+    }
+
     /// PlatformConfiguration.getTargetPlatform: the first `--platforms`
     /// entry (PlatformOptions.computeTargetPlatform, PlatformOptions.java:205-212).
     pub fn target_platform(&self) -> &Label {
@@ -1812,6 +1836,8 @@ pub struct CommandLineOptions {
     /// The [`FLAG_LIST_OPTIONS`] occurrences (option name, value) in
     /// command-line order.
     flag_lists: Vec<(&'static str, String)>,
+    /// The last `--platform_suffix` (CoreOptions.platformSuffix, :512-520).
+    platform_suffix: Option<String>,
 }
 
 /// The repeatable `List<String>` options of the configuration fragments
@@ -1819,7 +1845,7 @@ pub struct CommandLineOptions {
 /// for `per_file_copt`) and whether `query` registers them (only
 /// CoreOptions, QueryCommand.java:59-67): CppOptions.java:236-282, 563-582,
 /// 602-667; CoreOptions.java:831-856; JavaOptions.java:50-69.
-const FLAG_LIST_OPTIONS: [(&str, bool); 14] = [
+const FLAG_LIST_OPTIONS: [(&str, bool); 16] = [
     ("copt", false),
     ("cxxopt", false),
     ("conlyopt", false),
@@ -1834,6 +1860,8 @@ const FLAG_LIST_OPTIONS: [(&str, bool); 14] = [
     ("host_features", true),
     ("javacopt", false),
     ("host_javacopt", false),
+    ("jvmopt", false),
+    ("host_jvmopt", false),
 ];
 
 /// CoreOptions.getNormalizedFeatures (CoreOptions.java:1210-1242): the
@@ -2167,6 +2195,38 @@ impl CommandLineOptions {
                 self.extra_execution_platforms = Some(comma_separated_option_list(&value));
                 return Ok(Parsed::Consumed(used_next));
             }
+            // --platform_suffix (CoreOptions.java:512-520, a String, default
+            // null): added to the output directory mnemonic
+            // (OutputPathMnemonicComputer.java:201-204; crate::config_registry).
+            if name == "platform_suffix" || name == "noplatform_suffix" {
+                if name == "noplatform_suffix" {
+                    return Err(invalid_argument(
+                        arg,
+                        format!("Illegal use of 'no' prefix on non-boolean option: {arg}"),
+                    ));
+                }
+                let (value, used_next) = match value {
+                    Some(value) => (value.to_owned(), false),
+                    None => (
+                        next.ok_or_else(|| format!("Expected value after {arg}"))?
+                            .to_owned(),
+                        true,
+                    ),
+                };
+                if !query {
+                    // OutputPathMnemonicComputer.checkedAddToMnemonic (an
+                    // InvalidConfigurationException, a command-line error):
+                    // reported once the configuration is created, natively
+                    // when the option is parsed.
+                    if value.contains('/') {
+                        return Err(format!(
+                            "Platform suffix '{value}' is invalid as part of a path: must not contain /"
+                        ));
+                    }
+                    self.platform_suffix = Some(value);
+                }
+                return Ok(Parsed::Consumed(used_next));
+            }
             // The repeatable List<String> flag options (FLAG_LIST_OPTIONS):
             // every occurrence appends its value as one element (no comma
             // splitting: the default String element converter).
@@ -2391,11 +2451,18 @@ impl CommandLineOptions {
                 "host_features" => &mut native.host_features,
                 "javacopt" => &mut native.javacopts,
                 "host_javacopt" => &mut native.host_javacopts,
+                "jvmopt" => &mut native.jvmopts,
+                "host_jvmopt" => &mut native.host_jvmopts,
                 other => unreachable!("flag list option {other}"),
             };
             list.push(value.clone());
         }
         native.features = normalize_features(&native.features);
+        // One leaked string per command (NativeOptions keeps `&'static str`).
+        native.platform_suffix = self
+            .platform_suffix
+            .as_ref()
+            .map(|suffix| &*Box::leak(suffix.clone().into_boxed_str()));
         // dedupeKeepingLast (PlatformOptions.java:164-185).
         let mut extra_toolchains: Vec<String> = Vec::new();
         for pattern in self.extra_toolchains.iter().rev() {

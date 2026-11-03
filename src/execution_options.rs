@@ -61,6 +61,110 @@ pub struct ExecutionOptions {
     pub local_resources: Vec<(String, f64)>,
     /// `--toolchain_resolution_debug` as given (default `-.*`).
     pub toolchain_resolution_debug: Option<String>,
+    /// `--ui_event_filters` values in order (filtered, unfiltered kinds).
+    pub ui_event_filters: Vec<(Vec<&'static str>, Vec<&'static str>)>,
+}
+
+/// EventKind (events/EventKind.java) in declaration order.
+const EVENT_KINDS: [&str; 16] = [
+    "FATAL",
+    "ERROR",
+    "WARNING",
+    "INFO",
+    "PROGRESS",
+    "DEBUG",
+    "START",
+    "FINISH",
+    "SUBCOMMAND",
+    "STDOUT",
+    "STDERR",
+    "PASS",
+    "FAIL",
+    "TIMEOUT",
+    "CANCELLED",
+    "DEPCHECKER",
+];
+
+/// UiOptions.EventFiltersConverter (runtime/UiOptions.java:52-110): a
+/// comma-separated list of event kinds, `-KIND` filters one out, `+KIND`
+/// shows it again, a bare `KIND` starts from everything filtered; the
+/// empty value filters every kind.
+pub fn parse_event_filters(input: &str) -> Result<(Vec<&'static str>, Vec<&'static str>), String> {
+    if input.is_empty() {
+        return Ok((EVENT_KINDS.to_vec(), Vec::new()));
+    }
+    let mut filtered: Vec<&'static str> = Vec::new();
+    let mut unfiltered: Vec<&'static str> = Vec::new();
+    for filter in input.split(',') {
+        if !filter.starts_with(['+', '-']) {
+            filtered = EVENT_KINDS.to_vec();
+            unfiltered.clear();
+        }
+        if filter.is_empty() {
+            continue;
+        }
+        let name = filter.strip_prefix(['+', '-']).unwrap_or(filter);
+        let kind = EVENT_KINDS
+            .iter()
+            .find(|kind| kind.eq_ignore_ascii_case(name))
+            .ok_or_else(|| {
+                format!(
+                    "Not a valid event kind: '{name}' (should be {})",
+                    EVENT_KINDS
+                        .iter()
+                        .map(|kind| kind.to_ascii_lowercase())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
+        if filter.starts_with('-') {
+            if !filtered.contains(kind) {
+                filtered.push(kind);
+            }
+            unfiltered.retain(|seen| seen != kind);
+        } else {
+            if !unfiltered.contains(kind) {
+                unfiltered.push(kind);
+            }
+            filtered.retain(|seen| seen != kind);
+        }
+    }
+    Ok((filtered, unfiltered))
+}
+
+/// UiOptions.getFilteredEventKinds over every `--ui_event_filters` value:
+/// the kinds the console drops, or an explicit error for kinds the native
+/// console cannot drop (its errors, test results, action output and
+/// progress are no filterable events).
+pub fn filtered_event_kinds(
+    filters: &[(Vec<&'static str>, Vec<&'static str>)],
+) -> Result<Vec<&'static str>, String> {
+    let mut kinds: Vec<&'static str> = Vec::new();
+    for (filtered, unfiltered) in filters {
+        for kind in filtered {
+            if !kinds.contains(kind) {
+                kinds.push(kind);
+            }
+        }
+        kinds.retain(|kind| !unfiltered.contains(kind));
+    }
+    // START/FINISH are never displayed by the default UI; INFO, WARNING
+    // and DEBUG are the native notes' kinds (crate::ui::set_hidden_kinds).
+    let unsupported: Vec<&str> = kinds
+        .iter()
+        .copied()
+        .filter(|kind| !matches!(*kind, "INFO" | "WARNING" | "DEBUG" | "START" | "FINISH"))
+        .collect();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "unsupported option --ui_event_filters: filtering {} events is not modelled by the native console (only INFO, WARNING, DEBUG, START and FINISH, docs/RC_OPTIONS.md); options are never silently ignored",
+            unsupported.join(", ")
+        ));
+    }
+    Ok(kinds
+        .into_iter()
+        .filter(|kind| !matches!(*kind, "START" | "FINISH"))
+        .collect())
 }
 
 impl Default for ExecutionOptions {
@@ -75,6 +179,7 @@ impl Default for ExecutionOptions {
             modify_execution_info_additive: true,
             local_resources: Vec::new(),
             toolchain_resolution_debug: None,
+            ui_event_filters: Vec::new(),
         }
     }
 }
@@ -227,6 +332,15 @@ impl ExecutionOptions {
             && let Some(result) = self.output.parse(arg, next)
         {
             return Some(result);
+        }
+        if let Some(parsed) = value_option(arg, next, "ui_event_filters") {
+            return Some(parsed.and_then(|(form, value, used)| {
+                self.ui_event_filters.push(
+                    parse_event_filters(value)
+                        .map_err(|error| format!("While parsing option {form}: {error}"))?,
+                );
+                Ok(used)
+            }));
         }
         if !build_command {
             return None;
@@ -534,6 +648,29 @@ mod tests {
                 .parse(true, "--experimental_convenience_symlinks=x", None)
                 .unwrap()
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn event_filters_follow_the_converter() {
+        let filters = |values: &[&str]| {
+            filtered_event_kinds(
+                &values
+                    .iter()
+                    .map(|value| parse_event_filters(value).unwrap())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(filters(&["-info,-debug"]), Ok(vec!["INFO", "DEBUG"]));
+        assert_eq!(filters(&["-info", "+info"]), Ok(vec![]));
+        assert_eq!(filters(&["-WARNING,+warning,-start"]), Ok(vec![]));
+        // A bare kind filters every other kind, errors included.
+        assert!(filters(&["info"]).unwrap_err().contains("FATAL, ERROR"));
+        assert!(filters(&[""]).is_err());
+        assert!(
+            parse_event_filters("-nope")
+                .unwrap_err()
+                .starts_with("Not a valid event kind: 'nope'")
         );
     }
 

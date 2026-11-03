@@ -9761,6 +9761,7 @@ impl Engine {
             features,
             disabled_default_features: global.off.clone(),
             javacopts: native.javacopts.clone(),
+            jvmopts: native.effective_jvmopts(),
             build_file_path,
             apple_sdk_versions: native.apple_sdk_versions.clone(),
             // Replaced by the analyzed target's own Context::action_env

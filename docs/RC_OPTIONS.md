@@ -37,6 +37,54 @@ Paths are relative to `src/main/java/com/google/devtools/build/lib/`.
 | `--repository_cache`, `--repo_contents_cache`, `--experimental_repository_cache_hardlinks`, `--experimental_repository_downloader_retries`, `--disk_cache` | `RepositoryOptions`, `RemoteOptions` | Modelled with genuine's on-disk layouts, shared with genuine Bazel ([REPOSITORY_CACHE.md](REPOSITORY_CACHE.md)). |
 | `--java_runtime_version` | `JavaOptions` (:373) | main models it in N28b (8301936), which this branch's base predates. Here it stays an explicit unsupported option, and integration takes main's model. |
 
+### Configuration flags, execution and output options (option-parity batch)
+
+Pinned source for this section: `/tmp/opencode/bazel-9.3.1-reference` (9.3.1).
+Implementation: `src/configuration.rs` (flag lists), `src/execution_options.rs`,
+`src/output_filter.rs`, `src/option_defaults.rs`, `src/toolchains.rs` (debug
+messages), `src/action.rs` (`--check_up_to_date`), `src/main.rs`. Tests:
+`tests/config_flag_options.rs`, `tests/cc_compile.rs`
+(`cc_flag_options_reach_the_compile_command_lines`), `tests/execution_options.rs`;
+genuine receipts beside their fixtures (`capture*.py`).
+
+| Option | Bazel 9.3.1 | Native |
+| --- | --- | --- |
+| `--features`, `--host_features` | CoreOptions (:831-856), normalized by `getNormalizedFeatures`; `ctx.features`/`ctx.disabled_features` merge them under the package's and rule's (RuleContext.computeFeatures); exec: `--features` = `--host_features` | Modelled (docs/CONFIGURATION.md "On the command line"); rules_cc's feature configuration and rules_go read `ctx.features`. rules_go 0.63 turns `--features=race` into a `WARNING: --features=race is no longer supported` DEBUG line and **no** race mode, natively exactly as genuine (verified on a scratch go_test: same action command lines); race mode is `--@io_bazel_rules_go//go/config:race`. |
+| `--copt`, `--cxxopt`, `--conlyopt`, `--linkopt`, `--per_file_copt` and `--host_*` | CppOptions; read by rules_cc's Starlark (`ctx.fragments.cpp`, `cc_internal.per_file_copts`) | Modelled; the CppCompile command lines equal genuine's (receipt `tests/fixtures/cc_compile/flag_options_receipt.json`). `query`: `Unrecognized option`. |
+| `--dynamic_mode` | CppOptions (:205-216), `ctx.fragments.cpp.dynamic_mode()` | A value option (off/default/fully; not propagated to exec). |
+| `--javacopt`, `--host_javacopt` | JavaOptions (:50-69); `default_javac_flags[_depset]` (JavaConfiguration :107-172) | Modelled, tokenized/detokenized like JavaHelper (receipt `tests/fixtures/config_flag_options`). |
+| `--output_filter`, `--auto_output_filter` | Reporter OutputFilter on successful actions' output (SkyframeActionExecutor :1305-1315; OutputFilteringModule, AutoOutputFilter) | Modelled on the native action-output notes; failed actions always report. |
+| `--experimental_ui_max_stdouterr_bytes` | UiEventHandler.getContentIfSmallEnough | Modelled: the oversized stream is saved under `<output base>/execroot/_main/bazel-out/_tmp/actions` and replaced by genuine's `… exceeds maximum size …; skipping` line. |
+| `--toolchain_resolution_debug` | SingleToolchainResolutionDebugPrinter, ToolchainResolutionDebugPrinter | The main messages verbatim (`Performing resolution of …`, `Rejected toolchain …`, `Compatible/Incompatible execution platform …`, `Recap …`/`No … toolchain found …`, `Removed execution platform …`, `Target platform …: Selected execution platform …`). Differences: each identical message prints once (genuine repeats some on Skyframe restarts), and `target_settings` rejections (RegisteredToolchainsValue's `rejectedToolchains`) are not listed. |
+| `--check_up_to_date` | CheckUpToDateFilter; `action 'X' is not up-to-date` (SkyframeActionExecutor :646-656) | Modelled at the action-cache miss; the progress text is native's (`Executing genrule L`, `BazelWorkspaceStatusAction FILE`, else `MNEMONIC OUTPUT`) and the error carries the native `action 'ID': ` prefix. Tests still run, as in genuine. |
+| `--modify_execution_info`, `--[no]incompatible_modify_execution_info_additive` | ExecutionInfoModifier on every spawn's execution info by mnemonic | Applied to every planned spawn's execution requirements (and rule-tag requirements for `-key`) when the plan is final: keyed, and the strategy/remote policies see it. `query` accepts and ignores them (CoreOptions). aquery/cquery show the unmodified requirements. |
+| `--local_resources` | ResourceManager over DEFAULT_RESOURCE_SET (1 CPU, 250 MB) | `cpu`/`memory` cap the local action concurrency (`min(jobs, cpu, memory/250)`, at least 1; not with a remote executor). Other resource names are accepted; actions' `resources:NAME:N` tags are not modelled. |
+| `--jobs=auto`, `--jobs=HOST_CPUS*F` | JobsConverter | `auto` is the default (native bound); keyword forms are computed. |
+| `--progress_report_interval` | non-curses progress reports | Validated (0-3600), no effect: the native console prints no periodic reports. |
+| `--[no]action_cache_store_output_metadata` (old `experimental_…`) | lets the action cache serve remote-only outputs | Accepted (no result effect). |
+| `--symlink_prefix`, `--experimental_convenience_symlinks` | convenience symlinks | bazel-rs creates none (genuine's `--symlink_prefix=/`): `/`, `ignore` and `clean` (removes `PREFIX{bin,testlogs,out,genfiles,<workspace>}` symlinks) are accepted; any combination that would create symlinks fails explicitly. |
+| `version --[no]gnu_format` | VersionCommand | `bazel 9.3.1+bazel-rs.<version>` (the version of `info release`). |
+
+#### Options at their default
+
+`crate::option_defaults`: an option this profile does not otherwise model is
+accepted when it is spelled at its genuine 9.3.1 default — `help <command>
+--long`'s `default: "…"` (src/help_topics.rs) or, for undocumented options,
+the source's literal `defaultValue` (src/option_source_defaults.rs,
+scripts/extract_option_defaults.py) — and fails explicitly with the default
+named otherwise. Genuine treats an option at its default exactly like an
+absent one. Not covered: repeatable options, computed (`see description`) and
+`null` defaults, expansion/`Void` options, options whose presence warns or
+implies others (`deprecationWarning`, `implicitRequirements`), and the
+client-supplied ones (`--isatty`, `--client_env`, …).
+
+#### Sweep
+
+`scripts/option_sweep.py --bazel-rs BIN --scratch DIR` probes every genuine
+option of `build`, `test`, `run`, `query` and `cquery` (src/option_metadata.rs)
+with its default (booleans both ways) and lists what bazel-rs still rejects
+as not modelled; see "Remaining rejected options" below.
+
 ### Download proxies
 
 * The environment is the client environment with `--repo_env` applied.

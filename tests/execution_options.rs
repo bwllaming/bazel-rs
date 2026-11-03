@@ -275,3 +275,25 @@ fn version_gnu_format() {
     let bad = workspace.command("version", &["--gnu_format=maybe"]);
     assert_eq!(bad.status.code(), Some(2));
 }
+
+#[test]
+fn ui_event_filters_drop_note_kinds() {
+    let workspace = Workspace::new();
+    let shown = workspace.build(&["--nobuild", "//:g"]);
+    assert!(stderr(&shown).contains("INFO: Analyzed target //:g"));
+    let hidden = workspace.build(&["--ui_event_filters=-info", "--nobuild", "//:g"]);
+    assert!(hidden.status.success(), "{}", stderr(&hidden));
+    assert!(!stderr(&hidden).contains("INFO: "), "{}", stderr(&hidden));
+    // `+info` after `-info` shows them again.
+    let again = workspace.build(&[
+        "--ui_event_filters=-info",
+        "--ui_event_filters=+info",
+        "--nobuild",
+        "//:g",
+    ]);
+    assert!(stderr(&again).contains("INFO: Analyzed target //:g"));
+    // Errors are no filterable native notes: explicit.
+    let errors = workspace.build(&["--ui_event_filters=-error", "--nobuild", "//:g"]);
+    assert!(!errors.status.success());
+    assert!(stderr(&errors).contains("filtering ERROR events is not modelled"));
+}

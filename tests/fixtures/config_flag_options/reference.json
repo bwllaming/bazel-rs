@@ -5,21 +5,23 @@
    "exit": 0,
    "flags": [],
    "outputs": {
-    "k8-fastbuild-ST-ab5cfe020d30/bin/moved.txt": "features=[\"pkg_feature\", \"zz_transitioned\"]\ndisabled_features=[\"pkg_off\", \"yy_off\"]\ncopts=[]\ncxxopts=[]\nconlyopts=[]\nlinkopts=[]\ndynamic_mode=\"DEFAULT\"\ndefault_javac_flags=[\"-Xep:Foo:OFF\"]\ndefault_javac_flags_depset=[\"-Xep:Foo:OFF\"]\n",
-    "k8-fastbuild/bin/plain.txt": "features=[\"pkg_feature\"]\ndisabled_features=[\"pkg_off\"]\ncopts=[]\ncxxopts=[]\nconlyopts=[]\nlinkopts=[]\ndynamic_mode=\"DEFAULT\"\ndefault_javac_flags=[]\ndefault_javac_flags_depset=[]\n",
-    "k8-fastbuild/bin/top.txt": "features=[\"pkg_feature\", \"rule_feature\"]\ndisabled_features=[\"pkg_off\", \"race\"]\ncopts=[]\ncxxopts=[]\nconlyopts=[]\nlinkopts=[]\ndynamic_mode=\"DEFAULT\"\ndefault_javac_flags=[]\ndefault_javac_flags_depset=[]\nsrc_dirname=\".\"\n--- exec tool\nfeatures=[\"pkg_feature\"]\ndisabled_features=[\"pkg_off\"]\ncopts=[\"-g0\"]\ncxxopts=[\"-g0\"]\nconlyopts=[]\nlinkopts=[]\ndynamic_mode=\"DEFAULT\"\ndefault_javac_flags=[]\ndefault_javac_flags_depset=[]\n"
+    "k8-fastbuild-ST-ab5cfe020d30/bin/moved.txt": "features=[\"pkg_feature\", \"zz_transitioned\"]\ndisabled_features=[\"pkg_off\", \"yy_off\"]\ncopts=[]\ncxxopts=[]\nconlyopts=[]\nlinkopts=[]\ndynamic_mode=\"DEFAULT\"\ndefault_javac_flags=[\"-Xep:Foo:OFF\"]\ndefault_javac_flags_depset=[\"-Xep:Foo:OFF\"]\ndefault_jvm_opts=[]\n",
+    "k8-fastbuild/bin/plain.txt": "features=[\"pkg_feature\"]\ndisabled_features=[\"pkg_off\"]\ncopts=[]\ncxxopts=[]\nconlyopts=[]\nlinkopts=[]\ndynamic_mode=\"DEFAULT\"\ndefault_javac_flags=[]\ndefault_javac_flags_depset=[]\ndefault_jvm_opts=[]\n",
+    "k8-fastbuild/bin/top.txt": "features=[\"pkg_feature\", \"rule_feature\"]\ndisabled_features=[\"pkg_off\", \"race\"]\ncopts=[]\ncxxopts=[]\nconlyopts=[]\nlinkopts=[]\ndynamic_mode=\"DEFAULT\"\ndefault_javac_flags=[]\ndefault_javac_flags_depset=[]\ndefault_jvm_opts=[]\nsrc_dirname=\".\"\n--- exec tool\nfeatures=[\"pkg_feature\"]\ndisabled_features=[\"pkg_off\"]\ncopts=[\"-g0\"]\ncxxopts=[\"-g0\"]\nconlyopts=[]\nlinkopts=[]\ndynamic_mode=\"DEFAULT\"\ndefault_javac_flags=[]\ndefault_javac_flags_depset=[]\ndefault_jvm_opts=[\"-XX:ErrorFile=/dev/stderr\"]\n"
    }
   },
   "dynamic_off": {
    "exit": 0,
    "flags": [
     "--dynamic_mode=off",
-    "--features=-pkg_feature"
+    "--features=-pkg_feature",
+    "--platform_suffix=sfx",
+    "--jvmopt=-Xmx2g"
    ],
    "outputs": {
-    "k8-fastbuild-ST-d6ff801ac489/bin/moved.txt": "features=[\"zz_transitioned\"]\ndisabled_features=[\"pkg_feature\", \"pkg_off\", \"yy_off\"]\ncopts=[]\ncxxopts=[]\nconlyopts=[]\nlinkopts=[]\ndynamic_mode=\"OFF\"\ndefault_javac_flags=[\"-Xep:Foo:OFF\"]\ndefault_javac_flags_depset=[\"-Xep:Foo:OFF\"]\n",
-    "k8-fastbuild/bin/plain.txt": "features=[]\ndisabled_features=[\"pkg_feature\", \"pkg_off\"]\ncopts=[]\ncxxopts=[]\nconlyopts=[]\nlinkopts=[]\ndynamic_mode=\"OFF\"\ndefault_javac_flags=[]\ndefault_javac_flags_depset=[]\n",
-    "k8-fastbuild/bin/top.txt": "features=[\"rule_feature\"]\ndisabled_features=[\"pkg_feature\", \"pkg_off\", \"race\"]\ncopts=[]\ncxxopts=[]\nconlyopts=[]\nlinkopts=[]\ndynamic_mode=\"OFF\"\ndefault_javac_flags=[]\ndefault_javac_flags_depset=[]\nsrc_dirname=\".\"\n--- exec tool\nfeatures=[\"pkg_feature\"]\ndisabled_features=[\"pkg_off\"]\ncopts=[\"-g0\"]\ncxxopts=[\"-g0\"]\nconlyopts=[]\nlinkopts=[]\ndynamic_mode=\"DEFAULT\"\ndefault_javac_flags=[]\ndefault_javac_flags_depset=[]\n"
+    "k8-fastbuild-sfx-ST-d6ff801ac489/bin/moved.txt": "features=[\"zz_transitioned\"]\ndisabled_features=[\"pkg_feature\", \"pkg_off\", \"yy_off\"]\ncopts=[]\ncxxopts=[]\nconlyopts=[]\nlinkopts=[]\ndynamic_mode=\"OFF\"\ndefault_javac_flags=[\"-Xep:Foo:OFF\"]\ndefault_javac_flags_depset=[\"-Xep:Foo:OFF\"]\ndefault_jvm_opts=[\"-Xmx2g\"]\n",
+    "k8-fastbuild-sfx/bin/plain.txt": "features=[]\ndisabled_features=[\"pkg_feature\", \"pkg_off\"]\ncopts=[]\ncxxopts=[]\nconlyopts=[]\nlinkopts=[]\ndynamic_mode=\"OFF\"\ndefault_javac_flags=[]\ndefault_javac_flags_depset=[]\ndefault_jvm_opts=[\"-Xmx2g\"]\n",
+    "k8-fastbuild-sfx/bin/top.txt": "features=[\"rule_feature\"]\ndisabled_features=[\"pkg_feature\", \"pkg_off\", \"race\"]\ncopts=[]\ncxxopts=[]\nconlyopts=[]\nlinkopts=[]\ndynamic_mode=\"OFF\"\ndefault_javac_flags=[]\ndefault_javac_flags_depset=[]\ndefault_jvm_opts=[\"-Xmx2g\"]\nsrc_dirname=\".\"\n--- exec tool\nfeatures=[\"pkg_feature\"]\ndisabled_features=[\"pkg_off\"]\ncopts=[\"-g0\"]\ncxxopts=[\"-g0\"]\nconlyopts=[]\nlinkopts=[]\ndynamic_mode=\"DEFAULT\"\ndefault_javac_flags=[]\ndefault_javac_flags_depset=[]\ndefault_jvm_opts=[\"-XX:ErrorFile=/dev/stderr\"]\n"
    }
   },
   "flags": {
@@ -46,12 +48,15 @@
     "--javacopt=it's",
     "--javacopt=-Dx=\"a b\"",
     "--host_javacopt=-DHJ",
-    "--dynamic_mode=FULLY"
+    "--dynamic_mode=FULLY",
+    "--jvmopt=-Xmx1g",
+    "--jvmopt=-Dy=1",
+    "--host_jvmopt=-Xss4m"
    ],
    "outputs": {
-    "k8-fastbuild-ST-5ed88d2c6f7e/bin/moved.txt": "features=[\"bar\", \"pkg_feature\", \"race\", \"zz_transitioned\"]\ndisabled_features=[\"foo\", \"pkg_off\", \"yy_off\"]\ncopts=[\"-DA\", \"-DA2\"]\ncxxopts=[\"-DB\"]\nconlyopts=[\"-DC\"]\nlinkopts=[\"-lm\"]\ndynamic_mode=\"FULLY\"\ndefault_javac_flags=[\"-Xlint:all\", \"-Werror\", \"-g\", \"it's\", \"-Dx=a b\", \"-Xep:Foo:OFF\"]\ndefault_javac_flags_depset=[\"-Xlint:all -Werror -g 'it'\\\\''s' '-Dx=a b' -Xep:Foo:OFF\"]\n",
-    "k8-fastbuild/bin/plain.txt": "features=[\"bar\", \"pkg_feature\", \"race\"]\ndisabled_features=[\"foo\", \"pkg_off\"]\ncopts=[\"-DA\", \"-DA2\"]\ncxxopts=[\"-DB\"]\nconlyopts=[\"-DC\"]\nlinkopts=[\"-lm\"]\ndynamic_mode=\"FULLY\"\ndefault_javac_flags=[\"-Xlint:all\", \"-Werror\", \"-g\", \"it's\", \"-Dx=a b\"]\ndefault_javac_flags_depset=[\"-Xlint:all -Werror -g 'it'\\\\''s' '-Dx=a b'\"]\n",
-    "k8-fastbuild/bin/top.txt": "features=[\"bar\", \"pkg_feature\", \"rule_feature\"]\ndisabled_features=[\"foo\", \"pkg_off\", \"race\"]\ncopts=[\"-DA\", \"-DA2\"]\ncxxopts=[\"-DB\"]\nconlyopts=[\"-DC\"]\nlinkopts=[\"-lm\"]\ndynamic_mode=\"FULLY\"\ndefault_javac_flags=[\"-Xlint:all\", \"-Werror\", \"-g\", \"it's\", \"-Dx=a b\"]\ndefault_javac_flags_depset=[\"-Xlint:all -Werror -g 'it'\\\\''s' '-Dx=a b'\"]\nsrc_dirname=\".\"\n--- exec tool\nfeatures=[\"hfeat\", \"pkg_feature\"]\ndisabled_features=[\"hoff\", \"pkg_off\"]\ncopts=[\"-DH\", \"-g0\"]\ncxxopts=[\"-DHX\", \"-g0\"]\nconlyopts=[\"-DHC\"]\nlinkopts=[\"-lhl\"]\ndynamic_mode=\"DEFAULT\"\ndefault_javac_flags=[\"-DHJ\"]\ndefault_javac_flags_depset=[\"-DHJ\"]\n"
+    "k8-fastbuild-ST-5ed88d2c6f7e/bin/moved.txt": "features=[\"bar\", \"pkg_feature\", \"race\", \"zz_transitioned\"]\ndisabled_features=[\"foo\", \"pkg_off\", \"yy_off\"]\ncopts=[\"-DA\", \"-DA2\"]\ncxxopts=[\"-DB\"]\nconlyopts=[\"-DC\"]\nlinkopts=[\"-lm\"]\ndynamic_mode=\"FULLY\"\ndefault_javac_flags=[\"-Xlint:all\", \"-Werror\", \"-g\", \"it's\", \"-Dx=a b\", \"-Xep:Foo:OFF\"]\ndefault_javac_flags_depset=[\"-Xlint:all -Werror -g 'it'\\\\''s' '-Dx=a b' -Xep:Foo:OFF\"]\ndefault_jvm_opts=[\"-Xmx1g\", \"-Dy=1\"]\n",
+    "k8-fastbuild/bin/plain.txt": "features=[\"bar\", \"pkg_feature\", \"race\"]\ndisabled_features=[\"foo\", \"pkg_off\"]\ncopts=[\"-DA\", \"-DA2\"]\ncxxopts=[\"-DB\"]\nconlyopts=[\"-DC\"]\nlinkopts=[\"-lm\"]\ndynamic_mode=\"FULLY\"\ndefault_javac_flags=[\"-Xlint:all\", \"-Werror\", \"-g\", \"it's\", \"-Dx=a b\"]\ndefault_javac_flags_depset=[\"-Xlint:all -Werror -g 'it'\\\\''s' '-Dx=a b'\"]\ndefault_jvm_opts=[\"-Xmx1g\", \"-Dy=1\"]\n",
+    "k8-fastbuild/bin/top.txt": "features=[\"bar\", \"pkg_feature\", \"rule_feature\"]\ndisabled_features=[\"foo\", \"pkg_off\", \"race\"]\ncopts=[\"-DA\", \"-DA2\"]\ncxxopts=[\"-DB\"]\nconlyopts=[\"-DC\"]\nlinkopts=[\"-lm\"]\ndynamic_mode=\"FULLY\"\ndefault_javac_flags=[\"-Xlint:all\", \"-Werror\", \"-g\", \"it's\", \"-Dx=a b\"]\ndefault_javac_flags_depset=[\"-Xlint:all -Werror -g 'it'\\\\''s' '-Dx=a b'\"]\ndefault_jvm_opts=[\"-Xmx1g\", \"-Dy=1\"]\nsrc_dirname=\".\"\n--- exec tool\nfeatures=[\"hfeat\", \"pkg_feature\"]\ndisabled_features=[\"hoff\", \"pkg_off\"]\ncopts=[\"-DH\", \"-g0\"]\ncxxopts=[\"-DHX\", \"-g0\"]\nconlyopts=[\"-DHC\"]\nlinkopts=[\"-lhl\"]\ndynamic_mode=\"DEFAULT\"\ndefault_javac_flags=[\"-DHJ\"]\ndefault_javac_flags_depset=[\"-DHJ\"]\ndefault_jvm_opts=[\"-Xss4m\"]\n"
    }
   }
  },
@@ -73,6 +78,16 @@
    "exit": 2,
    "flags": [
     "--per_file_copt=[@-O0"
+   ]
+  },
+  "bad_platform_suffix": {
+   "errors": [
+    "ERROR: Platform suffix 'a/b' is invalid as part of a path: must not contain /",
+    "ERROR: Build did NOT complete successfully"
+   ],
+   "exit": 2,
+   "flags": [
+    "--platform_suffix=a/b"
    ]
   },
   "no_prefix_copt": {

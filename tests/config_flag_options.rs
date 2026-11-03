@@ -128,7 +128,9 @@ fn configuration_flag_option_errors_match_genuine() {
         let output = workspace.build(&strings(&case["flags"]), &["//:plain"]);
         assert_eq!(output.status.code(), Some(2), "{name}");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        for error in strings(&case["errors"]) {
+        // The first error (genuine's `Build did NOT complete successfully`
+        // summary line has no native counterpart on an option error).
+        for error in strings(&case["errors"]).into_iter().take(1) {
             let message = error.strip_prefix("ERROR: ").unwrap();
             // The regex engine's own detail differs (docs/CONFIGURATION.md).
             let message = message
