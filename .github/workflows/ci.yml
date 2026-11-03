@@ -80,3 +80,50 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -p test_release.py
           python3 -m unittest discover -s tests -p test_ci.py
+          python3 -m unittest discover -s tests -p test_self_build.py
+
+  self-build:
+    name: Bazel self-build with the latest bazel-rs release
+    # Dogfood (docs/SELF_BUILD.md): the latest published bazel-rs builds this
+    # commit's //:bazel-rs with rules_rust, smoke-tests it and runs
+    # `test //...`. Cargo stays the primary build; the comparison with genuine
+    # Bazel stays local (scripts/self_build.py compare).
+    runs-on: self-hosted
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: GitHub CLI
+        # Self-hosted runners may not have gh: install the pinned release.
+        run: |
+          if ! command -v gh >/dev/null; then
+            version=2.103.3
+            sha256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
+            archive="$RUNNER_TEMP/gh.tar.gz"
+            curl -fsSL -o "$archive" "https://github.com/cli/cli/releases/download/v$version/gh_${version}_linux_amd64.tar.gz"
+            echo "$sha256  $archive" | sha256sum -c -
+            tar -xzf "$archive" -C "$RUNNER_TEMP"
+            echo "$RUNNER_TEMP/gh_${version}_linux_amd64/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Latest bazel-rs release
+        # The newest release of this repository (pre-releases included), the
+        # static x86_64 archive, checked against its .sha256.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')
+          stem="bazel-rs-${tag#v}-x86_64-unknown-linux-musl"
+          dir="$RUNNER_TEMP/bazel-rs-release"
+          rm -rf "$dir" && mkdir -p "$dir"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$stem.tar.gz*" --dir "$dir"
+          (cd "$dir" && sha256sum -c "$stem.tar.gz.sha256" && tar xzf "$stem.tar.gz")
+          echo "$dir/$stem" >> "$GITHUB_PATH"
+          "$dir/$stem/bazel-rs" --version
+
+      - name: Build, smoke-test and test with bazel-rs
+        # bazel-rs's cache stays on the runner between runs.
+        env:
+          BAZEL_RS_MAX_MEMORY_MB: "8192"
+          BAZEL_RS_PROGRESS: "0"
+        run: python3 scripts/self_build.py check --bazel bazel-rs --state-dir "$HOME/.cache/bazel-rs/self-build"

@@ -351,6 +351,11 @@ Done since the last increment recorded under "History", one line each:
 - [x] CI on GitHub (`.github/workflows/ci.yml`, self-hosted): fmt, clippy, the
       library tests and the hermetic integration subset; the full gate stays
       local (scripts/check.sh).
+- [x] Self-build (docs/SELF_BUILD.md): MODULE.bazel/BUILD.bazel build
+      bazel-rs with rules_rust 0.75.0 and crate_universe over Cargo.lock. The
+      CI job `self-build` runs `scripts/self_build.py check` with the latest
+      release. Genuine and bazel-rs hit each other's remote-cache entries for
+      all 759 actions (`compare`).
 - [ ] NOTICE names "The bazel-rs Authors" as copyright holder (placeholder).
 
 ## History

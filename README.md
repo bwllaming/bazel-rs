@@ -30,6 +30,13 @@ supported execution host.
 After a release build, direnv also exposes `bazel-rs` on PATH. It never installs
 a `bazel` alias or replaces the main repo's launcher.
 
+Cargo is the primary build. The repository is also a Bazel 9.3.1 workspace
+(`MODULE.bazel`, `BUILD.bazel`, rules_rust, with crates from `Cargo.lock`
+through crate_universe), so bazel-rs can build and test itself:
+`python3 scripts/self_build.py check`. CI runs this with the latest release.
+Genuine 9.3.1 and bazel-rs hit each other's remote-cache entries for all 759
+actions (docs/SELF_BUILD.md).
+
 ### Global allocator (jemalloc)
 
 The `bazel-rs` binary uses jemalloc as its Rust global allocator: cargo feature

@@ -1,0 +1,2 @@
+# Building bazel-rs with Bazel (docs/SELF_BUILD.md); Cargo stays the primary build.
+test --test_output=errors

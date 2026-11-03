@@ -1,0 +1,159 @@
+"""bazel-rs built by Bazel with rules_rust: a dogfood check (docs/SELF_BUILD.md).
+
+Cargo stays the primary build. Cargo.toml stays the source of truth: the
+third-party crates come from crate_universe (`all_crate_deps`), the lints from
+its `[lints]` table (`:lints`), CARGO_PKG_VERSION from its `version`
+(`:cargo_pkg_version`).
+"""
+
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load("//:self_build.bzl", "bazel_rs_integration_test", "copy_test_support")
+
+exports_files([
+    "Cargo.lock",
+    "Cargo.toml",
+])
+
+extract_cargo_lints(
+    name = "lints",
+    manifest = "Cargo.toml",
+)
+
+genrule(
+    name = "cargo_pkg_version",
+    srcs = ["Cargo.toml"],
+    outs = ["cargo_pkg_version.env"],
+    cmd = "sed -n 's/^version = \"\\(.*\\)\"$$/CARGO_PKG_VERSION=\\1/p' $< | head -n 1 > $@",
+)
+
+# What the library's cfg(test) code embeds (include_bytes!/include_str!/
+# include!) or reads at run time from CARGO_MANIFEST_DIR.
+UNIT_TEST_DATA = [
+    "Cargo.lock",
+    "Cargo.toml",
+    "tests/fixtures/build_settings/bazel-skylib-1.8.2.tar.gz",
+    "tests/fixtures/builtin_modules/registry/modules/bazel_skylib/1.8.2/MODULE.bazel",
+    "tests/fixtures/builtin_modules/registry/modules/bazel_skylib/1.8.2/source.json",
+    "tests/fixtures/json/float_reference.json",
+    "tests/fixtures/label_passthrough/native_publication_observation.json",
+    "tests/fixtures/py_regex_match/reference_receipt.json",
+    "tests/fixtures/py_singleton_depset_edges/reference_receipt.json",
+] + glob(["tests/support/*.rs"])
+
+rust_library(
+    name = "bazel_rs",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    aliases = aliases(),
+    # include_bytes!/include_str! of the embedded @bazel_tools and builtins.
+    compile_data = glob(["resources/**"]),
+    crate_name = "bazel_rs",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    lint_config = ":lints",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env_files = [":cargo_pkg_version"],
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "bazel-rs",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    compile_data = ["docs/capabilities.json"],
+    crate_features = [
+        "default",
+        "jemalloc",
+    ],
+    edition = "2024",
+    lint_config = ":lints",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env_files = [":cargo_pkg_version"],
+    visibility = ["//visibility:public"],
+    deps = [":bazel_rs"] + all_crate_deps(normal = True),
+)
+
+# The library's unit tests (`cargo test --lib`). CARGO_MANIFEST_DIR is "."
+# (the runfiles root, the test's working directory), where `data` puts files.
+rust_test(
+    name = "unit_tests",
+    size = "large",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    # Both need this crate's manifest as a settled file (an old ctime);
+    # bazel-rs stages a test's runfiles as fresh hard links of its store
+    # blobs (genuine Bazel: symlinks to the source tree).
+    args = [
+        "--skip=action::tests::digest_memo_remembers_settled_states_and_produced_paths",
+        "--skip=action::tests::stale_states_never_reach_the_persistent_table",
+    ],
+    compile_data = UNIT_TEST_DATA,
+    crate = ":bazel_rs",
+    data = UNIT_TEST_DATA,
+    edition = "2024",
+    # .cargo/config.toml [env]: native LABEL<TAB>PATH result lines.
+    env = {"BAZEL_RS_RESULT_LINES": "1"},
+    lint_config = ":lints",
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    rustc_env = {"CARGO_MANIFEST_DIR": "."},
+    rustc_env_files = [":cargo_pkg_version"],
+    deps = all_crate_deps(normal_dev = True),
+)
+
+# A hermetic subset of the integration tests (scripts/ci-integration-tests.txt;
+# tests/test_self_build.py keeps these lists inside it). These need no binary:
+# they link the library or scan the sources.
+[
+    rust_test(
+        name = name,
+        size = "medium",
+        srcs = ["tests/%s.rs" % name],
+        aliases = aliases(
+            normal_dev = True,
+            proc_macro_dev = True,
+        ),
+        compile_data = glob(["tests/support/*.rs"]),
+        crate_root = "tests/%s.rs" % name,
+        data = data,
+        edition = "2024",
+        env = {"BAZEL_RS_RESULT_LINES": "1"},
+        lint_config = ":lints",
+        proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+        rustc_env = {"CARGO_MANIFEST_DIR": "."},
+        rustc_env_files = [":cargo_pkg_version"],
+        deps = [":bazel_rs"] + all_crate_deps(
+            normal = True,
+            normal_dev = True,
+        ),
+    )
+    for name, data in [
+        ("cquery_proto_streaming", []),
+        ("libc_string", []),
+        ("observed_fs_discipline", glob(["src/**/*.rs"])),
+        ("spawn_discipline", ["clippy.toml"] + glob(["src/**/*.rs"])),
+        ("staging_bench", []),
+    ]
+]
+
+# These run the Bazel-built //:bazel-rs on scratch workspaces (self_build.bzl).
+copy_test_support(name = "test_support")
+
+[
+    bazel_rs_integration_test(name = name)
+    for name in [
+        "bazelrc",
+        "cquery",
+        "custom_rules",
+        "definition_bzl_cache",
+        "glob_symlinks",
+        "provider_init",
+        "string_list_dict",
+    ]
+]

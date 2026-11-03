@@ -4,3 +4,6 @@
 bazel-rs-out/
 __pycache__/
 *.pyc
+/bazel-*
+# crate_universe writes these for the [patch] path crates (docs/SELF_BUILD.md).
+/vendor/*/BUILD.bazel
