@@ -67,9 +67,15 @@ mod owned {
 }
 pub(crate) use owned::Args;
 
-/// Append one literal string group to an Args value (Args.add of each string).
+/// Append the arguments of cc_internal.get_link_args's LinkCommandLine to an
+/// Args value. Its key part is AbstractCommandLine.addToFingerprint
+/// (actions/AbstractCommandLine.java:54-65): `addString` of each argument.
 pub(crate) fn add_strings(args: &Args, values: Vec<String>) -> anyhow::Result<()> {
-    args.record(|recipe| recipe.unmodelled("a natively built command line"));
+    args.record(|recipe| {
+        recipe
+            .ops
+            .extend(values.iter().cloned().map(crate::aquery_key::ArgsOp::Text));
+    });
     args.push(Group::Strings(values))
 }
 
@@ -88,6 +94,12 @@ pub(crate) fn set_param_file_info(
     args.param.borrow_mut().flag_format = Some(info.flag_format);
     args.param.borrow_mut().always = info.always;
     Ok(())
+}
+
+/// The ParameterFileType name aquery's key gives the param file of `args`
+/// (cc_internal.get_link_args's GCC_QUOTED, written shell-quoted).
+pub(crate) fn set_key_param_file_type(args: &Args, name: &'static str) {
+    args.record(|recipe| recipe.param_file_type = Some(name));
 }
 
 impl Args {
@@ -367,11 +379,29 @@ impl Args {
     }
 
     fn param_key(&self) -> Option<crate::aquery_key::ParamFileKey> {
+        let named = self
+            .recipe
+            .borrow()
+            .as_ref()
+            .and_then(|recipe| recipe.param_file_type);
         self.param_file_info()
             .map(|info| crate::aquery_key::ParamFileKey {
                 flag_format: info.flag_format,
-                file_type: file_type_name(info.file_type),
+                file_type: named.unwrap_or(file_type_name(info.file_type)),
             })
+    }
+}
+
+/// MapFn.DEFAULT's stringification of a depset element
+/// (CommandLineItem.expandToCommandLine: an Artifact's exec path, a
+/// String, a StarlarkInt's decimal form), `None` for other objects.
+fn default_key_string(value: Value<'_>) -> Option<String> {
+    if let Some(text) = value.unpack_str() {
+        Some(text.to_owned())
+    } else if let Ok(file) = crate::starlark_types::unpack_file(value) {
+        Some(file.path.clone())
+    } else {
+        value.unpack_i32().map(|number| number.to_string())
     }
 }
 
@@ -510,6 +540,18 @@ fn map_one<'v>(
     expander: bool,
     eval: &mut Evaluator<'v, '_, '_>,
 ) -> anyhow::Result<Vec<String>> {
+    map_one_with(item, map_each, expander, false, eval)
+}
+
+/// [`map_one`] with a NoopExpander when `noop` (a directory mapped at
+/// analysis for aquery's key, StarlarkCustomCommandLine.java:1146-1152).
+fn map_one_with<'v>(
+    item: Value<'v>,
+    map_each: Value<'v>,
+    expander: bool,
+    noop: bool,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> anyhow::Result<Vec<String>> {
     if map_each.is_none() {
         return Ok(vec![string_value(item, eval)?]);
     }
@@ -519,10 +561,10 @@ fn map_one<'v>(
     // its DirectoryExpander expands non-directories only.
     let mut arguments = vec![item];
     if expander {
-        arguments.push(
-            eval.heap()
-                .alloc(crate::command_line::DirectoryExpander { listings: None }),
-        );
+        arguments.push(eval.heap().alloc(crate::command_line::DirectoryExpander {
+            listings: None,
+            noop,
+        }));
     }
     // Its `print`s show nothing (crate::debug_print::silenced).
     let mapped = crate::debug_print::silenced(|| {
@@ -550,8 +592,9 @@ fn vector_group<'v>(
     check_mapper(map_each, allow_closure, method, eval)?;
     formatted(shape.format_each.as_deref(), "")?;
     formatted(shape.format_joined.as_deref(), "")?;
-    let is_depset = values.get_type() == "depset";
-    let values = if values.get_type() == "depset" {
+    let depset = values.downcast_ref::<crate::starlark_types::Depset>();
+    let is_depset = depset.is_some();
+    let values = if is_depset {
         let to_list = values
             .get_attr_error("to_list", eval.heap())
             .map_err(|e| anyhow!(e.to_string()))?;
@@ -575,29 +618,51 @@ fn vector_group<'v>(
     let mut deferred = false;
     let mut ops: Option<Vec<crate::aquery_key::ArgsOp>> =
         builder.recipe.borrow().is_some().then(Vec::new);
-    if is_depset {
-        builder
-            .record(|recipe| recipe.unmodelled("a depset value (NestedSet structure fingerprint)"));
-    }
+    // The key strings of each depset element (its to_list order): the
+    // map_each results, or MapFn.DEFAULT's stringification.
+    let mut element_strings: Vec<Vec<String>> = Vec::new();
     for item in values {
         if map_each.is_none()
             && let Some(ops) = ops.as_mut()
         {
-            ops.push(object_op(item, eval));
+            if is_depset {
+                element_strings.push(match default_key_string(item) {
+                    Some(text) => vec![text],
+                    None => {
+                        builder.record(|recipe| {
+                            recipe.unmodelled("a depset of labels or other non-string objects")
+                        });
+                        Vec::new()
+                    }
+                });
+            } else {
+                ops.push(object_op(item, eval));
+            }
         }
         if let Some(file) = File::from_value(item)
             && file.is_directory
         {
             // A tree artifact expands at execution time; one passed as it is
             // to a map_each with a DirectoryExpander is mapped then too.
-            if expand_directories {
+            if expand_directories || expander {
+                if !map_each.is_none()
+                    && let Some(ops) = ops.as_mut()
+                {
+                    // At analysis Bazel maps the directory itself, with a
+                    // NoopExpander (StarlarkCustomCommandLine.java:577-595).
+                    let strings = map_one_with(item, map_each, expander, true, eval)?;
+                    if is_depset {
+                        element_strings.push(strings);
+                    } else {
+                        ops.extend(strings.into_iter().map(crate::aquery_key::ArgsOp::Text));
+                    }
+                }
                 deferred = true;
-                items.push(Item::Directory(file.clone()));
-                continue;
-            }
-            if expander {
-                deferred = true;
-                items.push(Item::Unexpanded(file.clone()));
+                items.push(if expand_directories {
+                    Item::Directory(file.clone())
+                } else {
+                    Item::Unexpanded(file.clone())
+                });
                 continue;
             }
         }
@@ -605,18 +670,63 @@ fn vector_group<'v>(
         if !map_each.is_none()
             && let Some(ops) = ops.as_mut()
         {
-            ops.extend(strings.iter().cloned().map(crate::aquery_key::ArgsOp::Text));
+            if is_depset {
+                element_strings.push(strings.clone());
+            } else {
+                ops.extend(strings.iter().cloned().map(crate::aquery_key::ArgsOp::Text));
+            }
         }
         match items.last_mut() {
             Some(Item::Strings(previous)) => previous.extend(strings),
             _ => items.push(Item::Strings(strings)),
         }
     }
+    if let (Some(depset), Some(ops)) = (depset, ops.as_mut()) {
+        // VectorArg.addToFingerprint over a NestedSet (:541-576): without
+        // map_each the StringificationType first (DEFAULT 0, FILE 1; LABEL
+        // also adds the main repository mapping), then the set's structure.
+        use crate::starlark_types::ItemType;
+        if map_each.is_none() {
+            let mut fp = crate::aquery_key::Fingerprint::<Vec<u8>>::default();
+            match depset.node.element_type {
+                Some(ItemType::File) => {
+                    fp.int(1);
+                }
+                Some(ItemType::Label) => builder.record(|recipe| {
+                    recipe.unmodelled("a depset of labels (main repository mapping)")
+                }),
+                _ => {
+                    fp.int(0);
+                }
+            }
+            ops.push(crate::aquery_key::ArgsOp::Raw(fp.into_inner()));
+        }
+        let flat = depset.flatten();
+        if flat.len() == element_strings.len() {
+            // A struct item's creation location takes no part in its ordering.
+            #[allow(clippy::mutable_key_type)]
+            let index: std::collections::BTreeMap<&crate::starlark_types::Item, usize> = flat
+                .iter()
+                .enumerate()
+                .map(|(position, item)| (*item, position))
+                .collect();
+            let bytes = crate::aquery_key::nested_set(&depset.node, &mut |item, fp| {
+                for text in index
+                    .get(item)
+                    .and_then(|position| element_strings.get(*position))
+                    .into_iter()
+                    .flatten()
+                {
+                    fp.string(text);
+                }
+            });
+            ops.push(crate::aquery_key::ArgsOp::Raw(bytes));
+        } else {
+            builder.record(|recipe| recipe.unmodelled("a depset whose elements did not map"));
+        }
+    }
     if let Some(mut ops) = ops {
         use crate::aquery_key::{self as key, ArgsOp};
-        if deferred && !map_each.is_none() {
-            builder.record(|recipe| recipe.unmodelled("map_each over a directory"));
-        }
         let text = |uuid, value: &Option<String>, ops: &mut Vec<ArgsOp>| {
             if let Some(value) = value {
                 ops.push(ArgsOp::Uuid(uuid));

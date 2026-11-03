@@ -7,8 +7,10 @@ selects, in Bazel 9.3.1's formats
 (query2/aquery/ActionGraph{Text,Summary,Proto}OutputFormatterCallback,
 skyframe/actiongraph/v2, analysis_v2.proto). Sources: `src/aquery.rs`
 (options, filters, formatters), `src/aquery_key.rs` (Bazel action keys),
-`src/engine/aquery.rs` (capture and action descriptions). Genuine captures:
-`tests/fixtures/aquery/kitchen` (`tests/aquery.rs`).
+`src/engine/aquery.rs` (capture and action descriptions), `src/java_gzip.rs`
+(Java's GZIP bytes). Genuine captures: `tests/fixtures/aquery/kitchen` and
+`tests/fixtures/aquery/depsets` (`tests/aquery.rs`),
+`tests/fixtures/cc_compile/genuine_aquery.txt` (`tests/cc_compile.rs`).
 
 ```sh
 bazel-rs aquery //pkg:target
@@ -72,26 +74,68 @@ bazel-rs aquery 'inputs(".*\.go", outputs(".*\.a", deps(//cmd:app)))' --output=s
 
 `ActionKey`/`action_key` is Bazel's `ActionKeyComputer.getKey` (Fingerprint
 over SHA-256, the execution platform's PlatformInfo, exec properties) for:
-genrules and Starlark `run`/`run_shell` spawns (flat strings and `Args`
-built from `add`/`add_all`/`add_joined` over lists, formats, uniquify,
-omit_if_empty, expand_directories, map_each over lists, Labels, param files),
-`ctx.actions.write` of a string up to 256 characters, `ctx.actions.write`
-of an `Args` (ParameterFileWriteAction), `expand_template`, `symlink`
-(SymlinkAction with its internal platform) and unresolved symlinks. Verified
-against genuine on the kitchen fixture (every key) and a rules_cc/rules_python
-fixture (CcStrip, PyCompile, Symlink, ExecutableSymlink, TemplateExpand,
-FileWrite).
+
+* genrules and Starlark `run`/`run_shell` spawns: flat strings and `Args`
+  (`add`/`add_all`/`add_joined` with formats, uniquify, omit_if_empty,
+  expand_directories, map_each, Labels, param files). An `Args` over a
+  **depset** is fingerprinted like ActionKeyContext's
+  NestedSetFingerprintCache: the order's ordinal, then the NestedSet's
+  internal structure — a leaf's strings, or the SHA-256 of the children
+  array, each nested array by its own digest — rebuilt from the native depset
+  DAG with the NestedSet constructor's layout (per-order placement of direct
+  and transitive members, singleton hoisting, identity deduplication, LINK
+  order's reversal; `aquery_key::nested_set`). Without map_each the
+  StringificationType comes first; map_each runs per element (at analysis
+  a directory is mapped as it is, with a NoopExpander). rules_go
+  (GoCompilePkg, GoLink, nogo), rules_python's PythonZipper and rules_cc's
+  link actions use these.
+* `ctx.actions.write` of a string: up to 256 characters a
+  RegularFileWriteAction; longer (in Bazel's internal Latin-1 characters) a
+  CompressedFileWriteAction keyed by the bytes of Java's GZIPOutputStream,
+  produced by `src/java_gzip.rs` — a port of zlib 1.3's deflate at the JDK
+  Deflater's parameters (level 6, windowBits 15, memLevel 8), checked against
+  zlib on pinned samples and a differential vector set
+  (tests/fixtures/aquery/depsets/vectors.py).
+* `ctx.actions.write` of an `Args` (ParameterFileWriteAction),
+  `expand_template`, `symlink` (SymlinkAction on its internal platform),
+  unresolved symlinks.
+* rules_cc: CppCompile (CppCompileAction.computeKey: the in-memory .d bit,
+  the configuration and feature environments, execution info, the digest of
+  the compiler options, the declared include sources, the mandatory and
+  spawn inputs built like CppCompileActionBuilder — toolchain
+  `compiler_files`, builtin include files, module maps, the source — and the
+  built-in include directories, all NestedSets by structure); CppLink and
+  CppArchive (cc_internal.get_link_args: LinkCommandLine's arguments and its
+  param file info, GCC_QUOTED included); SolibSymlink (the symlink's and the
+  library's exec paths on the internal platform).
+* RunfilesTree (an empty computeKey on the internal platform).
+
+Verified against genuine 9.3.1 on tests/fixtures/aquery/kitchen and
+tests/fixtures/aquery/depsets (every action byte for byte),
+tests/fixtures/cc_compile/genuine_aquery.txt, and by hand on rules_go,
+rules_cc/rules_python workspaces and a private ~/code clone (every Go action
+of `deps(//src/beyondwork.ai/utils/str/...)`).
 
 Not reproduced (a deterministic native key is printed instead):
 
-* `Args` over a **depset** (NestedSetFingerprintCache digests the NestedSet's
-  internal node structure) and map_each over directories — e.g. rules_go's
-  GoCompilePkg and rules_python's PythonZipper.
-* FileWrite contents longer than 256 characters (CompressedFileWriteAction
-  keys Java's GZIP bytes).
-* Native-class actions: CppCompile/CppLink/CppArchive/SolibSymlink,
-  RepoMappingManifest, SourceSymlinkManifest, SymlinkTree, RunfilesTree,
-  TranslateBuildInfo.
+* SymlinkTree and SourceSymlinkManifest: Runfiles.fingerprint with absolute
+  paths (`digestAbsolutePaths`: the output base's execroot and external
+  directory), so their keys differ between any two output bases, genuine
+  ones included.
+* RepoMappingManifest: the NestedSet of the target's transitive
+  `Package.Metadata` (Skyframe's transitive-packages structure) and each
+  package's repository mapping.
+* TranslateBuildInfo: the bzlTransitiveDigest of the translation callback's
+  module, which includes the digest of the binary's embedded @_builtins.
+* Args over a depset of Labels (LABEL stringification adds the main
+  repository mapping) or of other non-string objects, and natively built
+  command lines other than get_link_args.
+
+The text output's `Execution platform:` prints the platform through the main
+repository mapping (`@platforms//host:host` when `platforms` is a direct
+dependency), the command trailer, summary and proto its canonical form, like
+genuine. A target in the no-config configuration (NoConfigTransition, e.g.
+`package_metadata`) has no execution platform.
 
 ### Divergences (normalized in the tests)
 
@@ -108,6 +152,7 @@ Not reproduced (a deterministic native key is printed instead):
   the planner shares the tree; otherwise as its entries.
 * Shared actions (two owners registering one action) are listed once, under
   the owner that planned them.
+* A test target's TestRunner action (TestActionBuilder) is not listed.
 * `--include_file_write_contents` on SourceSymlinkManifest prints empty
   contents (genuine's names absolute output-base paths).
 

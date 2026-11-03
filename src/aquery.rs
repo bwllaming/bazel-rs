@@ -47,6 +47,9 @@ pub struct Meta {
     pub param_write: Option<ParamWrite>,
     /// A RepoMappingManifestAction (`py_internal.create_repo_mapping_manifest`).
     pub repo_mapping: bool,
+    /// A native action class's `computeKey` stream, encoded at registration
+    /// (CppCompileAction; crate::cc_actions).
+    pub compute_key: Option<Vec<u8>>,
 }
 
 /// A ParameterFileWriteAction's file type, fingerprint and arguments.
@@ -347,6 +350,10 @@ pub struct ActionRecord {
     pub outputs: Vec<(String, bool)>,
     pub execution_info: Vec<(String, String)>,
     pub execution_platform: Option<String>,
+    /// The execution platform through the main repository mapping (the
+    /// text output's LabelPrinter; the command trailer and the proto keep
+    /// Label.toString).
+    pub display_execution_platform: Option<String>,
     /// FileContentsProvider: executable bit and contents.
     pub file_write: Option<(bool, String)>,
     /// TemplateExpansionAction: the template text and substitutions.
@@ -545,7 +552,11 @@ fn write_text(
         out.push_str(&format!("  Mnemonic: {}\n", action.mnemonic));
         out.push_str(&format!("  Target: {}\n", action.display_target));
         out.push_str(&format!("  Configuration: {}\n", configuration.mnemonic));
-        if let Some(platform) = &action.execution_platform {
+        if let Some(platform) = action
+            .display_execution_platform
+            .as_ref()
+            .or(action.execution_platform.as_ref())
+        {
             out.push_str(&format!("  Execution platform: {platform}\n"));
         }
         if !action.aspects.is_empty() {

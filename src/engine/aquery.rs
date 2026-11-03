@@ -248,6 +248,11 @@ impl Engine {
                 self.aquery_records(node, owner, rule_class, configuration, &configurations)
             {
                 record.display_target = display_target.clone();
+                record.display_execution_platform = record
+                    .execution_platform
+                    .as_deref()
+                    .and_then(|platform| Label::parse_canonical(platform).ok())
+                    .map(|platform| display(&platform));
                 actions.push((graph_node, record));
             }
         }
@@ -297,7 +302,15 @@ impl Engine {
         let tool = configurations[configuration].is_tool;
         let label = owner.key.label.to_string();
         let (platform_label, properties) = self.aquery_platform(node, owner.key.config);
-        let platform = self.aquery_platform_info(&platform_label);
+        // A no-config target (NoConfigTransition: no PlatformConfiguration)
+        // resolves no toolchain context, so its actions have no execution
+        // platform (ToolchainContextUtil.java:79-82).
+        let no_config = self.configurations.get(owner.key.config).native.no_config;
+        let platform = if no_config {
+            None
+        } else {
+            self.aquery_platform_info(&platform_label)
+        };
         // An alias (`@bazel_tools//tools:host_platform`) prints as the
         // platform it resolves to (PlatformInfo.label).
         let platform_label = platform
@@ -340,7 +353,8 @@ impl Engine {
             rule_class,
             configuration,
             aspects: owner.aspects.clone(),
-            execution_platform: Some(crate::rule_declarations::canonical_form(&platform_label)),
+            execution_platform: (!no_config)
+                .then(|| crate::rule_declarations::canonical_form(&platform_label)),
             inputs: inputs.clone(),
             outputs: outputs.clone(),
             ..Default::default()
@@ -424,8 +438,13 @@ impl Engine {
                     "Symlink".into()
                 };
                 record.description = progress(message);
-                record.action_key =
-                    crate::aquery_key::action_key(&KeyKind::Symlink, key_platform, &properties);
+                let kind = match (record.mnemonic.as_str(), primary_output, primary_input) {
+                    ("SolibSymlink", Some(symlink), Some(library)) => {
+                        KeyKind::SolibSymlink { symlink, library }
+                    }
+                    _ => KeyKind::Symlink,
+                };
+                record.action_key = crate::aquery_key::action_key(&kind, key_platform, &properties);
             }
             (
                 None,
@@ -539,7 +558,11 @@ impl Engine {
                     ..record.clone()
                 };
                 tree.description = format!("runfiles for {label}");
-                tree.action_key = self.aquery_native_key(&tree, key_platform, &properties);
+                tree.action_key = crate::aquery_key::action_key(
+                    &KeyKind::RunfilesTree,
+                    key_platform,
+                    &properties,
+                );
                 extra_records.push(tree);
             }
             (None, Some(transform)) => {
@@ -612,17 +635,18 @@ impl Engine {
                     .unwrap_or_else(|| vec![CommandLinePart::Flat(arguments.clone())]);
                 let inherited: Vec<String> =
                     action.extra.inherited_environment.iter().cloned().collect();
-                record.action_key = crate::aquery_key::action_key(
-                    &KeyKind::Spawn {
-                        command_lines: &lines,
-                        mnemonic: &record.mnemonic,
-                        environment: &record.environment,
-                        inherited: &inherited,
-                        execution_info: &record.execution_info,
-                    },
-                    key_platform,
-                    &properties,
-                );
+                let spawn = KeyKind::Spawn {
+                    command_lines: &lines,
+                    mnemonic: &record.mnemonic,
+                    environment: &record.environment,
+                    inherited: &inherited,
+                    execution_info: &record.execution_info,
+                };
+                let kind = match &meta.compute_key {
+                    Some(bytes) => KeyKind::Encoded(bytes),
+                    None => spawn,
+                };
+                record.action_key = crate::aquery_key::action_key(&kind, key_platform, &properties);
                 record.discovers_inputs =
                     matches!(record.mnemonic.as_str(), "CppCompile" | "ObjcCompile");
                 if record.discovers_inputs {

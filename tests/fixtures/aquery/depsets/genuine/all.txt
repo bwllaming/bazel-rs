@@ -1,0 +1,869 @@
+action 'Action pkg/d.dir'
+  Mnemonic: Action
+  Target: //pkg:d
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 62824e253e5e970bbb513090badb08f104a295eafc1d997c30edab63c2f40d64
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/d.dir (TreeArtifact)]
+  Command Line: (exec /bin/bash \
+    -c \
+    'mkdir -p bazel-out/k8-fastbuild/bin/pkg/d.dir && touch bazel-out/k8-fastbuild/bin/pkg/d.dir/x')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mplain pkg/d.plain'
+  Mnemonic: Mplain
+  Target: //pkg:d
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 89eed9b12ddb47cf6a122a2f1e276c2df3c8a3107ba726428a9835c627f3d057
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/l1.o, bazel-out/k8-fastbuild/bin/pkg/l2.o, bazel-out/k8-fastbuild/bin/pkg/l3.o, bazel-out/k8-fastbuild/bin/pkg/l4.o, bazel-out/k8-opt-exec/bin/pkg/tool.sh, pkg/a.txt, pkg/b.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/d.plain]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    bazel-out/k8-fastbuild/bin/pkg/l1.o \
+    pkg/a.txt \
+    bazel-out/k8-fastbuild/bin/pkg/l2.o \
+    pkg/b.txt \
+    bazel-out/k8-fastbuild/bin/pkg/l3.o \
+    bazel-out/k8-fastbuild/bin/pkg/l4.o \
+    bazel-out/k8-fastbuild/bin/pkg/d.plain)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mmapped pkg/d.mapped'
+  Mnemonic: Mmapped
+  Target: //pkg:d
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: a8648a504ed6e47e91cd2d603ff1b9b61b52bcaafe5fd140f00cacf0ba7dbd34
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/l1.o, bazel-out/k8-fastbuild/bin/pkg/l2.o, bazel-out/k8-fastbuild/bin/pkg/l3.o, bazel-out/k8-fastbuild/bin/pkg/l4.o, bazel-out/k8-opt-exec/bin/pkg/tool.sh, pkg/a.txt, pkg/b.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/d.mapped]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    -f \
+    l1.o \
+    -f \
+    a.txt \
+    -f \
+    l2.o \
+    -f \
+    b.txt \
+    -f \
+    l3.o \
+    -f \
+    l4.o \
+    --names \
+    '[l1,l2,l3,l4,top]' \
+    'n=l11' \
+    'n=l12' \
+    'n=l21' \
+    'n=l22' \
+    'n=l31' \
+    'n=l32' \
+    'n=l41' \
+    'n=l42' \
+    'n=top1' \
+    'n=top2' \
+    -- \
+    bazel-out/k8-fastbuild/bin/pkg/d.mapped)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mmisc pkg/d.misc'
+  Mnemonic: Mmisc
+  Target: //pkg:d
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 175c32f32396749c37afef5d41f49d72f08ecdafa9d4678e675c91377af2ab6e
+  Inputs: [bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/d.misc]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    --empty \
+    only \
+    x \
+    y \
+    1 \
+    2 \
+    3 \
+    bazel-out/k8-fastbuild/bin/pkg/d.misc)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mtree pkg/d.tree'
+  Mnemonic: Mtree
+  Target: //pkg:d
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 266b4336b2354800f9909edbdfc65450e0c109d62445716907999d1d9e2dc178
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/d.dir, bazel-out/k8-fastbuild/bin/pkg/l1.o, bazel-out/k8-fastbuild/bin/pkg/l2.o, bazel-out/k8-fastbuild/bin/pkg/l3.o, bazel-out/k8-fastbuild/bin/pkg/l4.o, bazel-out/k8-opt-exec/bin/pkg/tool.sh, pkg/a.txt, pkg/b.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/d.tree]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    bazel-out/k8-fastbuild/bin/pkg/l1.o \
+    pkg/a.txt \
+    bazel-out/k8-fastbuild/bin/pkg/l2.o \
+    pkg/b.txt \
+    bazel-out/k8-fastbuild/bin/pkg/l3.o \
+    bazel-out/k8-fastbuild/bin/pkg/l4.o \
+    bazel-out/k8-fastbuild/bin/pkg/d.dir \
+    'd=bazel-out/k8-fastbuild/bin/pkg/d.dir' \
+    bazel-out/k8-fastbuild/bin/pkg/d.tree)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mtreemap pkg/d.treemap'
+  Mnemonic: Mtreemap
+  Target: //pkg:d
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 0bb811fa17d9aa981cb945c99637e720748b5e91f7aa4a45584cbb58768ab57c
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/d.dir, bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/d.treemap]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    bazel-out/k8-fastbuild/bin/pkg/d.dir \
+    bazel-out/k8-fastbuild/bin/pkg/d.treemap)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mparam pkg/d.param'
+  Mnemonic: Mparam
+  Target: //pkg:d
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: b3d67701a16f2adc49184a78b9307a92875a4ba4c6c4ed80c3772ebd792f2078
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/l1.o, bazel-out/k8-fastbuild/bin/pkg/l2.o, bazel-out/k8-fastbuild/bin/pkg/l3.o, bazel-out/k8-fastbuild/bin/pkg/l4.o, bazel-out/k8-opt-exec/bin/pkg/tool.sh, pkg/a.txt, pkg/b.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/d.param]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    bazel-out/k8-fastbuild/bin/pkg/l1.o \
+    pkg/a.txt \
+    bazel-out/k8-fastbuild/bin/pkg/l2.o \
+    pkg/b.txt \
+    bazel-out/k8-fastbuild/bin/pkg/l3.o \
+    bazel-out/k8-fastbuild/bin/pkg/l4.o \
+    bazel-out/k8-fastbuild/bin/pkg/d.param)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Writing file pkg/d.params'
+  Mnemonic: FileWrite
+  Target: //pkg:d
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: c4dc7e8ca2305db4ed98e3c63819c7e708fdf42bb10ab760d963f2e28d8c670a
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/d.params]
+
+action 'Writing file pkg/d.w255'
+  Mnemonic: FileWrite
+  Target: //pkg:d
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: e9f81900b3b2ddd0d0ae96293e7e344be93e9f95ded65f2cd94cbf23ec55c6eb
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/d.w255]
+  IsExecutable: false
+
+action 'Writing file pkg/d.w256'
+  Mnemonic: FileWrite
+  Target: //pkg:d
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 18c34f5be9ad356009489d9bb37bc86452de1642afced6d38f4ac6dabb05c2e7
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/d.w256]
+  IsExecutable: false
+
+action 'Writing script pkg/d.w257'
+  Mnemonic: FileWrite
+  Target: //pkg:d
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 3c2d65cf3a6f2bf3775b6f695c9bb05be109d5d68b66fa0bf7cd164421c3eff5
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/d.w257]
+  IsExecutable: true
+
+action 'Writing file pkg/d.wlong'
+  Mnemonic: FileWrite
+  Target: //pkg:d
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 65fa803b943d863f6dd21a71d5ef258580b9c049da0463bd7822f122be2c48d0
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/d.wlong]
+  IsExecutable: false
+
+action 'Writing file pkg/d.wuni'
+  Mnemonic: FileWrite
+  Target: //pkg:d
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: a891d1e9c1672a1081cabcfc60394635c3e9c0b264f665f5acb17633c60374ba
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/d.wuni]
+  IsExecutable: false
+
+action 'Action pkg/dp.dir'
+  Mnemonic: Action
+  Target: //pkg:dp
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 0efa719f7db7b10f25b2cba5d59052b072088b54963ec5237e0fe40f5f0fd50e
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dp.dir (TreeArtifact)]
+  Command Line: (exec /bin/bash \
+    -c \
+    'mkdir -p bazel-out/k8-fastbuild/bin/pkg/dp.dir && touch bazel-out/k8-fastbuild/bin/pkg/dp.dir/x')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mplain pkg/dp.plain'
+  Mnemonic: Mplain
+  Target: //pkg:dp
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 1812b05f66c2d239897acc36f57221711b77d765b002daea63d65a0ce40013ce
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/p1.o, bazel-out/k8-fastbuild/bin/pkg/p2.o, bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dp.plain]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    bazel-out/k8-fastbuild/bin/pkg/p1.o \
+    bazel-out/k8-fastbuild/bin/pkg/p2.o \
+    bazel-out/k8-fastbuild/bin/pkg/dp.plain)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mmapped pkg/dp.mapped'
+  Mnemonic: Mmapped
+  Target: //pkg:dp
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: d4ff75bb81efcaad0f4c928e658356ee6d6862d6e8cf8ddfb23f7fbbae55d27e
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/p1.o, bazel-out/k8-fastbuild/bin/pkg/p2.o, bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dp.mapped]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    -f \
+    p1.o \
+    -f \
+    p2.o \
+    --names \
+    '[p1,p2,top]' \
+    'n=p11' \
+    'n=p12' \
+    'n=p21' \
+    'n=p22' \
+    'n=top1' \
+    'n=top2' \
+    -- \
+    bazel-out/k8-fastbuild/bin/pkg/dp.mapped)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mmisc pkg/dp.misc'
+  Mnemonic: Mmisc
+  Target: //pkg:dp
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 007733c6a187fa01f3e53f0ae6ffdea972f9e3105889700ad42ea5513f9ba581
+  Inputs: [bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dp.misc]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    --empty \
+    only \
+    x \
+    y \
+    1 \
+    2 \
+    3 \
+    bazel-out/k8-fastbuild/bin/pkg/dp.misc)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mtree pkg/dp.tree'
+  Mnemonic: Mtree
+  Target: //pkg:dp
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: abf8e5c1f12425c8ab5c9e4695b432fb2c77bf3d8f5e479a5b7d8f323f2b395d
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/dp.dir, bazel-out/k8-fastbuild/bin/pkg/p1.o, bazel-out/k8-fastbuild/bin/pkg/p2.o, bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dp.tree]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    bazel-out/k8-fastbuild/bin/pkg/p1.o \
+    bazel-out/k8-fastbuild/bin/pkg/p2.o \
+    bazel-out/k8-fastbuild/bin/pkg/dp.dir \
+    'd=bazel-out/k8-fastbuild/bin/pkg/dp.dir' \
+    bazel-out/k8-fastbuild/bin/pkg/dp.tree)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mtreemap pkg/dp.treemap'
+  Mnemonic: Mtreemap
+  Target: //pkg:dp
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 60013fcf38f7113f68bcf50f64acb78cfed581f4aa3004e63406d9a718075aa1
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/dp.dir, bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dp.treemap]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    bazel-out/k8-fastbuild/bin/pkg/dp.dir \
+    bazel-out/k8-fastbuild/bin/pkg/dp.treemap)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mparam pkg/dp.param'
+  Mnemonic: Mparam
+  Target: //pkg:dp
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 08340473f4d5cf46788afd29014e4d3f0964b9f418b3ca05ced176ee592fd42e
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/p1.o, bazel-out/k8-fastbuild/bin/pkg/p2.o, bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dp.param]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    bazel-out/k8-fastbuild/bin/pkg/p1.o \
+    bazel-out/k8-fastbuild/bin/pkg/p2.o \
+    bazel-out/k8-fastbuild/bin/pkg/dp.param)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Writing file pkg/dp.params'
+  Mnemonic: FileWrite
+  Target: //pkg:dp
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 0254e69708e81ee9b8d4931a49e9c60631b695358d5dd0f5f5e7b99402237445
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dp.params]
+
+action 'Writing file pkg/dp.w255'
+  Mnemonic: FileWrite
+  Target: //pkg:dp
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: e9f81900b3b2ddd0d0ae96293e7e344be93e9f95ded65f2cd94cbf23ec55c6eb
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dp.w255]
+  IsExecutable: false
+
+action 'Writing file pkg/dp.w256'
+  Mnemonic: FileWrite
+  Target: //pkg:dp
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 18c34f5be9ad356009489d9bb37bc86452de1642afced6d38f4ac6dabb05c2e7
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dp.w256]
+  IsExecutable: false
+
+action 'Writing script pkg/dp.w257'
+  Mnemonic: FileWrite
+  Target: //pkg:dp
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 3c2d65cf3a6f2bf3775b6f695c9bb05be109d5d68b66fa0bf7cd164421c3eff5
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dp.w257]
+  IsExecutable: true
+
+action 'Writing file pkg/dp.wlong'
+  Mnemonic: FileWrite
+  Target: //pkg:dp
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 65fa803b943d863f6dd21a71d5ef258580b9c049da0463bd7822f122be2c48d0
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dp.wlong]
+  IsExecutable: false
+
+action 'Writing file pkg/dp.wuni'
+  Mnemonic: FileWrite
+  Target: //pkg:dp
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: a891d1e9c1672a1081cabcfc60394635c3e9c0b264f665f5acb17633c60374ba
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dp.wuni]
+  IsExecutable: false
+
+action 'Action pkg/ds.dir'
+  Mnemonic: Action
+  Target: //pkg:ds
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 33821db725491dc2786383292926661b91f127fc4e17babc92467929afe1edea
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/ds.dir (TreeArtifact)]
+  Command Line: (exec /bin/bash \
+    -c \
+    'mkdir -p bazel-out/k8-fastbuild/bin/pkg/ds.dir && touch bazel-out/k8-fastbuild/bin/pkg/ds.dir/x')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mplain pkg/ds.plain'
+  Mnemonic: Mplain
+  Target: //pkg:ds
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 7202ff1b8333a249d76b649b2c9123fc8d5a9e1b80c885749c27366cfd6dc98a
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/l1.o, bazel-out/k8-opt-exec/bin/pkg/tool.sh, pkg/a.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/ds.plain]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    bazel-out/k8-fastbuild/bin/pkg/l1.o \
+    pkg/a.txt \
+    bazel-out/k8-fastbuild/bin/pkg/ds.plain)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mmapped pkg/ds.mapped'
+  Mnemonic: Mmapped
+  Target: //pkg:ds
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 7a19c1910bd00fbd14e253216c5b2364d7145e6b27c28a84dc43bebfedcb6f0d
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/l1.o, bazel-out/k8-opt-exec/bin/pkg/tool.sh, pkg/a.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/ds.mapped]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    -f \
+    l1.o \
+    -f \
+    a.txt \
+    --names \
+    '[l1,top]' \
+    'n=l11' \
+    'n=l12' \
+    'n=top1' \
+    'n=top2' \
+    -- \
+    bazel-out/k8-fastbuild/bin/pkg/ds.mapped)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mmisc pkg/ds.misc'
+  Mnemonic: Mmisc
+  Target: //pkg:ds
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 1814e5546506fe55ea5e14f4d5df4cb258ec82613834f5b020f04fc284e06da9
+  Inputs: [bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/ds.misc]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    --empty \
+    only \
+    x \
+    y \
+    1 \
+    2 \
+    3 \
+    bazel-out/k8-fastbuild/bin/pkg/ds.misc)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mtree pkg/ds.tree'
+  Mnemonic: Mtree
+  Target: //pkg:ds
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 86a786aea41401a0f0e8834c97be6b2c6199a2b6044408902499f3518eeece08
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/ds.dir, bazel-out/k8-fastbuild/bin/pkg/l1.o, bazel-out/k8-opt-exec/bin/pkg/tool.sh, pkg/a.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/ds.tree]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    bazel-out/k8-fastbuild/bin/pkg/l1.o \
+    pkg/a.txt \
+    bazel-out/k8-fastbuild/bin/pkg/ds.dir \
+    'd=bazel-out/k8-fastbuild/bin/pkg/ds.dir' \
+    bazel-out/k8-fastbuild/bin/pkg/ds.tree)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mtreemap pkg/ds.treemap'
+  Mnemonic: Mtreemap
+  Target: //pkg:ds
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 9544a7c52cd419dfa6421b15be4bcbc26c0a4a16c4a46b13c78c4121c4c7fa92
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/ds.dir, bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/ds.treemap]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    bazel-out/k8-fastbuild/bin/pkg/ds.dir \
+    bazel-out/k8-fastbuild/bin/pkg/ds.treemap)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mparam pkg/ds.param'
+  Mnemonic: Mparam
+  Target: //pkg:ds
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 9f89e322c6e1c980ffb68f56ecfaa33eae95bd7350e7e3697b94f559278865bb
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/l1.o, bazel-out/k8-opt-exec/bin/pkg/tool.sh, pkg/a.txt]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/ds.param]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    bazel-out/k8-fastbuild/bin/pkg/l1.o \
+    pkg/a.txt \
+    bazel-out/k8-fastbuild/bin/pkg/ds.param)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Writing file pkg/ds.params'
+  Mnemonic: FileWrite
+  Target: //pkg:ds
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 283e7d2d9c9207e5926a942210946f4e1b520a88c52e60664718d2b02013ee26
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/ds.params]
+
+action 'Writing file pkg/ds.w255'
+  Mnemonic: FileWrite
+  Target: //pkg:ds
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: e9f81900b3b2ddd0d0ae96293e7e344be93e9f95ded65f2cd94cbf23ec55c6eb
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/ds.w255]
+  IsExecutable: false
+
+action 'Writing file pkg/ds.w256'
+  Mnemonic: FileWrite
+  Target: //pkg:ds
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 18c34f5be9ad356009489d9bb37bc86452de1642afced6d38f4ac6dabb05c2e7
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/ds.w256]
+  IsExecutable: false
+
+action 'Writing script pkg/ds.w257'
+  Mnemonic: FileWrite
+  Target: //pkg:ds
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 3c2d65cf3a6f2bf3775b6f695c9bb05be109d5d68b66fa0bf7cd164421c3eff5
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/ds.w257]
+  IsExecutable: true
+
+action 'Writing file pkg/ds.wlong'
+  Mnemonic: FileWrite
+  Target: //pkg:ds
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 65fa803b943d863f6dd21a71d5ef258580b9c049da0463bd7822f122be2c48d0
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/ds.wlong]
+  IsExecutable: false
+
+action 'Writing file pkg/ds.wuni'
+  Mnemonic: FileWrite
+  Target: //pkg:ds
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: a891d1e9c1672a1081cabcfc60394635c3e9c0b264f665f5acb17633c60374ba
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/ds.wuni]
+  IsExecutable: false
+
+action 'Action pkg/dt.dir'
+  Mnemonic: Action
+  Target: //pkg:dt
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: dd2771d60c7ee99237a4d94d97c907edd2384346983f4a0d4f1ba7198328f13b
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dt.dir (TreeArtifact)]
+  Command Line: (exec /bin/bash \
+    -c \
+    'mkdir -p bazel-out/k8-fastbuild/bin/pkg/dt.dir && touch bazel-out/k8-fastbuild/bin/pkg/dt.dir/x')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mplain pkg/dt.plain'
+  Mnemonic: Mplain
+  Target: //pkg:dt
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 91fbe688c9ce698f5e77bd2723b3cf4996ba8e208b7e58eb2c20da118802331a
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/t1.o, bazel-out/k8-fastbuild/bin/pkg/t2.o, bazel-out/k8-fastbuild/bin/pkg/t3.o, bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dt.plain]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    bazel-out/k8-fastbuild/bin/pkg/t1.o \
+    bazel-out/k8-fastbuild/bin/pkg/t2.o \
+    bazel-out/k8-fastbuild/bin/pkg/t3.o \
+    bazel-out/k8-fastbuild/bin/pkg/dt.plain)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mmapped pkg/dt.mapped'
+  Mnemonic: Mmapped
+  Target: //pkg:dt
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 7fc1aab93ed32fa9142e4da967e24d1bd9f9ca95543f19b8cf0f9b26ae8ba330
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/t1.o, bazel-out/k8-fastbuild/bin/pkg/t2.o, bazel-out/k8-fastbuild/bin/pkg/t3.o, bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dt.mapped]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    -f \
+    t1.o \
+    -f \
+    t2.o \
+    -f \
+    t3.o \
+    --names \
+    '[top,t3,t2,t1]' \
+    'n=top1' \
+    'n=top2' \
+    'n=t31' \
+    'n=t32' \
+    'n=t21' \
+    'n=t22' \
+    'n=t11' \
+    'n=t12' \
+    -- \
+    bazel-out/k8-fastbuild/bin/pkg/dt.mapped)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mmisc pkg/dt.misc'
+  Mnemonic: Mmisc
+  Target: //pkg:dt
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 1a40746955d4b0a894f8422e52546a33ee039aa7c5adab208bc20cd1ed3783e5
+  Inputs: [bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dt.misc]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    --empty \
+    only \
+    x \
+    y \
+    1 \
+    2 \
+    3 \
+    bazel-out/k8-fastbuild/bin/pkg/dt.misc)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mtree pkg/dt.tree'
+  Mnemonic: Mtree
+  Target: //pkg:dt
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: e4be6b0a93334dda04b25ec723f34a2e2eecb1c6451451067e6a3f37e9fa25dc
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/dt.dir, bazel-out/k8-fastbuild/bin/pkg/t1.o, bazel-out/k8-fastbuild/bin/pkg/t2.o, bazel-out/k8-fastbuild/bin/pkg/t3.o, bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dt.tree]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    bazel-out/k8-fastbuild/bin/pkg/t1.o \
+    bazel-out/k8-fastbuild/bin/pkg/t2.o \
+    bazel-out/k8-fastbuild/bin/pkg/t3.o \
+    bazel-out/k8-fastbuild/bin/pkg/dt.dir \
+    'd=bazel-out/k8-fastbuild/bin/pkg/dt.dir' \
+    bazel-out/k8-fastbuild/bin/pkg/dt.tree)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mtreemap pkg/dt.treemap'
+  Mnemonic: Mtreemap
+  Target: //pkg:dt
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: ebd7fb07906b87fb0080ec91288ffcb6ca4c7e49a8c89ddde56caec1328dce3f
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/dt.dir, bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dt.treemap]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    bazel-out/k8-fastbuild/bin/pkg/dt.dir \
+    bazel-out/k8-fastbuild/bin/pkg/dt.treemap)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Mparam pkg/dt.param'
+  Mnemonic: Mparam
+  Target: //pkg:dt
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: ec44119c02919e462ed97f6f99a445fe15c52d1b71335be5c8d37b13b22a9aee
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/t1.o, bazel-out/k8-fastbuild/bin/pkg/t2.o, bazel-out/k8-fastbuild/bin/pkg/t3.o, bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dt.param]
+  Command Line: (exec bazel-out/k8-opt-exec/bin/pkg/tool.sh \
+    bazel-out/k8-fastbuild/bin/pkg/t1.o \
+    bazel-out/k8-fastbuild/bin/pkg/t2.o \
+    bazel-out/k8-fastbuild/bin/pkg/t3.o \
+    bazel-out/k8-fastbuild/bin/pkg/dt.param)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Writing file pkg/dt.params'
+  Mnemonic: FileWrite
+  Target: //pkg:dt
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: c5112e7e20080ab3eca66da2f0896bd969cd612068b214caf6f43c4764cce4aa
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dt.params]
+
+action 'Writing file pkg/dt.w255'
+  Mnemonic: FileWrite
+  Target: //pkg:dt
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: e9f81900b3b2ddd0d0ae96293e7e344be93e9f95ded65f2cd94cbf23ec55c6eb
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dt.w255]
+  IsExecutable: false
+
+action 'Writing file pkg/dt.w256'
+  Mnemonic: FileWrite
+  Target: //pkg:dt
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 18c34f5be9ad356009489d9bb37bc86452de1642afced6d38f4ac6dabb05c2e7
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dt.w256]
+  IsExecutable: false
+
+action 'Writing script pkg/dt.w257'
+  Mnemonic: FileWrite
+  Target: //pkg:dt
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 3c2d65cf3a6f2bf3775b6f695c9bb05be109d5d68b66fa0bf7cd164421c3eff5
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dt.w257]
+  IsExecutable: true
+
+action 'Writing file pkg/dt.wlong'
+  Mnemonic: FileWrite
+  Target: //pkg:dt
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 65fa803b943d863f6dd21a71d5ef258580b9c049da0463bd7822f122be2c48d0
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dt.wlong]
+  IsExecutable: false
+
+action 'Writing file pkg/dt.wuni'
+  Mnemonic: FileWrite
+  Target: //pkg:dt
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: a891d1e9c1672a1081cabcfc60394635c3e9c0b264f665f5acb17633c60374ba
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/dt.wuni]
+  IsExecutable: false
+
+action 'Writing file pkg/l1.o'
+  Mnemonic: FileWrite
+  Target: //pkg:l1
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: ba617fc845253b7e22cb9a3c8cb6f9e33f3fa36b009e303eeb8b843cf63173b1
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/l1.o]
+  IsExecutable: false
+
+action 'Writing file pkg/l2.o'
+  Mnemonic: FileWrite
+  Target: //pkg:l2
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: e47036ddde7d9924624f53b76521bfcf02a6a613ff0644da020ed93a763aedac
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/l2.o]
+  IsExecutable: false
+
+action 'Writing file pkg/l3.o'
+  Mnemonic: FileWrite
+  Target: //pkg:l3
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 33b2af6fc085a2a70b8fa73d5c10ea8fb9a8e21d0382685638f049ca9ecc1c19
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/l3.o]
+  IsExecutable: false
+
+action 'Writing file pkg/l4.o'
+  Mnemonic: FileWrite
+  Target: //pkg:l4
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 76443fd7b66f41b4c76664a300170d42950a5f70cdcc757b7d1035cca4ba353f
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/l4.o]
+  IsExecutable: false
+
+action 'Writing file pkg/p1.o'
+  Mnemonic: FileWrite
+  Target: //pkg:p1
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 7e2e8c2d0096509d1cffa1e536d3160a255a3834c20011239761740ad562dc1a
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/p1.o]
+  IsExecutable: false
+
+action 'Writing file pkg/p2.o'
+  Mnemonic: FileWrite
+  Target: //pkg:p2
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: f79dc1cd86e9a984f8b7f5d1e478cb6f1891f4530ac4aba22e907490aa42087b
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/p2.o]
+  IsExecutable: false
+
+action 'Writing file pkg/t1.o'
+  Mnemonic: FileWrite
+  Target: //pkg:t1
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 34e4d8d9f497ba1e187037ca9b4eb798c82fdc7535105fec83e0a2ac4fea2d07
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/t1.o]
+  IsExecutable: false
+
+action 'Writing file pkg/t2.o'
+  Mnemonic: FileWrite
+  Target: //pkg:t2
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: fac11a9d70bc566645eef5d23c812c531ed4beb4cc52eba39337adcfd561046d
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/t2.o]
+  IsExecutable: false
+
+action 'Writing file pkg/t3.o'
+  Mnemonic: FileWrite
+  Target: //pkg:t3
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 61c1d93be7a6e0f171e2fd167ae912fa7297fcc42760109bc60f533842ed6652
+  Inputs: []
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/t3.o]
+  IsExecutable: false
+
+action 'Executing genrule //pkg:toolgen [for tool]'
+  Mnemonic: Genrule
+  Target: //pkg:toolgen
+  Configuration: k8-opt-exec
+  Execution platform: @@platforms//host:host
+  ActionKey: 097ba294516087c3e0ff0bacf95da5e8cf9a016a5fde369182f53523a4f85a39
+  Inputs: [external/bazel_tools/tools/genrule/genrule-setup.sh]
+  Outputs: [bazel-out/k8-opt-exec/bin/pkg/tool.sh]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /bin/bash \
+    -c \
+    'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo '\''#!/bin/sh'\'' > bazel-out/k8-opt-exec/bin/pkg/tool.sh')
+# Configuration: 04bf134dfa57115b01daa56bd3a30421a6e74b1819e002496a26c94ed0087067
+# Execution platform: @@platforms//host:host
+
+action 'Executing genrule //pkg:toolgen'
+  Mnemonic: Genrule
+  Target: //pkg:toolgen
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 8502406d6fd846ba741cf24491fa7313913c43f0bbf54195e3f203a172e831d2
+  Inputs: [external/bazel_tools/tools/genrule/genrule-setup.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/tool.sh]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /bin/bash \
+    -c \
+    'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo '\''#!/bin/sh'\'' > bazel-out/k8-fastbuild/bin/pkg/tool.sh')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+

@@ -17,6 +17,10 @@ use sha2::{Digest, Sha256};
 pub const SPAWN_GUID: &str = "ebd6fce3-093e-45ee-adb6-bf513b602f0d";
 /// FileWriteAction.RegularFileWriteAction.GUID (FileWriteAction.java:250).
 pub const FILE_WRITE_GUID: &str = "332877c7-ca9f-4731-b387-54f620408522";
+/// FileWriteAction.CompressedFileWriteAction.GUID (FileWriteAction.java:286).
+pub const COMPRESSED_FILE_WRITE_GUID: &str = "5bfba914-2251-11ee-be56-0242ac120002";
+/// FileWriteAction.COMPRESS_CHARS_THRESHOLD (FileWriteAction.java:68).
+const COMPRESS_CHARS_THRESHOLD: usize = 256;
 /// TemplateExpansionAction.GUID (TemplateExpansionAction.java:50).
 pub const TEMPLATE_GUID: &str = "786c1fe0-dca8-407a-b108-e1ecd6d1bc7f";
 /// SymlinkAction.GUID (SymlinkAction.java:61).
@@ -42,11 +46,29 @@ pub const SINGLE_FORMATTED_ARG_UUID: &str = "8cb96642-a235-4fe0-b3ed-ebfdae8a0bd
 /// PlatformInfo.EMPTY_PLATFORM_INFO, SymlinkAction's execution platform.
 pub const INTERNAL_PLATFORM: &str = "@@bazel_tools//tools:internal_platform";
 
+/// Where a [`Fingerprint`] writes its protobuf-encoded stream: a SHA-256
+/// digest or a byte buffer (a fragment appended raw to another fingerprint).
+pub trait Sink: Default {
+    fn put(&mut self, bytes: &[u8]);
+}
+
+impl Sink for Sha256 {
+    fn put(&mut self, bytes: &[u8]) {
+        self.update(bytes);
+    }
+}
+
+impl Sink for Vec<u8> {
+    fn put(&mut self, bytes: &[u8]) {
+        self.extend_from_slice(bytes);
+    }
+}
+
 /// util/Fingerprint.java over a SHA-256 digest.
 #[derive(Default)]
-pub struct Fingerprint(Sha256);
+pub struct Fingerprint<S: Sink = Sha256>(S);
 
-fn varint(hash: &mut Sha256, mut value: u64) {
+fn varint(hash: &mut impl Sink, mut value: u64) {
     let mut buffer = [0u8; 10];
     let mut length = 0;
     loop {
@@ -60,7 +82,7 @@ fn varint(hash: &mut Sha256, mut value: u64) {
         buffer[length] = byte | 0x80;
         length += 1;
     }
-    hash.update(&buffer[..length]);
+    hash.put(&buffer[..length]);
 }
 
 /// The UTF-8 encoding of the Java string holding `text`'s internal bytes as
@@ -79,18 +101,24 @@ fn java_utf8(text: &str) -> std::borrow::Cow<'_, [u8]> {
     std::borrow::Cow::Owned(out)
 }
 
-impl Fingerprint {
+impl<S: Sink> Fingerprint<S> {
     /// `addString`: writeStringNoTag.
     pub fn string(&mut self, text: &str) -> &mut Self {
         let bytes = java_utf8(text);
         varint(&mut self.0, bytes.len() as u64);
-        self.0.update(&bytes);
+        self.0.put(&bytes);
+        self
+    }
+
+    /// `addBytes`: the bytes, raw (no length).
+    pub fn raw(&mut self, bytes: &[u8]) -> &mut Self {
+        self.0.put(bytes);
         self
     }
 
     /// `addBoolean`: writeBoolNoTag.
     pub fn boolean(&mut self, value: bool) -> &mut Self {
-        self.0.update([u8::from(value)]);
+        self.0.put(&[u8::from(value)]);
         self
     }
 
@@ -143,6 +171,18 @@ impl Fingerprint {
         self.long(least as i64).long(most as i64)
     }
 
+    /// The encoded stream of a buffer fingerprint.
+    pub fn into_inner(self) -> S {
+        self.0
+    }
+}
+
+impl Fingerprint {
+    /// `digestAndReset`: the raw SHA-256.
+    pub fn digest(self) -> [u8; 32] {
+        self.0.finalize().into()
+    }
+
     /// `hexDigestAndReset`.
     pub fn hex(self) -> String {
         self.0
@@ -167,6 +207,8 @@ pub enum ArgsOp {
     Text(String),
     /// A UUID marker.
     Uuid(&'static str),
+    /// Bytes already encoded (a NestedSet's fingerprint, [`nested_set`]).
+    Raw(Vec<u8>),
 }
 
 /// The fingerprint description of one `Args` object: its operations, or
@@ -177,6 +219,9 @@ pub enum ArgsOp {
 pub struct ArgsRecipe {
     pub ops: Vec<ArgsOp>,
     pub unmodelled: Option<&'static str>,
+    /// ParameterFileType.toString of a param file the native command line
+    /// writes with another type's quoting (GCC_QUOTED as SHELL_QUOTED).
+    pub param_file_type: Option<&'static str>,
 }
 
 impl ArgsRecipe {
@@ -207,9 +252,200 @@ impl ArgsRecipe {
                 ArgsOp::Uuid(uuid) => {
                     fp.uuid(uuid);
                 }
+                ArgsOp::Raw(bytes) => {
+                    fp.raw(bytes);
+                }
             }
         }
     }
+}
+
+/// NestedSetFingerprintCache.EMPTY_SET_DIGEST.
+const EMPTY_SET_DIGEST: i32 = 104_395_303;
+
+/// Order.ordinal (collect/nestedset/Order.java:105-108).
+fn order_ordinal(order: crate::starlark_types::Order) -> i32 {
+    use crate::starlark_types::Order;
+    match order {
+        Order::Default => 0,
+        Order::Postorder => 1,
+        Order::Topological => 2,
+        Order::Preorder => 3,
+    }
+}
+
+type NodePtr = *const crate::starlark_types::DepsetNode;
+
+/// One element of a Java NestedSet's `children` array: a leaf or the
+/// (shared) array of a transitive member.
+#[derive(Clone, Copy)]
+enum JavaChild<'a> {
+    Leaf(&'a crate::starlark_types::Item),
+    Array(&'a crate::starlark_types::DepsetNode),
+}
+
+/// What a native depset node's Java NestedSet `children` is: nothing, one
+/// leaf, its own array, or exactly another node's array (a single
+/// transitive array member, NestedSet.java:278-281).
+#[derive(Clone, Copy)]
+enum Shape<'a> {
+    Empty,
+    Leaf(&'a crate::starlark_types::Item),
+    Array,
+    Same(&'a crate::starlark_types::DepsetNode),
+}
+
+/// The NestedSet layouts of one depset DAG and their digests, memoized by
+/// node (NestedSetFingerprintCache's DigestMap is keyed by the array).
+#[derive(Default)]
+struct Layouts<'a> {
+    shapes: std::collections::HashMap<NodePtr, Shape<'a>>,
+    digests: std::collections::HashMap<NodePtr, [u8; 32]>,
+}
+
+impl<'a> Layouts<'a> {
+    fn shape(&mut self, node: &'a crate::starlark_types::DepsetNode) -> Shape<'a> {
+        if let Some(shape) = self.shapes.get(&(node as NodePtr)) {
+            return *shape;
+        }
+        let children = self.children(node);
+        let shape = match children.as_slice() {
+            [] => Shape::Empty,
+            [JavaChild::Leaf(item)] => Shape::Leaf(item),
+            [JavaChild::Array(inner)] => Shape::Same(inner),
+            _ => Shape::Array,
+        };
+        self.shapes.insert(node as NodePtr, shape);
+        shape
+    }
+
+    /// The NestedSet(order, direct, transitive) constructor's candidate
+    /// children (collect/nestedset/NestedSet.java:183-266) over the
+    /// builder's direct set and transitive sets (NestedSetBuilder.java
+    /// :181-202, 288-390: deduplicated by identity; a LINK_ORDER builder
+    /// reverses them first).
+    fn children(&mut self, node: &'a crate::starlark_types::DepsetNode) -> Vec<JavaChild<'a>> {
+        use crate::starlark_types::{Item, Order};
+        if node.empty {
+            return Vec::new();
+        }
+        let mut transitive: Vec<&'a crate::starlark_types::DepsetNode> = Vec::new();
+        let mut seen: std::collections::HashSet<NodePtr> = std::collections::HashSet::new();
+        let ordered: Vec<&'a std::sync::Arc<crate::starlark_types::DepsetNode>> =
+            if node.order == Order::Topological {
+                node.children.iter().rev().collect()
+            } else {
+                node.children.iter().collect()
+            };
+        for child in ordered {
+            if !child.empty && seen.insert(&**child as NodePtr) {
+                transitive.push(child);
+            }
+        }
+        let direct: Vec<&'a Item> = if node.order == Order::Topological {
+            node.direct.iter().rev().collect()
+        } else {
+            node.direct.iter().collect()
+        };
+        let preorder = node.order == Order::Preorder;
+        let mut children: Vec<JavaChild<'a>> = Vec::new();
+        let mut already: Vec<&'a Item> = Vec::new();
+        for pass in 0..2 {
+            if (pass == 0) == preorder && !direct.is_empty() {
+                for member in &direct {
+                    if !already.contains(member) {
+                        children.push(JavaChild::Leaf(member));
+                    }
+                }
+                already = direct.clone();
+            } else if (pass == 1) == preorder && !transitive.is_empty() {
+                let mut hoisted: Vec<&'a Item> = Vec::new();
+                for subset in &transitive {
+                    match self.shape(subset) {
+                        Shape::Leaf(item) => {
+                            if !already.contains(&item) && !hoisted.contains(&item) {
+                                hoisted.push(item);
+                                children.push(JavaChild::Leaf(item));
+                            }
+                        }
+                        Shape::Array => children.push(JavaChild::Array(subset)),
+                        Shape::Same(inner) => children.push(JavaChild::Array(inner)),
+                        Shape::Empty => {}
+                    }
+                }
+                already = hoisted;
+            }
+        }
+        children
+    }
+
+    /// The digest of a NestedSet's `children` array
+    /// (NestedSetFingerprintCache.addToFingerprint, :104-118).
+    fn digest(
+        &mut self,
+        node: &'a crate::starlark_types::DepsetNode,
+        expand: &mut Expand<'_>,
+    ) -> [u8; 32] {
+        if let Some(digest) = self.digests.get(&(node as NodePtr)) {
+            return *digest;
+        }
+        let digest = match self.shape(node) {
+            Shape::Same(inner) => self.digest(inner, expand),
+            _ => {
+                let mut fp = Fingerprint::default();
+                for child in self.children(node) {
+                    match child {
+                        JavaChild::Leaf(item) => {
+                            let mut leaf = Fingerprint::<Vec<u8>>::default();
+                            expand(item, &mut leaf);
+                            fp.raw(&leaf.into_inner());
+                        }
+                        JavaChild::Array(inner) => {
+                            let digest = self.digest(inner, expand);
+                            fp.raw(&digest);
+                        }
+                    }
+                }
+                fp.digest()
+            }
+        };
+        self.digests.insert(node as NodePtr, digest);
+        digest
+    }
+}
+
+/// Adds one NestedSet element's strings to a fingerprint
+/// (`mapFn.expandToCommandLine(object, fingerprint::addString)`).
+pub(crate) type Expand<'e> =
+    dyn FnMut(&crate::starlark_types::Item, &mut Fingerprint<Vec<u8>>) + 'e;
+
+/// ActionKeyContext.addNestedSetToFingerprint(mapFn, fp, nestedSet)
+/// (NestedSetFingerprintCache.java:57-69): EMPTY_SET_DIGEST for an empty
+/// set, else the order's ordinal then the children — a leaf's mapped
+/// strings, or the SHA-256 of the children array (each array member by its
+/// own digest), so the key follows the NestedSet's internal structure, not
+/// its flattened contents.
+pub(crate) fn nested_set(
+    node: &crate::starlark_types::DepsetNode,
+    expand: &mut Expand<'_>,
+) -> Vec<u8> {
+    let mut fp = Fingerprint::<Vec<u8>>::default();
+    let mut layouts = Layouts::default();
+    match layouts.shape(node) {
+        Shape::Empty => {
+            fp.int(EMPTY_SET_DIGEST);
+        }
+        Shape::Leaf(item) => {
+            fp.int(order_ordinal(node.order));
+            expand(item, &mut fp);
+        }
+        Shape::Array | Shape::Same(_) => {
+            fp.int(order_ordinal(node.order));
+            let digest = layouts.digest(node, expand);
+            fp.raw(&digest);
+        }
+    }
+    fp.into_inner()
 }
 
 /// A parameter file's part of the key (CommandLines.addParamFileInfoToFingerprint).
@@ -328,7 +564,8 @@ pub enum KeyKind<'a> {
         inherited: &'a [String],
         execution_info: &'a [(String, String)],
     },
-    /// RegularFileWriteAction.computeKey (FileWriteAction.java:276-281).
+    /// RegularFileWriteAction.computeKey (FileWriteAction.java:276-281), or
+    /// CompressedFileWriteAction's over 256 characters.
     FileWrite { executable: bool, contents: &'a str },
     /// TemplateExpansionAction.computeKey (:183-196) over an artifact template.
     Template {
@@ -338,6 +575,16 @@ pub enum KeyKind<'a> {
     },
     /// SymlinkAction.computeKey (:429-439) of toArtifact/toExecutable (no inputPath).
     Symlink,
+    /// SolibSymlinkAction.computeKey (rules/cpp/SolibSymlinkAction.java
+    /// :123-129): the symlink's and the library's exec paths, on
+    /// EMPTY_PLATFORM_INFO (:327-335).
+    SolibSymlink { symlink: &'a str, library: &'a str },
+    /// A `computeKey` stream encoded by the action's builder
+    /// (crate::aquery::Meta::compute_key).
+    Encoded(&'a [u8]),
+    /// RunfilesTreeAction (actions/RunfilesTreeAction.java:133-139,
+    /// 163-172): an empty computeKey on EMPTY_PLATFORM_INFO.
+    RunfilesTree,
     /// UnresolvedSymlinkAction.computeKey (:96-103).
     UnresolvedSymlink {
         target: &'a str,
@@ -393,9 +640,20 @@ pub fn action_key(
             executable,
             contents,
         } => {
-            fp.string(FILE_WRITE_GUID)
-                .boolean(*executable)
-                .string(contents);
+            // FileWriteAction.createInternal (:187-203): a String longer
+            // than the threshold (in Java chars: Bazel's internal Latin-1
+            // bytes) is a CompressedFileWriteAction keyed by its GZIP bytes
+            // (:333-340; crate::java_gzip).
+            let internal = crate::bazel_bytes::internal_bytes(contents);
+            if internal.len() > COMPRESS_CHARS_THRESHOLD {
+                fp.string(COMPRESSED_FILE_WRITE_GUID)
+                    .boolean(*executable)
+                    .raw(&crate::java_gzip::gzip(&internal));
+            } else {
+                fp.string(FILE_WRITE_GUID)
+                    .boolean(*executable)
+                    .string(contents);
+            }
             platform
         }
         KeyKind::Template {
@@ -415,6 +673,17 @@ pub fn action_key(
         KeyKind::Symlink => {
             fp.string(SYMLINK_GUID);
             // SymlinkAction.getExecutionPlatform/getExecProperties (:483-492).
+            return finish(fp, KeyPlatform::Internal, &[]);
+        }
+        KeyKind::SolibSymlink { symlink, library } => {
+            fp.string(symlink).string(library);
+            return finish(fp, KeyPlatform::Internal, &[]);
+        }
+        KeyKind::Encoded(bytes) => {
+            fp.raw(bytes);
+            platform
+        }
+        KeyKind::RunfilesTree => {
             return finish(fp, KeyPlatform::Internal, &[]);
         }
         KeyKind::UnresolvedSymlink {
@@ -603,6 +872,34 @@ mod tests {
                 target_type: "UNSPECIFIED"
             }),
             "7d2c82a5149116bb2d33096d079881fc6021cce8883c7029142299b871c0d051"
+        );
+        // tests/fixtures/aquery/depsets: 255 and 256 characters are a
+        // RegularFileWriteAction, 257 a CompressedFileWriteAction.
+        assert_eq!(
+            key(KeyKind::FileWrite {
+                executable: false,
+                contents: &"a".repeat(255)
+            }),
+            "e9f81900b3b2ddd0d0ae96293e7e344be93e9f95ded65f2cd94cbf23ec55c6eb"
+        );
+        assert_eq!(
+            key(KeyKind::FileWrite {
+                executable: false,
+                contents: &"b".repeat(256)
+            }),
+            "18c34f5be9ad356009489d9bb37bc86452de1642afced6d38f4ac6dabb05c2e7"
+        );
+        assert_eq!(
+            key(KeyKind::FileWrite {
+                executable: true,
+                contents: &"c".repeat(257)
+            }),
+            "3c2d65cf3a6f2bf3775b6f695c9bb05be109d5d68b66fa0bf7cd164421c3eff5"
+        );
+        // Every RunfilesTreeAction of the genuine rules_go capture.
+        assert_eq!(
+            key(KeyKind::RunfilesTree),
+            "64524680ae352918974e5de22f89166472d4f41ef8c12369e8c62a2141413139"
         );
     }
 }

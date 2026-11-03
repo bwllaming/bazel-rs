@@ -14,7 +14,13 @@ include!("support/explicit_modules.rs");
 include!("support/module_archives.rs");
 
 fn fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/aquery/kitchen")
+    fixture_named("kitchen")
+}
+
+fn fixture_named(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/aquery")
+        .join(name)
 }
 
 fn genuine(name: &str) -> String {
@@ -38,13 +44,17 @@ struct Workspace(tempfile::TempDir);
 
 impl Workspace {
     fn new() -> Self {
+        Self::of("kitchen")
+    }
+
+    fn of(name: &str) -> Self {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("aquery-")
                 .tempdir_in(crate::test_temp::root())
                 .unwrap(),
         );
-        copy_tree(&fixture().join("ws"), ws.0.path());
+        copy_tree(&fixture_named(name).join("ws"), ws.0.path());
         seed_module_archives(&ws.0.path().join("cache"), &["platforms@1.0.0"]);
         ws
     }
@@ -391,4 +401,17 @@ fn aquery_errors_like_genuine() {
         written.starts_with("action 'Executing genrule //pkg:g'\n"),
         "{written}"
     );
+}
+
+/// tests/fixtures/aquery/depsets: Args over depsets (NestedSet structure
+/// fingerprints with every order, map_each, uniquify, formats, joins,
+/// omit_if_empty, expand_directories and tree artifacts, param files,
+/// ctx.actions.write(Args)) and FileWrites around and over the 256-character
+/// compression threshold: every action, ActionKey included, byte for byte.
+#[test]
+fn aquery_depset_and_compressed_write_keys_match_genuine() {
+    let ws = Workspace::of("depsets");
+    let all = ws.stdout(&["//pkg:all"]);
+    let expected = fs::read_to_string(fixture_named("depsets").join("genuine/all.txt")).unwrap();
+    assert_text(&all, &expected);
 }

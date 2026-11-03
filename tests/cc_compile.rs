@@ -174,9 +174,17 @@ impl Workspace {
         self.build_with_env(cache, args, &[])
     }
 
+    fn aquery(&self, cache: &str, args: &[&str]) -> Output {
+        self.command(cache, "aquery", args, &[])
+    }
+
     /// `build` plus extra client environment variables (N63's
     /// SOURCE_DATE_EPOCH pins the workspace status timestamp).
     fn build_with_env(&self, cache: &str, args: &[&str], env: &[(&str, &str)]) -> Output {
+        self.command(cache, "build", args, env)
+    }
+
+    fn command(&self, cache: &str, verb: &str, args: &[&str], env: &[(&str, &str)]) -> Output {
         let registry = format!(
             "--registry=file://{}",
             manifest()
@@ -190,7 +198,7 @@ impl Workspace {
             .args(["--kill-after=5s", "900s"])
             .arg(env!("CARGO_BIN_EXE_bazel-rs"))
             .args(["--ignore_all_rc_files", &format!("--cache-dir={cache}")])
-            .args(["build", "--experimental-builtin-modules", registry.as_str()])
+            .args([verb, "--experimental-builtin-modules", registry.as_str()])
             .args(args)
             .current_dir(&self.root)
             .env_clear()
@@ -461,4 +469,38 @@ fn cc_flag_options_reach_the_compile_command_lines() {
         .map(|line| line.as_str().unwrap().to_owned())
         .collect();
     assert_eq!(compiles, expected);
+}
+
+/// The genuine aquery of the three targets (aquery_receipt.json): every
+/// action byte for byte but the configuration checksum, ActionKeys included
+/// — CppCompileAction.computeKey over CppCompileActionBuilder's NestedSets,
+/// the LinkCommandLine Args of CppArchive/CppLink, SolibSymlinkAction.
+#[test]
+fn aquery_matches_genuine_cc_action_keys() {
+    let ws = Workspace::new();
+    let output = ws.aquery(
+        "cache",
+        &["//cdep:built + //cdep:prebuilt + //cdep:prebuilt_shared"],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let blocks = |text: &str| -> Vec<String> {
+        let mut blocks: Vec<String> = text
+            .split("\n\n")
+            .filter(|block| !block.trim().is_empty())
+            .map(|block| {
+                block
+                    .lines()
+                    .filter(|line| !line.starts_with("# Configuration: "))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .collect();
+        blocks.sort();
+        blocks
+    };
+    let expected = fs::read_to_string(fixture().join("genuine_aquery.txt")).unwrap();
+    assert_eq!(
+        blocks(&String::from_utf8_lossy(&output.stdout)),
+        blocks(&expected)
+    );
 }

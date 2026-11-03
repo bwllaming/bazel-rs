@@ -1,0 +1,100 @@
+action 'Compiling cdep/prebuilt.c'
+  Mnemonic: CppCompile
+  Target: //cdep:built
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: c93e154439013aef24c8b329beccbc95f28d103dd4eaaf23b875ed91effe1088
+  Inputs: [cdep/prebuilt.c, cdep/prebuilt.h, external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/cdep/_objs/built/prebuilt.pic.d, bazel-out/k8-fastbuild/bin/cdep/_objs/built/prebuilt.pic.o]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /usr/bin/gcc \
+    -U_FORTIFY_SOURCE \
+    -fstack-protector \
+    -Wall \
+    -Wunused-but-set-parameter \
+    -Wno-free-nonheap-object \
+    -fno-omit-frame-pointer \
+    -MD \
+    -MF \
+    bazel-out/k8-fastbuild/bin/cdep/_objs/built/prebuilt.pic.d \
+    '-frandom-seed=bazel-out/k8-fastbuild/bin/cdep/_objs/built/prebuilt.pic.o' \
+    -fPIC \
+    -iquote \
+    . \
+    -iquote \
+    bazel-out/k8-fastbuild/bin \
+    -c \
+    cdep/prebuilt.c \
+    -o \
+    bazel-out/k8-fastbuild/bin/cdep/_objs/built/prebuilt.pic.o \
+    -fno-canonical-system-headers \
+    -Wno-builtin-macro-redefined \
+    '-D__DATE__="redacted"' \
+    '-D__TIMESTAMP__="redacted"' \
+    '-D__TIME__="redacted"')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Linking cdep/libbuilt.a'
+  Mnemonic: CppArchive
+  Target: //cdep:built
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 3200bde542f4b32efb65a00ed23266df5f0e04a620976de18148596c00835190
+  Inputs: [bazel-out/k8-fastbuild/bin/cdep/_objs/built/prebuilt.pic.o, external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/cdep/libbuilt.a]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd, ZERO_AR_DATE=1]
+  Command Line: (exec /usr/bin/ar \
+    rcsD \
+    bazel-out/k8-fastbuild/bin/cdep/libbuilt.a \
+    bazel-out/k8-fastbuild/bin/cdep/_objs/built/prebuilt.pic.o)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Linking cdep/libbuilt.so'
+  Mnemonic: CppLink
+  Target: //cdep:built
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 1722789f8c54ffe75046db444993d3efa368c966bc197dadaacda07535b84ef1
+  Inputs: [bazel-out/k8-fastbuild/bin/cdep/_objs/built/prebuilt.pic.o, external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths, external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh, external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh, external/rules_cc+/cc/private/toolchain/build_interface_so, external/rules_cc+/cc/private/toolchain/link_dynamic_library.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/cdep/libbuilt.so]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin, PWD=/proc/self/cwd, ZERO_AR_DATE=1]
+  Command Line: (exec /usr/bin/gcc \
+    -shared \
+    -o \
+    bazel-out/k8-fastbuild/bin/cdep/libbuilt.so \
+    -Wl,-S \
+    '-fuse-ld=gold' \
+    -B/usr/bin \
+    -Wl,-no-as-needed \
+    -Wl,-z,relro,-z,now \
+    -pass-exit-codes \
+    bazel-out/k8-fastbuild/bin/cdep/_objs/built/prebuilt.pic.o \
+    -Wl,--push-state,-as-needed \
+    -lstdc++ \
+    -Wl,--pop-state \
+    -Wl,--push-state,-as-needed \
+    -lm \
+    -Wl,--pop-state)
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'SolibSymlink _solib_k8/libcdep_Slibbuilt.so'
+  Mnemonic: SolibSymlink
+  Target: //cdep:built
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: ddd6b3b6d04a2834828ec1c3debfd63adb1ac868d8a09cf8ac9468936c3fe8f2
+  Inputs: [bazel-out/k8-fastbuild/bin/cdep/libbuilt.so]
+  Outputs: [bazel-out/k8-fastbuild/bin/_solib_k8/libcdep_Slibbuilt.so]
+
+action 'SolibSymlink _solib_k8/_U_S_Scdep_Cprebuilt_Ushared___Ucdep/libprebuilt.so'
+  Mnemonic: SolibSymlink
+  Target: //cdep:prebuilt_shared
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: c39bd7ad5e8d77854e5de33826a02d8df82df448015cb2b54b6e6b0a5ab74710
+  Inputs: [cdep/libprebuilt.so]
+  Outputs: [bazel-out/k8-fastbuild/bin/_solib_k8/_U_S_Scdep_Cprebuilt_Ushared___Ucdep/libprebuilt.so]
+

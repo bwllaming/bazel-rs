@@ -193,6 +193,9 @@ mod expander {
     pub(crate) struct DirectoryExpander {
         #[allocative(skip)]
         pub listings: Option<Arc<Listings>>,
+        /// StarlarkCustomCommandLine.NoopExpander (:1090-1097): `[file]`
+        /// for a directory too (map_each at analysis, for aquery's key).
+        pub noop: bool,
     }
     starlark::starlark_simple_value!(DirectoryExpander);
 }
@@ -228,7 +231,7 @@ fn directory_expander_methods(builder: &mut starlark::environment::MethodsBuilde
                 file.get_type()
             );
         };
-        if !found.is_directory {
+        if !found.is_directory || this.noop {
             return Ok(heap.alloc(vec![file]));
         }
         let Some(listings) = &this.listings else {
@@ -370,6 +373,7 @@ fn call_mapper(
         if let Some(listings) = listings {
             arguments.push(heap.alloc(DirectoryExpander {
                 listings: Some(Arc::clone(listings)),
+                noop: false,
             }));
         }
         // Its `print`s show nothing (crate::debug_print::silenced).

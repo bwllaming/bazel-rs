@@ -695,6 +695,9 @@ pub(crate) fn call<'v>(
                 .expect("fresh Args");
             if let Some(info) = &param_info {
                 crate::args::set_param_file_info(args, info.clone())?;
+                if parameter_file_type_value.unpack_str() == Some("GCC_QUOTED") {
+                    crate::args::set_key_param_file_type(args, "GCC_QUOTED");
+                }
             }
             crate::args::add_strings(args, flags).map_err(|error| {
                 failure(format!("cc_internal.{method}: {error}"))
@@ -904,7 +907,10 @@ fn solib_symlink(context: &Context, library: &File, link_path: &str) -> anyhow::
     if library.short_path.starts_with("_solib_") {
         bail!("cc_internal dynamic library symlink of '{name}': already a solib symlink");
     }
-    let symlink = context.declare(link_path)?;
+    // SolibSymlinkAction.getDynamicLibrarySymlinkInternal (:181-202): a
+    // shareable artifact below the bin root (`_solib_<cpu>/...`), not below
+    // the package.
+    let symlink = context.declare_shareable(&context.output_root, link_path)?;
     context.register_action(crate::analysis_runtime::Registration {
         outputs: vec![symlink.clone()],
         inputs: vec![library.clone()],
@@ -1172,6 +1178,7 @@ fn create_cc_compile_action<'v>(
         }
     }
     let environment_feature = data.environment(&action_name, variables, eval)?;
+    let environment_feature_key = environment_feature.clone();
     let context = crate::analysis_runtime::context(eval)
         .map_err(|error| failure(format!("cc_internal.{method}: {error}")))?;
     let _ = (&label_owner, &active_owner);
@@ -1181,7 +1188,7 @@ fn create_cc_compile_action<'v>(
     // PWD put (overriding, unless requires-darwin), then the feature
     // variables putAll (which may override PWD again).
     let action_environment = action_env.for_spawn(true, BTreeMap::new());
-    let mut environment = action_environment.fixed;
+    let mut environment = action_environment.fixed.clone();
     environment.insert("PWD".to_owned(), "/proc/self/cwd".to_owned());
     for (key, value) in environment_feature {
         environment.insert(key, value);
@@ -1194,6 +1201,28 @@ fn create_cc_compile_action<'v>(
         execution_info.insert(requirement, String::new());
     }
     let mnemonic = compile_mnemonic(&action_name);
+    let compute_key = if crate::aquery::capturing() {
+        Some(compile_compute_key(&CompileKeyParts {
+            compilation: compilation_info,
+            toolchain: toolchain_info,
+            additional_inputs: &files_arg(7, "additional_compilation_inputs")?,
+            additional_set: bound[8].filter(|value| !value.is_none()),
+            build_info_headers: &files_arg(19, "build_info_header_files")?,
+            cache_key_inputs: bound[18].filter(|value| !value.is_none()),
+            source: &source,
+            action_name: &action_name,
+            has_dotd: bound[11].is_some_and(|value| !value.is_none()),
+            fixed_environment: &action_environment.fixed,
+            inherited_environment: &action_environment.inherited,
+            feature_environment: &environment_feature_key,
+            execution_info: &execution_info,
+            compiler_options: &arguments[1..],
+            heap,
+        })?)
+    } else {
+        None
+    };
+    let primary_output = outputs.first().cloned();
     context
         .register_action(crate::analysis_runtime::Registration {
             outputs,
@@ -1224,7 +1253,187 @@ fn create_cc_compile_action<'v>(
             shareable: false,
         })
         .map_err(|error| failure(format!("cc_internal.{F}: {error}")))?;
+    if let (Some(key), Some(output)) = (compute_key, primary_output) {
+        let mut actions = context.actions.borrow_mut();
+        if let Some(registered) = actions
+            .iter_mut()
+            .rev()
+            .find(|action| action.outputs.contains(&output))
+        {
+            let mut meta = registered
+                .action
+                .extra
+                .aquery
+                .as_deref()
+                .cloned()
+                .unwrap_or_default();
+            meta.compute_key = Some(key);
+            registered.action.extra.aquery = Some(Arc::new(meta));
+        }
+    }
     Ok(())
+}
+
+/// What CppCompileAction.computeKey reads of one `create_cc_compile_action`.
+struct CompileKeyParts<'a, 'v> {
+    compilation: Value<'v>,
+    toolchain: Value<'v>,
+    additional_inputs: &'a [File],
+    additional_set: Option<Value<'v>>,
+    build_info_headers: &'a [File],
+    cache_key_inputs: Option<Value<'v>>,
+    source: &'a File,
+    action_name: &'a str,
+    has_dotd: bool,
+    fixed_environment: &'a BTreeMap<String, String>,
+    inherited_environment: &'a std::collections::BTreeSet<String>,
+    feature_environment: &'a [(String, String)],
+    execution_info: &'a BTreeMap<String, String>,
+    compiler_options: &'a [String],
+    heap: Heap<'v>,
+}
+
+/// CppCompileAction.computeKey (rules/cpp/CppCompileAction.java:1389-1461)
+/// over the NestedSets CppCompileActionBuilder builds
+/// (CppCompileActionBuilder.java:256-400): the in-memory .d bit, the GUID,
+/// the configuration's and the features' environments, the execution info,
+/// the digest of the compiler options, then the declared include sources,
+/// the mandatory (spawn) inputs and the prunable headers by their NestedSet
+/// structure (crate::aquery_key::nested_set), and the built-in include
+/// directories. The encoded stream, before the execution platform.
+fn compile_compute_key<'v>(parts: &CompileKeyParts<'_, 'v>) -> starlark::Result<Vec<u8>> {
+    use crate::aquery_key::Fingerprint;
+    use crate::starlark_types::{Depset, DepsetNode, Item, ItemType, Order};
+    const GUID: &str = "97493805-894f-493a-be66-9a698f45c31d";
+    let heap = parts.heap;
+    let node = |value: Option<Value<'v>>| -> Option<Arc<DepsetNode>> {
+        value
+            .and_then(|value| value.downcast_ref::<Depset>())
+            .map(|depset| Arc::clone(&depset.node))
+    };
+    let field = |info: Value<'v>, name: &str| node(struct_field(info, name, heap));
+    let compose = |direct: Vec<File>, children: Vec<Option<Arc<DepsetNode>>>, order: Order| {
+        let mut items: Vec<Item> = Vec::new();
+        for file in direct {
+            let item = Item::File(file);
+            if !items.contains(&item) {
+                items.push(item);
+            }
+        }
+        Depset::compose_framework(
+            items,
+            children.into_iter().flatten().collect(),
+            order,
+            Some(ItemType::File),
+        )
+        .map(|depset| depset.node)
+        .map_err(|error| failure(format!("create_cc_compile_action key: {error}")))
+    };
+    // buildAndVerify: --incompatible_use_specific_tool_files (default true)
+    // stages compiler_files (as_files for `assemble`), all_files for a tree
+    // artifact source.
+    let toolchain_files = if parts.source.is_directory {
+        field(parts.toolchain, "all_files")
+    } else if parts.action_name == "assemble" {
+        field(parts.toolchain, "_as_files")
+    } else {
+        field(parts.toolchain, "_compiler_files")
+    };
+    // mandatoryInputsBuilder (stable): the additional inputs, the
+    // additional input set, the toolchain files.
+    let mandatory = compose(
+        parts.additional_inputs.to_vec(),
+        vec![node(parts.additional_set), toolchain_files],
+        Order::Default,
+    )?;
+    // buildMandatoryInputs (compile order).
+    let mut direct = files_field(
+        "create_cc_compile_action",
+        parts.toolchain,
+        "_builtin_include_files",
+        heap,
+    )?;
+    direct.extend(parts.build_info_headers.iter().cloned());
+    if let Some(map) = struct_field(parts.compilation, "_module_map", heap)
+        .and_then(|value| value.get_attr("file", heap).ok().flatten())
+        .and_then(|value| unpack_file(value).ok())
+    {
+        direct.push(map);
+    }
+    direct.push(parts.source.clone());
+    if let Some(grep) = struct_field(parts.toolchain, "_grep_includes", heap)
+        .and_then(|value| unpack_file(value).ok())
+    {
+        direct.push(grep);
+    }
+    let headers = field(parts.compilation, "headers");
+    let mut transitive = vec![
+        Some(mandatory),
+        field(parts.compilation, "_direct_module_maps"),
+        field(parts.compilation, "_non_code_inputs"),
+    ];
+    if !parts.has_dotd {
+        transitive.push(headers.clone());
+    }
+    let spawn = compose(direct, transitive, Order::Postorder)?;
+    let all = compose(
+        Vec::new(),
+        vec![Some(Arc::clone(&spawn)), node(parts.cache_key_inputs)],
+        Order::Default,
+    )?;
+    let empty = compose(Vec::new(), Vec::new(), Order::Default)?;
+    let headers = match headers {
+        Some(headers) => headers,
+        None => Arc::clone(&empty),
+    };
+    let mut expand = |item: &Item, fp: &mut Fingerprint<Vec<u8>>| {
+        if let Item::File(file) = item {
+            fp.string(&file.path);
+        }
+    };
+    let mut options = Fingerprint::default();
+    options.strings(parts.compiler_options.iter().map(String::as_str));
+    let built_in: Vec<String> = struct_field(parts.toolchain, "built_in_include_directories", heap)
+        .and_then(starlark::values::list::ListRef::from_value)
+        .map(|list| {
+            list.iter()
+                .filter_map(|value| value.unpack_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut fp = Fingerprint::<Vec<u8>>::default();
+    fp.boolean(parts.has_dotd)
+        .uuid(GUID)
+        .string_map(
+            parts
+                .fixed_environment
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        )
+        .strings(parts.inherited_environment.iter().map(String::as_str))
+        .string_map(
+            parts
+                .feature_environment
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        )
+        .string_map(
+            parts
+                .execution_info
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        )
+        .raw(&options.digest());
+    fp.raw(&crate::aquery_key::nested_set(&headers, &mut expand));
+    fp.int(0);
+    fp.raw(&crate::aquery_key::nested_set(&all, &mut expand));
+    fp.raw(&crate::aquery_key::nested_set(&spawn, &mut expand));
+    fp.int(0);
+    fp.raw(&crate::aquery_key::nested_set(&empty, &mut expand));
+    fp.strings(built_in.iter().map(String::as_str));
+    fp.int(0);
+    fp.raw(&crate::aquery_key::nested_set(&headers, &mut expand));
+    Ok(fp.into_inner())
 }
 
 /// CcCommon.CoptsFilter.passesFilter (CcCommon.java:122-130): the flag passes
