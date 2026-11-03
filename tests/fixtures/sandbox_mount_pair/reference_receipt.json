@@ -9,7 +9,7 @@
  "classification_notes": {
   "EXACT_MESSAGE": "same text; native exits 1 for option errors where genuine exits 2 (pre-existing native convention)",
   "EXACT_ROUTE": "both accept the option; release strings differ by the native suffix",
-  "EXPECTED_NATIVE_UNSUPPORTED": "genuine on this host resolves sandboxed to processwrapper-sandbox, which ignores mounts; native cannot remount under Landlock and fails explicitly"
+  "EXPECTED_NATIVE_UNSUPPORTED": "(historical) native once failed real remounts explicitly; superseded by the namespace sandbox branch: no row uses it any more"
  },
  "rows": [
   {
@@ -208,7 +208,7 @@
     "--sandbox_add_mount_pair=/usr:/opt/mp",
     "//:ok"
    ],
-   "classification": "EXPECTED_NATIVE_UNSUPPORTED",
+   "classification": "EXACT",
    "genuine": {
     "exit": 0,
     "error": null,
@@ -216,11 +216,12 @@
     "stdout": null
    },
    "native": {
-    "exit": 1,
-    "error": "unsupported option --sandbox_add_mount_pair: only identity mounts of an absolute path (PATH or PATH:PATH) are modelled; the native sandbox cannot remount a path (docs/SANDBOX.md)",
-    "output": null,
+    "exit": 0,
+    "error": null,
+    "output": "ok\n",
     "stdout": null
-   }
+   },
+   "note": "native re-observed with branch namespace-sandbox (capture.py --native): the Landlock processwrapper-sandbox ignores the mount like genuine; with the namespace sandbox the pair is a bind mount validated like LinuxSandboxUtil.validateBindMounts (tests/fixtures/sandbox_backend)"
   }
  ]
 }

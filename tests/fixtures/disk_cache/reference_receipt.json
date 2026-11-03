@@ -47,7 +47,7 @@
     "sh.out": "HELLO\n"
    },
    "processes": [
-    "INFO: 3 processes: 1 internal, 2 linux-sandbox."
+    "INFO: 3 processes: 1 internal, 2 processwrapper-sandbox."
    ]
   },
   "4_genuine_fresh_output_root_on_native_written": {

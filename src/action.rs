@@ -7523,7 +7523,7 @@ pub fn execute_with_remote(
         runner = Some(strategy.runner_name());
         report_subcommand(action, &execroot, strategy.runner_name());
         crate::progress::spawn_started(match strategy {
-            crate::sandbox::Strategy::Sandboxed => crate::progress::Strategy::LinuxSandbox,
+            crate::sandbox::Strategy::Sandboxed => crate::sandbox::sandboxed_progress(),
             crate::sandbox::Strategy::ProcessWrapper => {
                 crate::progress::Strategy::ProcessWrapperSandbox
             }
@@ -7549,15 +7549,18 @@ pub fn execute_with_remote(
             // action's cwd and environment; the worker applies the sandbox
             // and supervises the action. The wrapped argv carries the
             // action's own arguments after --.
-            crate::process_wrapper::Launch::sandbox_worker(crate::sandbox::wrap(
-                &execroot,
-                &tmp,
-                &environment,
-                crate::sandbox::denies_network(&execution_info),
-                &argv,
-                &work.0,
-                None,
-            ))
+            crate::process_wrapper::Launch::sandbox_worker(
+                crate::sandbox::wrap(
+                    &execroot,
+                    &tmp,
+                    &environment,
+                    &execution_info,
+                    &argv,
+                    &work.0,
+                    None,
+                )
+                .map_err(|error| format!("action '{}' failed: {error}", action.id))?,
+            )
         } else if action.executable_file && !argv[0].starts_with('/') {
             // Bazel runs a File executable by its execution path, relative
             // to the execution root; argv[0] keeps that spelling.
@@ -7628,8 +7631,8 @@ pub fn execute_with_remote(
                 &prepared,
                 &execroot,
                 match strategy {
-                    crate::sandbox::Strategy::Sandboxed => "linux-sandbox",
-                    crate::sandbox::Strategy::ProcessWrapper => "processwrapper-sandbox",
+                    crate::sandbox::Strategy::Sandboxed
+                    | crate::sandbox::Strategy::ProcessWrapper => strategy.runner_name(),
                     _ => "local",
                 },
                 status.code().unwrap_or(1),

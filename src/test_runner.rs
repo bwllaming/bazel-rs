@@ -594,7 +594,7 @@ impl<'a> Session<'a> {
                 ) {
                     "remote"
                 } else if crate::sandbox::all_sandboxed() {
-                    "linux-sandbox"
+                    crate::sandbox::sandboxed_runner_name()
                 } else {
                     "local"
                 },
@@ -1481,16 +1481,16 @@ impl Runner<'_> {
     /// TestRunnerAction.java:112), the test rule's tags and the test
     /// action's execution info (TargetUtils.getExecutionInfo with the
     /// rule's testing.ExecutionInfo requirements, TestSpec::execution_info).
-    /// Returns whether the sandbox must deny network
-    /// (crate::sandbox::denies_network).
-    fn strategy(&self, unit: &Unit<'_>) -> Result<(crate::sandbox::Strategy, bool), String> {
+    /// Returns the merged execution info too (the sandbox reads its network
+    /// policy and `requires-fakeroot` from it).
+    fn strategy(
+        &self,
+        unit: &Unit<'_>,
+    ) -> Result<(crate::sandbox::Strategy, std::collections::BTreeSet<String>), String> {
         let mut info: std::collections::BTreeSet<String> =
             unit.spec.info.tags.iter().cloned().collect();
         info.extend(unit.spec.execution_info().into_keys());
-        Ok((
-            crate::sandbox::resolve("TestRunner", &info, false)?,
-            crate::sandbox::denies_network(&info),
-        ))
+        Ok((crate::sandbox::resolve("TestRunner", &info, false)?, info))
     }
 
     /// The sandbox worker's arguments for one test spawn: the full process
@@ -1504,8 +1504,8 @@ impl Runner<'_> {
         args: &[String],
         executable: &str,
         arg0: &str,
-        deny_network: bool,
-    ) -> Vec<String> {
+        execution_info: &std::collections::BTreeSet<String>,
+    ) -> Result<Vec<String>, String> {
         let environment: BTreeMap<String, std::ffi::OsString> = env
             .iter()
             .map(|(name, value)| (name.clone(), std::ffi::OsString::from(value)))
@@ -1522,7 +1522,7 @@ impl Runner<'_> {
             execroot,
             &tmp,
             &environment,
-            deny_network,
+            execution_info,
             &arguments,
             execroot.parent().unwrap_or(execroot),
             Some(arg0),
@@ -1585,7 +1585,7 @@ impl Runner<'_> {
         // test exit under the sandbox is an ordinary test failure, without
         // the action suggestion text (StandaloneTestStrategy reports the
         // spawn's own status).
-        let (strategy, deny_network) = self.strategy(unit)?;
+        let (strategy, execution_info) = self.strategy(unit)?;
         // The `remote` strategy (StandaloneTestStrategy's spawn through
         // RemoteSpawnRunner, docs/REMOTE_EXECUTION.md); a failure with
         // `--remote_local_fallback` runs the attempt standalone.
@@ -1668,8 +1668,8 @@ impl Runner<'_> {
                     args,
                     SETUP_EXEC_PATH,
                     &args[0],
-                    deny_network,
-                ))
+                    &execution_info,
+                )?)
             } else {
                 crate::process_wrapper::Launch::new(
                     execroot.join(SETUP_EXEC_PATH),
@@ -1895,8 +1895,8 @@ impl Runner<'_> {
                     &arguments,
                     XML_EXEC_PATH,
                     XML_EXEC_PATH,
-                    deny_network,
-                ))
+                    &execution_info,
+                )?)
             } else {
                 crate::process_wrapper::Launch::new(
                     execroot.join(XML_EXEC_PATH),

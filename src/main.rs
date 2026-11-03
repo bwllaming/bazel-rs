@@ -138,17 +138,6 @@ fn run() -> Result<(), String> {
                 .map_err(|_| "command-line arguments must be valid UTF-8".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    // The sandbox worker (crate::sandbox): the executor starts this binary
-    // with the hidden `__sandbox-worker` subcommand where Bazel starts its
-    // linux-sandbox tool. Dispatched before anything else: the worker is not
-    // a bazel command and shares none of the client state (no diagnostics
-    // either: its stderr is the action's).
-    if args
-        .first()
-        .is_some_and(|arg| arg == bazel_rs::sandbox::WORKER_ARG)
-    {
-        std::process::exit(bazel_rs::sandbox::worker_main(&args[1..]));
-    }
     bazel_rs::perf_mark("main.start");
     let line = bazelrc::split_command_line(args)?;
     let cache = line.cache_dir.clone().map(PathBuf::from);
@@ -740,8 +729,35 @@ fn run() -> Result<(), String> {
     // command. Unknown strategy identifiers are rejected once here, at
     // startup, with Bazel's STRATEGY_NOT_FOUND text and exit code 2
     // (SpawnStrategyRegistry.toStrategy:718-727).
+    // The roots the namespace sandbox keeps visible in its hermetic /tmp
+    // (collectPathsToMountUnderHermeticTmp: the sandbox base and output base
+    // — both below the cache here —, the package path, the repo contents
+    // cache).
+    spawn_options.known_roots = vec![
+        cache.clone(),
+        bazel_rs::worktree::output_base_for(&cache, &root),
+        root.clone(),
+    ];
+    if let Some(contents) = rc_options
+        .repo_contents_cache
+        .as_deref()
+        .and_then(|value| bazel_rs::repository_cache::resolve(value, &root))
+    {
+        spawn_options.known_roots.push(contents);
+    }
     if let Err(error) = bazel_rs::sandbox::validate(&spawn_options) {
         eprintln!("ERROR: {error}");
+        // The executor's initialization failure ends the build like the
+        // --test_strategy one below (genuine 9.3.1 capture,
+        // tests/fixtures/sandbox_backend).
+        if builds(&command) {
+            eprintln!("ERROR: Build did NOT complete successfully");
+            match command.as_str() {
+                "test" => eprintln!("ERROR: Couldn't start the build. Unable to run tests"),
+                "run" => eprintln!("ERROR: Build failed. Not running target"),
+                _ => {}
+            }
+        }
         exit(2);
     }
     bazel_rs::sandbox::install(spawn_options);
@@ -5233,6 +5249,27 @@ impl NativeOptions {
             self.spawn.sandbox_default_allow_network = value?;
             false
         } else if builds(command)
+            && let Some(value) =
+                bazel_rs::configuration::boolean_option(arg, "sandbox_fake_hostname")
+        {
+            // SandboxOptions.java:112-117.
+            self.spawn.sandbox_fake_hostname = value?;
+            false
+        } else if builds(command)
+            && let Some(value) =
+                bazel_rs::configuration::boolean_option(arg, "sandbox_fake_username")
+        {
+            // SandboxOptions.java:120-125.
+            self.spawn.sandbox_fake_username = value?;
+            false
+        } else if builds(command)
+            && let Some(value) =
+                bazel_rs::configuration::boolean_option(arg, "sandbox_enable_loopback_device")
+        {
+            // SandboxOptions.java:403-411.
+            self.spawn.sandbox_enable_loopback_device = value?;
+            false
+        } else if builds(command)
             && matches!(
                 arg,
                 "--sandbox_writable_path" | "--sandbox_block_path" | "--sandbox_tmpfs_path"
@@ -5246,7 +5283,7 @@ impl NativeOptions {
                 bazel_rs::rc_options::value_option(arg, next, "sandbox_add_mount_pair")
         {
             let (form, value, used) = parsed?;
-            self.parse_mount_pair(&form, value, &unit.option.origin_suffix())?;
+            self.parse_mount_pair(&form, value)?;
             used
         } else if builds(command)
             && let Some(value) = arg
@@ -5532,22 +5569,14 @@ impl NativeOptions {
     }
 
     /// One `--sandbox_add_mount_pair` value (SandboxOptions.java:173-180,
-    /// MountPairConverter): converter errors are Bazel's; an identity mount
-    /// of an absolute path (`/tmp`, `/tmp:/tmp` — ~/code's `build:linux_*`
-    /// line) is recorded with no further effect (crate::sandbox::SpawnOptions
-    /// ::sandbox_add_mount_pair); any other pair would need a remount the
-    /// Landlock sandbox cannot make and fails explicitly.
-    fn parse_mount_pair(&mut self, form: &str, value: &str, origin: &str) -> Result<(), String> {
-        let (source, target) = bazel_rs::sandbox::mount_pair(value)
+    /// MountPairConverter): converter errors are Bazel's; the pair is a bind
+    /// mount of the namespace sandbox (crate::sandbox::SpawnOptions
+    /// ::sandbox_add_mount_pair), ignored by the fallback sandbox like
+    /// genuine's processwrapper-sandbox ignores it.
+    fn parse_mount_pair(&mut self, form: &str, value: &str) -> Result<(), String> {
+        let pair = bazel_rs::sandbox::mount_pair(value)
             .map_err(|error| format!("While parsing option {form}: {error}"))?;
-        if source != target || !Path::new(&source).is_absolute() {
-            return Err(format!(
-                "unsupported option --sandbox_add_mount_pair{origin}: only identity mounts of an absolute path (PATH or PATH:PATH) are modelled; the native sandbox cannot remount a path (docs/SANDBOX.md)"
-            ));
-        }
-        self.spawn
-            .sandbox_add_mount_pair
-            .push(PathBuf::from(source));
+        self.spawn.sandbox_add_mount_pair.push(pair);
         Ok(())
     }
 
@@ -6550,6 +6579,20 @@ fn main() {
         .is_some_and(|arg| arg == bazel_rs::process_wrapper::ARG)
     {
         std::process::exit(bazel_rs::process_wrapper::main(&raw.collect::<Vec<_>>()));
+    }
+    // The sandbox worker (crate::sandbox): the executor starts this binary
+    // with the hidden `__sandbox-worker` subcommand where Bazel starts its
+    // linux-sandbox tool. Dispatched before anything else, while the process
+    // is single-threaded (unshare(CLONE_NEWUSER) requires it): the worker is
+    // not a bazel command and shares none of the client state (no
+    // diagnostics either: its stderr is the action's).
+    let mut raw = std::env::args_os().skip(1);
+    if raw
+        .next()
+        .is_some_and(|arg| arg == bazel_rs::sandbox::WORKER_ARG)
+    {
+        let args: Vec<String> = raw.map(|arg| arg.to_string_lossy().into_owned()).collect();
+        std::process::exit(bazel_rs::sandbox::worker_main(&args));
     }
     // The native coverage output generator (crate::coverage): a coverage
     // test action's LCOV_MERGER launcher starts this binary with it.

@@ -674,8 +674,9 @@ fn proxies_are_chosen_again_for_every_redirect_target() {
 /// (tests/fixtures/sandbox_mount_pair/reference_receipt.json): identity
 /// mounts build (from the command line and an rc `--config`), the building
 /// commands and `info` take the option, `query` does not, converter errors
-/// are Bazel's; a real remount fails explicitly (genuine on this host runs
-/// processwrapper-sandbox, which ignores mounts; EXPECTED_NATIVE_UNSUPPORTED).
+/// are Bazel's; a real remount is ignored like genuine's processwrapper-sandbox
+/// ignores it on this host (tests/fixtures/sandbox_backend), or — with the
+/// namespace sandbox — validated like linux-sandbox's bind mounts.
 #[test]
 fn sandbox_add_mount_pair_follows_genuine() {
     let f = Fixture::new();
@@ -714,12 +715,13 @@ fn sandbox_add_mount_pair_follows_genuine() {
                 "While parsing option --sandbox_add_mount_pair= : Input   contains one or more empty paths. {form}"
             ),
         ),
-        (
-            &["build", "--sandbox_add_mount_pair=/usr:/opt/mp", "//:plain"][..],
-            "unsupported option --sandbox_add_mount_pair: only identity mounts of an absolute path"
-                .to_owned(),
-        ),
     ] {
         rejected(&f.run(args), &marker);
+    }
+    let remount = f.run(&["build", "--sandbox_add_mount_pair=/usr:/opt/mp", "//:plain"]);
+    if remount.status.success() {
+        assert_eq!(built(&remount), "plain\n");
+    } else {
+        rejected(&remount, "Mount target '/opt/mp' does not exist.");
     }
 }

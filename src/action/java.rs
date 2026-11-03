@@ -197,22 +197,17 @@ fn spawn(
     let sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
     report_subcommand(action, execroot, strategy.runner_name());
     crate::progress::spawn_started(match strategy {
-        crate::sandbox::Strategy::Sandboxed => crate::progress::Strategy::LinuxSandbox,
+        crate::sandbox::Strategy::Sandboxed => crate::sandbox::sandboxed_progress(),
         crate::sandbox::Strategy::ProcessWrapper => {
             crate::progress::Strategy::ProcessWrapperSandbox
         }
         _ => crate::progress::Strategy::Local,
     });
     let mut launch = if sandboxed {
-        crate::process_wrapper::Launch::sandbox_worker(crate::sandbox::wrap(
-            execroot,
-            tmp,
-            &environment,
-            crate::sandbox::denies_network(info),
-            &argv,
-            work,
-            None,
-        ))
+        crate::process_wrapper::Launch::sandbox_worker(
+            crate::sandbox::wrap(execroot, tmp, &environment, info, &argv, work, None)
+                .map_err(|error| format!("action '{}' failed: {error}", action.id))?,
+        )
     } else if action.executable_file && !argv[0].starts_with('/') {
         crate::process_wrapper::Launch::new(
             execroot.join(&argv[0]),

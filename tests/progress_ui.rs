@@ -217,7 +217,9 @@ fn the_status_area_shows_on_a_terminal_and_nowhere_else() {
         "{raw:?}"
     );
     assert!(
-        raw.contains("s linux-sandbox") || raw.contains("s local"),
+        raw.contains("s linux-sandbox")
+            || raw.contains("s processwrapper-sandbox")
+            || raw.contains("s local"),
         "{raw:?}"
     );
     // ...every status line fits the 100 columns (one left free)...

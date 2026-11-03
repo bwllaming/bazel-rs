@@ -4,11 +4,24 @@ Bazel 9.3 executes Linux actions under the `sandboxed` strategy by default:
 the platform default strategy list is [worker,] sandboxed, local
 (`BazelStrategyModule.java:67-80`; `SandboxModule.java:353-356` registers
 `sandboxed` as the default spawn strategy whenever a sandbox implementation
-is supported), and on Linux the implementation is the `linux-sandbox` tool
-(`SandboxModule.java:326`, `src/main/tools/linux-sandbox.cc`). This engine
-implements the same semantics: `sandboxed` is the default, `--spawn_strategy`
-and `--strategy=<mnemonic>=` select strategies per spawn, and test actions
-run sandboxed like any action.
+is supported). On Linux `sandboxed` is the `linux-sandbox` tool
+(`src/main/tools/linux-sandbox.cc`) when it works on the host —
+`LinuxSandboxedSpawnRunner.isSupported` runs `/bin/true` through it once —
+and `processwrapper-sandbox`, a sandbox directory without any isolation,
+otherwise (`SandboxModule.java:281-326` registers `sandboxed` for both,
+linux-sandbox last so that it wins). This engine implements the same
+semantics with the same two backends (`crate::sandbox::Backend`):
+
+| Host | genuine 9.3.1 | bazel-rs | `INFO: N processes: …` |
+| --- | --- | --- | --- |
+| unprivileged user namespaces work (and a fresh `/proc` in one) | linux-sandbox | the namespace sandbox (`src/sandbox/namespaces.rs`) | `linux-sandbox` |
+| user namespaces blocked (Docker's default seccomp profile — ~/code's CI runners —, Ubuntu's `apparmor_restrict_unprivileged_userns=1` — this dev host —, sysbox containers that refuse a fresh `/proc`) | processwrapper-sandbox | processwrapper-sandbox, restricted by a Landlock ruleset | `processwrapper-sandbox` |
+
+`sandboxed` is the default, `--spawn_strategy` and `--strategy=<mnemonic>=`
+select strategies per spawn, and test actions run sandboxed like any action.
+Paired receipt of the backend choice: `tests/fixtures/sandbox_backend`
+(genuine 9.3.1 on this host; the genuine `linux-sandbox` binary's own probe
+fails here and in Docker with the reasons recorded there).
 
 ## Strategy plumbing
 
@@ -17,14 +30,19 @@ run sandboxed like any action.
   the option is not allowMultiple, `ExecutionOptions.java:63-75`).
   Registered identifiers are `standalone`/`local` (`StandaloneModule.java:98`),
   `sandboxed`/`linux-sandbox` (`SandboxModule.java:326`),
-  `processwrapper-sandbox` (SandboxModule.java:285-299: a sandbox strategy
-  that isolates nothing — the strategy genuine Bazel resolves to on hosts
-  without usable namespaces, like this one; an explicit escape hatch here)
-  and `worker` (BazelStrategyModule.java:75; persistent workers,
+  `processwrapper-sandbox` (SandboxModule.java:285-299: requested
+  explicitly, a sandbox strategy that isolates nothing, like genuine's) and
+  `worker` (BazelStrategyModule.java:75; persistent workers,
   docs/PERSISTENT_WORKERS.md: usable only for spawns that support workers,
   skipped for every other spawn).
+  `linux-sandbox` is registered only where the namespace sandbox works:
+  elsewhere `--spawn_strategy=linux-sandbox` is rejected exactly like
+  genuine rejects it there (`SandboxModule` registers it only when
+  `LinuxSandboxedSpawnRunner.isSupported`; receipt row `linux-sandbox`).
   Unknown identifiers are rejected once at startup with Bazel's
-  STRATEGY_NOT_FOUND text and exit code 2 (SpawnStrategyRegistry.toStrategy:
+  STRATEGY_NOT_FOUND text, `ERROR: Build did NOT complete successfully`
+  (plus `Couldn't start the build. Unable to run tests` for `test`) and
+  exit code 2 (SpawnStrategyRegistry.toStrategy:
   717-727): the request name is "explicit default strategies" for
   `--spawn_strategy` (built at :546-551) and "mnemonic M" for
   `--strategy=M=` / `--genrule_strategy` (:494); the trailing
@@ -48,8 +66,8 @@ run sandboxed like any action.
   from a genrule's `local = 1` and from rule tags through
   `TargetUtils.getExecutionInfo`); the tag set is merged with the spawn's
   `execution_requirements` map exactly like `remote_policy`
-  (crate::action::remote_policy). A kernel without Landlock support skips
-  `sandboxed` the same way. When no requested strategy can execute the spawn
+  (crate::action::remote_policy). A host with neither usable namespaces nor
+  Landlock skips `sandboxed` the same way. When no requested strategy can execute the spawn
   the build fails with Bazel's message (`SpawnStrategyResolver.java:77-96`).
 - The platform default list is Bazel's own — [worker,] sandboxed, local
   (`BazelStrategyModule.java:67-80`): `worker` executes the spawns whose
@@ -87,23 +105,125 @@ run sandboxed like any action.
   the same 5 (`//internal:bazel_test`, `tags = ["local"]`) unsandboxed; the
   earlier bare "not sandboxed" note made that look like a divergence.
 
-## The sandbox
+## The namespace sandbox (linux-sandbox)
 
-Genuine `linux-sandbox` clones the action into fresh user, mount, IPC, PID
-and (by default) network namespaces and remounts the whole filesystem
-read-only except the writable paths (`linux-sandbox.cc:185-196`,
-`linux-sandbox-pid1.cc: SetupMountNamespace`, `MakeFilesystemMostlyReadOnly`,
-`MountProcAndSys`, `SetupNetworking`). This engine's build client runs in a
-Docker container whose default seccomp policy denies `unshare`/`clone` with
-`CLONE_NEWNS`/`CLONE_NEWPID` and every `mount(2)` to unprivileged processes,
-so those namespaces cannot be created here (probe evidence in
-`tests/fixtures/sandbox/reference_receipt.json`; the same filter is why
-genuine Bazel 9.3.0 on this host cannot register `linux-sandbox` either and
-falls back to processwrapper-sandbox, which isolates nothing). The closest
-Bazel-faithful design that still makes out-of-sandbox writes FAIL is a
-Landlock ruleset (Linux LSM, ABI 4 on this kernel) applied by a sandbox
-worker process immediately before it starts the action — exactly the point
-where linux-sandbox applies its namespace setup:
+Where unprivileged user namespaces work, `sandboxed` is genuine's
+linux-sandbox, ported (`src/sandbox/namespaces.rs`; `linux-sandbox.cc`,
+`linux-sandbox-pid1.cc`, `LinuxSandboxedSpawnRunner.prepareSpawn`,
+`LinuxSandboxCommandLineBuilder`):
+
+- **Probe.** Once per invocation (lazily, at the first sandboxed spawn or
+  an explicit `linux-sandbox` request) the engine runs `/bin/true` through
+  its own sandbox worker with the probe's options (user, mount, IPC and PID
+  namespaces, the read-only remount, a fresh `/proc`), like
+  `LinuxSandboxedSpawnRunner.computeIsSupported`. Any failure selects the
+  fallback below. One extra process pair per invocation (~3 ms).
+- **Processes.** The executor starts its own binary as `__sandbox-worker`
+  (the linux-sandbox binary's role). The worker unshares the user, mount,
+  IPC — plus network and UTS on demand — namespaces, maps the user (the
+  client's uid/gid; `nobody` with `--sandbox_fake_username`; root for the
+  `requires-fakeroot` execution requirement), sets the mounts up, then
+  unshares the PID namespace and starts `__sandbox-pid1` as its first
+  process: between fork and exec — still holding the worker's capabilities —
+  it mounts a fresh `/proc`; then, as pid 1, it forks the action as pid 2 in
+  its own process group with umask 022 and every signal at its default,
+  forwards SIGTERM to that group, reaps every process of the namespace, and
+  exits with the action's code or 128 + its signal (`WaitForChild`).
+  Leaving pid 1 kills whatever the action left (setsid daemons included).
+  The worker stays outside the PID namespace as the spawn's supervisor
+  (docs/PROCESS_WRAPPER.md): test timeouts (`T`), kills (`K`), the memory
+  watchdog's group kill and the executor's death reach pid 1 unchanged; a
+  SIGKILLed pid 1 takes the namespace with it.
+- **Mounts** (`MountFilesystems`, `MakeFilesystemMostlyReadOnly`, in
+  genuine's order): the mount namespace is made private (`MS_REC |
+  MS_PRIVATE`); bind mounts (`MS_BIND | MS_REC`); tmpfs on every
+  `--sandbox_tmpfs_path`; every writable path bound onto itself; the
+  working directory (the execroot) bound onto itself; then every mount of
+  `/proc/self/mounts` remounted read-only — keeping its locked
+  nodev/noexec/nosuid/atime flags, retrying EBUSY, ignoring EACCES, EPERM,
+  EINVAL, ENOENT, ESTALE, ENODEV — except the working directory, the
+  writable paths and the tmpfs mounts. With a network namespace a fresh
+  read-only sysfs is mounted on `/sys` and `lo` brought up
+  (`--sandbox_enable_loopback_device`, default true). Writes outside the
+  writable set fail with **EROFS** ("Read-only file system"), exactly like
+  genuine.
+- **Writable paths** (`getWritableDirs`, a sorted set): the execroot,
+  TEST_TMPDIR and TMPDIR (relative to the execroot; outside it they must
+  exist and are resolved — "Cannot resolve symlinks in TMPDIR because it
+  doesn't exist: …" otherwise), `--sandbox_writable_path` entries and their
+  resolved targets, the resolved `/dev/shm`, and `/tmp`. The host `/dev` is
+  remounted read-only like the rest (device nodes stay usable).
+- **Hermetic /tmp** (`useHermeticTmp`, always on in Bazel 9): each spawn's
+  own empty `<sandbox>/_hermetic_tmp` is mounted at `/tmp` as the final
+  mount, unless a `--sandbox_add_mount_pair` has the source `/tmp` (~/code's
+  `build:linux_* --sandbox_add_mount_pair=/tmp`), a `--sandbox_tmpfs_path`
+  is `/tmp`, or a bazel-rs root is `/tmp` itself. The bazel-rs roots below
+  `/tmp` — the cache directory (sandbox base, CAS, output base), the
+  workspace, the repo contents cache — are mounted back at their first two
+  segments (`/tmp/x/y/z` → `/tmp/x`, `collectPathsToMountUnderHermeticTmp`),
+  and writable paths and tmpfs mount points below `/tmp` are created inside
+  the hermetic tmp first. TMPDIR keeps its value (the client's TMPDIR, or
+  `/tmp` — now the private one); a client TMPDIR below `/tmp` stays the
+  shared host directory, as in genuine. Mount pairs whose target lies below
+  `/tmp` are moved into the hermetic tmp; a mount on `/tmp` itself with
+  hermetic tmp fails with genuine's text.
+- **`--sandbox_add_mount_pair`**: target ← source bind mounts (a relative
+  source is relative to the execroot; per source the last pair wins, per
+  target the last source), read-only unless the target is writable,
+  validated like `LinuxSandboxUtil.validateBindMounts`: "Mount source '…'
+  does not exist.", "Mount target '…' is a file but mount source '…' is a
+  directory, they must be the same type.", "Mount target '…' does not
+  exist. Bazel only supports bind mounting on top of existing
+  files/directories. …" — spawn failures, like genuine's UserExecException.
+- **`--sandbox_block_path`**: each existing (resolved) path is covered by an
+  inaccessible helper — an empty mode-000 directory or file. Genuine keeps
+  the helpers in the sandbox base; here they live on a private tmpfs the
+  worker mounts on `<sandbox>/sandbox-helpers`, so nothing mode-000 is ever
+  left in the cache. Reads fail with EACCES.
+- **`--sandbox_tmpfs_path`**: an empty tmpfs (`MS_NOSUID | MS_NODEV |
+  MS_NOATIME`); the working directory may not lie below one (genuine's
+  text).
+- **Network**: a network namespace exactly when the spawn must be denied
+  the network (`block-network`, or `--nosandbox_default_allow_network`
+  without `requires-network`; `Spawns.requiresNetwork`) — all protocols,
+  loopback up unless `--nosandbox_enable_loopback_device`.
+- **`--sandbox_fake_hostname`**: a UTS namespace with hostname `localhost`
+  and domain name `localdomain`. **`--sandbox_fake_username`**: the user is
+  `nobody`.
+- Not modelled: `--experimental_use_hermetic_linux_sandbox` (pivot_root into
+  a hardlinked tree; an unknown option here), cgroups
+  (`--experimental_sandbox_memory_limit_mb` and friends),
+  `--sandbox_explicit_pseudoterminal`. Persistent workers with
+  `--worker_sandboxing` keep the Landlock wrapper (genuine's sandboxed
+  workers are not linux-sandbox spawns either).
+- **Test-only knob** `BAZEL_RS_SANDBOX_NAMESPACES`: `off` skips the
+  namespaces (the fallback runs; measurements), `bind-proc` lets pid 1 bind
+  the host `/proc` (and keep the host `/sys`) when the kernel refuses a fresh
+  mount. Container runtimes like sysbox overmount `/proc` files, and the
+  kernel's `mount_too_revealing` check then refuses a fresh proc in a nested
+  user namespace — genuine's linux-sandbox dies there (`"mount /proc":
+  Invalid argument`, receipt), and so does the default probe. The knob is how
+  the namespace path is exercised on this machine:
+  `docker run --security-opt seccomp=unconfined --security-opt
+  apparmor=unconfined -e BAZEL_RS_SANDBOX_NAMESPACES=bind-proc …` (process
+  listings under `/proc` are then the container's; the PID namespace still
+  ends with pid 1). Integration tests (`tests/sandbox.rs`) adapt to the
+  backend the engine's probe selects and skip the namespace-only checks with
+  a message where it is unavailable.
+
+## The fallback sandbox (processwrapper-sandbox + Landlock)
+
+Where user namespaces are unavailable, genuine runs processwrapper-sandbox,
+and so does this engine — by name (`INFO: N processes: … processwrapper-sandbox`,
+the progress display, the execution log, BEP), and in what a spawn sees: the
+shared host `/tmp`, the host's hostname and user, mount pairs and tmpfs
+paths without mounts (genuine's processwrapper-sandbox ignores both; receipt
+rows `fake-hostname-username`, `remount`). On top of that, so that
+out-of-sandbox writes still FAIL, the sandbox worker applies a Landlock
+ruleset (Linux LSM, ABI 4 on this kernel) before it starts the action —
+exactly the point where linux-sandbox applies its namespace setup. An
+explicitly requested `processwrapper-sandbox` stays without the ruleset,
+like genuine's.
 
 - The executor starts its own binary as the hidden `__sandbox-worker`
   subcommand (the role the linux-sandbox binary fills as the spawn's
@@ -166,19 +286,15 @@ where linux-sandbox applies its namespace setup:
   (Bazel's EnvironmentalExecException class; the createFileSystem ->
   "Could not copy inputs into sandbox" role).
 
-Deviations from genuine namespaces (all forced by this host's seccomp
-filter, none by choice): no user/mount/PID/IPC/UTS namespaces; `/proc` shows
-host processes (no pid-namespace isolation); no fresh `/proc`/`/sys` mounts;
-no fake hostname (`sandbox_fake_hostname` unimplemented); the tmpfs mounts
-of `--sandbox_tmpfs_path` are writable grants, not empty filesystems. Two
-further, deliberate loosenings: `/tmp` is the **shared host /tmp** (Bazel's
-linux-sandbox mounts a private, empty hermetic /tmp per sandbox when no
-explicit /tmp mount exists — LinuxSandboxedSpawnRunner.useHermeticTmp:218-296
-with known-path remounts — so cross-action /tmp side channels exist here
-that Bazel's sandbox prevents; a workspace under ~/code that needs the host
-/tmp visible uses Bazel's own answer, `--sandbox_add_mount_pair=/tmp`,
-which is accepted: identity mounts of absolute paths change nothing here,
-other remounts fail explicitly — see the flag table). TMPDIR has genuine's value under every strategy — the
+Deviations of the fallback from genuine's linux-sandbox (forced by the
+missing namespaces, none by choice — genuine's own fallback isolates
+nothing): no user/mount/PID/IPC/UTS namespaces; `/proc` shows host
+processes; no fresh `/proc`/`/sys` mounts; no fake hostname or username;
+`--sandbox_tmpfs_path` entries are writable grants, not empty filesystems;
+`--sandbox_add_mount_pair` is ignored (like genuine's processwrapper-sandbox);
+`/tmp` is the **shared host /tmp**, exactly as under genuine's
+processwrapper-sandbox (cross-action /tmp side channels exist that the
+namespace sandbox's hermetic /tmp prevents). TMPDIR has genuine's value under every strategy — the
 client's `TMPDIR`, or `/tmp` (PosixLocalEnvProvider.rewriteLocalEnv;
 docs/ACTION_ENV.md, `tests/fixtures/action_tmpdir`) — and is the shared
 host directory too, not a per-action directory: a per-action directory below
@@ -191,14 +307,17 @@ cannot write. Writes, creates, removes, renames and truncations are denied.
 
 - **Tool caches under $HOME fail sandboxed** — go, pip, npm, cargo and zig
   without configured cache directories write `~/.cache`-style paths, which
-  the sandbox denies with EACCES ("Permission denied"), exactly like a
-  genuine linux-sandbox (whose read-only remount denies the same writes).
+  the sandbox denies — EROFS ("Read-only file system") under the namespace
+  sandbox, exactly like genuine linux-sandbox, EACCES ("Permission denied")
+  under the Landlock fallback (genuine's processwrapper-sandbox would let
+  them through).
   Point the tool's cache at TMPDIR or /tmp (both sandbox-writable), grant
   the path with `--sandbox_writable_path=<dir>`, or tag the action
   `no-sandbox` (Bazel's own answers are `--sandbox_writable_path` and the
   tag).
-- **A `--cache-dir` under /tmp is writable by sandboxed actions** (the /tmp
-  grant is Bazel-parity). Cross-linking docs/HARDLINK_STAGING.md: staged
+- **A `--cache-dir` under /tmp is writable by actions of the Landlock
+  fallback** (the /tmp grant is Bazel-parity; under the namespace sandbox the
+  cache is mounted read-only into the hermetic /tmp). Cross-linking docs/HARDLINK_STAGING.md: staged
   inputs are hardlinks into the content-addressed store, and Landlock does
   not restrict metadata operations — an action can chmod a staged input
   (read-only hardlink) and then write the shared store blob through it.
@@ -231,12 +350,18 @@ Use --sandbox_debug to see verbose messages from the sandbox and retain the sand
 | `--strategy=<mnemonic>=<list>` | per-mnemonic override |
 | `--genrule_strategy=<list>` | Genrule-only override (deprecated spelling) |
 | `--sandbox_debug` | retain the sandbox build root, print setup log, no suggestion |
-| `--sandbox_writable_path=<path>` | keep an existing path writable (with its symlink target) |
-| `--sandbox_block_path=<path>` | make the path's subtree unreadable |
-| `--sandbox_tmpfs_path=<path>` | keep the path writable (no empty tmpfs is mounted) |
-| `--sandbox_add_mount_pair=<path>[:<path>]` | identity mounts (`/tmp`, `/tmp:/tmp`) accepted with no effect (host paths are visible at their own path; a bind mount is not writable unless already a writable dir); other pairs fail explicitly; converter errors are Bazel's. A mount source that does not exist is not reported (linux-sandbox fails such spawns with "Mount source '…' does not exist."; processwrapper-sandbox, genuine's strategy on this host, ignores mounts) |
-| `--[no]sandbox_default_allow_network` | default true: sandboxed actions reach the network; `--nosandbox_...` denies TCP unless the spawn tags `requires-network` |
+| `--sandbox_writable_path=<path>` | keep a path writable (with its symlink target): bound onto itself (namespaces) / granted writable (Landlock) |
+| `--sandbox_block_path=<path>` | make the path unreadable: an inaccessible helper mounted over it (namespaces) / no Landlock read grant on its subtree |
+| `--sandbox_tmpfs_path=<path>` | an empty tmpfs (namespaces) / the path granted writable, no mount (Landlock) |
+| `--sandbox_add_mount_pair=<path>[:<path>]` | a bind mount target ← source, validated like genuine (namespaces) / ignored like genuine's processwrapper-sandbox (Landlock); a `/tmp` source disables the hermetic /tmp; converter errors are Bazel's |
+| `--sandbox_fake_hostname` | hostname `localhost` in a UTS namespace (namespaces) / no effect, like processwrapper-sandbox |
+| `--sandbox_fake_username` | user `nobody` (namespaces) / no effect, like processwrapper-sandbox |
+| `--[no]sandbox_enable_loopback_device` | default true: a sandbox network namespace has `lo` up |
+| `--[no]sandbox_default_allow_network` | default true: sandboxed actions reach the network; `--nosandbox_...` denies it (a network namespace / Landlock's TCP denial) unless the spawn tags `requires-network` |
 
-Paired receipt: `tests/fixtures/sandbox/reference_receipt.json` (genuine
+Paired receipts: `tests/fixtures/sandbox/reference_receipt.json` (genuine
 Bazel 9.3.0 vs this engine on the same fixtures: default strategy choice,
-out-of-sandbox write failure texts, escalation absence, output bytes).
+out-of-sandbox write failure texts, escalation absence, output bytes) and
+`tests/fixtures/sandbox_backend/reference_receipt.json` (genuine 9.3.1: the
+backend and runner name on a host without user namespaces, an explicit
+`linux-sandbox`, the namespace-only options).

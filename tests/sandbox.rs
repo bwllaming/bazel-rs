@@ -149,6 +149,57 @@ fn thread_test_name() -> String {
         .replace("::", "-")
 }
 
+/// Whether this host's `sandboxed` strategy is the namespace sandbox
+/// (genuine's linux-sandbox): the engine's own probe, `/bin/true` through the
+/// sandbox worker (LinuxSandboxedSpawnRunner.isSupported). Where user
+/// namespaces are blocked — this dev host, Docker's default seccomp profile —
+/// it is the Landlock-restricted processwrapper-sandbox, and the
+/// namespace-only tests skip with a message. The test-only
+/// BAZEL_RS_SANDBOX_NAMESPACES knob (docs/SANDBOX.md) reaches the engine
+/// through the inherited environment.
+fn linux_sandbox() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        let knob = std::env::var("BAZEL_RS_SANDBOX_NAMESPACES").unwrap_or_default();
+        if knob == "off" {
+            return false;
+        }
+        let dir = tempfile::Builder::new()
+            .prefix("sandbox-probe-")
+            .tempdir_in(crate::test_temp::root())
+            .unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
+        command.args(["__sandbox-worker", "--namespaces", "-W"]);
+        command.arg(dir.path());
+        if knob == "bind-proc" {
+            command.arg("--proc-fallback");
+        }
+        command
+            .args(["--", "/bin/true"])
+            .current_dir(dir.path())
+            .env_clear()
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        command.status().is_ok_and(|status| status.success())
+    })
+}
+
+/// Skips a namespace-only test where the namespace sandbox is unavailable.
+fn skip_without_linux_sandbox(test: &str) -> bool {
+    if linux_sandbox() {
+        return false;
+    }
+    eprintln!(
+        "{test}: skipped — unprivileged user namespaces (or a fresh /proc in one) are \
+         unavailable on this host, so `sandboxed` is the Landlock processwrapper-sandbox \
+         (docs/SANDBOX.md); run in a container that allows them, e.g. \
+         BAZEL_RS_SANDBOX_NAMESPACES=bind-proc under docker --security-opt \
+         seccomp=unconfined --security-opt apparmor=unconfined"
+    );
+    true
+}
+
 struct Workspace {
     temp: tempfile::TempDir,
     /// Removes this test's outside-sandbox marker on drop, and the shared
@@ -197,9 +248,9 @@ impl Workspace {
             &format!(
                 r#"genrule(name = 'ok', srcs = ['in.txt'], outs = ['ok.txt'], cmd = 'cp $(location in.txt) $@')
 genrule(name = 'leak', outs = ['leak.txt'], cmd = 'echo leaked > {marker} && touch $@')
-genrule(name = 'net', outs = ['net.txt'], cmd = '(echo > /dev/tcp/127.0.0.1/9) 2> $@ || true')
-genrule(name = 'net2', tags = ['requires-network'], outs = ['net2.txt'], cmd = '(echo > /dev/tcp/127.0.0.1/9) 2> $@ || true')
-genrule(name = 'net3', tags = ['block-network'], outs = ['net3.txt'], cmd = '(echo > /dev/tcp/127.0.0.1/9) 2> $@ || true')
+genrule(name = 'net', outs = ['net.txt'], cmd = '((echo > /dev/tcp/127.0.0.1/9) 2> $@ || true) && echo netns=$$(readlink /proc/self/ns/net) >> $@')
+genrule(name = 'net2', tags = ['requires-network'], outs = ['net2.txt'], cmd = '((echo > /dev/tcp/127.0.0.1/9) 2> $@ || true) && echo netns=$$(readlink /proc/self/ns/net) >> $@')
+genrule(name = 'net3', tags = ['block-network'], outs = ['net3.txt'], cmd = '((echo > /dev/tcp/127.0.0.1/9) 2> $@ || true) && echo netns=$$(readlink /proc/self/ns/net) >> $@')
 genrule(name = 'blocked', outs = ['blocked.txt'], cmd = 'cat /etc/hostname > $@ 2>&1 || true')
 genrule(name = 'tmpwrite', outs = ['tmpwrite.txt'], cmd = 'echo t > /tmp/n59-tmpwrite-marker && echo done > $@')
 "#
@@ -259,8 +310,15 @@ fn outside_write_fails_sandboxed_with_bazels_suggestion() {
     assert!(!output.status.success());
     assert!(!output.status.success());
     let text = Workspace::text(&output);
+    // The read-only remount of linux-sandbox, or the Landlock denial of the
+    // fallback (docs/SANDBOX.md).
+    let denial = if linux_sandbox() {
+        "Read-only file system"
+    } else {
+        "Permission denied"
+    };
     assert!(
-        text.contains("Permission denied"),
+        text.contains(denial),
         "the sandbox denies the write: {text}"
     );
     assert!(
@@ -290,7 +348,9 @@ fn outside_write_passes_under_standalone() {
 #[test]
 fn linux_sandbox_is_the_sandboxed_identifier_alias() {
     // SandboxModule.java:326 registers "sandboxed" and "linux-sandbox" for
-    // the same strategy.
+    // the same strategy — only where LinuxSandboxedSpawnRunner.isSupported:
+    // elsewhere the identifier is unregistered, a startup error (genuine
+    // 9.3.1 capture, tests/fixtures/sandbox_backend).
     let ws = Workspace::new();
     let marker = ws.outside();
     ws.build_fixture(marker);
@@ -299,7 +359,21 @@ fn linux_sandbox_is_the_sandboxed_identifier_alias() {
         &["build", "--spawn_strategy=linux-sandbox", "//pkg:leak"],
     );
     assert!(!output.status.success());
-    assert!(Workspace::text(&output).contains(SUGGESTION));
+    let text = Workspace::text(&output);
+    if linux_sandbox() {
+        assert!(text.contains(SUGGESTION), "{text}");
+    } else {
+        assert_eq!(output.status.code(), Some(2), "{text}");
+        assert!(
+            text.contains(
+                "ERROR: 'linux-sandbox' was requested for explicit default strategies but no \
+                 strategy with that identifier was registered. Valid values are: [standalone, \
+                 local, sandboxed, processwrapper-sandbox, worker]\nERROR: Build did NOT \
+                 complete successfully\n"
+            ),
+            "{text}"
+        );
+    }
     assert!(!marker.exists());
 }
 
@@ -391,6 +465,38 @@ fn network_is_allowed_by_default_and_blocked_by_tag_or_flag() {
     let ws = Workspace::new();
     let marker = ws.outside();
     ws.build_fixture(marker);
+    if linux_sandbox() {
+        // linux-sandbox's network namespace (with `lo` up,
+        // --sandbox_enable_loopback_device): the spawn's netns differs from
+        // the client's exactly when the network is denied.
+        let own = format!(
+            "netns={}",
+            fs::read_link("/proc/self/ns/net").unwrap().display()
+        );
+        for (cache, args, name, isolated) in [
+            ("cache", &["build", "//pkg:net"][..], "net.txt", false),
+            (
+                "cache2",
+                &["build", "--nosandbox_default_allow_network", "//pkg:net"][..],
+                "net.txt",
+                true,
+            ),
+            (
+                "cache3",
+                &["build", "--nosandbox_default_allow_network", "//pkg:net2"][..],
+                "net2.txt",
+                false,
+            ),
+            ("cache4", &["build", "//pkg:net3"][..], "net3.txt", true),
+        ] {
+            let output = ws.run(cache, args);
+            assert!(output.status.success(), "{}", Workspace::text(&output));
+            let net = find_output(ws.path(), cache, name);
+            assert!(net.contains("Connection refused"), "{args:?}: {net}");
+            assert_eq!(!net.contains(&own), isolated, "{args:?}: {net} vs {own}");
+        }
+        return;
+    }
     let output = ws.run("cache", &["build", "//pkg:net"]);
     assert!(output.status.success(), "{}", Workspace::text(&output));
     let net = find_output(ws.path(), "cache", "net.txt");
@@ -434,11 +540,23 @@ fn network_is_allowed_by_default_and_blocked_by_tag_or_flag() {
 #[test]
 fn tmp_stays_writable_like_the_linux_sandbox() {
     // LinuxSandboxedSpawnRunner.getWritableDirs:391-398 keeps /tmp writable.
+    // linux-sandbox's /tmp is the spawn's own hermetic one (useHermeticTmp):
+    // the write never reaches the host /tmp. processwrapper-sandbox shares
+    // the host /tmp.
     let ws = Workspace::new();
     let marker = ws.outside();
     ws.build_fixture(marker);
     let output = ws.run("cache", &["build", "//pkg:tmpwrite"]);
     assert!(output.status.success(), "{}", Workspace::text(&output));
+    if linux_sandbox() {
+        assert!(!Path::new("/tmp/n59-tmpwrite-marker").exists());
+        // An explicit /tmp mount pair shares the host /tmp again.
+        let output = ws.run(
+            "cache2",
+            &["build", "--sandbox_add_mount_pair=/tmp", "//pkg:tmpwrite"],
+        );
+        assert!(output.status.success(), "{}", Workspace::text(&output));
+    }
     assert!(fs::read_to_string("/tmp/n59-tmpwrite-marker").is_ok_and(|text| text.trim() == "t"));
     fs::remove_file("/tmp/n59-tmpwrite-marker").unwrap();
 }
@@ -530,11 +648,16 @@ fn unknown_strategy_is_rejected_once_at_startup() {
     assert_eq!(output.status.code(), Some(2));
     let text = Workspace::text(&output);
     assert!(
-        text.contains(
+        text.contains(&format!(
             "ERROR: 'bogus' was requested for explicit default strategies but no strategy \
              with that identifier was registered. Valid values are: [standalone, local, \
-             sandboxed, linux-sandbox, processwrapper-sandbox, worker]"
-        ),
+             sandboxed, {}processwrapper-sandbox, worker]",
+            if linux_sandbox() {
+                "linux-sandbox, "
+            } else {
+                ""
+            }
+        )),
         "{text}"
     );
     // The mnemonic spellings: --strategy=M= and --genrule_strategy.
@@ -845,6 +968,171 @@ fn tmpdir_is_the_client_tmpdir_or_slash_tmp_like_genuine() {
         }
     }
     assert_eq!(&observed, rows);
+}
+
+/// The receipt cases of tests/fixtures/sandbox_backend (capture.py): which
+/// sandbox backs `sandboxed` and what a spawn sees there. Where user
+/// namespaces are blocked — the host genuine 9.3.1 was captured on — the
+/// engine must print genuine's `processwrapper-sandbox` runner and reject
+/// `--spawn_strategy=linux-sandbox` like it; with the namespace sandbox the
+/// same cases show linux-sandbox's view (fake hostname and user, a private
+/// /tmp, validated mount pairs).
+#[test]
+fn sandbox_backend_matches_the_genuine_receipt() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sandbox_backend");
+    let receipt: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fixture.join("reference_receipt.json")).unwrap())
+            .unwrap();
+    let marker = tempfile::Builder::new()
+        .prefix("sandbox-backend-marker-")
+        .tempfile_in("/tmp")
+        .unwrap();
+    let host = String::from_utf8(Command::new("hostname").output().unwrap().stdout).unwrap();
+    let user = String::from_utf8(Command::new("id").arg("-un").output().unwrap().stdout).unwrap();
+    for row in receipt["rows"].as_array().unwrap() {
+        let id = row["id"].as_str().unwrap();
+        let args: Vec<&str> = row["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| arg.as_str().unwrap())
+            .collect();
+        let ws = Workspace::new();
+        ws.file(
+            "BUILD.bazel",
+            &format!(
+                "genrule(name = \"ok\", outs = [\"ok.txt\"], cmd = \"(echo host=$$(hostname); \
+                 echo user=$$(id -un); if [ -e {} ]; then echo host_tmp=shared; \
+                 else echo host_tmp=private; fi) > $@\")\n",
+                marker.path().display()
+            ),
+        );
+        let output = ws.run("cache", &args);
+        let text = Workspace::text(&output);
+        let errors: Vec<&str> = text
+            .lines()
+            .filter(|line| line.starts_with("ERROR: "))
+            .collect();
+        let processes: Vec<&str> = text
+            .lines()
+            .filter(|line| line.starts_with("INFO: ") && line.contains(" processes: "))
+            .collect();
+        let built = output.status.success().then(|| {
+            find_output(ws.path(), "cache", "ok.txt")
+                .replace(&format!("host={host}"), "host=<host>\n")
+                .replace(&format!("user={user}"), "user=<user>\n")
+        });
+        let observed = serde_json::json!({
+            "exit": output.status.code(),
+            "errors": errors,
+            "processes": processes,
+            "output": built,
+        });
+        if !linux_sandbox() {
+            assert_eq!(observed, row["native"], "{id}: {text}");
+            if row["classification"] == "EXACT" {
+                assert_eq!(row["native"], row["genuine"], "{id}");
+            }
+            continue;
+        }
+        // linux-sandbox: genuine's view where the namespaces exist.
+        let expected = match id {
+            "default" => serde_json::json!({
+                "exit": 0, "errors": [],
+                "processes": ["INFO: 2 processes: 1 internal, 1 linux-sandbox."],
+                "output": "host=<host>\nuser=<user>\nhost_tmp=private\n",
+            }),
+            "processwrapper" => row["genuine"].clone(),
+            "linux-sandbox" => serde_json::json!({
+                "exit": 0, "errors": [],
+                "processes": ["INFO: 2 processes: 1 internal, 1 linux-sandbox."],
+                "output": "host=<host>\nuser=<user>\nhost_tmp=private\n",
+            }),
+            "fake-hostname-username" => serde_json::json!({
+                "exit": 0, "errors": [],
+                "processes": ["INFO: 2 processes: 1 internal, 1 linux-sandbox."],
+                "output": "host=localhost\nuser=nobody\nhost_tmp=private\n",
+            }),
+            // LinuxSandboxUtil.validateBindMounts: the target must exist.
+            "remount" => {
+                assert_ne!(output.status.code(), Some(0), "{id}: {text}");
+                assert!(
+                    text.contains(
+                        "Mount target '/opt/mp' does not exist. Bazel only supports bind \
+                         mounting on top of existing files/directories."
+                    ),
+                    "{id}: {text}"
+                );
+                continue;
+            }
+            other => panic!("unexpected receipt row {other}"),
+        };
+        assert_eq!(observed, expected, "{id}: {text}");
+    }
+}
+
+/// linux-sandbox's isolation (linux-sandbox-pid1.cc): the action is pid 2 of
+/// its own PID namespace and everything it leaves dies with pid 1; the host
+/// filesystem is read-only (EROFS) except the writable paths; mount pairs,
+/// tmpfs paths and block paths shape the view.
+#[test]
+fn linux_sandbox_isolates_the_spawn_in_namespaces() {
+    if skip_without_linux_sandbox("linux_sandbox_isolates_the_spawn_in_namespaces") {
+        return;
+    }
+    let ws = Workspace::new();
+    let base = ws.path().join("mounts");
+    fs::create_dir_all(base.join("source")).unwrap();
+    fs::create_dir_all(base.join("target")).unwrap();
+    fs::create_dir_all(base.join("secret")).unwrap();
+    fs::create_dir_all(base.join("scratch")).unwrap();
+    fs::write(base.join("source/file"), "mounted\n").unwrap();
+    fs::write(base.join("secret/file"), "secret\n").unwrap();
+    fs::write(base.join("scratch/old"), "old\n").unwrap();
+    let base_text = base.display().to_string();
+    ws.file(
+        "pkg/BUILD.bazel",
+        &format!(
+            r#"genrule(name = 'view', outs = ['view.txt'], cmd = '(set +e; echo pid=$$$$; cat {b}/target/file; cat {b}/secret/file 2>&1 | sed "s|.*: ||"; ls -A {b}/scratch | wc -l; touch {b}/scratch/new && echo tmpfs-writable; touch /etc/n59-ns 2>&1 | sed "s|.*: ||"; umask; true) > $@')
+genrule(name = 'daemon', outs = ['daemon.txt'], cmd = '(setsid sleep 300 > /dev/null 2>&1 &); echo started > $@')
+"#,
+            b = base_text
+        ),
+    );
+    let output = ws.run(
+        "cache",
+        &[
+            "build",
+            &format!("--sandbox_add_mount_pair={base_text}/source:{base_text}/target"),
+            &format!("--sandbox_block_path={base_text}/secret"),
+            &format!("--sandbox_tmpfs_path={base_text}/scratch"),
+            "//pkg:view",
+            "//pkg:daemon",
+        ],
+    );
+    let text = Workspace::text(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(
+        text.contains("INFO: 3 processes: 1 internal, 2 linux-sandbox."),
+        "{text}"
+    );
+    assert_eq!(
+        find_output(ws.path(), "cache", "view.txt"),
+        "pid=2\nmounted\nPermission denied\n0\ntmpfs-writable\nRead-only file system\n0022\n"
+    );
+    // The tmpfs hid the host directory and kept the write.
+    assert!(!base.join("scratch/new").exists());
+    assert!(base.join("scratch/old").exists());
+    // The daemon died with the PID namespace.
+    let ps = Command::new("pgrep")
+        .args(["-f", "sleep 300"])
+        .output()
+        .unwrap();
+    assert!(
+        ps.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&ps.stdout)
+    );
 }
 
 fn find_output(root: &Path, cache: &str, name: &str) -> String {

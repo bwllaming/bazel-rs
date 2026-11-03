@@ -1,0 +1,153 @@
+{
+ "schema": "sandbox-backend-receipt-v1",
+ "reference": {
+  "path": "/home/coder/bazel/.direnv/reference/bazel-9.3.1-linux-x86_64",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "version": "9.3.1"
+ },
+ "method": "capture.py in this directory on the dev host (one genrule workspace per case, private HOME, PATH=/usr/bin:/bin, --nosystem_rc --nohome_rc; genuine --batch with a scratch --output_user_root); native = bazel-rs of branch namespace-sandbox",
+ "host": {
+  "unshare -Ur true": "unshare: write failed /proc/self/uid_map: Operation not permitted",
+  "/proc/sys/kernel/unprivileged_userns_clone": "1",
+  "/proc/sys/kernel/apparmor_restrict_unprivileged_userns": "1 (a new user namespace gets no capabilities: CapEff 0)",
+  "consequence": "LinuxSandboxedSpawnRunner.isSupported fails: genuine registers sandboxed -> processwrapper-sandbox only; bazel-rs's namespace probe fails the same way and `sandboxed` runs its Landlock-restricted processwrapper-sandbox",
+  "docker (sysbox runtime underneath)": "with --security-opt seccomp=unconfined,apparmor=unconfined a user namespace gets its capabilities, but a fresh /proc mount is refused (EINVAL, mount_too_revealing: sysboxfs overmounts /proc/{swaps,sys,uptime}); genuine's linux-sandbox (MountProcAndSys DIEs, see below) and bazel-rs's probe fail there too. The test-only BAZEL_RS_SANDBOX_NAMESPACES=bind-proc binds the host /proc instead, which is how the namespace path is exercised (docs/SANDBOX.md)",
+  "genuine linux-sandbox -- /bin/true (the isSupported probe), extracted from the 9.3.1 install base": {
+   "dev host": "src/main/tools/linux-sandbox-pid1.cc:205: \"mount\": Operation not permitted (exit 1)",
+   "docker, seccomp/apparmor unconfined": "src/main/tools/linux-sandbox-pid1.cc:486: \"mount /proc\": Invalid argument (exit 1)"
+  }
+ },
+ "classification_notes": {
+  "EXACT": "same exit code, ERROR lines, process summary and genrule output",
+  "EXACT_EXCEPT_VALID_VALUES_LIST": "same rejection and exit code; the trailing 'Valid values are: [...]' list is genuine's host-registered set in registry order, bazel-rs lists its own registered identifiers (docs/SANDBOX.md)"
+ },
+ "rows": [
+  {
+   "id": "default",
+   "args": [
+    "build",
+    "//:ok"
+   ],
+   "classification": "EXACT",
+   "genuine": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox."
+    ],
+    "output": "host=<host>\nuser=<user>\nhost_tmp=shared\n"
+   },
+   "native": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox."
+    ],
+    "output": "host=<host>\nuser=<user>\nhost_tmp=shared\n"
+   }
+  },
+  {
+   "id": "processwrapper",
+   "args": [
+    "build",
+    "--spawn_strategy=processwrapper-sandbox",
+    "//:ok"
+   ],
+   "classification": "EXACT",
+   "genuine": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox."
+    ],
+    "output": "host=<host>\nuser=<user>\nhost_tmp=shared\n"
+   },
+   "native": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox."
+    ],
+    "output": "host=<host>\nuser=<user>\nhost_tmp=shared\n"
+   }
+  },
+  {
+   "id": "linux-sandbox",
+   "args": [
+    "build",
+    "--spawn_strategy=linux-sandbox",
+    "//:ok"
+   ],
+   "classification": "EXACT_EXCEPT_VALID_VALUES_LIST",
+   "genuine": {
+    "exit": 2,
+    "errors": [
+     "ERROR: 'linux-sandbox' was requested for explicit default strategies but no strategy with that identifier was registered. Valid values are: [dynamic_worker, processwrapper-sandbox, standalone, dynamic, remote, worker, sandboxed, local]",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "processes": [],
+    "output": null
+   },
+   "native": {
+    "exit": 2,
+    "errors": [
+     "ERROR: 'linux-sandbox' was requested for explicit default strategies but no strategy with that identifier was registered. Valid values are: [standalone, local, sandboxed, processwrapper-sandbox, worker]",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "processes": [],
+    "output": null
+   }
+  },
+  {
+   "id": "fake-hostname-username",
+   "args": [
+    "build",
+    "--sandbox_fake_hostname",
+    "--sandbox_fake_username",
+    "//:ok"
+   ],
+   "classification": "EXACT",
+   "genuine": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox."
+    ],
+    "output": "host=<host>\nuser=<user>\nhost_tmp=shared\n"
+   },
+   "native": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox."
+    ],
+    "output": "host=<host>\nuser=<user>\nhost_tmp=shared\n"
+   }
+  },
+  {
+   "id": "remount",
+   "args": [
+    "build",
+    "--sandbox_add_mount_pair=/usr:/opt/mp",
+    "//:ok"
+   ],
+   "classification": "EXACT",
+   "genuine": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox."
+    ],
+    "output": "host=<host>\nuser=<user>\nhost_tmp=shared\n"
+   },
+   "native": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox."
+    ],
+    "output": "host=<host>\nuser=<user>\nhost_tmp=shared\n"
+   }
+  }
+ ]
+}

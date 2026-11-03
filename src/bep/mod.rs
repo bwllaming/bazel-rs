@@ -2083,7 +2083,7 @@ fn process_stats(actions: &[ActionRecord]) -> String {
     }
     if spawns > 0 {
         let strategy = if crate::sandbox::all_sandboxed() {
-            "linux-sandbox"
+            crate::sandbox::sandboxed_runner_name()
         } else {
             "local"
         };

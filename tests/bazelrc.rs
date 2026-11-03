@@ -250,18 +250,14 @@ fn unmodelled_rc_options_name_their_file_and_line() {
         &["build", "--config=cross", ":ok"],
     );
     assert!(error.contains("--distdir"), "{error}");
+    // A real remount is modelled now: the namespace sandbox mounts it, the
+    // processwrapper-sandbox fallback ignores it like genuine's (docs/SANDBOX.md).
     ws.file(
         ".bazelrc",
         "build:cross --sandbox_add_mount_pair=/usr:/opt/mp\n",
     );
-    let error = ws.failed(&[], &["build", "--config=cross", ":ok"]);
-    assert!(
-        error.contains(&format!(
-            "unsupported option --sandbox_add_mount_pair from rc file {}:1 (config definition 'build:cross'): only identity mounts of an absolute path",
-            rc_path(&ws, ".bazelrc")
-        )),
-        "{error}"
-    );
+    let output = ws.run(&["build", "--config=cross", ":ok"]);
+    assert!(output.status.success(), "{}", stderr(&output));
 }
 
 #[test]

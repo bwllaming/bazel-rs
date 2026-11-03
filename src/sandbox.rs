@@ -1,44 +1,41 @@
 //! Sandboxed local execution (N59, docs/SANDBOX.md).
 //!
 //! Bazel 9.3's `sandboxed` strategy on Linux is the `linux-sandbox` tool
-//! (src/main/tools/linux-sandbox.cc): clone(CLONE_NEWUSER | CLONE_NEWNS |
-//! CLONE_NEWIPC | CLONE_NEWPID [| CLONE_NEWNET | CLONE_NEWUTS]) and, in pid 1,
-//! a private read-only mount table where only the sandbox execroot, TMPDIR,
-//! /tmp and /dev/shm stay writable (linux-sandbox-pid1.cc:
-//! MakeFilesystemMostlyReadOnly). This host runs the build client inside a
-//! Docker container whose default seccomp policy denies unshare/clone with
-//! CLONE_NEWNS or CLONE_NEWPID and every mount(2) (probe receipt in
-//! tests/fixtures/sandbox/reference_receipt.json), so those namespaces cannot
-//! be created by an unprivileged build client here.
+//! (src/main/tools/linux-sandbox.cc) whenever it works on the host
+//! (LinuxSandboxedSpawnRunner.isSupported runs /bin/true through it), and
+//! `processwrapper-sandbox` — a sandbox directory without any isolation —
+//! otherwise (SandboxModule.java:281-326 registers `sandboxed` for both,
+//! linux-sandbox last so that it wins). This engine has the same two
+//! backends ([`Backend`]):
 //!
-//! The closest Bazel-faithful design that still makes out-of-sandbox writes
-//! FAIL is a Landlock ruleset (LSM since Linux 5.13; ABI 4 here) applied in a
-//! sandbox worker process before exec'ing the action, exactly where
-//! linux-sandbox would apply its namespace setup:
+//! - [`Backend::Namespaces`] (namespaces.rs): the linux-sandbox itself —
+//!   user, mount, IPC and PID namespaces (network and UTS on demand), the
+//!   host filesystem read-only except the writable paths, a private
+//!   hermetic /tmp, `--sandbox_add_mount_pair`, `--sandbox_tmpfs_path`,
+//!   `--sandbox_block_path`, the fake hostname and username, a network
+//!   namespace for `block-network`, and a pid 1 whose exit kills the whole
+//!   process tree. Runner name `linux-sandbox`.
+//! - [`Backend::Landlock`]: on hosts without usable user namespaces (Docker's
+//!   default seccomp profile, Ubuntu's apparmor_restrict_unprivileged_userns
+//!   — this one) genuine runs processwrapper-sandbox, and so does this
+//!   engine, by name (`INFO: N processes: ... processwrapper-sandbox`) and in
+//!   what a spawn sees (the shared host /tmp, mount pairs ignored) — but
+//!   with a Landlock ruleset applied by the sandbox worker before it starts
+//!   the action, so that out-of-sandbox writes still FAIL:
+//!   - every write-ish filesystem access is denied outside the paths Bazel's
+//!     linux-sandbox keeps writable (the execroot, TMPDIR, TEST_TMPDIR, /tmp,
+//!     /dev/shm, --sandbox_writable_path entries with resolved symlinks);
+//!   - reads stay allowed everywhere; only --sandbox_block_path subtrees lose
+//!     read access;
+//!   - TCP bind and connect are denied when the spawn must be denied the
+//!     network (`block-network`, or --nosandbox_default_allow_network
+//!     without `requires-network`);
+//!   - denials surface as EACCES ("Permission denied"), not the EROFS a
+//!     read-only remount produces.
 //!
-//! - every write-ish filesystem access is denied outside the paths Bazel's
-//!   linux-sandbox keeps writable (LinuxSandboxedSpawnRunner.getWritableDirs
-//!   adds the sandbox execroot, /tmp and /dev/shm;
-//!   AbstractSandboxSpawnRunner.getWritableDirs adds TMPDIR, TEST_TMPDIR and
-//!   --sandbox_writable_path entries with resolved symlinks);
-//! - reads stay allowed everywhere, like a read-only bind of the whole
-//!   filesystem; only --sandbox_block_path subtrees lose read access;
-//! - the network stays allowed by default, exactly like Bazel
-//!   (--sandbox_default_allow_network, default true): TCP bind and connect
-//!   are denied only when the spawn must be denied the network — the
-//!   `block-network` tag, or --nosandbox_default_allow_network without a
-//!   `requires-network` tag (Spawns.requiresNetwork; the Landlock
-//!   counterpart of the network namespace linux-sandbox creates only then) —
-//!   approximated to TCP because Landlock (ABI 4) has no UDP or raw-socket
-//!   rules;
-//! - denials surface as EACCES ("Permission denied"), not the EROFS a
-//!   read-only remount produces — the observable difference from genuine
-//!   linux-sandbox, documented in the receipt.
-//!
-//! No user, PID, IPC, UTS or mount namespace exists, and Landlock cannot
-//! restrict process visibility, so `/proc` shows host processes. Those
-//! namespaces are simply unavailable to unprivileged processes under this
-//! container's seccomp filter; the deviations are recorded in docs/SANDBOX.md.
+//! An explicitly requested `processwrapper-sandbox` isolates nothing, like
+//! genuine's; an explicit `linux-sandbox` is unregistered — a startup error —
+//! where the namespaces cannot be created, exactly like genuine's.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -59,6 +56,9 @@ pub const SANDBOX_DEBUG_SUGGESTION: &str = "\n\nUse --sandbox_debug to see verbo
 
 /// The hidden argv[1] that dispatches main to [`worker_main`].
 pub const WORKER_ARG: &str = "__sandbox-worker";
+
+mod namespaces;
+pub use namespaces::KNOB as NAMESPACES_KNOB;
 
 /// The strategies this engine registers, in the identifier spellings Bazel
 /// 9.3 registers them: "standalone" and "local" (StandaloneModule.java:98),
@@ -122,12 +122,14 @@ impl Strategy {
     }
 
     /// The runner name of a spawn under this strategy
-    /// (SpawnRunner.getName, SpawnStats): Landlock is this engine's
-    /// `linux-sandbox`, standalone is LocalSpawnRunner's `local`.
+    /// (SpawnRunner.getName, SpawnStats): `sandboxed` is `linux-sandbox`
+    /// with the namespace backend and `processwrapper-sandbox` with the
+    /// fallback ([`sandboxed_runner_name`]); standalone is LocalSpawnRunner's
+    /// `local`.
     pub fn runner_name(self) -> &'static str {
         match self {
             Strategy::Standalone => "local",
-            Strategy::Sandboxed => "linux-sandbox",
+            Strategy::Sandboxed => sandboxed_runner_name(),
             Strategy::ProcessWrapper => "processwrapper-sandbox",
             Strategy::Worker => "worker",
             Strategy::Remote => "remote",
@@ -162,14 +164,24 @@ pub struct SpawnOptions {
     pub sandbox_block_path: Vec<PathBuf>,
     /// `--sandbox_tmpfs_path` (SandboxOptions.java:149-159).
     pub sandbox_tmpfs_path: Vec<PathBuf>,
-    /// `--sandbox_add_mount_pair` identity mounts (SandboxOptions.java:
-    /// 173-180; [`mount_pair`]). Recorded only: every host path is already
-    /// visible at its own path in the Landlock sandbox and a bind mount does
-    /// not make its target writable (linux-sandbox remounts everything
-    /// outside the writable dirs read-only), so an identity mount changes
-    /// nothing a spawn observes here. Non-identity remounts are rejected at
-    /// option parsing (docs/SANDBOX.md).
-    pub sandbox_add_mount_pair: Vec<PathBuf>,
+    /// `--sandbox_add_mount_pair` as (source, target) (SandboxOptions.java:
+    /// 173-180; [`mount_pair`]): bind mounts of the namespace sandbox
+    /// (namespaces::plan). The fallback sandbox ignores them, like genuine's
+    /// processwrapper-sandbox (docs/SANDBOX.md).
+    pub sandbox_add_mount_pair: Vec<(String, String)>,
+    /// `--sandbox_fake_hostname` (SandboxOptions.java:112-117): the
+    /// namespace sandbox's UTS namespace with hostname `localhost`.
+    pub sandbox_fake_hostname: bool,
+    /// `--sandbox_fake_username` (SandboxOptions.java:120-125): the
+    /// namespace sandbox maps the user to `nobody`.
+    pub sandbox_fake_username: bool,
+    /// `--sandbox_enable_loopback_device`, default true (SandboxOptions.java:
+    /// 403-411): a sandbox network namespace has `lo` up.
+    pub sandbox_enable_loopback_device: bool,
+    /// The paths bazel-rs manages (cache, output base, workspace): those
+    /// under /tmp stay visible in the namespace sandbox's hermetic /tmp
+    /// (LinuxSandboxedSpawnRunner.collectPathsToMountUnderHermeticTmp).
+    pub known_roots: Vec<PathBuf>,
     /// `--sandbox_debug` (SandboxOptions.java:87-97).
     pub sandbox_debug: bool,
     /// `--sandbox_default_allow_network`, default true (SandboxOptions.java:
@@ -195,6 +207,10 @@ impl Default for SpawnOptions {
             sandbox_block_path: Vec::new(),
             sandbox_tmpfs_path: Vec::new(),
             sandbox_add_mount_pair: Vec::new(),
+            sandbox_fake_hostname: false,
+            sandbox_fake_username: false,
+            sandbox_enable_loopback_device: true,
+            known_roots: Vec::new(),
             sandbox_debug: false,
             sandbox_default_allow_network: true,
             remote_registered: false,
@@ -271,15 +287,21 @@ pub fn mount_pair(input: &str) -> Result<(String, String), String> {
 /// mnemonic filter of BazelStrategyModule.java:84, built at :494). The
 /// trailing "Valid values are: [...]" is approximate: genuine's set is the
 /// strategies its modules registered on the host (an order the registry
-/// does not define); this engine's fixed set follows.
+/// does not define); this engine's fixed set follows. `linux-sandbox` is
+/// registered only where the namespace sandbox works (the probe runs only
+/// when the identifier is requested, or for the error's list).
 pub fn validate(options: &SpawnOptions) -> Result<(), String> {
-    let registered = registered(options);
     let check = |identifier: &str, request: &str| -> Result<(), String> {
-        if !registered.contains(&identifier) {
+        let known = if identifier == "linux-sandbox" {
+            linux_sandbox_registered(options)
+        } else {
+            REGISTERED.contains(&identifier) || identifier == "remote" && options.remote_registered
+        };
+        if !known {
             return Err(format!(
                 "'{identifier}' was requested for {request} but no strategy with that \
                  identifier was registered. Valid values are: [{}]",
-                registered.join(", ")
+                registered(options).join(", ")
             ));
         }
         Ok(())
@@ -298,10 +320,15 @@ pub fn validate(options: &SpawnOptions) -> Result<(), String> {
     Ok(())
 }
 
-/// The registered identifiers: [`REGISTERED`], plus `remote` when a remote
+/// The registered identifiers: [`REGISTERED`] (without `linux-sandbox` when
+/// the namespace sandbox is unavailable: SandboxModule registers it only
+/// when LinuxSandboxedSpawnRunner.isSupported), plus `remote` when a remote
 /// cache or executor is configured.
 fn registered(options: &SpawnOptions) -> Vec<&'static str> {
     let mut identifiers = REGISTERED.to_vec();
+    if !linux_sandbox_registered(options) {
+        identifiers.retain(|identifier| *identifier != "linux-sandbox");
+    }
     if options.remote_registered {
         identifiers.push("remote");
     }
@@ -319,26 +346,99 @@ pub fn remote_executor() -> bool {
 /// nothing.
 const ABI: landlock::ABI = landlock::ABI::V3;
 
-/// Whether this kernel's Landlock can carry the sandbox: a ruleset handling
-/// the write accesses must be creatable. Probed once per process; mirrors
-/// LinuxSandboxedSpawnRunner.isSupported, which runs /bin/true through the
-/// linux-sandbox once and remembers the result. The library's unit tests
+/// The implementation behind the `sandboxed` strategy on this host.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Backend {
+    /// The namespace sandbox (namespaces.rs): genuine's linux-sandbox.
+    Namespaces,
+    /// The Landlock-restricted processwrapper-sandbox (no usable user
+    /// namespaces).
+    Landlock,
+    /// Neither: `sandboxed` cannot execute anything (a kernel without
+    /// Landlock and namespaces; the library's in-process unit tests).
+    Unavailable,
+}
+
+/// The `sandboxed` backend, probed once per process: the namespace sandbox
+/// when it runs /bin/true (LinuxSandboxedSpawnRunner.isSupported, cached per
+/// server like genuine's isSupportedMap), else Landlock when a ruleset
+/// handling the write accesses can be created. [`namespaces::KNOB`] `off`
+/// skips the namespaces (measurements, tests). The library's unit tests
 /// execute actions in-process, where the worker (a hidden subcommand of the
 /// CLI binary) cannot run, so they resolve to the next strategy exactly like
-/// a host whose kernel lacks Landlock; sandboxed execution itself is covered
-/// by the CLI integration tests (tests/sandbox.rs).
-pub fn supported() -> bool {
-    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+/// a host without either; sandboxed execution itself is covered by the CLI
+/// integration tests (tests/sandbox.rs).
+pub fn backend() -> Backend {
+    backend_for(OPTIONS.get())
+}
+
+/// [`backend`], probing with `options` when it has not run yet (option
+/// validation runs before [`install`]; reading the installed options here
+/// must not initialize them).
+fn backend_for(options: Option<&SpawnOptions>) -> Backend {
+    static BACKEND: OnceLock<Backend> = OnceLock::new();
     if cfg!(test) {
-        return false;
+        return Backend::Unavailable;
     }
-    *SUPPORTED.get_or_init(|| {
-        Ruleset::default()
+    *BACKEND.get_or_init(|| {
+        let knob = std::env::var(namespaces::KNOB).unwrap_or_default();
+        // Genuine probes in its execroot; the cache directory (the first
+        // known root) holds this engine's execroots.
+        let cwd = options
+            .and_then(|options| options.known_roots.first())
+            .filter(|path| path.is_dir())
+            .cloned()
+            .or_else(|| std::env::current_dir().ok());
+        if knob != "off" && cwd.is_some_and(|cwd| namespaces::probe(&cwd, proc_fallback())) {
+            return Backend::Namespaces;
+        }
+        let landlock = Ruleset::default()
             .set_compatibility(landlock::CompatLevel::HardRequirement)
             .handle_access(AccessFs::from_write(ABI))
             .and_then(|ruleset| ruleset.create().map(|_| ()))
-            .is_ok()
+            .is_ok();
+        if landlock {
+            Backend::Landlock
+        } else {
+            Backend::Unavailable
+        }
     })
+}
+
+/// [`namespaces::KNOB`] `bind-proc` (test-only).
+fn proc_fallback() -> bool {
+    std::env::var(namespaces::KNOB).is_ok_and(|value| value == "bind-proc")
+}
+
+/// Whether the `sandboxed` strategy can execute spawns on this host.
+pub fn supported() -> bool {
+    backend() != Backend::Unavailable
+}
+
+/// Whether `linux-sandbox` is a registered identifier (SandboxModule:
+/// only when LinuxSandboxedSpawnRunner.isSupported).
+fn linux_sandbox_registered(options: &SpawnOptions) -> bool {
+    backend_for(Some(options)) == Backend::Namespaces
+}
+
+/// The runner name of a `sandboxed` spawn: `linux-sandbox` with the
+/// namespace backend, `processwrapper-sandbox` otherwise (the runner genuine
+/// resolves `sandboxed` to on hosts without usable namespaces).
+pub fn sandboxed_runner_name() -> &'static str {
+    if backend() == Backend::Namespaces {
+        "linux-sandbox"
+    } else {
+        "processwrapper-sandbox"
+    }
+}
+
+/// The progress display's strategy of a `sandboxed` spawn.
+pub fn sandboxed_progress() -> crate::progress::Strategy {
+    if backend() == Backend::Namespaces {
+        crate::progress::Strategy::LinuxSandbox
+    } else {
+        crate::progress::Strategy::ProcessWrapperSandbox
+    }
 }
 
 /// The strategies requested for `mnemonic`, in priority order
@@ -490,13 +590,17 @@ pub fn all_sandboxed() -> bool {
 /// subcommand's arguments (the counterpart of linux-sandbox's -M/-w/-e/-N
 /// command line, LinuxSandboxCommandLineBuilder).
 struct WorkerConfig {
-    /// Writable paths: the action's execroot and TMPDIR, TEST_TMPDIR, /tmp and
-    /// /dev/shm (LinuxSandboxedSpawnRunner.getWritableDirs:391-398), plus
+    /// The namespace sandbox's plan (`--namespaces` and linux-sandbox's
+    /// options); None for the Landlock sandbox.
+    namespaces: Option<namespaces::Plan>,
+    /// Landlock: writable paths: the action's execroot and TMPDIR,
+    /// TEST_TMPDIR, /tmp and /dev/shm
+    /// (LinuxSandboxedSpawnRunner.getWritableDirs:391-398), plus
     /// --sandbox_writable_path and --sandbox_tmpfs_path entries.
     writable: Vec<PathBuf>,
-    /// --sandbox_block_path entries.
+    /// Landlock: --sandbox_block_path entries.
     blocked: Vec<PathBuf>,
-    /// Whether the sandbox must deny network access to the spawn
+    /// Landlock: whether the sandbox must deny network access to the spawn
     /// (crate::denies_network: the Landlock counterpart of creating the
     /// network namespace, LinuxSandboxedSpawnRunner.java:302-303 — created
     /// only when the spawn does not require network; by default Bazel allows
@@ -504,11 +608,11 @@ struct WorkerConfig {
     /// true, SandboxOptions.java:283-292).
     deny_network: bool,
     /// Where the worker's setup log goes when --sandbox_debug is on
-    /// (linux-sandbox's -d debug_path).
+    /// (linux-sandbox's -D debug_path).
     debug_path: Option<PathBuf>,
     /// Where the worker reports a sandbox setup failure (the executor reads it
     /// after the wait; no action exit code can be mistaken for one).
-    setup_error: PathBuf,
+    setup_error: Option<PathBuf>,
     /// The process argv[0] spelling when it differs from the executable (test
     /// spawns exec the setup script with the test binary as argv[0],
     /// StandaloneTestStrategy's test wrapper).
@@ -520,11 +624,28 @@ struct WorkerConfig {
 }
 
 impl WorkerConfig {
+    fn empty() -> Self {
+        WorkerConfig {
+            namespaces: None,
+            writable: Vec::new(),
+            blocked: Vec::new(),
+            deny_network: false,
+            debug_path: None,
+            setup_error: None,
+            arg0: None,
+            exec: false,
+        }
+    }
+
     /// The worker's argv for `arguments`: `[__sandbox-worker, ...config..., --,
     /// argv...]`. The worker runs with the action's own cwd and environment;
     /// only the configuration travels as arguments.
     fn argv(&self, arguments: &[String]) -> Vec<String> {
         let mut argv = vec![WORKER_ARG.to_owned()];
+        if let Some(plan) = &self.namespaces {
+            argv.push("--namespaces".into());
+            plan.push_args(&mut argv);
+        }
         for path in &self.writable {
             argv.push("--writable".into());
             argv.push(display(path));
@@ -540,8 +661,10 @@ impl WorkerConfig {
             argv.push("--debug".into());
             argv.push(display(path));
         }
-        argv.push("--setup-error".into());
-        argv.push(display(&self.setup_error));
+        if let Some(path) = &self.setup_error {
+            argv.push("--setup-error".into());
+            argv.push(display(path));
+        }
         if let Some(arg0) = &self.arg0 {
             argv.push("--arg0".into());
             argv.push(arg0.clone());
@@ -552,6 +675,54 @@ impl WorkerConfig {
         argv.push("--".into());
         argv.extend(arguments.iter().cloned());
         argv
+    }
+
+    /// Parses the worker's own command line (the inverse of [`Self::argv`]):
+    /// the configuration and the action's argv after `--`.
+    fn parse(args: &[String]) -> Result<(Self, &[String]), String> {
+        let mut config = Self::empty();
+        let mut index = 0;
+        while index < args.len() {
+            if let Some(plan) = config.namespaces.as_mut()
+                && plan.parse_arg(args, &mut index)?
+            {
+                index += 1;
+                continue;
+            }
+            match args[index].as_str() {
+                "--namespaces" => config.namespaces = Some(namespaces::Plan::default()),
+                "--writable" => {
+                    index += 1;
+                    config.writable.push(path(&args.get(index))?);
+                }
+                "--block" => {
+                    index += 1;
+                    config.blocked.push(path(&args.get(index))?);
+                }
+                "--deny-network" => config.deny_network = true,
+                "--exec" => config.exec = true,
+                "--debug" => {
+                    index += 1;
+                    config.debug_path = Some(path(&args.get(index))?);
+                }
+                "--setup-error" => {
+                    index += 1;
+                    config.setup_error = Some(path(&args.get(index))?);
+                }
+                "--arg0" => {
+                    index += 1;
+                    config.arg0 = Some(
+                        args.get(index)
+                            .ok_or_else(|| "sandbox worker: --arg0 requires a value".to_owned())?
+                            .clone(),
+                    );
+                }
+                "--" => return Ok((config, &args[index + 1..])),
+                other => return Err(format!("sandbox worker: unknown option '{other}'")),
+            }
+            index += 1;
+        }
+        Ok((config, &[]))
     }
 }
 
@@ -573,20 +744,83 @@ fn absolute(path: &Path) -> PathBuf {
 /// Wraps one action command line in the sandbox worker: the executor starts
 /// its own binary as `__sandbox-worker` (the role the linux-sandbox binary
 /// fills as the spawn's argv[0]; crate::process_wrapper::Launch::sandbox_worker)
-/// and the worker runs and supervises the action under the Landlock ruleset.
-/// The writable set is the paths Bazel's linux-sandbox keeps
-/// writable for the spawn; the caller has already created the execroot and
-/// tmp directories and resolved the action environment (TMPDIR/TEST_TMPDIR
-/// are read from the worker's own environment, which is the action's).
+/// and the worker runs and supervises the action in the sandbox of the
+/// host's [`backend`]. The caller has already created the execroot and
+/// resolved the action environment (TMPDIR is `tmp`; TEST_TMPDIR is read from
+/// `environment`); `debug_root` is the spawn's sandbox directory. A sandbox
+/// layout the namespace sandbox rejects (a missing mount source, a missing
+/// TMPDIR: LinuxSandboxedSpawnRunner.prepareSpawn's UserExecException and
+/// IOException) is the error.
 pub fn wrap(
     execroot: &Path,
     tmp: &Path,
     environment: &BTreeMap<String, std::ffi::OsString>,
-    deny_network: bool,
+    execution_info: &BTreeSet<String>,
     arguments: &[String],
     debug_root: &Path,
     arg0: Option<&str>,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
+    let options = options();
+    let deny_network = denies_network(execution_info);
+    let mut config = if backend() == Backend::Namespaces {
+        let netns = match (deny_network, options.sandbox_enable_loopback_device) {
+            (false, _) => namespaces::Netns::None,
+            (true, true) => namespaces::Netns::WithLoopback,
+            (true, false) => namespaces::Netns::Plain,
+        };
+        let test_tmpdir = environment
+            .get("TEST_TMPDIR")
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty());
+        let block_paths: Vec<PathBuf> = options
+            .sandbox_block_path
+            .iter()
+            .map(|path| absolute(path))
+            .collect();
+        let writable_paths: Vec<PathBuf> = options
+            .sandbox_writable_path
+            .iter()
+            .map(|path| absolute(path))
+            .collect();
+        let plan = namespaces::plan(&namespaces::PlanInput {
+            execroot,
+            sandbox_dir: debug_root,
+            tmpdir: tmp,
+            test_tmpdir,
+            writable_paths: &writable_paths,
+            tmpfs_paths: &options.sandbox_tmpfs_path,
+            mount_pairs: &options.sandbox_add_mount_pair,
+            block_paths: &block_paths,
+            known_roots: &options.known_roots,
+            netns,
+            fake_hostname: options.sandbox_fake_hostname,
+            fake_username: options.sandbox_fake_username,
+            fake_root: execution_info.contains("requires-fakeroot"),
+            proc_fallback: proc_fallback(),
+        })?;
+        WorkerConfig {
+            namespaces: Some(plan),
+            ..WorkerConfig::empty()
+        }
+    } else {
+        landlock_config(execroot, tmp, environment, deny_network)
+    };
+    config.debug_path = options
+        .sandbox_debug
+        .then(|| debug_root.join("sandbox-debug.log"));
+    config.setup_error = Some(debug_root.join("sandbox-setup-error"));
+    config.arg0 = arg0.map(str::to_owned);
+    Ok(config.argv(arguments))
+}
+
+/// The Landlock sandbox's configuration: the paths Bazel's linux-sandbox
+/// keeps writable for the spawn.
+fn landlock_config(
+    execroot: &Path,
+    tmp: &Path,
+    environment: &BTreeMap<String, std::ffi::OsString>,
+    deny_network: bool,
+) -> WorkerConfig {
     let options = options();
     let mut writable = vec![
         execroot.to_path_buf(),
@@ -641,23 +875,19 @@ pub fn wrap(
             .map(|path| absolute(path))
             .collect(),
         deny_network,
-        debug_path: options
-            .sandbox_debug
-            .then(|| debug_root.join("sandbox-debug.log")),
-        setup_error: debug_root.join("sandbox-setup-error"),
-        arg0: arg0.map(str::to_owned),
-        exec: false,
+        ..WorkerConfig::empty()
     }
-    .argv(arguments)
 }
 
-/// [`wrap`] for a sandboxed persistent worker (`--worker_sandboxing`,
-/// SandboxedWorker): the same writable set around the worker's working
-/// directory, the network allowed (genuine's sandboxed workers isolate the
-/// filesystem only), and the worker process exec'ed in place of the sandbox
-/// worker so that its stdin and stdout stay the protocol's streams. A setup
-/// failure is reported on stderr (the worker log) with exit code 126, before
-/// any response.
+/// The sandbox wrapper for a sandboxed persistent worker
+/// (`--worker_sandboxing`, SandboxedWorker): the Landlock sandbox's writable
+/// set around the worker's working directory, the network allowed (genuine's
+/// sandboxed workers isolate the filesystem only), and the worker process
+/// exec'ed in place of the sandbox worker so that its stdin and stdout stay
+/// the protocol's streams. A setup failure is reported on stderr (the worker
+/// log) with exit code 126, before any response. The namespace sandbox does
+/// not host persistent workers (genuine's sandboxed workers are not
+/// linux-sandbox spawns either without --experimental_worker_sandbox_hardening).
 pub fn wrap_worker(
     execroot: &Path,
     tmp: &Path,
@@ -665,45 +895,47 @@ pub fn wrap_worker(
     arguments: &[String],
     debug_root: &Path,
 ) -> Vec<String> {
-    let mut argv = wrap(
-        execroot,
-        tmp,
-        environment,
-        false,
-        arguments,
-        debug_root,
-        None,
-    );
-    let separator = argv
-        .iter()
-        .position(|argument| argument == "--")
-        .expect("wrap ends its options with --");
-    argv.insert(separator, "--exec".into());
-    argv
+    let mut config = landlock_config(execroot, tmp, environment, false);
+    config.debug_path = options()
+        .sandbox_debug
+        .then(|| debug_root.join("sandbox-debug.log"));
+    config.setup_error = Some(debug_root.join("sandbox-setup-error"));
+    config.exec = true;
+    config.argv(arguments)
 }
 
-/// The worker entry point (main dispatches `__sandbox-worker` here): apply the
-/// Landlock ruleset, then start and supervise the action
-/// (crate::process_wrapper). A sandbox setup failure — including an action
-/// that cannot be started — is written to the setup-error file and reported
-/// with exit code 126 before the action exists (the infrastructure-failure
-/// channel; the action's own status travels in the control channel's end
-/// report) — the counterpart of AbstractSandboxSpawnRunner.runSpawn's
-/// sandbox.createFileSystem failure ("Could not copy inputs into sandbox", an
-/// EnvironmentalExecException, not the action's).
+/// The worker entry point (main dispatches `__sandbox-worker` here): set the
+/// sandbox up — the namespaces, or the Landlock ruleset — then start and
+/// supervise the action (crate::process_wrapper). A sandbox setup failure —
+/// including an action that cannot be started — is written to the
+/// setup-error file and reported with exit code 126 before the action exists
+/// (the infrastructure-failure channel; the action's own status travels in
+/// the control channel's end report) — the counterpart of
+/// AbstractSandboxSpawnRunner.runSpawn's sandbox.createFileSystem failure
+/// ("Could not copy inputs into sandbox", an EnvironmentalExecException, not
+/// the action's). The setup-error file is opened before any mount: the
+/// namespace sandbox makes its directory read-only.
 pub fn worker_main(args: &[String]) -> i32 {
+    let setup_error = args
+        .iter()
+        .position(|argument| argument == "--setup-error")
+        .and_then(|index| args.get(index + 1))
+        .and_then(|path| {
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+        });
     match worker(args) {
         Ok(code) => code,
         Err(error) => {
             eprintln!("linux-sandbox: {error}");
             // The executor reports the message from the file, so the action's
             // own stderr stays untouched by the infrastructure failure.
-            for (index, argument) in args.iter().enumerate() {
-                if argument == "--setup-error"
-                    && let Some(path) = args.get(index + 1)
-                {
-                    let _ = fs::write(path, format!("linux-sandbox: {error}\n"));
-                }
+            if let Some(mut file) = setup_error {
+                use std::io::Write;
+                let _ = writeln!(file, "linux-sandbox: {error}");
             }
             126
         }
@@ -711,64 +943,45 @@ pub fn worker_main(args: &[String]) -> i32 {
 }
 
 fn worker(args: &[String]) -> Result<i32, String> {
-    let mut config = WorkerConfig {
-        writable: Vec::new(),
-        blocked: Vec::new(),
-        deny_network: false,
-        debug_path: None,
-        setup_error: PathBuf::new(),
-        arg0: None,
-        exec: false,
-    };
-    let mut arguments: &[String] = &[];
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--writable" => {
-                index += 1;
-                config.writable.push(path(&args.get(index))?);
-            }
-            "--block" => {
-                index += 1;
-                config.blocked.push(path(&args.get(index))?);
-            }
-            "--deny-network" => config.deny_network = true,
-            "--exec" => config.exec = true,
-            "--debug" => {
-                index += 1;
-                config.debug_path = Some(path(&args.get(index))?);
-            }
-            "--setup-error" => {
-                index += 1;
-                config.setup_error = path(&args.get(index))?;
-            }
-            "--arg0" => {
-                index += 1;
-                config.arg0 = Some(
-                    args.get(index)
-                        .ok_or_else(|| "sandbox worker: --arg0 requires a value".to_owned())?
-                        .clone(),
-                );
-            }
-            "--" => {
-                arguments = &args[index + 1..];
-                break;
-            }
-            other => return Err(format!("sandbox worker: unknown option '{other}'")),
-        }
-        index += 1;
-    }
+    let (config, arguments) = WorkerConfig::parse(args)?;
     if arguments.is_empty() {
         return Err("sandbox worker: no command after --".into());
     }
+    // linux-sandbox's -D file, opened before the mounts (PRINT_DEBUG).
+    let debug_file = config.debug_path.as_ref().and_then(|path| {
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()
+    });
+    let debug_file = std::cell::RefCell::new(debug_file);
     let debug = |line: &str| {
-        if let Some(path) = &config.debug_path {
+        if let Some(file) = debug_file.borrow_mut().as_mut() {
             use std::io::Write;
-            if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
-                let _ = writeln!(file, "{line}");
-            }
+            // PRINT_DEBUG's `<seconds>.<nanoseconds>: ` prefix.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            let _ = writeln!(file, "{}.{:09}: {line}", now.as_secs(), now.subsec_nanos());
         }
     };
+    if let Some(plan) = &config.namespaces {
+        debug(&format!("linux-sandbox (namespaces) worker: {plan:?}"));
+        namespaces::enter(plan, &debug)?;
+        // The worker stays outside the new PID namespace as the spawn's
+        // supervisor; its child is pid 1 there, which mounts /proc and forks
+        // the action (namespaces::spawn_below_pid1).
+        let mut command = Command::new(&arguments[0]);
+        command.args(&arguments[1..]);
+        if let Some(arg0) = &config.arg0 {
+            use std::os::unix::process::CommandExt;
+            command.arg0(arg0);
+        }
+        namespaces::spawn_below_pid1(&mut command, plan.proc_fallback);
+        return crate::process_wrapper::run_supervised(&mut command)
+            .map_err(|error| format!("cannot execute '{}': {error}", arguments[0]));
+    }
     debug(&format!(
         "linux-sandbox (landlock) worker: writable={:?} blocked={:?} deny_network={}",
         config.writable, config.blocked, config.deny_network
@@ -1062,9 +1275,8 @@ mod tests {
             blocked: vec![PathBuf::from("/b")],
             deny_network: true,
             debug_path: Some(PathBuf::from("/d")),
-            setup_error: PathBuf::from("/e"),
-            arg0: None,
-            exec: false,
+            setup_error: Some(PathBuf::from("/e")),
+            ..WorkerConfig::empty()
         };
         let argv = config.argv(&strings(&["/bin/true", "x"]));
         assert_eq!(
@@ -1086,50 +1298,30 @@ mod tests {
             ]
         );
         // The worker parser accepts its own output.
-        let mut parsed = WorkerConfig {
-            writable: Vec::new(),
-            blocked: Vec::new(),
-            deny_network: false,
-            debug_path: None,
-            setup_error: PathBuf::new(),
-            arg0: None,
-            exec: false,
-        };
-        let mut arguments: &[String] = &[];
-        let mut index = 1;
-        while index < argv.len() {
-            match argv[index].as_str() {
-                "--writable" => {
-                    index += 1;
-                    parsed.writable.push(PathBuf::from(&argv[index]));
-                }
-                "--block" => {
-                    index += 1;
-                    parsed.blocked.push(PathBuf::from(&argv[index]));
-                }
-                "--deny-network" => parsed.deny_network = true,
-                "--debug" => {
-                    index += 1;
-                    parsed.debug_path = Some(PathBuf::from(&argv[index]));
-                }
-                "--setup-error" => {
-                    index += 1;
-                    parsed.setup_error = PathBuf::from(&argv[index]);
-                }
-                "--" => {
-                    arguments = &argv[index + 1..];
-                    break;
-                }
-                _ => unreachable!("argv produced by argv()"),
-            }
-            index += 1;
-        }
+        let (parsed, arguments) = WorkerConfig::parse(&argv[1..]).unwrap();
         assert_eq!(parsed.writable, config.writable);
         assert_eq!(parsed.blocked, config.blocked);
         assert!(parsed.deny_network);
+        assert!(parsed.namespaces.is_none());
         assert_eq!(parsed.debug_path, config.debug_path);
         assert_eq!(parsed.setup_error, config.setup_error);
         assert_eq!(arguments, strings(&["/bin/true", "x"]).as_slice());
+        // The namespace sandbox's plan travels after --namespaces.
+        let config = WorkerConfig {
+            namespaces: Some(namespaces::Plan {
+                working_dir: PathBuf::from("/x"),
+                writable: vec![PathBuf::from("/x"), PathBuf::from("/tmp")],
+                netns: namespaces::Netns::Plain,
+                ..namespaces::Plan::default()
+            }),
+            arg0: Some("tool".into()),
+            ..WorkerConfig::empty()
+        };
+        let argv = config.argv(&strings(&["/bin/true"]));
+        let (parsed, arguments) = WorkerConfig::parse(&argv[1..]).unwrap();
+        assert_eq!(parsed.namespaces, config.namespaces);
+        assert_eq!(parsed.arg0.as_deref(), Some("tool"));
+        assert_eq!(arguments, strings(&["/bin/true"]).as_slice());
     }
 
     #[test]
