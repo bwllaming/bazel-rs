@@ -47,6 +47,7 @@
 use std::ffi::{CString, OsStr};
 use std::fs;
 use std::io;
+use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -990,13 +991,32 @@ fn loopback_up() -> Result<(), String> {
 /// exited and `_exit`s with its code or 128 + its signal. Leaving pid 1
 /// kills whatever the action left. No second exec of this binary: pid 1 is
 /// the forked child itself, like genuine's cloned pid 1.
-pub fn spawn_below_pid1(command: &mut Command, proc_fallback: bool) {
+///
+/// Pid 1 also writes the action's raw wait status into a pipe before it
+/// exits: the returned reader yields it (None when pid 1 died first, e.g.
+/// SIGKILLed), so that the supervisor reports the action's exact status — a
+/// signal included — like every other spawn (docs/PROCESS_WRAPPER.md), where
+/// genuine's linux-sandbox can only exit 128 + the signal.
+pub fn spawn_below_pid1(command: &mut Command, proc_fallback: bool) -> io::Result<StatusPipe> {
+    let mut fds = [0; 2];
+    // SAFETY: pipe2 fills the two-element array.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } < 0 {
+        return Err(errno());
+    }
+    // SAFETY: both descriptors were just created and are owned here.
+    let (read, write) = unsafe {
+        (
+            std::os::fd::OwnedFd::from_raw_fd(fds[0]),
+            std::os::fd::OwnedFd::from_raw_fd(fds[1]),
+        )
+    };
+    let status_fd = fds[1];
     let proc_ = c"proc";
     let slash_proc = c"/proc";
     // SAFETY: runs in the child between fork and exec of the single-threaded
     // worker (its supervisor threads start after the spawn): only system
     // calls on static strings and stack values (setsid, mount, prctl, fork,
-    // umask, sigaction, close_range/close, wait, _exit), errno read right
+    // umask, sigaction, close_range/close, write, wait, _exit), errno read right
     // after each; pid 1 never returns from the hook.
     unsafe {
         command.pre_exec(move || {
@@ -1037,8 +1057,31 @@ pub fn spawn_below_pid1(command: &mut Command, proc_fallback: bool) {
                 libc::umask(0o022);
                 return Ok(());
             }
-            pid1(child)
+            pid1(child, status_fd)
         });
+    }
+    Ok(StatusPipe {
+        read: fs::File::from(read),
+        _write: write,
+    })
+}
+
+/// The reading end of pid 1's status pipe (and the worker's copy of the
+/// writing end, closed with it).
+pub struct StatusPipe {
+    read: fs::File,
+    _write: std::os::fd::OwnedFd,
+}
+
+impl StatusPipe {
+    /// The action's raw wait status, once pid 1 has exited.
+    pub fn status(&mut self) -> Option<i32> {
+        use std::io::Read;
+        let mut bytes = [0u8; 4];
+        self.read
+            .read_exact(&mut bytes)
+            .ok()
+            .map(|()| i32::from_ne_bytes(bytes))
     }
 }
 
@@ -1059,7 +1102,7 @@ extern "C" fn forward_signal(signal: libc::c_int) {
 ///
 /// # Safety
 /// Only in the forked pid 1 of [`spawn_below_pid1`]'s hook.
-unsafe fn pid1(child: libc::pid_t) -> ! {
+unsafe fn pid1(child: libc::pid_t, status_fd: libc::c_int) -> ! {
     // SAFETY: plain system calls on stack values; the handler only calls
     // kill(2) on an atomic's value.
     unsafe {
@@ -1068,13 +1111,31 @@ unsafe fn pid1(child: libc::pid_t) -> ! {
         action.sa_sigaction = forward_signal as *const () as libc::sighandler_t;
         libc::sigemptyset(&mut action.sa_mask);
         libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut());
-        // Every descriptor but stdin, stdout and stderr: the start's error
-        // pipe must close with the action's exec.
-        if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) < 0 {
-            for fd in 3..65536 {
-                libc::close(fd);
+        // Every descriptor but stdin, stdout, stderr and the status pipe:
+        // the start's error pipe must close with the action's exec.
+        let below = if status_fd > 3 {
+            libc::syscall(libc::SYS_close_range, 3u32, (status_fd - 1) as u32, 0u32)
+        } else {
+            0
+        };
+        let above = libc::syscall(
+            libc::SYS_close_range,
+            (status_fd + 1) as u32,
+            u32::MAX,
+            0u32,
+        );
+        if below < 0 || above < 0 {
+            // Linux < 5.9: one by one.
+            for fd in 3..1024 {
+                if fd != status_fd {
+                    libc::close(fd);
+                }
             }
         }
+        let report = |status: libc::c_int| {
+            let bytes = status.to_ne_bytes();
+            libc::write(status_fd, bytes.as_ptr().cast(), bytes.len());
+        };
         loop {
             let mut status = 0;
             let reaped = libc::wait(&mut status);
@@ -1087,6 +1148,7 @@ unsafe fn pid1(child: libc::pid_t) -> ! {
             if reaped != child {
                 continue;
             }
+            report(status);
             if libc::WIFSIGNALED(status) {
                 libc::_exit(128 + libc::WTERMSIG(status));
             }

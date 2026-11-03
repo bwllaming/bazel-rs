@@ -123,12 +123,17 @@ linux-sandbox, ported (`src/sandbox/namespaces.rs`; `linux-sandbox.cc`,
   IPC — plus network and UTS on demand — namespaces, maps the user (the
   client's uid/gid; `nobody` with `--sandbox_fake_username`; root for the
   `requires-fakeroot` execution requirement), sets the mounts up, then
-  unshares the PID namespace and starts `__sandbox-pid1` as its first
-  process: between fork and exec — still holding the worker's capabilities —
-  it mounts a fresh `/proc`; then, as pid 1, it forks the action as pid 2 in
+  re-enters its working directory (EnterWorkingDirectory: the inherited cwd
+  would still point at the pre-remount mount), unshares the PID namespace
+  and starts pid 1 as its first process — a fork of the worker, no second
+  exec: between fork and exec, still holding the worker's capabilities, it
+  mounts a fresh `/proc`; then it forks the action as pid 2 in
   its own process group with umask 022 and every signal at its default,
   forwards SIGTERM to that group, reaps every process of the namespace, and
-  exits with the action's code or 128 + its signal (`WaitForChild`).
+  exits with the action's code or 128 + its signal (`WaitForChild`); it also
+  hands the action's exact wait status to the worker through a pipe, so a
+  signalled action is reported as such like every other spawn here
+  (genuine's linux-sandbox can only exit 128 + the signal).
   Leaving pid 1 kills whatever the action left (setsid daemons included).
   The worker stays outside the PID namespace as the spawn's supervisor
   (docs/PROCESS_WRAPPER.md): test timeouts (`T`), kills (`K`), the memory
@@ -210,6 +215,27 @@ linux-sandbox, ported (`src/sandbox/namespaces.rs`; `linux-sandbox.cc`,
   ends with pid 1). Integration tests (`tests/sandbox.rs`) adapt to the
   backend the engine's probe selects and skip the namespace-only checks with
   a message where it is unavailable.
+
+### Per-spawn cost
+
+200 trivial genrules, `--jobs=1`, cold cache, release binary, in a Docker
+container with user namespaces allowed (`BAZEL_RS_SANDBOX_NAMESPACES=bind-proc`;
+101 mounts in the container's table), median of 3:
+
+| Strategy | wall | per spawn |
+| --- | --- | --- |
+| standalone | 1.74 s | 8.7 ms |
+| processwrapper-sandbox (explicit, no isolation) | 1.59 s | 8.0 ms |
+| sandboxed, Landlock fallback | 1.78 s | 8.9 ms |
+| sandboxed, namespace sandbox | 3.38 s | 16.9 ms |
+| — same, genuine's per-mount `MS_REMOUNT` loop instead of `mount_setattr` | 38.5 s | 192 ms |
+
+The namespace sandbox adds ~8 ms per spawn: unsharing and tearing down the
+namespaces, ~2 ms of mounts. MakeFilesystemMostlyReadOnly's one remount per
+mount costs ~1 ms per mount here, so the read-only view is made with
+mount_setattr(2) (Linux 5.12) — the whole tree read-only recursively, then
+the writable mount points cleared — the same end state; older kernels take
+genuine's loop. Pid 1 is a fork of the worker's child, not another exec.
 
 ## The fallback sandbox (processwrapper-sandbox + Landlock)
 

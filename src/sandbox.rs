@@ -978,9 +978,12 @@ fn worker(args: &[String]) -> Result<i32, String> {
             use std::os::unix::process::CommandExt;
             command.arg0(arg0);
         }
-        namespaces::spawn_below_pid1(&mut command, plan.proc_fallback);
-        return crate::process_wrapper::run_supervised(&mut command)
-            .map_err(|error| format!("cannot execute '{}': {error}", arguments[0]));
+        let mut pipe = namespaces::spawn_below_pid1(&mut command, plan.proc_fallback)
+            .map_err(|error| format!("cannot create the status pipe: {error}"))?;
+        return crate::process_wrapper::run_supervised_with(&mut command, &mut |raw| {
+            pipe.status().unwrap_or(raw)
+        })
+        .map_err(|error| format!("cannot execute '{}': {error}", arguments[0]));
     }
     debug(&format!(
         "linux-sandbox (landlock) worker: writable={:?} blocked={:?} deny_network={}",

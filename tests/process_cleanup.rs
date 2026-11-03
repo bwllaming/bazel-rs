@@ -402,6 +402,13 @@ sleep 30
 
 #[test]
 fn a_test_killing_its_process_group_ends_only_itself_sandboxed() {
+    // The test reads /proc/$$/stat: with the test-only bind-proc fallback of
+    // the namespace sandbox (docs/SANDBOX.md) /proc is the host's, where the
+    // namespace's PID names another process.
+    if std::env::var("BAZEL_RS_SANDBOX_NAMESPACES").is_ok_and(|knob| knob == "bind-proc") {
+        eprintln!("skipped: /proc is the host's under BAZEL_RS_SANDBOX_NAMESPACES=bind-proc");
+        return;
+    }
     check_test_isolation("sandboxed");
 }
 

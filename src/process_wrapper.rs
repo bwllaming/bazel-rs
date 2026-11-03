@@ -519,11 +519,21 @@ fn start_command(command: &mut Command) -> io::Result<Child> {
 /// process-wrapper's; the result is the worker's exit code. A start error is
 /// returned unreported: the worker reports it as a sandbox setup failure.
 pub(crate) fn run_supervised(command: &mut Command) -> io::Result<i32> {
+    run_supervised_with(command, &mut |raw| raw)
+}
+
+/// [`run_supervised`] whose end report carries `status(raw)` instead of the
+/// child's own raw wait status: the namespace sandbox's pid 1 reports the
+/// action's exact status itself (crate::sandbox::namespaces).
+pub(crate) fn run_supervised_with(
+    command: &mut Command,
+    status: &mut dyn FnMut(i32) -> i32,
+) -> io::Result<i32> {
     let mut control = control_from_stdin();
     let subreaper = become_subreaper();
     let child = start_command(command)?;
     send(&mut control, &Report::Started(child.id()));
-    Ok(supervise(child, control, subreaper))
+    Ok(supervise(child, control, subreaper, status))
 }
 
 /// The supervisor's options: `[--arg0 S] [--execvp [--candidate PATH]...] --
@@ -607,7 +617,7 @@ pub fn main(args: &[OsString]) -> i32 {
     match started {
         Ok(child) => {
             send(&mut control, &Report::Started(child.id()));
-            supervise(child, control, subreaper)
+            supervise(child, control, subreaper, &mut |raw| raw)
         }
         Err(errno) => {
             send(&mut control, &Report::Failed(errno));
@@ -621,7 +631,12 @@ pub fn main(args: &[OsString]) -> i32 {
 /// kill its process group and every remaining descendant, report the child's
 /// wait status and return the supervisor's own exit code (the child's code, or
 /// 128 + its signal like linux-sandbox, linux-sandbox.cc:272-280).
-fn supervise(mut child: Child, mut control: Option<Control>, subreaper: bool) -> i32 {
+fn supervise(
+    mut child: Child,
+    mut control: Option<Control>,
+    subreaper: bool,
+    status: &mut dyn FnMut(i32) -> i32,
+) -> i32 {
     let pid = Pid::from_child(&child);
     // Readable once the child has exited; without pidfds (Linux < 5.3) the
     // exit is polled.
@@ -681,7 +696,7 @@ fn supervise(mut child: Child, mut control: Option<Control>, subreaper: bool) ->
     if subreaper {
         kill_remaining_children();
     }
-    match raw {
+    match raw.map(status) {
         Some(raw) => {
             send(&mut control, &Report::Exited(raw));
             let status = ExitStatus::from_raw(raw);
