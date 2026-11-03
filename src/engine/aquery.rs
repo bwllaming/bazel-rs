@@ -358,6 +358,8 @@ impl Engine {
                 .inputs
                 .iter()
                 .find(|(_, destination)| destination.as_os_str() == template.as_os_str())
+                // snapshot-unrecorded: aquery's description of a template's text;
+                // aquery never saves or replays an analysis snapshot.
                 .and_then(|(source, _)| std::fs::read(&**source).ok())
                 .map(|bytes| internal_string(&bytes))
                 .unwrap_or_else(|| format!("ARTIFACT: {exec}"));
