@@ -7,15 +7,18 @@ Usage:
 
 The option names, boolean syntax, converters and command membership come
 from src/option_metadata.rs (genuine `help flags-as-proto`); the defaults
-from src/help_topics.rs (genuine `help <command> --long`). Each option runs
+from src/help_topics.rs (genuine `help <command> --long`) and, for
+undocumented options, src/option_source_defaults.rs. Each option runs
 once with its default value (booleans: `--name` and `--noname`; list
 options without a default: a plausible converter value) on a one-target
 workspace (`build --nobuild //:x`, `query //:x`, ...), and the probes that
 bazel-rs rejects as not modelled (`options are never silently ignored`,
 `unsupported option`, `not modelled`) are listed. A value error (exit 2
 from the option's converter) is reported separately: the option is
-recognized. Startup-only options are skipped. Exit 0 always; the report
-goes to stdout (a tab-separated table, or Markdown with --markdown).
+recognized. Startup-only options are skipped. Each row says whether the
+probe spelled the genuine default (`default`) or another value (`other`).
+Exit 0 always; the report goes to stdout (a tab-separated table, or
+Markdown with --markdown).
 """
 
 import argparse
@@ -115,16 +118,24 @@ def parse_defaults():
     return defaults
 
 
+def source_defaults():
+    text = open(os.path.join(ROOT, 'src/option_source_defaults.rs'), encoding='utf-8').read()
+    return {name: value.replace('\\\\', '\\')
+            for name, value in re.findall(r'\("([a-z0-9_:]+)", "((?:[^"\\]|\\.)*)"\)', text)}
+
+
 def probes(option, defaults):
+    """(argument, whether it spells the genuine default) pairs."""
     name = option['name']
+    default = defaults.get(name)
     if option['boolean']:
-        return [f'--{name}', f'--no{name}']
+        return [(f'--{name}', default == 'true'), (f'--no{name}', default == 'false')]
     if option['expansion'] or option['converter'] == 'Void':
-        return [f'--{name}']
+        return [(f'--{name}', False)]
     value = NAME_VALUES.get(name)
     if value is None:
-        value = defaults.get(name) or CONVERTER_VALUES.get(option['converter'], 'x')
-    return [f'--{name}={value}']
+        value = default or CONVERTER_VALUES.get(option['converter'], 'x')
+    return [(f'--{name}={value}', value == default and not option['multiple'])]
 
 
 def setup(scratch):
@@ -179,7 +190,7 @@ def main():
     args = parser.parse_args()
     scratch = os.path.abspath(args.scratch)
     workspace = setup(scratch)
-    defaults = parse_defaults()
+    defaults = {**source_defaults(), **parse_defaults()}
     only = set(filter(None, args.only.split(',')))
     rows = {}
     for option in parse_metadata():
@@ -188,19 +199,20 @@ def main():
         for command in args.commands.split(','):
             if not option['commands'] & (1 << COMMANDS.index(command)):
                 continue
-            for arg in probes(option, defaults):
+            for arg, at_default in probes(option, defaults):
                 verdict, message = run(args.bazel_rs, scratch, workspace, command, arg)
                 if verdict in ('rejected', 'error', 'timeout'):
-                    rows.setdefault((arg, verdict, message), []).append(command)
+                    key = (arg, 'default' if at_default else 'other', verdict, message)
+                    rows.setdefault(key, []).append(command)
     if args.markdown:
-        print('| probe | verdict | commands | message |')
-        print('| --- | --- | --- | --- |')
-    for (arg, verdict, message), commands in sorted(rows.items()):
+        print('| probe | value | verdict | commands | message |')
+        print('| --- | --- | --- | --- | --- |')
+    for (arg, value, verdict, message), commands in sorted(rows.items()):
         message = message.replace('|', '\\|')
         if args.markdown:
-            print(f'| `{arg}` | {verdict} | {",".join(commands)} | {message[:160]} |')
+            print(f'| `{arg}` | {value} | {verdict} | {",".join(commands)} | {message[:160]} |')
         else:
-            print(f'{arg}\t{verdict}\t{",".join(commands)}\t{message[:200]}')
+            print(f'{arg}\t{value}\t{verdict}\t{",".join(commands)}\t{message[:200]}')
     return 0
 
 

@@ -515,6 +515,8 @@ pub fn clean_convenience_symlinks(workspace: &std::path::Path, prefix: &str) {
         .unwrap_or_default();
     for suffix in ["bin", "testlogs", "out", "genfiles", name.as_str()] {
         let link = workspace.join(format!("{prefix}{suffix}"));
+        // snapshot-unrecorded: a workspace cleanup the command performs
+        // before planning, never an input of analysis or planning.
         if std::fs::symlink_metadata(&link).is_ok_and(|metadata| metadata.file_type().is_symlink())
         {
             let _ = std::fs::remove_file(&link);

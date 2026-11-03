@@ -418,8 +418,7 @@ dev = rule(implementation = _impl, toolchains = [config_common.toolchain_type("/
         diagnostic,
         "bazel-rs: negative toolchain registration pattern \"-//tc:other_any\" is not implemented in the native profile\n"
     );
-    // --extra_toolchains is not a query option; --toolchain_resolution_debug
-    // stays unsupported.
+    // --extra_toolchains is not a query option.
     let output = ws.run(&["query", "--extra_toolchains=//tc:all", "//u:all"]);
     // A command-line error: exit 2 (crate::exit_code).
     assert_eq!(output.status.code(), Some(2));
@@ -430,11 +429,19 @@ dev = rule(implementation = _impl, toolchains = [config_common.toolchain_type("/
         "{}",
         errors(&output)
     );
-    let diagnostic = ws.rejected(&["--toolchain_resolution_debug=.*", "//u:o"]);
+    // --toolchain_resolution_debug prints the resolution messages
+    // (crate::toolchains; genuine capture tests/fixtures/execution_options).
+    let output = ws.run(&[
+        "build",
+        "--host_platform=//p:linux",
+        "--toolchain_resolution_debug=.*",
+        "//u:o",
+    ]);
+    assert!(output.status.success(), "{}", errors(&output));
     assert!(
-        diagnostic.contains("unsupported option")
-            && diagnostic.contains("--toolchain_resolution_debug"),
-        "{diagnostic}"
+        errors(&output).contains("INFO: ToolchainResolution: Performing resolution of //tc:other"),
+        "{}",
+        errors(&output)
     );
 }
 

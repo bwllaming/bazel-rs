@@ -1357,7 +1357,13 @@ fn explicit_experimental_flag_is_unsupported_not_reference_allowlist_enforcement
             "Unknown startup option",
         );
         ws.untouched();
-        rejected(&ws.run(&["query", flag, ":check"]), "unsupported");
-        ws.untouched();
     }
+    // The genuine default (`true`) is the unflagged behaviour
+    // (crate::option_defaults); `false` is not modelled.
+    success(&ws.run(&["query", "--experimental_rule_extension_api=true", ":check"]));
+    rejected(
+        &ws.run(&["query", "--experimental_rule_extension_api=false", ":check"]),
+        "unsupported",
+    );
+    ws.untouched();
 }

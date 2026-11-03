@@ -200,9 +200,11 @@ pub fn default_option(
     } else {
         arg.to_owned()
     };
+    // The unmodelled option's own message (crate main's unmodelled_option):
+    // only the default is modelled (docs/RC_OPTIONS.md).
+    let _ = default;
     Some(Err(format!(
-        "unsupported option {shown:?}{origin}: not modelled by the native profile beyond its Bazel 9.3 default --{}={default} (docs/RC_OPTIONS.md); options are never silently ignored",
-        option.name
+        "unsupported option {shown:?}{origin}; options are never silently ignored"
     )))
 }
 
@@ -234,11 +236,9 @@ mod tests {
         let error = default_option("build", "--experimental_remote_mark_tool_inputs", None, "")
             .unwrap()
             .unwrap_err();
-        assert!(
-            error.contains(
-                "beyond its Bazel 9.3 default --experimental_remote_mark_tool_inputs=false"
-            ) && error.ends_with("options are never silently ignored"),
-            "{error}"
+        assert_eq!(
+            error,
+            "unsupported option \"--experimental_remote_mark_tool_inputs\"; options are never silently ignored"
         );
         // An integer default with a separate value.
         assert_eq!(

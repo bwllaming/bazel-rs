@@ -171,14 +171,14 @@ fn run() -> Result<(), String> {
                 match bazel_rs::configuration::boolean_option(arg, "gnu_format") {
                     Some(Ok(value)) => gnu = value,
                     Some(Err(error)) => fail_with(2, &error),
-                    None => fail_with(
-                        2,
-                        &bazel_rs::configuration::unrecognized_option(arg).unwrap_or_else(|| {
-                            format!(
-                                "unsupported version option {arg:?}: only --[no]gnu_format is modelled; options are never silently ignored"
-                            )
-                        }),
-                    ),
+                    // Other (common) options of `version` are not modelled;
+                    // the argument is not echoed (it may be a --repo_env value).
+                    None => {
+                        return Err(
+                            "unsupported version option: only --[no]gnu_format is modelled; options are never silently ignored"
+                                .to_owned(),
+                        );
+                    }
                 }
             }
             if gnu {
