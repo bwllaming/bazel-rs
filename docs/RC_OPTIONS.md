@@ -64,6 +64,9 @@ genuine receipts beside their fixtures (`capture*.py`).
 | `--[no]action_cache_store_output_metadata` (old `experimental_…`) | lets the action cache serve remote-only outputs | Accepted (no result effect). |
 | `--symlink_prefix`, `--experimental_convenience_symlinks` | convenience symlinks | bazel-rs creates none (genuine's `--symlink_prefix=/`): `/`, `ignore` and `clean` (removes `PREFIX{bin,testlogs,out,genfiles,<workspace>}` symlinks) are accepted; any combination that would create symlinks fails explicitly. |
 | `version --[no]gnu_format` | VersionCommand | `bazel 9.3.1+bazel-rs.<version>` (the version of `info release`). |
+| `--ui_event_filters` | UiOptions.EventFiltersConverter; the UI drops the filtered event kinds | INFO, WARNING and DEBUG (the native notes) and START/FINISH (never shown) are filtered like genuine; filtering any other kind (ERROR, STDOUT, PROGRESS, …) fails explicitly. |
+| `--platform_suffix` | CoreOptions; added to the output directory mnemonic | Modelled (`k8-fastbuild-SUFFIX`, a `/` fails like genuine; receipt `tests/fixtures/config_flag_options`). |
+| `--jvmopt`, `--host_jvmopt` | JavaOptions; `ctx.fragments.java.default_jvm_opts`; exec: `--host_jvmopt` or `-XX:ErrorFile=/dev/stderr` | Modelled (receipt `tests/fixtures/config_flag_options`). |
 
 #### Options at their default
 

@@ -232,6 +232,25 @@ Done since the last increment recorded under "History", one line each:
       spawns) and shared results with NativeLink 1.8.2; build and test spawns.
 - [x] Build Event Protocol files, `--profile` traces, `--execution_log_*_file`
       (docs/BEP.md, docs/PROFILE.md).
+- [x] Configuration flag options on the command line: `--features`/`--host_features`,
+      `--copt`/`--cxxopt`/`--conlyopt`/`--linkopt`/`--per_file_copt` (+ `--host_*`),
+      `--dynamic_mode`, `--javacopt`/`--host_javacopt`, `--jvmopt`/`--host_jvmopt`,
+      `--platform_suffix` (genuine 9.3.1 fixtures: ctx values, exec values, ST
+      hashes, rules_cc compile command lines; docs/CONFIGURATION.md). ~/code's
+      `--features=race` is accepted; rules_go 0.63 warns and builds without race
+      mode, like genuine.
+- [x] Execution/output options: `--check_up_to_date`, `--output_filter`,
+      `--auto_output_filter`, `--experimental_ui_max_stdouterr_bytes`,
+      `--toolchain_resolution_debug`, `--modify_execution_info`, `--local_resources`,
+      `--ui_event_filters` (INFO/WARNING/DEBUG), `--jobs=auto|HOST_CPUS…`,
+      `--progress_report_interval`, `version --gnu_format`, convenience-symlink
+      no-op modes; any other option at its genuine default
+      (docs/RC_OPTIONS.md, sweep `scripts/option_sweep.py`).
+- [ ] The remaining rejected options of the sweep (docs/RC_OPTIONS.md
+      "Remaining rejected options"): non-default values of unmodelled options,
+      `--override_module`/`--override_repository`, `--distdir`,
+      `--strategy_regexp`, `--explain`, Android/Apple/FDO/LTO options, query-only
+      gaps (`--profile`, `--run_under`, `--bes_*` on `query`).
 - [ ] `--bes_backend` (gRPC Build Event Service upload) fails explicitly.
 - [ ] Remote: `--remote_download_minimal`/`toplevel` behave like `all`;
       `--remote_cache_compression`; Bazel's exit code 34 for remote failures;
