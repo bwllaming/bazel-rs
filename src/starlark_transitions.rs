@@ -79,6 +79,12 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "host_conlyopt",
     "host_linkopt",
     "host_per_file_copt",
+    // CoreOptions.defaultFeatures/hostFeatures and JavaOptions.javacOpts/
+    // hostJavacOpts: List<String> options like the CppOptions lists.
+    "features",
+    "host_features",
+    "javacopt",
+    "host_javacopt",
     // CppOptions.crosstoolTop (`--crosstool_top`): a NO_OP option whose
     // value only the configuration identity and `config_setting(values)`
     // observe.
@@ -876,6 +882,10 @@ fn native_input<'v>(
         "host_conlyopt" => heap.alloc(native.host_conlyopts.clone()),
         "host_linkopt" => heap.alloc(native.host_linkopts.clone()),
         "host_per_file_copt" => heap.alloc(native.host_per_file_copts.clone()),
+        "features" => heap.alloc(native.features.clone()),
+        "host_features" => heap.alloc(native.host_features.clone()),
+        "javacopt" => heap.alloc(native.javacopts.clone()),
+        "host_javacopt" => heap.alloc(native.host_javacopts.clone()),
         // CppOptions.crosstoolTop: a Label field (its default is a real
         // label, never null).
         "crosstool_top" => label(
@@ -1650,6 +1660,10 @@ fn convert_native(
             | "host_conlyopt"
             | "host_linkopt"
             | "host_per_file_copt"
+            | "features"
+            | "host_features"
+            | "javacopt"
+            | "host_javacopt"
     );
     let invalid = || format!("Invalid value type for option '{name}'");
     let parsing = |message: String| format!("OptionsParsingError for option '{name}': {message}");
@@ -1805,23 +1819,28 @@ fn convert_native(
         // IllegalArgumentException, :762-764; observed: the paired capture
         // tests/fixtures/cpp_flag_options).
         "copt" | "cxxopt" | "conlyopt" | "linkopt" | "host_copt" | "host_cxxopt"
-        | "host_conlyopt" | "host_linkopt" => {
+        | "host_conlyopt" | "host_linkopt" | "features" | "host_features" | "javacopt"
+        | "host_javacopt" => {
             let field = match name {
-                "copt" => "coptList",
-                "cxxopt" => "cxxoptList",
-                "conlyopt" => "conlyoptList",
-                "linkopt" => "linkoptList",
-                "host_copt" => "hostCoptList",
-                "host_cxxopt" => "hostCxxoptList",
-                "host_conlyopt" => "hostConlyoptList",
-                _ => "hostLinkoptList",
+                "copt" => "rules.cpp.CppOptions.coptList",
+                "cxxopt" => "rules.cpp.CppOptions.cxxoptList",
+                "conlyopt" => "rules.cpp.CppOptions.conlyoptList",
+                "linkopt" => "rules.cpp.CppOptions.linkoptList",
+                "host_copt" => "rules.cpp.CppOptions.hostCoptList",
+                "host_cxxopt" => "rules.cpp.CppOptions.hostCxxoptList",
+                "host_conlyopt" => "rules.cpp.CppOptions.hostConlyoptList",
+                "host_linkopt" => "rules.cpp.CppOptions.hostLinkoptList",
+                "features" => "analysis.config.CoreOptions.defaultFeatures",
+                "host_features" => "analysis.config.CoreOptions.hostFeatures",
+                "javacopt" => "rules.java.JavaOptions.javacOpts",
+                _ => "rules.java.JavaOptions.hostJavacOpts",
             };
             let values = match &raw.kind {
                 RawKind::List(items) if items.is_empty() => Vec::new(),
                 RawKind::List(items) => items.iter().map(|item| item.element_text(false)).collect(),
                 RawKind::String(_) => {
                     return Err(format!(
-                        "IllegalArgumentError for option '{name}': Can not set java.util.List field com.google.devtools.build.lib.rules.cpp.CppOptions.{field} to java.lang.String"
+                        "IllegalArgumentError for option '{name}': Can not set java.util.List field com.google.devtools.build.lib.{field} to java.lang.String"
                     ));
                 }
                 _ => return Err(invalid()),
@@ -1834,9 +1853,16 @@ fn convert_native(
                 "host_copt" => &mut native.host_copts,
                 "host_cxxopt" => &mut native.host_cxxopts,
                 "host_conlyopt" => &mut native.host_conlyopts,
-                _ => &mut native.host_linkopts,
+                "host_linkopt" => &mut native.host_linkopts,
+                "features" => &mut native.features,
+                "host_features" => &mut native.host_features,
+                "javacopt" => &mut native.javacopts,
+                _ => &mut native.host_javacopts,
             };
             *target = values;
+            if name == "features" {
+                native.features = crate::configuration::normalize_features(&native.features);
+            }
         }
         // allowMultiple `List<PerLabelOptions>` with the explicit
         // PerLabelOptionsConverter (per element): each list element converts

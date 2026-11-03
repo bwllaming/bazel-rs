@@ -1,0 +1,39 @@
+{
+ "bazel": "9.3.1",
+ "elf_sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+ "flags": [
+  "--copt=-DCOPT",
+  "--conlyopt=-DCONLY",
+  "--cxxopt=-DCXX",
+  "--linkopt=-lm",
+  "--per_file_copt=bin/lib@-DPERFILE,-DPF\\,2",
+  "--features=-default_compile_flags",
+  "--dynamic_mode=off"
+ ],
+ "exit": 0,
+ "compiles": [
+  "/usr/bin/gcc -MD -MF bazel-out/k8-fastbuild/bin/bin/_objs/lib/lib.pic.d '-frandom-seed=bazel-out/k8-fastbuild/bin/bin/_objs/lib/lib.pic.o' -fPIC -iquote . -iquote bazel-out/k8-fastbuild/bin -DCOPT -DCONLY -DPERFILE -DPF,2 -c bin/lib.c -o bazel-out/k8-fastbuild/bin/bin/_objs/lib/lib.pic.o -fno-canonical-system-headers -Wno-builtin-macro-redefined '-D__DATE__=\"redacted\"' '-D__TIMESTAMP__=\"redacted\"' '-D__TIME__=\"redacted\"')",
+  "/usr/bin/gcc -MD -MF bazel-out/k8-fastbuild/bin/bin/_objs/tool/main.pic.d '-frandom-seed=bazel-out/k8-fastbuild/bin/bin/_objs/tool/main.pic.o' -fPIC -iquote . -iquote bazel-out/k8-fastbuild/bin -iquote external/rules_cc+ -iquote bazel-out/k8-fastbuild/bin/external/rules_cc+ -iquote external/bazel_tools -iquote bazel-out/k8-fastbuild/bin/external/bazel_tools -DCOPT -DCONLY -c bin/main.c -o bazel-out/k8-fastbuild/bin/bin/_objs/tool/main.pic.o -fno-canonical-system-headers -Wno-builtin-macro-redefined '-D__DATE__=\"redacted\"' '-D__TIMESTAMP__=\"redacted\"' '-D__TIME__=\"redacted\"')"
+ ],
+ "link_params": [
+  "-o",
+  "bazel-out/k8-fastbuild/bin/bin/tool",
+  "-Wl,-S",
+  "-fuse-ld=gold",
+  "-B/usr/bin",
+  "-Wl,-no-as-needed",
+  "-Wl,-z,relro,-z,now",
+  "-pass-exit-codes",
+  "bazel-out/k8-fastbuild/bin/bin/_objs/tool/main.pic.o",
+  "-Wl,--start-lib",
+  "bazel-out/k8-fastbuild/bin/bin/_objs/lib/lib.pic.o",
+  "-Wl,--end-lib",
+  "-lm",
+  "-Wl,--push-state,-as-needed",
+  "-lstdc++",
+  "-Wl,--pop-state",
+  "-Wl,--push-state,-as-needed",
+  "-lm",
+  "-Wl,--pop-state"
+ ]
+}

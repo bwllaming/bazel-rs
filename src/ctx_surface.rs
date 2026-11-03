@@ -73,9 +73,15 @@ pub struct CtxSurface {
     pub template_variables: Vec<Vec<(String, String)>>,
     /// RuleContext.computeFeatures (analysis/RuleContext.java:268-276): the
     /// package's and the rule's `features` merged with the configuration's
-    /// `--features` (`--host_features` in exec configurations; both rejected
-    /// natively, so empty).
+    /// `--features` (`--host_features` in exec configurations).
     pub features: FeatureSet,
+    /// The configuration's disabled default features
+    /// (BuildConfigurationValue.getDisabledFeatures, :965-969): the `-name`
+    /// entries of `--features`, sorted.
+    pub disabled_default_features: Vec<String>,
+    /// JavaOptions.javacOpts (`--javacopt`), as given
+    /// (`ctx.fragments.java.default_javac_flags[_depset]`).
+    pub javacopts: Vec<String>,
     /// Package.Metadata buildFilename relative to its source root
     /// (StarlarkRuleContext.getBuildFileRelativePath, StarlarkRuleContext.java:1007-1016).
     pub build_file_path: String,
@@ -128,6 +134,8 @@ impl Default for CtxSurface {
             target_platform: TargetPlatform::Absent,
             template_variables: Vec::new(),
             features: FeatureSet::default(),
+            disabled_default_features: Vec::new(),
+            javacopts: Vec::new(),
             build_file_path: String::new(),
             apple_sdk_versions: Default::default(),
             action_env: Arc::new(
@@ -727,29 +735,40 @@ fn configuration_methods(builder: &mut MethodsBuilder) {
                 != crate::configuration::OptionValue::Enum("NO"),
         )
     }
-    /// :965-969: the disabled `--features` (rejected natively): an empty,
-    /// immutable set.
+    /// :965-969: the configuration's disabled default features
+    /// (`-name` entries of `--features`), an immutable set.
     fn disabled_features<'v>(
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
-        configuration(this).map_err(starlark::Error::new_other)?;
+        let surface = configuration(this).map_err(starlark::Error::new_other)?;
         crate::subrule_fragments::private_api(eval)?;
-        empty_frozen_set(eval.heap()).map_err(starlark::Error::new_other)
+        frozen_string_set(eval.heap(), &surface.disabled_default_features)
+            .map_err(starlark::Error::new_other)
     }
 }
 
-/// An empty immutable Starlark set (StarlarkSet.immutableCopyOf of nothing).
-fn empty_frozen_set<'v>(heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+/// An immutable Starlark set of `items` (StarlarkSet.immutableCopyOf).
+fn frozen_string_set<'v>(heap: Heap<'v>, items: &[String]) -> anyhow::Result<Value<'v>> {
     use starlark::environment::{GlobalsBuilder, LibraryExtension, Module};
     use starlark::syntax::{AstModule, Dialect};
     let owned = Module::with_temp_heap(|module| -> anyhow::Result<_> {
         {
+            module.set(
+                "items",
+                module
+                    .heap()
+                    .alloc(AllocList(items.iter().map(String::as_str))),
+            );
             let mut eval = Evaluator::new(&module);
             let globals = GlobalsBuilder::extended_by(&[LibraryExtension::SetType]).build();
             eval.eval_module(
-                AstModule::parse("set.star", "s = set()\n".to_owned(), &Dialect::Standard)
-                    .map_err(|error| anyhow!(error.to_string()))?,
+                AstModule::parse(
+                    "set.star",
+                    "s = set(items)\n".to_owned(),
+                    &Dialect::Standard,
+                )
+                .map_err(|error| anyhow!(error.to_string()))?,
                 &globals,
             )
             .map_err(|error| anyhow!(error.to_string()))?;
@@ -1183,8 +1202,67 @@ fn strict_public_imports<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Re
     Ok(heap.alloc(surface.option_value("strict_public_imports").to_string()))
 }
 
-fn javac_flags_depset<'v>(_: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
-    crate::starlark_types::empty_preorder_string_depset(heap)
+/// JavaConfiguration.commandLineJavacFlags (rules/java/JavaConfiguration.java:107-108):
+/// JavaHelper.detokenizeJavaOptions of the tokenized `--javacopt` values —
+/// nothing, or one string of the ShellUtils.shellEscape'd tokens joined by
+/// spaces (rules/java/JavaHelper.java:56-95).
+fn command_line_javac_flags(surface: &CtxSurface) -> Option<String> {
+    let mut tokens = Vec::new();
+    for option in &surface.javacopts {
+        // A tokenization failure keeps the tokens scanned before it, then
+        // the option as given (JavaHelper.tokenizeJavaOptions :61-74).
+        if tokenize_into(&mut tokens, option).is_err() {
+            tokens.push(option.clone());
+        }
+    }
+    if tokens.is_empty() {
+        return None;
+    }
+    Some(
+        tokens
+            .iter()
+            .map(|token| shell_utils_escape(token))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+/// ShellUtils.shellEscape (shell/ShellUtils.java:28-53): letters, digits
+/// and `@%-_+:,./` are safe; the empty string is `''`.
+fn shell_utils_escape(word: &str) -> String {
+    if word.is_empty() {
+        return "''".to_owned();
+    }
+    if word
+        .chars()
+        .all(|c| c.is_alphanumeric() || "@%-_+:,./".contains(c))
+    {
+        return word.to_owned();
+    }
+    format!("'{}'", word.replace('\'', "'\\''"))
+}
+
+/// JavaConfiguration.getDefaultJavacFlagsStarlark (:168-172): a
+/// NAIVE_LINK_ORDER (`preorder`) depset of [`command_line_javac_flags`].
+fn javac_flags_depset<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    match command_line_javac_flags(surface) {
+        None => crate::starlark_types::empty_preorder_string_depset(heap),
+        Some(flags) => Ok(heap.alloc(crate::starlark_types::Depset::compose(
+            vec![crate::starlark_types::Item::String(flags)],
+            Vec::new(),
+            crate::starlark_types::Order::Preorder,
+            Some(crate::starlark_types::ItemType::String),
+        )?)),
+    }
+}
+
+/// JavaConfiguration.getDefaultJavacFlagsForStarlarkAsList (:160-166): the
+/// tokenized [`command_line_javac_flags`].
+fn default_javac_flags<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    let flags = command_line_javac_flags(surface)
+        .map(|flags| tokenize(&flags).unwrap_or_else(|_| vec![flags]))
+        .unwrap_or_default();
+    Ok(frozen_owned_strings(heap, &flags))
 }
 
 fn java_plugins<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
@@ -1309,7 +1387,7 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
             ),
             ("bytecode_optimization_pass_actions", Field(V::Int(1))),
             ("bytecode_optimizer_mnemonic", Field(V::Str("Proguard"))),
-            ("default_javac_flags", Field(V::Strs(&[]))),
+            ("default_javac_flags", Field(V::Dyn(default_javac_flags))),
             (
                 "default_javac_flags_depset",
                 Field(V::Dyn(javac_flags_depset)),

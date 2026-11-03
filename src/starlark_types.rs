@@ -815,7 +815,13 @@ impl<'v> StarlarkValue<'v> for File {
             "path" => heap.alloc(self.path.as_str()),
             "short_path" => heap.alloc(self.short_path.as_str()),
             "basename" => heap.alloc(basename),
-            "dirname" => heap.alloc(self.path.rsplit_once('/').map_or("", |(dir, _)| dir)),
+            // Artifact.getDirname (actions/Artifact.java:384-391): the exec
+            // path's parent as getSafePathString, `.` for a top-level path.
+            "dirname" => heap.alloc(match self.path.rsplit_once('/') {
+                Some(("", _)) => "/",
+                Some((dir, _)) => dir,
+                None => ".",
+            }),
             "extension" => heap.alloc(basename.rsplit_once('.').map_or("", |(_, ext)| ext)),
             "is_source" => heap.alloc(self.is_source),
             "is_directory" => heap.alloc(self.is_directory),

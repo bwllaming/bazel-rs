@@ -498,6 +498,14 @@ pub fn exec_transition(
         host_conlyopts: from.native.host_conlyopts.clone(),
         host_per_file_copts: from.native.host_per_file_copts.clone(),
         host_linkopts: from.native.host_linkopts.clone(),
+        // `_core_options` (builtin_exec_platforms.bzl:228): `--features` =
+        // `--host_features`, which propagates (:258).
+        features: crate::configuration::normalize_features(&from.native.host_features),
+        host_features: from.native.host_features.clone(),
+        // `_java_options` (builtin_exec_platforms.bzl:356): `--javacopt` =
+        // `--host_javacopt`, which propagates (:381).
+        javacopts: from.native.host_javacopts.clone(),
+        host_javacopts: from.native.host_javacopts.clone(),
         // The table-driven options (crate::configuration::VALUE_OPTIONS):
         // each row's exec rule (propagated, default or set).
         values: from.native.exec_values(),
@@ -593,6 +601,10 @@ pub(crate) fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static
     options.insert("host_cxxopt", list(&native.host_cxxopts));
     options.insert("host_conlyopt", list(&native.host_conlyopts));
     options.insert("host_linkopt", list(&native.host_linkopts));
+    options.insert("features", list(&native.features));
+    options.insert("host_features", list(&native.host_features));
+    options.insert("javacopt", list(&native.javacopts));
+    options.insert("host_javacopt", list(&native.host_javacopts));
     let per_label_options = |items: &[String]| {
         let entries = items
             .iter()

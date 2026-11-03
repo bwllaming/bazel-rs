@@ -420,3 +420,45 @@ fn cc_binary_links_and_the_workspace_status_stamps() {
         "{text}"
     );
 }
+
+/// The C++ configuration flag options on the command line (`--copt`,
+/// `--conlyopt`, `--cxxopt`, `--linkopt`, `--per_file_copt`, `--features`,
+/// `--dynamic_mode`) reach rules_cc's compile command lines exactly like
+/// genuine Bazel 9.3.1's (tests/fixtures/cc_compile/flag_options_receipt.json,
+/// capture_flag_options.py beside it).
+#[test]
+fn cc_flag_options_reach_the_compile_command_lines() {
+    if !Path::new("/usr/bin/gcc").exists() {
+        eprintln!("skipped: no host /usr/bin/gcc for cc_configure");
+        return;
+    }
+    let receipt: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(fixture().join("flag_options_receipt.json")).unwrap(),
+    )
+    .unwrap();
+    let flags: Vec<&str> = receipt["flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|flag| flag.as_str().unwrap())
+        .collect();
+    let ws = Workspace::new();
+    let mut args = vec!["-s"];
+    args.extend(&flags);
+    args.push("//bin:tool");
+    let output = ws.build("cache", &args);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let mut compiles: Vec<String> = stderr(&output)
+        .lines()
+        .filter(|line| line.starts_with("  /usr/bin/gcc") && line.contains(" -c "))
+        .map(|line| line.trim().to_owned())
+        .collect();
+    compiles.sort();
+    let expected: Vec<String> = receipt["compiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(compiles, expected);
+}

@@ -1,0 +1,17 @@
+load(":defs.bzl", "report", "transitioned")
+
+package(features = ["pkg_feature", "-pkg_off"])
+
+report(name = "tool")
+
+report(
+    name = "top",
+    features = ["rule_feature", "-race"],
+    tool = ":tool",
+)
+
+report(name = "plain")
+
+transitioned(name = "moved")
+
+platform(name = "p")

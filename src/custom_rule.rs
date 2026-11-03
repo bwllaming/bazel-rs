@@ -505,9 +505,7 @@ pub struct CppConfigurationView {
     pub no_fragments: bool,
     /// CppOptions.coptList (`--copt`): the C and C++ compiler flags, the
     /// exec configuration's `--host_copt` + `-g0` (the exec transition,
-    /// builtin_exec_platforms.bzl:334-342). Only a Starlark transition or
-    /// the exec transition sets it (`--copt` is not a modelled
-    /// command-line option).
+    /// builtin_exec_platforms.bzl:334-342).
     pub copts: Vec<String>,
     /// CppOptions.cxxoptList (`--cxxopt`); see [`Self::copts`].
     pub cxxopts: Vec<String>,
@@ -515,6 +513,10 @@ pub struct CppConfigurationView {
     pub conlyopts: Vec<String>,
     /// CppOptions.linkoptList (`--linkopt`); see [`Self::copts`].
     pub linkopts: Vec<String>,
+    /// CppOptions.dynamicMode (`--dynamic_mode`) as DynamicMode.name().
+    pub dynamic_mode: &'static str,
+    /// CppOptions.perFileCopts (`--per_file_copt`), `filter@options` as given.
+    pub per_file_copts: Vec<String>,
 }
 
 impl Default for CppConfigurationView {
@@ -528,6 +530,8 @@ impl Default for CppConfigurationView {
             cxxopts: Vec::new(),
             conlyopts: Vec::new(),
             linkopts: Vec::new(),
+            dynamic_mode: "DEFAULT",
+            per_file_copts: Vec::new(),
         }
     }
 }
@@ -543,6 +547,11 @@ impl CppConfigurationView {
             cxxopts: native.cxxopts.clone(),
             conlyopts: native.conlyopts.clone(),
             linkopts: native.linkopts.clone(),
+            dynamic_mode: match native.raw_value("dynamic_mode") {
+                Some(crate::configuration::OptionValue::Enum(mode)) => mode,
+                _ => "DEFAULT",
+            },
+            per_file_copts: native.per_file_copts.clone(),
         }
     }
 

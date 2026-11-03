@@ -253,6 +253,29 @@ fn compilation_context_inputs<'v>(
     })
 }
 
+/// PerLabelOptionsConverter's option list (analysis/config/PerLabelOptions.java:
+/// 56-62): split on commas not preceded by a backslash, blank pieces
+/// dropped, `\\,` unescaped.
+fn per_label_option_list(list: &str) -> Vec<String> {
+    let mut pieces = Vec::new();
+    let mut current = String::new();
+    let mut previous = None;
+    for character in list.chars() {
+        if character == ',' && previous != Some('\\') {
+            pieces.push(std::mem::take(&mut current));
+        } else {
+            current.push(character);
+        }
+        previous = Some(character);
+    }
+    pieces.push(current);
+    pieces
+        .into_iter()
+        .filter(|piece| !piece.trim().is_empty())
+        .map(|piece| piece.replace("\\,", ","))
+        .collect()
+}
+
 /// `CppCompileActionBuilder.getActionName` (CppCompileActionBuilder.java:
 /// 2028-2056) over CppFileTypes (case-sensitive suffix matching).
 fn compile_action_name(action_name: Option<&str>, source: &File) -> String {
@@ -419,9 +442,11 @@ pub(crate) fn call<'v>(
             }))
         }
         "per_file_copts" => {
-            // CcStarlarkInternal.perFileCopts (:972-991): --per_file_copt is
-            // unmodelled, so no options match.
-            bind(
+            // CcStarlarkInternal.perFileCopts (:972-991): the options of
+            // every `--per_file_copt` whose RegexFilter includes the
+            // source's label (Label.toString) or its exec path
+            // (PerLabelOptions.isIncluded, analysis/config/PerLabelOptions.java:96-106).
+            let bound = bind(
                 method,
                 &[
                     param("cpp_configuration", true, false, true),
@@ -431,7 +456,35 @@ pub(crate) fn call<'v>(
                 args,
                 heap,
             )?;
-            Ok(heap.alloc(Vec::<String>::new()))
+            let entries = crate::subrule_fragments::per_file_copts(bound[0].expect("required"))
+                .ok_or_else(|| {
+                    type_error(
+                        method,
+                        "cpp_configuration",
+                        bound[0].expect("required"),
+                        "CppConfiguration",
+                    )
+                })?;
+            let mut options = Vec::new();
+            if !entries.is_empty() {
+                let source = unpack_file(bound[1].expect("required"))
+                    .map_err(|error| failure(format!("{method}: source_file: {error}")))?;
+                let label = bound[2]
+                    .filter(|value| !value.is_none())
+                    .and_then(crate::starlark_types::unpack_label);
+                for entry in entries {
+                    let (filter, list) = entry.split_once('@').unwrap_or((entry.as_str(), ""));
+                    let filter = crate::coverage::RegexFilter::parse(filter).map_err(failure)?;
+                    if label
+                        .as_deref()
+                        .is_some_and(|label| filter.is_included(label))
+                        || filter.is_included(&source.path)
+                    {
+                        options.extend(per_label_option_list(list));
+                    }
+                }
+            }
+            Ok(heap.alloc(options))
         }
         "wrap_link_actions" => {
             // CcStarlarkInternal.wrapLinkActions (:466-484): the wrapped

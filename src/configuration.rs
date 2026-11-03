@@ -619,6 +619,30 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         exec: ExecValue::Set("macos"),
         exec_source: "builtin_exec_platforms.bzl:185, 190",
     },
+    // CppOptions.dynamicMode (`--dynamic_mode`, DynamicModeConverter: an
+    // EnumConverter of CppConfiguration.DynamicMode, "dynamic mode"):
+    // read by rules_cc through `ctx.fragments.cpp.dynamic_mode()`
+    // (CppConfiguration.getDynamicModeFlagString, :359-365: the constant
+    // name). Not in CppOptions' exec propagate list: the default there.
+    ValueOption {
+        option: OptionDef {
+            name: "dynamic_mode",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Enum {
+                type_name: "dynamic mode",
+                values: &["OFF", "DEFAULT", "FULLY"],
+            },
+            default: "default",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/cpp/CppOptions.java:205-216",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:291-348 (not propagated)",
+    },
 ];
 
 /// The table-driven option named `name` (its canonical name only).
@@ -1098,6 +1122,30 @@ pub struct NativeOptions {
     /// see [`Self::host_copts`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub host_linkopts: Vec<String>,
+    /// CoreOptions.defaultFeatures (`--features`, CoreOptions.java:831-843,
+    /// allowMultiple), normalized like CoreOptions.getNormalizedFeatures
+    /// (:1210-1242): enabled features sorted, then the disabled ones as
+    /// `-name` sorted (a disable wins). The configuration's default
+    /// FeatureSet (BuildConfigurationValue.java:337, 960-969): merged under
+    /// every rule's `ctx.features` (RuleContext.computeFeatures). The exec
+    /// transition sets it to `--host_features` (builtin_exec_platforms.bzl:228).
+    /// Omitted from the identity when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
+    /// CoreOptions.hostFeatures (`--host_features`, CoreOptions.java:845-856),
+    /// as given; propagates to exec configurations (builtin_exec_platforms.bzl:258).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub host_features: Vec<String>,
+    /// JavaOptions.javacOpts (`--javacopt`, JavaOptions.java:50-58): read by
+    /// `ctx.fragments.java.default_javac_flags[_depset]`
+    /// (JavaConfiguration.java:107-108, 160-172). The exec transition sets
+    /// it to `--host_javacopt` (builtin_exec_platforms.bzl:356).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub javacopts: Vec<String>,
+    /// JavaOptions.hostJavacOpts (`--host_javacopt`, JavaOptions.java:60-69);
+    /// propagates to exec configurations (builtin_exec_platforms.bzl:381).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub host_javacopts: Vec<String>,
     /// The table-driven [`VALUE_OPTIONS`] whose value differs from the
     /// default, by name ([`NativeOptions::value`] gives the default for the
     /// others). Serialized as `NAME: toString` and omitted from the
@@ -1389,6 +1437,10 @@ impl Default for NativeOptions {
             host_conlyopts: Vec::new(),
             host_per_file_copts: Vec::new(),
             host_linkopts: Vec::new(),
+            features: Vec::new(),
+            host_features: Vec::new(),
+            javacopts: Vec::new(),
+            host_javacopts: Vec::new(),
             values: BTreeMap::new(),
             collect_code_coverage: false,
             instrumentation: Instrumentation::default(),
@@ -1757,6 +1809,65 @@ pub struct CommandLineOptions {
     /// Whether `--instrumentation_filter` was given (TestCommand.java:161-165:
     /// `bazel coverage` computes the default only otherwise).
     explicit_instrumentation_filter: bool,
+    /// The [`FLAG_LIST_OPTIONS`] occurrences (option name, value) in
+    /// command-line order.
+    flag_lists: Vec<(&'static str, String)>,
+}
+
+/// The repeatable `List<String>` options of the configuration fragments
+/// (allowMultiple, the default String element converter; PerLabelOptions
+/// for `per_file_copt`) and whether `query` registers them (only
+/// CoreOptions, QueryCommand.java:59-67): CppOptions.java:236-282, 563-582,
+/// 602-667; CoreOptions.java:831-856; JavaOptions.java:50-69.
+const FLAG_LIST_OPTIONS: [(&str, bool); 14] = [
+    ("copt", false),
+    ("cxxopt", false),
+    ("conlyopt", false),
+    ("linkopt", false),
+    ("per_file_copt", false),
+    ("host_copt", false),
+    ("host_cxxopt", false),
+    ("host_conlyopt", false),
+    ("host_linkopt", false),
+    ("host_per_file_copt", false),
+    ("features", true),
+    ("host_features", true),
+    ("javacopt", false),
+    ("host_javacopt", false),
+];
+
+/// CoreOptions.getNormalizedFeatures (CoreOptions.java:1210-1242): the
+/// enabled features sorted, then the disabled ones as `-name` sorted; a
+/// disable always wins over an enable.
+pub fn normalize_features(features: &[String]) -> Vec<String> {
+    let mut state: BTreeMap<&str, bool> = BTreeMap::new();
+    for feature in features {
+        if let Some(off) = feature.strip_prefix('-') {
+            state.insert(off, false);
+        } else {
+            state.entry(feature.as_str()).or_insert(true);
+        }
+    }
+    // TreeSet<String> order is Java's String.compareTo (UTF-16 units);
+    // for these names BTreeMap's byte order is the same except outside the
+    // BMP, which java_string_cmp handles.
+    let mut enabled: Vec<&str> = state
+        .iter()
+        .filter(|(_, on)| **on)
+        .map(|(f, _)| *f)
+        .collect();
+    let mut disabled: Vec<&str> = state
+        .iter()
+        .filter(|(_, on)| !**on)
+        .map(|(f, _)| *f)
+        .collect();
+    enabled.sort_by(|a, b| crate::native_rules::java_string_cmp(a, b));
+    disabled.sort_by(|a, b| crate::native_rules::java_string_cmp(a, b));
+    enabled
+        .into_iter()
+        .map(str::to_owned)
+        .chain(disabled.into_iter().map(|feature| format!("-{feature}")))
+        .collect()
 }
 
 /// The repeatable EnvVarsConverter options (docs/ACTION_ENV.md): name and
@@ -2056,6 +2167,41 @@ impl CommandLineOptions {
                 self.extra_execution_platforms = Some(comma_separated_option_list(&value));
                 return Ok(Parsed::Consumed(used_next));
             }
+            // The repeatable List<String> flag options (FLAG_LIST_OPTIONS):
+            // every occurrence appends its value as one element (no comma
+            // splitting: the default String element converter).
+            if let Some((option, core)) = FLAG_LIST_OPTIONS
+                .iter()
+                .find(|(option, _)| name == *option || name.strip_prefix("no") == Some(option))
+            {
+                if query && !core {
+                    return Err(invalid_argument(arg, format!("Unrecognized option: {arg}")));
+                }
+                if name != *option {
+                    return Err(invalid_argument(
+                        arg,
+                        format!("Illegal use of 'no' prefix on non-boolean option: {arg}"),
+                    ));
+                }
+                let (value, form, used_next) = match value {
+                    Some(value) => (value.to_owned(), arg.to_owned(), false),
+                    None => {
+                        let value = next.ok_or_else(|| format!("Expected value after {arg}"))?;
+                        (value.to_owned(), format!("{arg} {value}"), true)
+                    }
+                };
+                if option.ends_with("per_file_copt") {
+                    // PerLabelOptionsConverter: the filter before the first
+                    // `@` must be a valid RegexFilter.
+                    let filter = value.split_once('@').map_or(value.as_str(), |(f, _)| f);
+                    crate::coverage::RegexFilter::parse(filter)
+                        .map_err(|error| format!("While parsing option {form}: {error}"))?;
+                }
+                if !query {
+                    self.flag_lists.push((option, value));
+                }
+                return Ok(Parsed::Consumed(used_next));
+            }
             let (option, negated) = match lookup(name) {
                 Some(option) => (option, false),
                 None => match name.strip_prefix("no").and_then(lookup) {
@@ -2229,6 +2375,27 @@ impl CommandLineOptions {
             }
         }
         native.define = normalize_defines(defines);
+        for (option, value) in &self.flag_lists {
+            let list = match *option {
+                "copt" => &mut native.copts,
+                "cxxopt" => &mut native.cxxopts,
+                "conlyopt" => &mut native.conlyopts,
+                "linkopt" => &mut native.linkopts,
+                "per_file_copt" => &mut native.per_file_copts,
+                "host_copt" => &mut native.host_copts,
+                "host_cxxopt" => &mut native.host_cxxopts,
+                "host_conlyopt" => &mut native.host_conlyopts,
+                "host_linkopt" => &mut native.host_linkopts,
+                "host_per_file_copt" => &mut native.host_per_file_copts,
+                "features" => &mut native.features,
+                "host_features" => &mut native.host_features,
+                "javacopt" => &mut native.javacopts,
+                "host_javacopt" => &mut native.host_javacopts,
+                other => unreachable!("flag list option {other}"),
+            };
+            list.push(value.clone());
+        }
+        native.features = normalize_features(&native.features);
         // dedupeKeepingLast (PlatformOptions.java:164-185).
         let mut extra_toolchains: Vec<String> = Vec::new();
         for pattern in self.extra_toolchains.iter().rev() {
@@ -2498,8 +2665,16 @@ mod tests {
         }
         assert!(matches!(
             options.parse("--copt=-O2", None),
-            Ok(Parsed::NotModelled)
+            Ok(Parsed::Consumed(false))
         ));
+        assert!(matches!(
+            options.parse("--copt", Some("-O1")),
+            Ok(Parsed::Consumed(true))
+        ));
+        assert_eq!(
+            options.parse("--nocopt", None).err().as_deref(),
+            Some("--nocopt :: Illegal use of 'no' prefix on non-boolean option: --nocopt")
+        );
         assert!(matches!(options.parse("-k", None), Ok(Parsed::NotModelled)));
         let empty = parsed(&["--platforms="]).unwrap();
         assert_eq!(empty.native.platforms, [default_host_platform()]);
@@ -3148,7 +3323,8 @@ mod tests {
                 "enable_runfiles",
                 "incompatible_python_disallow_native_rules",
                 "collect_code_coverage",
-                "apple_platform_type"
+                "apple_platform_type",
+                "dynamic_mode"
             ]
         );
         let defaults = NativeOptions::default();

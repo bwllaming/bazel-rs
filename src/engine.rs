@@ -9675,7 +9675,7 @@ impl Engine {
         let native = &configuration.native;
         // RuleContext.computeFeatures (analysis/RuleContext.java:268-276): the
         // package's features, then the rule's `features`, under the
-        // configuration's (`--features`/`--host_features`, rejected natively).
+        // configuration's (`--features`; `--host_features` in exec ones).
         let package = self
             .packages
             .get(&rule.label.package_id())
@@ -9692,10 +9692,8 @@ impl Engine {
                 _ => FeatureSet::default(),
             })
             .unwrap_or_default();
-        let features = FeatureSet::merge_with_global(
-            &FeatureSet::merge(&package, &own),
-            &FeatureSet::default(),
-        );
+        let global = FeatureSet::parse(native.features.iter().map(String::as_str));
+        let features = FeatureSet::merge_with_global(&FeatureSet::merge(&package, &own), &global);
         // Package.Metadata buildFilename relative to the source root: the
         // package path and the BUILD file name of the rule's location.
         let build_file = rule
@@ -9734,6 +9732,8 @@ impl Engine {
             target_platform,
             template_variables,
             features,
+            disabled_default_features: global.off.clone(),
+            javacopts: native.javacopts.clone(),
             build_file_path,
             apple_sdk_versions: native.apple_sdk_versions.clone(),
             // Replaced by the analyzed target's own Context::action_env

@@ -487,10 +487,9 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
         receiver(this)?;
         Ok(true)
     }
-    /// CppConfiguration.java:359-365; --dynamic_mode default 'default' (DynamicMode.name()).
+    /// CppConfiguration.java:359-365: `--dynamic_mode` as DynamicMode.name().
     fn dynamic_mode<'v>(this: Value<'v>) -> anyhow::Result<&'static str> {
-        receiver(this)?;
-        Ok("DEFAULT")
+        Ok(receiver(this)?.view.dynamic_mode)
     }
     /// CppConfiguration.java:866-884; default true.
     fn experimental_cc_implementation_deps<'v>(
@@ -784,6 +783,14 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
 }
 
 /// A `cpp` fragment of the given configuration (rule `ctx.fragments.cpp`).
+/// The `--per_file_copt` entries of a `ctx.fragments.cpp` value
+/// (CppConfiguration.getPerFileCopts); `None` for another value.
+pub(crate) fn per_file_copts(value: Value<'_>) -> Option<&[String]> {
+    value
+        .downcast_ref::<CppFragment>()
+        .map(|fragment| fragment.view.per_file_copts.as_slice())
+}
+
 pub(crate) fn alloc_cpp(heap: Heap<'_>, view: CppConfigurationView) -> Value<'_> {
     heap.alloc(CppFragment { view })
 }

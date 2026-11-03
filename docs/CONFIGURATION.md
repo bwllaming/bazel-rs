@@ -905,9 +905,45 @@ Windows (`builtin_exec_platforms.bzl:327-345`, so the exec identity changed
 once when this landed; the exec `ST-` hash is unchanged because the dynamic
 exec baseline carries the same lists), `ctx.fragments.cpp.copts/cxxopts/
 conlyopts/linkopts` read them, and `config_setting(values)` matches
-`crosstool_top`. The native cc actions do not consume them (the toolchain's
-own flags apply); `--copt` on the command line stays unsupported, and
-`config_setting(values)` on the flag lists is not modelled.
+`crosstool_top`. `config_setting(values)` on the flag lists is not modelled.
+
+### On the command line
+
+The flag lists are command-line options too (build/run/test/cquery; `query`
+registers only CoreOptions, so `--copt` etc. are `Unrecognized option`
+there, while `--features`/`--host_features` are accepted and ignored):
+
+- `--copt`, `--cxxopt`, `--conlyopt`, `--linkopt`, `--per_file_copt` and
+  their `--host_*` variants: repeatable, one element per occurrence (no
+  comma splitting), `--per_file_copt` validated by PerLabelOptionsConverter.
+  rules_cc's Starlark reads them through `ctx.fragments.cpp` and
+  `cc_internal.per_file_copts` (now native: a `--per_file_copt` whose
+  RegexFilter includes the source's label or exec path adds its options,
+  split on unescaped commas, `\,` unescaped), so they reach the CppCompile
+  and CppLink command lines exactly like genuine
+  (tests/cc_compile.rs `cc_flag_options_reach_the_compile_command_lines`,
+  receipt tests/fixtures/cc_compile/flag_options_receipt.json).
+- `--features`/`--host_features` (CoreOptions): normalized like
+  `getNormalizedFeatures` (enabled sorted, then `-disabled` sorted; a
+  disable wins) and merged under every rule's `ctx.features` /
+  `ctx.disabled_features` (RuleContext.computeFeatures); the exec
+  transition sets `--features` to `--host_features`. rules_cc's
+  `configure_features` and rules_go's `go_context_data` read `ctx.features`
+  (rules_go 0.63 prints `WARNING: --features=race is no longer supported`
+  and builds without race mode, exactly like genuine; race mode is
+  `--@io_bazel_rules_go//go/config:race`).
+- `--dynamic_mode` (off/default/fully, a table-driven value option, not
+  propagated to exec): `ctx.fragments.cpp.dynamic_mode()`.
+- `--javacopt`/`--host_javacopt`: `ctx.fragments.java.default_javac_flags`
+  (tokenized) and `default_javac_flags_depset` (one ShellUtils-escaped
+  string; JavaHelper.detokenizeJavaOptions); the exec transition sets
+  `--javacopt` to `--host_javacopt`.
+
+All of them are part of the configuration identity and, after a Starlark
+transition (which may read and write `features`, `host_features`,
+`javacopt`, `host_javacopt` too), of the `ST-` hash; the genuine capture
+tests/fixtures/config_flag_options/reference.json pins the values, the exec
+values and a transitioned output path (tests/config_flag_options.rs).
 
 `//command_line_option:build_python_zip` is deliberately NOT a native
 option: genuine 9.3 maps it to `@@rules_python+//python/config_settings:
