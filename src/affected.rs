@@ -1088,6 +1088,15 @@ fn start_plan(
 }
 
 impl Running {
+    /// Waits until the scoped planning wrote its scope (its target pattern
+    /// phase is over) or ended.
+    fn wait_for_scope(&mut self) {
+        let scope = PathBuf::from(format!("{}.scope", self.out.display()));
+        while !scope.exists() && matches!(self.child.try_wait(), Ok(None)) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
     /// Waits for the planning and returns its digests and scope.
     fn finish(mut self) -> Result<Planned, String> {
         let status = self
@@ -1545,7 +1554,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 None => root.clone(),
             };
             eprintln!("bazel-rs affected: planning both revisions concurrently");
-            let base_run = start_plan(
+            let mut base_run = start_plan(
                 binary,
                 startup,
                 &options,
@@ -1553,6 +1562,15 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 &keep.join("base.digests"),
                 base_scope,
             );
+            // The head starts once the base selected its targets: the base
+            // is then past module resolution and loading, and ahead in the
+            // analysis, so it fetches what both need first and the head
+            // waits for those fetches instead of downloading itself. A head
+            // planning that downloads is not saved (taint network), and the
+            // commands after `affected` could not derive from it.
+            if let (Ok(running), Some(_)) = (&mut base_run, base_scope) {
+                running.wait_for_scope();
+            }
             let head_run = start_plan(
                 binary,
                 startup,
