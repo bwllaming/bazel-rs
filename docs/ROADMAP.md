@@ -1,6 +1,6 @@
 # Full-parity roadmap and acceptance gates
 
-## Current state (2026-10-26)
+## Current state (2026-11-03)
 
 bazel-rs builds, tests, runs and queries the `~/code` application: `build --nobuild
 //src/...` succeeds, `build -k //src/...` builds 1,813 of 1,816 top-level targets (the
@@ -233,10 +233,10 @@ main-repo filegroup smoke checks. No whole-repo speed claim.
 ### 1. Loading and repository graph
 
 Status: met for `~/code` (Bzlmod, lockfile byte-identical to 9.3, extensions,
-repository rules, rc files, parallel loading). Open: SkyQuery
-(`--universe_scope`), query `xml`/`proto`/`streamed_*` outputs,
-`--target_pattern_file`, `vendor`; there is no in-memory incremental graph (no
-server) — the analysis snapshot replaces it for unchanged inputs.
+repository rules, rc files, parallel loading, SkyQuery `--universe_scope`, every
+query output format, `--target_pattern_file`, `--repository_cache` shared with
+Bazel). Open: `vendor`; there is no in-memory incremental graph (no server) —
+the analysis snapshot replaces it for unchanged inputs.
 
 - `.bzl` loads, module freezing, load cycles, Bazel Starlark dialect/builtins,
   `glob`, `select`, package defaults, visibility/package groups, ignore files.
@@ -265,8 +265,9 @@ cannot accidentally publish telemetry or change the checkout during testing.
 
 Status: analysis of all of `//src/...` succeeds; `cquery` subset with
 target-determinator support (docs/CQUERY.md); `aquery` (docs/AQUERY.md).
-Open: `cquery --output=starlark`, the remaining aspect features (PLAN.md), one toolchain on two
-execution platforms in one configuration.
+Open: `cquery --output=starlark|files|jsonproto|transitions`, `starlark_doc_extract`,
+aquery action keys for depset-built `Args` and native C++/runfiles actions
+(docs/AQUERY.md), one toolchain on two execution platforms in one configuration.
 
 - Custom rules/attributes/providers, `depset`, aspects, `ctx.actions`, `Args`,
   executable tools, tree artifacts, runfiles and `FilesToRunProvider`.
@@ -282,8 +283,9 @@ negative cases; accepted attributes may never become silent no-ops.
 
 Status: parallel scheduling, process supervision, Landlock sandbox, action cache
 with GC, HTTP and gRPC remote caches, remote execution (REAPI v2), per-command
-persistent workers. Open: namespace sandbox / private `/tmp`, workers that live
-across commands, `--remote_download_minimal`/`toplevel`, remote compression,
+persistent workers, Build without the Bytes (`--remote_download_outputs`),
+remote compression, test results in the remote cache, `--disk_cache`. Open:
+namespace sandbox / private `/tmp`, workers that live across commands,
 cross-host reproducibility tests.
 
 - Parallel DAG scheduling, cancellation, process supervision and timeouts.
@@ -309,13 +311,13 @@ cache corruption and concurrent-process tests; reproducibility tests across host
   script-path generation are N23f (docs/RUNFILES_TREES.md). `--keep_going`
   with FAILED TO BUILD summaries (docs/KEEP_GOING.md) and remote test execution
   (docs/REMOTE_EXECUTION.md) are in. Coverage, `--run_under` labels (and for
-  tests), `--test_strategy` values beyond `standalone`/`local`/`exclusive` (test
-  actions themselves run sandboxed like any action, docs/SANDBOX.md) and
-  `--notest_keep_going` remain.
-- BEP file outputs, `--profile` and the execution logs are in (docs/BEP.md,
-  docs/PROFILE.md; the gRPC Build Event Service upload remains);
-  info/clean/shutdown/fetch/mod/help are in (docs/COMMANDS.md, docs/MOD_COMMAND.md);
-  query proto/xml output formats and target-pattern files remain.
+  tests) and `--notest_keep_going` are in; `--test_strategy` values beyond
+  `standalone`/`local`/`exclusive` remain (test actions themselves run
+  sandboxed like any action, docs/SANDBOX.md).
+- BEP file outputs, the gRPC Build Event Service upload, `--profile` and the
+  execution logs are in (docs/BEP.md, docs/PROFILE.md);
+  info/clean/shutdown/fetch/mod/help/aquery are in (docs/COMMANDS.md,
+  docs/MOD_COMMAND.md, docs/AQUERY.md); `dump`, `print_action`, `vendor` remain.
 - Remaining supported OSes, upstream rule families and CLI compatibility matrix.
 
 Gate: safely selected real-repo Go/Python/Node/shell tests actually execute and

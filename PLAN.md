@@ -208,11 +208,14 @@ Done since the last increment recorded under "History", one line each:
       (docs/COMMANDS.md).
 - [ ] `dump`, `print_action` (low priority).
 - [ ] `vendor` (explicit error: no vendor-directory read path, docs/COMMANDS.md).
-- [ ] `query --output=xml|proto|streamed_proto|streamed_jsonproto` and SkyQuery
-      (`--universe_scope`, `--infer_universe_scope`); `cquery --output=starlark`
-      (needed for target-determinator's default incompatible-target filtering).
-- [ ] `--target_pattern_file`, `--notest_keep_going`, `--run_under=<label>`
-      (all rejected explicitly today).
+- [x] `query --output=xml|proto|streamed_proto|streamed_jsonproto` and SkyQuery
+      (`--universe_scope`).
+- [ ] `cquery --output=starlark|files|jsonproto|transitions` (starlark is needed
+      for target-determinator's default incompatible-target filtering; owned by
+      the cquery track).
+- [x] `--target_pattern_file`, `--notest_keep_going`, `--run_under=<label>`.
+- [x] `aquery` (docs/AQUERY.md) and native `genquery`; `starlark_doc_extract`
+      still fails explicitly.
 
 ### Running ~/code the way its users do
 
@@ -251,10 +254,11 @@ Done since the last increment recorded under "History", one line each:
       `--override_module`/`--override_repository`, `--distdir`,
       `--strategy_regexp`, `--explain`, Android/Apple/FDO/LTO options, query-only
       gaps (`--profile`, `--run_under`, `--bes_*` on `query`).
-- [ ] `--bes_backend` (gRPC Build Event Service upload) fails explicitly.
-- [ ] Remote: `--remote_download_minimal`/`toplevel` behave like `all`;
-      `--remote_cache_compression`; Bazel's exit code 34 for remote failures;
-      capability check at first use instead of startup.
+- [x] `--bes_backend` (gRPC Build Event Service upload, docs/BEP.md).
+- [x] Remote: `--remote_download_outputs=toplevel|minimal` (HTTP and gRPC),
+      `--remote_cache_compression` (gRPC zstd), retries, test results in the
+      remote cache, `--disk_cache` and `--repository_cache` in Bazel's layouts
+      (docs/REMOTE_CACHE.md, docs/REPOSITORY_CACHE.md).
 - [x] Persistent workers (docs/PERSISTENT_WORKERS.md); no ~/code action uses them.
       Workers live for one command only (no server).
 - [x] Warm `run` latency measured: 0.20–0.35 s overhead on a snapshot hit.
@@ -340,12 +344,13 @@ Done since the last increment recorded under "History", one line each:
 
 ### Distribution
 
-- [x] GitHub releases: scripts/release.py, scripts/bump_version.py,
-      docs/RELEASING.md; v0.1.0 published as a pre-release.
-- [ ] Portability: the binary needs glibc ≥ 2.39 (Ubuntu 24.04+); a static musl or
-      older-glibc build for other hosts. Linux x86_64 only (no arm64, no macOS).
-- [ ] No CI on GitHub: the suite needs the genuine Bazel ELF and network fixtures;
-      at least fmt/clippy/`cargo test --lib` could run there.
+- [x] GitHub releases built by GitHub Actions on a tag push (docs/RELEASING.md):
+      x86_64 glibc (≥ 2.39), static x86_64 and aarch64 musl builds. The
+      x86_64 build and publish run on the organisation's self-hosted runners,
+      arm64 on GitHub's `ubuntu-24.04-arm`. No macOS (not planned for now).
+- [x] CI on GitHub (`.github/workflows/ci.yml`, self-hosted): fmt, clippy, the
+      library tests and the hermetic integration subset; the full gate stays
+      local (scripts/check.sh).
 - [ ] NOTICE names "The bazel-rs Authors" as copyright holder (placeholder).
 
 ## History
