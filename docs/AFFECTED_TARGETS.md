@@ -1071,10 +1071,11 @@ binary; affected's output identical in every run; seconds):
 ¹ with an empty remote cache (later rows: populated); both cold builds
 analyze in full.
 
-* Lukewarm: the head planning executes 7 repositories instead of 287 (the
-  re-evaluated `pip`'s unchanged wheels are reused), is saved, and the build
-  derives (`INFO: Analyzed 480 targets (206 packages loaded, 0 targets
-  configured)`).
+* Lukewarm: the head planning is saved and the build derives (`INFO:
+  Analyzed 480 targets (206 packages loaded, 0 targets configured)`); the
+  `query`, which visits every `select()` branch, executes 7 repositories
+  instead of 287 (the re-evaluated `pip`'s unchanged wheels are reused; the
+  build's own fetches 46 → 3).
 * Warm, and every row: the `test` after a derived `build` derived too only
   once a hit's INPUTS refresh kept the DERIVE section (before, the refresh
   dropped it and the test analyzed in full, 86 s).
