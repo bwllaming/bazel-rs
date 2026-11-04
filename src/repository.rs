@@ -6074,7 +6074,8 @@ mod tests {
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            // The registry trees in it are sealed (read-only directories).
+            let _ = crate::repository_ctx::remove_tree(&self.0);
         }
     }
 
