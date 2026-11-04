@@ -1,0 +1,31 @@
+Usage: bazel dump <options>
+Dumps the internal state of the bazel server process.  This command is provided as an aid to debugging, not as a stable interface, so users should not try to parse the output; instead, use 'query' or 'info' for this purpose.
+Options that control the output of the command:
+  --[no]action_cache (a boolean; default: "false")
+    Dump action cache content.
+      Tags: bazel_monitoring
+  --memory (memory mode; default: see description)
+    Dump the memory use of the given Skyframe node.
+      Tags: bazel_monitoring
+  --[no]packages (a boolean; default: "false")
+    Dump package cache content.
+      Tags: bazel_monitoring
+  --[no]rule_classes (a boolean; default: "false")
+    Dump rule classes.
+      Tags: bazel_monitoring
+  --[no]rules (a boolean; default: "false")
+    Dump rules, including counts and memory usage (if memory is tracked).
+      Tags: bazel_monitoring
+  --skyframe (off, summary, count, value, deps, rdeps, function_graph, active_directories or active_directories_frontier_deps; default: "off")
+    Dump the Skyframe graph.
+      Tags: bazel_monitoring
+  --skykey_filter (a comma-separated list of regex expressions with prefix '-' specifying excluded paths; default: ".*")
+    Regex filter of SkyKey names to output. Only used with --skyframe=deps, 
+    rdeps, function_graph.
+      Tags: bazel_monitoring
+  --skylark_memory (a string; default: see description)
+    Dumps a pprof-compatible memory profile to the specified path. To learn 
+    more please see https://github.com/google/pprof.
+      Tags: bazel_monitoring
+
+

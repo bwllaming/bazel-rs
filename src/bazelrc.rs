@@ -1843,7 +1843,7 @@ pub fn expand(
     // inheritsOptionsFrom); `fetch` inherits `test` (FetchCommand), which
     // inherits `build`.
     let groups: Vec<&str> = match command {
-        "run" | "test" | "info" | "clean" | "aquery" => {
+        "run" | "test" | "info" | "clean" | "aquery" | "print_action" => {
             vec!["always", "common", "build", command]
         }
         "fetch" | "cquery" | "coverage" => vec!["always", "common", "build", "test", command],

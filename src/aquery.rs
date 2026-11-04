@@ -50,6 +50,9 @@ pub struct Meta {
     /// A native action class's `computeKey` stream, encoded at registration
     /// (CppCompileAction; crate::cc_actions).
     pub compute_key: Option<Vec<u8>>,
+    /// A Starlark spawn's inputs in their NestedSet order (inputs, then
+    /// tools), exec paths (crate::print_action's SpawnInfo.input_file).
+    pub input_order: Option<Vec<String>>,
 }
 
 /// A ParameterFileWriteAction's file type, fingerprint and arguments.
@@ -369,6 +372,9 @@ pub struct ActionRecord {
     /// The text output's fixed environment when it differs from the proto's
     /// effective one (CppCompileAction: the configuration's environment).
     pub text_environment: Option<Vec<(String, String)>>,
+    /// The inputs in their NestedSet order when known
+    /// ([`Meta::input_order`]; crate::print_action).
+    pub input_order: Option<Vec<String>>,
 }
 
 /// The selected actions with their configurations.

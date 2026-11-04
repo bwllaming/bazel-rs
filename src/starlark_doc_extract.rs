@@ -38,11 +38,20 @@ enum Field {
 pub(crate) struct Message(Vec<Field>);
 
 impl Message {
-    fn str(&mut self, number: u32, name: &'static str, value: impl Into<String>) {
+    pub(crate) fn str(&mut self, number: u32, name: &'static str, value: impl Into<String>) {
         let value = value.into();
         if !value.is_empty() {
             self.0.push(Field::Str(number, name, value));
         }
+    }
+
+    /// A set string field, also when empty (a repeated or proto2 field).
+    pub(crate) fn set_str(&mut self, number: u32, name: &'static str, value: impl Into<String>) {
+        self.0.push(Field::Str(number, name, value.into()));
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     fn bool(&mut self, number: u32, name: &'static str, value: bool) {
@@ -57,7 +66,7 @@ impl Message {
         }
     }
 
-    fn msg(&mut self, number: u32, name: &'static str, value: Message) {
+    pub(crate) fn msg(&mut self, number: u32, name: &'static str, value: Message) {
         self.0.push(Field::Msg(number, name, value));
     }
 

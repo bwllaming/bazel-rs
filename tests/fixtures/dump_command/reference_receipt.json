@@ -1,0 +1,169 @@
+{
+  "bazel": "9.3.1 (/home/coder/bazel/.direnv/reference/bazel-9.3.1-linux-x86_64)",
+  "captured": "2026-11-04",
+  "dump": {
+    "invocation": "bazel --batch --ignore_all_rc_files --output_user_root=<private> dump ARGS (a fresh server: --batch); genuine/dump/N.{out,err} are stdout and stderr (the JVM's deprecation line dropped)",
+    "cases": {
+      "1": {
+        "args": [],
+        "exit": 7
+      },
+      "2": {
+        "args": [
+          "--rules"
+        ],
+        "exit": 0
+      },
+      "3": {
+        "args": [
+          "--packages"
+        ],
+        "exit": 0
+      },
+      "4": {
+        "args": [
+          "--skyframe=summary"
+        ],
+        "exit": 0
+      },
+      "5": {
+        "args": [
+          "--skyframe=count"
+        ],
+        "exit": 0
+      },
+      "6": {
+        "args": [
+          "--skyframe=value"
+        ],
+        "exit": 0
+      },
+      "7": {
+        "args": [
+          "--skyframe=deps"
+        ],
+        "exit": 0
+      },
+      "8": {
+        "args": [
+          "--skyframe=rdeps"
+        ],
+        "exit": 0
+      },
+      "9": {
+        "args": [
+          "--skyframe=function_graph"
+        ],
+        "exit": 0
+      },
+      "10": {
+        "args": [
+          "--skyframe=active_directories"
+        ],
+        "exit": 0
+      },
+      "11": {
+        "args": [
+          "--skyframe=active_directories_frontier_deps"
+        ],
+        "exit": 0
+      },
+      "12": {
+        "args": [
+          "--skyframe=bogus"
+        ],
+        "exit": 2
+      },
+      "15": {
+        "args": [
+          "--memory=shallow,count:package://pkg"
+        ],
+        "exit": 7
+      },
+      "16": {
+        "args": [
+          "--memory=full,summary"
+        ],
+        "exit": 0
+      },
+      "17": {
+        "args": [
+          "--memory=bogus"
+        ],
+        "exit": 2
+      },
+      "18": {
+        "args": [
+          "--skylark_memory=heap.pb"
+        ],
+        "exit": 0
+      },
+      "19": {
+        "args": [
+          "--rules",
+          "--packages"
+        ],
+        "exit": 0
+      }
+    },
+    "rule_classes": "resources/dump_rule_classes.txt is `dump --rule_classes` stdout without its final blank line",
+    "action_cache": "genuine lists its output base's CompactPersistentActionCache (\"Action cache (N records):\" with index -> primary output, packed_len, timestamp to the minute, digest; then \"String indexer (N records):\"); native lists the cache directory's action entries in that layout (manifest size, manifest time, action key as digest)",
+    "skylark_memory": "the path is irrelevant (case 18 used an absolute scratch path)"
+  },
+  "print_action": {
+    "invocation": "bazel --batch --ignore_all_rc_files --output_user_root=<private> print_action --registry=file://<repo>/tests/fixtures/builtin_modules/registry ARGS in ws/; genuine/print_action/N.out is stdout",
+    "cases": {
+      "1": {
+        "args": [
+          "//pkg:s"
+        ],
+        "exit": 0
+      },
+      "2": {
+        "args": [
+          "--print_action_mnemonics=MyTool",
+          "//pkg:s"
+        ],
+        "exit": 0
+      },
+      "3": {
+        "args": [
+          "--print_action_mnemonics=MyShell",
+          "--print_action_mnemonics=FileWrite",
+          "//pkg:s"
+        ],
+        "exit": 0
+      },
+      "4": {
+        "args": [
+          "//pkg:nocompile"
+        ],
+        "exit": 1,
+        "error": "ConfiguredTarget(//pkg:nocompile, <CHECKSUM>) is not a supported target kind"
+      },
+      "5": {
+        "args": [
+          "//pkg:g"
+        ],
+        "exit": 1,
+        "error": "ConfiguredTarget(//pkg:g, <CHECKSUM>) is not a supported target kind"
+      },
+      "6": {
+        "args": [
+          "--print_action_mnemonics=MyRun",
+          "//pkg:s"
+        ],
+        "exit": 1,
+        "error": "no actions to print were found"
+      },
+      "7": {
+        "args": [
+          "//pkg:missing"
+        ],
+        "exit": 1,
+        "error": "no such target '//pkg:missing': target 'missing' not declared in package 'pkg' defined by <WS>/pkg/BUILD"
+      }
+    },
+    "notes": "genuine builds the targets first (its stderr shows the build); native analyzes them with aquery's action planning only. Error texts: the configuration checksum is native's ConfigId (docs/CQUERY.md), genuine's here a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18; a loading error prints genuine's 'Skipping'/'Build failed when printing actions' lines natively as the native loading error. Two requested targets print in genuine's ConfiguredTarget set order (observed unstable); native sorts by label."
+  }
+}

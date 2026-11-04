@@ -1,0 +1,15 @@
+action {
+  action {
+    owner: "//pkg:s"
+    id: "c186426da0ca6a301eabb83806d37d239e2fb0d323a2354bc05b472b5b178b40"
+    mnemonic: "MyTool"
+    [blaze.SpawnInfo.spawn_info] {
+      argument: "pkg/tool.sh"
+      argument: "bazel-out/k8-fastbuild/bin/pkg/s.tooled"
+      input_file: "pkg/a.txt"
+      input_file: "pkg/b.txt"
+      input_file: "pkg/tool.sh"
+      output_file: "bazel-out/k8-fastbuild/bin/pkg/s.tooled"
+    }
+  }
+}

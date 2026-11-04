@@ -1139,6 +1139,8 @@ fn register_spawn(
     );
     let outputs = file_list(options.outputs)?;
     ensure!(!outputs.is_empty(), "param 'outputs' may not be empty");
+    // The files the caller passed (a File executable), before `inputs`.
+    let initial_inputs = inputs.len();
     inputs.extend(
         options
             .inputs
@@ -1242,6 +1244,15 @@ fn register_spawn(
             environment: Some(fixed),
             command_lines: Some(command_lines),
             arguments: Some(bazel_arguments),
+            // StarlarkActionFactory: the inputs, then the tools (a File
+            // executable is one).
+            input_order: Some(
+                inputs[initial_inputs..]
+                    .iter()
+                    .chain(&inputs[..initial_inputs])
+                    .map(|input| input.path.clone())
+                    .collect(),
+            ),
             ..Default::default()
         })
     });

@@ -227,7 +227,13 @@ fn run() -> Result<(), String> {
             Err(error) => fail_with(2, &error),
         },
         "query" | "cquery" | "aquery" | "config" | "build" | "mod" | "run" | "test"
-        | "coverage" | "info" | "clean" | "fetch" | "gc" => {}
+        | "coverage" | "info" | "clean" | "fetch" | "gc" | "print_action" => {}
+        // DumpCommand (crate::dump_command): the batch-like server state.
+        "dump" => {
+            let code = bazel_rs::dump_command::run(&rest, line.cache_dir.as_deref())?;
+            bazel_rs::digest_memo::finish();
+            exit(code);
+        }
         "vendor" => {
             return Err(
                 "the vendor command is not implemented in the native profile (Bazel 9.3 `vendor --vendor_dir=DIR` copies the fetched repositories into DIR for later builds to read); `bazel-rs fetch` materializes repositories into the shared repository store"
@@ -265,6 +271,15 @@ fn run() -> Result<(), String> {
     let coverage_command = command == "coverage";
     let command = if coverage_command {
         "test".to_owned()
+    } else {
+        command
+    };
+    // PrintActionCommand inherits BuildCommand's options; natively it is
+    // an aquery of the requested targets (crate::print_action).
+    let print_action = command == "print_action";
+    let command = if print_action {
+        PRINT_ACTION.store(true, std::sync::atomic::Ordering::Relaxed);
+        "aquery".to_owned()
     } else {
         command
     };
@@ -790,6 +805,17 @@ fn run() -> Result<(), String> {
     // expression. Type 'bazel help query' for syntax and help", ...) are the
     // command's failure detail without an event: exit 2, silent, like
     // genuine Bazel 9.3 (tests/fixtures/query_language, error.no_expression).
+    if print_action && rest.is_empty() {
+        bazel_rs::note!(
+            "WARNING: Usage: bazel print_action <options> <targets>.\nInvoke `bazel help print_action` for full description of usage and options.\nYour request is correct, but requested an empty set of targets. Nothing will be built."
+        );
+        fail_with(1, "no actions to print were found");
+    }
+    let rest = if print_action {
+        vec![bazel_rs::print_action::expression(&rest)]
+    } else {
+        rest
+    };
     let rest = if command == "query" || command == "cquery" || command == "aquery" {
         let query = if command == "cquery" {
             &cquery_options.common
@@ -1353,6 +1379,23 @@ fn run() -> Result<(), String> {
         drop(std::mem::ManuallyDrop::into_inner(engine));
         lockfile_gate.open();
         bazel_rs::observed_fs::close_window();
+        if print_action {
+            let mnemonics = PRINT_ACTION_MNEMONICS
+                .lock()
+                .map(|mnemonics| mnemonics.clone())
+                .unwrap_or_default();
+            match bazel_rs::print_action::summary(&analysis, &mnemonics) {
+                Ok(text) => {
+                    print!("{text}");
+                    snapshot.finish();
+                    return Ok(());
+                }
+                Err(failure) => {
+                    snapshot.finish();
+                    fail_with(failure.code, &failure.message);
+                }
+            }
+        }
         aquery_output(
             &analysis,
             &expression,
@@ -6042,6 +6085,12 @@ enum FetchMode {
 /// with errors: ...`, exit 2).
 static FETCH_TARGETS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// This command is `print_action` (an aquery of the targets, crate::print_action).
+static PRINT_ACTION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `--print_action_mnemonics` (PrintActionOptions).
+static PRINT_ACTION_MNEMONICS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 /// One option unit of a pipeline command: `fetch`'s own options first,
 /// then the native options (of `test` for `fetch`, which inherits them).
 fn parse_command_option(
@@ -6053,6 +6102,16 @@ fn parse_command_option(
     if analyzes(command) && bazel_rs::flag_alias::definition_value(unit).is_some() {
         // Registered/replayed in parse order after MODULE resolution.
         return Ok(());
+    }
+    if PRINT_ACTION.load(std::sync::atomic::Ordering::Relaxed) {
+        let arg = unit.option.text.as_str();
+        let next = unit.value.as_ref().map(|value| value.text.as_str());
+        let mut mnemonics = PRINT_ACTION_MNEMONICS.lock().map_err(|e| e.to_string())?;
+        if bazel_rs::print_action::parse_option(arg, next, &mut mnemonics).is_some() {
+            return Ok(());
+        }
+        // PrintActionCommand's options are BuildCommand's (not aquery's).
+        return native.parse("build", unit);
     }
     if command == "fetch" {
         let arg = unit.option.text.as_str();

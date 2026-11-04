@@ -205,7 +205,9 @@ Done since the last increment recorded under "History", one line each:
       (docs/MOD_COMMAND.md); `show_repo` proto outputs remain explicit errors.
 - [x] `help <command>`/`startup_options`/`target-syntax`/`info-keys`, `canonicalize-flags`
       (docs/COMMANDS.md).
-- [ ] `dump`, `print_action` (low priority).
+- [x] `dump` (fresh-server sections, genuine `--rule_classes`, native
+      `--action_cache`) and `print_action` (aquery-planned ExtraActionInfo,
+      not built) (docs/COMMANDS.md).
 - [ ] `vendor` (explicit error: no vendor-directory read path, docs/COMMANDS.md).
 - [x] `query --output=xml|proto|streamed_proto|streamed_jsonproto` and SkyQuery
       (`--universe_scope`).

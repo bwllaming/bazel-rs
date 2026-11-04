@@ -194,8 +194,56 @@ inputs, VENDOR.bazel `ignore()`/`pin()`, vendored registry files under
 `_registries/`); the native store has neither genuine's marker files nor that
 read path, so a native `vendor` could produce a directory neither genuine nor
 native builds use. Bazel commands that the native
-profile lacks (`dump`, `print_action`, `mobile-install`, ...) keep
+profile lacks (`mobile-install`, `license`, ...) keep
 `unsupported command or startup option`.
+
+## `dump`
+
+DumpCommand (`runtime/commands/DumpCommand.java`; code `src/dump_command.rs`;
+tests `tests/dump_command.rs` over `tests/fixtures/dump_command`). bazel-rs
+has no server, so every in-memory section prints what a fresh genuine 9.3.1
+server (`--batch`) prints, byte for byte: `--packages` `0 packages`,
+`--rules` `No rules in Bazel server, please run a build command first.`,
+`--skyframe=summary` zero counts (`function_graph` an empty digraph, the
+other modes nothing), `--memory=full,…` `{}` and a named node
+`The requested node is not present.` (exit 7), `--skylark_memory` the
+memory-tracking notice; the developer warning on stderr; no output option:
+the genuine usage on stderr, exit 7. `--rule_classes` prints the genuine
+9.3.1 rule class table (`resources/dump_rule_classes.txt`, captured from
+`bazel dump --rule_classes`). Option errors are genuine's (`--x ::
+Unrecognized option: --x`, `Unrecognized arguments: …`, boolean, enum and
+`--memory` converter messages; exit 2); the common options of every command
+are accepted. `--action_cache` lists the native action cache (`<cache>/actions`)
+in CompactPersistentActionCache.dump's layout: per entry its primary output,
+`packed_len` (the manifest size), `timestamp` (the manifest time, to the
+minute like genuine's epoch-minute timestamps) and `digest` (the native
+action key), then the string indexer; genuine lists its own output base's
+cache, so the entries differ. Only the command line is read (no rc files),
+and outside a workspace without `--cache-dir` the action cache is empty.
+
+## `print_action`
+
+PrintActionCommand (`runtime/commands/PrintActionCommand.java`; code
+`src/print_action.rs`, the target data in `src/engine/aquery.rs`; tests
+`tests/dump_command.rs`). The requested targets are analyzed like `aquery`
+(build options and rc sections; `--print_action_mnemonics` filters). Each
+target needs a non-empty `compilation_outputs` output group (else
+`ConfiguredTarget(LABEL, CHECKSUM) is not a supported target kind`, exit 1);
+its actions reachable from its files to build (PrintActionVisitor: the
+generating action of an output owned by the target, before its inputs) print
+as an ExtraActionSummary text proto: owner, action key, mnemonic and
+SpawnInfo (arguments, fixed environment, inputs in NestedSet order, outputs)
+for spawns, CppCompileInfo for C++ compiles, nothing more for writes. No
+actions: `no actions to print were found`, exit 1. Byte-identical to genuine
+on the fixture's Starlark spawns, writes and filters. Divergences: genuine
+builds the targets first (its stderr shows the build; native builds
+nothing), the checksum is the native ConfigId (docs/CQUERY.md), a loading
+error is the native one (genuine adds `Build failed when printing
+actions`), several targets print sorted by label (genuine: its result set's
+order), CppCompileInfo's `sources_and_headers` are the declared inputs
+(genuine: the executed action's after include scanning), a non-Starlark
+action's inputs print generated before source inputs, `--compile_one_dependency`
+is not implemented, and JavaCompileInfo fails explicitly.
 
 ## `aquery`
 

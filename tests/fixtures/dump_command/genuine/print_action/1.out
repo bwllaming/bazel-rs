@@ -1,0 +1,49 @@
+action {
+  action {
+    owner: "//pkg:s"
+    id: "7a6c76f116c178399934829cc3ed124e905adcf24f88b08df53f2e0960675f28"
+    mnemonic: "MyShell"
+    [blaze.SpawnInfo.spawn_info] {
+      argument: "/bin/bash"
+      argument: "-c"
+      argument: "cat $1 > $2"
+      argument: ""
+      argument: "bazel-out/k8-fastbuild/bin/pkg/s.mid"
+      argument: "bazel-out/k8-fastbuild/bin/pkg/s.out"
+      variable {
+        name: "ZED"
+        value: "1"
+      }
+      variable {
+        name: "ALPHA"
+        value: "2"
+      }
+      input_file: "bazel-out/k8-fastbuild/bin/pkg/s.mid"
+      input_file: "pkg/a.txt"
+      input_file: "pkg/b.txt"
+      output_file: "bazel-out/k8-fastbuild/bin/pkg/s.out"
+    }
+  }
+}
+action {
+  action {
+    owner: "//pkg:s"
+    id: "63344d6934137915d7dfcef85184833093b729dda2ae3333e81a9c8239976958"
+    mnemonic: "FileWrite"
+  }
+}
+action {
+  action {
+    owner: "//pkg:s"
+    id: "c186426da0ca6a301eabb83806d37d239e2fb0d323a2354bc05b472b5b178b40"
+    mnemonic: "MyTool"
+    [blaze.SpawnInfo.spawn_info] {
+      argument: "pkg/tool.sh"
+      argument: "bazel-out/k8-fastbuild/bin/pkg/s.tooled"
+      input_file: "pkg/a.txt"
+      input_file: "pkg/b.txt"
+      input_file: "pkg/tool.sh"
+      output_file: "bazel-out/k8-fastbuild/bin/pkg/s.tooled"
+    }
+  }
+}

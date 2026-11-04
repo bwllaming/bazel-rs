@@ -12,6 +12,21 @@ use crate::aquery_key::{CommandLinePart, KeyKind, KeyPlatform};
 pub(super) struct Capture {
     owners: HashMap<String, Owner>,
     nodes: Vec<PlannedAction>,
+    top_level: Vec<TopLevel>,
+}
+
+/// A requested (top-level) configured target as `print_action` reads it
+/// (crate::print_action).
+#[derive(Clone, Debug)]
+pub struct TopLevel {
+    /// Label.toString of the target.
+    pub label: String,
+    /// The configuration checksum.
+    pub checksum: String,
+    /// The files to build (exec paths).
+    pub files_to_build: Vec<String>,
+    /// OutputGroupInfo.FILES_TO_COMPILE (`compilation_outputs`), exec paths.
+    pub files_to_compile: Vec<String>,
 }
 
 struct Owner {
@@ -26,9 +41,25 @@ pub struct Analysis {
     pub graph: cquery::Graph,
     configurations: Vec<crate::aquery::Configuration>,
     actions: Vec<(u32, ActionRecord)>,
+    top_level: Vec<TopLevel>,
 }
 
 impl Analysis {
+    /// The requested configured targets (crate::print_action).
+    pub fn top_level(&self) -> &[TopLevel] {
+        &self.top_level
+    }
+
+    /// Every planned action with its owner's configuration checksum.
+    pub fn actions_with_checksums(&self) -> impl Iterator<Item = (&ActionRecord, &str)> {
+        self.actions.iter().map(|(_, record)| {
+            (
+                record,
+                self.configurations[record.configuration].checksum.as_str(),
+            )
+        })
+    }
+
     /// The actions of the selected configured targets: per target (by label,
     /// then configuration order), its own actions in registration order, then
     /// its aspects' (with `include_aspects`).
@@ -149,6 +180,56 @@ impl Engine {
         }
     }
 
+    /// Keep the requested targets' files to build and files to compile
+    /// (aquery only; crate::print_action).
+    pub(super) fn aquery_top_level(
+        &mut self,
+        labels: &[Label],
+        top: ConfigId,
+        state: &ActionPlanning,
+    ) {
+        if self.aquery_capture.is_none() {
+            return;
+        }
+        let mut top_level = Vec::new();
+        for label in labels {
+            let Ok(key) = self.output_group_key(label, top) else {
+                continue;
+            };
+            let requested = ConfiguredTargetKey::new(label.clone(), top);
+            let files_to_build = state
+                .dry
+                .get(&requested)
+                .or_else(|| state.dry.get(&key))
+                .map(|artifacts| {
+                    artifacts
+                        .iter()
+                        .map(|artifact| artifact.exec.to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let files_to_compile = self
+                .planned_output_group(
+                    &state.custom_providers,
+                    &state.validation,
+                    &key,
+                    "compilation_outputs",
+                )
+                .into_iter()
+                .map(|file| file.path.clone())
+                .collect();
+            top_level.push(TopLevel {
+                label: label.to_string(),
+                checksum: top.to_string(),
+                files_to_build,
+                files_to_compile,
+            });
+        }
+        if let Some(capture) = &mut self.aquery_capture {
+            capture.top_level = top_level;
+        }
+    }
+
     /// Keep the planned actions of the analysis (aquery only).
     pub(super) fn aquery_nodes(&mut self, nodes: &mut Vec<PlannedAction>) {
         if let Some(capture) = &mut self.aquery_capture {
@@ -260,6 +341,7 @@ impl Engine {
             graph,
             configurations,
             actions,
+            top_level: capture.top_level.clone(),
         })
     }
 
@@ -356,6 +438,7 @@ impl Engine {
             execution_platform: (!no_config)
                 .then(|| crate::rule_declarations::canonical_form(&platform_label)),
             inputs: inputs.clone(),
+            input_order: meta.input_order.clone(),
             outputs: outputs.clone(),
             ..Default::default()
         };

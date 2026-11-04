@@ -51,6 +51,8 @@
     "fetch (TARGET... as build --nobuild, --repo=@apparent|@@canonical, --all, --configure, --force; genuine messages and exit codes; docs/COMMANDS.md)",
     "clean (this workspace's output tree and per-workspace state; --expunge its whole state directory; --async/--expunge_async move then delete; the shared action cache and repository store stay; output base lock; docs/COMMANDS.md)",
     "shutdown (no server: --iff_heap_size_greater_than accepted, exit 0; docs/COMMANDS.md)",
+    "dump (a fresh genuine server's output for --packages/--rules/--skyframe/--memory/--skylark_memory, the genuine --rule_classes table, --action_cache over the native action cache in genuine's layout; genuine option errors and exit codes; docs/COMMANDS.md)",
+    "print_action (ExtraActionSummary text of the requested targets' actions reachable from their files to build: SpawnInfo, CppCompileInfo, --print_action_mnemonics; analysis only, nothing is built; docs/COMMANDS.md)",
     "help [COMMAND] (minimal)",
     "gc (native-only: collect the cache's garbage now and report what was freed; --dry_run; the policy of --experimental_disk_cache_gc_max_size/_max_age and --repo_contents_cache_gc_max_age, which every command also applies at its end after --experimental_disk_cache_gc_idle_delay; docs/CACHE_GC.md)",
     "mod graph --output=json (explicit selected modules; optional registries)",

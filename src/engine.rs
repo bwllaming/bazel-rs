@@ -15749,6 +15749,7 @@ impl Engine {
         crate::perf_mark("plan.phase2_actions_done");
         if self.cquery_capture.is_some() {
             // aquery keeps the planned actions of the whole universe.
+            self.aquery_top_level(labels, top, &state);
             self.aquery_nodes(&mut state.nodes);
             // Full provider analysis (including top-level aspects) succeeded.
             // Nothing below this boundary is part of configured querying.
