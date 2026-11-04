@@ -253,10 +253,6 @@ fn analysis_of_unmodeled_native_rules_fails_explicitly() {
         // (docs/PLATFORMS.md).
         ("//skylib:unix", HOST_PLATFORM_UNAVAILABLE),
         ("//skylib:linux", HOST_PLATFORM_UNAVAILABLE),
-        (
-            "//misc:defs_doc.binaryproto",
-            "//misc:defs_doc: native rule starlark_doc_extract analysis not implemented",
-        ),
         ("//misc:copy", HOST_PLATFORM_UNAVAILABLE),
         ("//misc:configured_files", HOST_PLATFORM_UNAVAILABLE),
     ] {
@@ -265,6 +261,14 @@ fn analysis_of_unmodeled_native_rules_fails_explicitly() {
         assert!(!errors(&build).contains("actions executed"), "{target}");
     }
     assert!(!ws.path().join("private-cache/actions").exists());
+    // starlark_doc_extract is native (docs/STARLARK_DOC_EXTRACT.md; genuine
+    // builds it too: receipt row A/build_misc:defs_doc.binaryproto).
+    let build = ws.run(&[
+        "build",
+        "//misc:defs_doc.binaryproto",
+        "//misc:defs_doc.textproto",
+    ]);
+    assert!(build.status.success(), "{}", errors(&build));
     // The REPO.bazel default_package_metadata (@platforms//:license, a
     // filegroup with applicable_licenses = []) is analyzed in the no-config
     // configuration (N28c); the source-only filegroup builds.

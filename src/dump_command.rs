@@ -234,10 +234,12 @@ fn decode_hex(text: &str) -> Option<String> {
 fn action_cache(cache: Option<&Path>) -> String {
     let mut entries = Vec::new();
     if let Some(cache) = cache
+        // snapshot-unrecorded: `dump` runs no analysis; it only lists the cache.
         && let Ok(listing) = std::fs::read_dir(cache.join("actions"))
     {
         for entry in listing.flatten() {
             let manifest = entry.path().join("manifest.json");
+            // snapshot-unrecorded: `dump` runs no analysis; it only lists the cache.
             let Ok(bytes) = std::fs::read(&manifest) else {
                 continue;
             };
@@ -254,6 +256,7 @@ fn action_cache(cache: Option<&Path>) -> String {
                 .and_then(|name| name.as_str())
                 .and_then(decode_hex)
                 .unwrap_or_default();
+            // snapshot-unrecorded: `dump` runs no analysis; it only lists the cache.
             let seconds = std::fs::metadata(&manifest)
                 .and_then(|metadata| metadata.modified())
                 .ok()
