@@ -105,7 +105,7 @@ pub(super) fn register<'v>(
     toolchain: Value<'v>,
     output: &File,
     resources: &[File],
-    resource_jars: &[File],
+    (resource_jars, resource_jars_node): (&[File], Option<Arc<DepsetNode>>),
     classpath_resources: &[File],
     additional_inputs: &[File],
     group: &str,
@@ -154,26 +154,71 @@ pub(super) fn register<'v>(
     let executable = runner
         .executable()
         .ok_or_else(|| failure("Java single_jar tool has no executable".into()))?;
-    let mut flags = vec![
-        "--normalize".into(),
-        "--dont_change_compression".into(),
-        "--exclude_build_data".into(),
-        "--no_strip_module_info".into(),
-        "--output".into(),
-        output.path.clone(),
-    ];
-    paths(&mut flags, "--sources", &jars);
+    // ResourceJarActionBuilder: the resource jars (a stable-order set of
+    // the attribute's) plus the class jar.
+    let attribute = command::build(
+        Vec::new(),
+        resource_jars_node.into_iter().collect(),
+        crate::starlark_types::Order::Default,
+        true,
+    );
+    let jars_node = command::build(
+        vec![class_jar.clone()],
+        vec![Arc::clone(&attribute)],
+        attribute.order,
+        true,
+    );
+    let mut line = command::Line::default();
+    line.add("--normalize")
+        .add("--dont_change_compression")
+        .add("--exclude_build_data")
+        .add("--no_strip_module_info")
+        .add_opt("--output", Some(&output.path))
+        .add_set("--sources", &jars_node);
     if !entries.is_empty() {
-        flags.push("--resources".into());
+        line.add("--resources");
         for (path, resource) in &entries {
-            flags.push(if path == &resource.path {
+            line.add(if path == &resource.path {
                 resource.path.clone()
             } else {
                 format!("{}:{path}", resource.path)
             });
         }
     }
-    paths(&mut flags, "--classpath_resources", classpath_resources);
+    line.add_paths("--classpath_resources", classpath_resources);
+    let flags = line.expand();
+    let meta = crate::aquery::capturing().then(|| {
+        let mut key_info: BTreeMap<String, String> = context
+            .propagated_tags
+            .iter()
+            .map(|tag| (tag.clone(), String::new()))
+            .collect();
+        key_info.insert("supports-path-mapping".into(), "1".into());
+        let key_info: Vec<(String, String)> = key_info.into_iter().collect();
+        let mut executable_line = command::Line::default();
+        executable_line.add(executable.path.clone());
+        let mut arguments = vec![executable.path.clone()];
+        arguments.extend(flags.iter().cloned());
+        crate::aquery::Meta {
+            progress: Some("Building Java resource jar".into()),
+            arguments: Some(arguments),
+            compute_key: Some(command::spawn_key(
+                &[
+                    (&executable_line, None),
+                    (
+                        &line,
+                        Some(command::ParamKey {
+                            file_type: "SHELL_QUOTED",
+                        }),
+                    ),
+                ],
+                "JavaResourceJar",
+                &command::KeyEnvironment::of(context, &[], true),
+                &key_info,
+            )),
+            ..Default::default()
+        }
+    });
     let spec = CommandLineSpec {
         executable: vec![executable.path.clone()],
         parts: vec![Part {
@@ -227,6 +272,9 @@ pub(super) fn register<'v>(
             shareable: true,
         })
         .map_err(starlark::Error::new_other)?;
+    if let Some(meta) = meta {
+        super::attach_meta(context, output, meta);
+    }
     Ok(class_jar)
 }
 

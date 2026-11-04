@@ -21,7 +21,9 @@ fn file(value: Value<'_>, name: &str) -> starlark::Result<File> {
 
 struct Boot {
     jars: Vec<File>,
+    jars_node: Arc<DepsetNode>,
     auxiliary: Vec<File>,
+    auxiliary_node: Arc<DepsetNode>,
     system_inputs: Vec<File>,
     system_path: Option<String>,
 }
@@ -33,9 +35,13 @@ impl Boot {
             "BootClassPathInfo",
         )?;
         let path = field(value, "_system_path", heap)?;
+        let jars = field(value, "bootclasspath", heap)?;
+        let auxiliary = field(value, "_auxiliary", heap)?;
         Ok(Self {
-            jars: files(field(value, "bootclasspath", heap)?, "bootclasspath", true)?,
-            auxiliary: files(field(value, "_auxiliary", heap)?, "_auxiliary", true)?,
+            jars: files(jars, "bootclasspath", true)?,
+            jars_node: command::node(jars).expect("checked depset"),
+            auxiliary: files(auxiliary, "_auxiliary", true)?,
+            auxiliary_node: command::node(auxiliary).expect("checked depset"),
             system_inputs: files(
                 field(value, "_system_inputs", heap)?,
                 "_system_inputs",
@@ -117,26 +123,21 @@ pub(crate) fn create_compilation<'v>(
     )?;
     let mut output = file(value(2), "output")?;
     let manifest = file(value(3), "manifest_proto")?;
-    let plugin_info = value(4);
-    provider(plugin_info, "java/private:java_info.bzl", "JavaPluginInfo")?;
-    crate::java_plugins::validate_outputs(plugin_info, heap).map_err(failure)?;
-    let mut plugin_jars = Vec::new();
-    let mut plugin_data = Vec::new();
-    for name in ["plugins", "api_generating_plugins"] {
-        let data = field(plugin_info, name, heap)?;
-        let classes = strings(field(data, "processor_classes", heap)?, "processor_classes")?;
-        let jars = files(field(data, "processor_jars", heap)?, "processor_jars", true)?;
-        let inputs = files(field(data, "processor_data", heap)?, "processor_data", true)?;
-        if !classes.is_empty() {
-            return Err(unsupported("annotation processors"));
-        }
-        if name == "plugins" {
-            plugin_jars = jars;
-            plugin_data = inputs;
-        }
-    }
-    let mut classpath = files(value(5), "compilation_classpath", true)?;
-    let mut direct = files(value(6), "direct_jars", true)?;
+    let (plugins, _) = plugin_info(COMPILE, value(4), heap)?;
+    let naive = crate::starlark_types::Order::Preorder;
+    let attribute = |value: Value<'v>, order| {
+        command::build(
+            Vec::new(),
+            command::node(value).into_iter().collect(),
+            order,
+            true,
+        )
+    };
+    files(value(5), "compilation_classpath", true)?;
+    files(value(6), "direct_jars", true)?;
+    // JavaTargetAttributes.build: naive-link builders over the given sets.
+    let mut classpath_node = attribute(value(5), naive);
+    let mut direct_node = attribute(value(6), naive);
     let mut boot = if value(7).is_none() {
         None
     } else {
@@ -150,25 +151,31 @@ pub(crate) fn create_compilation<'v>(
     }
     let boot = boot.expect("toolchain bootclasspath");
     if !boot.auxiliary.is_empty() {
-        classpath = unique(boot.auxiliary.iter().cloned().chain(classpath));
-        direct = unique(boot.auxiliary.iter().cloned().chain(direct));
+        classpath_node = command::build(
+            Vec::new(),
+            vec![Arc::clone(&boot.auxiliary_node), classpath_node],
+            naive,
+            true,
+        );
+        direct_node = command::build(
+            Vec::new(),
+            vec![Arc::clone(&boot.auxiliary_node), direct_node],
+            naive,
+            true,
+        );
     }
-    let jvm_flags = strings(value(8), "javabuilder_jvm_flags")?;
-    let mut dependency_jdeps = files(value(9), "compile_time_java_deps", true)?;
+    let jvm_flags_value = value(8);
+    strings(jvm_flags_value, "javabuilder_jvm_flags")?;
+    let jvm_flags = command::node(jvm_flags_value).expect("checked depset");
+    files(value(9), "compile_time_java_deps", true)?;
+    let mut dependency_node = attribute(value(9), crate::starlark_types::Order::Default);
     let options = javac_options(strings(value(10), "javac_opts")?);
-    if options.iter().any(|option| option == "-processor") {
-        return Err(unsupported("annotation processors in javac_opts"));
-    }
     let strict = value(11)
         .unpack_str()
         .ok_or_else(|| type_error(COMPILE, "strict_deps_mode", value(11), "string"))?
         .to_ascii_uppercase();
     let strict = match strict.as_str() {
-        "OFF" => {
-            direct.clear();
-            dependency_jdeps.clear();
-            "OFF"
-        }
+        "OFF" => "OFF",
         "DEFAULT" | "ERROR" => "ERROR",
         "WARN" => "WARN",
         _ => {
@@ -177,6 +184,10 @@ pub(crate) fn create_compilation<'v>(
             )));
         }
     };
+    if strict == "OFF" {
+        direct_node = command::empty(naive);
+        dependency_node = command::empty(crate::starlark_types::Order::Default);
+    }
     let target = crate::starlark_types::label_command_line_form(value(12), eval)
         .ok_or_else(|| type_error(COMPILE, "target_label", value(12), "Label"))?;
     let optional_file = |i, name| {
@@ -189,17 +200,15 @@ pub(crate) fn create_compilation<'v>(
     let jdeps = optional_file(13, "deps_proto")?;
     let gen_class = optional_file(14, "gen_class")?;
     let gen_source = optional_file(15, "gen_source")?;
-    if gen_class.is_some() || gen_source.is_some() {
-        return Err(unsupported("generated processor class/source jars"));
-    }
     let native_header = optional_file(16, "native_header_jar")?;
     let sources = if value(17).is_none() {
         Vec::new()
     } else {
-        files(value(17), "sources", true)?
-            .into_iter()
-            .filter(|f| f.path.ends_with(".java"))
-            .collect()
+        unique(
+            files(value(17), "sources", true)?
+                .into_iter()
+                .filter(|f| f.path.ends_with(".java")),
+        )
     };
     let sequence_files = |i, name| match bound[i] {
         Some(value) => files(value, name, false),
@@ -207,10 +216,13 @@ pub(crate) fn create_compilation<'v>(
     };
     let source_jars = sequence_files(18, "source_jars")?;
     let resources = sequence_files(19, "resources")?;
-    let resource_jars = if value(20).is_none() {
-        Vec::new()
+    let (resource_jars, resource_jars_node) = if value(20).is_none() {
+        (Vec::new(), None)
     } else {
-        files(value(20), "resource_jars", true)?
+        (
+            files(value(20), "resource_jars", true)?,
+            command::node(value(20)),
+        )
     };
     let classpath_resources = sequence_files(21, "classpath_resources")?;
     let sourcepath = sequence_files(22, "sourcepath")?;
@@ -233,12 +245,9 @@ pub(crate) fn create_compilation<'v>(
             .ok_or_else(|| type_error(COMPILE, name, value(i), "bool"))
     };
     let jspecify = boolean(24, "enable_jspecify")?;
-    boolean(25, "enable_direct_classpath")?; // Only affects turbine annotation processing, rejected above.
+    boolean(25, "enable_direct_classpath")?; // Only affects turbine annotation processing.
     let additional = sequence_files(26, "additional_inputs")?;
-    let additional_outputs = sequence_files(27, "additional_outputs")?;
-    if !additional_outputs.is_empty() {
-        return Err(unsupported("additional processor outputs"));
-    }
+    let additional_outputs = unique(sequence_files(27, "additional_outputs")?);
     if let Some(extra) = bound[28] {
         let extra = sequence(COMPILE, "extra_args", extra)?;
         for arg in &extra {
@@ -268,7 +277,7 @@ pub(crate) fn create_compilation<'v>(
     if surface.config.coverage_enabled && !sources.is_empty() {
         return Err(unsupported("Java coverage instrumentation"));
     }
-    strings(
+    let incompatible = strings(
         field(
             toolchain,
             "_reduced_classpath_incompatible_processors",
@@ -292,7 +301,14 @@ pub(crate) fn create_compilation<'v>(
     if tool.is_none() {
         return Err(failure("JavaToolchainInfo has no JavaBuilder tool".into()));
     }
-    let (launcher, tool_inputs) = launcher_with_flags(COMPILE, tool, toolchain, &jvm_flags, heap)?;
+    let (executable, tool_inputs) = tool_command(COMPILE, tool, toolchain, Some(&jvm_flags), heap)?;
+    if let Some(gen_class) = &gen_class {
+        // JavaCompilationHelper.createGenJarAction, over the requested
+        // (not the resource-split class) output.
+        gen_jar_action(
+            context, toolchain, &output, &manifest, gen_class, &group, heap,
+        )?;
+    }
     if !resources.is_empty() || !resource_jars.is_empty() || !classpath_resources.is_empty() {
         output = super::resources::register(
             context,
@@ -300,7 +316,7 @@ pub(crate) fn create_compilation<'v>(
             toolchain,
             &output,
             &resources,
-            &resource_jars,
+            (&resource_jars, resource_jars_node),
             &classpath_resources,
             &additional,
             &group,
@@ -308,10 +324,11 @@ pub(crate) fn create_compilation<'v>(
         )?;
     }
     let mandatory = unique(
-        plugin_jars
+        plugins
+            .jars
             .iter()
             .cloned()
-            .chain(plugin_data)
+            .chain(plugins.data.iter().cloned())
             .chain(source_jars.iter().cloned())
             .chain(sources.iter().cloned())
             .chain(runtime_inputs)
@@ -322,6 +339,32 @@ pub(crate) fn create_compilation<'v>(
             .chain(tool_inputs)
             .chain(tools),
     );
+    let flat = |node: &Arc<DepsetNode>| -> Vec<File> {
+        Depset {
+            node: Arc::clone(node),
+        }
+        .flatten()
+        .into_iter()
+        .filter_map(|item| match item {
+            Item::File(file) => Some(file.clone()),
+            _ => None,
+        })
+        .collect()
+    };
+    let classpath = flat(&classpath_node);
+    let direct = flat(&direct_node);
+    // JavaCompileActionBuilder.build: reduced-classpath-incompatible
+    // processors, strict deps OFF and an absent jdeps select OFF.
+    let bazel = !plugins
+        .classes
+        .iter()
+        .any(|class| incompatible.contains(class))
+        && strict != "OFF"
+        && jdeps.is_some();
+    if !bazel {
+        dependency_node = command::empty(crate::starlark_types::Order::Default);
+    }
+    let dependency_jdeps = flat(&dependency_node);
     let inputs = unique(
         mandatory
             .iter()
@@ -330,60 +373,56 @@ pub(crate) fn create_compilation<'v>(
             .chain(dependency_jdeps.iter().cloned()),
     );
     let mut outputs = vec![output.clone()];
+    outputs.extend(additional_outputs);
     outputs.extend(jdeps.iter().cloned());
     outputs.extend(native_header.iter().cloned());
+    outputs.extend(gen_source.iter().cloned());
     outputs.push(manifest.clone());
-    let mut flags = vec!["--output".into(), output.path.clone()];
-    if let Some(header) = &native_header {
-        paths(
-            &mut flags,
+    let outputs = unique(outputs);
+    let mut flags = command::Line::default();
+    flags
+        .add_opt("--output", Some(&output.path))
+        .add_opt(
             "--native_header_output",
-            std::slice::from_ref(header),
-        );
-    }
-    paths(
-        &mut flags,
-        "--output_manifest_proto",
-        std::slice::from_ref(&manifest),
-    );
-    flags.push("--compress_jar".into());
-    if let Some(deps) = &jdeps {
-        paths(
-            &mut flags,
+            native_header.as_ref().map(|f| f.path.as_str()),
+        )
+        .add_opt(
+            "--generated_sources_output",
+            gen_source.as_ref().map(|f| f.path.as_str()),
+        )
+        .add_opt("--output_manifest_proto", Some(&manifest.path))
+        .add("--compress_jar")
+        .add_opt(
             "--output_deps_proto",
-            std::slice::from_ref(deps),
-        );
-    }
-    paths(&mut flags, "--bootclasspath", &boot.jars);
-    if let Some(system) = boot.system_path {
-        flags.extend(["--system".into(), system]);
-    }
-    paths(&mut flags, "--sourcepath", &sourcepath);
-    paths(&mut flags, "--processorpath", &plugin_jars);
-    paths(&mut flags, "--source_jars", &source_jars);
-    paths(&mut flags, "--sources", &sources);
+            jdeps.as_ref().map(|f| f.path.as_str()),
+        )
+        .add_set("--bootclasspath", &boot.jars_node)
+        .add_opt("--system", boot.system_path.as_deref())
+        .add_paths("--sourcepath", &sourcepath)
+        .add_set("--processorpath", &plugins.jars_node)
+        .add_set("--processors", &plugins.classes_node)
+        .add_paths("--source_jars", &source_jars)
+        .add_paths("--sources", &sources);
     if !options.is_empty() {
-        flags.push("--javacopts".into());
-        flags.extend(options);
-        flags.push("--".into());
+        flags.add("--javacopts");
+        for option in &options {
+            flags.add(option.clone());
+        }
+        flags.add("--");
     }
-    flags.extend([
-        "--target_label".into(),
-        if target.starts_with('@') {
-            format!("@{target}")
-        } else {
-            target
-        },
-    ]);
-    if let Some(injecting) = injecting {
-        flags.extend(["--injecting_rule_kind".into(), injecting.to_owned()]);
-    }
+    flags
+        .add_target_label(&target)
+        .add_opt("--injecting_rule_kind", injecting);
     if strict != "OFF" {
-        flags.extend(["--strict_java_deps".into(), strict.into()]);
-        paths(&mut flags, "--direct_dependencies", &direct);
+        flags
+            .add("--strict_java_deps")
+            .add(strict)
+            .add_set("--direct_dependencies", &direct_node);
     }
-    flags.extend(["--experimental_fix_deps_tool".into(), "add_dep".into()]);
-    let mut execution_info = BTreeMap::from([("supports-path-mapping".into(), "1".into())]);
+    flags.add("--experimental_fix_deps_tool").add("add_dep");
+    // JavaCompilationHelper.getExecutionInfo, in its order, then the rule's
+    // propagated tags.
+    let mut key_info = vec![("supports-path-mapping".to_owned(), "1".to_owned())];
     for (field_name, requirement) in [
         ("_javac_supports_workers", "supports-workers"),
         (
@@ -404,24 +443,65 @@ pub(crate) fn create_compilation<'v>(
             .unpack_bool()
             .ok_or_else(|| type_error(COMPILE, field_name, enabled, "bool"))?
         {
-            execution_info.insert(requirement.into(), "1".into());
+            key_info.push((requirement.into(), "1".into()));
         }
     }
+    for tag in &context.propagated_tags {
+        if !key_info.iter().any(|(key, _)| key == tag) {
+            key_info.push((tag.clone(), String::new()));
+        }
+    }
+    let mut execution_info: BTreeMap<String, String> = key_info
+        .iter()
+        .filter(|(key, _)| !context.propagated_tags.contains(key))
+        .cloned()
+        .collect();
     if let Some(jdeps) = &jdeps {
         execution_info.insert("internal-inline-outputs".into(), jdeps.path.clone());
     }
-    let environment = context.action_env.for_spawn(
-        true,
-        BTreeMap::from([("LC_CTYPE".into(), utf8_locale(context, &group)?.into())]),
-    );
+    let locale = utf8_locale(context, &group)?;
+    let environment = context
+        .action_env
+        .for_spawn(true, BTreeMap::from([("LC_CTYPE".into(), locale.into())]));
+    let meta = crate::aquery::capturing().then(|| {
+        let key_environment = command::KeyEnvironment::of(context, &[("LC_CTYPE", locale)], true);
+        let mut arguments = executable.expand();
+        arguments.extend(flags.expand());
+        let mut classpath_line = command::Line::default();
+        classpath_line.add_set("--classpath", &classpath_node);
+        arguments.extend(classpath_line.expand());
+        let mut display_info = key_info.clone();
+        if let Some(jdeps) = &jdeps {
+            display_info.push(("internal-inline-outputs".to_owned(), jdeps.path.clone()));
+        }
+        crate::aquery::Meta {
+            progress: Some(command::progress(
+                "Building",
+                sources.len(),
+                source_jars.len(),
+                &plugins.classes,
+            )),
+            arguments: Some(arguments),
+            compute_key: Some(command::java_compile_key(
+                if bazel { 2 } else { 0 },
+                &executable,
+                &flags,
+                &classpath_node,
+                &key_environment,
+                &key_info,
+                jdeps.is_some(),
+            )),
+            execution_info: Some(display_info),
+            ..Default::default()
+        }
+    });
     let paths = |files: &[File]| files.iter().map(|f| f.path.clone().into()).collect();
-    // The native fragment currently advertises BAZEL; no selectable alternative
-    // mode is accepted. These two late OFF conditions are genuine builder rules.
-    let mode = match crate::ctx_surface::JAVA_CLASSPATH_MODE {
-        "BAZEL" if strict != "OFF" && jdeps.is_some() => ClasspathMode::Bazel,
-        "BAZEL" | "OFF" => ClasspathMode::Off,
-        _ => return Err(unsupported("configured Java classpath mode")),
+    let mode = if bazel {
+        ClasspathMode::Bazel
+    } else {
+        ClasspathMode::Off
     };
+    let launcher = executable.expand();
     context
         .register_action(Registration {
             outputs,
@@ -437,7 +517,7 @@ pub(crate) fn create_compilation<'v>(
                 execution_info,
                 java_compile: Some(Box::new(JavaCompileSpec {
                     mode,
-                    flags,
+                    flags: flags.expand(),
                     classpath: paths(&classpath),
                     direct_jars: paths(&direct),
                     dependency_jdeps: paths(&dependency_jdeps),
@@ -455,5 +535,103 @@ pub(crate) fn create_compilation<'v>(
             shareable: true,
         })
         .map_err(starlark::Error::new_other)?;
+    if let Some(meta) = meta {
+        attach_meta(context, &output, meta);
+    }
     Ok(Value::new_none())
+}
+
+/// JavaCompilationHelper.createGenJarAction: GenClass over the class jar and
+/// its manifest proto (a SpawnAction, mnemonic JavaSourceJar).
+#[allow(clippy::too_many_arguments)]
+fn gen_jar_action<'v>(
+    context: &Context,
+    toolchain: Value<'v>,
+    class_jar: &File,
+    manifest: &File,
+    gen_class: &File,
+    group: &str,
+    heap: Heap<'v>,
+) -> starlark::Result<()> {
+    let tool = field(toolchain, "_gen_class", heap)?;
+    if tool.is_none() {
+        return Err(unsupported("a Java toolchain without GenClass"));
+    }
+    let tool = file(tool, "_gen_class")?;
+    let runtime = field(toolchain, "java_runtime", heap)?;
+    let runtime_inputs = files(
+        field(runtime, "files", heap)?,
+        "JavaRuntimeInfo.files",
+        true,
+    )?;
+    let java = field(runtime, "java_executable_exec_path", heap)?;
+    let java = java
+        .unpack_str()
+        .ok_or_else(|| type_error(COMPILE, "java_executable_exec_path", java, "string"))?;
+    let jvm_opt = field(toolchain, "jvm_opt", heap)?;
+    strings(jvm_opt, "jvm_opt")?;
+    let mut executable = command::Line::default();
+    executable
+        .add(java)
+        .add_bare_set(&command::node(jvm_opt).expect("checked depset"))
+        .add("-jar")
+        .add(tool.path.clone());
+    let mut flags = command::Line::default();
+    flags
+        .add_opt("--manifest_proto", Some(&manifest.path))
+        .add_opt("--class_jar", Some(&class_jar.path))
+        .add_opt("--output_jar", Some(&gen_class.path));
+    let launcher = executable.expand();
+    let meta = crate::aquery::capturing().then(|| {
+        let mut arguments = launcher.clone();
+        arguments.extend(flags.expand());
+        let environment = command::KeyEnvironment {
+            fixed: Vec::new(),
+            inherited: Vec::new(),
+        };
+        crate::aquery::Meta {
+            progress: Some("Building genclass jar %{output}".into()),
+            arguments: Some(arguments),
+            environment: Some(Vec::new()),
+            compute_key: Some(command::spawn_key(
+                &[(&executable, None), (&flags, None)],
+                "JavaSourceJar",
+                &environment,
+                &[],
+            )),
+            execution_info: Some(Vec::new()),
+            ..Default::default()
+        }
+    });
+    context
+        .register_action(Registration {
+            outputs: vec![gen_class.clone()],
+            inputs: unique(
+                [manifest.clone(), class_jar.clone()]
+                    .into_iter()
+                    .chain(runtime_inputs)
+                    .chain([tool]),
+            ),
+            command: String::new(),
+            write: None,
+            program: launcher.first().cloned(),
+            arguments: launcher.into_iter().skip(1).chain(flags.expand()).collect(),
+            environment: BTreeMap::new(),
+            extra: crate::action::ActionExtra {
+                mnemonic: "JavaSourceJar".into(),
+                ..Default::default()
+            },
+            shell_pad: false,
+            executable_file: false,
+            deferred: None,
+            exec_group: group.to_owned(),
+            runfiles_trees: vec![],
+            build_info: None,
+            shareable: true,
+        })
+        .map_err(starlark::Error::new_other)?;
+    if let Some(meta) = meta {
+        attach_meta(context, gen_class, meta);
+    }
+    Ok(())
 }

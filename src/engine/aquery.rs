@@ -423,7 +423,14 @@ impl Engine {
             })
             .collect();
         let primary_output = outputs.first().map(|(path, _)| path.as_str());
-        let primary_input = inputs.first().map(String::as_str);
+        // Action.getPrimaryInput: the first of the inputs NestedSet (a
+        // Starlark spawn's declared inputs precede its tools).
+        let primary_input = meta
+            .input_order
+            .as_ref()
+            .and_then(|order| order.first())
+            .or(inputs.first())
+            .map(String::as_str);
         let suffix = action.id.rsplit_once('#').map(|(_, suffix)| suffix);
         let mut extra_records = Vec::new();
         let mut record = ActionRecord {
@@ -710,7 +717,14 @@ impl Engine {
                 for tag in &action.execution_info {
                     merged.entry(tag.clone()).or_default();
                 }
-                let info: Vec<(String, String)> = merged.into_iter().collect();
+                let info: Vec<(String, String)> = match &meta.execution_info {
+                    Some(info) => {
+                        let mut info = info.clone();
+                        info.sort();
+                        info
+                    }
+                    None => merged.into_iter().collect(),
+                };
                 record.execution_info = info;
                 let lines = meta
                     .command_lines

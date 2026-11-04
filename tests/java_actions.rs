@@ -304,18 +304,8 @@ fn turbine_rejects_bad_bindings_provider_identities_and_unsupported_branches() {
             "'BAD'",
             "StrictDepsMode BAD not allowed",
         ),
-        (
-            "ctx.attr.direct",
-            "False",
-            "non-direct classpath header compilation",
-        ),
         ("ctx, tc, jar", "struct(), tc, jar", "ctx"),
         ("ctx.files.extra, tjar,", "ctx.files.extra, None,", "File"),
-        (
-            "JavaPluginInfo(runtime_deps = [])",
-            "JavaPluginInfo(runtime_deps = [], processor_class = 'Processor', generates_api = True)",
-            "API-generating annotation processors",
-        ),
     ] {
         f.write(&format!("{PACKAGE}/headers.bzl"), &DEFS.replace(from, to));
         f.rejected(expected);
@@ -499,15 +489,15 @@ kinds = rule(implementation=_impl, attrs={'deps':attr.label_list(allow_files=Tru
 }
 
 #[test]
-fn javabuilder_worker_only_and_selected_remote_fail_before_tool_execution() {
+fn javabuilder_runs_as_worker_and_selected_remote_fails_before_tool_execution() {
     let f = Fixture::new();
     let target = format!("//{PACKAGE}:real_empty");
+    // JavaBuilder runs as a (multiplex) persistent worker: the fake tool is
+    // started as one.
     let worker = f.run("build", &["--strategy=Javac=worker", &target]);
     assert!(!worker.status.success());
     assert!(
-        errors(&worker).contains(
-            "Javac spawn cannot be executed with any of the available strategies: [worker]"
-        ),
+        errors(&worker).contains("multiplex-worker-1-Javac.log"),
         "{}",
         errors(&worker)
     );
@@ -527,7 +517,6 @@ fn javabuilder_worker_only_and_selected_remote_fail_before_tool_execution() {
         "{}",
         errors(&remote)
     );
-    assert!(!errors(&worker).contains("unexpectedly-executed"));
     assert!(!errors(&remote).contains("unexpectedly-executed"));
 }
 
@@ -568,7 +557,7 @@ fn resource_jar_action_keeps_class_producer_and_explicit_prefix_semantics() {
 }
 
 #[test]
-fn javabuilder_annotation_processors_fail_explicitly_after_header_registration() {
+fn javabuilder_annotation_processors_register_processor_flags_and_genclass() {
     let f = Fixture::new();
     f.write(
         &format!("{PACKAGE}/processor.bzl"),
@@ -581,13 +570,24 @@ processor = rule(implementation=_impl)
     );
     let build = fs::read_to_string(f.path().join(format!("{PACKAGE}/BUILD.bazel"))).unwrap();
     f.write(&format!("{PACKAGE}/BUILD.bazel"), &("load(':processor.bzl','processor')\n".to_owned()+&build+"\nprocessor(name='processor')\njava_library(name='with_processor',srcs=['Base.java'],plugins=[':processor'])\n"));
-    let out = f.run("cquery", &[&format!("//{PACKAGE}:with_processor")]);
-    assert!(!out.status.success());
-    assert!(out.stdout.is_empty());
+    let out = f.ok(
+        "build",
+        &["--nobuild", &format!("//{PACKAGE}:with_processor")],
+    );
+    let dump = errors(&out);
+    // JavaCompileActionBuilder: the processor path and classes, the
+    // generated sources; JavaCompilationHelper.createGenJarAction.
+    assert!(dump.contains("--processors\u{1}Processor"), "{dump}");
+    assert!(dump.contains("--generated_sources_output"), "{dump}");
+    let aquery = f.ok(
+        "aquery",
+        &[&format!(
+            "mnemonic(JavaSourceJar, //{PACKAGE}:with_processor)"
+        )],
+    );
+    let text = String::from_utf8_lossy(&aquery.stdout);
     assert!(
-        errors(&out)
-            .contains("create_compilation_action: annotation processors is not implemented"),
-        "{}",
-        errors(&out)
+        text.contains("action 'Building genclass jar third_party/bazel_rules/rules_java/libwith_processor-gen.jar'"),
+        "{text}"
     );
 }

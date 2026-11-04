@@ -53,6 +53,10 @@ pub struct Meta {
     /// A Starlark spawn's inputs in their NestedSet order (inputs, then
     /// tools), exec paths (crate::print_action's SpawnInfo.input_file).
     pub input_order: Option<Vec<String>>,
+    /// A native action class's `getExecutionInfo()` in its order
+    /// (JavaCompileAction's in-memory jdeps directive is not a legal
+    /// Starlark key); `None`: the spawn's filtered requirements.
+    pub execution_info: Option<Vec<(String, String)>>,
 }
 
 /// A ParameterFileWriteAction's file type, fingerprint and arguments.

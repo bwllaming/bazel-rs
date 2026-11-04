@@ -40,6 +40,28 @@ fn bounded_jdeps(path: &Path, cache: Option<&Path>) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// How a Java compilation's last spawn ran.
+pub(super) struct Outcome {
+    /// Whether the full-classpath fallback ran after the reduced attempt.
+    pub fallback: bool,
+    /// The last spawn's runner (SpawnResult.getRunnerName).
+    pub runner: &'static str,
+    /// The last spawn was a remote/disk cache hit.
+    pub remote_hit: bool,
+    /// The last spawn ran under the sandbox (its execroot is not reused).
+    pub sandboxed: bool,
+}
+
+/// The remote/disk spawn cache of one attempt (RemoteSpawnCache): its
+/// cache, read and write policies, output path mode and platform.
+pub(super) struct SpawnCache<'r> {
+    pub remote: &'r crate::remote_cache::RemoteCache,
+    pub read: crate::remote_cache::CachePolicy,
+    pub write: crate::remote_cache::CachePolicy,
+    pub output_paths: bool,
+    pub platform: Vec<(String, String)>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     logical: &Action,
@@ -50,7 +72,9 @@ pub(super) fn run(
     cas: &Path,
     root: &Path,
     strategy: crate::sandbox::Strategy,
-) -> Result<bool, String> {
+    cache: Option<&SpawnCache<'_>>,
+    work_parent: &Path,
+) -> Result<Outcome, String> {
     let spec = logical
         .extra
         .java_compile
@@ -89,9 +113,11 @@ pub(super) fn run(
             // discards undeclared temporaries and every staged-input view.
             clear_directory(execroot)?;
             for name in ["stdout.log", "stderr.log"] {
-                fs::remove_file(work.join(name)).map_err(|e| {
-                    io_error("cannot discard reduced Java log", &work.join(name), e)
-                })?;
+                let path = work.join(name);
+                if path.exists() {
+                    fs::remove_file(&path)
+                        .map_err(|e| io_error("cannot discard reduced Java log", &path, e))?;
+                }
             }
         }
         let attempt = spec.attempt(logical, &reduced, fallback)?;
@@ -106,17 +132,113 @@ pub(super) fn run(
             .filter(|(name, _)| selected.contains(name.as_path()))
             .map(|(name, input)| (name.clone(), input.clone()))
             .collect();
-        let staged = stage_inputs(cas, root, &inputs, execroot)?;
-        for (path, content) in &attempt.extra.param_files {
-            write_file(&execroot.join(path), content, 0)?;
-        }
-        for output in &logical.outputs {
-            if let Some(parent) = execroot.join(output).parent() {
-                ensure_directory(parent)?;
+        let view = PreparedAction {
+            inputs,
+            origins: BTreeMap::new(),
+            outputs: prepared.outputs.clone(),
+            key: prepared.key.clone(),
+        };
+        // RemoteSpawnCache.lookup of this spawn (each attempt is its own
+        // spawn with its own remote Action).
+        let remote_spec = cache.and_then(|cache| {
+            match remote_action(&attempt, &view, cache.output_paths, &cache.platform) {
+                Ok(spec) => Some(spec),
+                Err(reason) => {
+                    crate::remote_cache::warn(&crate::remote_cache::CacheError::Other(format!(
+                        "not used for {}: {reason}",
+                        logical.id
+                    )));
+                    None
+                }
+            }
+        });
+        let started = SystemTime::now();
+        let clock = std::time::Instant::now();
+        let mut hit = None;
+        if let (Some(cache), Some((remote_spec, _))) = (cache, &remote_spec)
+            && cache.read.any()
+        {
+            let declared = declared_outputs(&attempt)?;
+            match cache
+                .remote
+                .lookup(remote_spec, &declared, &|_| false, cache.read, cache.write)
+            {
+                Ok(found) => hit = found,
+                Err(crate::remote_cache::CacheError::Credentials(error)) => {
+                    return Err(format!(
+                        "Exec failed due to CredentialHelperException: {error}"
+                    ));
+                }
+                Err(error) => crate::remote_cache::warn(&error),
             }
         }
-        let result = spawn(&attempt, work, execroot, tmp, strategy, &info)?;
-        check_staged(&staged, execroot).map_err(|e| format!("action '{}': {e}", logical.id))?;
+        let (result, runner, attempt_root, remote_hit, sandboxed) = if let Some(hit) = hit {
+            crate::progress::spawn_started(crate::progress::Strategy::RemoteCache);
+            let disk = hit.source == crate::remote_cache::CacheSource::Disk;
+            for (name, output) in attempt.outputs.iter().zip(hit.outputs) {
+                let downloaded = match output {
+                    crate::remote_cache::Output::File(bytes) => {
+                        crate::remote_cache::Downloaded::File(bytes)
+                    }
+                    crate::remote_cache::Output::Symlink(target) => {
+                        crate::remote_cache::Downloaded::Symlink(target)
+                    }
+                    crate::remote_cache::Output::Remote(digest) => {
+                        crate::remote_cache::Downloaded::Remote(digest)
+                    }
+                    crate::remote_cache::Output::Directory(tree) => {
+                        crate::remote_cache::Downloaded::Directory(tree)
+                    }
+                };
+                let path = execroot.join(name);
+                if let Some(parent) = path.parent() {
+                    ensure_directory(parent)?;
+                }
+                write_downloaded(&path, &downloaded)?;
+            }
+            let runner = if disk {
+                "disk cache hit"
+            } else {
+                "remote cache hit"
+            };
+            (
+                AttemptResult {
+                    stdout: String::from_utf8_lossy(&hit.stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&hit.stderr).into_owned(),
+                    status: std::process::ExitStatus::default(),
+                    started,
+                    wall: clock.elapsed(),
+                    logs: (hit.stdout, hit.stderr),
+                },
+                runner,
+                execroot.to_path_buf(),
+                true,
+                false,
+            )
+        } else if strategy == crate::sandbox::Strategy::Worker {
+            let result = run_worker(&attempt, &view, tmp, cas, root, work_parent, execroot)?;
+            (result, "worker", execroot.to_path_buf(), false, false)
+        } else {
+            let staged = stage_inputs(cas, root, &view.inputs, execroot)?;
+            for (path, content) in &attempt.extra.param_files {
+                write_file(&execroot.join(path), content, 0)?;
+            }
+            for output in &logical.outputs {
+                if let Some(parent) = execroot.join(output).parent() {
+                    ensure_directory(parent)?;
+                }
+            }
+            let result = spawn(&attempt, work, execroot, tmp, strategy, &info)?;
+            check_staged(&staged, execroot).map_err(|e| format!("action '{}': {e}", logical.id))?;
+            (
+                result,
+                strategy.runner_name(),
+                execroot.to_path_buf(),
+                false,
+                strategy == crate::sandbox::Strategy::Sandboxed,
+            )
+        };
+        let execroot = attempt_root.as_path();
         // Only field 5, after process success/input integrity, requests the
         // second attempt. success=false is valid in a fallback-only proto.
         let request_fallback =
@@ -128,21 +250,15 @@ pub(super) fn run(
                 false
             };
         if crate::exec_log::active() {
-            let view = PreparedAction {
-                inputs,
-                origins: BTreeMap::new(),
-                outputs: prepared.outputs.clone(),
-                key: prepared.key.clone(),
-            };
             log_spawn(
                 &attempt,
                 &view,
                 execroot,
-                strategy.runner_name(),
+                runner,
                 result.status.code().unwrap_or(1),
-                false,
+                remote_hit,
                 (result.started, result.wall),
-                None,
+                remote_spec.as_ref().map(|(spec, _)| &spec.key),
             );
         }
         if !result.status.success() {
@@ -150,6 +266,33 @@ pub(super) fn run(
                 "action '{}' failed ({}):\nstdout:\n{}\nstderr:\n{}",
                 logical.id, result.status, result.stdout, result.stderr
             ));
+        }
+        // RemoteSpawnCache.store: a successful executed spawn's outputs.
+        if !remote_hit
+            && let (Some(cache), Some((remote_spec, _))) = (cache, &remote_spec)
+            && cache.write.any()
+        {
+            let mut uploads = Vec::new();
+            for name in &attempt.outputs {
+                let path = execroot.join(name);
+                if let Ok(bytes) = fs::read(&path) {
+                    uploads.push((
+                        crate::remote_cache::path_string(name)?,
+                        crate::remote_cache::Output::File(bytes),
+                    ));
+                }
+            }
+            if let Err(error) = cache.remote.upload(
+                remote_spec,
+                &uploads,
+                &result.logs.0,
+                &result.logs.1,
+                result.started,
+                result.wall,
+                cache.write,
+            ) {
+                crate::remote_cache::warn(&error);
+            }
         }
         if request_fallback {
             // The buffers are dropped; the next spawn truncates its log files.
@@ -169,9 +312,90 @@ pub(super) fn run(
             })?;
         }
         replay_logs(&logical.id, &result.stdout, &result.stderr);
-        return Ok(fallback);
+        return Ok(Outcome {
+            fallback,
+            runner,
+            remote_hit,
+            sandboxed,
+        });
     }
     unreachable!("fallback attempt is terminal")
+}
+
+/// One attempt on a persistent worker (WorkerSpawnRunner.exec): the
+/// attempt's argv without its flag files keys the worker; the inputs are
+/// staged into the worker's directory, the response's output is the
+/// spawn's stderr. The outputs move into the action's execution root.
+fn run_worker(
+    attempt: &Action,
+    view: &PreparedAction,
+    tmp: &Path,
+    cas: &Path,
+    root: &Path,
+    work_parent: &Path,
+    execroot: &Path,
+) -> Result<AttemptResult, String> {
+    let mut environment = resolved_environment(attempt);
+    environment.insert("TMPDIR".into(), tmp.as_os_str().to_owned());
+    let config = crate::worker::parse(
+        &attempt.extra.mnemonic,
+        &arguments(attempt),
+        environment,
+        &attempt.extra.execution_info,
+    )
+    .map_err(|error| {
+        if error.environmental {
+            crate::sandbox::note_setup_failure();
+        }
+        format!("action '{}' failed: {}", attempt.id, error.message)
+    })?;
+    let mut lease = crate::worker::acquire(work_parent, config.key)
+        .map_err(|error| format!("action '{}' failed: {error}", attempt.id))?;
+    let worker_root = lease.execroot().to_path_buf();
+    clear_directory(&worker_root)?;
+    let staged = stage_inputs(cas, root, &view.inputs, &worker_root)?;
+    for (path, content) in &attempt.extra.param_files {
+        write_file(&worker_root.join(path), content, 0)?;
+    }
+    for output in &attempt.outputs {
+        if let Some(parent) = worker_root.join(output).parent() {
+            ensure_directory(parent)?;
+        }
+    }
+    report_subcommand(attempt, &worker_root, "worker");
+    crate::progress::spawn_started(crate::progress::Strategy::Worker);
+    let started = SystemTime::now();
+    let clock = std::time::Instant::now();
+    let request_inputs = worker_request_inputs(&view.inputs, &attempt.extra.param_files);
+    let read = |path: &str| -> Option<io::Result<Vec<u8>>> {
+        declared_input(&view.inputs, &attempt.extra.param_files, Path::new(path))
+            .then(|| fs::read(worker_root.join(path)))
+    };
+    let response = lease.execute(&config.flag_files, &read, request_inputs);
+    crate::sandbox::count(crate::sandbox::Strategy::Worker);
+    let response = response.map_err(|error| format!("action '{}' failed: {error}", attempt.id))?;
+    check_staged(&staged, &worker_root).map_err(|e| format!("action '{}': {e}", attempt.id))?;
+    // The worker's outputs become the action's (published from execroot).
+    for output in &attempt.outputs {
+        let from = worker_root.join(output);
+        if fs::symlink_metadata(&from).is_ok() {
+            let to = execroot.join(output);
+            if let Some(parent) = to.parent() {
+                ensure_directory(parent)?;
+            }
+            fs::rename(&from, &to).map_err(|e| io_error("cannot move worker output", &from, e))?;
+        }
+    }
+    use std::os::unix::process::ExitStatusExt;
+    Ok(AttemptResult {
+        stdout: String::new(),
+        stderr: response.output.clone(),
+        // A wait status: the exit code in the second byte.
+        status: std::process::ExitStatus::from_raw((response.exit_code & 0xff) << 8),
+        started,
+        wall: clock.elapsed(),
+        logs: (Vec::new(), response.output.into_bytes()),
+    })
 }
 
 struct AttemptResult {
@@ -180,6 +404,8 @@ struct AttemptResult {
     status: std::process::ExitStatus,
     started: SystemTime,
     wall: std::time::Duration,
+    /// The spawn's raw stdout and stderr (a remote cache upload's).
+    logs: (Vec<u8>, Vec<u8>),
 }
 
 fn spawn(
@@ -246,12 +472,17 @@ fn spawn(
             error.trim_end()
         ));
     }
+    let logs = (
+        fs::read(work.join("stdout.log")).unwrap_or_default(),
+        fs::read(work.join("stderr.log")).unwrap_or_default(),
+    );
     Ok(AttemptResult {
         stdout,
         stderr,
         status,
         started,
         wall: clock.elapsed(),
+        logs,
     })
 }
 
@@ -523,10 +754,8 @@ if [ "$CASE" = second_fallback ]; then printf '\050\001' >> out/result.jdeps; fi
                 "{}",
                 String::from_utf8_lossy(&out.stderr)
             );
-            assert!(
-                String::from_utf8_lossy(&out.stderr)
-                    .contains("spawn-cache lookup/upload is unsupported")
-            );
+            // A `local` spawn is not looked up in the spawn cache
+            // (RemoteSpawnCache: not cacheable).
             return;
         }
         use std::io::{BufRead, BufReader, Write};

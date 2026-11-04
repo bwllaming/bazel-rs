@@ -6987,19 +6987,21 @@ pub fn execute_with_remote(
     let java_strategy = if action.extra.java_compile.is_some() {
         let mut info = action.execution_info.clone();
         info.extend(action.extra.execution_info.keys().cloned());
-        let strategy = crate::sandbox::resolve(&action.extra.mnemonic, &info, false)?;
+        // WorkerSpawnRunner.canExec: JavaBuilder/Turbine spawns have tool
+        // files (the compiler and its runtime).
+        let can_worker =
+            crate::worker::can_exec(&action.extra.mnemonic, &action.extra.execution_info, true);
+        let strategy = crate::sandbox::resolve(&action.extra.mnemonic, &info, can_worker)?;
         if strategy == crate::sandbox::Strategy::Remote {
             return Err("JavaBuilder reduced/fallback remote execution is not implemented in the native profile".into());
-        }
-        if remote.is_some() {
-            crate::note!(
-                "JavaBuilder protocol spawn-cache lookup/upload is unsupported; using the native terminal action cache"
-            );
         }
         Some(strategy)
     } else {
         None
     };
+    // Each Java compilation attempt is its own spawn for the remote/disk
+    // spawn cache (crate::action::java); the action itself is not.
+    let java_remote = remote.filter(|_| java_strategy.is_some());
     let remote = if java_strategy.is_some() {
         None
     } else {
@@ -7321,7 +7323,7 @@ pub fn execute_with_remote(
             None => crate::sandbox::resolve(&action.extra.mnemonic, &execution_info, can_worker)
                 .map_err(|error| format!("action '{}': {error}", action.id))?,
         };
-        if strategy == crate::sandbox::Strategy::Worker {
+        if strategy == crate::sandbox::Strategy::Worker && java_strategy.is_none() {
             // WorkerParser.compute: the worker key's environment is the
             // spawn's with the local TMPDIR (PosixLocalEnvProvider).
             let mut environment = resolved_environment(action);
@@ -7389,6 +7391,8 @@ pub fn execute_with_remote(
     // or a native transform.
     let mut runner: Option<&'static str> = None;
     let mut additional_spawns = 0;
+    // A Java compilation whose last spawn was a spawn cache hit.
+    let mut java_remote_hit = false;
     // Whether the spawn ran in a sandboxed worker (`--worker_sandboxing`).
     let worker_sandboxed = worker.as_ref().is_some_and(|(lease, _)| lease.sandboxed());
     if let Some(write) = &action.write {
@@ -7452,14 +7456,58 @@ pub fn execute_with_remote(
             );
         }
     } else if let Some(strategy) = java_strategy {
+        let spawn_cache = match java_remote {
+            Some(module) => {
+                let (remotely, _) = remote_policy(action);
+                let cacheable = may_be_cached(action);
+                let read = module.read_policy(cacheable, remotely);
+                let write = module.write_policy(cacheable, remotely);
+                if read.any() || write.any() {
+                    let output_paths = match module.output_paths() {
+                        Err(crate::remote_cache::CacheError::Capabilities(error)) => {
+                            return Err(error);
+                        }
+                        Err(error) => return Err(error.to_string()),
+                        Ok(output_paths) => output_paths,
+                    };
+                    let platform = crate::remote_execution::platform_properties(
+                        &action.remote_platform,
+                        &module.default_exec_properties,
+                    )
+                    .map_err(|error| format!("action '{}': {error}", action.id))?;
+                    note_download_store(cache_root);
+                    Some(java::SpawnCache {
+                        remote: module,
+                        read,
+                        write,
+                        output_paths,
+                        platform,
+                    })
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+        let spawn_cache = spawn_cache.filter(|_| action.remote_unsupported.is_none());
         let outcome = java::run(
-            action, &prepared, &work.0, &execroot, &tmp, cas, root, strategy,
+            action,
+            &prepared,
+            &work.0,
+            &execroot,
+            &tmp,
+            cas,
+            root,
+            strategy,
+            spawn_cache.as_ref(),
+            work_parent,
         );
         match outcome {
-            Ok(fallback) => {
-                sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
-                runner = Some(strategy.runner_name());
-                additional_spawns = u8::from(fallback);
+            Ok(outcome) => {
+                sandboxed = outcome.sandboxed;
+                runner = Some(outcome.runner);
+                additional_spawns = u8::from(outcome.fallback);
+                java_remote_hit = outcome.remote_hit;
             }
             Err(error) => {
                 if strategy == crate::sandbox::Strategy::Sandboxed && crate::sandbox::debug() {
@@ -8020,7 +8068,7 @@ pub fn execute_with_remote(
     if sandboxed && crate::sandbox::debug() {
         std::mem::forget(work);
     }
-    let mut done = result(listings, false, false);
+    let mut done = result(listings, false, java_remote_hit);
     done.runner = runner;
     done.additional_spawns = additional_spawns;
     Ok(done)

@@ -9,6 +9,7 @@ java_toolchain(
     header_compiler = "turbine.jar",
     header_compiler_direct = "turbine.jar",
     javabuilder = "javabuilder.jar",
+    genclass = "javabuilder.jar",
     singlejar = "singlejar",
     proguard_allowlister = "singlejar",
     javacopts = ["--release 11"],
