@@ -156,12 +156,11 @@ fn configured_sets_keep_exec_identity_and_filter_edges() {
     let out = ws.ok(&["kind(alias, deps(//:consumer))"]);
     assert_eq!(labels(&out), ["//:alias"]);
     // Starlark output reads the same graph (tests/cquery_output_formats.rs);
-    // formatters without a native implementation still fail explicitly.
+    // `--output=build` its own (genuine-checked there too).
     let out = ws.ok(&["--output=starlark", "//:top"]);
     assert_eq!(String::from_utf8_lossy(&out.stdout), "@@//:top\n");
-    let out = ws.query(&["--output=build", "//:top"]);
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("not implemented"));
+    let out = ws.ok(&["--output=build", "//:top"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("  name = \"top\",\n"));
 }
 
 #[test]

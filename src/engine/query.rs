@@ -842,6 +842,49 @@ impl Engine {
     }
 }
 
+impl Engine {
+    /// cquery `--output=build` (cquery/BuildOutputFormatterCallback.java):
+    /// BuildOutputFormatter.TargetOutputter.outputRule of one rule with its
+    /// configured attribute values (CqueryAttributeReader: every select
+    /// resolved, none preserved), labels in display form
+    /// (LabelPrinter.displayForm through the main repository mapping).
+    /// `attributes` are the rule's query attributes, `name` first.
+    pub(super) fn configured_build_block(
+        &mut self,
+        label: &Label,
+        attributes: Vec<QueryAttribute>,
+        main_mapping_order: &[String],
+    ) -> String {
+        let options = QueryOptions::default();
+        let mut env = Env {
+            engine: self,
+            options: &options,
+            relative_directory: String::new(),
+            kinds: HashMap::new(),
+            attributes: HashMap::from([(label.clone(), Arc::new(attributes))]),
+            edges: HashMap::new(),
+            load_targets: BTreeMap::new(),
+            patterns: HashMap::new(),
+            graph_nodes: Set::default(),
+            graph_edges: HashMap::new(),
+            events: Vec::new(),
+            has_errors: false,
+            package_errors: HashMap::new(),
+            unresolved: HashMap::new(),
+            main_mapping_order: main_mapping_order.to_vec(),
+            digests: HashMap::new(),
+            sky: false,
+            unfiltered: false,
+            universe: Set::default(),
+            universe_packages: HashSet::new(),
+            universe_parents: None,
+            pattern_failures: HashMap::new(),
+            legacy_labels: false,
+        };
+        env.build_rule(label, "\n")
+    }
+}
+
 /// QueryEnvironment.shouldVisit.
 fn should_visit(depth: Option<i32>, current: i32) -> bool {
     depth.is_none_or(|max| current <= max)

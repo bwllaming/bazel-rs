@@ -1,0 +1,1 @@
+ERROR: Instead of using --output=transitions, set the --transitions flag explicitly to 'lite' or 'full'

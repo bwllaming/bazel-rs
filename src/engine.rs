@@ -34,6 +34,7 @@ pub mod aquery;
 mod aquery_test;
 mod compatibility;
 pub mod cquery;
+mod cquery_presentation;
 mod genquery;
 mod incremental;
 mod keep_going;
@@ -1957,6 +1958,12 @@ pub struct Engine {
     /// `cquery --output=files`: the graph also records each configured
     /// target's important output files (a separate analysis key).
     cquery_files: bool,
+    /// `cquery --output=build`: the graph records each rule's BUILD block.
+    cquery_build: bool,
+    /// `cquery --output=transitions`: the graph records transition facts.
+    cquery_transitions: bool,
+    /// `cquery --show_config_fragments`: the graph records required fragments.
+    cquery_fragments: bool,
     /// aquery: the cquery capture also plans every action, and the planned
     /// actions with their owners are kept (crate::engine::aquery).
     aquery_capture: Option<aquery::Capture>,
@@ -2241,6 +2248,9 @@ impl Engine {
             skip_teardown: false,
             cquery_capture: None,
             cquery_files: false,
+            cquery_build: false,
+            cquery_transitions: false,
+            cquery_fragments: false,
             aquery_capture: None,
             console_owners: HashMap::new(),
             declared_inputs: HashMap::new(),
@@ -2400,6 +2410,18 @@ impl Engine {
 
     /// Whether the configured-query graph records important output files
     /// (`cquery --output=files`, keyed separately: crate::cquery_state).
+    pub fn set_cquery_build(&mut self, build: bool) {
+        self.cquery_build = build;
+    }
+
+    pub fn set_cquery_transitions(&mut self, transitions: bool) {
+        self.cquery_transitions = transitions;
+    }
+
+    pub fn set_cquery_fragments(&mut self, fragments: bool) {
+        self.cquery_fragments = fragments;
+    }
+
     pub fn set_cquery_files(&mut self, files: bool) {
         self.cquery_files = files;
     }

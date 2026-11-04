@@ -1,0 +1,49 @@
+NoTransition -> //:top (cd728b0)
+  srcs#//:src.txt#(null transition) -> 
+  deps#//:mid#NoTransition -> 
+  deps#//:alias#NoTransition -> 
+  tool#//:tool#(exec + (TestTrimmingTransition + ConfigFeatureFlagTaggedTrimmingTransition)) -> 92bce56
+  tr_dep#//:leaf#(Starlark transition:/tmp/opencode/w/tra-cqcap/ws/defs.bzl:11:22 + (TestTrimmingTransition + ConfigFeatureFlagTaggedTrimmingTransition)) -> f8cea2d
+  aspect_dep#//:mid#NoTransition -> 
+  $allowlist_function_transition#//tools/allowlists/function_transition_allowlist:function_transition_allowlist#(null transition) -> 
+NoTransition -> //:tool (92bce56)
+  srcs#//:src.txt#(null transition) -> 
+  $allowlist_function_transition#//tools/allowlists/function_transition_allowlist:function_transition_allowlist#(null transition) -> 
+NoTransition -> //:alias (cd728b0)
+NoTransition -> //:leaf (f8cea2d)
+  srcs#//:opt.txt#(null transition) -> 
+  $allowlist_function_transition#//tools/allowlists/function_transition_allowlist:function_transition_allowlist#(null transition) -> 
+NoTransition -> //:linux (3030ed4)
+  constraint_values#@platforms//os:linux#NoTransition -> 
+  constraint_values#@platforms//cpu:x86_64#NoTransition -> 
+//:extra.txt (null)
+//:src.txt (null)
+NoTransition -> //:mid (cd728b0)
+  srcs#//:src.txt#(null transition) -> 
+  deps#//:gen#NoTransition -> 
+  $allowlist_function_transition#//tools/allowlists/function_transition_allowlist:function_transition_allowlist#(null transition) -> 
+NoTransition -> //:opt (cd728b0)
+//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+NoConfigTransition -> @platforms//os:linux (3030ed4)
+  constraint_setting#@platforms//os:os#NoTransition -> 
+NoConfigTransition -> @platforms//cpu:x86_64 (3030ed4)
+  constraint_setting#@platforms//cpu:cpu#NoTransition -> 
+//:opt.txt (null)
+NoTransition -> //:gen (cd728b0)
+  srcs#//:src.txt#(null transition) -> 
+  $genrule_setup#@bazel_tools//tools/genrule:genrule-setup.sh#(null transition) -> 
+NoTransition -> //:leaf (cd728b0)
+  srcs#//:src.txt#(null transition) -> 
+  $allowlist_function_transition#//tools/allowlists/function_transition_allowlist:function_transition_allowlist#(null transition) -> 
+NoTransition -> //:is_transitioned (f8cea2d)
+  flag_values#//:flag#NoTransition -> 
+NoConfigTransition -> @platforms//cpu:cpu (3030ed4)
+NoConfigTransition -> @platforms//os:os (3030ed4)
+@bazel_tools//tools/genrule:genrule-setup.sh (null)
+NoTransition -> //:is_transitioned (cd728b0)
+  flag_values#//:flag#NoTransition -> 
+NoTransition -> //:flag (f8cea2d)
+NoTransition -> //:flag (cd728b0)
+NoTransition -> //:indirect (cd728b0)
+  deps#//:windows_only#NoTransition -> 
+  $allowlist_function_transition#//tools/allowlists/function_transition_allowlist:function_transition_allowlist#(null transition) -> 

@@ -1,0 +1,10 @@
+# /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:27:4
+lib(
+  name = "leaf",
+  srcs = ["//:src.txt"],
+)
+# Rule leaf instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:27:4 in <toplevel>
+# Rule lib defined at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/defs.bzl:30:11 in <toplevel>
+

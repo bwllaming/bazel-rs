@@ -1,0 +1,4 @@
+frag_cpp rule //:cpp (7253618) [BazelRuleClassProvider$StrictActionEnvConfiguration, CoreOptions, CppConfiguration, PlatformConfiguration, PlatformOptions, ShellConfiguration]
+genrule rule //:gen (7253618) [BazelRuleClassProvider$StrictActionEnvConfiguration, CoreOptions, PlatformConfiguration, PlatformOptions, ShellConfiguration]
+generated file //:gen.txt (7253618) [BazelRuleClassProvider$StrictActionEnvConfiguration, CoreOptions, PlatformConfiguration, PlatformOptions, ShellConfiguration]
+source file //:src.txt (null) []

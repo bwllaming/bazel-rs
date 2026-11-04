@@ -77,8 +77,7 @@ bazel-rs cquery --universe_scope=//app:all 'config(//app:tool, target)'
 ### Declared boundaries
 
 This is not full Bazel cquery parity. Unsupported functions/output modes/options
-fail explicitly. In particular: `build`/`transitions` output,
-`--show_config_fragments`, provider *values* in Starlark output, keep-going
+fail explicitly. In particular: provider *values* in Starlark output, keep-going
 partial results, full aspect metadata formatting, relative path-as-target literals outside the recorded patterns,
 and attr() over License values are not implemented. Existing native analysis
 limitations still fail. Direct/indirect incompatible targets are actionless

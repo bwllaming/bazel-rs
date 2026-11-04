@@ -1,0 +1,82 @@
+load(":defs.bzl", "frag_bazel_android", "frag_bazel_py", "with_aspect", "frag_android", "frag_apple", "frag_bogus", "frag_cpp", "frag_cpp_java", "frag_coverage", "frag_j2objc", "frag_java", "frag_none", "frag_objc", "frag_platform", "frag_proto", "frag_py", "reads_var", "string_flag", "with_attr_transition", "with_rule_transition")
+
+package(default_visibility = ["//visibility:public"])
+
+platform(
+    name = "linux",
+    constraint_values = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+string_flag(name = "flag", build_setting_default = "x")
+
+frag_none(name = "none")
+frag_cpp(name = "cpp")
+frag_java(name = "java")
+frag_py(name = "py")
+frag_platform(name = "platform")
+frag_coverage(name = "coverage")
+frag_proto(name = "proto")
+frag_apple(name = "apple")
+frag_objc(name = "objc")
+frag_j2objc(name = "j2objc")
+frag_android(name = "android")
+frag_bogus(name = "bogus")
+frag_cpp_java(name = "cpp_java")
+
+reads_var(name = "var")
+
+config_setting(name = "cs_cpu", values = {"cpu": "k8"})
+config_setting(name = "cs_strip", values = {"strip": "always"})
+config_setting(name = "cs_define", define_values = {"a": "b"})
+config_setting(name = "cs_values_define", values = {"define": "c=d"})
+config_setting(name = "cs_flag", flag_values = {":flag": "y"})
+config_setting(name = "cs_constraint", constraint_values = ["@platforms//os:linux"])
+config_setting(name = "cs_mode", values = {"compilation_mode": "opt"})
+config_setting(name = "cs_java", values = {"java_runtime_version": "11"})
+
+frag_none(
+    name = "selects",
+    deps = select({":cs_cpu": [], "//conditions:default": []}) +
+           select({":cs_strip": [], "//conditions:default": []}) +
+           select({":cs_define": [], "//conditions:default": []}) +
+           select({":cs_values_define": [], "//conditions:default": []}) +
+           select({":cs_flag": [], "//conditions:default": []}) +
+           select({":cs_constraint": [], "//conditions:default": []}) +
+           select({":cs_java": [], "//conditions:default": []}),
+)
+
+frag_none(name = "parent", deps = [":cpp", ":java", ":flag"])
+
+alias(name = "alias_cpp", actual = ":cpp")
+
+filegroup(name = "fg", srcs = [":cpp"])
+
+genrule(name = "gen", outs = ["gen.txt"], cmd = "touch $@")
+
+with_rule_transition(name = "rule_tr", deps = [":cpp"])
+
+with_attr_transition(name = "attr_tr", dep = ":none", tool = ":cpp")
+
+
+exports_files(["src.txt"])
+
+frag_bazel_py(name = "bazel_py")
+frag_bazel_android(name = "bazel_android")
+
+with_aspect(name = "aspected", dep = ":none")
+
+alias(name = "flag_alias", actual = ":flag")
+
+frag_none(name = "via_alias", deps = [":flag_alias"])
+
+label_flag(name = "lflag", build_setting_default = ":none")
+
+frag_none(name = "uses_lflag", deps = [":lflag"])
+
+toolchain_type(name = "tc_type")
+
+toolchain(name = "tc", toolchain = ":none", toolchain_type = ":tc_type")
+
+test_suite(name = "suite", tests = [])
+
+package_group(name = "pg", packages = ["//..."])

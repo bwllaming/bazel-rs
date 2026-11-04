@@ -1,0 +1,1 @@
+platform(name = "host", visibility = ["//visibility:public"])

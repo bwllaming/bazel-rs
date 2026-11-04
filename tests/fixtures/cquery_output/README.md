@@ -19,5 +19,9 @@
   workspace; tests/cquery_output_text.rs transcodes the streamed records and
   expects genuine's jsonproto/textproto bytes. Paths and checksums record the
   capture scratch directory.
+- `build*`, `transitions_*`, `fragments_*` (2026-11-04): `--output=build`,
+  `--output=transitions` with `--transitions=none|lite|full` and
+  `--show_config_fragments=direct|transitive|direct_host_only` (its
+  converter error), same capture options.
 - `checksum_poc.py`: recomputes genuine BuildOptions checksums from
   `configured.jsonproto` (docs/CQUERY_OUTPUT.md).

@@ -1,0 +1,416 @@
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:15:8
+frag_py(
+  name = "py",
+)
+# Rule py instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:15:8 in <toplevel>
+# Rule frag_py defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:10:20 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16  in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:32:15
+config_setting(
+  name = "cs_flag",
+  flag_values = {"//:flag": "y"},
+)
+# Rule cs_flag instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:32:15 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:30:15
+config_setting(
+  name = "cs_define",
+  define_values = {"a": "b"},
+)
+# Rule cs_define instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:30:15 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:10:12
+string_flag(
+  name = "flag",
+  build_setting_default = "x",
+)
+# Rule flag instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:10:12 in <toplevel>
+# Rule string_flag defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:30:19 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:17:14
+frag_coverage(
+  name = "coverage",
+)
+# Rule coverage instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:17:14 in <toplevel>
+# Rule frag_coverage defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:12:26 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16  in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:80:11
+test_suite(
+  name = "suite",
+  tests = [],
+  _implicit_tests = [],
+)
+# Rule suite instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:80:11 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:29:15
+config_setting(
+  name = "cs_strip",
+  values = {"strip": "always"},
+)
+# Rule cs_strip instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:29:15 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:34:15
+config_setting(
+  name = "cs_mode",
+  values = {"compilation_mode": "opt"},
+)
+# Rule cs_mode instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:34:15 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:58:21
+with_attr_transition(
+  name = "attr_tr",
+  dep = "//:none",
+  tool = "//:cpp",
+)
+# Rule attr_tr instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:58:21 in <toplevel>
+# Rule with_attr_transition defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:51:28 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:14:10
+frag_java(
+  name = "java",
+)
+# Rule java instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:14:10 in <toplevel>
+# Rule frag_java defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:9:22 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16 in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:35:15
+config_setting(
+  name = "cs_java",
+  values = {"java_runtime_version": "11"},
+)
+# Rule cs_java instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:35:15 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:18:11
+frag_proto(
+  name = "proto",
+)
+# Rule proto instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:18:11 in <toplevel>
+# Rule frag_proto defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:13:23 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16  in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:37:10
+frag_none(
+  name = "selects",
+  deps = [],
+)
+# Rule selects instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:37:10 in <toplevel>
+# Rule frag_none defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:7:22 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16 in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:13:9
+frag_cpp(
+  name = "cpp",
+)
+# Rule cpp instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:13:9 in <toplevel>
+# Rule frag_cpp defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:8:21 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16 in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:24:14
+frag_cpp_java(
+  name = "cpp_java",
+)
+# Rule cpp_java instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:24:14 in <toplevel>
+# Rule frag_cpp_java defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:19:26 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16  in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:21:12
+frag_j2objc(
+  name = "j2objc",
+)
+# Rule j2objc instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:21:12 in <toplevel>
+# Rule frag_j2objc defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:16:24 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16  in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:31:15
+config_setting(
+  name = "cs_values_define",
+  values = {"define": "c=d"},
+)
+# Rule cs_values_define instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:31:15 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:50:6
+alias(
+  name = "alias_cpp",
+  actual = "//:cpp",
+)
+# Rule alias_cpp instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:50:6 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:74:10
+frag_none(
+  name = "uses_lflag",
+  deps = ["//:lflag"],
+)
+# Rule uses_lflag instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:74:10 in <toplevel>
+# Rule frag_none defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:7:22 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16 in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:68:6
+alias(
+  name = "flag_alias",
+  actual = "//:flag",
+)
+# Rule flag_alias instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:68:6 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:23:11
+frag_bogus(
+  name = "bogus",
+)
+# Rule bogus instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:23:11 in <toplevel>
+# Rule frag_bogus defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:18:23 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16  in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:33:15
+config_setting(
+  name = "cs_constraint",
+  constraint_values = ["@platforms//os:linux"],
+)
+# Rule cs_constraint instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:33:15 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:12:10
+frag_none(
+  name = "none",
+)
+# Rule none instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:12:10 in <toplevel>
+# Rule frag_none defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:7:22 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16 in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:48:10
+frag_none(
+  name = "parent",
+  deps = ["//:cpp", "//:java", "//:flag"],
+)
+# Rule parent instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:48:10 in <toplevel>
+# Rule frag_none defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:7:22 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16 in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:5:9
+platform(
+  name = "linux",
+  constraint_values = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+# Rule linux instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:5:9 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:54:8
+genrule(
+  name = "gen",
+  outs = ["//:gen.txt"],
+  cmd = "touch $@",
+)
+# Rule gen instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:54:8 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:28:15
+config_setting(
+  name = "cs_cpu",
+  values = {"cpu": "k8"},
+)
+# Rule cs_cpu instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:28:15 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:56:21
+with_rule_transition(
+  name = "rule_tr",
+  deps = ["//:cpp"],
+)
+# Rule rule_tr instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:56:21 in <toplevel>
+# Rule with_rule_transition defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:42:28 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:52:10
+filegroup(
+  name = "fg",
+  srcs = ["//:cpp"],
+)
+# Rule fg instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:52:10 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:76:15
+toolchain_type(
+  name = "tc_type",
+)
+# Rule tc_type instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:76:15 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:19:11
+frag_apple(
+  name = "apple",
+)
+# Rule apple instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:19:11 in <toplevel>
+# Rule frag_apple defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:14:23 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16  in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:72:11
+label_flag(
+  name = "lflag",
+  build_setting_default = "//:none",
+)
+# Rule lflag instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:72:11 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:22:13
+frag_android(
+  name = "android",
+)
+# Rule android instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:22:13 in <toplevel>
+# Rule frag_android defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:17:25 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16  in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:20:10
+frag_objc(
+  name = "objc",
+)
+# Rule objc instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:20:10 in <toplevel>
+# Rule frag_objc defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:15:22 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16  in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:78:10
+toolchain(
+  name = "tc",
+  toolchain_type = "//:tc_type",
+  toolchain = "//:none",
+)
+# Rule tc instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:78:10 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:26:10
+reads_var(
+  name = "var",
+)
+# Rule var instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:26:10 in <toplevel>
+# Rule reads_var defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:25:17 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:64:19
+frag_bazel_android(
+  name = "bazel_android",
+)
+# Rule bazel_android instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:64:19 in <toplevel>
+# Rule frag_bazel_android defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:61:31 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16  in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:70:10
+frag_none(
+  name = "via_alias",
+  deps = ["//:flag_alias"],
+)
+# Rule via_alias instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:70:10 in <toplevel>
+# Rule frag_none defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:7:22 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16 in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:16:14
+frag_platform(
+  name = "platform",
+)
+# Rule platform instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:16:14 in <toplevel>
+# Rule frag_platform defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:11:26 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16  in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:66:12
+with_aspect(
+  name = "aspected",
+  dep = "//:none",
+)
+# Rule aspected instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:66:12 in <toplevel>
+# Rule with_aspect defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:68:19 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:63:14
+frag_bazel_py(
+  name = "bazel_py",
+)
+# Rule bazel_py instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/BUILD.bazel:63:14 in <toplevel>
+# Rule frag_bazel_py defined at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:60:26 in <toplevel>
+#   /tmp/opencode/w/tra-fragcap/ws/defs.bzl:5:16  in frag_rule
+
+# /tmp/opencode/w/tra-fragcap/userroot/28133358bd062323493139fdd97a9deb/external/platforms/os/BUILD.bazel:2:17
+constraint_value(
+  name = "linux",
+  visibility = ["//visibility:public"],
+  constraint_setting = "@platforms//os:os",
+)
+# Rule linux instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/userroot/28133358bd062323493139fdd97a9deb/external/platforms/os/BUILD.bazel:2:17 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/userroot/28133358bd062323493139fdd97a9deb/external/platforms/cpu/BUILD.bazel:2:17
+constraint_value(
+  name = "x86_64",
+  visibility = ["//visibility:public"],
+  constraint_setting = "@platforms//cpu:cpu",
+)
+# Rule x86_64 instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/userroot/28133358bd062323493139fdd97a9deb/external/platforms/cpu/BUILD.bazel:2:17 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/userroot/28133358bd062323493139fdd97a9deb/external/platforms/cpu/BUILD.bazel:1:19
+constraint_setting(
+  name = "cpu",
+  visibility = ["//visibility:public"],
+)
+# Rule cpu instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/userroot/28133358bd062323493139fdd97a9deb/external/platforms/cpu/BUILD.bazel:1:19 in <toplevel>
+
+# /tmp/opencode/w/tra-fragcap/userroot/28133358bd062323493139fdd97a9deb/external/platforms/os/BUILD.bazel:1:19
+constraint_setting(
+  name = "os",
+  visibility = ["//visibility:public"],
+)
+# Rule os instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-fragcap/userroot/28133358bd062323493139fdd97a9deb/external/platforms/os/BUILD.bazel:1:19 in <toplevel>
+

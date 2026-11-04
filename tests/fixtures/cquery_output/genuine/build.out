@@ -1,0 +1,139 @@
+# /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:42:4
+lib(
+  name = "indirect",
+  deps = ["//:windows_only"],
+)
+# Rule indirect instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:42:4 in <toplevel>
+# Rule lib defined at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/defs.bzl:30:11 in <toplevel>
+
+# /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:32:4
+lib(
+  name = "tool",
+  srcs = ["//:src.txt"],
+)
+# Rule tool instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:32:4 in <toplevel>
+# Rule lib defined at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/defs.bzl:30:11 in <toplevel>
+
+# /tmp/opencode/w/tra-cqcap/userroot/c15c7e9012903b8bb2936d8cad70244d/external/platforms/cpu/BUILD.bazel:1:19
+constraint_setting(
+  name = "cpu",
+  visibility = ["//visibility:public"],
+)
+# Rule cpu instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/userroot/c15c7e9012903b8bb2936d8cad70244d/external/platforms/cpu/BUILD.bazel:1:19 in <toplevel>
+
+# /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:34:6
+alias(
+  name = "alias",
+  actual = "//:leaf",
+)
+# Rule alias instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:34:6 in <toplevel>
+
+# /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:36:8
+genrule(
+  name = "gen",
+  srcs = ["//:src.txt"],
+  outs = ["//:gen.txt"],
+  cmd = "cp $< $@",
+)
+# Rule gen instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:36:8 in <toplevel>
+
+# /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:5:12
+string_flag(
+  name = "flag",
+  build_setting_default = "default",
+)
+# Rule flag instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:5:12 in <toplevel>
+# Rule string_flag defined at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/defs.bzl:6:19 in <toplevel>
+
+# /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:44:6
+alias(
+  name = "incompatible_alias",
+  actual = "//:windows_only",
+)
+# Rule incompatible_alias instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:44:6 in <toplevel>
+
+# /tmp/opencode/w/tra-cqcap/userroot/c15c7e9012903b8bb2936d8cad70244d/external/platforms/os/BUILD.bazel:1:19
+constraint_setting(
+  name = "os",
+  visibility = ["//visibility:public"],
+)
+# Rule os instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/userroot/c15c7e9012903b8bb2936d8cad70244d/external/platforms/os/BUILD.bazel:1:19 in <toplevel>
+
+# /tmp/opencode/w/tra-cqcap/userroot/c15c7e9012903b8bb2936d8cad70244d/external/platforms/os/BUILD.bazel:2:17
+constraint_value(
+  name = "linux",
+  visibility = ["//visibility:public"],
+  constraint_setting = "@platforms//os:os",
+)
+# Rule linux instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/userroot/c15c7e9012903b8bb2936d8cad70244d/external/platforms/os/BUILD.bazel:2:17 in <toplevel>
+
+# /tmp/opencode/w/tra-cqcap/userroot/c15c7e9012903b8bb2936d8cad70244d/external/platforms/cpu/BUILD.bazel:2:17
+constraint_value(
+  name = "x86_64",
+  visibility = ["//visibility:public"],
+  constraint_setting = "@platforms//cpu:cpu",
+)
+# Rule x86_64 instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/userroot/c15c7e9012903b8bb2936d8cad70244d/external/platforms/cpu/BUILD.bazel:2:17 in <toplevel>
+
+# /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:11:9
+platform(
+  name = "linux",
+  constraint_values = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+# Rule linux instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:11:9 in <toplevel>
+
+# /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:7:15
+config_setting(
+  name = "is_transitioned",
+  flag_values = {"//:flag": "transitioned"},
+)
+# Rule is_transitioned instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:7:15 in <toplevel>
+
+# /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:25:4
+lib(
+  name = "mid",
+  srcs = ["//:src.txt"],
+  deps = ["//:gen"],
+)
+# Rule mid instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:25:4 in <toplevel>
+# Rule lib defined at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/defs.bzl:30:11 in <toplevel>
+
+# /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:9:15
+config_setting(
+  name = "opt",
+  values = {"compilation_mode": "opt"},
+)
+# Rule opt instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:9:15 in <toplevel>
+
+# /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:16:4
+lib(
+  name = "top",
+  srcs = ["//:src.txt"],
+  deps = ["//:mid", "//:alias"],
+  tool = "//:tool",
+  tr_dep = "//:leaf",
+  aspect_dep = "//:mid",
+)
+# Rule top instantiated at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/BUILD.bazel:16:4 in <toplevel>
+# Rule lib defined at (most recent call last):
+#   /tmp/opencode/w/tra-cqcap/ws/defs.bzl:30:11 in <toplevel>
+

@@ -21,3 +21,12 @@ graph_flat	//:top + //:mid + //:src.txt + //:gen + //:extra.txt + //:fg + //:gen
 graph_limit	//:top + //:mid + //:src.txt + //:gen + //:extra.txt + //:fg + //:gen.txt + //:opt	--output=graph	--graph:node_limit=30
 label_kind	//...	--output=label_kind
 bogus	//:top	--output=bogus
+build	deps(//:top) + //:gen.txt + //:indirect + //:incompatible_alias except //:leaf	--output=build
+build_leaf	//:leaf	--output=build
+transitions_none	deps(//:top)	--output=transitions
+transitions_lite	deps(//:top) + //:indirect	--output=transitions	--transitions=lite
+transitions_full	deps(//:top) + //:indirect	--output=transitions	--transitions=full
+fragments_direct	deps(//:top) + //:indirect	--show_config_fragments=direct
+fragments_transitive	deps(//:top) + //:indirect	--show_config_fragments=transitive
+fragments_kind	//:top + //:gen + //:gen.txt	--output=label_kind	--show_config_fragments=direct
+fragments_bad	//:top	--show_config_fragments=direct_host_only

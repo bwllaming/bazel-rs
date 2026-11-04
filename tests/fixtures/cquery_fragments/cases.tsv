@@ -1,0 +1,6 @@
+direct	deps(//...)	--show_config_fragments=direct
+transitive	deps(//...)	--show_config_fragments=transitive
+kind	//:cpp + //:gen + //:gen.txt + //:src.txt	--output=label_kind	--show_config_fragments=direct
+lite	deps(//...)	--output=transitions	--transitions=lite
+full	deps(//...)	--output=transitions	--transitions=full
+build	deps(//...)	--output=build

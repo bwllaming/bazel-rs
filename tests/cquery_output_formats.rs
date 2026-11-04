@@ -34,8 +34,12 @@ struct Workspace(tempfile::TempDir);
 
 impl Workspace {
     fn new() -> Self {
+        Self::of(&fixtures())
+    }
+
+    fn of(fixture: &Path) -> Self {
         let dir = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
-        copy_dir(&fixtures().join("workspace"), &dir.path().join("ws"));
+        copy_dir(&fixture.join("workspace"), &dir.path().join("ws"));
         Self(dir)
     }
 
@@ -62,6 +66,27 @@ impl Workspace {
     }
 }
 
+/// An absolute path up to `marker` (a `/ws/` workspace or an `/external/`
+/// repository root) replaced by `replacement` (`--output=build` locations,
+/// Starlark transition names).
+fn replace_root(line: &str, marker: &str, replacement: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(index) = rest.find(marker) {
+        let start = rest[..index].rfind([' ', ':', '(']).map_or(0, |at| at + 1);
+        if !rest[start..index].starts_with('/') {
+            out.push_str(&rest[..index + marker.len()]);
+            rest = &rest[index + marker.len()..];
+            continue;
+        }
+        out.push_str(&rest[..start]);
+        out.push_str(replacement);
+        rest = &rest[index + marker.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Sorted distinct lines, checksum prefixes and repository spellings
 /// normalized (native graph labels are canonical `@@repo`).
 fn normalized(text: &str) -> Vec<String> {
@@ -72,6 +97,11 @@ fn normalized(text: &str) -> Vec<String> {
             let line = line
                 .replace("@@platforms//", "@platforms//")
                 .replace("@@bazel_tools//", "@bazel_tools//");
+            let line = replace_root(
+                &replace_root(&line, "/ws/", "<WS>/"),
+                "/external/",
+                "<EXT>/",
+            );
             let mut out = String::new();
             let chars: Vec<char> = line.chars().collect();
             let mut index = 0;
@@ -100,7 +130,11 @@ fn normalized(text: &str) -> Vec<String> {
 }
 
 fn cases() -> Vec<(String, Vec<String>)> {
-    std::fs::read_to_string(fixtures().join("cases.tsv"))
+    cases_of(&fixtures())
+}
+
+fn cases_of(fixture: &Path) -> Vec<(String, Vec<String>)> {
+    std::fs::read_to_string(fixture.join("cases.tsv"))
         .unwrap()
         .lines()
         .filter(|line| !line.is_empty())
@@ -113,12 +147,11 @@ fn cases() -> Vec<(String, Vec<String>)> {
 }
 
 fn genuine(case: &str, extension: &str) -> String {
-    std::fs::read_to_string(
-        fixtures()
-            .join("genuine")
-            .join(format!("{case}.{extension}")),
-    )
-    .unwrap()
+    genuine_of(&fixtures(), case, extension)
+}
+
+fn genuine_of(fixture: &Path, case: &str, extension: &str) -> String {
+    std::fs::read_to_string(fixture.join("genuine").join(format!("{case}.{extension}"))).unwrap()
 }
 
 /// Provider values are not retained by the native graph (docs/CQUERY.md):
@@ -252,21 +285,28 @@ fn formats_share_one_graph_and_jsonproto_parses() {
     assert_eq!(value["target"][0]["rule"]["name"], "//:top");
 }
 
+/// `--output=build|transitions` and `--show_config_fragments` read facts
+/// only their own analyses record: after a label graph of the same
+/// expression each still answers (its own graph), and repeating it is a hit.
 #[test]
-fn unimplemented_formatters_fail_explicitly() {
+fn presentation_formats_key_their_own_graph() {
     let ws = Workspace::new();
+    let label = ws.run(&["deps(//:top)".into(), "--output=label".into()]);
+    assert!(label.status.success());
     for args in [
-        vec!["//:top", "--output=build"],
-        vec!["//:top", "--output=transitions", "--transitions=lite"],
-        vec!["//:top", "--show_config_fragments=direct"],
+        vec!["deps(//:top)", "--output=build"],
+        vec!["deps(//:top)", "--output=transitions", "--transitions=lite"],
+        vec!["deps(//:top)", "--output=transitions", "--transitions=full"],
+        vec!["deps(//:top)", "--show_config_fragments=direct"],
     ] {
-        let out = ws.run(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        assert!(!out.status.success(), "{args:?}");
-        assert!(
-            String::from_utf8_lossy(&out.stderr).contains("not implemented in the native profile"),
-            "{args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let first = ws.run(&args);
+        let stderr = String::from_utf8_lossy(&first.stderr);
+        assert!(first.status.success(), "{args:?}: {stderr}");
+        assert!(!stderr.contains("internal error"), "{args:?}: {stderr}");
+        assert!(!first.stdout.is_empty(), "{args:?}");
+        let again = ws.run(&args);
+        assert_eq!(again.stdout, first.stdout, "{args:?}");
     }
 }
 
@@ -336,4 +376,52 @@ fn config_lists_shows_and_diffs_the_last_cquery_configurations() {
     );
     let many = config(&["a", "b", "c"]);
     assert!(String::from_utf8_lossy(&many.stderr).contains("Too many config ids."));
+}
+
+/// tests/fixtures/cquery_fragments: `--show_config_fragments=direct|transitive`
+/// over Starlark rule fragments, config_setting values/defines/flags,
+/// selects, rule and attribute transitions, build settings (aliases,
+/// label_flag), test_suite, aspects and platforms, and `--output=transitions`
+/// and `--output=build` of the same graph, against genuine 9.3.1.
+/// Divergence (docs/CQUERY.md): native analyzes a platform's constraints in
+/// the platform's incoming configuration, so genuine's empty-configuration
+/// edges of a target-configuration platform (`(NoConfigTransition + …) ->`
+/// with their `flag_alias` diff) and that platform's target-configuration
+/// fragments line have no native counterpart.
+#[test]
+fn fragments_and_transitions_match_genuine() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cquery_fragments");
+    let ws = Workspace::of(&fixture);
+    let divergent = |line: &String| {
+        line.contains("#(NoConfigTransition + ")
+            || line.starts_with("    flag_alias:")
+            || (line.starts_with("//:linux (H) [") && line != "//:linux (H) []")
+    };
+    let mut failures = Vec::new();
+    for (case, args) in cases_of(&fixture) {
+        let out = ws.run(&args);
+        let expected_code = genuine_of(&fixture, &case, "rc");
+        if out.status.code().map(|code| code.to_string()).as_deref() != Some(expected_code.trim()) {
+            failures.push(format!(
+                "{case}: exit {:?}: {}",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stderr)
+            ));
+            continue;
+        }
+        let expected: Vec<String> = normalized(&genuine_of(&fixture, &case, "out"))
+            .into_iter()
+            .filter(|line| !divergent(line))
+            .collect();
+        let actual: Vec<String> = normalized(&String::from_utf8_lossy(&out.stdout))
+            .into_iter()
+            .filter(|line| !divergent(line))
+            .collect();
+        if expected != actual {
+            failures.push(format!(
+                "{case}: stdout\n  genuine {expected:?}\n  native  {actual:?}"
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

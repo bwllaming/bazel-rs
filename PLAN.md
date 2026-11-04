@@ -215,11 +215,14 @@ Done since the last increment recorded under "History", one line each:
       listing/show/diff (docs/CQUERY_OUTPUT.md); TD's default incompatible-target
       filtering matches genuine on a ~/code pair. Provider values are not
       retained (names only).
-- [ ] `cquery --output=build|transitions`, `--show_config_fragments` (explicit
-      errors; transitions need per-edge transition names in the graph, build
-      needs the configured attribute values as BUILD text) and genuine
-      BuildOptions checksums (needs all ~319 fragment options modelled;
-      algorithm reproduced in tests/fixtures/cquery_output/checksum_poc.py).
+- [x] `cquery --output=build`, `--output=transitions` (`lite`/`full`) and
+      `--show_config_fragments=direct|transitive` (docs/CQUERY_OUTPUT.md;
+      facts recorded only for the format that reads them; genuine-captured
+      tests/fixtures/cquery_fragments and cquery_output cases).
+- [ ] genuine BuildOptions checksums (needs all ~319 fragment options
+      modelled; algorithm reproduced in tests/fixtures/cquery_output/checksum_poc.py).
+- [x] `aquery` TestRunner actions (docs/AQUERY.md; coverage-mode ones are not
+      listed) and `--strict_java_deps` (docs/JAVA_ACTIONS.md).
 - [x] `--target_pattern_file`, `--notest_keep_going`, `--run_under=<label>`.
 - [x] `aquery` (docs/AQUERY.md) and native `genquery`.
 - [x] `starlark_doc_extract`: the ModuleInfo binary/text protos byte-identical

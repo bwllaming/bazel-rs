@@ -9,9 +9,9 @@
 | `files` | FilesOutputFormatterCallback | yes (own analysis key) |
 | `jsonproto` / `textproto` | ProtoOutputFormatterCallback.writeData | yes, byte-identical printers |
 | `graph` | GraphOutputFormatterCallback / GraphOutputWriter | yes |
-| `build` | BuildOutputFormatterCallback | explicit error |
-| `transitions` | TransitionsOutputFormatterCallback | explicit error |
-| `--show_config_fragments` | RequiredConfigFragmentsProvider | explicit error |
+| `build` | BuildOutputFormatterCallback | yes (own analysis key) |
+| `transitions` | TransitionsOutputFormatterCallback | yes, `lite` and `full` (own analysis key) |
+| `--show_config_fragments` | RequiredConfigFragmentsProvider | yes, `direct` and `transitive` (keyed) |
 
 An unknown format fails like genuine (exit 2): `Invalid output format 'X'.
 Valid values are: label_kind, label, transitions, proto, streamed_proto,
@@ -57,6 +57,72 @@ main f7d0c36e: 6,592 MiB, no boundary step); RSS at graph-ready is 76 MiB
 higher. Label
 output is byte-identical to main's. (A first version that built dependency
 views for every key cost +921 MiB and was replaced by the light read.)
+
+Three more facts are recorded only for the format that reads them, so the
+other formats' graphs (and their memory) are unchanged: `--output=build`
+(each analyzed rule node's BUILD block), `--output=transitions` (per rule
+node its rule-class and rule transition names and its attributes'
+transition names) and `--show_config_fragments` (per rule node its own
+required fragments, build-setting label and requested aspects'
+fragments). `--output=files|build|transitions` key their own analysis
+(cquery_state `presentation`); `--show_config_fragments` is part of every
+key. Measured on the private ~/code clone, `deps(//...)` label output is
+unaffected (the facts are not recorded; table below).
+
+## `--output=build`
+
+BuildOutputFormatterCallback: TargetOutputter.outputRule (the `bazel query`
+renderer, crate::engine::query `configured_build_block`) over the rule's
+query attributes with every select resolved for the node's configuration
+(CqueryAttributeReader), labels in display form; an output file prints its
+generating rule; each rule label once (TargetOutputter's printed set). Native
+prints the first configured target in label then configuration order
+(genuine: Skyframe order, so a label analyzed in two configurations whose
+selects differ may show either). A node whose select projection failed
+fails the command with that error. Genuine-captured: `build`, `build_leaf`.
+
+## `--output=transitions`
+
+TransitionsOutputFormatterCallback with CqueryTransitionResolver: per result
+`CLASS -> LABEL (id)` (the rule class's transition: `NoTransition`,
+`NoConfigTransition` for constraint rules, `Starlark transition:PATH:L:C`),
+then for rule configured targets (not aliases or label build settings) one
+line per (attribute, dependency label): `attr#label#NAME -> ids`, where
+NAME is `NoTransition` for the same single configuration, `(null
+transition)` for an unconfigured dependency, else the attribute transition
+(`exec`, a Starlark transition) composed with the dependency's rule
+transition (its class transition composed with `(TestTrimmingTransition +
+ConfigFeatureFlagTaggedTrimmingTransition)`, `NoTransition` parts for test
+rules, aliases, test-option config_settings and the
+`//command_line_option/fragment:test` tag; none for a rule named `alias`,
+genuine's `getName().equals("alias")`). Toolchain edges print as
+`[toolchain dependency]`, private attributes as `$name`. `full` adds
+OptionsDiff.getPrettyPrintList per transitioned edge: the modelled native
+options that differ (options class, then name; `name:old -> [new, …]`),
+`is exec configuration`, `platform_suffix` and the exec transition's
+`--jvmopt` (not a native option, so always its default). `--transitions`
+unset prints genuine's error event and nothing (exit 0).
+
+## `--show_config_fragments`
+
+`label`/`label_kind` lines append RequiredConfigFragmentsProvider as genuine
+sorts it (RequiredFragmentsUtil): the universal fragments with CoreOptions
+and PlatformOptions, `rule(fragments=…)` (the registered fragment classes;
+`py`/`bazel_py`/unknown names add nothing, as in 9.3.1), test_suite's
+TestConfiguration, config_setting's options classes of `values` keys,
+`--define:NAME` and `flag_values` settings, the options and settings read or
+written by the rule's and its attributes' Starlark transitions, build
+settings themselves, config conditions' sets, and in `direct` mode the build
+settings among the prerequisites (through aliases); `transitive` adds every
+prerequisite's set and the fragments of aspects the target requests. Source
+files, incompatible targets and nodes of the empty (platform) configuration
+print `[]`. `direct_host_only` fails with genuine's converter error (exit 2).
+Divergence: native analyzes a platform's constraints in the platform's
+incoming configuration, so the empty-configuration platform edges and the
+platform's second (target-configuration) line of genuine have no native
+counterpart. Genuine-captured: `tests/fixtures/cquery_fragments`
+(`fragments_and_transitions_match_genuine`) and the `fragments_*` and
+`transitions_*` cases of `tests/fixtures/cquery_output`.
 
 ## `--output=starlark`
 

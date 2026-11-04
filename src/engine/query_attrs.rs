@@ -190,6 +190,24 @@ pub(crate) struct QueryAttribute {
     pub aspects: Vec<crate::rule_declarations::QueryAspect>,
 }
 
+impl QueryAttribute {
+    /// The `name` attribute (printed first, explicitly specified).
+    pub(crate) fn name(name: &str) -> Self {
+        QueryAttribute {
+            name: "name".to_owned(),
+            public_name: "name".to_owned(),
+            shape: Shape::Other,
+            ty: AttrType::String,
+            explicit: true,
+            tool: false,
+            value: Some(AttrValue::String(name.to_owned())),
+            select: None,
+            default: None,
+            aspects: Vec::new(),
+        }
+    }
+}
+
 /// Canonical label texts of a value (Type.visitLabels), in value order.
 pub(crate) fn value_labels(value: &AttrValue, shape: Shape) -> Vec<String> {
     if !shape.is_dependency() {

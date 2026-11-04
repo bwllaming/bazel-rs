@@ -1,0 +1,75 @@
+NoTransition -> //:py (cd728b0)
+NoTransition -> //:cs_flag (cd728b0)
+  flag_values#//:flag#NoTransition -> 
+NoTransition -> //:cs_define (cd728b0)
+NoTransition -> //:flag (cd728b0)
+NoTransition -> //:coverage (cd728b0)
+NoTransition -> //:suite (d207fa4)
+NoTransition -> //:cs_strip (cd728b0)
+NoTransition -> //:cs_mode (cd728b0)
+NoTransition -> //:attr_tr (cd728b0)
+  dep#//:none#(Starlark transition:/tmp/opencode/w/tra-fragcap/ws/defs.bzl:35:22 + (TestTrimmingTransition + ConfigFeatureFlagTaggedTrimmingTransition)) -> 4bbb28b
+  tool#//:cpp#(exec + (TestTrimmingTransition + ConfigFeatureFlagTaggedTrimmingTransition)) -> 92bce56
+  $allowlist_function_transition#//tools/allowlists/function_transition_allowlist:function_transition_allowlist#(null transition) -> 
+NoTransition -> //:java (cd728b0)
+NoTransition -> //:cs_java (cd728b0)
+NoTransition -> //:proto (cd728b0)
+NoTransition -> //:selects (cd728b0)
+NoTransition -> //:cpp (46f7be1)
+NoTransition -> //:cpp_java (cd728b0)
+NoTransition -> //:j2objc (cd728b0)
+NoTransition -> //:cs_values_define (cd728b0)
+NoTransition -> //:alias_cpp (d207fa4)
+NoTransition -> //:uses_lflag (cd728b0)
+  deps#//:lflag#NoTransition -> 
+NoTransition -> //:flag_alias (cd728b0)
+NoTransition -> //:flag_alias (d207fa4)
+NoTransition -> //:bogus (cd728b0)
+NoTransition -> //:cs_constraint (cd728b0)
+  constraint_values#@platforms//os:linux#(NoConfigTransition + (TestTrimmingTransition + ConfigFeatureFlagTaggedTrimmingTransition)) -> 3030ed4
+NoTransition -> //:none (cd728b0)
+NoTransition -> //:parent (cd728b0)
+  deps#//:cpp#NoTransition -> 
+  deps#//:java#NoTransition -> 
+  deps#//:flag#NoTransition -> 
+NoTransition -> //:linux (3030ed4)
+  constraint_values#@platforms//os:linux#NoTransition -> 
+  constraint_values#@platforms//cpu:x86_64#NoTransition -> 
+NoTransition -> //:cpp (92bce56)
+NoTransition -> //:gen (cd728b0)
+  $genrule_setup#@bazel_tools//tools/genrule:genrule-setup.sh#(null transition) -> 
+NoTransition -> //:cs_cpu (cd728b0)
+Starlark transition:/tmp/opencode/w/tra-fragcap/ws/defs.bzl:40:22 -> //:rule_tr (46f7be1)
+  deps#//:cpp#NoTransition -> 
+  $allowlist_function_transition#//tools/allowlists/function_transition_allowlist:function_transition_allowlist#(null transition) -> 
+NoTransition -> //:fg (cd728b0)
+  srcs#//:cpp#NoTransition -> 
+NoTransition -> //:tc_type (cd728b0)
+NoTransition -> //:none (4bbb28b)
+NoTransition -> //:apple (cd728b0)
+NoTransition -> //:lflag (cd728b0)
+NoTransition -> //:lflag (d207fa4)
+NoTransition -> //:android (cd728b0)
+NoTransition -> //:objc (cd728b0)
+NoTransition -> //:tc (cd728b0)
+  toolchain_type#//:tc_type#NoTransition -> 
+NoTransition -> //:var (cd728b0)
+NoTransition -> //:bazel_android (cd728b0)
+NoTransition -> //:via_alias (cd728b0)
+  deps#//:flag_alias#NoTransition -> 
+NoTransition -> //:platform (cd728b0)
+NoTransition -> //:cpp (cd728b0)
+NoTransition -> //:aspected (cd728b0)
+  dep#//:none#NoTransition -> 
+NoTransition -> //:linux (cd728b0)
+  constraint_values#@platforms//os:linux#(NoConfigTransition + (TestTrimmingTransition + ConfigFeatureFlagTaggedTrimmingTransition)) -> 3030ed4
+  constraint_values#@platforms//cpu:x86_64#(NoConfigTransition + (TestTrimmingTransition + ConfigFeatureFlagTaggedTrimmingTransition)) -> 3030ed4
+NoTransition -> //:bazel_py (cd728b0)
+NoConfigTransition -> @platforms//os:linux (3030ed4)
+  constraint_setting#@platforms//os:os#NoTransition -> 
+NoConfigTransition -> @platforms//cpu:x86_64 (3030ed4)
+  constraint_setting#@platforms//cpu:cpu#NoTransition -> 
+@bazel_tools//tools/genrule:genrule-setup.sh (null)
+//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)
+NoConfigTransition -> @platforms//cpu:cpu (3030ed4)
+NoConfigTransition -> @platforms//os:os (3030ed4)

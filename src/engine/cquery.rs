@@ -58,6 +58,9 @@ struct CapturedAspect {
     applicable: bool,
     targets: Vec<u32>,
     aspects: Vec<u32>,
+    /// The aspect declaration's `fragments` (`--show_config_fragments`),
+    /// `None` when empty (no allocation per application).
+    fragments: Option<Arc<[String]>>,
 }
 
 impl Capture {
@@ -115,6 +118,8 @@ impl Capture {
                     applicable: aspect.applies_to_rule(rule),
                     targets: Vec::new(),
                     aspects: required,
+                    fragments: (!aspect.declaration.fragments.is_empty())
+                        .then(|| aspect.declaration.fragments.clone().into()),
                 });
                 id
             };
@@ -216,6 +221,16 @@ pub struct Graph {
     pub fact_errors: BTreeMap<u32, String>,
     /// Whether [`Node::files`] were recorded (`--output=files` graphs only).
     pub files_recorded: bool,
+    /// `--output=build` graphs only: each analyzed rule node's BUILD block
+    /// with its configured attribute values (BuildOutputFormatterCallback).
+    pub build_blocks: BTreeMap<u32, String>,
+    pub build_recorded: bool,
+    /// `--output=transitions` graphs only (super::cquery_presentation).
+    pub transitions: BTreeMap<u32, super::cquery_presentation::NodeTransitions>,
+    pub transitions_recorded: bool,
+    /// `--show_config_fragments` graphs only (super::cquery_presentation).
+    pub fragments: BTreeMap<u32, super::cquery_presentation::NodeFragments>,
+    pub fragments_recorded: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -335,9 +350,10 @@ impl Options {
                 "starlark:expr" => self.starlark_expr = value.to_owned(),
                 "starlark:file" => self.starlark_file = value.to_owned(),
                 "show_config_fragments" => {
-                    if !matches!(value, "off" | "direct" | "transitive" | "direct_host_only") {
+                    if !matches!(value, "off" | "direct" | "transitive") {
+                        crate::exit_code::record(crate::exit_code::COMMAND_LINE_ERROR);
                         return Err(format!(
-                            "While parsing option --show_config_fragments={value}: Not a valid configuration fragment mode: '{value}' (should be off, direct_host_only, direct or transitive)"
+                            "While parsing option --show_config_fragments={value}: Not a valid include config fragments provider option: '{value}' (should be off, direct or transitive)"
                         ));
                     }
                     self.show_config_fragments = value.to_owned();
@@ -378,24 +394,13 @@ impl Options {
     pub fn expression(&self, text: &str) -> Result<Expr, String> {
         match self.common.output.as_str() {
             "label" | "label_kind" | "proto" | "streamed_proto" | "jsonproto" | "textproto"
-            | "starlark" | "files" | "graph" => {}
-            "build" | "transitions" => {
-                return Err(format!(
-                    "cquery --output={} is not implemented in the native profile",
-                    self.common.output
-                ));
-            }
+            | "starlark" | "files" | "graph" | "build" | "transitions" => {}
             other => {
                 crate::exit_code::record(crate::exit_code::COMMAND_LINE_ERROR);
                 return Err(format!(
                     "Invalid output format '{other}'. Valid values are: {OUTPUT_FORMATS}"
                 ));
             }
-        }
-        if self.show_config_fragments != "off" {
-            return Err(
-                "cquery --show_config_fragments is not implemented in the native profile".into(),
-            );
         }
         crate::query_language::parse_cquery(text).map_err(|e| e.to_string())
     }
@@ -735,6 +740,24 @@ impl Graph {
                 self.write_graph(&ids, options, &mut destination)?;
                 return destination.flush().map_err(|e| e.to_string());
             }
+            "build" => {
+                self.write_build(&self.sorted(&ids), &mut destination)?;
+                return destination.flush().map_err(|e| e.to_string());
+            }
+            "transitions" => {
+                if options.writer.transitions == wire::Transitions::None {
+                    eprintln!(
+                        "ERROR: Instead of using --output=transitions, set the --transitions flag explicitly to 'lite' or 'full'"
+                    );
+                    return Ok(());
+                }
+                self.write_transitions(
+                    &self.sorted(&ids),
+                    options.writer.transitions == wire::Transitions::Full,
+                    &mut destination,
+                )?;
+                return destination.flush().map_err(|e| e.to_string());
+            }
             "jsonproto" | "textproto" => {
                 let mut transcoder = crate::cquery_text::Transcoder::new(
                     &mut destination,
@@ -753,13 +776,14 @@ impl Graph {
             _ => {}
         }
         if matches!(options.common.output.as_str(), "label" | "label_kind") {
+            let mut memo = HashMap::new();
             for id in self.sorted(&ids) {
                 let node = &self.nodes[id as usize];
                 if options.common.output == "label_kind" {
                     write!(destination, "{} ", node.kind()).map_err(|e| e.to_string())?;
                 }
                 let checksum = self.checksum(node);
-                writeln!(
+                write!(
                     destination,
                     "{} ({})",
                     node.label(),
@@ -770,6 +794,15 @@ impl Graph {
                     }
                 )
                 .map_err(|e| e.to_string())?;
+                if options.show_config_fragments != "off" {
+                    let fragments = self.fragments_text(
+                        id,
+                        options.show_config_fragments == "transitive",
+                        &mut memo,
+                    )?;
+                    write!(destination, " {fragments}").map_err(|e| e.to_string())?;
+                }
+                writeln!(destination).map_err(|e| e.to_string())?;
             }
             return destination.flush().map_err(|e| e.to_string());
         }
@@ -846,6 +879,53 @@ impl Graph {
                 // event per target; formatting continues.
                 Err(error) => eprintln!("ERROR: {error}"),
             }
+        }
+        Ok(())
+    }
+
+    /// BuildOutputFormatterCallback: each result's rule (an output file's
+    /// generating rule) once per label (TargetOutputter's printed set), the
+    /// first configured target's values (native: label, then configuration
+    /// order; genuine: Skyframe order).
+    fn write_build(&self, ids: &[u32], destination: &mut impl Write) -> Result<(), String> {
+        if !self.build_recorded {
+            return Err("internal error: this configured graph records no BUILD blocks".into());
+        }
+        let mut printed = HashSet::new();
+        for &id in ids {
+            let node = &self.nodes[id as usize];
+            let rule = match &node.target {
+                wire::Target::Rule(_) => id,
+                wire::Target::GeneratedFile(_) => {
+                    match node.edges.iter().find(|edge| {
+                        edge.attribute.is_empty()
+                            && !edge.aspect
+                            && matches!(self.nodes[edge.to as usize].target, wire::Target::Rule(_))
+                    }) {
+                        Some(edge) => edge.to,
+                        None => continue,
+                    }
+                }
+                _ => continue,
+            };
+            let label = self.nodes[rule as usize].label();
+            if printed.contains(label) {
+                continue;
+            }
+            if let Some(error) = self.nodes[rule as usize]
+                .attribute_errors
+                .as_ref()
+                .and_then(|errors| errors.values().next())
+            {
+                return Err(error.clone());
+            }
+            let Some(block) = self.build_blocks.get(&rule) else {
+                continue;
+            };
+            printed.insert(label);
+            destination
+                .write_all(block.as_bytes())
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -1659,8 +1739,17 @@ impl Engine {
                     .push(capture.target_keys[edge.to as usize].label.to_string());
             }
         }
+        let main_mapping_order = if self.cquery_build {
+            self.repositories.main_mapping_order()
+        } else {
+            Vec::new()
+        };
+        let mut build_blocks = BTreeMap::new();
         for ((label, config), _) in ordered {
             let mut attribute_errors = BTreeMap::new();
+            // `--output=build`: the rule's query attributes with selects
+            // resolved, rendered after the match (Engine::configured_build_block).
+            let mut build_attributes: Option<Vec<query_attrs::QueryAttribute>> = None;
             let owner = match self.target(label)? {
                 Target::Output(rule, _) => rule.label.clone(),
                 _ => label.clone(),
@@ -1733,6 +1822,7 @@ impl Engine {
                                 config_hash: config.to_string(),
                             });
                     let mut attributes = Vec::new();
+                    let mut resolved = Vec::new();
                     for mut attribute in query_attrs::rule_attributes(rule, package) {
                         if attribute.select.is_some()
                             && let Some(resolver) = &resolver
@@ -1758,7 +1848,14 @@ impl Engine {
                                 }
                             }
                         }
+                        if self.cquery_build {
+                            resolved.push(attribute.clone());
+                        }
                         attributes.push(configured_attribute(attribute, rule)?);
+                    }
+                    if self.cquery_build && attribute_errors.is_empty() {
+                        resolved.insert(0, query_attrs::QueryAttribute::name(&label.name));
+                        build_attributes = Some(resolved);
                     }
                     attributes.push(wire::Attribute::new(
                         "name",
@@ -1856,6 +1953,10 @@ impl Engine {
                     })
                 }
             };
+            if let Some(attributes) = build_attributes {
+                let block = self.configured_build_block(label, attributes, &main_mapping_order);
+                build_blocks.insert(nodes.len() as u32, block);
+            }
             let (provider_names, files) = match self.target(label)? {
                 Target::Source(_) => (
                     Some(
@@ -2077,6 +2178,47 @@ impl Engine {
                     .collect(),
             );
         }
+        // `--output=transitions` / `--show_config_fragments` facts.
+        let mut transitions = BTreeMap::new();
+        let mut fragments = BTreeMap::new();
+        if self.cquery_transitions || self.cquery_fragments {
+            let mut aspect_fragments: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
+            for (requester, applications) in &capture.requests {
+                let from = aspect_targets[*requester as usize];
+                for id in applications {
+                    aspect_fragments.entry(from).or_default().extend(
+                        super::cquery_presentation::aspect_fragments(
+                            capture.applications[*id as usize]
+                                .fragments
+                                .as_deref()
+                                .unwrap_or_default(),
+                        ),
+                    );
+                }
+            }
+            for ((label, config), id) in &ids {
+                let Ok(Target::Rule(rule)) = self.target(label) else {
+                    continue;
+                };
+                if matches!(rule.kind, RuleKind::PackageGroup(_)) {
+                    continue;
+                }
+                if self.cquery_transitions {
+                    transitions.insert(*id, self.node_transitions(&rule));
+                }
+                if self.cquery_fragments {
+                    let mut facts = self.node_fragments(&rule);
+                    facts.none = config.is_none_or(|config| {
+                        self.configurations.get(config).native.no_config
+                            || self
+                                .empty_configuration_rules
+                                .contains(&ConfiguredTargetKey::new(label.clone(), config))
+                    });
+                    facts.aspects = aspect_fragments.remove(id).unwrap_or_default();
+                    fragments.insert(*id, facts);
+                }
+            }
+        }
         crate::perf_mark("cquery.graph_edges_ready");
         Ok(Graph {
             nodes,
@@ -2088,6 +2230,12 @@ impl Engine {
             build_options,
             fact_errors,
             files_recorded: self.cquery_files,
+            build_blocks,
+            build_recorded: self.cquery_build,
+            transitions,
+            transitions_recorded: self.cquery_transitions,
+            fragments,
+            fragments_recorded: self.cquery_fragments,
         })
     }
 }

@@ -1295,6 +1295,12 @@ fn run() -> Result<(), String> {
     engine.set_workspace_status(workspace_status);
     engine.set_execute_build(!no_build && command != "cquery" && command != "aquery");
     engine.set_cquery_files(command == "cquery" && cquery_options.common.output == "files");
+    engine.set_cquery_build(command == "cquery" && cquery_options.common.output == "build");
+    engine.set_cquery_transitions(
+        command == "cquery" && cquery_options.common.output == "transitions",
+    );
+    engine
+        .set_cquery_fragments(command == "cquery" && cquery_options.show_config_fragments != "off");
     engine.set_keep_going(test_options.keep_going && analyzes(&command));
     engine.set_skip_incompatible_explicit_targets(test_options.skip_incompatible_explicit_targets);
     // --loading_phase_threads (LoadingPhaseThreadsOption.java, P2 of the
