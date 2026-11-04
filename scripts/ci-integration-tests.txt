@@ -72,5 +72,6 @@ string_list_dict
 string_methods
 target_identity
 unused_inputs_list
+vendor_tempfile
 workspace_status
 xcode_version_info

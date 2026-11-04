@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "crate": "tempfile",
+  "version": "3.27.0",
+  "archive": {
+    "url": "https://crates.io/api/v1/crates/tempfile/3.27.0/download",
+    "sha256": "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd",
+    "root": "tempfile-3.27.0",
+    "regular_members": 27,
+    "uncompressed_regular_file_bytes": 187847,
+    "omitted_members": [],
+    "archive_member_inventory": {
+      "path_base": "vendor/tempfile-3.27.0",
+      "canonical_json_sha256": "29115baa426c0c89af7faa71ee0827287e87b16ea83a565811993c732dd0ee16",
+      "canonicalization": "UTF-8 json.dumps(archive_members, sort_keys=True, separators=(',', ':')) without trailing newline; sorted relative POSIX paths; fields path, size, sha256"
+    }
+  },
+  "upstream": {
+    "repository": "https://github.com/Stebalien/tempfile",
+    "commit": "5c8fa12eb584931b4f1bccfde87eb72fbfa7dc61",
+    "commit_receipt": "vendor/tempfile-3.27.0/.cargo_vcs_info.json"
+  },
+  "declared_source_patches": [
+    {
+      "path": "src/dir/mod.rs",
+      "original": {
+        "size": 17189,
+        "sha256": "d144325a6528a9a6e7c78a42e0eec42ee401c3b834ef5851376323725756f219"
+      },
+      "current": {
+        "size": 18641,
+        "sha256": "88871ef34da3144859cf060982f364548ccb31546cd3cc2db79e54ab5d2fa843"
+      }
+    }
+  ],
+  "license": {
+    "paths": [
+      "LICENSE-APACHE",
+      "LICENSE-MIT"
+    ],
+    "acquisition": "The archive's own license files, unchanged (MIT OR Apache-2.0). No addition.",
+    "content": {
+      "LICENSE-APACHE": {
+        "size": 10847,
+        "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+      },
+      "LICENSE-MIT": {
+        "size": 1056,
+        "sha256": "8b427f5bc501764575e52ba4f9d95673cf8f6d80a86d0d06599852e1a9a20a36"
+      }
+    }
+  },
+  "scope": "TempDir removal on drop and close() (src/dir/mod.rs): when std::fs::remove_dir_all fails with PermissionDenied, every directory below the temporary directory gets its owner's rwx permissions (links never followed) and the removal is retried once. bazel-rs seals its repository store's trees (no write bits on files and directories, docs/REPOSITORY_SLOTS.md \"Sealed trees\"), and a temporary directory holding a store (every test workspace's cache) must still be removed. No other behaviour, API, dependency version or feature change. All published archive files preserved; nothing added."
+}

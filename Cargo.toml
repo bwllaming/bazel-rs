@@ -105,6 +105,9 @@ lzma-rust2 = { version = "=0.22.0", default-features = false, features = ["std",
 starlark = { path = "vendor/starlark-0.14.2" }
 # Same pinned parser; tab whitespace parity only (docs/STARLARK_VENDOR.md).
 starlark_syntax = { path = "vendor/starlark_syntax-0.14.2" }
+# Same pinned crate; TempDir removal also empties sealed (read-only)
+# directories (vendor/tempfile-3.27.0.provenance.json).
+tempfile = { path = "vendor/tempfile-3.27.0" }
 
 [profile.release]
 lto = "thin"
