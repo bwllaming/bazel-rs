@@ -124,6 +124,15 @@ fn dynamic_library_soname(library_path: &str, preserve_name: bool, mnemonic: &st
     format!("lib{mnemonic_mangling}{}", escaped_path(library_path))
 }
 
+/// Artifact.getRootRelativePath of the file at `path`, which
+/// SolibSymlinkAction.getDynamicLibrarySymlink (:158-179) mangles: below
+/// its configuration's root for a generated file — `external/REPO/...` for
+/// an external repository's library, never its `../REPO` short path — and
+/// the execution path for a source file.
+fn root_relative_path(path: &str) -> &str {
+    crate::label::split_generated_root(path).map_or(path, |(_, relative)| relative)
+}
+
 /// `SolibSymlinkAction.getMangledName` (:273-295).
 fn mangled_name(
     label: &Label,
@@ -776,7 +785,7 @@ pub(crate) fn call<'v>(
                     &context.label,
                     &solib,
                     &context.output_root,
-                    &library.short_path,
+                    root_relative_path(&library.path),
                     preserve,
                     prefix_consumer,
                 )
@@ -1553,6 +1562,29 @@ mod tests {
             ),
             "_solib_k8/_U_S_Scdep_Cprebuilt_Ushared___Ucdep/libprebuilt.so"
         );
+    }
+
+    #[test]
+    fn external_libraries_mangle_their_root_relative_path() {
+        // Genuine 9.3.1 (stardoc 0.8.0's protobuf, exec configuration):
+        // _solib_k8/libexternal_Sprotobuf+_Ssrc_Sgoogle_Sprotobuf_Slibprotobuf.so.
+        let label = Label::parse_canonical("@@protobuf+//src/google/protobuf:protobuf").unwrap();
+        let path = root_relative_path(
+            "bazel-out/k8-opt-exec/bin/external/protobuf+/src/google/protobuf/libprotobuf.so",
+        );
+        assert_eq!(
+            path,
+            "external/protobuf+/src/google/protobuf/libprotobuf.so"
+        );
+        assert_eq!(
+            mangled_name(&label, "_solib_k8", "k8-opt-exec", path, false, false),
+            "_solib_k8/libexternal_Sprotobuf+_Ssrc_Sgoogle_Sprotobuf_Slibprotobuf.so"
+        );
+        assert_eq!(
+            root_relative_path("external/r+/lib/libx.so"),
+            "external/r+/lib/libx.so"
+        );
+        assert_eq!(root_relative_path("cdep/libx.so"), "cdep/libx.so");
     }
 
     #[test]

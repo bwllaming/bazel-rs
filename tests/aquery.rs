@@ -436,6 +436,7 @@ fn aquery_genrule_attributes_match_genuine() {
         &ws.stdout(&["--stamp", "//pkg:all"]),
         &genuine("stamp.txt").unwrap(),
     );
+    assert_text(&ws.stdout(&["@ext//:all"]), &genuine("ext.txt").unwrap());
     let build = ws.command("build", &["//pkg:all_ok"]);
     assert!(
         build.status.success(),

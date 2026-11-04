@@ -1,0 +1,30 @@
+action 'Executing genrule @@ext+//:multi'
+  Mnemonic: Genrule
+  Target: @ext//:multi
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 28ba840ab4813c98233581e36b33bda81c27980b993835f39b55e92d7df34e73
+  Inputs: [external/bazel_tools/tools/genrule/genrule-setup.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/external/ext+/a/x.txt, bazel-out/k8-fastbuild/bin/external/ext+/b.txt]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /bin/bash \
+    -c \
+    'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo x > bazel-out/k8-fastbuild/bin/external/ext+/a/x.txt; echo bazel-out/k8-fastbuild/bin/external/ext+ bazel-out/k8-fastbuild/bin/external/ext+ > bazel-out/k8-fastbuild/bin/external/ext+/b.txt')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+action 'Executing genrule @@ext+//:single'
+  Mnemonic: Genrule
+  Target: @ext//:single
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 84b914cd8a0d8779677fae0fbbccedd842a77cbca278d80dccdc6a8ab5540576
+  Inputs: [external/bazel_tools/tools/genrule/genrule-setup.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/external/ext+/s.txt]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /bin/bash \
+    -c \
+    'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo bazel-out/k8-fastbuild/bin/external/ext+ bazel-out/k8-fastbuild/bin/external/ext+ > bazel-out/k8-fastbuild/bin/external/ext+/s.txt')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+

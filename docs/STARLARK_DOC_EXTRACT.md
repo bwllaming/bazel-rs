@@ -115,9 +115,15 @@ modules and labels, and `bazel_skylib` 1.8.2's `lib` and `rules` modules
 re-exported from the main repository (`docs/` in the fixture); genuine's
 error messages for missing deps, generated sources, multi-file sources, doc
 comment errors and malformed docstrings. Stardoc 0.8.0's `stardoc()` macro:
-its `NAME.extract` output matches genuine byte for byte; the renderer itself
-is not built natively (its protobuf dependency's zlib genrule uses
-`cmd_bash`, an existing native genrule gap).
+its `NAME.extract` output matches genuine byte for byte, and the whole macro
+builds natively (2026-11-04, by hand: a module with `bazel_dep(stardoc
+0.8.0)` from the BCR, `stardoc(name, input, out)` over a function and a
+rule): the renderer (a java_binary over protobuf built from source; zlib's
+`cmd_bash` genrule, docs/NATIVE_BUILD_RULES.md) runs and its Markdown is
+byte-identical to genuine 9.3.1's; `aquery 'deps(//:docs)'` has genuine's
+2079 actions, mnemonics and configurations, every Genrule, CppCompile,
+CppLink and SolibSymlink ActionKey equal (Javac/Turbine command lines and
+some progress messages are not modelled, docs/AQUERY.md).
 
 ## Divergences
 

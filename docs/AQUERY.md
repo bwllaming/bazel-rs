@@ -131,6 +131,15 @@ Not reproduced (a deterministic native key is printed instead):
   repository mapping) or of other non-string objects, and natively built
   command lines other than get_link_args.
 
+Known gaps seen on stardoc 0.8.0's `deps(//:docs)` (2026-11-04; keys equal
+unless stated): the description of header-parsing CppCompile actions names
+another header, SolibSymlink descriptions carry ` [for tool]` in the exec
+configuration (genuine's do not), an Ijar description names the ijar tool
+instead of its input; JavaCompile/Turbine actions differ in description,
+command line (JavaBuilder flags) and key; the starlark_doc_extract binary
+proto write (BinaryFileWriteAction) differs in key and prints
+`IsExecutable`.
+
 The text output's `Execution platform:` prints the platform through the main
 repository mapping (`@platforms//host:host` when `platforms` is a direct
 dependency), the command trailer, summary and proto its canonical form, like

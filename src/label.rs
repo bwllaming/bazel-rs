@@ -377,9 +377,15 @@ impl Label {
         format!("@@{}//{}:{}", self.repository, self.package, self.name)
     }
 
+    /// The package's directory below the execution root: an external
+    /// repository's root package is `external/REPO`, without the trailing
+    /// separator `Path::join("")` would add (Bazel's PathFragment never
+    /// has one: `$(RULEDIR)`/`$(@D)` of zlib's root-package genrule).
     pub fn package_exec_path(&self) -> PathBuf {
         if self.repository.is_empty() {
             PathBuf::from(&self.package)
+        } else if self.package.is_empty() {
+            PathBuf::from("external").join(&self.repository)
         } else {
             PathBuf::from("external")
                 .join(&self.repository)
@@ -1008,6 +1014,8 @@ mod tests {
         );
         assert_eq!(label.short_path(), PathBuf::from("../dep+/p/q/input.txt"));
         assert_eq!(label.package_exec_path(), PathBuf::from("external/dep+/p"));
+        let root = Label::parse_canonical("@@dep+//:x").unwrap();
+        assert_eq!(root.package_exec_path().to_string_lossy(), "external/dep+");
         let output = label.with_name("generated/file.txt").unwrap();
         assert_eq!(output.package_id(), label.package_id());
         assert_eq!(
