@@ -22,6 +22,17 @@ pub(super) struct Capture {
     /// analysis state at the cquery boundary (provider key names, important
     /// output files). Not providers: their values never enter the graph.
     facts: BTreeMap<(Label, Option<ConfigId>), Result<Facts, String>>,
+    provider_lists: HashSet<Arc<[String]>>,
+}
+
+fn capture_interned(capture: &mut Option<Capture>, names: Vec<String>) -> Option<Arc<[String]>> {
+    let capture = capture.as_mut()?;
+    if let Some(existing) = capture.provider_lists.get(names.as_slice()) {
+        return Some(existing.clone());
+    }
+    let names: Arc<[String]> = Arc::from(names);
+    capture.provider_lists.insert(names.clone());
+    Some(names)
 }
 
 /// What `--output=starlark|files` read from a configured target that the
@@ -29,8 +40,9 @@ pub(super) struct Capture {
 #[derive(Clone, Debug, Default)]
 pub(super) struct Facts {
     /// The configured target's providers, as `providers(target)` keys them
-    /// (AbstractConfiguredTarget.tryAddProviderForQuery), in genuine order.
-    providers: Vec<String>,
+    /// (AbstractConfiguredTarget.tryAddProviderForQuery), in genuine order;
+    /// interned (few distinct lists).
+    providers: Arc<[String]>,
     /// The exec paths of the important artifacts of the requested output
     /// groups (TopLevelArtifactHelper.getAllArtifactsToBuild).
     files: Vec<String>,
@@ -202,6 +214,8 @@ pub struct Graph {
     /// Nodes whose formatter facts could not be read at the analysis
     /// boundary; only `--output=starlark|files` report them.
     pub fact_errors: BTreeMap<u32, String>,
+    /// Whether [`Node::files`] were recorded (`--output=files` graphs only).
+    pub files_recorded: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -837,6 +851,9 @@ impl Graph {
     }
 
     fn write_files(&self, ids: &[u32], destination: &mut impl Write) -> Result<(), String> {
+        if !self.files_recorded {
+            return Err("internal error: this configured graph records no output files".into());
+        }
         let mut seen = HashSet::new();
         for &id in ids {
             let node = &self.nodes[id as usize];
@@ -1172,6 +1189,10 @@ impl Engine {
         }
     }
 
+    /// A light read of what a dependency view would expose (crate::engine
+    /// `dependency_view`): the committed providers and files to build,
+    /// without building or memoizing views, target identities or artifact
+    /// registrations for keys nothing depended on.
     fn cquery_target_facts(
         &mut self,
         state: &mut ActionPlanning,
@@ -1179,79 +1200,105 @@ impl Engine {
         key: &ConfiguredTargetKey,
         selected: &BTreeSet<String>,
     ) -> Result<Facts, String> {
+        if self
+            .target_incompatibility(configured, &key.label, key.config)?
+            .is_some()
+        {
+            // The graph's own incompatibility answers (IncompatiblePlatformProvider).
+            return Ok(Facts::default());
+        }
         let PlanState {
             dry,
             custom_providers,
             provider_keys,
-            runfiles_info,
-            artifact_index,
             declared,
-            native_output_groups,
-            validation,
-            target_identities,
-            views,
             ..
         } = state.plan_state();
-        let view = self.plan_dependency_view(
-            configured,
-            dry,
-            custom_providers,
-            provider_keys,
-            runfiles_info,
-            artifact_index,
-            declared,
-            native_output_groups,
-            validation,
-            target_identities,
-            views,
-            &key.label,
-            key.config,
-        )?;
-        let mut files = Vec::new();
-        let mut seen = HashSet::new();
-        let mut add = |file: &File| {
-            if seen.insert(file.path.clone()) {
-                files.push(file.path.clone());
-            }
+        let artifacts = if self.cquery_files {
+            self.shared_artifacts(&key.label, key.config, dry, declared)?
+        } else {
+            Arc::new(Vec::new())
         };
-        for group in selected {
-            if group.starts_with('_') {
-                continue;
-            }
-            if group == crate::output_group_info::DEFAULT {
-                view.files.iter().for_each(&mut add);
-            }
-            if !view.is_rule {
-                continue;
-            }
-            if let Some(groups) = view
-                .providers
-                .get(crate::output_group_info::PROVIDER_ID)
-                .and_then(|value| crate::output_group_info::groups(value.value()))
-                && let Some((_, depset)) = groups.iter().find(|(name, _)| name == group)
-            {
-                crate::output_group_info::depset_files(depset)
-                    .iter()
-                    .for_each(&mut add);
-            }
-        }
-        let actual = Label::parse_canonical(&view.label)?;
-        let native_kind = match self.target(&actual)? {
+        let actual = self
+            .forwarded_actual(configured, key)
+            .unwrap_or_else(|| key.label.clone());
+        let target = self.target(&actual)?;
+        let is_rule = matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)));
+        let native_kind = match &target {
             Target::Rule(rule) => match &rule.kind {
                 RuleKind::Native(kind) => Some(*kind),
+                RuleKind::Filegroup => Some("filegroup"),
+                RuleKind::Genrule => Some("genrule"),
                 _ => None,
             },
             _ => None,
         };
-        let order = view.provider_keys.clone();
+        let providers = custom_providers.get(key);
+        let mut files = Vec::new();
+        let mut seen = HashSet::new();
+        for group in selected.iter().filter(|_| self.cquery_files) {
+            if group.starts_with('_') {
+                continue;
+            }
+            if group == crate::output_group_info::DEFAULT {
+                for artifact in artifacts.iter() {
+                    let path = &artifact.file().path;
+                    if seen.insert(path.clone()) {
+                        files.push(path.clone());
+                    }
+                }
+                continue;
+            }
+            if !is_rule {
+                continue;
+            }
+            if let Some(groups) = providers
+                .and_then(|providers| providers.get(crate::output_group_info::PROVIDER_ID))
+                .and_then(|value| crate::output_group_info::groups(value.value()))
+                && let Some((_, depset)) = groups.iter().find(|(name, _)| name == group)
+            {
+                for file in crate::output_group_info::depset_files(depset) {
+                    if seen.insert(file.path.clone()) {
+                        files.push(file.path.clone());
+                    }
+                }
+            }
+        }
+        let actual_key = ConfiguredTargetKey::new(
+            actual.clone(),
+            self.delegated_config(
+                &ConfiguredTargetKey::new(actual.clone(), key.config),
+                key.config,
+            ),
+        );
+        let order = provider_keys.get(&actual_key).cloned().unwrap_or_default();
         let mut declared: Vec<String> = Vec::new();
-        let mut output_group = false;
-        for id in view.providers.keys() {
+        let mut output_group = is_rule;
+        let mut instrumented = false;
+        for id in providers.into_iter().flat_map(|providers| providers.keys()) {
             match id.as_str() {
                 crate::output_group_info::PROVIDER_ID => output_group = true,
                 crate::providers::DEFAULT_INFO_PROVIDER_ID => {}
+                crate::instrumented_files::PROVIDER_ID => instrumented = true,
                 id => declared.push(crate::cquery_starlark::provider_key_name(id)),
             }
+        }
+        // InstrumentedFilesInfo.EMPTY of filegroup/genrule/output files, or
+        // a coverage configuration's forwarded one (dependency_view).
+        let coverage = self
+            .configurations
+            .get(key.config)
+            .native
+            .collect_code_coverage;
+        let has_toolchain_info = declared.iter().any(|name| name == "ToolchainInfo");
+        instrumented |= match &target {
+            Target::Rule(_) if coverage => is_rule && !has_toolchain_info,
+            Target::Rule(_) => matches!(native_kind, Some("filegroup" | "genrule")),
+            Target::Output(..) => true,
+            Target::Source(_) => false,
+        };
+        if instrumented && is_rule {
+            declared.push("InstrumentedFilesInfo".into());
         }
         if native_kind == Some("toolchain_type")
             && !declared.iter().any(|n| n == "ToolchainTypeInfo")
@@ -1267,34 +1314,24 @@ impl Engine {
                 .position(|key| key == short)
                 .unwrap_or(usize::MAX)
         });
-        let mut providers = Vec::new();
-        if view.is_source {
-            providers.extend(
-                [
-                    "VisibilityProvider",
-                    "FileProvider",
-                    "FilesToRunProvider",
-                    "DefaultInfo",
-                ]
-                .map(String::from),
-            );
-        } else if view.is_rule {
+        let mut names = Vec::new();
+        if is_rule {
             let files_first = matches!(
                 native_kind,
                 Some("platform" | "constraint_setting" | "constraint_value")
             );
             if !files_first {
-                providers.append(&mut declared);
+                names.append(&mut declared);
             }
-            providers.extend(["FileProvider", "FilesToRunProvider"].map(String::from));
-            providers.append(&mut declared);
+            names.extend(["FileProvider", "FilesToRunProvider"].map(String::from));
+            names.append(&mut declared);
             if output_group {
-                providers.push("OutputGroupInfo".into());
+                names.push("OutputGroupInfo".into());
             }
-            providers.push("DefaultInfo".into());
+            names.push("DefaultInfo".into());
         } else {
             // OutputFileConfiguredTarget.getProvidersDictForQuery.
-            providers.extend(
+            names.extend(
                 [
                     "VisibilityProvider",
                     "FileProvider",
@@ -1303,13 +1340,17 @@ impl Engine {
                 ]
                 .map(String::from),
             );
-            if declared.iter().any(|n| n == "InstrumentedFilesInfo") {
-                providers.push("InstrumentedFilesInfo".into());
+            if instrumented {
+                names.push("InstrumentedFilesInfo".into());
             }
             if output_group {
-                providers.push("OutputGroupInfo".into());
+                names.push("OutputGroupInfo".into());
             }
         }
+        let providers = match capture_interned(&mut self.cquery_capture, names) {
+            Some(names) => names,
+            None => Arc::from(Vec::new()),
+        };
         Ok(Facts { providers, files })
     }
 
@@ -1827,7 +1868,7 @@ impl Engine {
                         .map(String::from)
                         .to_vec(),
                     ),
-                    if default_group {
+                    if default_group && self.cquery_files {
                         vec![source_exec_path(label)]
                     } else {
                         Vec::new()
@@ -1852,7 +1893,7 @@ impl Engine {
                     Vec::new(),
                 ),
                 _ => match capture.facts.get(&(label.clone(), *config)) {
-                    Some(Ok(facts)) => (Some(facts.providers.clone()), facts.files.clone()),
+                    Some(Ok(facts)) => (Some(facts.providers.to_vec()), facts.files.clone()),
                     Some(Err(error)) => {
                         fact_errors.insert(nodes.len() as u32, error.clone());
                         (None, Vec::new())
@@ -2046,6 +2087,7 @@ impl Engine {
             provider_sets,
             build_options,
             fact_errors,
+            files_recorded: self.cquery_files,
         })
     }
 }

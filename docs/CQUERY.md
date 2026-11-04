@@ -30,6 +30,8 @@ bazel-rs cquery --output=streamed_proto --transitions=lite \
   'deps(//app:all)' --output_file=/tmp/app-deps.pb
 bazel-rs cquery --output=streamed_proto '//app:all' --output_file=/tmp/app.pb
 bazel-rs config --output=json --dump_all
+bazel-rs cquery --output=starlark '//app:all' \
+  --starlark:expr='target.label if "IncompatiblePlatformProvider" not in providers(target) else ""'
 bazel-rs cquery --universe_scope=//app:all 'config(//app:tool, target)'
 ```
 
@@ -39,6 +41,10 @@ bazel-rs cquery --universe_scope=//app:all 'config(//app:tool, target)'
   9.3 schema and streamed output frames **CqueryResult**, not ConfiguredTarget.
   Inline Configuration.checksum is retained, including `null` for sources.
   See [the wire contract](CQUERY_PROTO.md).
+* `starlark` (`--starlark:expr|file`, `providers()` key names, `build_options()`),
+  `files` (`--output_groups`), `jsonproto`, `textproto` and `graph` output, and
+  `config` listing/show/diff: see [CQUERY_OUTPUT.md](CQUERY_OUTPUT.md).
+  target-determinator's default incompatible-target filtering works.
 * Configured sets preserve `(label, configuration)` identity. A label used as
   both a target and an exec tool is not collapsed into one result.
 * Target patterns, set/let, union/intersect/except, `deps`, `rdeps`, `filter`,
@@ -71,9 +77,9 @@ bazel-rs cquery --universe_scope=//app:all 'config(//app:tool, target)'
 ### Declared boundaries
 
 This is not full Bazel cquery parity. Unsupported functions/output modes/options
-fail explicitly. In particular: Starlark formatting and incompatible-target
-filtering, keep-going partial results, transitions=full, full aspect metadata
-formatting, relative path-as-target literals outside the recorded patterns,
+fail explicitly. In particular: `build`/`transitions` output,
+`--show_config_fragments`, provider *values* in Starlark output, keep-going
+partial results, full aspect metadata formatting, relative path-as-target literals outside the recorded patterns,
 and attr() over License values are not implemented. Existing native analysis
 limitations still fail. Direct/indirect incompatible targets are actionless
 configured results included in queries; retained conditions project their
@@ -82,6 +88,10 @@ attributes without ordinary dependency analysis. See
 separate [build/test root policy](INCOMPATIBLE_BUILD_SKIP.md). Attribute split
 transitions now analyze every branch; see [SPLIT_TRANSITIONS.md](SPLIT_TRANSITIONS.md).
 There is no genuine-Bazel fallback and no special-case TD output rewriting.
+
+TD's default mode (`-filter-incompatible-targets=true`) matched genuine 9.3.1 on
+a private ~/code pair, including both compatibility-filter cqueries
+([CQUERY_OUTPUT.md](CQUERY_OUTPUT.md#target-determinator-default-mode)).
 
 For native TD lockfile isolation, pass
 `--bazel-startup-opts=--native-lockfile=/private/MODULE.bazel.lock` as well as
@@ -92,7 +102,8 @@ startup default covers all commands; explicit command values still override it.
 See [lockfile semantics](REGISTRY_LOCKFILE.md#native-only---native-lockfileworkspacereadonlyabsolutepath).
 
 Configuration checksums are the **existing full native ConfigIds**, not Bazel's
-BuildOptions checksums. Actions and ordinary build cache keys are not rekeyed.
+BuildOptions checksums (the genuine algorithm is reproduced from genuine data
+in CQUERY_OUTPUT.md; matching it needs every 9.3 fragment option modelled). Actions and ordinary build cache keys are not rekeyed.
 Native platform configurations can remain distinct where Bazel trims them to one
 empty-options configuration; native graph label spelling is canonical (`@@repo`).
 The implementation hash is a versioned native SHA-256 Merkle digest of real

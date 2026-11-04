@@ -97,8 +97,8 @@ recreating providers or executing skipped tests.
 
 No DefaultConfigId, ordinary action key or cquery graph projection is changed.
 Cquery keeps explicit and wildcard incompatible targets; the new policy option
-does not filter its graph or change its output bytes. Its Starlark formatter is
-still unsupported, and TD still requires `-filter-incompatible-targets=false`.
+does not filter its graph or change its output bytes. Its Starlark formatter
+now serves TD's default incompatible-target filter (docs/CQUERY_OUTPUT.md).
 The existing untrimmed label-flag/setting identity gap and runtime-unproven
 aspect-owned incompatible toolchain case are independent, unchanged boundaries.
 

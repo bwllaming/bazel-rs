@@ -72,9 +72,10 @@ Ordinary analysis failures remain failures, and compatible builds retain normal
 action-plan checks. Cquery's inclusion of incompatible targets is independent of
 the build/test policy.
 
-Cquery Starlark formatting/default TD incompatible filtering is still unsupported;
-**TD requires `-filter-incompatible-targets=false`**. Whole-repository TD success
-is not established by a configured query.
+Cquery Starlark output (docs/CQUERY_OUTPUT.md) answers TD's default
+incompatible-target filter from the recorded `IncompatiblePlatformProvider`
+names; it matched genuine on a ~/code pair. Whole-repository TD success is not
+established by a configured query alone.
 
 The native configuration model still lacks genuine's separate untrimmed
 top-level label_flag/label_setting instances and uses incoming ConfigIds for

@@ -90,10 +90,20 @@ pub struct Started {
 
 fn presentation(option: &crate::bazelrc::Unit) -> bool {
     let name = option.option.text.split('=').next().unwrap_or_default();
+    // `--output=files` reads output files the other formats' graphs do not
+    // record (Engine::set_cquery_files): it keys its own analysis.
+    if name == "--output" {
+        let value = option
+            .option
+            .text
+            .split_once('=')
+            .map(|(_, value)| value)
+            .or_else(|| option.value.as_ref().map(|value| value.text.as_str()));
+        return value != Some("files");
+    }
     matches!(
         name,
-        "--output"
-            | "--output_file"
+        "--output_file"
             | "--query_file"
             | "--transitions"
             | "--universe_scope"
@@ -975,6 +985,7 @@ mod tests {
             provider_sets: Vec::new(),
             build_options: Vec::new(),
             fact_errors: Default::default(),
+            files_recorded: false,
         };
         let key = key::Key {
             g: [13; 32],

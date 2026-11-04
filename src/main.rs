@@ -45,10 +45,10 @@ Query: the Bazel 9.3 query language (deps, rdeps, allpaths, somepath, attr, filt
   --output=label|label_kind|build|package|location|minrank|maxrank|graph,
   --order_output, --[no]implicit_deps, --[no]tool_deps, --[no]keep_going (docs/QUERY.md).
 Cquery: configured/provider analysis without actions or workspace status; label,
-  label_kind, proto, streamed_proto; --transitions=lite, --output_file, --universe_scope,
-  deps/rdeps/kind/filter/attr/labels/some/set/let/config and set algebra. Config dumps
-  the last successful cquery's actual native configurations. Starlark output is not
-  implemented; target-determinator needs -filter-incompatible-targets=false (docs/CQUERY.md).
+  label_kind, proto, streamed_proto, jsonproto, textproto, starlark, files, graph;
+  --transitions, --output_file, --universe_scope, deps/rdeps/kind/filter/attr/labels/
+  some/set/let/config and set algebra. Config lists, shows and diffs the last
+  successful cquery's native configurations (docs/CQUERY.md, docs/CQUERY_OUTPUT.md).
 Info: the Bazel 9.3 items (bazel-bin, execution_root, output_base, ...) mapped to the
   native layout; built outputs are linked below <state>/execroot/_main, <state> the
   workspace's state directory (the output base, see Cache below; docs/INFO.md).
@@ -1289,6 +1289,7 @@ fn run() -> Result<(), String> {
     }
     engine.set_workspace_status(workspace_status);
     engine.set_execute_build(!no_build && command != "cquery" && command != "aquery");
+    engine.set_cquery_files(command == "cquery" && cquery_options.common.output == "files");
     engine.set_keep_going(test_options.keep_going && analyzes(&command));
     engine.set_skip_incompatible_explicit_targets(test_options.skip_incompatible_explicit_targets);
     // --loading_phase_threads (LoadingPhaseThreadsOption.java, P2 of the

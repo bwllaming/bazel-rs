@@ -1949,6 +1949,9 @@ pub struct Engine {
     skip_teardown: bool,
     /// Opt-in configured-query capture. Ordinary builds retain no query graph.
     cquery_capture: Option<cquery::Capture>,
+    /// `cquery --output=files`: the graph also records each configured
+    /// target's important output files (a separate analysis key).
+    cquery_files: bool,
     /// aquery: the cquery capture also plans every action, and the planned
     /// actions with their owners are kept (crate::engine::aquery).
     aquery_capture: Option<aquery::Capture>,
@@ -2228,6 +2231,7 @@ impl Engine {
             prefetch_platforms: None,
             skip_teardown: false,
             cquery_capture: None,
+            cquery_files: false,
             aquery_capture: None,
             declared_inputs: HashMap::new(),
             source_targets: HashMap::new(),
@@ -2382,6 +2386,12 @@ impl Engine {
     /// artifactsToBuild only on the execution path).
     pub fn set_execute_build(&mut self, execute: bool) {
         self.execute_build = execute;
+    }
+
+    /// Whether the configured-query graph records important output files
+    /// (`cquery --output=files`, keyed separately: crate::cquery_state).
+    pub fn set_cquery_files(&mut self, files: bool) {
+        self.cquery_files = files;
     }
 
     /// `--keep_going` (docs/KEEP_GOING.md): later target pattern phases skip
