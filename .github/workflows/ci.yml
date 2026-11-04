@@ -30,8 +30,10 @@ env:
 jobs:
   check:
     name: fmt, clippy, unit and hermetic integration tests
-    # The organisation's self-hosted runners (x86_64 Linux containers).
-    runs-on: self-hosted
+    # Pull requests (which forks can open on a public repository) run on
+    # GitHub-hosted runners; pushes to main on the organisation's self-hosted
+    # runners (x86_64 Linux containers), which must never run untrusted code.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'self-hosted' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -94,8 +96,9 @@ jobs:
     # Dogfood (docs/SELF_BUILD.md): the latest published bazel-rs builds this
     # commit's //:bazel-rs with rules_rust, smoke-tests it and runs
     # `test //...`. Cargo stays the primary build; the comparison with genuine
-    # Bazel stays local (scripts/self_build.py compare).
-    runs-on: self-hosted
+    # Bazel stays local (scripts/self_build.py compare). Like `check`: pull
+    # requests on GitHub-hosted runners, pushes to main self-hosted.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'self-hosted' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

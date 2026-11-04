@@ -526,12 +526,12 @@ mod tests {
     fn no_proxy_entries_match_like_bazel() {
         let env = environment(&[
             ("https_proxy", "https://p"),
-            ("NO_PROXY", "your-storagebox.de , .sub.test,,exact.test"),
+            ("NO_PROXY", "cache.example , .sub.test,,exact.test"),
         ]);
         for (host, direct) in [
-            ("your-storagebox.de", true),
-            ("u1.your-storagebox.de", true),
-            ("xyour-storagebox.de", false),
+            ("cache.example", true),
+            ("u1.cache.example", true),
+            ("xcache.example", false),
             ("a.sub.test", true),
             ("sub.test", false),
             ("exact.test", true),
@@ -556,8 +556,8 @@ mod tests {
     fn addresses_parse_with_url_pattern_semantics() {
         let route = |address: &str| create_proxy_info(Some(address));
         assert_eq!(
-            route("http://prod-egress-proxy.tail70a9fd.ts.net:8080"),
-            Ok(http("prod-egress-proxy.tail70a9fd.ts.net", 8080))
+            route("http://egress-proxy.internal.example:8080"),
+            Ok(http("egress-proxy.internal.example", 8080))
         );
         // `([^:]+)` is greedy: a trailing slash without a port stays in
         // the host, which then cannot be resolved.

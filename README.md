@@ -1,14 +1,18 @@
 # bazel-rs
 
-**Experimental native Rust foundations for a Bazel-compatible build system. Not
-a replacement for Bazel, and not full feature parity.** Compatibility target:
-official Bazel **9.3.1** (since 2026-10-30; 9.3.0 before, docs/BAZEL_9_3_1.md). No
-command delegates to upstream Bazel.
+**An experimental, native (Rust) reimplementation of Bazel.** Compatibility
+target: official Bazel **9.3.1** (docs/BAZEL_9_3_1.md). No command delegates to
+upstream Bazel, and there is no server: every command is one process that
+reuses a content-addressed cache and a saved analysis snapshot.
 
-The starting implementation evaluates a narrow BUILD subset and executes native
-local actions. It cannot build or test the main `bwllaming/code` application.
-That checkout pins **9.3.1** (`.bazeliskrc` `USE_BAZEL_VERSION`), the same release as
-this project's compatibility target.
+bazel-rs builds, tests, runs and queries a large private Go/TypeScript/Python
+monorepo (`bwllaming/code`, referred to as `~/code` in these docs) and runs its
+CI. The remaining differences from Bazel are listed in PLAN.md and docs/ROADMAP.md.
+Linux (x86-64 and arm64) only.
+
+bazel-rs is not affiliated with, endorsed by or sponsored by Google or the
+Bazel project. "Bazel" is a trademark of Google LLC. See NOTICE for the parts
+derived from Bazel and for third-party licenses.
 
 ## Tooling
 

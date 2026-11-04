@@ -2956,7 +2956,7 @@
    ],
    "cwd": "/home/coder/code",
    "returncode": 1,
-   "stderr": "bazel-rs: unsupported option \"--credential_helper=u609859-sub1.your-storagebox.de=%workspace%/bin/bazel-credential-helper\" from rc file /home/coder/code/.bazelrc:2 ('common' options); options are never silently ignored\n"
+   "stderr": "bazel-rs: unsupported option \"--credential_helper=remote-cache.example.com=%workspace%/bin/bazel-credential-helper\" from rc file /home/coder/code/.bazelrc:2 ('common' options); options are never silently ignored\n"
   },
   {
    "argv": [
@@ -2967,7 +2967,7 @@
    ],
    "cwd": "/home/coder/code",
    "returncode": 1,
-   "stderr": "bazel-rs: unsupported option \"--credential_helper=u609859-sub1.your-storagebox.de=%workspace%/bin/bazel-credential-helper\" from rc file /home/coder/code/.bazelrc:2 ('common' options); options are never silently ignored\n"
+   "stderr": "bazel-rs: unsupported option \"--credential_helper=remote-cache.example.com=%workspace%/bin/bazel-credential-helper\" from rc file /home/coder/code/.bazelrc:2 ('common' options); options are never silently ignored\n"
   }
  ],
  "counts": {

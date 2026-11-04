@@ -1,7 +1,18 @@
 bazel-rs
-Copyright 2026 The bazel-rs Authors
+Copyright 2026 Beyond Work, Inc.
 
 Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+bazel-rs is an independent reimplementation of Bazel. It is not affiliated
+with, endorsed by or sponsored by Google LLC or the Bazel project. "Bazel" is a
+trademark of Google LLC.
+
+Parts of bazel-rs are derived from Bazel (https://github.com/bazelbuild/bazel):
+behaviour, messages, file formats and algorithms are ported from Bazel's
+sources, and some code (for example the linux-sandbox port in
+src/sandbox/namespaces.rs and the Starlark builtins in resources/builtins_bzl)
+is translated from or contains Bazel source files.
+Copyright The Bazel Authors. Licensed under the Apache License, Version 2.0.
 
 This product includes third-party software:
 
@@ -12,9 +23,10 @@ This product includes third-party software:
   Licensed under the Apache License, Version 2.0. Modified by bazel-rs; the
   modifications are listed in vendor/starlark-0.14.2/BAZEL_RS_MODIFICATIONS.md.
 
-* The embedded tools of Bazel 9.3.0 for Linux x86-64
-  (resources/bazel_tools/embedded_tools.tar.gz, embedded in the bazel-rs binary
-  and materialized as the @bazel_tools repository).
+* The embedded tools of Bazel 9.3.1 for Linux x86-64 and arm64
+  (resources/bazel_tools/linux-x86_64/ and linux-arm64/embedded_tools.tar.gz,
+  embedded in the bazel-rs binary and materialized as the @bazel_tools
+  repository).
   Copyright The Bazel Authors. Licensed under the Apache License, Version 2.0,
   with the additional notice for src/main/cpp/util/md5.cc ("derived from the
   RSA Data Security, Inc. MD5 Message-Digest Algorithm"); the complete text is
@@ -23,6 +35,31 @@ This product includes third-party software:
   with the Classpath Exception; its legal notices are part of the bundle
   (jdk/ASSEMBLY_EXCEPTION, jdk/DISCLAIMER and jdk/legal/) and are reproduced in
   THIRD_PARTY_LICENSES.md of each binary release.
+
+* starlark_syntax 0.14.2 (vendored in vendor/starlark_syntax-0.14.2).
+  Copyright 2018 The Starlark in Rust Authors.
+  Copyright (c) Facebook, Inc. (now Meta Platforms, Inc.) and its affiliates.
+  Licensed under the Apache License, Version 2.0.
+
+* tempfile 3.27.0 (vendored in vendor/tempfile-3.27.0, used by the tests).
+  Copyright (c) 2015 Steven Allen. Licensed under the Apache License,
+  Version 2.0 or the MIT license (vendor/tempfile-3.27.0/LICENSE-APACHE,
+  LICENSE-MIT). Modified by bazel-rs; see its provenance file.
+
+* src/java_gzip.rs ports the deflate implementation of zlib 1.3.1.
+  Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler.
+  zlib license: This software is provided 'as-is', without any express or
+  implied warranty. In no event will the authors be held liable for any damages
+  arising from the use of this software. Permission is granted to anyone to use
+  this software for any purpose, including commercial applications, and to
+  alter it and redistribute it freely, subject to the following restrictions:
+  1. The origin of this software must not be misrepresented; you must not
+     claim that you wrote the original software. If you use this software in a
+     product, an acknowledgment in the product documentation would be
+     appreciated but is not required.
+  2. Altered source versions must be plainly marked as such, and must not be
+     misrepresented as being the original software.
+  3. This notice may not be removed or altered from any source distribution.
 
 * Rust crates from crates.io (statically linked), including jemalloc through
   tikv-jemalloc-sys (BSD-2-Clause). Each crate's license and license files are
