@@ -478,6 +478,32 @@ pub fn install_modifiers(modifiers: Vec<Vec<Modifier>>, additive: bool) {
     *MODIFIERS.write().unwrap_or_else(|error| error.into_inner()) = (modifiers, additive);
 }
 
+/// BuildConfigurationValue.modifyExecutionInfo over an insertion-ordered
+/// map (ExecutionInfoModifier.apply: a removal drops the key, an addition
+/// puts `""`, keeping an existing key's position), for aquery's TestRunner
+/// keys (crate::engine::aquery_test).
+pub fn modify_ordered(mnemonic: &str, info: &mut Vec<(String, String)>) {
+    let guard = MODIFIERS.read().unwrap_or_else(|error| error.into_inner());
+    let (modifiers, additive) = &*guard;
+    let applied: &[Vec<Modifier>] = if *additive {
+        modifiers
+    } else {
+        modifiers.last().map_or(&[], std::slice::from_ref)
+    };
+    for expression in applied.iter().flatten() {
+        if !expression.pattern.is_match(mnemonic).unwrap_or(false) {
+            continue;
+        }
+        if expression.remove {
+            info.retain(|(key, _)| *key != expression.key);
+        } else if let Some(entry) = info.iter_mut().find(|(key, _)| *key == expression.key) {
+            entry.1 = String::new();
+        } else {
+            info.push((expression.key.clone(), String::new()));
+        }
+    }
+}
+
 /// BuildConfigurationValue.modifiedExecutionInfo for every spawn of a
 /// planned request (SpawnAction, StarlarkAction, Genrule, CppCompile,
 /// Javac, TestRunner …: every action that executes a process; file writes

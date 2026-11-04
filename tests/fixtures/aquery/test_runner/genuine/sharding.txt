@@ -1,0 +1,96 @@
+action 'Testing //pkg:t (shard 1 of 3)'
+  Mnemonic: TestRunner
+  Target: //pkg:t
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 4aed26d008332b123cf356761d295d619a3bce362001b02e476e3377d8f9900c
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/t.sh.runfiles, external/bazel_tools/tools/test/generate-xml.sh, external/bazel_tools/tools/test/test-setup.sh]
+  Outputs: [bazel-out/k8-fastbuild/testlogs/pkg/t/shard_1_of_3/test.cache_status, bazel-out/k8-fastbuild/testlogs/pkg/t/shard_1_of_3/test.log, bazel-out/k8-fastbuild/testlogs/pkg/t/shard_1_of_3/test.outputs (TreeArtifact), bazel-out/k8-fastbuild/testlogs/pkg/t/shard_1_of_3/test.xml]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec external/bazel_tools/tools/test/test-setup.sh \
+    pkg/t.sh \
+    a \
+    b \
+    pkg/d.txt)
+# Configuration: 499189e62ef7a06ee7413a16ab16da4d1bdb7c9831ca9ed154952b6e27607215
+# Execution platform: @@platforms//host:host
+
+action 'Testing //pkg:t (shard 2 of 3)'
+  Mnemonic: TestRunner
+  Target: //pkg:t
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 00711808d8baff5bb036d4abde5844d8ca64dacb9ed85109daa12023c1f598ab
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/t.sh.runfiles, external/bazel_tools/tools/test/generate-xml.sh, external/bazel_tools/tools/test/test-setup.sh]
+  Outputs: [bazel-out/k8-fastbuild/testlogs/pkg/t/shard_2_of_3/test.cache_status, bazel-out/k8-fastbuild/testlogs/pkg/t/shard_2_of_3/test.log, bazel-out/k8-fastbuild/testlogs/pkg/t/shard_2_of_3/test.outputs (TreeArtifact), bazel-out/k8-fastbuild/testlogs/pkg/t/shard_2_of_3/test.xml]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec external/bazel_tools/tools/test/test-setup.sh \
+    pkg/t.sh \
+    a \
+    b \
+    pkg/d.txt)
+# Configuration: 499189e62ef7a06ee7413a16ab16da4d1bdb7c9831ca9ed154952b6e27607215
+# Execution platform: @@platforms//host:host
+
+action 'Testing //pkg:t (shard 3 of 3)'
+  Mnemonic: TestRunner
+  Target: //pkg:t
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 65e905c28f28f37feb8347e36d4e4f8a4e8cac03d2f2bae8d36181c2dff8e748
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/t.sh.runfiles, external/bazel_tools/tools/test/generate-xml.sh, external/bazel_tools/tools/test/test-setup.sh]
+  Outputs: [bazel-out/k8-fastbuild/testlogs/pkg/t/shard_3_of_3/test.cache_status, bazel-out/k8-fastbuild/testlogs/pkg/t/shard_3_of_3/test.log, bazel-out/k8-fastbuild/testlogs/pkg/t/shard_3_of_3/test.outputs (TreeArtifact), bazel-out/k8-fastbuild/testlogs/pkg/t/shard_3_of_3/test.xml]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec external/bazel_tools/tools/test/test-setup.sh \
+    pkg/t.sh \
+    a \
+    b \
+    pkg/d.txt)
+# Configuration: 499189e62ef7a06ee7413a16ab16da4d1bdb7c9831ca9ed154952b6e27607215
+# Execution platform: @@platforms//host:host
+
+action 'Testing //pkg:s (shard 1 of 3)'
+  Mnemonic: TestRunner
+  Target: //pkg:s
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: c20409e5f5834622a540ffd69fa52b4f4ce00d6abbf2a53aea2b0e68f3859d1b
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/s.sh.runfiles, external/bazel_tools/tools/test/generate-xml.sh, external/bazel_tools/tools/test/test-setup.sh]
+  Outputs: [bazel-out/k8-fastbuild/testlogs/pkg/s/shard_1_of_3/test.cache_status, bazel-out/k8-fastbuild/testlogs/pkg/s/shard_1_of_3/test.log, bazel-out/k8-fastbuild/testlogs/pkg/s/shard_1_of_3/test.outputs (TreeArtifact), bazel-out/k8-fastbuild/testlogs/pkg/s/shard_1_of_3/test.xml]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec external/bazel_tools/tools/test/test-setup.sh \
+    pkg/s.sh)
+# Configuration: 499189e62ef7a06ee7413a16ab16da4d1bdb7c9831ca9ed154952b6e27607215
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {block-network: '', no-cache: '', requires-network: ''}
+
+action 'Testing //pkg:s (shard 2 of 3)'
+  Mnemonic: TestRunner
+  Target: //pkg:s
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: c32a4fdf0cc6fab4648482d16c55f4208e322b4a87131d751bb4e8198d4da893
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/s.sh.runfiles, external/bazel_tools/tools/test/generate-xml.sh, external/bazel_tools/tools/test/test-setup.sh]
+  Outputs: [bazel-out/k8-fastbuild/testlogs/pkg/s/shard_2_of_3/test.cache_status, bazel-out/k8-fastbuild/testlogs/pkg/s/shard_2_of_3/test.log, bazel-out/k8-fastbuild/testlogs/pkg/s/shard_2_of_3/test.outputs (TreeArtifact), bazel-out/k8-fastbuild/testlogs/pkg/s/shard_2_of_3/test.xml]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec external/bazel_tools/tools/test/test-setup.sh \
+    pkg/s.sh)
+# Configuration: 499189e62ef7a06ee7413a16ab16da4d1bdb7c9831ca9ed154952b6e27607215
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {block-network: '', no-cache: '', requires-network: ''}
+
+action 'Testing //pkg:s (shard 3 of 3)'
+  Mnemonic: TestRunner
+  Target: //pkg:s
+  Configuration: k8-fastbuild
+  Execution platform: @@platforms//host:host
+  ActionKey: 0a9c069f22a8c50f75660f66c6852935f75e5a5d9ca053d061cf4d18c54ee7f1
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/s.sh.runfiles, external/bazel_tools/tools/test/generate-xml.sh, external/bazel_tools/tools/test/test-setup.sh]
+  Outputs: [bazel-out/k8-fastbuild/testlogs/pkg/s/shard_3_of_3/test.cache_status, bazel-out/k8-fastbuild/testlogs/pkg/s/shard_3_of_3/test.log, bazel-out/k8-fastbuild/testlogs/pkg/s/shard_3_of_3/test.outputs (TreeArtifact), bazel-out/k8-fastbuild/testlogs/pkg/s/shard_3_of_3/test.xml]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec external/bazel_tools/tools/test/test-setup.sh \
+    pkg/s.sh)
+# Configuration: 499189e62ef7a06ee7413a16ab16da4d1bdb7c9831ca9ed154952b6e27607215
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {block-network: '', no-cache: '', requires-network: ''}
+

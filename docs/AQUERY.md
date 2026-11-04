@@ -8,10 +8,12 @@ selects, in Bazel 9.3.1's formats
 skyframe/actiongraph/v2, analysis_v2.proto). Sources: `src/aquery.rs`
 (options, filters, formatters), `src/aquery_key.rs` (Bazel action keys),
 `src/engine/aquery.rs` (capture and action descriptions),
+`src/engine/aquery_test.rs` (TestRunner actions),
 `src/java_actions/command.rs` (the Java actions' CustomCommandLines and
 keys, docs/JAVA_ACTIONS.md), `src/java_gzip.rs`
 (Java's GZIP bytes). Genuine captures: `tests/fixtures/aquery/kitchen` and
-`tests/fixtures/aquery/depsets` (`tests/aquery.rs`),
+`tests/fixtures/aquery/depsets`, `tests/fixtures/aquery/test_runner`
+(`tests/aquery.rs`),
 `tests/fixtures/cc_compile/genuine_aquery.txt` (`tests/cc_compile.rs`),
 `tests/fixtures/java_action_parity` (`tests/java_action_parity.rs`: every
 Java action class, keys included). A Starlark spawn's `%{input}` is its
@@ -114,6 +116,25 @@ over SHA-256, the execution platform's PlatformInfo, exec properties) for:
   param file info, GCC_QUOTED included); SolibSymlink (the symlink's and the
   library's exec paths on the internal platform).
 * RunfilesTree (an empty computeKey on the internal platform).
+* TestRunner (TestRunnerAction.computeKey): one action per shard and run of
+  every analyzed test rule (TestActionBuilder.createTestAction), listed
+  after the rule's RunfilesSupport actions: `Testing LABEL (shard i of n,
+  run j of m)`, inputs (the runfiles tree, test-setup.sh, generate-xml.sh,
+  a `--run_under` label's executable), outputs (`test.log`, `test.xml`,
+  `test.cache_status`, the `test.outputs` tree), the configuration's
+  environment, TestStrategy.expandedArgsFromAction's command line
+  (`--run_under` prefixes, `args`, `--test_arg`), and the key over the test
+  arguments, `--test_filter`, `--test_runner_fail_fast`, `--run_under`,
+  RunEnvironmentInfo, the action and `--test_env` environments, size,
+  timeout and its `--test_timeout` duration, tags, remotability,
+  shard/run numbers (`--runs_per_test`, `--test_sharding_strategy`),
+  `--zip_undeclared_test_outputs` and the execution info in its map order
+  (TargetUtils.getExecutionInfo's HashMap order, then `local`/
+  `no-remote-exec`, testing.ExecutionInfo, `--modify_execution_info`).
+  The execution platform is the configuration's host platform (genuine:
+  the `test` exec group's; equal on single-platform hosts).
+  Genuine-captured: tests/fixtures/aquery/test_runner
+  (`aquery_test_runner_actions_match_genuine`).
 
 Verified against genuine 9.3.1 on tests/fixtures/aquery/kitchen and
 tests/fixtures/aquery/depsets (every action byte for byte),
@@ -169,7 +190,9 @@ genuine. A target in the no-config configuration (NoConfigTransition, e.g.
   the planner shares the tree; otherwise as its entries.
 * Shared actions (two owners registering one action) are listed once, under
   the owner that planned them.
-* A test target's TestRunner action (TestActionBuilder) is not listed.
+* TestRunner actions under `--collect_code_coverage` (the coverage
+  TestRunnerAction's collect_coverage.sh argument, coverage inputs,
+  environment and `coverage.dat` output) are not listed.
 * `--include_file_write_contents` on SourceSymlinkManifest prints empty
   contents (genuine's names absolute output-base paths).
 

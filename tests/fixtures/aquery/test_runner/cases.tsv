@@ -1,0 +1,11 @@
+all.txt	//pkg:all
+all.jsonproto	//pkg:all --output=jsonproto --noexperimental_parallel_aquery_output
+all.summary	//pkg:all --output=summary
+runs.txt	'mnemonic(TestRunner, //pkg:all)' --runs_per_test=2 '--runs_per_test=.*:f@3'
+flags.txt	'mnemonic(TestRunner, //pkg:all)' --test_arg=x '--test_arg=y z' --test_env=FOO=bar --test_env=HOME --test_env=B=2 --test_timeout=7,60,900,3600 --test_filter=Foo --test_runner_fail_fast --zip_undeclared_test_outputs --action_env=AE=1 --action_env=INH
+sharding.txt	'mnemonic(TestRunner, //pkg:t + //pkg:s)' --test_sharding_strategy=forced=3
+nosharding.txt	'mnemonic(TestRunner, //pkg:s)' --test_sharding_strategy=disabled
+under_shell.txt	'mnemonic(TestRunner, //pkg:t)' '--run_under=true --flag'
+under_path.txt	'mnemonic(TestRunner, //pkg:t)' '--run_under=/usr/bin/env -i'
+under_label.txt	'mnemonic(TestRunner, //pkg:t)' '--run_under=//pkg:wrap -v'
+modify.txt	'mnemonic(TestRunner, //pkg:all)' --modify_execution_info=TestRunner=+supports-x,TestRunner=-requires-network --noincompatible_exclusive_test_sandboxed

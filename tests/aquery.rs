@@ -469,3 +469,107 @@ fn aquery_genrule_attributes_match_genuine() {
         );
     }
 }
+
+/// The ActionKeys of the runfiles support actions native does not
+/// reproduce (docs/AQUERY.md) replaced: text blocks, then jsonproto actions.
+fn without_unreproduced_keys(blocks: Vec<String>) -> Vec<String> {
+    const UNREPRODUCED: [&str; 3] = [
+        "SymlinkTree",
+        "SourceSymlinkManifest",
+        "RepoMappingManifest",
+    ];
+    let mut blocks: Vec<String> = blocks
+        .into_iter()
+        .map(|block| {
+            let unreproduced = UNREPRODUCED.iter().any(|mnemonic| {
+                block.contains(&format!("\n  Mnemonic: {mnemonic}\n"))
+                    || block.contains(&format!("\"mnemonic\":\"{mnemonic}\""))
+            });
+            if !unreproduced {
+                return block;
+            }
+            if block.starts_with('{') {
+                let mut action: serde_json::Value = serde_json::from_str(&block).unwrap();
+                action["actionKey"] = "<key>".into();
+                return action.to_string();
+            }
+            block
+                .lines()
+                .map(|line| {
+                    if line.starts_with("  ActionKey: ") {
+                        "  ActionKey: <key>"
+                    } else {
+                        line
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect();
+    blocks.sort();
+    blocks
+}
+
+/// tests/fixtures/aquery/test_runner: the TestRunner actions of test rules
+/// (one per shard and run) with the test options that shape them; every
+/// TestRunner ActionKey byte for byte (cases.tsv, reference_receipt.json).
+#[test]
+fn aquery_test_runner_actions_match_genuine() {
+    let ws = Workspace::of("test_runner");
+    let root = fixture_named("test_runner");
+    let cases = fs::read_to_string(root.join("cases.tsv")).unwrap();
+    for line in cases.lines().filter(|line| !line.is_empty()) {
+        let (name, args) = line.split_once('\t').unwrap();
+        let args = shell_words(args);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let expected = fs::read_to_string(root.join("genuine").join(name)).unwrap();
+        let native = ws.stdout(&args);
+        if name.ends_with(".jsonproto") {
+            assert_eq!(
+                without_unreproduced_keys(normalized_json(&native)),
+                without_unreproduced_keys(normalized_json(&expected)),
+                "{name}"
+            );
+        } else if name.ends_with(".summary") {
+            assert_eq!(native, expected, "{name}");
+        } else {
+            let (native, expected) = (
+                without_unreproduced_keys(text_blocks(&native)),
+                without_unreproduced_keys(text_blocks(&expected)),
+            );
+            assert_eq!(native.len(), expected.len(), "{name}: {native:#?}");
+            for (native, expected) in native.iter().zip(&expected) {
+                assert_eq!(native, expected, "{name}");
+            }
+        }
+    }
+}
+
+/// The single-quoted words of a cases.tsv line (capture.sh `eval set --`).
+fn shell_words(text: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let (mut quoted, mut started) = (false, false);
+    for c in text.chars() {
+        match c {
+            '\'' => {
+                quoted = !quoted;
+                started = true;
+            }
+            ' ' if !quoted => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                }
+                started = false;
+            }
+            c => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        words.push(word);
+    }
+    words
+}

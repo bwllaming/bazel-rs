@@ -1377,8 +1377,11 @@ fn run() -> Result<(), String> {
     // (cmdline/TargetPattern.java:783-789).
     let relative_directory = relative_directory(&root, &cwd)?;
     if let Some((expression, filters)) = aquery_expression {
-        let analysis =
-            engine.aquery_analysis(&aquery_options.universe(&expression), &relative_directory)?;
+        let analysis = engine.aquery_analysis(
+            &aquery_options.universe(&expression),
+            &relative_directory,
+            &test_options,
+        )?;
         for warning in engine.take_warnings() {
             warn(&warning);
         }

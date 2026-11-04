@@ -13,6 +13,8 @@ pub(super) struct Capture {
     owners: HashMap<String, Owner>,
     nodes: Vec<PlannedAction>,
     top_level: Vec<TopLevel>,
+    /// The analyzed test rules (their TestRunner actions, super::aquery_test).
+    pub(super) tests: Vec<super::aquery_test::TestCapture>,
 }
 
 /// A requested (top-level) configured target as `print_action` reads it
@@ -249,6 +251,7 @@ impl Engine {
         &mut self,
         patterns: &[String],
         relative_directory: &str,
+        test_options: &crate::test_command::TestOptions,
     ) -> Result<Analysis, String> {
         crate::aquery::set_capturing(true);
         self.aquery_capture = Some(Capture::default());
@@ -328,6 +331,44 @@ impl Engine {
             for mut record in
                 self.aquery_records(node, owner, rule_class, configuration, &configurations)
             {
+                record.display_target = display_target.clone();
+                record.display_execution_platform = record
+                    .execution_platform
+                    .as_deref()
+                    .and_then(|platform| Label::parse_canonical(platform).ok())
+                    .map(|platform| display(&platform));
+                actions.push((graph_node, record));
+            }
+        }
+        // TestRunner actions: registered with the rule's (after its
+        // RunfilesSupport actions, TestActionBuilder via
+        // RuleConfiguredTargetBuilder.build).
+        for test in &capture.tests {
+            let config = test.key.config;
+            let Some(&graph_node) =
+                nodes_by_key.get(&(test.key.label.to_string(), config.to_string()))
+            else {
+                continue;
+            };
+            let configuration = *configuration_index.entry(config).or_insert_with(|| {
+                let mnemonic = self.configurations.mnemonic(config).to_owned();
+                configurations.push(crate::aquery::Configuration {
+                    platform_name: mnemonic.split('-').next().unwrap_or_default().to_owned(),
+                    mnemonic,
+                    checksum: config.to_string(),
+                    is_tool: self.configurations.get(config).native.is_exec,
+                });
+                configurations.len() - 1
+            });
+            let rule_class = match &graph.nodes[graph_node as usize].target {
+                crate::cquery_proto::Target::Rule(rule) => Some(rule.rule_class.clone()),
+                _ => None,
+            };
+            let display_target = display(&test.key.label);
+            for mut record in
+                self.aquery_test_records(test, test_options, configuration, &configurations)
+            {
+                record.rule_class = rule_class.clone();
                 record.display_target = display_target.clone();
                 record.display_execution_platform = record
                     .execution_platform

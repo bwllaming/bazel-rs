@@ -31,6 +31,7 @@ use std::sync::Arc;
 mod affected_scope;
 mod alloc_report;
 pub mod aquery;
+mod aquery_test;
 mod compatibility;
 pub mod cquery;
 mod genquery;
@@ -15885,6 +15886,7 @@ impl Engine {
         if self.cquery_capture.is_some() {
             // aquery keeps the planned actions of the whole universe.
             self.aquery_top_level(labels, top, &state);
+            self.aquery_tests(&state);
             self.aquery_nodes(&mut state.nodes);
             // Formatter facts (provider names, important files) are read
             // while the planning state is live; the graph keeps no providers.

@@ -1,0 +1,16 @@
+37 total actions.
+
+Mnemonics:
+  Genrule: 1
+  SymlinkTree: 6
+  TestRunner: 6
+  SourceSymlinkManifest: 6
+  RepoMappingManifest: 6
+  FileWrite: 6
+  RunfilesTree: 6
+
+Configurations:
+  k8-fastbuild: 37
+
+Execution Platforms:
+  @@platforms//host:host: 37

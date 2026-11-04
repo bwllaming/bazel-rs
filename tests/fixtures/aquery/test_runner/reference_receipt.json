@@ -1,0 +1,15 @@
+{
+  "bazel": "9.3.1 (/home/coder/bazel/.direnv/reference/bazel-9.3.1-linux-x86_64)",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "invocation": "capture.sh BAZEL <private output root>: bazel --batch --ignore_all_rc_files --output_user_root=<private> aquery ARGS in ws/ (MODULE.bazel module(name='tr')), HOME/TMPDIR private; one case per line of cases.tsv (name<TAB>shell-quoted args), stdout saved as genuine/NAME; every case exited 0",
+  "captured": "2026-11-04",
+  "fixture_files_sha256": {
+    "ws/MODULE.bazel": "2435a4a9782107aa09e3061dc0adc2c17e9cf60d8ad23972dd62401e9c37dcd6",
+    "ws/pkg/BUILD": "d837b818c11fc9af4375d1f48d164acb37cbf98925831c5e58f9e50d897f90e4",
+    "ws/pkg/d.txt": "8d74beec1be996322ad76813bafb92d40839895d6dd7ee808b17ca201eac98be",
+    "ws/pkg/defs.bzl": "1f4ff9ae62c26181906066d41d871274108a86f89e08383c0c11b3bdd61aa5c9",
+    "cases.tsv": "8c01fd256c5dafe2420551e81a7756a5fed7f0f31d0169f6bfdfe9ab9773b941"
+  },
+  "covers": "TestRunnerAction (TestActionBuilder.createTestAction, TestRunnerAction.computeKey, TestStrategy.expandedArgsFromAction): description with shard/run suffixes, inputs (runfiles tree, test-setup.sh, generate-xml.sh, a --run_under label's executable), outputs, the configuration environment, execution info from tags (HashMap order in the key), local/exclusive/flaky/size/timeout, shard_count, testing.ExecutionInfo requirements, RunEnvironmentInfo environment and inherited names, the args attribute, --runs_per_test (per label), --test_sharding_strategy forced/disabled, --test_arg, --test_env, --action_env, --test_timeout, --test_filter, --test_runner_fail_fast, --zip_undeclared_test_outputs, --run_under (shell, path, label), --modify_execution_info, --noincompatible_exclusive_test_sandboxed; every ActionKey",
+  "normalized": "'# Configuration: <BuildOptions checksum>' lines and the configuration checksum (native ConfigIds); the ActionKeys of SymlinkTree, SourceSymlinkManifest and RepoMappingManifest (not reproduced, docs/AQUERY.md); dep_set_of_files structure (compared flattened)"
+}
