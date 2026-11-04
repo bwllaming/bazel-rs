@@ -49,8 +49,9 @@ rust_library(
         exclude = ["src/main.rs"],
     ),
     aliases = aliases(),
-    # include_bytes!/include_str! of the embedded @bazel_tools and builtins.
-    compile_data = glob(["resources/**"]),
+    # include_bytes!/include_str! of the embedded @bazel_tools and builtins,
+    # and cquery's protobuf schema.
+    compile_data = glob(["resources/**"]) + ["src/cquery_schema.pb"],
     crate_name = "bazel_rs",
     crate_root = "src/lib.rs",
     edition = "2024",

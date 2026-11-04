@@ -75,6 +75,27 @@ class SelfBuildTest(unittest.TestCase):
         )
         self.assertEqual(self_build.absolute_paths('{"a": "@@//pkg:x", "b": "rel/path"}'), [])
 
+    def test_every_embedded_file_is_compile_data(self):
+        # include_bytes!/include_str! in src/ must name a file the Bazel
+        # build passes to rustc (compile_data or UNIT_TEST_DATA in
+        # BUILD.bazel), else the self-build fails where Cargo succeeds.
+        import fnmatch
+        import re
+
+        build = (ROOT / "BUILD.bazel").read_text()
+        strings = re.findall(r'"([^"]*)"', build)
+        literals = {s for s in strings if "*" not in s}
+        globs = [s.replace("**", "*") for s in strings if "*" in s]
+        missing = []
+        for source in sorted((ROOT / "src").rglob("*.rs")):
+            text = source.read_text()
+            for name in re.findall(r'include_(?:bytes|str)!\(\s*"([^"{}]+)"\s*\)', text):
+                path = (source.parent / name).resolve().relative_to(ROOT).as_posix()
+                if path in literals or any(fnmatch.fnmatch(path, g) for g in globs):
+                    continue
+                missing.append(f"{source.relative_to(ROOT)}: {path}")
+        self.assertEqual(missing, [], "add these to compile_data in BUILD.bazel")
+
     def test_rust_toolchain_matches_rust_toolchain_toml(self):
         channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
         module = (ROOT / "MODULE.bazel").read_text()
