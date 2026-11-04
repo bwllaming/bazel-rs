@@ -23,6 +23,21 @@ nonparticipants are absent. Modules expose `name`, normalized declared `version`
 empty lists. Tags preserve MODULE call order even when differently spelled usage
 labels merge into one canonical extension identity.
 
+**Generated repositories are keyed by their own specification**
+(affected-reuse-cold, provenance profile `ordinary-file-template-v2`): a
+generated repository's spec key and tree identity frame the group's shared
+provenance (the extension's sources, tag classes, participants, imports, host
+factors, `environ`) with *its own* definition, bound attributes and names —
+no longer the whole group's repositories and mapping. Like Bazel's repository
+contents cache, whose key is the repository's own definition, a sibling added
+or changed (a requirements bump re-evaluating `pip`) re-executes only the
+repositories whose own specification changed (on a scratch rules_python 2.4.4
+workspace, bumping one of three wheels: genuine 9.3.1 fetched the bumped wheel
+and the hub, so does bazel-rs; before, every wheel ran again). Attribute
+labels are bound before keying, so a sibling's canonical name a repository
+refers to is part of its own attributes. The first run of this binary
+re-executes each generated repository once (new keys).
+
 `ctx.is_dev_dependency(tag)` accepts a genuine tag, positionally. The Boolean
 `ctx.root_module_has_non_dev_dependency` property reflects retained root usage
 declarations, independently of tags or imports. Dependency dev usages are ignored;

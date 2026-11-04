@@ -443,11 +443,12 @@ with the snapshot's plan restricted to them.
   gone: the `query` between them rewrote the hidden lockfile `affected`'s
   head planning read (now recorded by the entries it used, "The hidden
   lockfile" above), and the head's `test --nobuild` plan reaches a source
-  directory (rules_js `sharp@…/lc`; now traversed, above). It still
-  analyzes in full when `affected`'s head planning could not be saved: a
-  cold or lukewarm cache where it evaluated a module extension (a bumped
-  requirements lock re-evaluates `pip`) or downloaded outside a repository
-  rule (registry files), docs/AFFECTED_TARGETS.md §8.9.
+  directory (rules_js `sharp@…/lc`; now traversed, above). Since
+  affected-reuse-cold a head planning that evaluated module extensions or
+  downloaded registry files is saved too ("A cold run is saved as the warm
+  run would be" below); on a cold ~/code cache the build still analyzes in
+  full because the `query` between them changes a published tree
+  (docs/AFFECTED_TARGETS.md §8.10).
 
 | ~/code CI (PR 13252), cache of the steps before | before | derived |
 |---|---|---|
@@ -925,6 +926,69 @@ MODULE.bazel.lock change: `aspect_tools_telemetry_report` reads
 MODULE.bazel.lock (a watched workspace file, exactly as in Bazel 9.3), so
 the run after a lockfile write re-executes it — it now saves, and the next
 run hits (before: one more full analysis, then the save).
+
+**A cold run is saved as the warm run would be** (affected-reuse-cold).
+Every piece of work a cold or lukewarm cache does that a warm run does not —
+evaluating a module extension, fetching registry files, materializing a
+registry module's source archive, a Git override or `@bazel_tools` —
+taints only until its result is published, then the very check the next
+run uses to reuse it runs in this run and is recorded instead:
+
+* *An evaluated module extension* (crate::repository's `EvaluatedTaint`):
+  once its result is recorded (`record_extension_lock`), and when the lockfile
+  mode writes the hidden lockfile (`update`, `refresh`; never `error`, `off`,
+  `--native-lockfile=readonly`) and the window may be saved (not a verify
+  shadow), the next run's reuse check runs: the entry as the next run parses
+  it (serialized, parsed again) has this run's digests, its recorded inputs
+  are up to date (revalidated through the recording facade, so they are
+  recorded exactly as a reuse records them), and binding it gives exactly the
+  repositories (definitions, bound attributes, names, order) and metadata
+  (without its facts) the evaluation bound. Its taint then becomes
+  *provisional* (crate::observed_fs::provisional_taint: every view of the
+  taints still lists it, `extension-evaluated … (unconfirmed)`), and every save
+  path's `note_hidden_lockfile` confirms it only when the lockfiles as the
+  command leaves them hold that entry where the next run reads it (the
+  workspace lockfile's first, then the hidden one's, for these factors) and
+  their facts let it be reused (SingleExtensionEvalFunction's facts check):
+  fail-closed, a path that never confirms keeps it. The evaluation's
+  downloads (crate::observed_fs::NetworkSink) settle with it, unless one
+  still transfers. Why a re-probe failed is the taint's detail (`(not
+  re-probed: …)`). A run whose evaluation printed (rules_python's `pip`:
+  `The PyPI hub name 'pypi' is reserved`) is confirmed too but tainted
+  `extension-output`: the next run prints nothing, so only a snapshot that
+  serves derived hits alone — `bazel-rs affected`'s scoped planning, never
+  looked up by its key; derived hits never replay the window — ignores it
+  (crate::snapshot::save::Save::set_derive_only).
+* *A registry file* fetched over the network whose bytes match the checksum
+  MODULE.bazel.lock names: the next run reads those bytes from the
+  content-addressed cache (unrecorded, checked against the hash) and records
+  the same URL and hash, so the download settles (also the module-root
+  warm-up's). An unknown checksum taints as before (its lockfile write is
+  pending anyway). Registry transfers use their own sink
+  (crate::observed_fs::with_registry_sink), never a repository rule's.
+* *A published registry source tree, Git tree or `@bazel_tools`*: the warm
+  check runs again after the publication and records its REPO + INTEGRITY
+  entries; `repository-materialized` and the archive's or fetch's `network`
+  settle (crate::observed_fs::HeldTaint).
+* *A specification pointer's absence* observed before its publication —
+  by this process, or by another one (the concurrent base planning of
+  `bazel-rs affected`) whose publication this process then read under the
+  writer lock — is superseded by that read in whatever order the events reach
+  the recorder (a probe's captured set replayed after the publication's
+  supersede); before, such an absence stayed recorded and the snapshot could
+  never validate.
+
+On ~/code a cold head planning now records what a warm one records (5,369
+pointer reads, 5,409 trees, no taint but `extension-output`), and a
+lukewarm one is saved; the build after `affected` derives from it
+(docs/AFFECTED_TARGETS.md §8.10).
+
+*Refresh keeps DERIVE.* A hit that settled racy keys rewrites its snapshot
+with the refreshed INPUTS (step 6); the rewrite dropped the DERIVE section,
+so the next derived lookup dropped the family marker — the `test` after a
+`build` that derived from `affected`'s head analyzed in full (~86 s on
+~/code). The rewrite copies DERIVE now (`tests/snapshot_derive.rs`
+`a_refreshed_snapshot_keeps_serving_derived_hits`).
 
 The plan is encoded on the main
 thread before execution; the recording is taken, selected by the policy

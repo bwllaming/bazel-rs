@@ -1033,3 +1033,54 @@ slower than this host (0.4.7's head 200 vs 133 s, base 494 vs 256 s): cold
 of 695–900 s; warm ~150–200 s, plus a derived `build` when the head was
 saved. What remains: fetching (cold), the lukewarm re-executions, and
 registration and phase 1 of the analysis (~60 of ~96 s per planning here).
+
+### 8.10 The head saved on cold and lukewarm caches (affected-reuse-cold)
+
+§8.8's derived `build` needed `affected`'s head planning saved, which a cold
+or lukewarm cache prevented: it evaluated module extensions (all of them
+cold; `pip` whenever the cache's hidden lockfile predates a requirements
+bump), fetched registry files and archives, and — with those taints already
+recorded — never re-probed its repository rules either. Now such a run is
+saved as the warm run would be (docs/ANALYSIS_SNAPSHOT.md, "A cold run is
+saved as the warm run would be"): an evaluated extension is re-probed as the
+next run's lockfile reuse and confirmed against the lockfiles the command
+writes, registry files whose hashes MODULE.bazel.lock names and published
+registry/Git trees settle, and a pointer absence superseded by its
+publication (also the concurrent base planning's) is dropped. `pip`'s print
+on every evaluation keeps an exact-key save out (`extension-output`), not the
+scoped head's, whose snapshot only serves derived hits. And a lukewarm `pip`
+re-evaluation re-executes only the wheels whose own specification changed
+(docs/MODULE_EXTENSIONS.md: generated repositories are keyed by their own
+specification, as genuine's repository contents cache keys them).
+
+Measured (private clone at PR 13252's merge `4445d0f`, the exact CI sequence
+`affected --base=HEAD^` → `query … --output streamed_jsonproto` → `build
+--keep_going --target_pattern_file …` → `test --nobuild --keep_going
+--test_output=errors --test_summary=terse --local_test_jobs=4
+--test_tag_filters=-nightly --target_pattern_file …` (an analysis-only
+stand-in for the CI `test`), a local HTTP remote cache, `nice -n 10`, one run
+each; lukewarm = the same sequence run first at main `513556c7c` with the same
+binary; affected's output identical in every run; seconds):
+
+| cache | 0.4.8 (13a7f714): affected / query / build / test | this revision |
+|---|---|---|
+| cold | 247 / 160 / 305¹ / 9 | 228 / 127 / 147 / 9 |
+| lukewarm | 121 / 27 / 134 / 5 | 118 / 18 / **67 (derived)** / 3 |
+| warm | 102 / 16 / 32 (derived) / **86** | 100 / 16 / 32 (derived) / **3 (derived)** |
+
+¹ with an empty remote cache (later rows: populated); both cold builds
+analyze in full.
+
+* Lukewarm: the head planning executes 7 repositories instead of 287 (the
+  re-evaluated `pip`'s unchanged wheels are reused), is saved, and the build
+  derives (`INFO: Analyzed 480 targets (206 packages loaded, 0 targets
+  configured)`).
+* Warm, and every row: the `test` after a derived `build` derived too only
+  once a hit's INPUTS refresh kept the DERIVE section (before, the refresh
+  dropped it and the test analyzed in full, 86 s).
+* Cold: the head is saved now, but the build still analyzes in full: the
+  `query` between them builds sdists of other platforms with `pip`, which
+  writes `pip/__pycache__` into rules_python's published `pypi__pip` tree;
+  the derived lookup sees that tree changed (`does not match its manifest
+  (extra pip/__pycache__)`) — correctly, the full analysis repairs the tree.
+  Not changed here.
