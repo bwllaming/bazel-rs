@@ -1,0 +1,1225 @@
+action 'Compiling Java headers pkg/liba-hjar.jar (1 source file)'
+  Mnemonic: Turbine
+  Target: //pkg:a
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: c66646dfa54655c7dd92203695871823853ad4618a7f8c616bc267a360a564de
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/_ijar/imported/pkg/imported-ijar.jar, bazel-out/k8-fastbuild/bin/pkg/libb-tjar.jar, bazel-out/k8-fastbuild/bin/pkg/libc-tjar.jar, jdk/bin/java, jdk/lib/ct.sym, pkg/A.java, turbine.jar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/liba-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/liba-hjar.jdeps, bazel-out/k8-fastbuild/bin/pkg/liba-tjar.jar]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    '-Dturbine.ctSymPath=jdk/lib/ct.sym' \
+    -jar \
+    turbine.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/liba-hjar.jar \
+    --header_compilation_output \
+    bazel-out/k8-fastbuild/bin/pkg/liba-tjar.jar \
+    --output_deps \
+    bazel-out/k8-fastbuild/bin/pkg/liba-hjar.jdeps \
+    --sources \
+    pkg/A.java \
+    --javacopts \
+    --release \
+    11 \
+    -Xlint:all \
+    -- \
+    --target_label \
+    //pkg:a \
+    --classpath \
+    bazel-out/k8-fastbuild/bin/pkg/libb-tjar.jar \
+    bazel-out/k8-fastbuild/bin/pkg/libc-tjar.jar \
+    bazel-out/k8-fastbuild/bin/pkg/_ijar/imported/pkg/imported-ijar.jar \
+    --reduce_classpath_mode \
+    NONE)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-fastbuild/bin/pkg/liba-hjar.jdeps, requires-network: '', supports-path-mapping: 1}
+
+action 'Building genclass jar pkg/liba-gen.jar'
+  Mnemonic: JavaSourceJar
+  Target: //pkg:a
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: c9d7c8627a25bbbdaccec401dd3c07bbb9186ccad19d4125e4fa77fba2865e1a
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/liba.jar, bazel-out/k8-fastbuild/bin/pkg/liba.jar_manifest_proto, genclass.jar, jdk/bin/java, jdk/lib/ct.sym]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/liba-gen.jar]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    -jar \
+    genclass.jar \
+    --manifest_proto \
+    bazel-out/k8-fastbuild/bin/pkg/liba.jar_manifest_proto \
+    --class_jar \
+    bazel-out/k8-fastbuild/bin/pkg/liba.jar \
+    --output_jar \
+    bazel-out/k8-fastbuild/bin/pkg/liba-gen.jar)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+
+action 'Building Java resource jar'
+  Mnemonic: JavaResourceJar
+  Target: //pkg:a
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 679209281d36437848dba065bf1ed28f42d9f9804fe90b72208d2b1c70d9d20f
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/liba-class.jar, pkg/data.txt, singlejar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/liba.jar]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec ./singlejar \
+    --normalize \
+    --dont_change_compression \
+    --exclude_build_data \
+    --no_strip_module_info \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/liba.jar \
+    --sources \
+    bazel-out/k8-fastbuild/bin/pkg/liba-class.jar \
+    --resources \
+    pkg/data.txt)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {requires-network: '', supports-path-mapping: 1}
+
+action 'Building pkg/liba-class.jar (1 source file) and running annotation processors (Gen)'
+  Mnemonic: Javac
+  Target: //pkg:a
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 2730895771c6867d23d588a3683e805548a10d1ff32f24ec22f63dcfdc817342
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/_ijar/imported/pkg/imported-ijar.jar, bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jdeps, bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jdeps, bazel-out/k8-opt-exec/bin/pkg/libgen.jar, javabuilder.jar, jdk/bin/java, jdk/lib/ct.sym, pkg/A.java]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/liba-class.jar, bazel-out/k8-fastbuild/bin/pkg/liba-gensrc.jar, bazel-out/k8-fastbuild/bin/pkg/liba-native-header.jar, bazel-out/k8-fastbuild/bin/pkg/liba.jar_manifest_proto, bazel-out/k8-fastbuild/bin/pkg/liba.jdeps]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    -jar \
+    javabuilder.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/liba-class.jar \
+    --native_header_output \
+    bazel-out/k8-fastbuild/bin/pkg/liba-native-header.jar \
+    --generated_sources_output \
+    bazel-out/k8-fastbuild/bin/pkg/liba-gensrc.jar \
+    --output_manifest_proto \
+    bazel-out/k8-fastbuild/bin/pkg/liba.jar_manifest_proto \
+    --compress_jar \
+    --output_deps_proto \
+    bazel-out/k8-fastbuild/bin/pkg/liba.jdeps \
+    --processorpath \
+    bazel-out/k8-opt-exec/bin/pkg/libgen.jar \
+    --processors \
+    proc.Gen \
+    --sources \
+    pkg/A.java \
+    --javacopts \
+    --release \
+    11 \
+    -Xlint:all \
+    -- \
+    --target_label \
+    //pkg:a \
+    --strict_java_deps \
+    WARN \
+    --direct_dependencies \
+    bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jar \
+    bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar \
+    bazel-out/k8-fastbuild/bin/pkg/_ijar/imported/pkg/imported-ijar.jar \
+    --experimental_fix_deps_tool \
+    add_dep \
+    --classpath \
+    bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jar \
+    bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar \
+    bazel-out/k8-fastbuild/bin/pkg/_ijar/imported/pkg/imported-ijar.jar)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-fastbuild/bin/pkg/liba.jdeps, requires-network: '', supports-multiplex-workers: 1, supports-path-mapping: 1, supports-worker-cancellation: 1, supports-workers: 1}
+
+action 'Building source jar pkg/liba-src.jar'
+  Mnemonic: JavaSourceJar
+  Target: //pkg:a
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: a498d3f7a9379fd33e23c9a193256eea55f20e9b87146f79300f9b13245f8c54
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/liba-gensrc.jar, pkg/A.java, singlejar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/liba-src.jar]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec ./singlejar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/liba-src.jar \
+    --compression \
+    --normalize \
+    --exclude_build_data \
+    --warn_duplicate_resources \
+    --sources \
+    bazel-out/k8-fastbuild/bin/pkg/liba-gensrc.jar \
+    --resources \
+    pkg/A.java:pkg/A.java \
+    --build_target \
+    None \
+    --output_jar_creator \
+    None)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {requires-network: ''}
+
+action 'Compiling Java headers pkg/libapi-hjar.jar (1 source file)'
+  Mnemonic: Turbine
+  Target: //pkg:api
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: ff6751f3cf8017a08be4df3c8c86c8ef4be4c497518eeeee7dfdda7e1712cf07
+  Inputs: [jdk/bin/java, jdk/lib/ct.sym, pkg/proc/Gen.java, turbine.jar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libapi-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/libapi-hjar.jdeps, bazel-out/k8-fastbuild/bin/pkg/libapi-tjar.jar]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    '-Dturbine.ctSymPath=jdk/lib/ct.sym' \
+    -jar \
+    turbine.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libapi-hjar.jar \
+    --header_compilation_output \
+    bazel-out/k8-fastbuild/bin/pkg/libapi-tjar.jar \
+    --output_deps \
+    bazel-out/k8-fastbuild/bin/pkg/libapi-hjar.jdeps \
+    --sources \
+    pkg/proc/Gen.java \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:api \
+    --reduce_classpath_mode \
+    NONE)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-fastbuild/bin/pkg/libapi-hjar.jdeps, supports-path-mapping: 1}
+
+action 'Building pkg/libapi.jar (1 source file)'
+  Mnemonic: Javac
+  Target: //pkg:api
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 03cae9251637e3ed8a1db2bcae7323c98aff1b0a78615bf420d7dbd3ce53980f
+  Inputs: [javabuilder.jar, jdk/bin/java, jdk/lib/ct.sym, pkg/proc/Gen.java]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libapi-native-header.jar, bazel-out/k8-fastbuild/bin/pkg/libapi.jar, bazel-out/k8-fastbuild/bin/pkg/libapi.jar_manifest_proto, bazel-out/k8-fastbuild/bin/pkg/libapi.jdeps]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    -jar \
+    javabuilder.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libapi.jar \
+    --native_header_output \
+    bazel-out/k8-fastbuild/bin/pkg/libapi-native-header.jar \
+    --output_manifest_proto \
+    bazel-out/k8-fastbuild/bin/pkg/libapi.jar_manifest_proto \
+    --compress_jar \
+    --output_deps_proto \
+    bazel-out/k8-fastbuild/bin/pkg/libapi.jdeps \
+    --sources \
+    pkg/proc/Gen.java \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:api \
+    --strict_java_deps \
+    WARN \
+    --experimental_fix_deps_tool \
+    add_dep)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-fastbuild/bin/pkg/libapi.jdeps, supports-multiplex-workers: 1, supports-path-mapping: 1, supports-worker-cancellation: 1, supports-workers: 1}
+
+action 'Building source jar pkg/libapi-src.jar'
+  Mnemonic: JavaSourceJar
+  Target: //pkg:api
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: d6f1a107f84aadb5b0fc09fc0acd8d1f8efcf2e4f8c52e512f83969a1c91647b
+  Inputs: [pkg/proc/Gen.java, singlejar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libapi-src.jar]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec ./singlejar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libapi-src.jar \
+    --compression \
+    --normalize \
+    --exclude_build_data \
+    --warn_duplicate_resources \
+    --resources \
+    pkg/proc/Gen.java:pkg/proc/Gen.java \
+    --build_target \
+    None \
+    --output_jar_creator \
+    None)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+
+action 'Compiling Java headers pkg/libapi-hjar.jar (1 source file) [for tool]'
+  Mnemonic: Turbine
+  Target: //pkg:api
+  Configuration: k8-opt-exec
+  Execution platform: @platforms//host:host
+  ActionKey: 5ae0628b2d8578d96fc6cb7143e30827b7f6565ddff10fca590ae44c95e95ef9
+  Inputs: [jdk/bin/java, jdk/lib/ct.sym, pkg/proc/Gen.java, turbine.jar]
+  Outputs: [bazel-out/k8-opt-exec/bin/pkg/libapi-hjar.jar, bazel-out/k8-opt-exec/bin/pkg/libapi-hjar.jdeps, bazel-out/k8-opt-exec/bin/pkg/libapi-tjar.jar]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    '-Dturbine.ctSymPath=jdk/lib/ct.sym' \
+    -jar \
+    turbine.jar \
+    --output \
+    bazel-out/k8-opt-exec/bin/pkg/libapi-hjar.jar \
+    --header_compilation_output \
+    bazel-out/k8-opt-exec/bin/pkg/libapi-tjar.jar \
+    --output_deps \
+    bazel-out/k8-opt-exec/bin/pkg/libapi-hjar.jdeps \
+    --sources \
+    pkg/proc/Gen.java \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:api \
+    --reduce_classpath_mode \
+    NONE)
+# Configuration: 617836b58237f5a2ab3b57a90efa9fe045f48e3e6bdf0e58a43681931ce2518e
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-opt-exec/bin/pkg/libapi-hjar.jdeps, supports-path-mapping: 1}
+
+action 'Building pkg/libapi.jar (1 source file) [for tool]'
+  Mnemonic: Javac
+  Target: //pkg:api
+  Configuration: k8-opt-exec
+  Execution platform: @platforms//host:host
+  ActionKey: 0a099a4eacb39343e79934306d7b7766cf1f499beec5144da14633ca5ecce5f4
+  Inputs: [javabuilder.jar, jdk/bin/java, jdk/lib/ct.sym, pkg/proc/Gen.java]
+  Outputs: [bazel-out/k8-opt-exec/bin/pkg/libapi-native-header.jar, bazel-out/k8-opt-exec/bin/pkg/libapi.jar, bazel-out/k8-opt-exec/bin/pkg/libapi.jar_manifest_proto, bazel-out/k8-opt-exec/bin/pkg/libapi.jdeps]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    -jar \
+    javabuilder.jar \
+    --output \
+    bazel-out/k8-opt-exec/bin/pkg/libapi.jar \
+    --native_header_output \
+    bazel-out/k8-opt-exec/bin/pkg/libapi-native-header.jar \
+    --output_manifest_proto \
+    bazel-out/k8-opt-exec/bin/pkg/libapi.jar_manifest_proto \
+    --compress_jar \
+    --output_deps_proto \
+    bazel-out/k8-opt-exec/bin/pkg/libapi.jdeps \
+    --sources \
+    pkg/proc/Gen.java \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:api \
+    --strict_java_deps \
+    WARN \
+    --experimental_fix_deps_tool \
+    add_dep)
+# Configuration: 617836b58237f5a2ab3b57a90efa9fe045f48e3e6bdf0e58a43681931ce2518e
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-opt-exec/bin/pkg/libapi.jdeps, supports-multiplex-workers: 1, supports-path-mapping: 1, supports-worker-cancellation: 1, supports-workers: 1}
+
+action 'Building source jar pkg/libapi-src.jar [for tool]'
+  Mnemonic: JavaSourceJar
+  Target: //pkg:api
+  Configuration: k8-opt-exec
+  Execution platform: @platforms//host:host
+  ActionKey: e3f4886ce2fc0d20bb13fb1ccafd648b3a0e7602a0d5eacdab5c317088c058f6
+  Inputs: [pkg/proc/Gen.java, singlejar]
+  Outputs: [bazel-out/k8-opt-exec/bin/pkg/libapi-src.jar]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec ./singlejar \
+    --output \
+    bazel-out/k8-opt-exec/bin/pkg/libapi-src.jar \
+    --compression \
+    --normalize \
+    --exclude_build_data \
+    --warn_duplicate_resources \
+    --resources \
+    pkg/proc/Gen.java:pkg/proc/Gen.java \
+    --build_target \
+    None \
+    --output_jar_creator \
+    None)
+# Configuration: 617836b58237f5a2ab3b57a90efa9fe045f48e3e6bdf0e58a43681931ce2518e
+# Execution platform: @@platforms//host:host
+
+action 'Compiling Java headers pkg/libapi_user-hjar.jar (1 source file) and running annotation processors (Gen)'
+  Mnemonic: JavacTurbine
+  Target: //pkg:api_user
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 9870ac0cbed68aff841a31a16c844eff9f949f8eba0a08fa9984985ab7ab6a56
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jdeps, bazel-out/k8-opt-exec/bin/pkg/libapi.jar, jdk/bin/java, jdk/lib/ct.sym, pkg/ApiUser.java, turbine.jar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libapi_user-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/libapi_user-hjar.jdeps, bazel-out/k8-fastbuild/bin/pkg/libapi_user-tjar.jar]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    -jar \
+    turbine.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libapi_user-hjar.jar \
+    --header_compilation_output \
+    bazel-out/k8-fastbuild/bin/pkg/libapi_user-tjar.jar \
+    --output_deps \
+    bazel-out/k8-fastbuild/bin/pkg/libapi_user-hjar.jdeps \
+    --sources \
+    pkg/ApiUser.java \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:api_user \
+    --processors \
+    proc.Gen \
+    --processorpath \
+    bazel-out/k8-opt-exec/bin/pkg/libapi.jar \
+    --direct_dependencies \
+    bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar \
+    --classpath \
+    bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-fastbuild/bin/pkg/libapi_user-hjar.jdeps, supports-path-mapping: 1}
+
+action 'Building genclass jar pkg/libapi_user-gen.jar'
+  Mnemonic: JavaSourceJar
+  Target: //pkg:api_user
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 6ce2078a68d40f66f82fc507c7309886fef59283611c40e4676aac43db5df740
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/libapi_user.jar, bazel-out/k8-fastbuild/bin/pkg/libapi_user.jar_manifest_proto, genclass.jar, jdk/bin/java, jdk/lib/ct.sym]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libapi_user-gen.jar]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    -jar \
+    genclass.jar \
+    --manifest_proto \
+    bazel-out/k8-fastbuild/bin/pkg/libapi_user.jar_manifest_proto \
+    --class_jar \
+    bazel-out/k8-fastbuild/bin/pkg/libapi_user.jar \
+    --output_jar \
+    bazel-out/k8-fastbuild/bin/pkg/libapi_user-gen.jar)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+
+action 'Building pkg/libapi_user.jar (1 source file) and running annotation processors (Gen)'
+  Mnemonic: Javac
+  Target: //pkg:api_user
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 9b27f79abc19c2020d73fa4cfae9c89767aa530f86ea0f11ac329ccbb4a0525f
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jdeps, bazel-out/k8-opt-exec/bin/pkg/libapi.jar, javabuilder.jar, jdk/bin/java, jdk/lib/ct.sym, pkg/ApiUser.java]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libapi_user-gensrc.jar, bazel-out/k8-fastbuild/bin/pkg/libapi_user-native-header.jar, bazel-out/k8-fastbuild/bin/pkg/libapi_user.jar, bazel-out/k8-fastbuild/bin/pkg/libapi_user.jar_manifest_proto, bazel-out/k8-fastbuild/bin/pkg/libapi_user.jdeps]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    -jar \
+    javabuilder.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libapi_user.jar \
+    --native_header_output \
+    bazel-out/k8-fastbuild/bin/pkg/libapi_user-native-header.jar \
+    --generated_sources_output \
+    bazel-out/k8-fastbuild/bin/pkg/libapi_user-gensrc.jar \
+    --output_manifest_proto \
+    bazel-out/k8-fastbuild/bin/pkg/libapi_user.jar_manifest_proto \
+    --compress_jar \
+    --output_deps_proto \
+    bazel-out/k8-fastbuild/bin/pkg/libapi_user.jdeps \
+    --processorpath \
+    bazel-out/k8-opt-exec/bin/pkg/libapi.jar \
+    --processors \
+    proc.Gen \
+    --sources \
+    pkg/ApiUser.java \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:api_user \
+    --strict_java_deps \
+    WARN \
+    --direct_dependencies \
+    bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar \
+    --experimental_fix_deps_tool \
+    add_dep \
+    --classpath \
+    bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-fastbuild/bin/pkg/libapi_user.jdeps, supports-multiplex-workers: 1, supports-path-mapping: 1, supports-worker-cancellation: 1, supports-workers: 1}
+
+action 'Building source jar pkg/libapi_user-src.jar'
+  Mnemonic: JavaSourceJar
+  Target: //pkg:api_user
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: f0dafe41123a1b1220fb11f3ed454891a03b0139ae94a73bfa3c0dca21e2a0f9
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/libapi_user-gensrc.jar, pkg/ApiUser.java, singlejar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libapi_user-src.jar]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec ./singlejar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libapi_user-src.jar \
+    --compression \
+    --normalize \
+    --exclude_build_data \
+    --warn_duplicate_resources \
+    --sources \
+    bazel-out/k8-fastbuild/bin/pkg/libapi_user-gensrc.jar \
+    --resources \
+    pkg/ApiUser.java:pkg/ApiUser.java \
+    --build_target \
+    None \
+    --output_jar_creator \
+    None)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+
+action 'Compiling Java headers pkg/libb-hjar.jar (1 source file)'
+  Mnemonic: Turbine
+  Target: //pkg:b
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: a0a310700e8661114c157ada1b2698b08fe653de76168805ec32ff66396602e1
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/libc-tjar.jar, jdk/bin/java, jdk/lib/ct.sym, pkg/B.java, turbine.jar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jdeps, bazel-out/k8-fastbuild/bin/pkg/libb-tjar.jar]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    '-Dturbine.ctSymPath=jdk/lib/ct.sym' \
+    -jar \
+    turbine.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jar \
+    --header_compilation_output \
+    bazel-out/k8-fastbuild/bin/pkg/libb-tjar.jar \
+    --output_deps \
+    bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jdeps \
+    --sources \
+    pkg/B.java \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:b \
+    --classpath \
+    bazel-out/k8-fastbuild/bin/pkg/libc-tjar.jar \
+    --reduce_classpath_mode \
+    NONE)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jdeps, supports-path-mapping: 1}
+
+action 'Building pkg/libb.jar (1 source file)'
+  Mnemonic: Javac
+  Target: //pkg:b
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 0c1470837f0dabff338215eb373a1ddb91794fb429e3c5be7a74b733ed429107
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jdeps, javabuilder.jar, jdk/bin/java, jdk/lib/ct.sym, pkg/B.java]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libb-native-header.jar, bazel-out/k8-fastbuild/bin/pkg/libb.jar, bazel-out/k8-fastbuild/bin/pkg/libb.jar_manifest_proto, bazel-out/k8-fastbuild/bin/pkg/libb.jdeps]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    -jar \
+    javabuilder.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libb.jar \
+    --native_header_output \
+    bazel-out/k8-fastbuild/bin/pkg/libb-native-header.jar \
+    --output_manifest_proto \
+    bazel-out/k8-fastbuild/bin/pkg/libb.jar_manifest_proto \
+    --compress_jar \
+    --output_deps_proto \
+    bazel-out/k8-fastbuild/bin/pkg/libb.jdeps \
+    --sources \
+    pkg/B.java \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:b \
+    --strict_java_deps \
+    WARN \
+    --direct_dependencies \
+    bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar \
+    --experimental_fix_deps_tool \
+    add_dep \
+    --classpath \
+    bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-fastbuild/bin/pkg/libb.jdeps, supports-multiplex-workers: 1, supports-path-mapping: 1, supports-worker-cancellation: 1, supports-workers: 1}
+
+action 'Building source jar pkg/libb-src.jar'
+  Mnemonic: JavaSourceJar
+  Target: //pkg:b
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 2f7955c8676b765d1de3c4b7a53e8fb7bd9544ff5286d1a299a423b7c8a81dfb
+  Inputs: [pkg/B.java, singlejar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libb-src.jar]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec ./singlejar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libb-src.jar \
+    --compression \
+    --normalize \
+    --exclude_build_data \
+    --warn_duplicate_resources \
+    --resources \
+    pkg/B.java:pkg/B.java \
+    --build_target \
+    None \
+    --output_jar_creator \
+    None)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+
+action 'Compiling Java headers pkg/libc-hjar.jar (1 source file)'
+  Mnemonic: Turbine
+  Target: //pkg:c
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 3b6cb79275e0a78fb2d02f5350035cae8296ecf74537e200f76598a01f7f5368
+  Inputs: [jdk/bin/java, jdk/lib/ct.sym, pkg/C.java, turbine.jar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jdeps, bazel-out/k8-fastbuild/bin/pkg/libc-tjar.jar]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    '-Dturbine.ctSymPath=jdk/lib/ct.sym' \
+    -jar \
+    turbine.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar \
+    --header_compilation_output \
+    bazel-out/k8-fastbuild/bin/pkg/libc-tjar.jar \
+    --output_deps \
+    bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jdeps \
+    --sources \
+    pkg/C.java \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:c \
+    --reduce_classpath_mode \
+    NONE)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jdeps, supports-path-mapping: 1}
+
+action 'Building pkg/libc.jar (1 source file)'
+  Mnemonic: Javac
+  Target: //pkg:c
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 6d6ce0e4fc1b6a9e6ce9370cfc95ca024387cbea42ab5f12dd8f2679b5f715c4
+  Inputs: [javabuilder.jar, jdk/bin/java, jdk/lib/ct.sym, pkg/C.java]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libc-native-header.jar, bazel-out/k8-fastbuild/bin/pkg/libc.jar, bazel-out/k8-fastbuild/bin/pkg/libc.jar_manifest_proto, bazel-out/k8-fastbuild/bin/pkg/libc.jdeps]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    -jar \
+    javabuilder.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libc.jar \
+    --native_header_output \
+    bazel-out/k8-fastbuild/bin/pkg/libc-native-header.jar \
+    --output_manifest_proto \
+    bazel-out/k8-fastbuild/bin/pkg/libc.jar_manifest_proto \
+    --compress_jar \
+    --output_deps_proto \
+    bazel-out/k8-fastbuild/bin/pkg/libc.jdeps \
+    --sources \
+    pkg/C.java \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:c \
+    --strict_java_deps \
+    WARN \
+    --experimental_fix_deps_tool \
+    add_dep)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-fastbuild/bin/pkg/libc.jdeps, supports-multiplex-workers: 1, supports-path-mapping: 1, supports-worker-cancellation: 1, supports-workers: 1}
+
+action 'Building source jar pkg/libc-src.jar'
+  Mnemonic: JavaSourceJar
+  Target: //pkg:c
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 8162aeb8b14c161799af80395fb238ed22c7b5c4dd9eb0c46c187ba3158b0257
+  Inputs: [pkg/C.java, singlejar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libc-src.jar]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec ./singlejar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libc-src.jar \
+    --compression \
+    --normalize \
+    --exclude_build_data \
+    --warn_duplicate_resources \
+    --resources \
+    pkg/C.java:pkg/C.java \
+    --build_target \
+    None \
+    --output_jar_creator \
+    None)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+
+action 'Building pkg/libempty.jar ()'
+  Mnemonic: Javac
+  Target: //pkg:empty
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: cd461d531e950fb1e42a69f3ff452c96ee0829c30a95f7f7054a3e739b298020
+  Inputs: [javabuilder.jar, jdk/bin/java, jdk/lib/ct.sym]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libempty-native-header.jar, bazel-out/k8-fastbuild/bin/pkg/libempty.jar, bazel-out/k8-fastbuild/bin/pkg/libempty.jar_manifest_proto]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    -jar \
+    javabuilder.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libempty.jar \
+    --native_header_output \
+    bazel-out/k8-fastbuild/bin/pkg/libempty-native-header.jar \
+    --output_manifest_proto \
+    bazel-out/k8-fastbuild/bin/pkg/libempty.jar_manifest_proto \
+    --compress_jar \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:empty \
+    --strict_java_deps \
+    WARN \
+    --experimental_fix_deps_tool \
+    add_dep)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {supports-multiplex-workers: 1, supports-path-mapping: 1, supports-worker-cancellation: 1, supports-workers: 1}
+
+action 'Building source jar pkg/libempty-src.jar'
+  Mnemonic: JavaSourceJar
+  Target: //pkg:empty
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: c0778b9d2b11d97ea1e3da24ac29b16f69fa632290fec94e1b2669caa0b622b6
+  Inputs: [singlejar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libempty-src.jar]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec ./singlejar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libempty-src.jar \
+    --compression \
+    --normalize \
+    --exclude_build_data \
+    --warn_duplicate_resources \
+    --build_target \
+    None \
+    --output_jar_creator \
+    None)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+
+action 'Compiling Java headers pkg/libgen-hjar.jar (1 source file)'
+  Mnemonic: Turbine
+  Target: //pkg:gen
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 03397681b2302f1d7c7b6fcfa219fa5fdf81ae22473942c441676773ea31b484
+  Inputs: [jdk/bin/java, jdk/lib/ct.sym, pkg/proc/Gen.java, turbine.jar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libgen-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/libgen-hjar.jdeps, bazel-out/k8-fastbuild/bin/pkg/libgen-tjar.jar]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    '-Dturbine.ctSymPath=jdk/lib/ct.sym' \
+    -jar \
+    turbine.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libgen-hjar.jar \
+    --header_compilation_output \
+    bazel-out/k8-fastbuild/bin/pkg/libgen-tjar.jar \
+    --output_deps \
+    bazel-out/k8-fastbuild/bin/pkg/libgen-hjar.jdeps \
+    --sources \
+    pkg/proc/Gen.java \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:gen \
+    --reduce_classpath_mode \
+    NONE)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-fastbuild/bin/pkg/libgen-hjar.jdeps, supports-path-mapping: 1}
+
+action 'Building pkg/libgen.jar (1 source file)'
+  Mnemonic: Javac
+  Target: //pkg:gen
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: e332f11a2ae3bf66ddc28e67c029f4a48a7215204ecc1686f264c952325478e9
+  Inputs: [javabuilder.jar, jdk/bin/java, jdk/lib/ct.sym, pkg/proc/Gen.java]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libgen-native-header.jar, bazel-out/k8-fastbuild/bin/pkg/libgen.jar, bazel-out/k8-fastbuild/bin/pkg/libgen.jar_manifest_proto, bazel-out/k8-fastbuild/bin/pkg/libgen.jdeps]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    -jar \
+    javabuilder.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libgen.jar \
+    --native_header_output \
+    bazel-out/k8-fastbuild/bin/pkg/libgen-native-header.jar \
+    --output_manifest_proto \
+    bazel-out/k8-fastbuild/bin/pkg/libgen.jar_manifest_proto \
+    --compress_jar \
+    --output_deps_proto \
+    bazel-out/k8-fastbuild/bin/pkg/libgen.jdeps \
+    --sources \
+    pkg/proc/Gen.java \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:gen \
+    --strict_java_deps \
+    WARN \
+    --experimental_fix_deps_tool \
+    add_dep)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-fastbuild/bin/pkg/libgen.jdeps, supports-multiplex-workers: 1, supports-path-mapping: 1, supports-worker-cancellation: 1, supports-workers: 1}
+
+action 'Building source jar pkg/libgen-src.jar'
+  Mnemonic: JavaSourceJar
+  Target: //pkg:gen
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 6ac946a06141b8337da11d09d614f7da761c0a2c0ae2c64bf32e14059997e556
+  Inputs: [pkg/proc/Gen.java, singlejar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libgen-src.jar]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec ./singlejar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libgen-src.jar \
+    --compression \
+    --normalize \
+    --exclude_build_data \
+    --warn_duplicate_resources \
+    --resources \
+    pkg/proc/Gen.java:pkg/proc/Gen.java \
+    --build_target \
+    None \
+    --output_jar_creator \
+    None)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+
+action 'Compiling Java headers pkg/libgen-hjar.jar (1 source file) [for tool]'
+  Mnemonic: Turbine
+  Target: //pkg:gen
+  Configuration: k8-opt-exec
+  Execution platform: @platforms//host:host
+  ActionKey: 7543a4e89d494b9622317a96e62332287ace48a48da724dbe13c440faec8b1bf
+  Inputs: [jdk/bin/java, jdk/lib/ct.sym, pkg/proc/Gen.java, turbine.jar]
+  Outputs: [bazel-out/k8-opt-exec/bin/pkg/libgen-hjar.jar, bazel-out/k8-opt-exec/bin/pkg/libgen-hjar.jdeps, bazel-out/k8-opt-exec/bin/pkg/libgen-tjar.jar]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    '-Dturbine.ctSymPath=jdk/lib/ct.sym' \
+    -jar \
+    turbine.jar \
+    --output \
+    bazel-out/k8-opt-exec/bin/pkg/libgen-hjar.jar \
+    --header_compilation_output \
+    bazel-out/k8-opt-exec/bin/pkg/libgen-tjar.jar \
+    --output_deps \
+    bazel-out/k8-opt-exec/bin/pkg/libgen-hjar.jdeps \
+    --sources \
+    pkg/proc/Gen.java \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:gen \
+    --reduce_classpath_mode \
+    NONE)
+# Configuration: 617836b58237f5a2ab3b57a90efa9fe045f48e3e6bdf0e58a43681931ce2518e
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-opt-exec/bin/pkg/libgen-hjar.jdeps, supports-path-mapping: 1}
+
+action 'Building pkg/libgen.jar (1 source file) [for tool]'
+  Mnemonic: Javac
+  Target: //pkg:gen
+  Configuration: k8-opt-exec
+  Execution platform: @platforms//host:host
+  ActionKey: b2db83afa8bb1695d3bc4f974423c92dbf5b44022c5c4d97a0d354114aa9c78c
+  Inputs: [javabuilder.jar, jdk/bin/java, jdk/lib/ct.sym, pkg/proc/Gen.java]
+  Outputs: [bazel-out/k8-opt-exec/bin/pkg/libgen-native-header.jar, bazel-out/k8-opt-exec/bin/pkg/libgen.jar, bazel-out/k8-opt-exec/bin/pkg/libgen.jar_manifest_proto, bazel-out/k8-opt-exec/bin/pkg/libgen.jdeps]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    -jar \
+    javabuilder.jar \
+    --output \
+    bazel-out/k8-opt-exec/bin/pkg/libgen.jar \
+    --native_header_output \
+    bazel-out/k8-opt-exec/bin/pkg/libgen-native-header.jar \
+    --output_manifest_proto \
+    bazel-out/k8-opt-exec/bin/pkg/libgen.jar_manifest_proto \
+    --compress_jar \
+    --output_deps_proto \
+    bazel-out/k8-opt-exec/bin/pkg/libgen.jdeps \
+    --sources \
+    pkg/proc/Gen.java \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:gen \
+    --strict_java_deps \
+    WARN \
+    --experimental_fix_deps_tool \
+    add_dep)
+# Configuration: 617836b58237f5a2ab3b57a90efa9fe045f48e3e6bdf0e58a43681931ce2518e
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-opt-exec/bin/pkg/libgen.jdeps, supports-multiplex-workers: 1, supports-path-mapping: 1, supports-worker-cancellation: 1, supports-workers: 1}
+
+action 'Building source jar pkg/libgen-src.jar [for tool]'
+  Mnemonic: JavaSourceJar
+  Target: //pkg:gen
+  Configuration: k8-opt-exec
+  Execution platform: @platforms//host:host
+  ActionKey: e169ab86da9325f046e84da5aa7df94b00d4d89f80c492f9b62c5bca95e1f4b0
+  Inputs: [pkg/proc/Gen.java, singlejar]
+  Outputs: [bazel-out/k8-opt-exec/bin/pkg/libgen-src.jar]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec ./singlejar \
+    --output \
+    bazel-out/k8-opt-exec/bin/pkg/libgen-src.jar \
+    --compression \
+    --normalize \
+    --exclude_build_data \
+    --warn_duplicate_resources \
+    --resources \
+    pkg/proc/Gen.java:pkg/proc/Gen.java \
+    --build_target \
+    None \
+    --output_jar_creator \
+    None)
+# Configuration: 617836b58237f5a2ab3b57a90efa9fe045f48e3e6bdf0e58a43681931ce2518e
+# Execution platform: @@platforms//host:host
+
+action 'Executing genrule //pkg:gensrc'
+  Mnemonic: Genrule
+  Target: //pkg:gensrc
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: c41fcfda12791c68b1a60c8688d63ed75bf926cac1340331e549d120b9ba0d41
+  Inputs: [external/bazel_tools/tools/genrule/genrule-setup.sh]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/gen.srcjar]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec /bin/bash \
+    -c \
+    'source external/bazel_tools/tools/genrule/genrule-setup.sh; touch bazel-out/k8-fastbuild/bin/pkg/gen.srcjar')
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+
+action 'Extracting interface for jar pkg/imported.jar'
+  Mnemonic: JavaIjar
+  Target: //pkg:imported
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 07b663eced0529f390415924a2773e17bc59af1cdee202f9c894fa45a810072c
+  Inputs: [ijar, pkg/imported.jar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/_ijar/imported/pkg/imported-ijar.jar]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec ./ijar \
+    pkg/imported.jar \
+    bazel-out/k8-fastbuild/bin/pkg/_ijar/imported/pkg/imported-ijar.jar \
+    --target_label \
+    //pkg:imported)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+
+action 'Compiling Java headers pkg/libmixed-hjar.jar (1 source file, 1 source jar)'
+  Mnemonic: Turbine
+  Target: //pkg:mixed
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 6c9aa5a86794cbde7a6ea6d0f4e4e1a9512df4dd96f6fd4ab2ddf8a0f5a0dbaf
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/gen.srcjar, bazel-out/k8-fastbuild/bin/pkg/liba-tjar.jar, bazel-out/k8-fastbuild/bin/pkg/libb-tjar.jar, bazel-out/k8-fastbuild/bin/pkg/libc-tjar.jar, jdk/bin/java, jdk/lib/ct.sym, pkg/M.java, turbine.jar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libmixed-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/libmixed-hjar.jdeps, bazel-out/k8-fastbuild/bin/pkg/libmixed-tjar.jar]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    '-Dturbine.ctSymPath=jdk/lib/ct.sym' \
+    -jar \
+    turbine.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libmixed-hjar.jar \
+    --header_compilation_output \
+    bazel-out/k8-fastbuild/bin/pkg/libmixed-tjar.jar \
+    --output_deps \
+    bazel-out/k8-fastbuild/bin/pkg/libmixed-hjar.jdeps \
+    --sources \
+    pkg/M.java \
+    --source_jars \
+    bazel-out/k8-fastbuild/bin/pkg/gen.srcjar \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:mixed \
+    --classpath \
+    bazel-out/k8-fastbuild/bin/pkg/liba-tjar.jar \
+    bazel-out/k8-fastbuild/bin/pkg/libb-tjar.jar \
+    bazel-out/k8-fastbuild/bin/pkg/libc-tjar.jar \
+    --reduce_classpath_mode \
+    NONE)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-fastbuild/bin/pkg/libmixed-hjar.jdeps, supports-path-mapping: 1}
+
+action 'Building Java resource jar'
+  Mnemonic: JavaResourceJar
+  Target: //pkg:mixed
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: a62f2f053fac9db81323da06b6bee2933703ad92daa5cbf8f8c6812023389d4b
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/libmixed-class.jar, pkg/src/main/resources/r/r.txt, singlejar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libmixed.jar]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec ./singlejar \
+    --normalize \
+    --dont_change_compression \
+    --exclude_build_data \
+    --no_strip_module_info \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libmixed.jar \
+    --sources \
+    bazel-out/k8-fastbuild/bin/pkg/libmixed-class.jar \
+    --resources \
+    pkg/src/main/resources/r/r.txt:r/r.txt)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {supports-path-mapping: 1}
+
+action 'Building pkg/libmixed-class.jar (1 source file, 1 source jar)'
+  Mnemonic: Javac
+  Target: //pkg:mixed
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 216dcabd4bfcfb4960a7705fba4f13ed9b9e886c778d27651ac6cfb601d9493a
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/_ijar/imported/pkg/imported-ijar.jar, bazel-out/k8-fastbuild/bin/pkg/gen.srcjar, bazel-out/k8-fastbuild/bin/pkg/liba-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/liba-hjar.jdeps, bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jdeps, bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jdeps, javabuilder.jar, jdk/bin/java, jdk/lib/ct.sym, pkg/M.java]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libmixed-class.jar, bazel-out/k8-fastbuild/bin/pkg/libmixed-native-header.jar, bazel-out/k8-fastbuild/bin/pkg/libmixed.jar_manifest_proto, bazel-out/k8-fastbuild/bin/pkg/libmixed.jdeps]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    -jar \
+    javabuilder.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libmixed-class.jar \
+    --native_header_output \
+    bazel-out/k8-fastbuild/bin/pkg/libmixed-native-header.jar \
+    --output_manifest_proto \
+    bazel-out/k8-fastbuild/bin/pkg/libmixed.jar_manifest_proto \
+    --compress_jar \
+    --output_deps_proto \
+    bazel-out/k8-fastbuild/bin/pkg/libmixed.jdeps \
+    --source_jars \
+    bazel-out/k8-fastbuild/bin/pkg/gen.srcjar \
+    --sources \
+    pkg/M.java \
+    --javacopts \
+    --release \
+    11 \
+    -- \
+    --target_label \
+    //pkg:mixed \
+    --strict_java_deps \
+    WARN \
+    --direct_dependencies \
+    bazel-out/k8-fastbuild/bin/pkg/liba-hjar.jar \
+    bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jar \
+    bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar \
+    --experimental_fix_deps_tool \
+    add_dep \
+    --classpath \
+    bazel-out/k8-fastbuild/bin/pkg/liba-hjar.jar \
+    bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jar \
+    bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar \
+    bazel-out/k8-fastbuild/bin/pkg/_ijar/imported/pkg/imported-ijar.jar)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-fastbuild/bin/pkg/libmixed.jdeps, supports-multiplex-workers: 1, supports-path-mapping: 1, supports-worker-cancellation: 1, supports-workers: 1}
+
+action 'Building source jar pkg/libmixed-src.jar'
+  Mnemonic: JavaSourceJar
+  Target: //pkg:mixed
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 5209f2bb93c1a71c308b68f3ac0fb1a0d481e09652980045cc4a82dae2f39dff
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/gen.srcjar, pkg/M.java, singlejar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libmixed-src.jar]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec ./singlejar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libmixed-src.jar \
+    --compression \
+    --normalize \
+    --exclude_build_data \
+    --warn_duplicate_resources \
+    --sources \
+    bazel-out/k8-fastbuild/bin/pkg/gen.srcjar \
+    --resources \
+    pkg/M.java:pkg/M.java \
+    --build_target \
+    None \
+    --output_jar_creator \
+    None)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+
+action 'Compiling Java headers pkg/libstrict_off-hjar.jar (1 source file)'
+  Mnemonic: Turbine
+  Target: //pkg:strict_off
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 7f93973145cffa8b2006400e4013d8514c318ae07657d2bb5347b994950617a2
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/libb-tjar.jar, bazel-out/k8-fastbuild/bin/pkg/libc-tjar.jar, jdk/bin/java, jdk/lib/ct.sym, pkg/Off.java, turbine.jar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libstrict_off-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/libstrict_off-hjar.jdeps, bazel-out/k8-fastbuild/bin/pkg/libstrict_off-tjar.jar]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    '-Dturbine.ctSymPath=jdk/lib/ct.sym' \
+    -jar \
+    turbine.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libstrict_off-hjar.jar \
+    --header_compilation_output \
+    bazel-out/k8-fastbuild/bin/pkg/libstrict_off-tjar.jar \
+    --output_deps \
+    bazel-out/k8-fastbuild/bin/pkg/libstrict_off-hjar.jdeps \
+    --sources \
+    pkg/Off.java \
+    --javacopts \
+    --release \
+    11 \
+    -Xep:DefaultCharset:OFF \
+    -- \
+    --target_label \
+    //pkg:strict_off \
+    --classpath \
+    bazel-out/k8-fastbuild/bin/pkg/libb-tjar.jar \
+    bazel-out/k8-fastbuild/bin/pkg/libc-tjar.jar \
+    --reduce_classpath_mode \
+    NONE)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-fastbuild/bin/pkg/libstrict_off-hjar.jdeps, supports-path-mapping: 1}
+
+action 'Building pkg/libstrict_off.jar (1 source file)'
+  Mnemonic: Javac
+  Target: //pkg:strict_off
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 10561bc927339347ebf0b70684e6aba32023c7b626a2ef34d8f0da2e35c16979
+  Inputs: [bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jdeps, bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar, bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jdeps, javabuilder.jar, jdk/bin/java, jdk/lib/ct.sym, pkg/Off.java]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libstrict_off-native-header.jar, bazel-out/k8-fastbuild/bin/pkg/libstrict_off.jar, bazel-out/k8-fastbuild/bin/pkg/libstrict_off.jar_manifest_proto, bazel-out/k8-fastbuild/bin/pkg/libstrict_off.jdeps]
+  Environment: [LC_CTYPE=C.UTF-8, PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec jdk/bin/java \
+    -Xmx256m \
+    -jar \
+    javabuilder.jar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libstrict_off.jar \
+    --native_header_output \
+    bazel-out/k8-fastbuild/bin/pkg/libstrict_off-native-header.jar \
+    --output_manifest_proto \
+    bazel-out/k8-fastbuild/bin/pkg/libstrict_off.jar_manifest_proto \
+    --compress_jar \
+    --output_deps_proto \
+    bazel-out/k8-fastbuild/bin/pkg/libstrict_off.jdeps \
+    --sources \
+    pkg/Off.java \
+    --javacopts \
+    --release \
+    11 \
+    -Xep:DefaultCharset:OFF \
+    -- \
+    --target_label \
+    //pkg:strict_off \
+    --strict_java_deps \
+    WARN \
+    --direct_dependencies \
+    bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jar \
+    bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar \
+    --experimental_fix_deps_tool \
+    add_dep \
+    --classpath \
+    bazel-out/k8-fastbuild/bin/pkg/libb-hjar.jar \
+    bazel-out/k8-fastbuild/bin/pkg/libc-hjar.jar)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+  ExecutionInfo: {internal-inline-outputs: bazel-out/k8-fastbuild/bin/pkg/libstrict_off.jdeps, supports-multiplex-workers: 1, supports-path-mapping: 1, supports-worker-cancellation: 1, supports-workers: 1}
+
+action 'Building source jar pkg/libstrict_off-src.jar'
+  Mnemonic: JavaSourceJar
+  Target: //pkg:strict_off
+  Configuration: k8-fastbuild
+  Execution platform: @platforms//host:host
+  ActionKey: 359eec7249df0e0bc322b1f5f5f1a5358bc2484256c06fb6947fd8501c57b0b7
+  Inputs: [pkg/Off.java, singlejar]
+  Outputs: [bazel-out/k8-fastbuild/bin/pkg/libstrict_off-src.jar]
+  Environment: [PATH=/bin:/usr/bin:/usr/local/bin]
+  Command Line: (exec ./singlejar \
+    --output \
+    bazel-out/k8-fastbuild/bin/pkg/libstrict_off-src.jar \
+    --compression \
+    --normalize \
+    --exclude_build_data \
+    --warn_duplicate_resources \
+    --resources \
+    pkg/Off.java:pkg/Off.java \
+    --build_target \
+    None \
+    --output_jar_creator \
+    None)
+# Configuration: 004479949dce9559432bea7e6c992ad44a0e8cdb6fcb660295ab2af371e81090
+# Execution platform: @@platforms//host:host
+

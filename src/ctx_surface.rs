@@ -1198,6 +1198,17 @@ fn strict_proto_deps<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result
     Ok(heap.alloc(surface.option_value("strict_proto_deps").to_string()))
 }
 
+/// JavaConfiguration.getStrictJavaDepsName (rules/java/JavaConfiguration.java
+/// :175-177): the configured `--strict_java_deps` constant in lower case.
+fn strict_java_deps<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    Ok(heap.alloc(
+        surface
+            .option_value("experimental_strict_java_deps")
+            .to_string()
+            .to_ascii_lowercase(),
+    ))
+}
+
 /// ProtoConfiguration.strictPublicImportsForStarlark (:239-243).
 fn strict_public_imports<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
     Ok(heap.alloc(surface.option_value("strict_public_imports").to_string()))
@@ -1432,7 +1443,7 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
             ),
             ("run_android_lint", Field(V::Bool(false))),
             ("split_bytecode_optimization_pass", Field(V::Bool(false))),
-            ("strict_java_deps", Field(V::Str("default"))),
+            ("strict_java_deps", Field(V::Dyn(strict_java_deps))),
             (
                 "use_header_compilation",
                 Method {

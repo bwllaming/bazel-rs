@@ -541,6 +541,29 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         exec: ExecValue::Propagate,
         exec_source: "builtin_exec_platforms.bzl:432",
     },
+    // JavaOptions.strictJavaDeps (`--experimental_strict_java_deps`, old
+    // name `--strict_java_deps`): read by rules_java through
+    // `ctx.fragments.java.strict_java_deps` (crate::ctx_surface); propagated
+    // to exec configurations (builtin_exec_platforms.bzl:369).
+    ValueOption {
+        option: OptionDef {
+            name: "experimental_strict_java_deps",
+            old_name: Some("strict_java_deps"),
+            abbrev: None,
+            kind: OptionKind::Enum {
+                type_name: "strict dependency checking level",
+                values: STRICT_DEPS_MODES,
+            },
+            default: "default",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/java/JavaOptions.java:167-178",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:369",
+    },
     // CoreOptions.enableRunfiles (`--enable_runfiles`, a TriState, default
     // auto): config_setting matches the configured value, which stays AUTO
     // unless set (aspect_bazel_lib's //lib:enable_runfiles `true` does not
@@ -2269,6 +2292,18 @@ impl CommandLineOptions {
                     None => return Ok(Parsed::NotModelled),
                 },
             };
+            // OptionsParserImpl.maybeAddOldNameWarning (:349-363): every
+            // modelled old name warns (oldNameWarning defaults to true).
+            let used = if negated { &name[2..] } else { name };
+            if let Some(old) = option.old_name.filter(|old| *old == used) {
+                let warning = format!(
+                    "Option '{old}' is deprecated: Use --{} instead",
+                    option.name
+                );
+                if !self.warnings.contains(&warning) {
+                    self.warnings.push(warning);
+                }
+            }
             if negated {
                 if !option.kind.boolean_syntax() {
                     return Err(invalid_argument(
@@ -3387,6 +3422,7 @@ mod tests {
                 "experimental_proto_descriptor_sets_include_source_info",
                 "strict_proto_deps",
                 "strict_public_imports",
+                "experimental_strict_java_deps",
                 "enable_runfiles",
                 "incompatible_python_disallow_native_rules",
                 "collect_code_coverage",
@@ -3404,6 +3440,10 @@ mod tests {
             Some(OptionValue::Enum("OFF"))
         );
         assert_eq!(
+            defaults.value("experimental_strict_java_deps"),
+            Some(OptionValue::Enum("DEFAULT"))
+        );
+        assert_eq!(
             defaults.value("experimental_proto_descriptor_sets_include_source_info"),
             Some(OptionValue::Bool(false))
         );
@@ -3418,6 +3458,41 @@ mod tests {
             Some(OptionValue::Enum("AUTO"))
         );
         assert_eq!(defaults.value("not_an_option"), None);
+    }
+
+    /// `--strict_java_deps` is the old name of `--experimental_strict_java_deps`
+    /// (JavaOptions.java:167-178): it sets the same value and warns once
+    /// (OptionsParserImpl.maybeAddOldNameWarning); the new name does not.
+    #[test]
+    fn strict_java_deps_old_name_sets_the_option_and_warns() {
+        let mut options = CommandLineOptions::default();
+        for arg in ["--strict_java_deps=off", "--strict_java_deps=WARN"] {
+            assert!(matches!(
+                options.parse(arg, None),
+                Ok(Parsed::Consumed(false))
+            ));
+        }
+        assert_eq!(
+            options.warnings(),
+            [
+                "Option 'strict_java_deps' is deprecated: Use --experimental_strict_java_deps instead"
+            ]
+        );
+        let configuration = options.configuration(&canonical).unwrap();
+        assert_eq!(
+            configuration.native.value("experimental_strict_java_deps"),
+            Some(OptionValue::Enum("WARN"))
+        );
+        let mut options = CommandLineOptions::default();
+        assert!(matches!(
+            options.parse("--experimental_strict_java_deps=error", None),
+            Ok(Parsed::Consumed(false))
+        ));
+        assert!(options.warnings().is_empty());
+        assert_ne!(
+            options.configuration(&canonical).unwrap().id,
+            Configuration::default().id
+        );
     }
 
     /// ProtoConfiguration's options on the command line (paired captures

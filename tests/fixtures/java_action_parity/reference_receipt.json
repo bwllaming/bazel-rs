@@ -27,7 +27,12 @@
     "ws/turbine.jar": "f0abafc96c497956bfcc9508e90af9a8a0b01b0e08ce57eee39c365424b11d1b"
   },
   "outputs": {
-    "genuine/all.txt": "17221e8494ede2188a7a9e85b5c7d6a8f41063d1810d3675e496f027e7c1f6b9"
+    "genuine/all.txt": "17221e8494ede2188a7a9e85b5c7d6a8f41063d1810d3675e496f027e7c1f6b9",
+    "genuine/strict_error.txt": "9bbb709312fbeaec114644bb779ddafc6c21b23bcd56b59fcb1b8401851a899f",
+    "genuine/strict_off.txt": "87ada1a1045b0506e780d8c2f04c8f9fe9ebfc8cba64820d5d4b4b9ffa7d71c3",
+    "genuine/strict_strict.txt": "8bdf77764a212f30a0af0bff01f3fe6740327e946473cdcbb5b544c6448d8df8",
+    "genuine/strict_warn.txt": "a888e6888a0bb7673a4d71b850d375c6d55731a05127e00618907624242f24dc"
   },
+  "strict_captures": "captured 2026-11-04 like all.txt with --strict_java_deps=MODE appended (MODE off, warn, error, strict; default reproduced all.txt byte for byte); each run's stderr carried 'WARNING: Option 'strict_java_deps' is deprecated: Use --experimental_strict_java_deps instead'",
   "notes": "45 actions: Javac (deps/exports/resources/javacopts/annotation processors/source jar/empty), Turbine, JavacTurbine (generates_api plugin), GenClass and source jars (JavaSourceJar), JavaResourceJar (resources, resource_strip_prefix), JavaIjar (java_import), a genrule. The native test analyzes the same BUILD files with the same rules_java 9.1.0 Starlark from the builtin fixture registry archive (tests/support/java_scaffold.rs); every block, ActionKey included, is byte-identical up to the configuration checksum."
 }

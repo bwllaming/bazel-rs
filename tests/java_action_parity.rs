@@ -123,3 +123,27 @@ fn java_actions_match_genuine_aquery_including_action_keys() {
     let genuine = |name: &str| fs::read_to_string(fixture().join("genuine").join(name)).unwrap();
     assert_parity(&ws.aquery(&["//pkg:all"]), &genuine("all.txt"));
 }
+
+/// `--strict_java_deps` (its old name; JavaOptions.strictJavaDeps) in every
+/// StrictDepsMode: rules_java's `ctx.fragments.java.strict_java_deps`
+/// selects JavaBuilder's `--strict_java_deps`/`--direct_dependencies` and
+/// the header compilation's direct classpath; genuine captures
+/// genuine/strict_MODE.txt (reference_receipt.json).
+#[test]
+fn strict_java_deps_modes_match_genuine_aquery() {
+    let ws = Workspace::new();
+    let genuine = |name: &str| fs::read_to_string(fixture().join("genuine").join(name)).unwrap();
+    for (mode, capture) in [
+        ("off", "strict_off.txt"),
+        ("warn", "strict_warn.txt"),
+        ("error", "strict_error.txt"),
+        ("strict", "strict_strict.txt"),
+        // `default` spelled out is genuine's default run (all.txt).
+        ("default", "all.txt"),
+    ] {
+        let flag = format!("--strict_java_deps={mode}");
+        assert_parity(&ws.aquery(&["//pkg:all", &flag]), &genuine(capture));
+    }
+    let flag = "--experimental_strict_java_deps=OFF";
+    assert_parity(&ws.aquery(&["//pkg:all", flag]), &genuine("strict_off.txt"));
+}

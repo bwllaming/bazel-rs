@@ -92,12 +92,34 @@ It passes `--reduce_classpath_mode NONE` in both cases. This is the genuine
 header optimization, independent of JavaBuilder's BAZEL reduced-classpath mode.
 Full JavaBuilder compilation enforces the strict-deps mode with the real tool.
 
+`--strict_java_deps` / `--experimental_strict_java_deps` (JavaOptions
+.strictJavaDeps, StrictDepsConverter: `off`, `warn`, `error`, `strict`,
+`default`, case-insensitive; default `default`) is a table-driven native
+option (crate::configuration::VALUE_OPTIONS): part of the configuration
+identity when set, propagated to exec configurations, and read by rules_java
+through `ctx.fragments.java.strict_java_deps` (the lower-case constant,
+JavaConfiguration.getStrictJavaDepsName). rules_java maps `strict` and
+`default` to `error`; `off` drops JavaBuilder's `--strict_java_deps` and
+`--direct_dependencies` and Turbine's direct classpath. The old name warns
+like genuine (`Option 'strict_java_deps' is deprecated: Use
+--experimental_strict_java_deps instead`). Verified: aquery of
+tests/fixtures/java_action_parity in every mode equals genuine 9.3.1's,
+ActionKeys included (`strict_java_deps_modes_match_genuine_aquery`); a real
+build (BCR rules_java 9.1.0, remotejdk 25) of a library using a class of a
+transitive-only dependency fails under `error` with JavaBuilder's
+`error: [strict] Using type pkg.C from an indirect dependency (TOOL_INFO:
+"//pkg:c")` / `buildozer 'add deps //pkg:c' //pkg:a` text, warns under
+`warn` and builds under `off`, as genuine does (2026-11-04, by hand: needs
+the JDK download). Native prints the tool's ANSI colour escapes where genuine
+strips them on a non-terminal stderr (BlazeCommandDispatcher's
+AnsiStrippingOutputStream), and its action failure framing is its own
+(console output).
+
 ## Explicit boundaries
 
 - Extra Args, per-package toolchain data, JSpecify, Java coverage
   instrumentation and `--experimental_turbine_annotation_processing` fail
-  explicitly; `--strict_java_deps` is not a native option (the fragment's
-  `default`).
+  explicitly.
   Ordinary dependent/sourcejar/empty library builds are proven; the application
   rules_jvm_external Java-library cquery passes with this implementation.
   Subsequent runtime-classpath and native-directory helpers also unblock the
