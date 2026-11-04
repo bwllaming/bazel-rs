@@ -394,6 +394,7 @@ impl Formatter {
                 return Err("You must not specify both --starlark:expr and --starlark:file".into());
             }
             let prefix = "invalid --starlark:file: ";
+            // snapshot-unrecorded: formatter input read at output time, never an analysis input.
             let source = std::fs::read_to_string(file)
                 .map_err(|_| format!("{prefix}failed to read {file}"))?;
             (source, file.to_owned(), prefix)
