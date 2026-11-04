@@ -159,10 +159,22 @@ pub(super) fn run(
             && cache.read.any()
         {
             let declared = declared_outputs(&attempt)?;
-            match cache
-                .remote
-                .lookup(remote_spec, &declared, &|_| false, cache.read, cache.write)
-            {
+            // JavaSpawn.isMandatoryOutput: a reduced attempt needs its jdeps.
+            let only = (!fallback && spec.mode == ClasspathMode::Bazel)
+                .then(|| spec.output_jdeps.clone())
+                .flatten();
+            let mandatory = |index: usize| {
+                only.as_ref()
+                    .is_none_or(|jdeps| attempt.outputs.get(index) == Some(jdeps))
+            };
+            match cache.remote.lookup_spawn(
+                remote_spec,
+                &declared,
+                &mandatory,
+                &|_| false,
+                cache.read,
+                cache.write,
+            ) {
                 Ok(found) => hit = found,
                 Err(crate::remote_cache::CacheError::Credentials(error)) => {
                     return Err(format!(
@@ -174,8 +186,10 @@ pub(super) fn run(
         }
         let (result, runner, attempt_root, remote_hit, sandboxed) = if let Some(hit) = hit {
             crate::progress::spawn_started(crate::progress::Strategy::RemoteCache);
+            let (hit, outputs) = hit;
             let disk = hit.source == crate::remote_cache::CacheSource::Disk;
-            for (name, output) in attempt.outputs.iter().zip(hit.outputs) {
+            for (name, output) in attempt.outputs.iter().zip(outputs) {
+                let Some(output) = output else { continue };
                 let downloaded = match output {
                     crate::remote_cache::Output::File(bytes) => {
                         crate::remote_cache::Downloaded::File(bytes)
@@ -736,6 +750,78 @@ if [ "$CASE" = second_fallback ]; then printf '\050\001' >> out/result.jdeps; fi
         let text = String::from_utf8_lossy(&combined);
         assert!(text.contains("terminal-stderr"), "{text}");
         assert!(!text.contains("discarded-attempt-"), "{text}");
+    }
+
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+            if entry.path().is_dir() {
+                out.extend(walk(&entry.path()));
+            } else {
+                out.push(entry.path());
+            }
+        }
+        out
+    }
+
+    /// Each attempt is its own spawn in the spawn cache (RemoteSpawnCache):
+    /// a fresh native cache with the same `--disk_cache` replays the reduced
+    /// attempt (whose jdeps requests the fallback) and the fallback without
+    /// running the compiler.
+    #[test]
+    fn attempts_are_spawn_cache_entries() {
+        const CHILD: &str = "BAZEL_RS_TEST_JAVA_SPAWN_CACHE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "action::java::tests::attempts_are_spawn_cache_entries",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let disk = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
+        let options = crate::remote_cache::RemoteOptions {
+            disk_cache: disk.path().display().to_string(),
+            accept_cached: true,
+            upload_local_results: true,
+            ..Default::default()
+        };
+        crate::remote_cache::install(crate::remote_cache::setup(&options, None).unwrap().unwrap());
+        let mut first = Fixture::new("fallback");
+        first.action.execution_info = BTreeSet::from(["no-sandbox".into()]);
+        let remote = crate::remote_cache::active();
+        let executed =
+            execute_with_remote(&first.dir.path().join("cache"), &first.action, remote).unwrap();
+        assert!(!executed.cache_hit && !executed.remote_hit);
+        assert_eq!(executed.additional_spawns, 1);
+        assert_eq!(first.trace().lines().count(), 2);
+        // Two attempts, two action results (plus their outputs).
+        assert!(walk(disk.path()).len() >= 2);
+        let mut second = Fixture::new("fallback");
+        second.action.execution_info = BTreeSet::from(["no-sandbox".into()]);
+        // The same spawns: the same paths, environment and input contents.
+        second.action.environment = first.action.environment.clone();
+        second.action.inputs = first.action.inputs.clone();
+        let replayed =
+            execute_with_remote(&second.dir.path().join("cache"), &second.action, remote).unwrap();
+        assert!(!replayed.cache_hit);
+        assert!(replayed.remote_hit);
+        assert_eq!(replayed.runner, Some("disk cache hit"));
+        assert_eq!(replayed.additional_spawns, 1);
+        assert_eq!(first.trace().lines().count(), 2, "no attempt ran again");
+        assert_eq!(
+            fs::read(&replayed.outputs[0]).unwrap(),
+            fs::read(&executed.outputs[0]).unwrap()
+        );
     }
 
     #[test]

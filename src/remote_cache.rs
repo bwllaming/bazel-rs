@@ -1212,6 +1212,10 @@ pub enum Output {
     Directory(DownloadedTree),
 }
 
+/// A [`RemoteCache::lookup_spawn`] hit: the outputs, `None` for a missing
+/// optional one, in declaration order (`Hit::outputs` is empty).
+pub type PartialHit = (Hit, Vec<Option<Output>>);
+
 /// The REAPI form of one spawn.
 #[derive(Clone, Debug)]
 pub struct RemoteAction {
@@ -1750,6 +1754,26 @@ impl RemoteCache {
         read: CachePolicy,
         write: CachePolicy,
     ) -> Result<Option<Hit>, CacheError> {
+        Ok(self
+            .lookup_spawn(action, outputs, &|_| true, stay_remote, read, write)?
+            .map(|(hit, outputs)| Hit {
+                outputs: outputs.into_iter().flatten().collect(),
+                ..hit
+            }))
+    }
+
+    /// [`Self::lookup`] of a spawn whose outputs need not all exist
+    /// (Spawn.isMandatoryOutput: a reduced-classpath JavaBuilder attempt
+    /// requires only its jdeps): a missing optional output is `None`.
+    pub fn lookup_spawn(
+        &self,
+        action: &RemoteAction,
+        outputs: &[(String, OutputKind)],
+        mandatory: &dyn Fn(usize) -> bool,
+        stay_remote: &dyn Fn(usize) -> bool,
+        read: CachePolicy,
+        write: CachePolicy,
+    ) -> Result<Option<PartialHit>, CacheError> {
         let Some((bytes, source)) = self.action_result_from(&action.key, read, write)? else {
             return Ok(None);
         };
@@ -1781,7 +1805,7 @@ impl RemoteCache {
             Some(remote_ok) => remote_ok,
             None => return Ok(None),
         };
-        let mut downloaded = Vec::new();
+        let mut downloaded: Vec<Option<Output>> = Vec::new();
         for (index, (output, kind)) in outputs.iter().enumerate() {
             if *kind == OutputKind::Directory {
                 // A declared tree artifact must come back as a directory
@@ -1794,7 +1818,7 @@ impl RemoteCache {
                     return Ok(None);
                 };
                 match self.tree(&directory.tree_digest, output, &action.key)? {
-                    Some(tree) => downloaded.push(Output::Directory(tree)),
+                    Some(tree) => downloaded.push(Some(Output::Directory(tree))),
                     None => return Ok(None),
                 }
                 continue;
@@ -1810,15 +1834,15 @@ impl RemoteCache {
                 // a symlink`, a miss here).
                 Some(_) if *symlink => return Ok(None),
                 Some(file) if remote_ok.contains(&index) => {
-                    downloaded.push(Output::Remote(file.digest.clone()))
+                    downloaded.push(Some(Output::Remote(file.digest.clone())))
                 }
                 Some(file) => match self.blob(&file.digest, &file.contents, output, &action.key)? {
-                    Some(bytes) => downloaded.push(Output::File(bytes)),
+                    Some(bytes) => downloaded.push(Some(Output::File(bytes))),
                     None => return Ok(None),
                 },
-                None if *symlink && linked.is_some() => {
-                    downloaded.push(Output::Symlink(linked.expect("checked").target.clone()))
-                }
+                None if *symlink && linked.is_some() => downloaded.push(Some(Output::Symlink(
+                    linked.expect("checked").target.clone(),
+                ))),
                 None if linked.is_some() => {
                     return Err(CacheError::Other(format!(
                         "cached output {output} is a directory or symlink, which the native profile does not materialize"
@@ -1829,6 +1853,7 @@ impl RemoteCache {
                         "cached output {output} is a directory or symlink, which the native profile does not materialize"
                     )));
                 }
+                None if !mandatory(index) => downloaded.push(None),
                 // maybeGetMissingMandatoryOutput: a miss.
                 None => return Ok(None),
             }
@@ -1844,12 +1869,15 @@ impl RemoteCache {
             return Ok(None);
         };
         self.hits.fetch_add(1, Ordering::Relaxed);
-        Ok(Some(Hit {
-            outputs: downloaded,
-            stdout,
-            stderr,
-            source,
-        }))
+        Ok(Some((
+            Hit {
+                outputs: Vec::new(),
+                stdout,
+                stderr,
+                source,
+            },
+            downloaded,
+        )))
     }
 
     /// UploadManifest.create + upload: every non-empty blob not yet uploaded
