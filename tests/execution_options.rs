@@ -118,8 +118,19 @@ fn check_up_to_date_fails_on_any_action_to_run() {
     let genuine = reference["errors"][0].as_str().unwrap();
     let message = genuine.strip_prefix("ERROR: ").unwrap();
     assert!(stderr(&fresh).contains(message), "{}", stderr(&fresh));
+    // Both status nodes are Bazel's one status action, named by its
+    // primary output.
+    assert!(
+        !stderr(&fresh).contains("volatile-status.txt"),
+        "{}",
+        stderr(&fresh)
+    );
     // Built once, the same check succeeds; a target still to build fails.
+    // The status action is checked against its cache entry, not executed
+    // (ActionCacheChecker.unconditionalExecution): a check in a later
+    // second (another volatile BUILD_TIMESTAMP) is still up to date.
     assert!(workspace.build(&["//:g"]).status.success());
+    std::thread::sleep(std::time::Duration::from_millis(1100));
     let built = workspace.build(&["--check_up_to_date", "//:g"]);
     assert!(built.status.success(), "{}", stderr(&built));
     let pending = workspace.build(&["--check_up_to_date", "//:h"]);

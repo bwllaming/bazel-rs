@@ -434,6 +434,34 @@ impl PlannedRequest {
         Ok(())
     }
 
+    /// `--check_up_to_date`: the workspace status action is not executed
+    /// unconditionally (ActionCacheChecker.unconditionalExecution,
+    /// actions/ActionCacheChecker.java:287-289, 548-554) but checked against
+    /// its action cache entry, which the status files an earlier build left
+    /// in the output tree satisfy — whatever this run's (volatile) status
+    /// would be. The status nodes write those files' bytes then, so they
+    /// are up to date exactly when that build's entries are still cached;
+    /// without both files (no earlier build) this run's status stays.
+    pub fn reuse_published_status(&mut self, output_path: &Path) {
+        // snapshot-unrecorded: the execution phase's output tree, read on every run after finalize.
+        let read = |name: &str| std::fs::read(output_path.join(name)).ok();
+        let (Some(stable), Some(volatile)) =
+            (read("stable-status.txt"), read("volatile-status.txt"))
+        else {
+            return;
+        };
+        for node in &mut self.nodes {
+            let content = match node.action.id.as_str() {
+                STABLE_STATUS_ID => &stable,
+                VOLATILE_STATUS_ID => &volatile,
+                _ => continue,
+            };
+            if let Some(write) = &mut node.action.write {
+                write.content = content.clone();
+            }
+        }
+    }
+
     fn expand_status(&mut self, computed: &ComputedWorkspaceStatus) {
         match computed {
             ComputedWorkspaceStatus::Ok(status) => {
@@ -928,6 +956,9 @@ pub fn execute_with_tests(
     // before finalize fills in the workspace status.
     crate::affected::write_if_requested(&request)?;
     request.finalize(status)?;
+    if crate::action::check_up_to_date() {
+        request.reuse_published_status(&crate::output_tree::output_path(options.cache));
+    }
     // The build event files' analysis events (crate::bep), from the plan:
     // a snapshot hit streams what its full analysis did.
     crate::bep::planned(&request);

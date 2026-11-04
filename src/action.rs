@@ -298,6 +298,11 @@ pub fn set_check_up_to_date(value: bool) {
     CHECK_UP_TO_DATE.store(value, Ordering::Relaxed);
 }
 
+/// Whether `--check_up_to_date` is set for this command.
+pub fn check_up_to_date() -> bool {
+    CHECK_UP_TO_DATE.load(Ordering::Relaxed)
+}
+
 /// The action's progress text as `-s` prints it (Bazel's describe():
 /// `Executing genrule L` for genrules, `MNEMONIC primary-output` otherwise).
 fn progress_text(action: &Action) -> String {
@@ -306,14 +311,9 @@ fn progress_text(action: &Action) -> String {
     if mnemonic == "Genrule" {
         format!("Executing genrule {label}")
     } else if mnemonic == "BazelWorkspaceStatusAction" {
-        // WorkspaceStatusAction's progress message names the file.
-        let name = action
-            .outputs
-            .first()
-            .and_then(|path| path.file_name())
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        format!("{mnemonic} {name}")
+        // Bazel's one status action (both nodes here) names its primary
+        // output (BazelWorkspaceStatusModule.java:87-98: stable first).
+        format!("{mnemonic} stable-status.txt")
     } else {
         let primary = action
             .outputs
