@@ -189,6 +189,7 @@ impl WritableDirectory {
             match open(At::Path(directory)) {
                 Ok(Some(entry)) if entry.directory => return Self::open(directory, &entry),
                 Ok(Some(_)) => break,
+                // snapshot-unrecorded: whether a stage directory a repository rule writes into exists yet (a mode change for the write, never an analysis input).
                 Ok(None) if std::fs::symlink_metadata(directory).is_err() => {
                     current = directory.parent();
                 }
