@@ -216,9 +216,95 @@ pub(crate) fn expand(
     Ok(result)
 }
 
+/// LabelExpander.expand (analysis/LabelExpander.java:63-150), genrule's
+/// `heuristic_label_expansion`: every maximal run of label characters
+/// (`[a-zA-Z0-9:/_.+-]`) that parses as a label in the rule's package and
+/// names an entry of `map` (CommandHelper.getLabelMap: the `srcs` and tool
+/// dependencies, never the outputs) is replaced by that entry's one exec
+/// path, unquoted; anything else is kept. An entry with another number of
+/// files is NotUniqueExpansionException's message.
+pub(crate) fn expand_labels_heuristically(
+    expression: &str,
+    parse: &dyn Fn(&str) -> Result<Label, String>,
+    map: &LocationMap,
+) -> Result<String, String> {
+    let is_label_char =
+        |c: char| c.is_ascii_alphanumeric() || matches!(c, ':' | '/' | '_' | '.' | '-' | '+');
+    let mut result = String::with_capacity(expression.len());
+    let mut rest = expression;
+    while let Some(c) = rest.chars().next() {
+        let end = rest.find(|c| !is_label_char(c)).unwrap_or(rest.len());
+        if end == 0 {
+            result.push(c);
+            rest = &rest[c.len_utf8()..];
+            continue;
+        }
+        let text = &rest[..end];
+        rest = &rest[end..];
+        let Some(files) = parse(text)
+            .ok()
+            .and_then(|label| map.0.get(&label.to_string()))
+        else {
+            result.push_str(text);
+            continue;
+        };
+        let paths = files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<BTreeSet<_>>();
+        match paths.first() {
+            Some(path) if paths.len() == 1 => result.push_str(path),
+            _ => {
+                return Err(format!(
+                    "heuristic label expansion found '{text}', which expands to {} files{}",
+                    paths.len(),
+                    if paths.len() > 1 {
+                        format!(", please use $(locations {text}) instead")
+                    } else {
+                        String::new()
+                    }
+                ));
+            }
+        }
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn heuristic_label_expansion_follows_label_expander() {
+        let root = Label::parse_canonical("//pkg:g").unwrap();
+        let mut map = LocationMap::default();
+        map.add("//pkg:a.txt", [file("pkg/a.txt", "pkg/a.txt")]);
+        map.add(
+            "//pkg:tool",
+            [file("bazel-out/k8-opt-exec/bin/pkg/tool", "pkg/tool")],
+        );
+        map.add(
+            "//pkg:two",
+            [file("pkg/x", "pkg/x"), file("pkg/y", "pkg/y")],
+        );
+        map.add("//pkg:none", []);
+        let mapping = BTreeMap::new();
+        let parse = |arg: &str| Label::parse_in(arg, &root.repository, &root.package, &mapping);
+        let run = |text: &str| expand_labels_heuristically(text, &parse, &map);
+        assert_eq!(
+            run(":tool a.txt >$@; cat //pkg:a.txt b.txt 'a.txt' /abs ${a.txt}"),
+            Ok("bazel-out/k8-opt-exec/bin/pkg/tool pkg/a.txt >$@; cat pkg/a.txt b.txt 'pkg/a.txt' /abs ${pkg/a.txt}".to_owned())
+        );
+        assert_eq!(
+            run("cat :two"),
+            Err("heuristic label expansion found ':two', which expands to 2 files, please use $(locations :two) instead".to_owned())
+        );
+        assert_eq!(
+            run("none"),
+            Err("heuristic label expansion found 'none', which expands to 0 files".to_owned())
+        );
+        assert_eq!(run(""), Ok(String::new()));
+    }
 
     fn file(path: &str, short_path: &str) -> File {
         File::new(crate::starlark_types::FileData {

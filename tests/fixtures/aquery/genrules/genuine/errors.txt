@@ -1,0 +1,4 @@
+ERROR: <WS>/err/BUILD:1:8: in cmd attribute of genrule rule //err:no_cmd: missing value for `cmd` attribute, you can also set `cmd_ps` or `cmd_bat` on Windows and `cmd_bash` on other platforms.
+ERROR: <WS>/err/BUILD:2:8: in cmd_bash attribute of genrule rule //err:bad_var: $(NOPE) not defined
+ERROR: <WS>/err/BUILD:4:8: in cmd attribute of genrule rule //err:not_unique: heuristic label expansion found ':fg', which expands to 2 files, please use $(locations :fg) instead
+ERROR: <WS>/err/BUILD:5:8: While resolving toolchains for target //err:no_exec (a7a71fd): Unable to find an execution platform for target platform @@platforms//host:host from available execution platforms []

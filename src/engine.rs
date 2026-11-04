@@ -7794,6 +7794,14 @@ impl Engine {
         // toolchain types, silently ignored when not a toolchain_type
         // (Make-variable targets).
         if let (RuleKind::Genrule, Some(native)) = (&rule.kind, &rule.native) {
+            // getExecutionPlatformConstraints (:150-167): the target's
+            // `exec_compatible_with` (an ImmutableSet).
+            for text in native.labels("exec_compatible_with") {
+                let label = self.resolve_rule_src(rule, &text)?;
+                if !key.exec_constraints.contains(&label) {
+                    key.exec_constraints.push(label);
+                }
+            }
             for text in native.labels("toolchains") {
                 let requirement = ToolchainTypeRequirement {
                     label: self.resolve_rule_src(rule, &text)?,
@@ -14218,6 +14226,11 @@ impl Engine {
         // (BazelGenRule.collectSources), the tool dependencies' executable
         // (else their files) and the outputs.
         let mut location_map = crate::location_expander::LocationMap::default();
+        // CommandHelper.getLabelMap (analysis/CommandHelper.java:128-181):
+        // the `srcs` and tool dependencies under their labels as written,
+        // for heuristic_label_expansion only.
+        let heuristic = native_bool(rule, "heuristic_label_expansion");
+        let mut label_map = crate::location_expander::LocationMap::default();
         let mut tools = Vec::new();
         let mut tool_trees = Vec::new();
         let mut template_variables: Vec<Vec<(String, String)>> = Vec::new();
@@ -14227,6 +14240,9 @@ impl Engine {
                 let label = self.resolve_rule_src(rule, src)?;
                 let artifacts = self.artifacts(&label, config, dry, declared)?;
                 location_map.add(&label.to_string(), artifacts.iter().map(Artifact::file));
+                if heuristic {
+                    label_map.add(&label.to_string(), artifacts.iter().map(Artifact::file));
+                }
             }
             // GenRuleBase.java:96-110 with CommandHelper (analysis/CommandHelper.java:128-181):
             // `tools` (exec configuration), `toolchains` and the resolved
@@ -14287,6 +14303,9 @@ impl Engine {
                     None => files,
                 };
                 location_map.add(&label.to_string(), located.iter().cloned());
+                if heuristic {
+                    label_map.add(&label.to_string(), located.iter().cloned());
+                }
                 if both_labels {
                     location_map.add(&actual.to_string(), located);
                 }
@@ -14351,8 +14370,14 @@ impl Engine {
                 );
             }
             // GenRuleBase.determineCommandTypeAndAttribute
-            // (rules/genrule/GenRuleBase.java:262-284); cmd_bash makes
-            // the rule unanalyzed earlier, cmd_bat/cmd_ps are Windows-only.
+            // (rules/genrule/GenRuleBase.java:262-284): `cmd_bash`, else
+            // `cmd` (rule.cmd holds the selected one's value); cmd_bat/cmd_ps
+            // are Windows-only.
+            let command_attribute = rule
+                .native
+                .as_deref()
+                .and_then(crate::native_rules::NativeTarget::genrule_command)
+                .map_or("cmd", |(name, _)| name);
             let base_command = rule.cmd.as_deref().ok_or_else(|| {
                 located(
                     rule.location.as_deref(),
@@ -14438,9 +14463,27 @@ impl Engine {
                             rule_class: "genrule",
                             label: &label,
                         }
-                        .attribute_message("cmd", &message)],
+                        .attribute_message(command_attribute, &message)],
                     )
                 })?;
+            // GenRuleBase.java:130-133 with CommandHelper.expandLabelsHeuristically
+            // (:249-256): a failure is an attribute error of `cmd`.
+            let command = if heuristic {
+                crate::location_expander::expand_labels_heuristically(&command, &parse, &label_map)
+                    .map_err(|message| {
+                        let label = crate::rule_declarations::canonical_form(&rule.label);
+                        crate::rule_errors::located_events(
+                            rule.location.as_deref(),
+                            [crate::rule_errors::RuleEvents {
+                                rule_class: "genrule",
+                                label: &label,
+                            }
+                            .attribute_message("cmd", &message)],
+                        )
+                    })?
+            } else {
+                command
+            };
             restricted_to_error(rule)?;
             if !self.semantic_only() {
                 let producer = OutputProducer::native(&key.label.to_string());
@@ -14460,7 +14503,7 @@ impl Engine {
                 return Err(located(
                     rule.location.as_deref(),
                     format!(
-                        "in cmd attribute of genrule rule {}: the expanded command is {} characters; Bazel runs commands longer than 64000 characters from a generated .genrule_script.sh file, which the native profile does not model",
+                        "in {command_attribute} attribute of genrule rule {}: the expanded command is {} characters; Bazel runs commands longer than 64000 characters from a generated .genrule_script.sh file, which the native profile does not model",
                         crate::rule_declarations::canonical_form(&rule.label),
                         command.len()
                     ),
@@ -14471,6 +14514,34 @@ impl Engine {
                 if native_bool(rule, "local") {
                     execution_info.insert("local".to_owned());
                 }
+                // GenRuleBase.isStampingEnabled (:250-257): stamp = 1, or -1
+                // under --stamp (in any configuration, the exec one
+                // included); the stable then the volatile workspace status
+                // file follow the inputs (:221-224).
+                let stamp = match rule
+                    .native
+                    .as_deref()
+                    .and_then(|native| native.attrs.get("stamp"))
+                {
+                    Some(crate::custom_rule::AttrValue::Int(1)) => true,
+                    Some(crate::custom_rule::AttrValue::Int(-1)) => {
+                        self.configurations.get(config).native.stamp
+                    }
+                    _ => false,
+                };
+                let status_inputs = if stamp {
+                    self.ensure_workspace_status(
+                        workspace_status,
+                        nodes,
+                        producers,
+                        client_environment,
+                        status_client_environment,
+                        artifact_index,
+                    )?
+                    .to_vec()
+                } else {
+                    Vec::new()
+                };
                 let mut action = Action {
                     id: action_owner.clone(),
                     command: format!(
@@ -14492,8 +14563,28 @@ impl Engine {
                     )],
                     ..Action::default()
                 };
+                // The `message` attribute's progress message
+                // (GenRuleBase.java:177-186): `MESSAGE LABEL`, else
+                // `Executing genrule LABEL`.
+                if crate::aquery::capturing()
+                    && let Some(message) = rule
+                        .native
+                        .as_deref()
+                        .and_then(|native| native.string("message"))
+                        .filter(|message| !message.is_empty())
+                {
+                    action.extra.aquery = Some(std::sync::Arc::new(crate::aquery::Meta {
+                        progress: Some(format!("{message} %{{label}}")),
+                        ..Default::default()
+                    }));
+                }
                 self.set_remote_platform(&mut action, rule, config, None, true);
-                let action_inputs = inputs.iter().cloned().chain(tools).collect::<Vec<_>>();
+                let action_inputs = inputs
+                    .iter()
+                    .cloned()
+                    .chain(tools)
+                    .chain(status_inputs)
+                    .collect::<Vec<_>>();
                 // The tools' runfiles trees are shared input groups, as a
                 // Starlark action's tools' (GenRuleAction's spawn expands the
                 // runfiles tree artifacts CommandHelper resolved).

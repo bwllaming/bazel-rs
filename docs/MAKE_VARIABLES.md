@@ -170,9 +170,10 @@ StarlarkRuleConfiguredTargetUtil.buildRule reports them, `:97-115`).
   (docs/CQUERY.md); `query_and_cquery_list_toolchain_edges` checks both commands.
 * A Starlark traceback keeps the native format (the duplicate-`targets`
   message is Bazel's text).
-* `heuristic_label_expansion = True`, `cmd_bash`, Windows commands and
+* Windows commands (`cmd_bat`/`cmd_ps` on a Windows execution platform) and
   commands longer than 64000 characters (Bazel's script file) still fail
-  explicitly (docs/NATIVE_BUILD_RULES.md). Tool runfiles trees are not
+  explicitly; `cmd_bash` and `heuristic_label_expansion` are modelled
+  (docs/NATIVE_BUILD_RULES.md). Tool runfiles trees are not
   staged (docs/RUNFILES.md).
 * `RuleClass.checkForDuplicateLabels` for `toolchains` remains the shared
   label-list gap (docs/COMMON_RULE_ATTRIBUTES.md).

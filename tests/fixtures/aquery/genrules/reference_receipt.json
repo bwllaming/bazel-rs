@@ -1,0 +1,24 @@
+{
+  "bazel": "9.3.1 (/home/coder/bazel/.direnv/reference/bazel-9.3.1-linux-x86_64)",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "invocation": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 bazel --batch --ignore_all_rc_files --output_user_root=<private> COMMAND in a fresh copy of ws/ (MODULE.bazel module(name='gcv'), bazel_dep platforms 1.0.0 from bcr.bazel.build)",
+  "captured": "2026-11-04",
+  "script": "/tmp/opencode/w/gcv-capture.sh (not committed), sha256 0e6d8191b9fffd317a4a462479ae43d0c4fb66c13c75bf4d8e5f9a8069b59a03",
+  "fixture_files_sha256": {
+    "ws/MODULE.bazel": "106fde1953273ae0e9a8b188533c76ea4bb6b3f3da32ba8450b074e4ff747774",
+    "ws/err/BUILD": "ab1ac97765429daf9abd241a729eed6f47a86284154834472fb2b50fa5c3721f",
+    "ws/err/a.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "ws/err/b.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "ws/pkg/BUILD": "6a48984487c1888a656017fadb982a831a44511cbe69c3c5201841a3432f6258",
+    "ws/pkg/in.txt": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+    "ws/pkg/two.txt": "27dd8ed44a83ff94d557f9fd0412ed5a8cbca69ea04922d88c01184a07300a5a"
+  },
+  "outputs": {
+    "all.txt": "aquery //pkg:all",
+    "stamp.txt": "aquery --stamp //pkg:all",
+    "all_ok.txt": "build //pkg:all_ok, then the contents of bazel-bin/pkg/all_ok.txt",
+    "errors.txt": "build //err:T for T in no_cmd bad_var not_unique no_exec: the first 'ERROR: ' line of each, the workspace path as <WS>"
+  },
+  "covers": "genrule command selection (GenRuleBase.determineCommandTypeAndAttribute: cmd_bash over cmd, a select()ed cmd_bash, an explicit empty cmd_bash, cmd_bat/cmd_ps ignored off Windows, the missing-command error), Make variables (SRCS, <, @, RULEDIR, @D, COMPILATION_MODE, BINDIR, GENDIR, TARGET_CPU), an expansion error named after cmd_bash, `message` (the progress message), `local`, `output_to_bindir`, `stamp` 1/-1/0 with and without --stamp (the workspace status inputs), `heuristic_label_expansion` (and its not-unique error), `exec_compatible_with` (and the no-execution-platform error), empty aspect_hints/compatible_with; every ActionKey",
+  "normalized": "'# Configuration: <BuildOptions checksum>' lines (native ConfigIds); the configuration hash in the toolchain-resolution error"
+}

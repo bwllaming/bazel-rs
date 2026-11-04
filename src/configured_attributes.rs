@@ -856,7 +856,9 @@ pub fn configure(
                     Arc::make_mut(&mut configured).srcs = srcs;
                 }
                 if matches!(configured.kind, crate::package::RuleKind::Genrule) {
-                    let cmd = target.string("cmd").map(str::to_owned);
+                    let cmd = target
+                        .genrule_command()
+                        .map(|(_, command)| command.to_owned());
                     if configured.cmd != cmd {
                         Arc::make_mut(&mut configured).cmd = cmd;
                     }

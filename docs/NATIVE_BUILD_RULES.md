@@ -190,13 +190,31 @@ match the target platform (docs/PLATFORMS.md).
   configuration, docs/CONFIGURATION.md "Exec transition"; genrule
   `toolchains` with Make-variable expansion, docs/MAKE_VARIABLES.md;
   metadata such as `tags`, `deprecation`,
-  `licenses`, `features`, `message`, `local`, `output_to_bindir`,
+  `licenses`, `features`, `output_to_bindir`,
   `exec_properties`, Windows-only `cmd_bat`/`cmd_ps`; genrule
   `executable = True`, below; `target_compatible_with`, checked before
-  toolchain resolution, docs/PLATFORMS.md). Any other non-empty
-  value (`cmd_bash`, `stamp` other than 0,
-  `package_metadata`, `aspect_hints`, ...) is
+  toolchain resolution, docs/PLATFORMS.md; the genrule attributes of the
+  next item). Any other non-empty value (`aspect_hints`,
+  `compatible_with`, `restricted_to`, `exec_group_compatible_with`, ...) is
   recorded and analysis fails explicitly listing it.
+* genrule command selection and options (`rules/genrule/GenRuleBase.java`):
+  the command is the explicitly set `cmd_bash`, else `cmd`
+  (`determineCommandTypeAndAttribute`, `:262-284`; an explicit empty string
+  counts, a `select()` resolving to `None` does not; `cmd_bat`/`cmd_ps` only
+  apply to a Windows execution platform, which the native profile never
+  selects), and expansion errors name the chosen attribute (`in cmd_bash
+  attribute of genrule rule ...`). `message` is the progress message
+  (`MESSAGE LABEL`, aquery's description), `local = True` adds the `local`
+  execution requirement, `stamp = 1` (or `-1` under `--stamp`, in any
+  configuration) adds the stable then the volatile workspace status file to
+  the inputs (`isStampingEnabled`, `:221-224, 250-257`),
+  `heuristic_label_expansion = True` replaces every run of label characters
+  that names a `srcs`/tool dependency with its single exec path, an entry
+  with another number of files failing with LabelExpander's `heuristic label
+  expansion found ':x', which expands to N files` (`:130-133`), and
+  `exec_compatible_with` constrains the execution platform. Paired capture
+  `tests/fixtures/aquery/genrules` (every ActionKey, built outputs and the
+  errors, `tests/aquery.rs`).
 * `filegroup(data = ...)` (rules/filegroup/Filegroup.java:48-119,
   FilegroupRule.java:36-80): `data` labels are target-configuration
   prerequisites (visibility, testonly, select(), `query deps()`) that

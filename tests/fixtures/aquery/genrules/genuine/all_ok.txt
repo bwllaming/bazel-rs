@@ -1,0 +1,14 @@
+bash
+bash
+cmd
+hello
+bazel-out/k8-fastbuild/bin/pkg bazel-out/k8-fastbuild/bin/pkg fastbuild bazel-out/k8-fastbuild/bin bazel-out/k8-fastbuild/bin x86_64
+hello
+3
+auto
+no
+tool
+hello
+hello
+two.txt heuristic.txt
+common

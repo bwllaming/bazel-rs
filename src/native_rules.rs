@@ -813,6 +813,17 @@ impl NativeTarget {
         self.attrs.contains_key(name) || self.configurable.contains_key(name)
     }
 
+    /// GenRuleBase.determineCommandTypeAndAttribute
+    /// (rules/genrule/GenRuleBase.java:262-284) off Windows: the explicitly
+    /// specified `cmd_bash`, else `cmd` (an explicit empty string counts;
+    /// `cmd_bat`/`cmd_ps` only apply to a Windows execution platform), as
+    /// the attribute name and its value.
+    pub fn genrule_command(&self) -> Option<(&'static str, &str)> {
+        ["cmd_bash", "cmd"]
+            .into_iter()
+            .find_map(|name| self.string(name).map(|command| (name, command)))
+    }
+
     pub fn labels(&self, name: &str) -> Vec<String> {
         match self.attrs.get(name) {
             Some(AttrValue::Labels(values)) => values.clone(),
@@ -1765,6 +1776,7 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
             "toolchains",
             "outs",
             "cmd",
+            "cmd_bash",
             "cmd_bat",
             "cmd_ps",
             "tags",
@@ -1778,6 +1790,9 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
             "local",
             "output_to_bindir",
             "exec_properties",
+            // The execution platform's constraints (crate::engine
+            // toolchain_context_key).
+            "exec_compatible_with",
             "generator_name",
             "generator_function",
             "generator_location",
@@ -1956,11 +1971,11 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
             ("executable", AttrValue::Bool(false))
             | ("heuristic_label_expansion", AttrValue::Bool(false)) => true,
             // An executable genrule's single output is its executable
-            // (GenRuleBase.java:78-86, 288-298; crate::engine).
-            ("executable", AttrValue::Bool(true)) => target.rule_class == "genrule",
-            // stamp=0 is the genrule default (BazelGenRuleRule.java:47).
-            ("stamp", AttrValue::Int(0)) => true,
-            ("cmd_bash", _) => false,
+            // (GenRuleBase.java:78-86, 288-298), heuristic label expansion
+            // (:130-133) and stamping (:221-224, 250-257) are modelled
+            // (crate::engine).
+            ("executable" | "heuristic_label_expansion", AttrValue::Bool(true))
+            | ("stamp", AttrValue::Int(_)) => target.rule_class == "genrule",
             _ => false,
         };
         if !neutral_value {

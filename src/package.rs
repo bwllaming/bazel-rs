@@ -1259,7 +1259,9 @@ fn declare_native<'v>(
             RuleKind::Genrule,
             target.labels("srcs"),
             target.strings("outs"),
-            target.string("cmd").map(str::to_owned),
+            target
+                .genrule_command()
+                .map(|(_, command)| command.to_owned()),
         ),
         name => (
             RuleKind::Native(name),
@@ -3281,7 +3283,7 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
         // Bazel 9.3 schemas (native_rules.rs): common attributes load, but
         // analysis-relevant ones are recorded as unanalyzed. testonly only
         // drives the prerequisite check the engine runs.
-        let rules = eval("filegroup(name='x', testonly=True, tags=['manual'])\ngenrule(name='g', outs=['y'], cmd='true', tools=[':x'], executable=True, stamp=1)\ngenrule(name='n', cmd='true', outs=[])\ngenrule(name='o', outs=['z'])").unwrap();
+        let rules = eval("filegroup(name='x', testonly=True, tags=['manual'])\ngenrule(name='g', outs=['y'], cmd='true', cmd_bash='false', tools=[':x'], executable=True, stamp=1, aspect_hints=[':x'])\ngenrule(name='n', cmd='true', outs=[])\ngenrule(name='o', outs=['z'])").unwrap();
         let x = &rules[&Label::parse(":x", "pkg").unwrap()];
         assert!(x.is_manual());
         assert!(x.is_test_only(&PackageArgs::default()));
@@ -3290,9 +3292,11 @@ unused = [genrule(name = "make_" + n, outs = [n + ".out"], cmd = "echo " + n + "
         // Value gaps are evaluated on the configured target (crate::engine).
         assert!(g.unanalyzed.is_empty(), "{:?}", g.unanalyzed);
         let gaps = crate::native_rules::analysis_gaps(g.native.as_ref().unwrap());
-        // `tools` is analyzed (the exec transition) and so is `executable`
-        // (its single output is the executable); `stamp = 1` is a gap.
-        assert_eq!(gaps, ["attribute 'stamp' = 1"]);
+        // `tools` is analyzed (the exec transition) and so are `executable`
+        // (its single output is the executable), `cmd_bash` (it wins over
+        // `cmd`) and `stamp`; `aspect_hints` is a gap.
+        assert_eq!(gaps, ["attribute 'aspect_hints' = [\"//pkg:x\"]"]);
+        assert_eq!(g.cmd.as_deref(), Some("false"));
         assert!(rules[&Label::parse(":n", "pkg").unwrap()].outs.is_empty());
         assert!(rules[&Label::parse(":o", "pkg").unwrap()].cmd.is_none());
         for (source, expected) in [

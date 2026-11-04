@@ -60,10 +60,14 @@ impl Workspace {
     }
 
     fn aquery(&self, args: &[&str]) -> Output {
+        self.command("aquery", args)
+    }
+
+    fn command(&self, command: &str, args: &[&str]) -> Output {
         let registry = builtin_registry_flag();
         let output = Command::new("timeout")
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
-            .args(["--ignore_all_rc_files", "--cache-dir=cache", "aquery"])
+            .args(["--ignore_all_rc_files", "--cache-dir=cache", command])
             .args(["--experimental-builtin-modules", registry.as_str()])
             .args(args)
             .current_dir(self.0.path())
@@ -72,7 +76,7 @@ impl Workspace {
         assert_ne!(
             output.status.code(),
             Some(124),
-            "aquery timed out: {args:?}"
+            "{command} timed out: {args:?}"
         );
         output
     }
@@ -414,4 +418,53 @@ fn aquery_depset_and_compressed_write_keys_match_genuine() {
     let all = ws.stdout(&["//pkg:all"]);
     let expected = fs::read_to_string(fixture_named("depsets").join("genuine/all.txt")).unwrap();
     assert_text(&all, &expected);
+}
+
+/// tests/fixtures/aquery/genrules: genrule command selection (cmd_bash over
+/// cmd, a select()ed and an explicit empty cmd_bash, cmd_bat/cmd_ps ignored
+/// off Windows), Make variables, `message`, `local`, `output_to_bindir`,
+/// `stamp` with and without --stamp, `heuristic_label_expansion` and
+/// `exec_compatible_with`: every action, ActionKey included, byte for byte;
+/// the built outputs and the analysis errors as genuine Bazel 9.3.1's.
+#[test]
+fn aquery_genrule_attributes_match_genuine() {
+    let ws = Workspace::of("genrules");
+    let genuine =
+        |name: &str| fs::read_to_string(fixture_named("genrules").join("genuine").join(name));
+    assert_text(&ws.stdout(&["//pkg:all"]), &genuine("all.txt").unwrap());
+    assert_text(
+        &ws.stdout(&["--stamp", "//pkg:all"]),
+        &genuine("stamp.txt").unwrap(),
+    );
+    let build = ws.command("build", &["//pkg:all_ok"]);
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let bin = ws.command("info", &["bazel-bin"]);
+    let bin = String::from_utf8(bin.stdout).unwrap();
+    assert_eq!(
+        fs::read_to_string(Path::new(bin.trim()).join("pkg/all_ok.txt")).unwrap(),
+        genuine("all_ok.txt").unwrap()
+    );
+    let workspace = ws.0.path().display().to_string();
+    for (target, expected) in ["no_cmd", "bad_var", "not_unique", "no_exec"]
+        .iter()
+        .zip(genuine("errors.txt").unwrap().lines())
+    {
+        let output = ws.command("build", &[&format!("//err:{target}")]);
+        assert_eq!(output.status.code(), Some(1), "{target}");
+        let stderr = String::from_utf8_lossy(&output.stderr).replace(&workspace, "<WS>");
+        let expected = expected.strip_prefix("ERROR: ").unwrap();
+        // The configuration hash of the toolchain-resolution error is the
+        // native ConfigId's.
+        let (head, tail) = expected.split_once(" (a7a71fd)").unwrap_or((expected, ""));
+        assert!(
+            stderr
+                .lines()
+                .any(|line| line.contains(head) && line.ends_with(tail)),
+            "{target}: expected {expected:?} in {stderr}"
+        );
+    }
 }

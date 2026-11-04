@@ -1,0 +1,5 @@
+genrule(name = "no_cmd", outs = ["no_cmd.txt"], cmd_bat = "echo bat > $@")
+genrule(name = "bad_var", outs = ["bad_var.txt"], cmd = "echo ok > $@", cmd_bash = "echo $(NOPE) > $@")
+filegroup(name = "fg", srcs = ["a.txt", "b.txt"])
+genrule(name = "not_unique", srcs = [":fg"], outs = ["not_unique.txt"], cmd_bash = "cat :fg > $@", heuristic_label_expansion = True)
+genrule(name = "no_exec", outs = ["no_exec.txt"], cmd_bash = "echo > $@", exec_compatible_with = ["@platforms//os:windows"])
