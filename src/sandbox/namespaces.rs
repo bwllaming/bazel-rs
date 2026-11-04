@@ -967,7 +967,9 @@ fn loopback_up() -> Result<(), String> {
             return Err(format!("if_nametoindex: {}", errno()));
         }
         ifr.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
-        if libc::ioctl(fd, libc::SIOCSIFFLAGS, &ifr) < 0 {
+        // The request type is `c_ulong` on glibc and `c_int` on musl.
+        #[allow(clippy::useless_conversion, clippy::unnecessary_cast)]
+        if libc::ioctl(fd, libc::SIOCSIFFLAGS as _, &ifr) < 0 {
             let error = errno();
             libc::close(fd);
             return Err(format!("ioctl: {error}"));
