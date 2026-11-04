@@ -225,21 +225,31 @@ pub fn materialize<T>(
     let manifest_path = manifests.join(format!("{key}.json"));
     check_optional_directory(&destination)?;
     check_optional_regular(&manifest_path)?;
-    if destination.is_dir()
-        && let Ok(bytes) = read_whole(&manifest_path)
-        && let Ok(manifest) = serde_json::from_slice::<Manifest>(&bytes)
-        && manifest.policy == POLICY
-        && manifest.key == key
-        && manifest.commit == commit
-        && snapshot(&destination, false).is_ok_and(|actual| actual == manifest.files)
-    {
-        // REPO + INTEGRITY records of the analysis snapshot.
-        crate::observed_fs::repository_tree(
-            "git",
-            &spec.remote,
-            &destination,
-            Some(&manifest_path),
-        );
+    // The warm check: reuse the published tree (with its REPO + INTEGRITY
+    // records of the analysis snapshot).
+    let warm = || {
+        let reused = destination.is_dir()
+            && read_whole(&manifest_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).ok())
+                .is_some_and(|manifest| {
+                    manifest.policy == POLICY
+                        && manifest.key == key
+                        && manifest.commit == commit
+                        && snapshot(&destination, false)
+                            .is_ok_and(|actual| actual == manifest.files)
+                });
+        if reused {
+            crate::observed_fs::repository_tree(
+                "git",
+                &spec.remote,
+                &destination,
+                Some(&manifest_path),
+            );
+        }
+        reused
+    };
+    if warm() {
         let module_file = read_whole(&destination.join("MODULE.bazel"))?;
         let value = validate(&destination, &module_file)?;
         return Ok((
@@ -257,12 +267,16 @@ pub fn materialize<T>(
         .tempdir_in(&trees)
         .map(crate::repository_store::Scratch::new)
         .map_err(|e| format!("cannot stage Git tree: {e}"))?;
-    crate::observed_fs::taint(crate::observed_fs::Taint::Network, || {
+    // Settled when the warm check, run again after the publication below,
+    // reuses it: the tree's key names the commit (and the patches), and the
+    // next run reuses it exactly so (a verify shadow keeps the taints).
+    let fetched = crate::observed_fs::HeldTaint::new(crate::observed_fs::Taint::Network, || {
         format!("git fetch {} {commit}", spec.remote)
     });
-    crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryMaterialized, || {
-        format!("git tree {} {commit}", spec.remote)
-    });
+    let materialized = crate::observed_fs::HeldTaint::new(
+        crate::observed_fs::Taint::RepositoryMaterialized,
+        || format!("git tree {} {commit}", spec.remote),
+    );
     fetch_export(spec, &commit, &cache, stage.path())?;
     patches.apply_tree(stage.path())?;
     let files = snapshot(stage.path(), true)?;
@@ -270,7 +284,7 @@ pub fn materialize<T>(
     let value = validate(stage.path(), &module_file)?;
     let manifest = Manifest {
         policy: POLICY.into(),
-        key,
+        key: key.clone(),
         commit: commit.clone(),
         files,
     };
@@ -292,6 +306,10 @@ pub fn materialize<T>(
         crate::repository_ctx::remove_tree(&destination)
             .map_err(|cleanup| format!("{error}; cannot clean unpublished Git tree: {cleanup}"))?;
         return Err(error);
+    }
+    if crate::observed_fs::reprobes_executions() && warm() {
+        fetched.settle();
+        materialized.settle();
     }
     Ok((
         GitTree {

@@ -241,6 +241,7 @@ pub(crate) fn specification_digest_mixed(
     repositories: &RepositorySet,
     canonical_name: &str,
     provenance_digest: &[u8; 32],
+    specification_digest: &[u8; 32],
     declared: &DeclaredEnvironment,
 ) -> Result<String, String> {
     let host = crate::host_os::host_spec(repositories.host()?.as_ref())?;
@@ -258,11 +259,14 @@ pub(crate) fn specification_digest_mixed(
     let mut digest = sha2::Sha256::new();
     use sha2::Digest as _;
     // v3: the slots' profile bump (crate::repository_store::SPEC_PROFILE).
-    digest.update(b"ordinary-repository-spec-digest-v3");
+    // v4: the repository's own specification beside its group's
+    // provenance (crate::repository's ORDINARY_PROFILE).
+    digest.update(b"ordinary-repository-spec-digest-v4");
     digest.update([0]);
     digest.update((canonical_name.len() as u64).to_le_bytes());
     digest.update(canonical_name.as_bytes());
     digest.update(provenance_digest);
+    digest.update(specification_digest);
     digest.update((host.len() as u64).to_le_bytes());
     digest.update(&host);
     digest.update((environment.len() as u64).to_le_bytes());

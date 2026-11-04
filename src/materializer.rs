@@ -474,9 +474,21 @@ fn materialize_registry(
             );
             return Ok((destination.clone(), false));
         }
-        crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryMaterialized, || {
-            format!("registry archive {name}@{version}")
-        });
+        // Settled by the warm check run again after the publication below.
+        let materialized = crate::observed_fs::HeldTaint::new(
+            crate::observed_fs::Taint::RepositoryMaterialized,
+            || format!("registry archive {name}@{version}"),
+        );
+        let sink = materialized.sink();
+        let cached_download = |cache: &Path,
+                               urls: &[String],
+                               integrity: &Integrity,
+                               downloads_enabled: bool,
+                               canonical_id: &str| {
+            crate::observed_fs::with_registry_sink(sink.clone(), || {
+                cached_download(cache, urls, integrity, downloads_enabled, canonical_id)
+            })
+        };
         let blob = cached_download(
             &cache,
             &urls,
@@ -561,6 +573,24 @@ fn materialize_registry(
         fs::rename(staging.path(), &destination)
             .map_err(|e| format!("cannot publish repository: {e}"))?;
         atomic_write(&manifest_path, &encoded)?;
+        // The warm check again, exactly as the next run's reuse runs it
+        // (above): when it reuses this publication, the materialization
+        // stands as that reuse (its REPO + INTEGRITY records) and its
+        // download only shaped the tree the records validate (the tree's
+        // key names the source and its integrity). A verify shadow keeps
+        // the taint (the hit materialized nothing).
+        if crate::observed_fs::reprobes_executions()
+            && published_tree_matches(&destination, &manifest_path)
+        {
+            crate::observed_fs::repository_tree(
+                "registry",
+                &format!("{name}@{version}"),
+                &destination,
+                Some(&manifest_path),
+            );
+            drop(sink);
+            materialized.settle();
+        }
         Ok((destination.clone(), true))
     };
     if !warming {

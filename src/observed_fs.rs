@@ -189,14 +189,15 @@ pub fn reprobes_executions() -> bool {
 }
 
 /// Whether the window's recorder already holds a taint that keeps the run
-/// from being saved, other than `except` (events still in a frame of some
+/// from being saved, other than `except` and `extension-output` (which a
+/// snapshot serving only derived hits ignores) (events still in a frame of some
 /// thread are not seen: an optimisation only — it saves a re-probe that
 /// could not make the run saveable).
 pub fn tainted_otherwise(except: Taint) -> bool {
     active().is_some_and(|recorder| {
-        lock(&recorder.taints)
-            .keys()
-            .any(|taint| *taint != except && !taint.plan_dependent())
+        lock(&recorder.taints).keys().any(|taint| {
+            *taint != except && !taint.plan_dependent() && *taint != Taint::ExtensionOutput
+        })
     })
 }
 
@@ -573,6 +574,13 @@ pub enum Taint {
     /// A module extension's implementation was evaluated (not reused from a
     /// lockfile entry).
     ExtensionEvaluated,
+    /// A module extension evaluated in this run printed (and its result
+    /// otherwise stands as the next run's reuse of its lockfile entry,
+    /// crate::repository's extension re-probe): the next run prints
+    /// nothing, so a snapshot of this run may only serve derived hits,
+    /// which never replay the planning's stderr (`bazel-rs affected`'s
+    /// scoped planning, crate::snapshot::save::Save::set_derive_only).
+    ExtensionOutput,
     /// A repository tree was (re)published: archive extraction, Git export,
     /// built-in tools staging.
     RepositoryMaterialized,
@@ -612,6 +620,7 @@ impl Taint {
             Self::LocalRepositoryOutput => "local-repository-output",
             Self::ReplayMismatch => "local-repository-replay-mismatch",
             Self::ExtensionEvaluated => "extension-evaluated",
+            Self::ExtensionOutput => "extension-output",
             Self::RepositoryMaterialized => "repository-materialized",
             Self::LockfileWritePending => "lockfile-write-pending",
             Self::CrossRepositorySymlink => "cross-repository-symlink",
@@ -669,8 +678,18 @@ pub struct Recorder {
     env: Mutex<BTreeMap<OsString, EnvObservation>>,
     repositories: Mutex<Vec<RepositoryRecord>>,
     selections: Mutex<BTreeMap<String, crate::repository_publication::Receipt>>,
+    /// The specification pointers this process replaced, with the
+    /// repository whose selection they name ([`supersede_selection`]): an
+    /// absence of one observed before the replacement but reaching the
+    /// recorder after it (a probe's captured set replayed later) is
+    /// dropped too.
+    superseded_selections: Mutex<BTreeSet<(PathBuf, String)>>,
     repository_roots: Mutex<HashMap<PathBuf, Claim>>,
     taints: Mutex<BTreeMap<Taint, TaintRecord>>,
+    /// Provisional [`Taint::ExtensionEvaluated`] taints ([`provisional_taint`]):
+    /// part of every view of the taints until confirmed
+    /// ([`confirm_provisional`]).
+    provisional: Mutex<BTreeSet<String>>,
     /// The plan-dependent taints analysis registered, once the planned
     /// request decided them ([`settle_plan_taints`]).
     plan_registered: Mutex<Option<BTreeMap<Taint, TaintRecord>>>,
@@ -757,8 +776,10 @@ impl Recorder {
             env: Mutex::default(),
             repositories: Mutex::default(),
             selections: Mutex::default(),
+            superseded_selections: Mutex::default(),
             repository_roots: Mutex::default(),
             taints: Mutex::default(),
+            provisional: Mutex::default(),
             plan_registered: Mutex::default(),
             window: Mutex::default(),
         }
@@ -807,6 +828,24 @@ impl Recorder {
     /// order the observations come in (W6R: workers' units reach the
     /// recorder in another order than one loading thread's loads).
     fn store_observation(&self, path: &Path, op: Op, outcome: Outcome) {
+        // A pointer's absence before it was published — by this process
+        // ([`Self::store_supersede_selection`]) or by another one whose
+        // publication this process then read and reused (the double-checked
+        // probe under the writer lock, a concurrent `affected` planning) —
+        // is superseded by that publication, in whatever order the events
+        // arrive: what the analysis used is the publication it read.
+        match &op {
+            Op::SelectionAbsent(canonical)
+                if lock(&self.superseded_selections)
+                    .contains(&(path.to_path_buf(), canonical.clone())) =>
+            {
+                return;
+            }
+            Op::SelectionRead(canonical) => {
+                self.store_supersede_selection_absence(path, canonical);
+            }
+            _ => {}
+        }
         let mut shard = lock(&self.shards[shard_of(path)]);
         if let Some((spelled, _)) = shard.get_key_value(path)
             && path.as_os_str().as_bytes() < spelled.as_os_str().as_bytes()
@@ -855,7 +894,19 @@ impl Recorder {
         lock(&self.shards[shard_of(path)]).remove(path);
     }
 
+    /// A read of the pointer at `path` for `canonical`: its absences
+    /// recorded before or after are superseded ([`Self::store_observation`]).
+    fn store_supersede_selection_absence(&self, path: &Path, canonical: &str) {
+        lock(&self.superseded_selections).insert((path.to_path_buf(), canonical.to_owned()));
+        if let Some(observations) = lock(&self.shards[shard_of(path)]).get_mut(path) {
+            observations.retain(|observation| {
+                !matches!(&observation.op, Op::SelectionAbsent(owner) if owner == canonical)
+            });
+        }
+    }
+
     fn store_supersede_selection(&self, path: &Path, canonical: &str) {
+        lock(&self.superseded_selections).insert((path.to_path_buf(), canonical.to_owned()));
         if let Some(observations) = lock(&self.shards[shard_of(path)]).get_mut(path) {
             observations.retain(|observation| {
                 !matches!(&observation.op,
@@ -870,6 +921,33 @@ impl Recorder {
             return;
         }
         self.store_taint(kind, detail);
+    }
+
+    /// [`provisional_taint`] (through a frame like any taint).
+    fn provisional(&self, detail: String) {
+        if self.redirected() {
+            push_event(Event::Provisional(detail));
+            return;
+        }
+        lock(&self.provisional).insert(detail);
+    }
+
+    /// The taints with the unconfirmed provisional ones
+    /// ([`Taint::ExtensionEvaluated`], `<detail> (unconfirmed)`).
+    fn taints_with_provisional(&self) -> BTreeMap<Taint, TaintRecord> {
+        let mut taints = lock(&self.taints).clone();
+        let provisional = lock(&self.provisional);
+        if !provisional.is_empty() {
+            let record = taints.entry(Taint::ExtensionEvaluated).or_default();
+            for detail in provisional.iter() {
+                record.count += 1;
+                let detail = format!("{detail} (unconfirmed)");
+                if record.details.len() < TAINT_DETAILS && !record.details.contains(&detail) {
+                    record.details.push(detail);
+                }
+            }
+        }
+        taints
     }
 
     /// [`Self::taint`] into the recorder itself.
@@ -1163,14 +1241,15 @@ impl Recorder {
             repositories,
             selections: lock(&self.selections).values().cloned().collect(),
             crossed,
-            taints: lock(&self.taints).clone(),
+            taints: self.taints_with_provisional(),
             plan_registered: lock(&self.plan_registered).clone(),
         }
     }
 
-    /// The taints recorded so far.
+    /// The taints recorded so far, with the unconfirmed provisional ones
+    /// ([`provisional_taint`]).
     pub fn taints(&self) -> BTreeMap<Taint, TaintRecord> {
-        lock(&self.taints).clone()
+        self.taints_with_provisional()
     }
 
     /// Everything recorded so far, sorted, moved out of the recorder (no
@@ -1222,7 +1301,7 @@ impl Recorder {
                 .into_values()
                 .collect(),
             crossed,
-            taints: lock(&self.taints).clone(),
+            taints: self.taints_with_provisional(),
             plan_registered: lock(&self.plan_registered).clone(),
         }
     }
@@ -1418,6 +1497,9 @@ impl Recorder {
         match event {
             Event::Observe(path, op, outcome) => self.store_observation(&path, op, outcome),
             Event::Taint(kind, detail) => self.store_taint(kind, detail),
+            Event::Provisional(detail) => {
+                lock(&self.provisional).insert(detail);
+            }
             Event::Env(name, observation) => self.store_env(&name, observation),
             Event::Claim(claim) => self.apply_claim(claim),
             Event::Supersede(path) => self.store_supersede(&path),
@@ -1567,6 +1649,8 @@ pub fn hook(hook: Hook) -> bool {
 enum Event {
     Observe(PathBuf, Op, Outcome),
     Taint(Taint, String),
+    /// [`provisional_taint`].
+    Provisional(String),
     Env(OsString, EnvObservation),
     Claim(ClaimEvent),
     /// [`supersede`].
@@ -2327,6 +2411,118 @@ pub fn with_network_sink<R>(sink: Option<Arc<NetworkSink>>, work: impl FnOnce() 
     result
 }
 
+/// A provisional [`Taint::ExtensionEvaluated`]: a module extension evaluated
+/// in this run whose result validated as the next run's reuse of its
+/// lockfile entry would (crate::repository's extension re-probe). It taints
+/// the run — every view of the taints lists it — until
+/// [`confirm_provisional`] confirms that the entry stands in the lockfiles
+/// as this command leaves them (crate::registry_session::RegistrySession::
+/// note_hidden_lockfile, on every save path): fail-closed, a path that never
+/// confirms keeps the taint.
+pub fn provisional_taint(detail: impl FnOnce() -> String) {
+    if let Some(recorder) = active() {
+        recorder.provisional(detail());
+    }
+}
+
+/// Confirm a [`provisional_taint`] (also after the window closed): it no
+/// longer taints the run. A later replay of the same provisional event
+/// (a captured set) taints again.
+pub fn confirm_provisional(detail: &str) {
+    if let Some(recorder) = active().or_else(|| RECORDER.get()) {
+        lock(&recorder.provisional).remove(detail);
+    }
+}
+
+thread_local! {
+    static REGISTRY_SINK: std::cell::RefCell<Option<Arc<NetworkSink>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A registry transfer's network access (crate::registry: registry files,
+/// module source archives): into this thread's registry sink
+/// ([`with_registry_sink`]), if any, else recorded. Never into a repository
+/// rule's [`NetworkSink`].
+pub fn registry_network_taint(detail: impl FnOnce() -> String) {
+    if active().is_none() {
+        return;
+    }
+    match REGISTRY_SINK.with(|sink| sink.borrow().clone()) {
+        Some(sink) => lock(&sink.0).push(detail()),
+        None => taint(Taint::Network, detail),
+    }
+}
+
+/// Run `work` with `sink` as this thread's registry sink
+/// ([`registry_network_taint`]).
+pub fn with_registry_sink<R>(sink: Option<Arc<NetworkSink>>, work: impl FnOnce() -> R) -> R {
+    let previous = REGISTRY_SINK.with(|current| current.replace(sink));
+    let result = work();
+    REGISTRY_SINK.with(|current| current.replace(previous));
+    result
+}
+
+/// A taint (and the network taints of the work it covers, [`Self::sink`])
+/// held until the work's outcome is known: recorded when dropped, or
+/// settled ([`Self::settle`]) when the outcome is what the next run reads
+/// without that work — a registry file whose bytes match the lockfile's
+/// checksum (the next run reads them from the content-addressed cache),
+/// a published registry tree the warm check reuses (crate::materializer).
+pub struct HeldTaint {
+    taint: Option<(Taint, String)>,
+    network: Option<Arc<NetworkSink>>,
+}
+
+impl HeldTaint {
+    /// Only the covered work's network taints.
+    pub fn network() -> Self {
+        Self {
+            taint: None,
+            network: active().map(|_| Arc::default()),
+        }
+    }
+
+    /// `kind` (with `detail`, formatted only while recording) and the covered
+    /// work's network taints.
+    pub fn new(kind: Taint, detail: impl FnOnce() -> String) -> Self {
+        let recording = active().is_some();
+        Self {
+            taint: recording.then(|| (kind, detail())),
+            network: recording.then(Arc::default),
+        }
+    }
+
+    /// The sink of the covered work's network taints ([`with_registry_sink`]).
+    pub fn sink(&self) -> Option<Arc<NetworkSink>> {
+        self.network.clone()
+    }
+
+    /// Nothing is recorded — unless a transfer still holds the sink (it is
+    /// no part of the outcome): then everything is.
+    pub fn settle(mut self) {
+        if self
+            .network
+            .as_ref()
+            .is_some_and(|network| Arc::strong_count(network) > 1)
+        {
+            return;
+        }
+        self.taint = None;
+        self.network = None;
+    }
+}
+
+impl Drop for HeldTaint {
+    fn drop(&mut self) {
+        if let Some((kind, detail)) = self.taint.take() {
+            taint(kind, || detail);
+        }
+        if let Some(network) = self.network.take() {
+            network.taint();
+        }
+    }
+}
+
 /// Record a taint even after the window closed (end-of-command conditions:
 /// errors, a pending lockfile write).
 pub fn taint_after_window(kind: Taint, detail: impl FnOnce() -> String) {
@@ -2828,6 +3024,34 @@ mod tests {
         assert!(recording.observations.iter().any(|(_, observation)| matches!(&observation.outcome,
             Outcome::Read { sha256: digest, .. } if observation.op == Op::SelectionRead("r".into()) && *digest == sha256(b"new"))));
         assert!(recording.taints.is_empty());
+    }
+
+    /// A probe's absence of a pointer captured before this process
+    /// published it, replayed after the publication's supersede (a captured
+    /// set reaching the recorder later), is dropped like an earlier one; an
+    /// absence of another repository's selection at that path stays.
+    #[test]
+    fn a_superseded_absence_replayed_later_is_dropped() {
+        let temp = tempfile::tempdir().unwrap();
+        let pointer = temp.path().join("pointer");
+        let window = record_this_thread();
+        let (_, probe) = capture_detached(|| note_selection_absent(&pointer, "r"));
+        let (_, other) = capture_detached(|| note_selection_absent(&pointer, "s"));
+        fs::write(&pointer, "new").unwrap();
+        supersede_selection(&pointer, "r");
+        replay(probe.as_ref().unwrap());
+        replay(other.as_ref().unwrap());
+        let recording = window.recorder.snapshot();
+        assert_eq!(
+            recording.observations.len(),
+            1,
+            "{:?}",
+            recording.observations
+        );
+        assert_eq!(
+            recording.observations[0].1.op,
+            Op::SelectionAbsent("s".into())
+        );
     }
 
     #[test]

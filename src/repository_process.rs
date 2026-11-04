@@ -401,6 +401,9 @@ pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
 /// Bazel prints captured output for quiet=False to its stderr
 /// (StarlarkExecutionResult.java:205-207).
 pub(crate) fn echo(stdout: &[u8], stderr: &[u8]) {
+    if !stdout.is_empty() || !stderr.is_empty() {
+        crate::ui::note_printed();
+    }
     let mut sink = io::stderr().lock();
     let _ = sink.write_all(stdout);
     let _ = sink.write_all(stderr);

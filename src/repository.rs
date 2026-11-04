@@ -347,6 +347,146 @@ fn taint_printed_output(canonical: &str, executed: &crate::repository_ctx::Execu
     }
 }
 
+/// The analysis snapshot's `extension-evaluated` taint of one module
+/// extension evaluation, held until its result is recorded: recorded when
+/// dropped (an error, a lockfile mode or window without a re-probe, a
+/// failed re-probe), or turned into a provisional taint by
+/// [`Self::reprobe`]. With the evaluation's downloads
+/// (crate::observed_fs::NetworkSink), which only shaped its result.
+struct EvaluatedTaint {
+    /// `None` once re-probed.
+    detail: Option<String>,
+    /// The evaluation's network taints when it may be re-probed.
+    network: Option<Arc<crate::observed_fs::NetworkSink>>,
+    /// crate::ui::prints_on_this_thread before the evaluation.
+    prints: u64,
+}
+
+/// What an evaluated extension group bound from its result, compared with
+/// what the next command binds from the result's lockfile entry
+/// ([`EvaluatedTaint::reprobe`]).
+struct ReprobedGroup<'a> {
+    group: &'a repository_catalog::OrdinaryGroup,
+    generated_mapping: &'a BTreeMap<String, String>,
+    generated_order: &'a [String],
+    repositories: &'a BTreeMap<String, OrdinaryRepository>,
+    explicit_attributes: &'a BTreeMap<String, Vec<String>>,
+    metadata: Option<&'a crate::extension_metadata::ExtensionMetadata>,
+}
+
+impl EvaluatedTaint {
+    fn new(detail: String, reprobes: bool) -> Self {
+        Self {
+            detail: Some(detail),
+            network: reprobes.then(Arc::default),
+            prints: crate::ui::prints_on_this_thread(),
+        }
+    }
+
+    /// The evaluated result is recorded (`entry`, the lockfile entry it
+    /// writes). The next command reuses that entry instead of evaluating
+    /// when its recorded inputs are up to date
+    /// (SingleExtensionEvalFunction.tryGettingValueFromLockFile), so the
+    /// lockfile check runs now exactly as it would run then — its recorded
+    /// inputs revalidated through the recording facade
+    /// (crate::lockfile_extensions::outdated_input) —, and the entry, as the
+    /// next command parses it, must give the very repositories (definitions,
+    /// bound attributes, names, order) and metadata this evaluation bound.
+    /// Then the evaluation stands as that reuse: a snapshot saved from this
+    /// run validates what the reuse would read, and the hidden lockfile's
+    /// record covers the entry (crate::registry_session::RegistrySession::
+    /// note_hidden_lockfile). What the evaluation itself read and downloaded
+    /// only shaped the entry. Its taint becomes provisional, confirmed when
+    /// the lockfiles as this command leaves them hold the entry where the
+    /// next command reads it and its facts let it be reused
+    /// (crate::registry_session::RegistrySession::note_settled_extension).
+    /// What the evaluation (or the recording of its result) printed the next
+    /// command would not print: `extension-output`, which only a snapshot
+    /// serving derived hits ignores. Anything else taints as before: a
+    /// download still transferring, an outdated input, any difference.
+    fn reprobe(
+        mut self,
+        repositories: &RepositorySet,
+        lock: &ExtensionLock,
+        entry: &crate::lockfile::Json,
+        bound: &ReprobedGroup<'_>,
+    ) {
+        use crate::lockfile_extensions as lx;
+        if self.network.is_none() {
+            return;
+        }
+        let checked = (|| {
+            let session = repositories
+                .state
+                .options
+                .registry_session
+                .session()
+                .ok_or("no lockfile")?;
+            let entry = lx::reparsed_entry(&lock.id, &lock.factors, entry)
+                .ok_or("its entry does not parse")?;
+            // Silent: the next run's check, not this run's output (a cached
+            // definition module replays its load's prints).
+            let silent = crate::ui::PrivateNotes::new();
+            let rebound = repositories.lock_entry_rebinds(lock, &entry, bound);
+            drop(silent);
+            rebound?;
+            if self
+                .network
+                .as_ref()
+                .is_some_and(|network| Arc::strong_count(network) > 1)
+            {
+                return Err("a download still transfers".to_owned());
+            }
+            Ok((session, entry))
+        })();
+        let (session, entry) = match checked {
+            Ok(checked) => checked,
+            Err(reason) => {
+                if let Some(detail) = &mut self.detail {
+                    detail.push_str(&format!(" (not re-probed: {reason})"));
+                }
+                return;
+            }
+        };
+        // Unique per evaluation: each is confirmed on its own.
+        static EVALUATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let key = format!(
+            "{} for {} (#{})",
+            lock.display_id,
+            lock.factors,
+            EVALUATIONS.fetch_add(1, Ordering::Relaxed)
+        );
+        crate::observed_fs::provisional_taint(|| key.clone());
+        // What it printed the next run would not print: the run may serve
+        // derived hits only (they never replay the planning's stderr).
+        if crate::ui::prints_on_this_thread() != self.prints {
+            crate::observed_fs::taint(crate::observed_fs::Taint::ExtensionOutput, || {
+                format!("{} printed", lock.display_id)
+            });
+        }
+        session.note_settled_extension(crate::registry_session::SettledExtension {
+            key,
+            id: lock.id.clone(),
+            factors: lock.factors.clone(),
+            facts_version: lock.facts_version,
+            entry,
+        });
+        self.detail = None;
+        self.network = None;
+    }
+}
+
+impl Drop for EvaluatedTaint {
+    fn drop(&mut self) {
+        if let Some(detail) = self.detail.take() {
+            crate::observed_fs::taint(crate::observed_fs::Taint::ExtensionEvaluated, || detail);
+        }
+        if let Some(network) = self.network.take() {
+            network.taint();
+        }
+    }
+}
+
 /// A speculation (crate::repository_speculation) whose execution formed a
 /// recorded-input key that depends on the roots the sequential engine will
 /// have obtained when it executes the rule
@@ -624,9 +764,19 @@ struct ProvenanceRecipe {
     environ: crate::repository_environment::DeclaredEnvironment,
 }
 
+/// The provenance profile of an ordinary extension group. v2: the group's
+/// provenance no longer holds its repositories and their mapping — each
+/// generated repository's spec key and identity frame its own
+/// specification instead ([`PreparedOrdinary::spec_key`],
+/// [`PreparedOrdinary::framed_provenance`]), like Bazel's marker file,
+/// whose rule key is the repository's own definition and attributes
+/// (DigestWriter): a sibling added or changed (a requirements bump) no
+/// longer re-executes every repository of the group.
+const ORDINARY_PROFILE: &str = "ordinary-file-template-v2";
+
 /// The provenance of an ordinary extension group: hashed into every
-/// generated repository's spec key and identity. Field order is the
-/// serialized key order.
+/// generated repository's spec key and identity, with the repository's own
+/// specification. Field order is the serialized key order.
 #[derive(serde::Serialize)]
 struct OrdinaryProvenance<'a> {
     profile: &'static str,
@@ -638,8 +788,6 @@ struct OrdinaryProvenance<'a> {
     modules: &'a [crate::extension_ctx::BoundModule],
     source_guards: &'a [serde_json::Value],
     root_has_non_dev_dependency: bool,
-    generated_mapping: &'a BTreeMap<String, String>,
-    repositories: &'a BTreeMap<String, OrdinaryRepository>,
     imports: &'a [serde_json::Value],
     #[serde(skip_serializing_if = "crate::host_os::HostFactors::is_empty")]
     host_factors: crate::host_os::HostFactors<'a>,
@@ -679,7 +827,7 @@ impl PreparedOrdinary {
         })?;
         let mut bytes = bounded_provenance(
             &OrdinaryProvenance {
-                profile: "ordinary-file-template-v1",
+                profile: ORDINARY_PROFILE,
                 public_label: recipe.public_label.clone(),
                 symbol: &recipe.symbol,
                 prefix: &recipe.prefix,
@@ -688,8 +836,6 @@ impl PreparedOrdinary {
                 modules: &[],
                 source_guards: &recipe.source_guards,
                 root_has_non_dev_dependency: recipe.root_has_non_dev_dependency,
-                generated_mapping: &self.generated_mapping,
-                repositories: &self.repositories,
                 imports: &recipe.imports,
                 host_factors: crate::host_os::HostFactors::from_parts(
                     recipe.host_os.as_deref(),
@@ -725,26 +871,32 @@ impl PreparedOrdinary {
     /// hold ~64 GB), and each canonical name executes at most once per
     /// process, so a cache could never be hit twice. The caller
     /// (materialize_lazy) runs this only on the execute path.
-    fn framed_provenance(&self, canonical_name: &str) -> Result<Vec<u8>, String> {
+    fn framed_provenance(&self, repository: &OrdinaryRepository) -> Result<Vec<u8>, String> {
+        let canonical_name = repository.canonical_name.as_str();
         let provenance = self.provenance()?;
-        let mut framed = Vec::with_capacity(16 + canonical_name.len() + provenance.len());
+        let specification = repository_specification(repository)?;
+        let mut framed =
+            Vec::with_capacity(24 + canonical_name.len() + provenance.len() + specification.len());
         framed.extend_from_slice(&(canonical_name.len() as u64).to_le_bytes());
         framed.extend_from_slice(canonical_name.as_bytes());
         framed.extend_from_slice(&(provenance.len() as u64).to_le_bytes());
         framed.extend_from_slice(provenance);
+        framed.extend_from_slice(&(specification.len() as u64).to_le_bytes());
+        framed.extend_from_slice(&specification);
         Ok(framed)
     }
 
     /// Spec digest for one repository, cached per canonical name.
     /// Mixes the group's ONCE-computed provenance digest with only the
-    /// per-repository frame (canonical name + host + environment), so a
-    /// warm run never re-hashes the shared closure bytes per sibling.
+    /// per-repository frame (canonical name, its own specification, host,
+    /// environment), so a warm run never re-hashes the shared closure bytes
+    /// per sibling.
     fn spec_key(
         &self,
         repositories: &RepositorySet,
-        canonical_name: &str,
-        declared: &crate::repository_environment::DeclaredEnvironment,
+        repository: &OrdinaryRepository,
     ) -> Result<String, String> {
+        let canonical_name = repository.canonical_name.as_str();
         if let Ok(cache) = self.spec_keys.lock()
             && let Some((key, observations)) = cache.get(canonical_name)
         {
@@ -755,12 +907,17 @@ impl PreparedOrdinary {
             }
             return Ok(key.clone());
         }
+        let specification: [u8; 32] = {
+            use sha2::Digest as _;
+            sha2::Sha256::digest(repository_specification(repository)?).into()
+        };
         let (key, observations) = crate::observed_fs::capture(|| {
             crate::repository_warm::specification_digest_mixed(
                 repositories,
                 canonical_name,
                 &self.provenance_digest,
-                declared,
+                &specification,
+                &repository.definition.environ,
             )
         });
         let key = key?;
@@ -771,6 +928,15 @@ impl PreparedOrdinary {
         }
         Ok(key)
     }
+}
+
+/// One extension-generated repository's own specification (definition,
+/// attributes, names; [`OrdinaryRepository`]'s serialized form), framed into
+/// its spec key and identity beside its group's provenance
+/// ([`ORDINARY_PROFILE`]).
+fn repository_specification(repository: &OrdinaryRepository) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(repository)
+        .map_err(|error| format!("cannot serialize repository specification: {error}"))
 }
 
 /// A cached ordinary spec key and what computing it observed (W6R).
@@ -1703,7 +1869,7 @@ impl RepositorySet {
         }
         Ok(CurrentSpec {
             origin: Origin::ExtensionV3,
-            key: prepared.spec_key(self, canonical, &repository.definition.environ)?,
+            key: prepared.spec_key(self, repository)?,
         })
     }
 
@@ -3070,13 +3236,7 @@ impl RepositorySet {
                     .ok()?
             } else {
                 let (prepared, repository) = self.ordinary_repository(canonical).ok()?;
-                prepared
-                    .spec_key(
-                        self,
-                        &repository.canonical_name,
-                        &repository.definition.environ,
-                    )
-                    .ok()?
+                prepared.spec_key(self, repository).ok()?
             };
             let workspace = crate::observed_fs::canonicalize(self.main_root()).ok()?;
             Some((spec_key, crate::repository_warm::workspace_text(&workspace)))
@@ -4241,6 +4401,9 @@ impl RepositorySet {
                 Some(lock) => self.reusable_lock_entry(lock)?,
                 None => None,
             };
+            // An evaluation's analysis-snapshot taint, held until its result
+            // is re-probed ([`EvaluatedTaint`]).
+            let mut evaluated_taint: Option<EvaluatedTaint> = None;
             let (recorded_repositories, metadata, execution) = match &reused {
                 Some(entry) => {
                     let (recorded, functions) = self.repositories_from_lock_entry(entry)?;
@@ -4254,15 +4417,29 @@ impl RepositorySet {
                     if self.state.publication_proof {
                         return Err("publication proof requires a currently valid extension lock entry".into());
                     }
-                    crate::observed_fs::taint(crate::observed_fs::Taint::ExtensionEvaluated, || {
-                        format!("{}%{}", group.label, group.symbol)
-                    });
+                    // Re-probed once its result is recorded when the next
+                    // command could reuse it: a lockfile mode that writes the
+                    // hidden lockfile, a window that may be saved.
+                    let reprobes = lock.as_ref().is_some_and(|lock| lock.mode.writes())
+                        && crate::observed_fs::reprobes_executions()
+                        && self
+                            .state
+                            .options
+                            .registry_session
+                            .session()
+                            .is_some_and(|session| session.writes_hidden_lockfile());
+                    let pending = evaluated_taint.insert(EvaluatedTaint::new(
+                        format!("{}%{}", group.label, group.symbol),
+                        reprobes,
+                    ));
+                    let network = pending.network.clone();
                     let facts = lock.as_ref().map(|lock| lock.facts.clone()).unwrap_or_default();
                     let tainted = crate::observed_fs::tainted_section();
-                    // Its downloads taint the run as such, never as a running
-                    // repository rule's (an extension evaluated while one
-                    // executes: crate::observed_fs::NetworkSink).
-                    let mut execution = crate::observed_fs::with_network_sink(None, || {
+                    // Its downloads taint the run as such — settled with its
+                    // re-probe —, never as a running repository rule's (an
+                    // extension evaluated while one executes:
+                    // crate::observed_fs::NetworkSink).
+                    let mut execution = crate::observed_fs::with_network_sink(network, || {
                         crate::extension_ctx::execute(
                             Arc::new(self.clone()), &definition, &loaded.functions, &group.label,
                             &group.symbol, &group.prefix, &group.participants,
@@ -4387,7 +4564,7 @@ impl RepositorySet {
                         ))
                     })
                     .collect::<Result<Vec<_>, String>>()?;
-                self.record_extension_lock(
+                let recorded_entry = self.record_extension_lock(
                     lock,
                     reused.as_ref(),
                     execution.as_ref(),
@@ -4395,7 +4572,18 @@ impl RepositorySet {
                     metadata.as_ref(),
                     specs,
                 )?;
+                if let (Some(pending), Some(entry)) = (evaluated_taint.take(), recorded_entry) {
+                    pending.reprobe(self, lock, &entry, &ReprobedGroup {
+                        group,
+                        generated_mapping: &generated_mapping,
+                        generated_order: &generated_order,
+                        repositories: &repositories,
+                        explicit_attributes: &explicit_attributes,
+                        metadata: metadata.as_ref(),
+                    });
+                }
             }
+            drop(evaluated_taint);
             // SingleExtensionEvalFunction.createSingleExtensionValue (Bazel
             // 9.3:455-487) then SingleExtensionFunction.java:53: metadata errors
             // fail the evaluation; the fixup warning precedes the import check.
@@ -4445,21 +4633,20 @@ impl RepositorySet {
             }
             // With a lockfile, an extension result may be evaluated or taken
             // from MODULE.bazel.lock; generated repositories then depend only
-            // on what the result determines (specs, mapping, sources), so both
-            // paths give the same identity. Without one, the evaluation's
+            // on what the result determines (each its own spec, the group's
+            // sources and imports), so both paths give the same identity. Without one, the evaluation's
             // bound tags and recorded inputs are kept (previous identities).
             let no_inputs = crate::repository_ctx::ExecutionInputs::default();
             let evaluated = execution.as_ref().filter(|_| lock.is_none());
             let inputs = evaluated.map_or(&no_inputs, |execution| &execution.inputs);
             let modules = evaluated.map_or(&[][..], |execution| &execution.modules[..]);
             let provenance = bounded_provenance(&OrdinaryProvenance {
-                profile: "ordinary-file-template-v1",
+                profile: ORDINARY_PROFILE,
                 public_label: group.label.to_string(),
                 symbol: &group.symbol, prefix: &group.prefix,
                 sources: &loaded.sources, tag_classes: &definition.tag_classes,
                 modules, source_guards: &source_guards,
                 root_has_non_dev_dependency: group.root_has_non_dev_dependency,
-                generated_mapping: &generated_mapping, repositories: &repositories,
                 imports: &imports,
                 host_factors,
                 extension_inputs: (!inputs.files.is_empty() || !inputs.host_facilities.is_empty())
@@ -4580,11 +4767,7 @@ impl RepositorySet {
         // Only the per-repo spec digest is cached (small strings,
         // review R1); framed provenance bytes are built on demand on
         // the execute path, never retained (perf follow-up 2).
-        let spec_key = prepared.spec_key(
-            self,
-            &repository.canonical_name,
-            &repository.definition.environ,
-        )?;
+        let spec_key = prepared.spec_key(self, repository)?;
         let workspace = crate::observed_fs::canonicalize(self.main_root())
             .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
         let workspace_text = crate::repository_warm::workspace_text(&workspace);
@@ -4666,16 +4849,11 @@ impl RepositorySet {
         // demand, unretained, on the execute path only
         // (materialize_lazy; perf follow-up 2 — no per-repo
         // ~31 MB cache).
-        let canonical_name = repository.canonical_name.clone();
         let spec_key = {
             let _m = crate::repository_store::timing::mark(
                 &crate::repository_store::timing::PHASES.spec_serialize,
             );
-            prepared.spec_key(
-                self,
-                &repository.canonical_name,
-                &repository.definition.environ,
-            )?
+            prepared.spec_key(self, repository)?
         };
         crate::repository_store::timing::count_spec(spec_key.len() as u64, 0);
         let workspace = crate::observed_fs::canonicalize(self.main_root())
@@ -4686,7 +4864,7 @@ impl RepositorySet {
         // Local rules never reuse across invocations here either
         // (shouldUseCachedRepoContents; see the direct path).
         let local = repository.definition.local;
-        let provenance = move || prepared.framed_provenance(&canonical_name);
+        let provenance = move || prepared.framed_provenance(repository);
         // A local execution's observations for its replay record.
         let observed = std::cell::RefCell::new(None);
         let observed_by = &observed;
@@ -5147,7 +5325,6 @@ impl RepositorySet {
         loaded: &loading::LoadedDefinition,
         factors: String,
     ) -> Result<Option<ExtensionLock>, String> {
-        use crate::lockfile::Json;
         use crate::lockfile_extensions as lx;
         let Some(session) = self.state.options.registry_session.session() else {
             return Ok(None);
@@ -5165,37 +5342,12 @@ impl RepositorySet {
         // Its entry and facts are consulted in every mode: the analysis
         // snapshot's record of the hidden lockfile covers them.
         session.note_hidden_consulted(&id);
-        let facts_of = |lockfile: &crate::lockfile::Lockfile| {
-            lockfile
-                .facts
-                .iter()
-                .find(|(key, _)| key == &id)
-                .map(|(_, value)| match value {
-                    Json::Object(members) => members.clone(),
-                    _ => Vec::new(),
-                })
-        };
-        let hidden_facts = facts_of(hidden)
-            .filter(|_| lx::facts_version_of(&hidden.facts_versions, &id) == facts_version);
-        let mut workspace_facts = Vec::new();
-        let mut facts = Vec::new();
-        if let Some(found) = facts_of(workspace) {
-            if lx::facts_version_of(&workspace.facts_versions, &id) == facts_version {
-                workspace_facts = found.clone();
-                facts = found;
-            }
-        } else if let Some(found) = &hidden_facts {
-            facts = found.clone();
-        }
-        let entry_of = |lockfile: &crate::lockfile::Lockfile| {
-            lockfile
-                .module_extensions
-                .iter()
-                .find(|(key, _)| key == &id)
-                .and_then(|(_, per_factors)| lx::member(per_factors, &factors))
-                .cloned()
-        };
-        let locked = entry_of(workspace).or_else(|| entry_of(hidden));
+        let lx::LockSelection {
+            facts,
+            workspace_facts,
+            hidden_facts,
+            locked,
+        } = lx::lock_selection(workspace, hidden, &id, &factors, facts_version);
         let mut names: Vec<&String> = definition.environ.names().iter().collect();
         names.sort_by(|a, b| crate::lockfile::java_string_cmp(a, b));
         names.dedup();
@@ -5270,9 +5422,7 @@ impl RepositorySet {
         }
         let reproducible = lx::entry_is_reproducible(entry);
         if (all || diffs.is_empty())
-            && reproducible
-            && !lock.facts.is_empty()
-            && Some(&lock.facts) != lock.hidden_facts.as_ref()
+            && lx::facts_block_reuse(entry, &lock.facts, lock.hidden_facts.as_deref())
         {
             diffs.push(format!(
                 "the facts recorded in the lockfile for the extension '{id}' do not match the result of its most recent evaluation"
@@ -5285,6 +5435,124 @@ impl RepositorySet {
             return Err(lx::outdated_message(&diffs.join(",")));
         }
         Ok(None)
+    }
+
+    /// [`EvaluatedTaint::reprobe`]: whether the next command reuses `entry`
+    /// (the evaluated result's lockfile entry as it parses it) as far as its
+    /// recorded inputs decide — checked now through the recording facade,
+    /// like [`Self::reusable_lock_entry`] — and binds from it exactly what
+    /// the evaluation bound (`bound`); else why not.
+    fn lock_entry_rebinds(
+        &self,
+        lock: &ExtensionLock,
+        entry: &crate::lockfile::Json,
+        bound: &ReprobedGroup<'_>,
+    ) -> Result<(), String> {
+        use crate::lockfile::Json;
+        use crate::lockfile_extensions as lx;
+        let string = |name: &str| match lx::member(entry, name) {
+            Some(Json::String(text)) => Some(text.as_str()),
+            _ => None,
+        };
+        if string("bzlTransitiveDigest") != Some(lock.bzl_transitive_digest.as_str())
+            || string("usagesDigest") != Some(lock.usages_digest.as_str())
+        {
+            return Err("its entry's digests differ".into());
+        }
+        let inputs = match lx::member(entry, "recordedInputs") {
+            Some(Json::Array(inputs)) => inputs.clone(),
+            _ => Vec::new(),
+        };
+        if let Some(reason) = lx::outdated_input(&inputs, &LockInputProbe(self)) {
+            return Err(format!("an input is outdated: {reason}"));
+        }
+        let metadata = lx::member(entry, "moduleExtensionMetadata")
+            .map(lx::metadata_from_json)
+            .transpose()?;
+        // The facts are no part of an entry's metadata (the lockfile keeps
+        // them apart; the facts check is the confirmation's,
+        // crate::registry_session::RegistrySession::note_settled_extension).
+        let evaluated =
+            bound
+                .metadata
+                .map(|metadata| crate::extension_metadata::ExtensionMetadata {
+                    has_facts: false,
+                    facts: None,
+                    ..metadata.clone()
+                });
+        if metadata != evaluated {
+            return Err("its entry's metadata differs".into());
+        }
+        let (recorded, _functions) = self.repositories_from_lock_entry(entry)?;
+        let group = bound.group;
+        let mut order = Vec::new();
+        let mut rebound = BTreeMap::new();
+        for recorded in recorded {
+            let explicit: Vec<String> = recorded
+                .order
+                .iter()
+                .filter(|name| {
+                    !lx::LEGACY_BUILTIN_ATTRIBUTES.contains(&name.as_str())
+                        && !matches!(
+                            recorded.attributes.get(name.as_str()),
+                            None | Some(crate::extension_calls::RecordedValue::None)
+                        )
+                })
+                .cloned()
+                .collect();
+            if bound.explicit_attributes.get(&recorded.name) != Some(&explicit) {
+                return Err(format!("{}: its explicit attributes differ", recorded.name));
+            }
+            let Some(canonical_name) = bound.generated_mapping.get(&recorded.name) else {
+                return Err(format!("{}: not generated", recorded.name));
+            };
+            let attributes = repository_rule::bind_recorded_attributes_where(
+                &recorded.definition,
+                &recorded.attributes,
+                canonical_name,
+                |text| {
+                    Label::parse_in(
+                        text,
+                        &group.label.repository,
+                        &group.label.package,
+                        bound.generated_mapping,
+                    )
+                },
+                &format!(
+                    "in the extension '{}%{}'",
+                    group.label.canonical_starlark(),
+                    group.symbol
+                ),
+            )?;
+            order.push(recorded.name.clone());
+            rebound.insert(
+                recorded.name.clone(),
+                OrdinaryRepository {
+                    definition: recorded.definition,
+                    attributes,
+                    explicit,
+                    original_name: recorded.name,
+                    canonical_name: canonical_name.clone(),
+                    root: DemandSlot::new(),
+                },
+            );
+        }
+        if order != bound.generated_order {
+            return Err("its repositories' order differs".into());
+        }
+        for (name, repository) in &rebound {
+            let evaluated = bound
+                .repositories
+                .get(name)
+                .ok_or_else(|| format!("{name}: not generated"))?;
+            if repository_specification(repository)? != repository_specification(evaluated)? {
+                return Err(format!("{name}: its specification differs"));
+            }
+        }
+        if rebound.len() != bound.repositories.len() {
+            return Err("its repositories differ".into());
+        }
+        Ok(())
     }
 
     /// The repository calls of a locked entry's generatedRepoSpecs: each
@@ -5353,7 +5621,9 @@ impl RepositorySet {
 
     /// After a SingleExtensionValue exists: Bazel's error-mode checks for an
     /// evaluated extension (:237-282) and the result BazelLockFileModule
-    /// records (:117-136, LockFileModuleExtension.WithFactors).
+    /// records (:117-136, LockFileModuleExtension.WithFactors). Returns the
+    /// entry an evaluated extension's result records (None when reused, not
+    /// written, or when the entry is invalid — the warning it printed).
     fn record_extension_lock(
         &self,
         lock: &ExtensionLock,
@@ -5362,10 +5632,10 @@ impl RepositorySet {
         loaded: &loading::LoadedDefinition,
         metadata: Option<&crate::extension_metadata::ExtensionMetadata>,
         specs: Vec<(String, crate::lockfile::Json)>,
-    ) -> Result<(), String> {
+    ) -> Result<Option<crate::lockfile::Json>, String> {
         if self.state.publication_proof {
             return if reused.is_some() && execution.is_none() {
-                Ok(())
+                Ok(None)
             } else {
                 Err("publication proof cannot record an evaluated extension".into())
             };
@@ -5388,7 +5658,7 @@ impl RepositorySet {
                     facts_version: lock.facts_version,
                 });
             }
-            return Ok(());
+            return Ok(None);
         }
         let execution = execution.ok_or("internal error: neither reused nor evaluated")?;
         // The ModuleExtensionContext's recorded inputs: static environment,
@@ -5470,7 +5740,7 @@ impl RepositorySet {
             )));
         }
         if !lock.mode.writes() {
-            return Ok(());
+            return Ok(None);
         }
         if let Some(reason) = &execution.inputs.bazel_unsupported {
             return Err(format!(
@@ -5488,11 +5758,11 @@ impl RepositorySet {
         session.record_extension_result(lx::ExtensionResult {
             id: lock.id.clone(),
             factors: lock.factors.clone(),
-            entry,
+            entry: entry.clone(),
             facts: Json::Object(new_facts),
             facts_version: lock.facts_version,
         });
-        Ok(())
+        Ok((invisible.is_empty()).then_some(entry))
     }
 }
 
@@ -6112,9 +6382,13 @@ mod tests {
             );
             assert!(!repository.attributes.contains_key("local"));
             assert!(repository.definition.schema.is_empty());
-            assert_eq!(provenance["repositories"][name]["local"], local);
+            let specification: serde_json::Value =
+                serde_json::from_slice(&repository_specification(repository).unwrap()).unwrap();
+            assert_eq!(specification["local"], local);
             // configure=False (default) is omitted, keeping legacy bytes/keys.
-            assert!(provenance["repositories"][name].get("configure").is_none());
+            assert!(specification.get("configure").is_none());
+            // v2: the group's provenance holds no repository.
+            assert!(provenance.get("repositories").is_none());
         }
         let mut configured = OrdinaryRepository {
             definition: enabled.definition.clone(),
@@ -6282,12 +6556,10 @@ mod tests {
                     "modules",
                     "source_guards",
                     "root_has_non_dev_dependency",
-                    "generated_mapping",
-                    "repositories",
                     "imports"
                 ]
             );
-            assert_eq!(value["profile"], "ordinary-file-template-v1");
+            assert_eq!(value["profile"], "ordinary-file-template-v2");
             assert!(
                 !String::from_utf8_lossy(prepared.provenance().unwrap()).contains("extension_io")
             );
@@ -6457,7 +6729,7 @@ mod tests {
                 assert_eq!(base, run("another getter", "arch-a", "os-a"));
                 let json: serde_json::Value = serde_json::from_slice(&base).unwrap();
                 if !os && !arch {
-                    assert_eq!(json.as_object().unwrap().len(), 12);
+                    assert_eq!(json.as_object().unwrap().len(), 10);
                     assert!(json.get("host_factors").is_none());
                 } else {
                     let factors = json["host_factors"].as_object().unwrap();
@@ -6526,7 +6798,7 @@ mod tests {
                     assert!(json.get("host_factors").is_none());
                     assert!(!repository.attributes.contains_key("host_factors"));
                     assert!(!f.0.join("bazel-rs-out").exists());
-                    prepared.provenance().unwrap().to_vec()
+                    prepared.framed_provenance(repository).unwrap()
                 };
             let base = run("getter-a", "arch-a");
             assert_eq!(base != run("getter-b", "arch-a"), select);
@@ -7019,13 +7291,7 @@ mod tests {
         assert_eq!(reader.calls.load(Ordering::SeqCst), 1);
         assert!(window.recorder.snapshot().env.is_empty());
         let (prepared, repository) = repos.ordinary_repository(&canonical).unwrap();
-        prepared
-            .spec_key(
-                &repos,
-                &repository.canonical_name,
-                &repository.definition.environ,
-            )
-            .unwrap();
+        prepared.spec_key(&repos, repository).unwrap();
         assert_eq!(reader.calls.load(Ordering::SeqCst), 1);
         let env = window.recorder.snapshot().env;
         assert_eq!(
@@ -7415,9 +7681,10 @@ mod tests {
             assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
             repos.mapping(&canonical).unwrap();
             if ordinary {
-                let (prepared, _) = repos.ordinary_repository(&canonical).unwrap();
+                let (prepared, repository) = repos.ordinary_repository(&canonical).unwrap();
                 assert!(
-                    String::from_utf8_lossy(prepared.provenance().unwrap()).contains("environ")
+                    String::from_utf8_lossy(&prepared.framed_provenance(repository).unwrap())
+                        .contains("environ")
                 );
             } else {
                 let runtime = repos.direct_runtime().unwrap();
@@ -7532,7 +7799,7 @@ mod tests {
         assert_eq!(serde_json::to_string(&with_environ).unwrap(), before);
         let provenance: serde_json::Value =
             serde_json::from_slice(prepared.provenance().unwrap()).unwrap();
-        assert_eq!(provenance["profile"], "ordinary-file-template-v1");
+        assert_eq!(provenance["profile"], "ordinary-file-template-v2");
     }
 
     #[test]

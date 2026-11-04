@@ -800,3 +800,89 @@ fn an_executing_build_derives_source_directory_actions_from_affected() {
     assert!(!stderr.contains("bazel-rs-snapshot: derived "), "{stderr}");
     assert!(stderr.contains("error traversing directory"), "{stderr}");
 }
+
+/// affected-reuse-cold: the head planning of `affected` on a cold cache, or
+/// after an input of a module extension changed, evaluates the extension
+/// (which prints, as rules_python's `pip` does) and is still saved for the
+/// commands after it — the `build` of the affected targets derives its plan
+/// (derived hits never replay what planning printed).
+#[test]
+fn the_build_after_affected_derives_when_the_head_evaluated_an_extension() {
+    let repo = Repo::new();
+    let mut files: Vec<(&str, &str)> = PACKAGES
+        .iter()
+        .copied()
+        .filter(|(path, _)| *path != "MODULE.bazel")
+        .collect();
+    files.push((
+        "MODULE.bazel",
+        "module(name = 'main')\next = use_extension('//e:ext.bzl', 'ext')\nuse_repo(ext, 'gen')\n",
+    ));
+    files.push(("e/BUILD.bazel", ""));
+    files.push((
+        "e/ext.bzl",
+        r#"def _repo(ctx):
+    ctx.file("BUILD.bazel", "exports_files(['v.txt'])\n")
+    ctx.file("v.txt", ctx.attr.value)
+
+_repo_rule = repository_rule(implementation = _repo, attrs = {"value": attr.string()})
+
+def _ext(module_ctx):
+    print("the extension was evaluated")
+    _repo_rule(name = "gen", value = module_ctx.read(Label("//e:value.txt")))
+    return module_ctx.extension_metadata(reproducible = True)
+
+ext = module_extension(implementation = _ext)
+"#,
+    ));
+    files.push(("e/value.txt", "one\n"));
+    files.push((
+        "g/BUILD.bazel",
+        "genrule(name = 'g', srcs = ['@gen//:v.txt', '//a'], outs = ['g.out'], cmd = 'cat $(SRCS) > $@')\n",
+    ));
+    let first = repo.commit(&files);
+    let second = repo.commit(&[("a/a.txt", "a2\n")]);
+    // A cold cache, then a lukewarm one: the working copy's hidden lockfile
+    // (the extension's entry) gone, the head evaluates the extension again.
+    for (base, lukewarm) in [(first.as_str(), false), (second.as_str(), true)] {
+        if lukewarm {
+            repo.commit(&[("a/a.txt", "a3\n")]);
+            for entry in fs::read_dir(repo.base().join("cache/worktrees")).unwrap() {
+                let lockfile = entry.unwrap().path().join("MODULE.bazel.lock");
+                if lockfile.exists() {
+                    fs::remove_file(lockfile).unwrap();
+                }
+            }
+        }
+        let output = repo.affected_with(
+            &[&format!("--base={base}")],
+            &[("BAZEL_RS_SNAPSHOT_EXPLAIN", "1")],
+        );
+        let affected = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "{affected}");
+        let labels: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert!(labels.contains(&"//g".to_owned()), "{labels:?}\n{affected}");
+        // The head evaluated the extension (its print is no output of
+        // `affected`'s) and was saved for the commands after it.
+        assert!(
+            !affected.contains("not saved") && affected.contains("bazel-rs-snapshot: saved "),
+            "{affected}"
+        );
+        let mut build = vec!["build", "--keep_going"];
+        build.extend(labels.iter().map(String::as_str));
+        let output = repo.bazel(&build);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert!(
+            stderr.contains("bazel-rs-snapshot: derived "),
+            "lukewarm {lukewarm}: {stderr}\n--- affected:\n{affected}"
+        );
+        assert!(
+            !stderr.contains("the extension was evaluated"),
+            "the derived build evaluates nothing:\n{stderr}"
+        );
+    }
+}

@@ -667,10 +667,17 @@ fn the_snapshot_recording_is_the_sequential_engines() {
         records
     };
     let sequential = record(1);
+    // Every download is a repository rule's, settled with its publication's
+    // warm re-probe (affected-reuse-cold: the evaluated extension no longer
+    // taints first, so the re-probes run): the recording holds the
+    // specification pointers the re-probes read instead.
     assert!(
-        sequential
+        !sequential
             .iter()
-            .any(|line| line.starts_with("TAINT network")),
+            .any(|line| line.starts_with("TAINT network"))
+            && sequential
+                .iter()
+                .any(|line| line.contains(" SELECTION_READ ")),
         "{sequential:?}"
     );
     assert_eq!(record(8), sequential);

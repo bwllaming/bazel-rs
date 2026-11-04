@@ -117,9 +117,31 @@ pub struct RegistrySession {
     hidden_consulted: Mutex<std::collections::BTreeSet<String>>,
     /// The SingleExtensionValues done in this invocation, in completion order.
     extension_results: Mutex<Vec<crate::lockfile_extensions::ExtensionResult>>,
+    /// The module extensions evaluated in this invocation whose result
+    /// validated as the next command's reuse of its lockfile entry would
+    /// ([`Self::note_settled_extension`]): each holds a provisional taint
+    /// until [`Self::note_hidden_lockfile`] confirms the entry stands where
+    /// the next command reads it.
+    settled_extensions: Mutex<Vec<SettledExtension>>,
     /// `--native-lockfile=readonly`: a stateless probe mode that writes no
     /// lockfile at all, not even the hidden one (reads are kept).
     readonly: bool,
+}
+
+/// A module extension evaluated in this invocation whose result validated
+/// as the next command's reuse of its lockfile entry would
+/// ([`RegistrySession::note_settled_extension`]).
+#[derive(Clone, Debug)]
+pub(crate) struct SettledExtension {
+    /// The provisional taint's detail (crate::observed_fs::provisional_taint).
+    pub key: String,
+    /// GsonTypeAdapterUtil's ModuleExtensionId spelling.
+    pub id: String,
+    pub factors: String,
+    pub facts_version: i64,
+    /// The entry as the next command parses it from the lockfile
+    /// (crate::lockfile_extensions::reparsed_entry).
+    pub entry: lockfile::Json,
 }
 
 /// What BazelModuleResolutionValue and the BazelDepGraphValue usage table
@@ -231,6 +253,7 @@ impl RegistrySession {
             hidden_read: None,
             hidden_consulted: Mutex::default(),
             extension_results: Mutex::default(),
+            settled_extensions: Mutex::default(),
             readonly: *target == LockfileTarget::ReadOnly,
         })
     }
@@ -351,6 +374,7 @@ impl RegistrySession {
         if self.mode == LockfileMode::Off {
             return;
         }
+        self.confirm_settled_extensions();
         let (Some((path, read)), Some(how)) = (&self.hidden, &self.hidden_read) else {
             return;
         };
@@ -394,6 +418,76 @@ impl RegistrySession {
                         crate::observed_fs::escape(seed.as_os_str())
                     )
                 });
+            }
+        }
+    }
+
+    /// Whether this command writes the hidden lockfile when it succeeds
+    /// (a lockfile mode that writes; not `--native-lockfile=readonly`).
+    pub(crate) fn writes_hidden_lockfile(&self) -> bool {
+        self.mode.writes() && !self.readonly && self.hidden.is_some()
+    }
+
+    /// Module extension `settled.id` was evaluated, and its result validated
+    /// as the next command's reuse of its lockfile entry would (its recorded
+    /// inputs up to date, its repositories and metadata those the entry
+    /// gives, nothing printed; crate::repository): its provisional taint
+    /// (crate::observed_fs::provisional_taint) is confirmed once the entry
+    /// stands where the next command reads it ([`Self::note_hidden_lockfile`]).
+    pub(crate) fn note_settled_extension(&self, settled: SettledExtension) {
+        self.settled_extensions
+            .lock()
+            .expect("settled extensions")
+            .push(settled);
+    }
+
+    /// Confirm the provisional taint of each settled extension whose entry
+    /// the next command — reading both lockfiles as this command leaves them
+    /// (serialized, parsed again) — selects (the workspace lockfile's
+    /// entry first, then the hidden one's) and reuses as far as the
+    /// lockfiles decide it (the facts check of
+    /// SingleExtensionEvalFunction.tryGettingValueFromLockFile). Any other
+    /// outcome keeps the taint: no write, a readonly or error mode, another
+    /// entry, facts that differ.
+    fn confirm_settled_extensions(&self) {
+        let settled = self
+            .settled_extensions
+            .lock()
+            .expect("settled extensions")
+            .clone();
+        if settled.is_empty() || !self.writes_hidden_lockfile() {
+            return;
+        }
+        let reparse = |lockfile: &Lockfile, mode: LockfileMode| {
+            Lockfile::parse(&lockfile.serialize(), mode).ok()
+        };
+        let workspace = match self.updated_lockfile() {
+            Some(written) => reparse(&written, self.mode),
+            None => Some(self.lockfile.clone()),
+        };
+        let hidden = match self.updated_hidden_lockfile() {
+            Some((_, written)) => reparse(&written, LockfileMode::Update),
+            None => Some(self.hidden_lockfile().clone()),
+        };
+        let (Some(workspace), Some(hidden)) = (workspace, hidden) else {
+            return;
+        };
+        for extension in settled {
+            let selection = crate::lockfile_extensions::lock_selection(
+                &workspace,
+                &hidden,
+                &extension.id,
+                &extension.factors,
+                extension.facts_version,
+            );
+            if selection.locked.as_ref() == Some(&extension.entry)
+                && !crate::lockfile_extensions::facts_block_reuse(
+                    &extension.entry,
+                    &selection.facts,
+                    selection.hidden_facts.as_deref(),
+                )
+            {
+                crate::observed_fs::confirm_provisional(&extension.key);
             }
         }
     }
@@ -551,7 +645,14 @@ impl RegistrySession {
             self.record(url, Some(hash.to_owned()));
             return Ok(Fetch::Found(Arc::new(bytes)));
         }
-        let fetched = match registry.read(relative) {
+        // The transfer's network taints are settled when its bytes match the
+        // lockfile's checksum: the next command reads those very bytes from
+        // the content-addressed cache, without the network (and records the
+        // same URL and hash).
+        let transfer = crate::observed_fs::HeldTaint::network();
+        let fetched = match crate::observed_fs::with_registry_sink(transfer.sink(), || {
+            registry.read(relative)
+        }) {
             Ok(Some(bytes)) => bytes,
             Ok(None) => {
                 self.record(url, None);
@@ -574,6 +675,9 @@ impl RegistrySession {
         }
         if self.mode != LockfileMode::Off {
             self.cas_put(&actual, &fetched);
+        }
+        if checksum.is_some() {
+            transfer.settle();
         }
         self.record(url, Some(actual));
         Ok(Fetch::Found(Arc::new(fetched)))
@@ -619,13 +723,21 @@ impl RegistrySession {
         {
             return Some(Arc::new(bytes));
         }
-        let fetched = registry.read(relative).ok()??;
+        // Settled like [`Self::fetch`]'s: bytes the lockfile's checksum
+        // names are what the sequential read takes from the cache.
+        let transfer = crate::observed_fs::HeldTaint::network();
+        let fetched =
+            crate::observed_fs::with_registry_sink(transfer.sink(), || registry.read(relative))
+                .ok()??;
         let actual = sha256_hex(&fetched);
         if checksum.is_some_and(|wanted| wanted != actual) {
             return None;
         }
         if self.mode != LockfileMode::Off {
             self.cas_put(&actual, &fetched);
+        }
+        if checksum.is_some() {
+            transfer.settle();
         }
         Some(Arc::new(fetched))
     }

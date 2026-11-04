@@ -1091,6 +1091,104 @@ pub(crate) fn combine_facts(
     (facts, versions)
 }
 
+/// What one module extension's evaluation reads of the two lockfiles
+/// (SingleExtensionEvalFunction.java:144-213): crate::repository's
+/// extension_lock, and the check that an evaluated result stands where the
+/// next command reads it (crate::registry_session::RegistrySession::
+/// note_settled_extension).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LockSelection {
+    /// The facts passed to the extension: the workspace lockfile's when
+    /// present (and of `facts_version`), else the hidden lockfile's.
+    pub facts: Vec<(String, Json)>,
+    /// The workspace lockfile's facts (of `facts_version`).
+    pub workspace_facts: Vec<(String, Json)>,
+    /// The hidden lockfile's facts of `facts_version`, if any.
+    pub hidden_facts: Option<Vec<(String, Json)>>,
+    /// The entry for `factors`: the workspace lockfile's, else the hidden one's.
+    pub locked: Option<Json>,
+}
+
+/// [`LockSelection`] of extension `id` for `factors`.
+pub(crate) fn lock_selection(
+    workspace: &crate::lockfile::Lockfile,
+    hidden: &crate::lockfile::Lockfile,
+    id: &str,
+    factors: &str,
+    facts_version: i64,
+) -> LockSelection {
+    let facts_of = |lockfile: &crate::lockfile::Lockfile| {
+        lockfile
+            .facts
+            .iter()
+            .find(|(key, _)| key == id)
+            .map(|(_, value)| match value {
+                Json::Object(members) => members.clone(),
+                _ => Vec::new(),
+            })
+    };
+    let hidden_facts =
+        facts_of(hidden).filter(|_| facts_version_of(&hidden.facts_versions, id) == facts_version);
+    let mut workspace_facts = Vec::new();
+    let mut facts = Vec::new();
+    if let Some(found) = facts_of(workspace) {
+        if facts_version_of(&workspace.facts_versions, id) == facts_version {
+            workspace_facts = found.clone();
+            facts = found;
+        }
+    } else if let Some(found) = &hidden_facts {
+        facts = found.clone();
+    }
+    let entry_of = |lockfile: &crate::lockfile::Lockfile| {
+        lockfile
+            .module_extensions
+            .iter()
+            .find(|(key, _)| key == id)
+            .and_then(|(_, per_factors)| member(per_factors, factors))
+            .cloned()
+    };
+    let locked = entry_of(workspace).or_else(|| entry_of(hidden));
+    LockSelection {
+        facts,
+        workspace_facts,
+        hidden_facts,
+        locked,
+    }
+}
+
+/// Whether the facts keep a reproducible `entry` from being reused
+/// (SingleExtensionEvalFunction.tryGettingValueFromLockFile, :389-397): the
+/// facts passed differ from those of its most recent evaluation.
+pub(crate) fn facts_block_reuse(
+    entry: &Json,
+    facts: &[(String, Json)],
+    hidden_facts: Option<&[(String, Json)]>,
+) -> bool {
+    entry_is_reproducible(entry) && !facts.is_empty() && Some(facts) != hidden_facts
+}
+
+/// `entry` of extension `id` for `factors` as a later command parses it from
+/// a lockfile this command writes (serialized, parsed again).
+pub(crate) fn reparsed_entry(id: &str, factors: &str, entry: &Json) -> Option<Json> {
+    let lockfile = crate::lockfile::Lockfile {
+        module_extensions: vec![(
+            id.to_owned(),
+            Json::Object(vec![(factors.to_owned(), entry.clone())]),
+        )],
+        ..Default::default()
+    };
+    let parsed = crate::lockfile::Lockfile::parse(
+        &lockfile.serialize(),
+        crate::lockfile::LockfileMode::Update,
+    )
+    .ok()?;
+    let (_, per_factors) = parsed
+        .module_extensions
+        .into_iter()
+        .find(|(key, _)| key == id)?;
+    member(&per_factors, factors).cloned()
+}
+
 /// The lockfile's factsVersions value of `id` (default 0).
 pub(crate) fn facts_version_of(versions: &[(String, Json)], id: &str) -> i64 {
     versions

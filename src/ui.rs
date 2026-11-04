@@ -111,6 +111,7 @@ pub fn note(text: &str) {
     if suppress_note() {
         return;
     }
+    count_print();
     if crate::snapshot::capture::is_active() {
         let bytes = marked(text);
         let _ = std::io::stderr().lock().write_all(&bytes);
@@ -129,6 +130,7 @@ pub fn emit(bytes: &[u8]) {
     if suppress_note() {
         return;
     }
+    count_print();
     let mut stderr = std::io::stderr().lock();
     if crate::snapshot::capture::is_active() {
         let _ = stderr.write_all(bytes);
@@ -140,6 +142,24 @@ pub fn emit(bytes: &[u8]) {
 
 thread_local! {
     static PRIVATE_NOTES: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    static PRINTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn count_print() {
+    PRINTS.with(|prints| prints.set(prints.get().wrapping_add(1)));
+}
+
+/// How many times this thread printed to stderr through [`note`], [`emit`]
+/// or crate::repository_process::echo: a module extension's re-probe
+/// (crate::repository) compares it around the evaluation — the next run
+/// reuses the result and prints none of it.
+pub fn prints_on_this_thread() -> u64 {
+    PRINTS.with(std::cell::Cell::get)
+}
+
+/// [`prints_on_this_thread`] of a write that bypasses [`note`] and [`emit`].
+pub(crate) fn note_printed() {
+    count_print();
 }
 
 fn suppress_note() -> bool {

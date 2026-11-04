@@ -350,7 +350,9 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
                 key.short()
             ));
         }
-        return Checked::Miss(Some(with_family(save::start(key, explain, log))));
+        let mut save = with_family(save::start(key, explain, log));
+        save.set_derive_only();
+        return Checked::Miss(Some(save));
     }
     // The event log's context (crate::snapshot::telemetry).
     let log = telemetry::Context {

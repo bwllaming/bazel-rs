@@ -427,7 +427,7 @@ async fn warm_await<F: std::future::Future>(future: F) -> Result<F::Output, Stri
 
 fn warm_http_to(url: Url, writer: &mut dyn Write) -> Result<Option<u64>, String> {
     crate::module_root_warm::check()?;
-    crate::observed_fs::taint(crate::observed_fs::Taint::Network, || url.to_string());
+    crate::observed_fs::registry_network_taint(|| url.to_string());
     crate::download_proxy::check(&url)?;
     let headers = crate::credentials::download_headers(url.as_str());
     crate::module_root_warm::check()?;
@@ -503,7 +503,7 @@ fn open_http_with(
     client: &Client,
     url: Url,
 ) -> Result<Option<reqwest::blocking::Response>, String> {
-    crate::observed_fs::taint(crate::observed_fs::Taint::Network, || url.to_string());
+    crate::observed_fs::registry_network_taint(|| url.to_string());
     crate::download_proxy::check(&url)?;
     // Credential helper headers for the requested URL (DownloadManager
     // credentialFactory, bazel/BazelRepositoryModule.java:446-477; N41).
@@ -571,9 +571,7 @@ fn read_all(mut reader: impl Read) -> Result<Vec<u8>, String> {
 /// permitted for source URLs, but credentials are not. Returns the size.
 pub fn download_to(url: &str, writer: &mut dyn Write) -> Result<u64, String> {
     validate_download_url(url)?;
-    crate::observed_fs::taint(crate::observed_fs::Taint::Network, || {
-        format!("download {url}")
-    });
+    crate::observed_fs::registry_network_taint(|| format!("download {url}"));
     if crate::module_root_warm::active() && !url.starts_with("file://") {
         return warm_http_to(http_url(url)?, writer)?
             .ok_or_else(|| "download resource not found".into());

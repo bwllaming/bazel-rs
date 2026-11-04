@@ -65,6 +65,11 @@ pub struct Save {
     family: Option<[u8; 32]>,
     /// The save holds a DERIVE section.
     derivable: bool,
+    /// The snapshot is never looked up by its key, only derived from
+    /// (`bazel-rs affected`'s scoped planning): its window's stderr is never
+    /// replayed, so output the next run would not print does not keep it
+    /// from being saved ([`Taint::ExtensionOutput`]).
+    derive_only: bool,
 }
 
 /// What an incremental analysis's save takes from the snapshot it started
@@ -108,6 +113,7 @@ pub fn start_with(key: Key, explain: bool, log: telemetry::Context, mode: captur
         seed: None,
         family: None,
         derivable: false,
+        derive_only: false,
     };
     if !observed_fs::open_window() {
         save.skipped = Some("the recording window was already open".to_owned());
@@ -140,6 +146,12 @@ impl Save {
     /// The family key of this command (crate::snapshot::derive).
     pub fn set_family(&mut self, family: Option<[u8; 32]>) {
         self.family = family;
+    }
+
+    /// The snapshot is never looked up by its key, only derived from
+    /// (`bazel-rs affected`'s scoped planning).
+    pub fn set_derive_only(&mut self) {
+        self.derive_only = true;
     }
 
     /// This command's key.
@@ -278,7 +290,10 @@ impl Save {
             ));
         }
         let recorder = observed_fs::recorder().ok_or("nothing was recorded")?;
-        let taints_now = recorder.taints();
+        let mut taints_now = recorder.taints();
+        if self.derive_only {
+            taints_now.remove(&Taint::ExtensionOutput);
+        }
         if !taints_now.is_empty() {
             return Err(taints(&taints_now));
         }

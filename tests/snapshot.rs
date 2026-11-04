@@ -5980,3 +5980,251 @@ fn a_seeded_hidden_lockfile_not_written_records_the_seed() {
     twin.each(|root| fs::remove_file(seed(root)).unwrap());
     twin.same(args, &[]).assert_miss("MODULE.bazel.lock");
 }
+
+/// A module extension generating one repository per line of
+/// `versions.txt` (`name=value`), downloading `served` (when set) and
+/// printing (when `PRINT`); `REPRODUCIBLE` decides where its entry goes.
+const VERSIONED_EXTENSION: &str = r#"def _repo(ctx):
+    ctx.file("BUILD.bazel", "exports_files(['v.txt'])\n")
+    ctx.file("v.txt", ctx.attr.value + "\n")
+
+_repo_rule = repository_rule(implementation = _repo, attrs = {"value": attr.string()})
+
+def _ext(module_ctx):
+    if PRINT:
+        print("the extension prints")
+    if SERVED:
+        module_ctx.download(url = SERVED, output = "served.txt", sha256 = SERVED_SHA256)
+    for line in module_ctx.read(Label("//:versions.txt")).splitlines():
+        name, value = line.split("=")
+        _repo_rule(name = name, value = value)
+    return module_ctx.extension_metadata(reproducible = REPRODUCIBLE)
+
+ext = module_extension(implementation = _ext)
+"#;
+
+/// A twin with [`VERSIONED_EXTENSION`] generating `a` and `b`, and
+/// `//ext:e` concatenating their values.
+fn versioned_extension_twin(reproducible: bool, print: bool, served: Option<(&str, &str)>) -> Twin {
+    let twin = fixture();
+    let (url, sha256) = served.unwrap_or_default();
+    twin.write(
+        "ext.bzl",
+        &format!(
+            "PRINT = {}\nREPRODUCIBLE = {}\nSERVED = {:?}\nSERVED_SHA256 = {:?}\n{VERSIONED_EXTENSION}",
+            if print { "True" } else { "False" },
+            if reproducible { "True" } else { "False" },
+            url,
+            sha256
+        ),
+    );
+    twin.write("versions.txt", "a=1\nb=1\n");
+    twin.write(
+        "MODULE.bazel",
+        &format!("{MODULE}\next = use_extension('//:ext.bzl', 'ext')\nuse_repo(ext, 'a', 'b')\n"),
+    );
+    twin.write(
+        "ext/BUILD.bazel",
+        "genrule(name = 'e', srcs = ['@a//:v.txt', '@b//:v.txt'], outs = ['e.txt'], cmd = 'cat $(SRCS) > $@')\n",
+    );
+    twin
+}
+
+/// The PERF-REPO line's `executed=` count of the snapshot side.
+fn repositories_executed(pair: &Pair) -> usize {
+    let stderr = text(&pair.on.stderr);
+    let line = stderr
+        .lines()
+        .find(|line| line.starts_with("PERF-REPO reused="))
+        .unwrap_or_else(|| panic!("no PERF-REPO line: {stderr}"));
+    line.split_whitespace()
+        .find_map(|field| field.strip_prefix("executed="))
+        .and_then(|count| count.parse().ok())
+        .unwrap()
+}
+
+/// A run that evaluated a reproducible module extension (a cold cache, or
+/// its input changed) is saved as the warm run reusing its hidden lockfile
+/// entry would be (affected-reuse-cold): its recorded inputs revalidated,
+/// its entry recorded. The input changed after that save misses, and so
+/// does the entry gone; each full analysis saves again.
+#[test]
+fn a_run_that_evaluated_an_extension_saves_like_its_reuse() {
+    let twin = versioned_extension_twin(true, false, None);
+    let args = &["build", "//ext:e"];
+    let cold = twin.same(args, &[]);
+    cold.assert_success().assert_saved();
+    twin.each(|root| assert_eq!(hidden_lockfiles(root).len(), 1));
+    twin.same(args, &[]).assert_hit();
+    // An input of the extension changed: a miss; the extension runs again
+    // and that run is saved too.
+    twin.write("versions.txt", "a=1\nb=2\n");
+    let changed = twin.same(args, &[("BAZEL_RS_TIMING", "1")]);
+    changed.assert_miss("versions.txt").assert_saved();
+    // Only the repository whose own specification changed runs again.
+    assert_eq!(repositories_executed(&changed), 1);
+    twin.same(args, &[]).assert_hit();
+    // Its entry gone: a miss.
+    twin.each(|root| {
+        for path in hidden_lockfiles(root) {
+            fs::remove_file(path).unwrap();
+        }
+    });
+    twin.same(args, &[])
+        .assert_miss("LOCKFILE_ENTRIES")
+        .assert_saved();
+    twin.same(args, &[]).assert_hit();
+    // A repository added (and not used): `a` and `b` are reused.
+    twin.write("versions.txt", "a=1\nb=2\nc=3\n");
+    let added = twin.same(args, &[("BAZEL_RS_TIMING", "1")]);
+    added.assert_miss("versions.txt").assert_saved();
+    assert_eq!(repositories_executed(&added), 0);
+}
+
+/// What keeps an evaluated extension's run from being saved: an entry in
+/// MODULE.bazel.lock (non-reproducible: its write is pending), a mode that
+/// writes no entry (`error`, `off`, `--native-lockfile=readonly`), output
+/// the next run would not print. The run after a written entry is saved.
+#[test]
+fn an_evaluated_extension_saves_only_where_the_next_run_reuses_it() {
+    let args = &["build", "//ext:e"];
+    let twin = versioned_extension_twin(false, false, None);
+    twin.same(args, &[])
+        .assert_not_saved("lockfile-write-pending");
+    twin.same(args, &[]).assert_saved();
+    twin.same(args, &[]).assert_hit();
+
+    let twin = versioned_extension_twin(true, false, None);
+    let error = &["build", "--lockfile_mode=error", "//ext:e"];
+    for _ in 0..2 {
+        twin.same(error, &[])
+            .assert_not_saved("extension-evaluated");
+    }
+    let off = &["build", "--lockfile_mode=off", "//ext:e"];
+    for _ in 0..2 {
+        twin.same(off, &[]).assert_not_saved("extension-evaluated");
+    }
+    let readonly = &["build", "--native-lockfile=readonly", "//ext:e"];
+    for _ in 0..2 {
+        twin.same(readonly, &[])
+            .assert_not_saved("extension-evaluated");
+    }
+    twin.each(|root| assert!(hidden_lockfiles(root).is_empty()));
+
+    let twin = versioned_extension_twin(true, true, None);
+    let printed = twin.same(args, &[]);
+    printed.assert_not_saved("extension-output");
+    assert!(printed.stderr().contains("the extension prints"));
+    let reused = twin.same(args, &[]);
+    reused.assert_saved();
+    assert!(!reused.stderr().contains("the extension prints"));
+    twin.same(args, &[]).assert_hit();
+}
+
+/// An evaluated extension's downloads only shaped its entry: the run that
+/// downloaded is saved, and its hit fetches nothing.
+#[test]
+fn an_evaluated_extensions_downloads_settle_with_its_reuse() {
+    use sha2::Digest as _;
+    let served = tempfile::Builder::new()
+        .prefix("snapshot-served-")
+        .tempdir_in(crate::test_temp::root())
+        .unwrap();
+    fs::write(served.path().join("blob.txt"), "downloaded\n").unwrap();
+    let sha256: String = sha2::Sha256::digest(b"downloaded\n")
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let server = Registry::serve(served.path().to_path_buf());
+    let url = format!("{}/blob.txt", server.url);
+    let twin = versioned_extension_twin(true, false, Some((&url, &sha256)));
+    let args = &["build", "//ext:e"];
+    twin.same(args, &[]).assert_success().assert_saved();
+    assert!(server.requests() > 0);
+    let before = server.requests();
+    twin.same(args, &[]).assert_hit();
+    assert_eq!(server.requests(), before, "a hit fetches nothing");
+}
+
+/// A cold cache whose MODULE.bazel.lock names the registry files' hashes:
+/// their downloads give the bytes the next run reads from the cache, and the
+/// module's source archive, once published, is what the next run's warm
+/// check reuses — the cold run is saved, and its hit fetches nothing.
+#[test]
+fn a_cold_cache_with_locked_registry_hashes_saves() {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let twin = fixture();
+    let registry = twin.base.path().join("registry");
+    let source = twin.base.path().join("w5src");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(
+        source.join("MODULE.bazel"),
+        "module(name = 'w5dep', version = '1.0')\n",
+    )
+    .unwrap();
+    fs::write(source.join("BUILD.bazel"), "exports_files(['f.txt'])\n").unwrap();
+    fs::write(source.join("f.txt"), "from the registry\n").unwrap();
+    fs::create_dir_all(registry.join("archives")).unwrap();
+    let archive = registry.join("archives/w5dep.tar.gz");
+    let status = Command::new("tar")
+        .arg("czf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(&source)
+        .arg(".")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let integrity = format!(
+        "sha256-{}",
+        base64::engine::general_purpose::STANDARD
+            .encode(sha2::Sha256::digest(fs::read(&archive).unwrap()))
+    );
+    let server = Registry::serve(registry.clone());
+    for (path, content) in [
+        (
+            "modules/w5dep/metadata.json",
+            r#"{"versions": ["1.0"]}"#.to_owned(),
+        ),
+        (
+            "modules/w5dep/1.0/MODULE.bazel",
+            "module(name = 'w5dep', version = '1.0')\n".to_owned(),
+        ),
+        (
+            "modules/w5dep/1.0/source.json",
+            format!(
+                r#"{{"url": "{}/archives/w5dep.tar.gz", "integrity": "{integrity}"}}"#,
+                server.url
+            ),
+        ),
+    ] {
+        let path = registry.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+    twin.write(
+        "MODULE.bazel",
+        &format!("{MODULE}\nbazel_dep(name = 'w5dep', version = '1.0')\n"),
+    );
+    twin.write(
+        "dep/BUILD.bazel",
+        "genrule(name = 'd', srcs = ['@w5dep//:f.txt'], outs = ['d.txt'], cmd = 'cp $< $@')\n",
+    );
+    let registry_flag = format!("--registry={}/", server.url);
+    let args = &["build", registry_flag.as_str(), "//dep:d"];
+    // The first run writes the hashes into MODULE.bazel.lock.
+    twin.same(args, &[])
+        .assert_success()
+        .assert_not_saved("taint");
+    twin.same(args, &[]).assert_saved();
+    // A cold cache: everything is downloaded again.
+    twin.each(|root| fs::remove_dir_all(root.join("cache")).unwrap());
+    let before = server.requests();
+    let cold = twin.same(args, &[]);
+    cold.assert_success().assert_saved();
+    assert!(server.requests() > before);
+    let before = server.requests();
+    twin.same(args, &[]).assert_hit();
+    assert_eq!(server.requests(), before, "a hit fetches nothing");
+}

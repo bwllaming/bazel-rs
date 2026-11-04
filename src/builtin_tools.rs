@@ -332,23 +332,33 @@ pub fn materialize(cache: &Path) -> Result<PathBuf, String> {
     let manifest_path = trees.join(format!("{}.json", bundle.identity));
     reject_symlink(&destination)?;
     reject_symlink(&manifest_path)?;
-    if fs::symlink_metadata(&manifest_path)
-        .is_ok_and(|metadata| metadata.is_file() && metadata.len() == MANIFEST.len() as u64)
-        && fs::read(&manifest_path).is_ok_and(|bytes| bytes == MANIFEST)
-        && verified_warm(&destination, &bundle.manifest)
-    {
-        // REPO + INTEGRITY records of the analysis snapshot.
-        crate::observed_fs::repository_tree(
-            "builtin",
-            "bazel_tools",
-            &destination,
-            Some(&manifest_path),
-        );
+    // The warm check: reuse a published tree (with its REPO + INTEGRITY
+    // records of the analysis snapshot).
+    let warm = || {
+        let reused = fs::symlink_metadata(&manifest_path)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() == MANIFEST.len() as u64)
+            && fs::read(&manifest_path).is_ok_and(|bytes| bytes == MANIFEST)
+            && verified_warm(&destination, &bundle.manifest);
+        if reused {
+            crate::observed_fs::repository_tree(
+                "builtin",
+                "bazel_tools",
+                &destination,
+                Some(&manifest_path),
+            );
+        }
+        reused
+    };
+    if warm() {
         return Ok(destination);
     }
-    crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryMaterialized, || {
-        "embedded @bazel_tools".to_owned()
-    });
+    // Settled when the warm check, run again after the publication, reuses
+    // it: the tree is the binary's embedded archive, and the next run
+    // reuses it exactly so (a verify shadow keeps the taint).
+    let materialized = crate::observed_fs::HeldTaint::new(
+        crate::observed_fs::Taint::RepositoryMaterialized,
+        || "embedded @bazel_tools".to_owned(),
+    );
     let staging = stage_tree(&trees, ARCHIVE, &bundle.manifest)?;
     remove_cache_entry(&destination)?;
     fs::rename(staging.path(), &destination)
@@ -370,6 +380,9 @@ pub fn materialize(cache: &Path) -> Result<PathBuf, String> {
     File::open(&trees)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| format!("sync embedded bazel_tools cache: {error}"))?;
+    if crate::observed_fs::reprobes_executions() && warm() {
+        materialized.settle();
+    }
     Ok(destination)
 }
 

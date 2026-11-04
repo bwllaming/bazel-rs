@@ -272,12 +272,14 @@ fn warmed_module_roots_change_nothing_the_build_shows() {
             .unwrap_or_else(|| panic!("{line} after {at}: {}", reference.stderr));
         at += found + line.len();
     }
+    // A cold materialization stands as the reuse the next run's warm check
+    // makes (its archive download settled with it): nothing taints.
     assert!(
-        reference
+        !reference
             .records
             .iter()
             .any(|line| line.starts_with("TAINT ")),
-        "a cold materialization taints: {:?}",
+        "a cold materialization is recorded as its reuse: {:?}",
         reference.records
     );
     for (threads, env) in [
