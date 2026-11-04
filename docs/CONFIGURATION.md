@@ -51,6 +51,7 @@ Modelled options, with Bazel's defaults and converters:
 | `--[no]experimental_proto_descriptor_sets_include_source_info` | `false` | BooleanConverter; a table-driven value option (below) | `rules/proto/ProtoConfiguration.java:58-65` |
 | `--strict_proto_deps` | `error` | StrictDepsConverter (EnumConverter over StrictDepsMode `OFF, WARN, ERROR, STRICT, DEFAULT`, case-insensitive; `default` is the constant `DEFAULT`); a table-driven value option (below) | `ProtoConfiguration.java:113-123`, `analysis/config/CoreOptionConverters.java:311-329` |
 | `--strict_public_imports` | `off` | StrictDepsConverter, as above; a table-driven value option (below) | `ProtoConfiguration.java:125-135` |
+| `--experimental_strict_java_deps` (old name `--strict_java_deps`, which warns `Option 'strict_java_deps' is deprecated: Use --experimental_strict_java_deps instead`) | `default` | StrictDepsConverter, as above; a table-driven value option (below) read by rules_java (`ctx.fragments.java.strict_java_deps`, docs/JAVA_ACTIONS.md) | `rules/java/JavaOptions.java:167-178` |
 
 Values that resolve to `@@bazel_tools//tools:host_platform` (or are empty)
 give the default configuration, exactly like the unset options (both become
@@ -147,6 +148,7 @@ replayed by `tests/value_options.rs`; `enable_runfiles` also by
 | `experimental_proto_descriptor_sets_include_source_info` | Bool, `false` | yes | propagated | `ProtoConfiguration.java:58-65`, `builtin_exec_platforms.bzl:426` |
 | `strict_proto_deps` | StrictDepsMode, `error` | yes | propagated | `ProtoConfiguration.java:113-123`, `:431` |
 | `strict_public_imports` | StrictDepsMode, `off` | yes | propagated | `ProtoConfiguration.java:125-135`, `:432` |
+| `experimental_strict_java_deps` | StrictDepsMode, `default` | yes | propagated | `JavaOptions.java:167-178`, `:369` |
 | `enable_runfiles` | TriState (TriStateConverter: `auto` or a boolean spelling, stored as `YES`/`NO`/`AUTO`; boolean syntax), `auto` | yes (also read by the runfiles trees, crate::runfiles_tree, and `ctx.configuration.runfiles_enabled()`) | propagated | `CoreOptions.java:954-961`, `Converters.java:133-156`, `:237` |
 | `collect_code_coverage` | Bool, `false` (the typed field a Starlark transition sets, N47) | yes (docs/COVERAGE.md) | default | `CoreOptions.java:566-578`, `:231-287` |
 | `apple_platform_type` | PlatformTypeConverter (ASCII lower case), `macos` | no (Apple rule transitions and `ctx.fragments.apple` are not modelled for other platform types) | set to `macos` | `rules/apple/AppleCommandLineOptions.java:194-203, 394-406`, `:185, 190` |
@@ -1175,7 +1177,7 @@ first-seen order (`:169-258`). For each entry, `checkOptionValue` (`:420-482`):
   `tests/fixtures/pre_platforms_flags` (41 genuine 9.3.0 cases);
 * the table-driven value options (`strict_proto_deps`,
   `strict_public_imports`, `experimental_proto_descriptor_sets_include_source_info`,
-  `enable_runfiles`, `collect_code_coverage`, `apple_platform_type`; above)
+  `experimental_strict_java_deps`, `enable_runfiles`, `collect_code_coverage`, `apple_platform_type`; above)
   convert and match through their row (paired captures
   `tests/fixtures/value_options`, `tests/fixtures/enable_runfiles_option`);
 * converter failures: `While parsing option --X=V: MESSAGE`;
