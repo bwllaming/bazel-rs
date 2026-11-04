@@ -1,17 +1,63 @@
 # Native Java compilation actions
 
 `create_compilation_action` registers real JavaBuilder compilation for ordinary
-sources/source jars, empty libraries and resource jars, without annotation processors. The
+sources/source jars, empty libraries, resource jars and annotation processors
+(`--processorpath`/`--processors`, `--generated_sources_output`, additional
+outputs and JavaCompilationHelper.createGenJarAction's GenClass action). The
 default advertised classpath mode remains **BAZEL**: dependency producers finish,
 binary jdeps select an ordered reduced classpath, and the real compiler runs
 `BAZEL_REDUCED`. Only its decoded fallback bit requests one `BAZEL_FALLBACK`
 attempt with the full classpath. Ordinary rules_java constructs the JavaInfo.
 
 `java_common.internal_DO_NOT_USE().create_header_compilation_action` implements
-the **direct compiler, direct classpath, no API-generating processors** slice of
-Bazel 9.3. It registers an ordinary `Turbine` spawn. The selected real compiler
+JavaHeaderCompileAction.Builder.build: without API-generating processors (and
+with `enable_direct_classpath`) an ordinary `Turbine` spawn over the direct
+classpath; otherwise a `JavacTurbine` JavaCompileAction (TURBINE) that runs the
+processors with the reduced classpath and fallback protocol of Javac, on the
+direct header compiler when every processor is one of its builtin processors,
+else on `_header_compiler` with the processor path. The selected real compiler
 produces the header jar, transitive-header jar and binary `.jdeps` output. This
 same registration runs in build and cquery analysis; cquery never executes it.
+
+## Action-graph parity (aquery, ActionKeys, remote cache)
+
+Every Java action matches genuine Bazel 9.3.1 in `aquery`: description
+(JavaCompileAction.ProgressMessage: `Building <jar> (N source files, M source
+jars) and running annotation processors (Short, …)`, `Compiling Java headers
+…`, `Building genclass jar …`, `Building Java resource jar`), mnemonic,
+command line (the full JavaBuilder/Turbine flag and classpath lines),
+inputs, outputs, environment, execution info (JavaCompileAction's
+`internal-inline-outputs` jdeps directive included) and ActionKey.
+`src/java_actions/command.rs` models CustomCommandLine: literal strings,
+NestedSets fingerprinted by their structure (the Starlark depsets passed in,
+rebuilt through NestedSetBuilder semantics: naive-link attribute sets,
+auxiliary bootclasspath prepends, stable resource-jar sets) and PrefixArgs.
+The keys are JavaCompileAction.computeKey (GUID, classpath mode, executable
+and flag lines, the classpath NestedSet, environment in getFixedEnv order,
+the builder's execution info, the in-memory jdeps bit) for Javac and
+JavacTurbine, and SpawnAction.computeKey (with the parameter-file info) for
+Turbine, GenClass and JavaResourceJar. A single-segment File executable runs
+as `./name` (SpawnAction.ensureCallable), for every Starlark spawn too.
+Evidence: tests/fixtures/java_action_parity (genuine capture, every block
+byte-identical) and stardoc 0.8.0's `deps(//:docs)` (Javac 9/9, Turbine 7/7
+identical).
+
+Execution: each JavaBuilder/JavacTurbine attempt (reduced, then fallback) is
+its own spawn, as JavaCompileAction.getReducedSpawn builds it: the executable
+line plus two always-spilled unquoted parameter files
+(`<output>-0.params` flags, `<output>-1.params` classpath and reduce mode).
+Each attempt goes through the remote/disk spawn cache (RemoteSpawnCache:
+lookup, then upload of a successful execution; a reduced attempt's hit needs
+only its jdeps, JavaSpawn.isMandatoryOutput) and, when the toolchain declares
+`supports-workers`/`supports-multiplex-workers` (rules_java's default), runs
+on a persistent (multiplex) worker under the default strategy order, with
+genuine's worker key (argv without the flag files, `--persistent_worker`,
+environment, mnemonic; `--worker_max_instances`,
+`--worker_max_multiplex_instances`, `--worker_verbose` as for any worker,
+docs/PERSISTENT_WORKERS.md). The remote Action digests equal genuine's: a
+genuine build's Javac/Turbine results are remote cache hits for bazel-rs and
+the reverse (jap-ws fixture 27/27 spawns, stardoc 0.8.0 15/15 Java spawns,
+both directions; docs.md identical).
 
 ## Supported contract
 
@@ -48,31 +94,29 @@ Full JavaBuilder compilation enforces the strict-deps mode with the real tool.
 
 ## Explicit boundaries
 
-- Annotation processors/generated processor
-  jars, additional processor outputs, extra Args, per-package toolchain data,
-  JSpecify and Java coverage instrumentation fail explicitly in this slice.
+- Extra Args, per-package toolchain data, JSpecify, Java coverage
+  instrumentation and `--experimental_turbine_annotation_processing` fail
+  explicitly; `--strict_java_deps` is not a native option (the fragment's
+  `default`).
   Ordinary dependent/sourcejar/empty library builds are proven; the application
   rules_jvm_external Java-library cquery passes with this implementation.
   Subsequent runtime-classpath and native-directory helpers also unblock the
   AddJarManifestEntry Java-binary cquery (docs/JAVA_RUNTIME_CLASSPATH.md and
   docs/JAVA_NATIVE_DEPS_DIRS.md). Full application analysis next stops at an
   incompatible-platform handling boundary; no whole configured-graph claim.
-- Non-direct classpath headers, absent direct compiler, API-generating
-  processors and tree/unresolved-symlink artifacts fail explicitly.
-  Non-API-generating plugins are validated but do
-  not run during header compilation, matching Bazel.
+- Tree/unresolved-symlink artifacts fail explicitly. Non-API-generating
+  plugins do not run during header compilation, matching Bazel.
 - The chosen execution group, platform and exec properties use normal
   resolution. Resolved constraints are shared into action construction by Arc;
   the final environment is action-keyed. No global action/config rekey or
   persisted format change is introduced.
 - Output-path stripping, changing in-memory jdeps mode and command-line limits
   remain outside the native option surface. No path stripping is performed.
-- JavaBuilder executes locally (standalone/process-wrapper/sandboxed). Actual
-  toolchain worker directives are retained, but this action policy is worker-
-  incapable: default strategy selection can choose local; worker-only requests
-  fail. Selected remote execution fails before submission. Remote spawn-cache
-  lookup/upload is explicitly reported as skipped for JavaBuilder; native
-  terminal caching and remote-only prerequisite materialization still work.
+- JavaBuilder executes on a worker, sandboxed, process-wrapped or standalone,
+  each attempt through the spawn cache. Selected remote execution fails
+  before submission. Multiplex workers are one process per concurrent
+  request (docs/PERSISTENT_WORKERS.md). Console progress lines still use the
+  native `MNEMONIC output` form (the aquery description is genuine's).
 
 ## JavaBuilder transaction
 
@@ -94,6 +138,9 @@ new running-process interruption parity.
 
 Successful fallback retains two spawn records and runner counts within one
 logical action completion. Native action cache hits report no new spawns.
+A spawn-cache hit of the last attempt makes the action a remote cache hit
+(`N remote cache hit`); its outputs are downloaded into the execution root
+and published like executed ones.
 
 The proto2 decoder validates required dependency/location fields, skips unknown
 fields/groups, preserves repeated/default scalar behavior and includes every

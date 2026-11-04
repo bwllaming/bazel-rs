@@ -20,6 +20,11 @@ requirements are:
 - rules_java `android_lint`
 - rules_swift
 
+The native Javac and JavacTurbine actions (JavaCompileAction) carry the
+toolchain's `supports-workers`/`supports-multiplex-workers` too; each of
+their reduced/fallback attempts runs as one WorkRequest on the JavaBuilder
+(multiplex) worker, keyed like genuine's (docs/JAVA_ACTIONS.md).
+
 ~/code instantiates none of those rules: it has no Java, Kotlin or Swift
 sources. Its TypeScript uses `js_run_binary`/`js_library` rather than the
 `ts_project` tsc worker. rules_rust, rules_go, protobuf and rules_js never

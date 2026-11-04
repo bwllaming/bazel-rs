@@ -7,10 +7,15 @@ selects, in Bazel 9.3.1's formats
 (query2/aquery/ActionGraph{Text,Summary,Proto}OutputFormatterCallback,
 skyframe/actiongraph/v2, analysis_v2.proto). Sources: `src/aquery.rs`
 (options, filters, formatters), `src/aquery_key.rs` (Bazel action keys),
-`src/engine/aquery.rs` (capture and action descriptions), `src/java_gzip.rs`
+`src/engine/aquery.rs` (capture and action descriptions),
+`src/java_actions/command.rs` (the Java actions' CustomCommandLines and
+keys, docs/JAVA_ACTIONS.md), `src/java_gzip.rs`
 (Java's GZIP bytes). Genuine captures: `tests/fixtures/aquery/kitchen` and
 `tests/fixtures/aquery/depsets` (`tests/aquery.rs`),
-`tests/fixtures/cc_compile/genuine_aquery.txt` (`tests/cc_compile.rs`).
+`tests/fixtures/cc_compile/genuine_aquery.txt` (`tests/cc_compile.rs`),
+`tests/fixtures/java_action_parity` (`tests/java_action_parity.rs`: every
+Java action class, keys included). A Starlark spawn's `%{input}` is its
+first declared input (the inputs NestedSet lists inputs before tools).
 
 ```sh
 bazel-rs aquery //pkg:target
@@ -134,9 +139,7 @@ Not reproduced (a deterministic native key is printed instead):
 Known gaps seen on stardoc 0.8.0's `deps(//:docs)` (2026-11-04; keys equal
 unless stated): the description of header-parsing CppCompile actions names
 another header, SolibSymlink descriptions carry ` [for tool]` in the exec
-configuration (genuine's do not), an Ijar description names the ijar tool
-instead of its input; JavaCompile/Turbine actions differ in description,
-command line (JavaBuilder flags) and key; the starlark_doc_extract binary
+configuration (genuine's do not); the starlark_doc_extract binary
 proto write (BinaryFileWriteAction) differs in key and prints
 `IsExecutable`.
 
