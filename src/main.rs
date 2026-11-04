@@ -525,14 +525,19 @@ fn run() -> Result<(), String> {
     // other `fetch` forms, `clean` and `shutdown` show none. Everything
     // printed from here on reaches the terminal through its thread; every
     // exit path below ends it ([`exit`]).
-    if let Some(config) = bazel_rs::progress::decide(
-        &command,
+    let terminal_environment = bazel_rs::progress::TerminalEnvironment::from_process(
+        is_standard_terminal(),
+        usize::try_from(terminal_columns()).unwrap_or(80),
+    );
+    // UiOptions.useColor: without it Bazel strips the ANSI control codes
+    // of what it prints (BlazeCommandDispatcher's AnsiStrippingOutputStream),
+    // actions' output included (crate::ui::event_with_output).
+    bazel_rs::ui::set_color(bazel_rs::progress::use_color(
         &ui_options,
-        &bazel_rs::progress::TerminalEnvironment::from_process(
-            is_standard_terminal(),
-            usize::try_from(terminal_columns()).unwrap_or(80),
-        ),
-    ) && let Err(error) = bazel_rs::progress::start(config)
+        &terminal_environment,
+    ));
+    if let Some(config) = bazel_rs::progress::decide(&command, &ui_options, &terminal_environment)
+        && let Err(error) = bazel_rs::progress::start(config)
     {
         eprintln!("bazel-rs: warning: the progress display is off: {error}");
     }

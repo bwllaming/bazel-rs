@@ -354,6 +354,10 @@ impl Local<'_> {
             groups: Vec::new(),
         };
         own.action.id.clear();
+        // The console's owner (its BUILD location) and progress message
+        // build nothing (crate::action_console; like the id, unkeyed).
+        own.action.extra.owner = None;
+        own.action.extra.progress = None;
         for dependency in &mut own.dependencies {
             dependency.action_id.clear();
         }

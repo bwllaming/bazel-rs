@@ -989,6 +989,24 @@ pub fn execute_with_tests(
     // under --nobuild (no status nodes are planned under --nobuild).
     let symlink_outputs = symlink_outputs(&nodes, &run_plans);
     let tool_trees = tool_runfiles_trees(&nodes);
+    // The top-level configuration's actions of each requested target (its
+    // own and its aspects': a validation's too), for a failed build's
+    // results: a target with one of them unbuilt failed to build.
+    let requested_names: HashSet<String> = requested
+        .iter()
+        .map(|(label, _)| label.to_string())
+        .chain(result_targets.iter().map(|(label, _)| label.to_string()))
+        .collect();
+    let owned: Vec<(String, String)> = nodes
+        .iter()
+        .filter_map(|node| {
+            let id = node.action.id.as_str();
+            let end = id.find(['#', '%']).unwrap_or(id.len());
+            let owner = &id[..end];
+            (!owner.contains('[') && requested_names.contains(owner))
+                .then(|| (owner.to_owned(), id.to_owned()))
+        })
+        .collect();
     set_remote_downloads(&command, &requested, &aspect_reports, &run_plans);
     let mut action_errors: Vec<(String, String)> = Vec::new();
     // A build without --keep_going whose action failed (reported).
@@ -1159,6 +1177,11 @@ pub fn execute_with_tests(
         })
     };
     let failed_requested: BTreeSet<Label> = if action_failed {
+        let unbuilt_owners: HashSet<&str> = owned
+            .iter()
+            .filter(|(_, id)| !results.contains_key(id))
+            .map(|(owner, _)| owner.as_str())
+            .collect();
         requested
             .iter()
             .filter(|(_, produced)| !built_all(std::slice::from_ref(produced)))
@@ -1166,7 +1189,9 @@ pub fn execute_with_tests(
             .chain(
                 result_targets
                     .iter()
-                    .filter(|(_, produced)| !built_all(produced))
+                    .filter(|(label, produced)| {
+                        !built_all(produced) || unbuilt_owners.contains(label.to_string().as_str())
+                    })
                     .map(|(label, _)| label.clone()),
             )
             .collect()

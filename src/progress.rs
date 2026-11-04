@@ -862,6 +862,16 @@ pub struct Config {
     pub columns: usize,
 }
 
+/// UiOptions.useColor: `--color=yes`, or `auto` on a standard terminal
+/// (without `NO_COLOR`).
+pub fn use_color(options: &UiOptions, environment: &TerminalEnvironment) -> bool {
+    match options.color {
+        Tristate::Yes => true,
+        Tristate::No => false,
+        Tristate::Auto => environment.standard_terminal && !environment.no_color,
+    }
+}
+
 /// Whether the display runs for `command` under `options` in `environment`
 /// (UiOptions.useCursesEnum / useColor): `--curses=yes` forces it, `auto`
 /// needs a standard terminal and no `CI`; `--noshow_progress`, the startup
@@ -887,11 +897,7 @@ pub fn decide(
     if !on {
         return None;
     }
-    let color = match options.color {
-        Tristate::Yes => true,
-        Tristate::No => false,
-        Tristate::Auto => environment.standard_terminal && !environment.no_color,
-    };
+    let color = use_color(options, environment);
     let seconds = if options.rate_limit.is_finite() {
         options.rate_limit.clamp(0.1, 60.0)
     } else {

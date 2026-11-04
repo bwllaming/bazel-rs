@@ -246,7 +246,10 @@ fn native_rules_and_failing_validations() {
             .contains(&"k8-fastbuild/bin/leaf.validated".to_owned())
     );
     let ws = Workspace::new();
-    rejected(&ws.build_with(&[], &["//:failing"]), "action '//:failing");
+    let failed = ws.build_with(&[], &["//:failing"]);
+    rejected(&failed, " failed: (Exit 1): ");
+    rejected(&failed, "(from val_fail rule target //:failing)");
+    rejected(&failed, "Target //:failing failed to build");
 }
 
 #[test]

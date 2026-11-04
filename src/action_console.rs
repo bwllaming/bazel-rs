@@ -765,4 +765,27 @@ mod tests {
             Some("aspects [//p:defs.bzl%a] on talk rule target //p:t")
         );
     }
+
+    #[test]
+    fn reported_errors_carry_their_parts() {
+        let error = format!(
+            "action '//x': {REPORTED}local\u{2}/ws/BUILD:1:1: \u{2}D failed: m\u{3}err\n\u{3}out\n"
+        );
+        assert!(is_reported(&error));
+        assert_eq!(
+            reported(&error),
+            Some(Reported {
+                runner: "local",
+                location: "/ws/BUILD:1:1: ",
+                message: "D failed: m",
+                stderr: "err\n",
+                stdout: "out\n",
+            })
+        );
+        assert_eq!(reported_runner(&error), Some("local"));
+        assert_eq!(raw_status_of("Killed"), Some(137));
+        assert_eq!(raw_status_of("Signal 42"), Some(170));
+        assert_eq!(raw_status_of("Exit 3"), None);
+        assert!(reported("plain error").is_none());
+    }
 }

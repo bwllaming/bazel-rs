@@ -120,6 +120,39 @@ pub fn note(text: &str) {
     }
 }
 
+static COLOR: AtomicBool = AtomicBool::new(false);
+
+/// UiOptions.useColor of this command ([`event_with_output`]).
+pub fn set_color(color: bool) {
+    COLOR.store(color, Ordering::Relaxed);
+}
+
+/// AnsiStrippingOutputStream: `bytes` without the ANSI control sequences
+/// `ESC [ [0-9;]* [A-Za-z]` (an unterminated or illegal one, or one of 128
+/// bytes and more, is kept).
+pub fn strip_ansi(bytes: &[u8]) -> Cow<'_, [u8]> {
+    if !bytes.contains(&0x1b) {
+        return Cow::Borrowed(bytes);
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == 0x1b && bytes.get(at + 1) == Some(&b'[') {
+            let mut end = at + 2;
+            while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b';') {
+                end += 1;
+            }
+            if end < bytes.len() && bytes[end].is_ascii_alphabetic() && end - at < 128 {
+                at = end + 1;
+                continue;
+            }
+        }
+        out.push(bytes[at]);
+        at += 1;
+    }
+    Cow::Owned(out)
+}
+
 /// Serializes [`event_with_output`]: one event and its output are never
 /// interleaved with another's.
 static EVENT_OUTPUT: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -143,8 +176,14 @@ pub fn event_with_output(text: &str, stdout: &[u8], stderr: &[u8], informational
             None => (&[], bytes),
         }
     }
-    let (err_lines, err_rest) = split(stderr);
-    let (out_lines, out_rest) = split(stdout);
+    let color = COLOR.load(Ordering::Relaxed);
+    let (stdout, stderr) = if color {
+        (Cow::Borrowed(stdout), Cow::Borrowed(stderr))
+    } else {
+        (strip_ansi(stdout), strip_ansi(stderr))
+    };
+    let (err_lines, err_rest) = split(&stderr);
+    let (out_lines, out_rest) = split(&stdout);
     let _serial = EVENT_OUTPUT
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -488,5 +527,19 @@ mod tests {
             b"a\x1b[1mb\x1b_x\n"
         );
         assert!(matches!(filtered(b"plain\n"), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn ansi_codes_strip_like_ansi_stripping_output_stream() {
+        assert_eq!(&*strip_ansi(b"plain"), b"plain");
+        assert_eq!(
+            &*strip_ansi(b"\x1b[1m\x1b[91merror\x1b[0m: x\x1b[K"),
+            b"error: x"
+        );
+        // Not a control sequence: kept.
+        assert_eq!(&*strip_ansi(b"a\x1bb\x1b[12"), b"a\x1bb\x1b[12");
+        assert_eq!(&*strip_ansi(b"\x1b[1;2-x"), b"\x1b[1;2-x");
+        let long = [b"\x1b[".as_slice(), &[b'1'; 130], b"m"].concat();
+        assert_eq!(&*strip_ansi(&long), &long[..]);
     }
 }

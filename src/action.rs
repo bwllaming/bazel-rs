@@ -7678,7 +7678,9 @@ pub fn execute_with_remote(
             if debug {
                 let sandbox_root = work.0.display().to_string();
                 std::mem::forget(work);
-                crate::note!("bazel-rs: sandbox build root retained at '{sandbox_root}'");
+                // The native note of where the retained root is (genuine's
+                // --sandbox_debug messages name it).
+                crate::note!("(sandbox build root retained at '{sandbox_root}')");
             }
             return Err(reported);
         }
