@@ -11,6 +11,7 @@ tests/fixtures/action_tmpdir/workspace
 tests/fixtures/aquery/depsets
 tests/fixtures/aquery/genrules
 tests/fixtures/aquery/kitchen
+tests/fixtures/aquery/test_runner
 tests/fixtures/args_map_each/workspace
 tests/fixtures/artifact_identity/workspace
 tests/fixtures/aspect_base_attributes/workspace
@@ -47,6 +48,7 @@ tests/fixtures/coverage_command/workspace
 tests/fixtures/cpp_flag_options/workspace
 tests/fixtures/cquery_artifacts/workspace
 tests/fixtures/cquery_aspect_edges/workspace
+tests/fixtures/cquery_fragments/workspace
 tests/fixtures/cquery_output/workspace
 tests/fixtures/cquery_proto/workspace
 tests/fixtures/custom
