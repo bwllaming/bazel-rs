@@ -1,0 +1,9 @@
+module(name = "sealed_copies")
+
+src_rule = use_repo_rule("//:repos.bzl", "src_rule")
+
+src_rule(name = "src")
+
+copy_rule = use_repo_rule("//:repos.bzl", "copy_rule")
+
+copy_rule(name = "copy")

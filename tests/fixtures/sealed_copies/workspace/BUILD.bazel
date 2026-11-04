@@ -1,0 +1,6 @@
+genrule(
+    name = "out",
+    srcs = ["@copy//:result.txt"],
+    outs = ["out.txt"],
+    cmd = "cp $< $@",
+)

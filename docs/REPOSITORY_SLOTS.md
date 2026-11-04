@@ -115,7 +115,32 @@ Python process computes.
   GOPATH of `go_repository_cache` through it, as in genuine's `external/` —
   and only its published copy is sealed. A mutable slot made from a tree
   (`restore_mutable`: a written-into repository, a missing self-referencing
-  slot) gets its owner's write permission back on every entry.
+  slot) gets the modes the repository left before sealing: the manifest
+  records them as `unsealed` where sealing changed a mode, outside the
+  identity like the stat fingerprints (rules_python's read-only `lib/`
+  stays read-only there; trees differing only in write bits share one
+  publication, whose first manifest's modes are kept). Without a manifest
+  every entry gets its owner's write permission.
+* Copies of sealed trees: a repository that copies another's tree
+  (`cp -r`) gets read-only files and directories, where genuine's copy of
+  its writable `external/` would not. Genuine's file operations delete an
+  existing entry and create the new one, so an entry's own mode never
+  matters to them; natively `file`, `template`, `symlink`, `delete`
+  (`deleteTreesBelow` makes directories writable first, so does
+  `remove_tree`), `rename` (a directory moving to another parent too),
+  `patch`, `download` and extraction give the directory they change its
+  owner's write permission for the operation (restored after; a pending
+  download keeps it), so the copies' modes do not matter either
+  (`nofollow_modes::WritableDirectory`; capture
+  `tests/fixtures/sealed_copies`, test `tests/sealed_copies.rs`). A rule
+  that made a directory of its own read-only and then writes into it fails
+  in genuine and succeeds here.
+* Mode changes never follow a link: sealing, unsealing a tree to replace
+  it, restoring a mutable slot and the vendored tempfile's removal open
+  each entry `O_PATH | O_NOFOLLOW`, change the mode of exactly that inode
+  (through `/proc/self/fd`, as glibc's `fchmodat(AT_SYMLINK_NOFOLLOW)`
+  does) and descend through `O_DIRECTORY | O_NOFOLLOW` descriptors checked
+  to be the same inode (`src/nofollow_modes.rs`).
 * Registry and Git trees are sealed in their stages (inside `trees/`)
   before their snapshot; Git's checkout modes are recorded as `0555` /
   `0444`. The embedded `@bazel_tools` tree keeps the bundle's modes.

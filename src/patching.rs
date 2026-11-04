@@ -1178,6 +1178,9 @@ impl PatchFs for TreeFs {
             )));
         }
         let current = self.checked(path)?;
+        // A copy of a sealed tree keeps its read-only directories
+        // (crate::nofollow_modes::WritableDirectory).
+        let _writable = crate::nofollow_modes::WritableDirectory::holding(&self.root, &current);
         match fs::symlink_metadata(&current) {
             Err(e)
                 if e.kind() == io::ErrorKind::NotFound
@@ -1203,6 +1206,7 @@ impl PatchFs for TreeFs {
         if path.is_empty() {
             return Err(PatchError::Io(format!("{} (Is a directory)", self.display)));
         }
+        let _writable = crate::nofollow_modes::WritableDirectory::holding(&self.root, &destination);
         create_parents(&self.root, Path::new(path))?;
         // FileOutputStream truncates an existing file in place (mode kept);
         // a leaf link is replaced instead of written through (native).

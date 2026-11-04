@@ -110,6 +110,7 @@ pub mod module_extension;
 pub mod module_graph;
 mod module_root_warm;
 pub mod native_rules;
+pub(crate) mod nofollow_modes;
 pub mod observed_fs;
 pub mod option_defaults;
 mod option_metadata;

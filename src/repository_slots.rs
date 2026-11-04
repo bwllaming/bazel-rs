@@ -826,24 +826,35 @@ pub fn restore_mutable(
     let slot = writer.fresh()?;
     let scratch = SlotScratch::new(&writer);
     // The tree is sealed (crate::repository_store::sealed_view); its
-    // mutable copy is the repository's writable directory again, as
-    // genuine's `external/<name>` is: every entry gets its owner's write
-    // permission back.
+    // mutable copy is the repository's directory again, as genuine's
+    // `external/<name>` is: the copy (made with its owner's write
+    // permission) gets the modes the repository left before sealing, from
+    // the manifest (rules_python's read-only `lib/` stays read-only);
+    // without them every entry keeps its owner's write permission.
     for entry in fs::read_dir(tree).map_err(|e| format!("cannot read {}: {e}", tree.display()))? {
         let entry = entry.map_err(|e| e.to_string())?;
         copy_entries(&entry.path(), &slot.join(entry.file_name()), OWNER_WRITE)?;
     }
-    {
+    let tree_mode = {
         use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(tree)
+        fs::metadata(tree)
             .map_err(|e| e.to_string())?
             .permissions()
-            .mode();
-        fs::set_permissions(
-            &slot,
-            fs::Permissions::from_mode((mode & 0o7777) | OWNER_WRITE),
-        )
-        .map_err(|e| e.to_string())?;
+            .mode()
+            & 0o7777
+    };
+    let modes = crate::repository_store::unsealed_modes(store, identity)
+        .unwrap_or_else(|| std::iter::once((String::new(), tree_mode | OWNER_WRITE)).collect());
+    // Children before their directories (a read-only directory's entries
+    // are set first); never through a link.
+    for (name, mode) in modes.iter().rev() {
+        let path = if name.is_empty() {
+            slot.clone()
+        } else {
+            slot.join(name)
+        };
+        crate::nofollow_modes::change(crate::nofollow_modes::At::Path(&path), |_| Some(*mode))
+            .map_err(|e| format!("cannot restore the mode of {}: {e}", path.display()))?;
     }
     writer.mark(identity)?;
     scratch.keep();

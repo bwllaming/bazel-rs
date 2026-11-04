@@ -519,7 +519,64 @@ fn remove_dir_all(path: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(unix)]
+/// Never through a link (Linux): each entry is opened `O_PATH | O_NOFOLLOW`
+/// and checked by `fstat`, its mode is changed on exactly that inode
+/// (through `/proc/self/fd`, as glibc's `fchmodat(AT_SYMLINK_NOFOLLOW)`
+/// does), and the walk descends through `O_DIRECTORY | O_NOFOLLOW`
+/// descriptors checked to be the same inode, so a directory replaced by a
+/// link meanwhile is never followed. Best effort: what fails is left to the
+/// retried removal to report.
+#[cfg(target_os = "linux")]
+fn make_directories_writable(path: &Path) {
+    use rustix::fs::{chmod, fstat, openat, Dir, FileType, Mode, OFlags, CWD};
+    use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+
+    fn fix(dir: BorrowedFd<'_>, name: &std::ffi::CStr) {
+        let flags = OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let Ok(entry) = openat(dir, name, flags | OFlags::PATH, Mode::empty()) else {
+            return;
+        };
+        let Ok(stat) = fstat(&entry) else {
+            return;
+        };
+        if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
+            return;
+        }
+        let mode = stat.st_mode & 0o7777;
+        if mode & 0o700 != 0o700 {
+            let proc = format!("/proc/self/fd/{}", entry.as_raw_fd());
+            let _ = chmod(proc.as_str(), Mode::from_raw_mode(mode | 0o700));
+        }
+        let Ok(opened) = openat(dir, name, flags | OFlags::RDONLY | OFlags::DIRECTORY, Mode::empty())
+        else {
+            return;
+        };
+        match fstat(&opened) {
+            Ok(again) if (again.st_dev, again.st_ino) == (stat.st_dev, stat.st_ino) => {}
+            _ => return,
+        }
+        let Ok(entries) = Dir::read_from(&opened) else {
+            return;
+        };
+        let names: Vec<std::ffi::CString> = entries
+            .flatten()
+            .map(|entry| entry.file_name().to_owned())
+            .filter(|name| name.to_bytes() != b"." && name.to_bytes() != b"..")
+            .collect();
+        for name in &names {
+            fix(opened.as_fd(), name);
+        }
+    }
+
+    use std::os::unix::ffi::OsStrExt;
+    if let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) {
+        fix(CWD, &path);
+    }
+}
+
+/// Other Unix systems: by path (no `O_PATH`); links are still never
+/// followed at the last component (`symlink_metadata`).
+#[cfg(all(unix, not(target_os = "linux")))]
 fn make_directories_writable(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let metadata = match std::fs::symlink_metadata(path) {

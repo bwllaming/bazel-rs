@@ -1929,6 +1929,13 @@ impl Context {
 
     /// makeDirectories for an output: parents become real directories; a
     /// symlinked parent is never traversed while writing.
+    /// The directory of the stage holding `relative` made writable while
+    /// it is changed (crate::nofollow_modes::WritableDirectory: copies of
+    /// sealed trees keep their read-only modes).
+    fn writable_holding(&self, relative: &str) -> crate::nofollow_modes::WritableDirectory {
+        crate::nofollow_modes::WritableDirectory::holding(&self.stage, &self.stage.join(relative))
+    }
+
     fn output_parents(&self, relative: &str) -> anyhow::Result<PathBuf> {
         self.ensure_stage()?;
         if relative.is_empty() {
@@ -1950,6 +1957,7 @@ impl Context {
             self.workspace_observed
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
+        let _writable = self.writable_holding(&relative);
         let path = self.output_parents(&relative)?;
         self.state.borrow_mut().created = true;
         // `p.getPath().delete()` removes a file, a symlink (never its target)
@@ -2376,6 +2384,9 @@ impl Context {
             self.stage.clone()
         } else {
             self.mark_created()?;
+            // A pending download writes after this returns: the directory
+            // stays writable.
+            self.writable_holding(relative).keep();
             // makeDirectories failing (e.g. the working directory became a
             // file) is an IOException of the download itself (java:858-874):
             // `success = False` under allow_fail.
@@ -2920,6 +2931,7 @@ fn storage_name(url: &reqwest::Url) -> String {
 /// Move every extracted entry into `destination`, replacing files and
 /// symlinks and merging directories; never follows destination symlinks.
 fn merge(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    let _writable = crate::nofollow_modes::WritableDirectory::of(destination);
     for entry in fs::read_dir(source)? {
         let entry = entry?;
         let from = entry.path();
@@ -4156,8 +4168,11 @@ fn repository_methods(builder: &mut MethodsBuilder) {
         );
         let relative = context.output(&path)?;
         let target = parents(&context.stage, &relative, false)?;
+        let _writable = context.writable_holding(&relative);
         match fs::symlink_metadata(&target) {
-            Ok(metadata) if metadata.file_type().is_dir() => fs::remove_dir_all(&target)?,
+            // deleteTreesBelow makes directories writable first
+            // (unix_jni.cc:760-773), like remove_tree.
+            Ok(metadata) if metadata.file_type().is_dir() => remove_tree(&target)?,
             Ok(_) => fs::remove_file(&target)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(error.into()),
@@ -4193,9 +4208,20 @@ fn repository_methods(builder: &mut MethodsBuilder) {
             return Err(failure(&"already exists"));
         }
         let from_path = parents(&context.stage, &from, false).map_err(|e| failure(&e))?;
+        let _writable_from = context.writable_holding(&from);
+        let _writable_to = context.writable_holding(&to);
         let to_path = context.output_parents(&to).map_err(|e| failure(&e))?;
         context.mark_created()?;
-        fs::rename(&from_path, &to_path).map_err(|error| {
+        // A directory moving to another parent needs its own write
+        // permission (its `..` changes); restored at its new path.
+        let moved = crate::nofollow_modes::WritableDirectory::of(&from_path);
+        let renamed = fs::rename(&from_path, &to_path);
+        let _moved = if renamed.is_ok() {
+            moved.moved(&to_path)
+        } else {
+            moved
+        };
+        renamed.map_err(|error| {
             // unix_jni.cc renameTo: "[unix_jni.cc:638] SRC -> DST (REASON)".
             failure(&format!(
                 "[unix_jni.cc:638] {} -> {} ({})",
@@ -4235,6 +4261,7 @@ fn repository_methods(builder: &mut MethodsBuilder) {
             !relative.is_empty(),
             failure(&"the repository directory itself cannot be a symlink")
         );
+        let _writable = context.writable_holding(&relative);
         let host_link = context.output_parents(&relative).map_err(|e| failure(&e))?;
         context.mark_created()?;
         if fs::symlink_metadata(&host_link).is_ok() {

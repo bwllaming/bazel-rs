@@ -82,6 +82,14 @@ fn sealed_tree(root: &Path, outside: &Path) {
     let tree = root.join("cache/repositories/direct/trees/t");
     fs::create_dir_all(tree.join("pkg/sub")).unwrap();
     fs::write(tree.join("pkg/sub/mod.py"), b"").unwrap();
+    // Not even readable: the walk must change its mode before listing it.
+    fs::create_dir_all(tree.join("pkg/locked/inner")).unwrap();
+    fs::set_permissions(
+        tree.join("pkg/locked/inner"),
+        fs::Permissions::from_mode(0o555),
+    )
+    .unwrap();
+    fs::set_permissions(tree.join("pkg/locked"), fs::Permissions::from_mode(0o000)).unwrap();
     std::os::unix::fs::symlink(outside, tree.join("pkg/outside")).unwrap();
     for (path, mode) in [
         (tree.join("pkg/sub/mod.py"), 0o444),

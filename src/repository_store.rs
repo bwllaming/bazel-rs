@@ -141,6 +141,15 @@ struct Entry {
     /// and are re-published with fingerprints on their next execution).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     stat: Option<StatFingerprint>,
+    /// The mode the repository left before the tree was sealed
+    /// ([`sealed_view`]), when sealing changed it: what a mutable copy of
+    /// the tree restores (crate::repository_slots::restore_mutable; e.g.
+    /// rules_python's read-only `lib/` stays read-only there). Outside the
+    /// identity ([`content_view`] drops it, like the stat fingerprint):
+    /// trees that differ only in write bits share one publication, whose
+    /// first manifest's modes are kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unsealed: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,6 +172,7 @@ fn content_view(files: &BTreeMap<String, Entry>) -> BTreeMap<String, Entry> {
                 name.clone(),
                 Entry {
                     stat: None,
+                    unsealed: None,
                     ..(*entry).clone()
                 },
             )
@@ -1778,6 +1788,7 @@ fn sealed_view(files: BTreeMap<String, Entry>) -> BTreeMap<String, Entry> {
         .into_iter()
         .map(|(name, mut entry)| {
             if entry.symlink.is_none() && entry.mode & WRITE_BITS != 0 {
+                entry.unsealed = Some(entry.mode);
                 entry.mode &= !WRITE_BITS;
                 entry.stat = None;
             }
@@ -1791,30 +1802,47 @@ fn sealed_view(files: BTreeMap<String, Entry>) -> BTreeMap<String, Entry> {
 /// permission (its `..` changes), so a tree's root is sealed once it is in
 /// place ([`seal_root`]). Links are never followed or changed.
 pub(crate) fn seal_below(root: &Path) -> Result<(), String> {
-    fn visit(path: &Path) -> Result<(), String> {
-        for child in fs::read_dir(path).map_err(|e| format!("{}: {e}", path.display()))? {
-            let child = child.map_err(|e| e.to_string())?.path();
-            let metadata = fs::symlink_metadata(&child).map_err(|e| e.to_string())?;
-            if metadata.file_type().is_symlink() {
-                continue;
-            }
-            if metadata.is_dir() {
-                visit(&child)?;
-            }
-            seal_entry(&child, &metadata)?;
+    use crate::nofollow_modes as nofollow;
+    nofollow::walk(root, &|_| None, &mut |at, entry| {
+        if entry.mode & WRITE_BITS != 0 {
+            nofollow::chmod(at, entry, entry.mode & !WRITE_BITS)?;
         }
         Ok(())
-    }
-    visit(root)
+    })
+    .map_err(|e| format!("cannot seal {}: {e}", root.display()))
+}
+
+/// The modes the repository left in the direct tree `identity` of `store`
+/// before it was sealed, by relative path (`""` the root; links have none):
+/// [`Entry::unsealed`] where sealing changed a mode, else the recorded mode
+/// (a tree an earlier binary published unsealed). `None` without a
+/// manifest this binary trusts.
+pub(crate) fn unsealed_modes(store: &Path, identity: &str) -> Option<BTreeMap<String, u32>> {
+    let path = store
+        .join("direct/manifests")
+        .join(format!("{identity}.json"));
+    let manifest = parse_manifest(&read_stable(&path).ok()?)?;
+    (manifest.identity == identity).then(|| {
+        manifest
+            .files
+            .into_iter()
+            .filter(|(_, entry)| entry.symlink.is_none())
+            .map(|(name, entry)| (name, entry.unsealed.unwrap_or(entry.mode)))
+            .collect()
+    })
 }
 
 /// Seal the root of a tree in place ([`seal_below`]).
 pub(crate) fn seal_root(root: &Path) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(root).map_err(|e| e.to_string())?;
-    if metadata.file_type().is_symlink() {
-        return Err(format!("{} is a link, not a tree", root.display()));
+    use crate::nofollow_modes as nofollow;
+    match nofollow::change(nofollow::At::Path(root), |mode| Some(mode & !WRITE_BITS)) {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(format!(
+            "{} is a link or missing, not a tree",
+            root.display()
+        )),
+        Err(e) => Err(format!("cannot seal {}: {e}", root.display())),
     }
-    seal_entry(root, &metadata)
 }
 
 /// A whole tree that is published without leaving its parent directory
@@ -1822,22 +1850,6 @@ pub(crate) fn seal_root(root: &Path) -> Result<(), String> {
 pub(crate) fn seal_tree(root: &Path) -> Result<(), String> {
     seal_below(root)?;
     seal_root(root)
-}
-
-#[cfg(unix)]
-fn seal_entry(path: &Path, metadata: &fs::Metadata) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    let mode = metadata.permissions().mode() & 0o7777;
-    if mode & WRITE_BITS == 0 {
-        return Ok(());
-    }
-    fs::set_permissions(path, fs::Permissions::from_mode(mode & !WRITE_BITS))
-        .map_err(|e| format!("cannot seal {}: {e}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn seal_entry(_path: &Path, _metadata: &fs::Metadata) -> Result<(), String> {
-    Ok(())
 }
 
 /// Tests: run `tamper`, which writes `path` (a file or link to create,
@@ -1874,16 +1886,15 @@ pub(crate) fn tampering<T>(path: &Path, tamper: impl FnOnce() -> T) -> T {
 /// Give a directory that is about to move to another parent (a tree root
 /// being replaced or quarantined) its owner's write permission back.
 fn unseal_for_move(path: &Path) -> Result<(), String> {
-    #[cfg(unix)]
-    if let Some(metadata) = optional_metadata(path)?
-        && metadata.is_dir()
+    use crate::nofollow_modes as nofollow;
+    // Never through a link (a link is quarantined as it is).
+    if let Some(entry) = nofollow::open(nofollow::At::Path(path))
+        .map_err(|e| format!("cannot replace {}: {e}", path.display()))?
+        && entry.directory
+        && entry.mode & 0o700 != 0o700
     {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = metadata.permissions().mode() & 0o7777;
-        if mode & 0o700 != 0o700 {
-            fs::set_permissions(path, fs::Permissions::from_mode(mode | 0o700))
-                .map_err(|e| format!("cannot replace {}: {e}", path.display()))?;
-        }
+        nofollow::chmod(nofollow::At::Path(path), &entry, entry.mode | 0o700)
+            .map_err(|e| format!("cannot replace {}: {e}", path.display()))?;
     }
     Ok(())
 }
@@ -2229,12 +2240,17 @@ where
                 let copy = trash.path().join("copy");
                 crate::repository_slots::copy_tree(&slot, &copy)?;
                 seal_below(&copy)?;
-                let copied = sealed_view(snapshot(&copy)?);
+                let mut copied = sealed_view(snapshot(&copy)?);
                 if content_view(&copied) != content_view(&manifest.files) {
                     return Err(format!(
                         "the repository directory {} changed while it was published",
                         slot.display()
                     ));
+                }
+                // The slot's own modes before sealing (the copy was sealed
+                // below its root before its snapshot).
+                for (name, entry) in &mut copied {
+                    entry.unsealed = manifest.files.get(name).and_then(|slot| slot.unsealed);
                 }
                 manifest.files = copied;
                 copy
@@ -3786,6 +3802,7 @@ fn snapshot_scanned(
                     sha256: format!("{:x}", Sha256::digest(target.as_bytes())),
                     symlink: Some(target),
                     stat: settled_fingerprint(&before, recorded_at),
+                    unsealed: None,
                 },
             );
             return Ok(());
@@ -3797,6 +3814,7 @@ fn snapshot_scanned(
             sha256: String::new(),
             symlink: None,
             stat: settled_fingerprint(&before, recorded_at),
+            unsealed: None,
         };
         if !entry.directory {
             regular_metadata(&before)?;
@@ -4910,6 +4928,55 @@ mod tests {
             0o555
         );
         no_stages(cache.path());
+        crate::repository_ctx::remove_tree(cache.path()).unwrap();
+    }
+
+    /// A mutable slot made again from a sealed tree (restore_mutable) gets
+    /// the modes the repository left, which the manifest records outside
+    /// the identity: rules_python's read-only `lib/` stays read-only (no
+    /// `__pycache__` written into it), the rest is writable again.
+    #[cfg(unix)]
+    #[test]
+    fn mutable_slots_restore_the_modes_before_sealing() {
+        use std::os::unix::fs::PermissionsExt;
+        let cache = temp();
+        let rule = |stage: &Path| {
+            read_only_lib(stage)?;
+            fs::write(
+                stage.join("go.env"),
+                format!("GOPATH={}\n", stage.display()),
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(b"inputs".to_vec())
+        };
+        let (tree, _) = publish_keyed(cache.path(), "gocache", b"", rule).unwrap();
+        let manifest: Manifest =
+            serde_json::from_slice(&fs::read(metadata_path(cache.path(), &tree)).unwrap()).unwrap();
+        assert_eq!(manifest.files["go.env"].unsealed, Some(0o644));
+        assert_eq!(manifest.files["lib"].unsealed, None);
+        // Outside the identity: the content view has none.
+        assert!(
+            content_view(&manifest.files)
+                .values()
+                .all(|e| e.unsealed.is_none())
+        );
+        let mode = |path: &Path| fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777;
+        let slot = slot(cache.path(), "gocache");
+        crate::repository_ctx::remove_tree(&slot).unwrap();
+        let identity = tree.file_name().unwrap().to_str().unwrap().to_owned();
+        crate::repository_slots::restore_mutable(cache.path(), "gocache", &identity, &tree, false)
+            .unwrap();
+        assert_eq!(
+            [
+                mode(&slot),
+                mode(&slot.join("go.env")),
+                mode(&slot.join("lib")),
+                mode(&slot.join("lib/python3.12/encodings")),
+                mode(&slot.join("lib/python3.12/encodings/__init__.py")),
+            ],
+            [0o755, 0o644, 0o555, 0o555, 0o444]
+        );
+        assert_eq!(mode(&tree.join("go.env")), 0o444);
         crate::repository_ctx::remove_tree(cache.path()).unwrap();
     }
 

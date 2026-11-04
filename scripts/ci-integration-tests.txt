@@ -63,6 +63,7 @@ repository_environment_options
 repository_warm_reuse
 repr
 runfiles
+sealed_copies
 spawn_discipline
 split_transitions
 staging_bench
