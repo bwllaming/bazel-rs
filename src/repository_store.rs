@@ -526,6 +526,15 @@ pub struct Executed {
     /// `version`, see `recorded_version`) persisted in the manifest and
     /// rechecked by `validate` on later warm calls.
     pub recorded: Vec<u8>,
+    /// The other repositories a label of the execution resolved into, with
+    /// their roots: for each one whose canonical tree the published bytes
+    /// name (an absolute link into it, its path written into a file), the
+    /// recorded probes gain its tree (crate::repository_warm::with_trees),
+    /// and a warm reuse requires it to resolve to that tree still — the
+    /// specification of a generated repository does not cover its
+    /// siblings', so a sibling fetched anew would otherwise leave links
+    /// into its old tree.
+    pub resolved: Vec<(String, PathBuf)>,
 }
 
 /// Whether a call ran the repository rule or reused a publication.
@@ -1945,6 +1954,26 @@ where
         stage_content(&slot, Some(&mut embedded))?
     };
     let embedded = embedded.finish();
+    // The resolved repositories whose trees the bytes name.
+    let mut executed = executed;
+    let named_trees: Vec<(String, String)> = {
+        let store = canonical_store(cache);
+        executed
+            .resolved
+            .iter()
+            .filter_map(|(name, root)| {
+                let tree = fs::canonicalize(root).ok()?;
+                let relative = tree.strip_prefix(&store).ok()?.to_str()?.to_owned();
+                embedded
+                    .refs
+                    .contains(&relative)
+                    .then(|| (name.clone(), relative))
+            })
+            .collect()
+    };
+    if !named_trees.is_empty() {
+        executed.recorded = crate::repository_warm::with_trees(&executed.recorded, named_trees)?;
+    }
     let class = if embedded.self_referencing {
         crate::repository_slots::SlotClass::SelfReferencing
     } else {
@@ -3699,6 +3728,7 @@ mod tests {
                         Ok(Executed {
                             inputs: intent.as_bytes().to_vec(),
                             recorded: recorded.clone(),
+                            resolved: Vec::new(),
                         })
                     },
                 )
@@ -3789,6 +3819,7 @@ mod tests {
                 Ok(Executed {
                     inputs: b"inputs".to_vec(),
                     recorded: br#"{"version":2}"#.to_vec(),
+                    resolved: Vec::new(),
                 })
             },
         )
@@ -3836,6 +3867,7 @@ mod tests {
                     Ok(Executed {
                         inputs: inputs.to_vec(),
                         recorded: recorded.clone(),
+                        resolved: Vec::new(),
                     })
                 },
             )
@@ -4052,6 +4084,7 @@ mod tests {
                 run(stage).map(|inputs| Executed {
                     inputs,
                     recorded: br#"{"version":1}"#.to_vec(),
+                    resolved: Vec::new(),
                 })
             },
         )
@@ -4075,6 +4108,7 @@ mod tests {
                 run(stage).map(|inputs| Executed {
                     inputs,
                     recorded: br#"{"version":1}"#.to_vec(),
+                    resolved: Vec::new(),
                 })
             },
         )
@@ -4097,6 +4131,7 @@ mod tests {
                 run(stage).map(|inputs| Executed {
                     inputs,
                     recorded: recorded.to_vec(),
+                    resolved: Vec::new(),
                 })
             },
         )
@@ -4130,6 +4165,7 @@ mod tests {
                         None => r#"{"version":2}"#.to_owned(),
                     }
                     .into_bytes(),
+                    resolved: Vec::new(),
                 })
             }
         };
@@ -4383,6 +4419,7 @@ mod tests {
                     write(stage).map(|inputs| Executed {
                         inputs,
                         recorded: recorded.clone().into_bytes(),
+                        resolved: Vec::new(),
                     })
                 },
             )
@@ -4488,6 +4525,7 @@ mod tests {
             Ok(Executed {
                 inputs: b"inputs".to_vec(),
                 recorded: br#"{"version":1}"#.to_vec(),
+                resolved: Vec::new(),
             })
         };
         let first = materialize(
@@ -4652,6 +4690,7 @@ mod tests {
                 embed(stage).map(|inputs| Executed {
                     inputs,
                     recorded: br#"{"version":1}"#.to_vec(),
+                    resolved: Vec::new(),
                 })
             },
         )
@@ -4687,6 +4726,7 @@ mod tests {
                 Ok(Executed {
                     inputs: b"inputs".to_vec(),
                     recorded: Vec::new(),
+                    resolved: Vec::new(),
                 })
             };
             let (root, execution) = materialize_local(
@@ -4884,6 +4924,7 @@ mod tests {
                 write(stage).map(|inputs| Executed {
                     inputs,
                     recorded: br#"{"version":1}"#.to_vec(),
+                    resolved: Vec::new(),
                 })
             },
         )
@@ -5074,6 +5115,7 @@ mod tests {
                         .map(|_| Executed {
                             inputs: Vec::new(),
                             recorded: br#"{"version":1}"#.to_vec(),
+                            resolved: Vec::new(),
                         })
                         .unwrap();
                     panic!("callback panic");
@@ -5333,6 +5375,7 @@ mod tests {
                     write(stage).map(|inputs| Executed {
                         inputs,
                         recorded: UPGRADED.to_vec(),
+                        resolved: Vec::new(),
                     })
                 },
             )
@@ -5390,6 +5433,7 @@ mod tests {
                         write(stage).map(|inputs| Executed {
                             inputs,
                             recorded: br#"{"version":2}"#.to_vec(),
+                            resolved: Vec::new(),
                         })
                     },
                 )
@@ -5490,6 +5534,7 @@ mod tests {
                             Ok(Executed {
                                 inputs,
                                 recorded: br#"{"version":1}"#.to_vec(),
+                                resolved: Vec::new(),
                             })
                         },
                     )
@@ -5535,6 +5580,7 @@ mod tests {
                             write(stage).map(|inputs| Executed {
                                 inputs,
                                 recorded: br#"{"version":1}"#.to_vec(),
+                                resolved: Vec::new(),
                             })
                         },
                     )

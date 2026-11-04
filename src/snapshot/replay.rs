@@ -500,6 +500,7 @@ fn replay_one(
             Ok(crate::repository_store::Executed {
                 inputs,
                 recorded: Vec::new(),
+                resolved: Vec::new(),
             })
         },
     );

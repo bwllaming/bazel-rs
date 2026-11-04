@@ -573,3 +573,113 @@ fn extracted_archive_hard_links_fail_at_the_direct_repository_snapshot() {
     );
     assert!(f.roots().is_empty());
 }
+
+/// A generated repository keyed by its own specification (affected-reuse-
+/// cold) whose published bytes name a sibling's store tree — an absolute
+/// link to a file of it, its path written into a file (rules_python's host
+/// toolchain links into the interpreter's repository) — runs again when the
+/// sibling is fetched anew, though its own specification is unchanged: its
+/// recorded probes hold the sibling's tree (version 4), and the reuse
+/// requires the sibling to resolve to it still. A sibling it does not name
+/// changing keeps it reused.
+#[test]
+fn a_repository_naming_a_siblings_tree_runs_again_when_the_sibling_changes() {
+    let f = Fixture::new();
+    f.file(
+        "MODULE.bazel",
+        "module(name='main')\next = use_extension('//:ext.bzl', 'ext')\nuse_repo(ext, 'b', 'a_link', 'a_path', 'd')\n",
+    );
+    f.file(
+        "ext.bzl",
+        r#"def _value(ctx):
+    ctx.file("BUILD.bazel", "exports_files(['python'])\n")
+    ctx.file("python", ctx.attr.value + "\n")
+
+value_rule = repository_rule(_value, attrs = {"value": attr.string()})
+
+def _link(ctx):
+    ctx.file("BUILD.bazel", "exports_files(['python'])\n")
+    ctx.symlink(ctx.path(ctx.attr.target), "python")
+
+link_rule = repository_rule(_link, attrs = {"target": attr.label()})
+
+def _path(ctx):
+    ctx.file("BUILD.bazel", "exports_files(['where.txt'])\n")
+    ctx.file("where.txt", str(ctx.path(ctx.attr.target)) + "\n")
+
+path_rule = repository_rule(_path, attrs = {"target": attr.label()})
+
+def _ext(module_ctx):
+    values = {}
+    for line in module_ctx.read(Label("//:values.txt")).splitlines():
+        name, value = line.split("=")
+        values[name] = value
+    value_rule(name = "b", value = values["b"])
+    value_rule(name = "d", value = values["d"])
+    link_rule(name = "a_link", target = "@b//:python")
+    path_rule(name = "a_path", target = "@b//:python")
+    return module_ctx.extension_metadata(reproducible = True)
+
+ext = module_extension(_ext)
+"#,
+    );
+    f.file("values.txt", "b=one\nd=one\n");
+    f.file(
+        "BUILD.bazel",
+        "genrule(name='g', srcs=['@a_link//:python', '@a_path//:where.txt', '@d//:python'], outs=['g.txt'], cmd='cat $(location @a_link//:python) > $@')\n",
+    );
+    let build = || {
+        let output = f
+            .command(&["build", "//:g"])
+            .env("BAZEL_RS_TIMING", "1")
+            .output()
+            .unwrap();
+        let stderr = text(&output);
+        let executed: Vec<String> = stderr
+            .lines()
+            .filter(|line| line.starts_with("PERF-REPO root") && line.contains(" executed "))
+            .filter_map(|line| line.split_whitespace().last())
+            .filter(|name| name.starts_with("+ext+"))
+            .map(str::to_owned)
+            .collect();
+        let path = outputs(&output)[0].1.clone();
+        let where_txt = fs::read_dir(f.0.path().join("cache/repositories/direct/trees"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path().join("where.txt"))
+            .filter(|path| path.exists())
+            .map(|path| fs::read_to_string(path).unwrap())
+            .collect::<Vec<_>>();
+        (
+            executed,
+            String::from_utf8(bytes(&f.0.path().join(path))).unwrap(),
+            where_txt,
+        )
+    };
+    let (executed, out, _) = build();
+    assert_eq!(executed.len(), 4, "{executed:?}");
+    assert_eq!(out, "one\n");
+    // Nothing changed: everything is reused.
+    let (executed, _, _) = build();
+    assert!(executed.is_empty(), "{executed:?}");
+    // A sibling they do not name changes: only it runs.
+    f.file("values.txt", "b=one\nd=two\n");
+    let (executed, out, _) = build();
+    assert_eq!(executed, ["+ext+d"], "{executed:?}");
+    assert_eq!(out, "one\n");
+    // The sibling they name changes: both run again and name its new tree.
+    f.file("values.txt", "b=two\nd=two\n");
+    let (mut executed, out, wheres) = build();
+    executed.sort();
+    assert_eq!(
+        executed,
+        ["+ext+a_link", "+ext+a_path", "+ext+b"],
+        "{executed:?}"
+    );
+    assert_eq!(out, "two\n");
+    let current = wheres
+        .iter()
+        .filter(|text| fs::read_to_string(text.trim()).is_ok_and(|bytes| bytes == "two\n"))
+        .count();
+    assert_eq!(current, 1, "{wheres:?}");
+}

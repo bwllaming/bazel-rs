@@ -35,8 +35,15 @@ repositories whose own specification changed (on a scratch rules_python 2.4.4
 workspace, bumping one of three wheels: genuine 9.3.1 fetched the bumped wheel
 and the hub, so does bazel-rs; before, every wheel ran again). Attribute
 labels are bound before keying, so a sibling's canonical name a repository
-refers to is part of its own attributes. The first run of this binary
-re-executes each generated repository once (new keys).
+refers to is part of its own attributes. What its own specification cannot
+cover is a sibling's *tree*: a repository whose published bytes name another
+repository's store tree (an absolute link to a file of it, its path written
+into a file — rules_python's host toolchain links into the interpreter's
+repository) records that repository and tree in its probes (version 4,
+crate::repository_warm), and is reused only while that repository still
+resolves to the same tree; genuine's link names `external/<name>`, which is
+rewritten in place. The first run of this binary re-executes each generated
+repository once (new keys).
 
 `ctx.is_dev_dependency(tag)` accepts a genuine tag, positionally. The Boolean
 `ctx.root_module_has_non_dev_dependency` property reflects retained root usage

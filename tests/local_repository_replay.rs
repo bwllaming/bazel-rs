@@ -839,43 +839,45 @@ k = repository_rule(_linker)
     };
     let before = trees(&f);
     // `dep` republishes (a new tree; its warm probe, run again after the
-    // publication, reuses it: the execution does not taint), `linker` is
-    // reused with its link into the old tree — named at once.
+    // publication, reuses it: the execution does not taint). `linker`'s
+    // published link names dep's tree, so its recorded probes hold that
+    // tree (affected-reuse-cold, version 4): it runs again and links into
+    // the new tree, a repository root — no anchor (before, it was reused
+    // with its link into the old tree, which a record named as an anchor).
     f.file("MODULE.bazel", &module("two"));
-    let changed = f.run_env(&record, &build);
-    let changed_text = stderr(&changed);
-    assert!(changed.status.success(), "{changed_text}");
-    let old = trees(&f)
-        .into_iter()
-        .find(|tree| {
-            before.contains(tree) && {
-                let linked =
-                    f.0.path()
-                        .join("cache/repositories/direct/trees")
-                        .join(tree)
-                        .join("defs.bzl");
-                linked.exists()
-            }
+    for _ in 0..2 {
+        let changed = f.run_env(&record, &build);
+        let changed_text = stderr(&changed);
+        assert!(changed.status.success(), "{changed_text}");
+        let lines = snapshot_lines(&changed_text);
+        assert!(
+            lines.iter().any(|line| line.contains("eligible=yes")),
+            "{changed_text}"
+        );
+        assert_eq!(anchors(&lines), Vec::<String>::new(), "{changed_text}");
+    }
+    let linked = fs::read_link(
+        f.0.path()
+            .join("cache/repositories/external/linker/linked.bzl"),
+    )
+    .ok()
+    .or_else(|| {
+        trees(&f).into_iter().find_map(|tree| {
+            fs::read_link(
+                f.0.path()
+                    .join("cache/repositories/direct/trees")
+                    .join(&tree)
+                    .join("linked.bzl"),
+            )
+            .ok()
+            .filter(|_| !before.contains(&tree))
         })
-        .expect("dep's old tree");
-    let named = anchors(&snapshot_lines(&changed_text));
-    assert_eq!(named.len(), 1, "{changed_text}");
+    })
+    .expect("linker's new link");
     assert!(
-        named[0].starts_with("link anchors: 1 store tree(s)") && named[0].ends_with(&old),
-        "{changed_text}"
-    );
-    let warm = f.run_env(&record, &build);
-    let text = stderr(&warm);
-    assert!(warm.status.success(), "{text}");
-    let lines = snapshot_lines(&text);
-    assert!(
-        lines.iter().any(|line| line.contains("eligible=yes")),
-        "{text}"
-    );
-    let named = anchors(&lines);
-    assert_eq!(named.len(), 1, "{text}");
-    assert!(
-        named[0].starts_with("link anchors: 1 store tree(s)") && named[0].ends_with(&old),
-        "{text}"
+        !before
+            .iter()
+            .any(|tree| linked.to_string_lossy().contains(tree.as_str())),
+        "{linked:?} still names an old tree"
     );
 }

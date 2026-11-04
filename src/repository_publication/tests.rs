@@ -210,6 +210,7 @@ fn newly_reusable_current_winner_rejects_the_prepared_historical_candidate() {
             Ok(crate::repository_store::Executed {
                 inputs: b"runtime".to_vec(),
                 recorded,
+                resolved: Vec::new(),
             })
         },
     )

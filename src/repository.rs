@@ -428,6 +428,7 @@ impl EvaluatedTaint {
             // definition module replays its load's prints).
             let silent = crate::ui::PrivateNotes::new();
             let rebound = repositories.lock_entry_rebinds(lock, &entry, bound);
+            let swallowed = silent.emitted();
             drop(silent);
             rebound?;
             if self
@@ -437,9 +438,9 @@ impl EvaluatedTaint {
             {
                 return Err("a download still transfers".to_owned());
             }
-            Ok((session, entry))
+            Ok((session, entry, swallowed))
         })();
-        let (session, entry) = match checked {
+        let (session, entry, swallowed) = match checked {
             Ok(checked) => checked,
             Err(reason) => {
                 if let Some(detail) = &mut self.detail {
@@ -459,7 +460,10 @@ impl EvaluatedTaint {
         crate::observed_fs::provisional_taint(|| key.clone());
         // What it printed the next run would not print: the run may serve
         // derived hits only (they never replay the planning's stderr).
-        if crate::ui::prints_on_this_thread() != self.prints {
+        // A print the silent rebind swallowed (a definition module's load
+        // printing for the first time) is output this run did not show
+        // where the next run would: exact saves are kept out the same way.
+        if crate::ui::prints_on_this_thread() != self.prints || swallowed {
             crate::observed_fs::taint(crate::observed_fs::Taint::ExtensionOutput, || {
                 format!("{} printed", lock.display_id)
             });
@@ -4292,7 +4296,20 @@ impl RepositorySet {
             let inputs =
                 crate::host_os::repository_inputs(this.host()?.as_ref(), &executed.inputs)?;
             let recorded = crate::repository_warm::record(&executed.inputs, &executed.watch_names)?;
-            Ok(crate::repository_store::Executed { inputs, recorded })
+            let resolved = executed
+                .resolved
+                .iter()
+                .filter_map(|name| {
+                    this.root(name)
+                        .ok()
+                        .map(|root| (name.clone(), root.to_path_buf()))
+                })
+                .collect();
+            Ok(crate::repository_store::Executed {
+                inputs,
+                recorded,
+                resolved,
+            })
         };
         if local {
             let (root, execution) = crate::repository_store::materialize_local(
@@ -4893,7 +4910,20 @@ impl RepositorySet {
             let inputs =
                 crate::host_os::repository_inputs(this.host()?.as_ref(), &executed.inputs)?;
             let recorded = crate::repository_warm::record(&executed.inputs, &executed.watch_names)?;
-            Ok(crate::repository_store::Executed { inputs, recorded })
+            let resolved = executed
+                .resolved
+                .iter()
+                .filter_map(|name| {
+                    this.root(name)
+                        .ok()
+                        .map(|root| (name.clone(), root.to_path_buf()))
+                })
+                .collect();
+            Ok(crate::repository_store::Executed {
+                inputs,
+                recorded,
+                resolved,
+            })
         };
         if local {
             let (root, execution) = crate::repository_store::materialize_local(
@@ -7076,6 +7106,7 @@ mod tests {
                     Ok(crate::repository_store::Executed {
                         inputs: bytes.to_vec(),
                         recorded: Vec::new(),
+                        resolved: Vec::new(),
                     })
                 },
             )

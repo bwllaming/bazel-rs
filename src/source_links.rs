@@ -1112,6 +1112,7 @@ mod tests {
                 Ok(crate::repository_store::Executed {
                     inputs: Vec::new(),
                     recorded: Vec::new(),
+                    resolved: Vec::new(),
                 })
             },
         )

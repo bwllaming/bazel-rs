@@ -4831,6 +4831,11 @@ pub struct ExecutedRepository {
     /// replayed local rule's impurity flags (crate::snapshot::replay); never
     /// part of an identity.
     pub environ_read: bool,
+    /// The other repositories a label of this execution resolved into
+    /// ([`Context::label_path`]): the store records, for those whose tree
+    /// path the published bytes embed, which tree that was
+    /// (crate::repository_store::Executed::resolved).
+    pub resolved: BTreeSet<String>,
 }
 
 /// A repository rule execution's print handler ([`Context::print_line`]).
@@ -5053,6 +5058,8 @@ fn execute_with(
                     .load(std::sync::atomic::Ordering::Relaxed)))
         .then(|| latin1_text(context.workspace.as_os_str().as_bytes()));
         let output = context.output.take();
+        let mut resolved = context.state.borrow().resolved.clone();
+        resolved.remove(canonical_name);
         let (mut inputs, watch_names) = context.finish_with_names()?;
         inputs.workspace = workspace;
         Ok(ExecutedRepository {
@@ -5060,6 +5067,7 @@ fn execute_with(
             watch_names,
             output,
             environ_read,
+            resolved,
         })
     };
     run().map_err(|error| {

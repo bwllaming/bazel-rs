@@ -65,6 +65,16 @@ struct WatchedProbe {
 /// reuse each other's publication. Only such probes are written as version
 /// 3; every other probe keeps its version-2 bytes.
 ///
+/// Version 4 (affected-reuse-cold) is version 3 (or 2, without a
+/// workspace) plus `trees`: the other repositories a label of the execution
+/// resolved into whose canonical store tree the published bytes name (an
+/// absolute link into it, its path written into a file), each with that
+/// tree (`direct/trees/<identity>` below the store). A generated
+/// repository's specification covers only its own (crate::repository's
+/// ORDINARY_PROFILE), so a sibling fetched anew changes nothing it records
+/// otherwise; the reuse requires each to resolve to the same tree still.
+/// Only such probes are written as version 4.
+///
 /// Any change to the probe bytes — a field, a path spelling, a state
 /// encoding, what a probe covers — must bump `version`. Binaries sharing a
 /// cache rely on it in both directions: an older binary never trusts a
@@ -85,6 +95,19 @@ struct RecordedInputs {
     watched_env: Option<WatchedProbe>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace: Option<String>,
+    /// Version 4: (canonical repository, its tree below the store).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    trees: Vec<(String, String)>,
+}
+
+/// `recorded` (this binary's probes, [`record`]) with the trees of `trees`
+/// ([`RecordedInputs`] version 4).
+pub(crate) fn with_trees(recorded: &[u8], trees: Vec<(String, String)>) -> Result<Vec<u8>, String> {
+    let mut probes: RecordedInputs = serde_json::from_slice(recorded)
+        .map_err(|error| format!("cannot parse recorded repository inputs: {error}"))?;
+    probes.version = 4;
+    probes.trees = trees;
+    serde_json::to_vec(&probes).map_err(|error| format!("cannot record repository inputs: {error}"))
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -357,6 +380,7 @@ pub(crate) fn record(
             names: watch_names.to_vec(),
         }),
         workspace: inputs.workspace.clone(),
+        trees: Vec::new(),
     };
     serde_json::to_vec(&recorded)
         .map_err(|error| format!("cannot record repository inputs: {error}"))
@@ -447,15 +471,39 @@ pub(crate) fn unchanged(
         .map_err(|error| format!("cannot parse recorded repository inputs: {error}"))?;
     let resolve = match recorded.version {
         1 => resolve_v1,
-        2 | 3 => resolve_friendly,
+        2..=4 => resolve_friendly,
         _ => return Ok(false),
     };
-    // Version 3: the publication of the workspace it names only (as
-    // written: a probe of version 2 or 1 with a workspace is foreign).
+    // Version 3 (and 4 with one): the publication of the workspace it names
+    // only (as written: a probe of version 2 or 1 with a workspace is
+    // foreign).
     if recorded.version == 3 || recorded.workspace.is_some() {
         let current = workspace_text(workspace);
-        if recorded.version != 3 || recorded.workspace.as_deref() != Some(current.as_str()) {
+        if !matches!(recorded.version, 3 | 4)
+            || recorded.workspace.as_deref() != Some(current.as_str())
+        {
             return Ok(false);
+        }
+    }
+    // Version 4: each repository whose tree the published bytes name still
+    // resolves to that tree (written only as version 4).
+    if recorded.version == 4 || !recorded.trees.is_empty() {
+        if recorded.version != 4 || recorded.trees.is_empty() {
+            return Ok(false);
+        }
+        let source_cache = repositories.source_cache_path()?;
+        let store = crate::observed_fs::canonicalize(source_cache)
+            .unwrap_or_else(|_| source_cache.to_path_buf());
+        for (name, tree) in &recorded.trees {
+            let Ok(root) = repositories.root(name) else {
+                return Ok(false);
+            };
+            let Ok(current) = crate::observed_fs::canonicalize(root) else {
+                return Ok(false);
+            };
+            if current.strip_prefix(&store).ok().and_then(Path::to_str) != Some(tree.as_str()) {
+                return Ok(false);
+            }
         }
     }
     if recorded.version == 1 {

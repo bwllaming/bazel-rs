@@ -1223,6 +1223,7 @@ mod tests {
                 Ok(crate::repository_store::Executed {
                     inputs: key.as_bytes().to_vec(),
                     recorded: br#"{"version":1}"#.to_vec(),
+                    resolved: Vec::new(),
                 })
             },
         )
@@ -1367,6 +1368,7 @@ mod tests {
             Ok(crate::repository_store::Executed {
                 inputs: b"runtime inputs".to_vec(),
                 recorded: br#"{"version":1}"#.to_vec(),
+                resolved: Vec::new(),
             })
         };
         let (local_root, execution) = crate::repository_store::materialize_local(
