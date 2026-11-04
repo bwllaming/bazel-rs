@@ -197,8 +197,7 @@ Done since the last increment recorded under "History", one line each:
       genrule/Starlark spawns (list-based Args)/writes/templates/symlinks;
       depset-based Args, compressed writes and native C++/runfiles action
       keys are native-only. `genquery` is native (result-based scope check);
-      `starlark_doc_extract` remains an explicit analysis error
-      (docs/AQUERY.md lists what it needs). The supported `cquery` subset is
+      so is `starlark_doc_extract` (docs/STARLARK_DOC_EXTRACT.md). The supported `cquery` subset is
       listed in docs/CQUERY.md.
 - [x] `fetch` (`sync` is not a 9.3 command; `vendor` fails explicitly: no vendor-directory read path or genuine marker files, docs/COMMANDS.md).
 - [x] `coverage` (docs/COVERAGE.md; Go/sh/Starlark-rule lcov, native output generator, combined report; C++ gcov, split post-processing and other generators explicit).
@@ -214,8 +213,11 @@ Done since the last increment recorded under "History", one line each:
       for target-determinator's default incompatible-target filtering; owned by
       the cquery track).
 - [x] `--target_pattern_file`, `--notest_keep_going`, `--run_under=<label>`.
-- [x] `aquery` (docs/AQUERY.md) and native `genquery`; `starlark_doc_extract`
-      still fails explicitly.
+- [x] `aquery` (docs/AQUERY.md) and native `genquery`.
+- [x] `starlark_doc_extract`: the ModuleInfo binary/text protos byte-identical
+      to genuine 9.3.1 (every symbol kind, docstring formats,
+      render_main_repo_name, bazel_skylib's modules, stardoc's extract step;
+      docs/STARLARK_DOC_EXTRACT.md).
 
 ### Running ~/code the way its users do
 

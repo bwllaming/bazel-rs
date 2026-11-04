@@ -15,8 +15,12 @@ closures are supported, native builtins and callable descriptors are not.
 The supported schema has only implicit `name` and `visibility`. Empty `attrs`
 and nonreserved entries removed with `None` are accepted. Explicit `name` or
 `visibility` descriptors are rejected even when their value is `None`.
-Nonempty effective attribute schemas, non-`None` inheritance and true finalizers
-are explicitly unsupported rather than silently ignoring configuration.
+Non-`None` inheritance is explicitly unsupported at definition. Nonempty
+effective attribute schemas and true finalizers load (their definitions are
+documented by `starlark_doc_extract`, docs/STARLARK_DOC_EXTRACT.md), but an
+invocation of such a macro fails explicitly (`macro user attributes are
+unsupported`, `macro finalizer=True is unsupported`) rather than silently
+ignoring configuration.
 
 The first global assignment establishes export identity, including a private
 underscore-prefixed assignment. Aliases and reexports preserve it. A descriptor

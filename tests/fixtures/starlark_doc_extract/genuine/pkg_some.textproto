@@ -1,0 +1,332 @@
+rule_info {
+  rule_name: "my_rule"
+  doc_string: "A rule.\n\nDetail line."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "srcs"
+    doc_string: "Sources."
+    type: LABEL_LIST
+    default_value: "[]"
+  }
+  attribute {
+    name: "dep"
+    doc_string: "A dep."
+    type: LABEL
+    provider_name_group {
+      provider_name: "MyInfo"
+      origin_key {
+        name: "MyInfo"
+        file: "//pkg:defs.bzl"
+      }
+    }
+    default_value: "None"
+  }
+  attribute {
+    name: "deps2"
+    type: LABEL_LIST
+    provider_name_group {
+      provider_name: "MyInfo"
+      provider_name: "reexported_dep_info"
+      origin_key {
+        name: "MyInfo"
+        file: "//pkg:defs.bzl"
+      }
+      origin_key {
+        name: "DepInfo"
+        file: "//lib:dep.bzl"
+      }
+    }
+    provider_name_group {
+      provider_name: "ListInfo"
+      origin_key {
+        name: "ListInfo"
+        file: "//pkg:defs.bzl"
+      }
+    }
+    default_value: "[]"
+  }
+  attribute {
+    name: "required"
+    doc_string: "Required string."
+    type: STRING
+    mandatory: true
+  }
+  attribute {
+    name: "choice"
+    type: STRING
+    default_value: "\"a\""
+    values: "\"a\""
+    values: "\"b\""
+  }
+  attribute {
+    name: "count"
+    type: INT
+    default_value: "3"
+    values: "1"
+    values: "3"
+  }
+  attribute {
+    name: "flag"
+    type: BOOLEAN
+    default_value: "True"
+  }
+  attribute {
+    name: "names"
+    type: STRING_LIST
+    default_value: "[\"x\", \"y\"]"
+  }
+  attribute {
+    name: "ints"
+    type: INT_LIST
+    default_value: "[1, 2]"
+  }
+  attribute {
+    name: "sd"
+    type: STRING_DICT
+    default_value: "{\"k\": \"v\"}"
+  }
+  attribute {
+    name: "sld"
+    type: STRING_LIST_DICT
+    default_value: "{\"k\": [\"v\"]}"
+  }
+  attribute {
+    name: "lsd"
+    type: LABEL_STRING_DICT
+    default_value: "{}"
+  }
+  attribute {
+    name: "out"
+    doc_string: "An output."
+    type: OUTPUT
+    default_value: "None"
+    nonconfigurable: true
+  }
+  attribute {
+    name: "outs"
+    type: OUTPUT_LIST
+    default_value: "[]"
+    nonconfigurable: true
+  }
+  attribute {
+    name: "default_label"
+    type: LABEL
+    default_value: "\"//pkg:foo\""
+  }
+  attribute {
+    name: "default_label2"
+    type: LABEL
+    default_value: "\"//lib:dep\""
+  }
+  attribute {
+    name: "ext_label"
+    type: LABEL
+    default_value: "\"@bazel_tools//tools/sh:toolchain_type\""
+  }
+  attribute {
+    name: "sk"
+    type: LABEL_DICT_UNARY
+    default_value: "{}"
+  }
+  attribute {
+    name: "lld"
+    type: LABEL_LIST_DICT
+    default_value: "{}"
+  }
+  origin_key {
+    name: "my_rule"
+    file: "//pkg:defs.bzl"
+  }
+  advertised_providers {
+    provider_name: "MyInfo"
+    provider_name: "reexported_dep_info"
+    origin_key {
+      name: "MyInfo"
+      file: "//pkg:defs.bzl"
+    }
+    origin_key {
+      name: "DepInfo"
+      file: "//lib:dep.bzl"
+    }
+  }
+}
+rule_info {
+  rule_name: "namespace.inner.rule"
+  doc_string: "A rule.\n\nDetail line."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "srcs"
+    doc_string: "Sources."
+    type: LABEL_LIST
+    default_value: "[]"
+  }
+  attribute {
+    name: "dep"
+    doc_string: "A dep."
+    type: LABEL
+    provider_name_group {
+      provider_name: "MyInfo"
+      origin_key {
+        name: "MyInfo"
+        file: "//pkg:defs.bzl"
+      }
+    }
+    default_value: "None"
+  }
+  attribute {
+    name: "deps2"
+    type: LABEL_LIST
+    provider_name_group {
+      provider_name: "MyInfo"
+      provider_name: "reexported_dep_info"
+      origin_key {
+        name: "MyInfo"
+        file: "//pkg:defs.bzl"
+      }
+      origin_key {
+        name: "DepInfo"
+        file: "//lib:dep.bzl"
+      }
+    }
+    provider_name_group {
+      provider_name: "ListInfo"
+      origin_key {
+        name: "ListInfo"
+        file: "//pkg:defs.bzl"
+      }
+    }
+    default_value: "[]"
+  }
+  attribute {
+    name: "required"
+    doc_string: "Required string."
+    type: STRING
+    mandatory: true
+  }
+  attribute {
+    name: "choice"
+    type: STRING
+    default_value: "\"a\""
+    values: "\"a\""
+    values: "\"b\""
+  }
+  attribute {
+    name: "count"
+    type: INT
+    default_value: "3"
+    values: "1"
+    values: "3"
+  }
+  attribute {
+    name: "flag"
+    type: BOOLEAN
+    default_value: "True"
+  }
+  attribute {
+    name: "names"
+    type: STRING_LIST
+    default_value: "[\"x\", \"y\"]"
+  }
+  attribute {
+    name: "ints"
+    type: INT_LIST
+    default_value: "[1, 2]"
+  }
+  attribute {
+    name: "sd"
+    type: STRING_DICT
+    default_value: "{\"k\": \"v\"}"
+  }
+  attribute {
+    name: "sld"
+    type: STRING_LIST_DICT
+    default_value: "{\"k\": [\"v\"]}"
+  }
+  attribute {
+    name: "lsd"
+    type: LABEL_STRING_DICT
+    default_value: "{}"
+  }
+  attribute {
+    name: "out"
+    doc_string: "An output."
+    type: OUTPUT
+    default_value: "None"
+    nonconfigurable: true
+  }
+  attribute {
+    name: "outs"
+    type: OUTPUT_LIST
+    default_value: "[]"
+    nonconfigurable: true
+  }
+  attribute {
+    name: "default_label"
+    type: LABEL
+    default_value: "\"//pkg:foo\""
+  }
+  attribute {
+    name: "default_label2"
+    type: LABEL
+    default_value: "\"//lib:dep\""
+  }
+  attribute {
+    name: "ext_label"
+    type: LABEL
+    default_value: "\"@bazel_tools//tools/sh:toolchain_type\""
+  }
+  attribute {
+    name: "sk"
+    type: LABEL_DICT_UNARY
+    default_value: "{}"
+  }
+  attribute {
+    name: "lld"
+    type: LABEL_LIST_DICT
+    default_value: "{}"
+  }
+  origin_key {
+    name: "my_rule"
+    file: "//pkg:defs.bzl"
+  }
+  advertised_providers {
+    provider_name: "MyInfo"
+    provider_name: "reexported_dep_info"
+    origin_key {
+      name: "MyInfo"
+      file: "//pkg:defs.bzl"
+    }
+    origin_key {
+      name: "DepInfo"
+      file: "//lib:dep.bzl"
+    }
+  }
+}
+provider_info {
+  provider_name: "MyInfo"
+  doc_string: "My provider.\n\nIndented detail."
+  field_info {
+    name: "foo"
+    doc_string: "The foo field."
+  }
+  field_info {
+    name: "bar"
+    doc_string: "Multi\nline bar."
+  }
+  origin_key {
+    name: "MyInfo"
+    file: "//pkg:defs.bzl"
+  }
+}
+module_docstring: "Module docstring.\n\nWith a second paragraph."
+file: "//pkg:defs.bzl"

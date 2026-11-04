@@ -581,3 +581,12 @@ The original trailing whitespace in `src/values/layout/heap/send.rs:56` is also
 preserved byte-for-byte rather than rewriting upstream source. The non-vendor
 staged whitespace check passes. Source and report bindings are recorded in
 `artifacts/h0-vendor-verification-manifest.json`.
+
+The [`starlark_doc_extract` increment](STARLARK_DOC_EXTRACT.md) adds one
+read-only accessor to `src/eval/compiler/def.rs` (re-exported from
+`src/eval.rs`): `starlark::eval::def_documentation(value)` returns a `def` or
+`lambda`'s raw docstring, its Bazel location (the identifier span), its
+parameter names as written (the parameter list names `*args`/`**kwargs`
+generically) and the globals of its defining module in slot order
+(StarlarkFunction.getDocumentation/getLocation/getModule). Nothing else
+changes; both files' current hashes are updated in the same provenance.

@@ -1,0 +1,14 @@
+func_info {
+  function_name: "f"
+  origin_key {
+    name: "f"
+    file: "//err:unused.bzl"
+  }
+}
+module_docstring: "Module."
+file: "//err:unused.bzl"
+starlark_other_symbol_info {
+  name: "A"
+  doc: "Attached."
+  type_name: "int"
+}

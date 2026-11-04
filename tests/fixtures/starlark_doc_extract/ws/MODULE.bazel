@@ -1,0 +1,5 @@
+module(name = "sde_fixture", version = "1.0")
+
+bazel_dep(name = "bazel_skylib", version = "1.8.2")
+bazel_dep(name = "dep_mod", version = "1.0")
+local_path_override(module_name = "dep_mod", path = "dep_mod")

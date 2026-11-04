@@ -40,6 +40,7 @@ pub mod query;
 mod query_attrs;
 pub mod root_checkpoint;
 mod split;
+mod starlark_doc_extract;
 
 /// A planned artifact. Its data is shared by its copies (MEM4): the
 /// planner holds one artifact in many places — a target's files to build
@@ -10852,6 +10853,24 @@ impl Engine {
                 cfg: EdgeCfg::Target,
             }));
         }
+        // StarlarkDocExtractRule (rules/starlarkdocextract/
+        // StarlarkDocExtractRule.java:33-139): `src` and `deps` are
+        // target-configuration prerequisites (their files are read).
+        if let (RuleKind::Native("starlark_doc_extract"), Some(native)) = (&rule.kind, &rule.native)
+        {
+            if let Some(crate::custom_rule::AttrValue::Label(Some(src))) = native.attrs.get("src") {
+                edges.push(Edge {
+                    label: src.clone(),
+                    attribute: "src".to_owned(),
+                    cfg: EdgeCfg::Target,
+                });
+            }
+            edges.extend(native.labels("deps").into_iter().map(|label| Edge {
+                label,
+                attribute: "deps".to_owned(),
+                cfg: EdgeCfg::Target,
+            }));
+        }
         // TestSuiteRule (rules/test/TestSuiteRule.java:96-110): `tests`,
         // then `$implicit_tests`, both in the target configuration.
         if let (RuleKind::Native("test_suite"), Some(native)) = (&rule.kind, &rule.native) {
@@ -14092,6 +14111,14 @@ impl Engine {
             RuleKind::Native("genquery") => Some(self.genquery_output(rule)?),
             _ => None,
         };
+        // starlark_doc_extract loads and documents its module at analysis
+        // (crate::engine::starlark_doc_extract).
+        let doc_extract = match rule.kind {
+            RuleKind::Native("starlark_doc_extract") => {
+                Some(self.starlark_doc_extract_output(rule, config, &state.dry, &state.declared)?)
+            }
+            _ => None,
+        };
         let ActionPlanning {
             dry,
             custom_providers,
@@ -14507,6 +14534,81 @@ impl Engine {
                         genrule_is_executable(rule),
                     )
                     .map_err(|error| format!("{}: {error:#}", rule.label))?,
+                ),
+            );
+            dry.insert(key, Arc::new(artifacts));
+        } else if let Some(doc_extract) = doc_extract {
+            // StarlarkDocExtract.createBinaryProtoOutput (BinaryFileWriteAction)
+            // and createTextProtoOutput (FileWriteAction): the binary proto is
+            // the files to build, the text proto an implicit output.
+            let mut artifacts = Vec::new();
+            for (index, (suffix, content)) in [
+                ("binaryproto", doc_extract.binary),
+                ("textproto", doc_extract.text),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let output = rule
+                    .label
+                    .with_name(&format!("{}.{suffix}", rule.label.name))?
+                    .generated_exec_path(&output_root);
+                let id = format!("{action_owner}#{index}");
+                if !self.semantic_only() {
+                    let producer = OutputProducer::native(&key.label.to_string());
+                    register_output(producers, &output, &producer)?;
+                    let action = Action {
+                        id: id.clone(),
+                        outputs: vec![output.clone()],
+                        write: Some(action::WriteAction {
+                            content,
+                            executable: false,
+                        }),
+                        extra: action::ActionExtra {
+                            mnemonic: "FileWrite".into(),
+                            ..Default::default()
+                        },
+                        ..Action::default()
+                    };
+                    let mut commit = ActionCommit {
+                        artifact_index,
+                        workspace_status,
+                        nodes,
+                        producers,
+                        source_inputs,
+                        client_environment,
+                        status_client_environment,
+                        input_groups,
+                        listed_tree_actions,
+                    };
+                    self.commit_action(
+                        action,
+                        Vec::new(),
+                        &[],
+                        None,
+                        &key.label.to_string(),
+                        &main_ignored,
+                        &mut commit,
+                    )?;
+                }
+                let artifact = Artifact::new(
+                    output.clone(),
+                    output,
+                    Some((id, 0)),
+                    rule.label.to_string(),
+                    false,
+                    false,
+                );
+                register_artifact(artifact_index, &artifact.file, &artifact);
+                declared.insert((config, artifact.exec.to_path_buf()), artifact.clone());
+                artifacts.push(artifact);
+            }
+            artifacts.truncate(1);
+            runfiles_info.insert(
+                key.clone(),
+                Arc::new(
+                    crate::runfiles::TargetRunfiles::genrule(&[artifacts[0].file()], false)
+                        .map_err(|error| format!("{}: {error:#}", rule.label))?,
                 ),
             );
             dry.insert(key, Arc::new(artifacts));
@@ -18399,6 +18501,7 @@ fn native_analysis_gate(rule: &Rule) -> Result<(), String> {
                 | "test_suite"
                 | "java_plugins_flag_alias"
                 | "genquery"
+                | "starlark_doc_extract"
         )
     {
         return Err(format!(

@@ -1,0 +1,365 @@
+rule_info {
+  rule_name: "setting"
+  doc_string: "A build setting with \303\274n\303\257c\303\266d\303\251 and    tab."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  origin_key {
+    name: "setting"
+    file: "//edge:edge.bzl"
+  }
+}
+rule_info {
+  rule_name: "tool_rule"
+  doc_string: "Leading blank line doc."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "tool"
+    doc_string: "Exec tool."
+    type: LABEL
+    default_value: "None"
+  }
+  attribute {
+    name: "srcs"
+    type: LABEL_LIST
+    provider_name_group {
+      provider_name: "DefaultInfo"
+      provider_name: "ExtInfoAlias"
+      origin_key {
+        name: "DefaultInfo"
+        file: "<native>"
+      }
+      origin_key {
+        name: "ExtInfo"
+        file: "@dep_mod//sub:lib.bzl"
+      }
+    }
+    default_value: "[]"
+  }
+  attribute {
+    name: "neg"
+    type: INT
+    default_value: "-5"
+  }
+  attribute {
+    name: "s"
+    type: STRING
+    default_value: "\"quote\\\"back\\\\slash\\nnewline\""
+  }
+  attribute {
+    name: "mixed"
+    type: STRING
+    default_value: "\"\""
+    values: "\"x\""
+    values: "\"y\""
+  }
+  attribute {
+    name: "lkd"
+    type: LABEL_STRING_DICT
+    default_value: "{\"//edge:a\": \"x\", \"@dep_mod//sub:lib\": \"y\"}"
+  }
+  attribute {
+    name: "skd"
+    type: LABEL_DICT_UNARY
+    default_value: "{\"k\": \"@dep_mod//sub:lib\"}"
+  }
+  attribute {
+    name: "lld"
+    type: LABEL_LIST_DICT
+    default_value: "{\"k\": [\"//edge:a\", \"//edge\"]}"
+  }
+  attribute {
+    name: "ll"
+    type: LABEL_LIST
+    default_value: "[\"//edge\", \"//:sde_fixture\", \"@dep_mod\"]"
+  }
+  origin_key {
+    name: "tool_rule"
+    file: "//edge:edge.bzl"
+  }
+}
+provider_info {
+  provider_name: "ExtInfoAlias"
+  doc_string: "External provider."
+  field_info {
+    name: "v"
+    doc_string: "The v."
+  }
+  origin_key {
+    name: "ExtInfo"
+    file: "@dep_mod//sub:lib.bzl"
+  }
+}
+provider_info {
+  provider_name: "ns.info"
+  doc_string: "External provider."
+  field_info {
+    name: "v"
+    doc_string: "The v."
+  }
+  origin_key {
+    name: "ExtInfo"
+    file: "@dep_mod//sub:lib.bzl"
+  }
+}
+provider_info {
+  provider_name: "ns.inner.deeper.p"
+  doc_string: "External provider."
+  field_info {
+    name: "v"
+    doc_string: "The v."
+  }
+  origin_key {
+    name: "ExtInfo"
+    file: "@dep_mod//sub:lib.bzl"
+  }
+}
+func_info {
+  function_name: "ext_reexport"
+  parameter {
+    name: "x"
+    default_value: "Label(\"@dep_mod//sub:lib\")"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "y"
+    default_value: "Label(\"@dep_mod//sub:other\")"
+    role: PARAM_ROLE_ORDINARY
+  }
+  doc_string: "External function."
+  origin_key {
+    name: "ext_function"
+    file: "@dep_mod//sub:lib.bzl"
+  }
+}
+func_info {
+  function_name: "fn_with_tabs"
+  parameter {
+    name: "a"
+    doc_string: "the a."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  doc_string: "Tab indented docstring."
+  origin_key {
+    name: "fn_with_tabs"
+    file: "//edge:edge.bzl"
+  }
+}
+func_info {
+  function_name: "defaults"
+  parameter {
+    name: "a"
+    doc_string: "alias Arguments: header."
+    default_value: "1.5"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "b"
+    default_value: "(\"x\", Label(\"@dep_mod//sub:lib\"))"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "c"
+    default_value: "{Label(\"//edge:a\"): [None, True]}"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "d"
+    default_value: "\"\303\251\""
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "e"
+    default_value: "struct(x = 1)"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "f"
+    doc_string: "attributes in parentheses."
+    default_value: "<provider>"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "g"
+    default_value: "<built-in function len>"
+    role: PARAM_ROLE_ORDINARY
+  }
+  doc_string: "Defaults."
+  origin_key {
+    name: "defaults"
+    file: "//edge:edge.bzl"
+  }
+}
+func_info {
+  function_name: "kwonly"
+  parameter {
+    name: "x"
+    mandatory: true
+    role: PARAM_ROLE_KEYWORD_ONLY
+  }
+  parameter {
+    name: "y"
+    default_value: "2"
+    role: PARAM_ROLE_KEYWORD_ONLY
+  }
+  doc_string: "Keyword only."
+  return {
+    doc_string: "Nothing\n at all."
+  }
+  origin_key {
+    name: "kwonly"
+    file: "//edge:edge.bzl"
+  }
+}
+func_info {
+  function_name: "ns.inner.fn"
+  parameter {
+    name: "x"
+    mandatory: true
+    role: PARAM_ROLE_KEYWORD_ONLY
+  }
+  parameter {
+    name: "y"
+    default_value: "2"
+    role: PARAM_ROLE_KEYWORD_ONLY
+  }
+  doc_string: "Keyword only."
+  return {
+    doc_string: "Nothing\n at all."
+  }
+  origin_key {
+    name: "kwonly"
+    file: "//edge:edge.bzl"
+  }
+}
+func_info {
+  function_name: "ns.other"
+  parameter {
+    name: "a"
+    doc_string: "alias Arguments: header."
+    default_value: "1.5"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "b"
+    default_value: "(\"x\", Label(\"@dep_mod//sub:lib\"))"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "c"
+    default_value: "{Label(\"//edge:a\"): [None, True]}"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "d"
+    default_value: "\"\303\251\""
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "e"
+    default_value: "struct(x = 1)"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "f"
+    doc_string: "attributes in parentheses."
+    default_value: "<provider>"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "g"
+    default_value: "<built-in function len>"
+    role: PARAM_ROLE_ORDINARY
+  }
+  doc_string: "Defaults."
+  origin_key {
+    name: "defaults"
+    file: "//edge:edge.bzl"
+  }
+}
+func_info {
+  function_name: "ns2.x"
+  parameter {
+    name: "a"
+    doc_string: "the a."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  doc_string: "Tab indented docstring."
+  origin_key {
+    name: "fn_with_tabs"
+    file: "//edge:edge.bzl"
+  }
+}
+func_info {
+  function_name: "varargs_middle"
+  parameter {
+    name: "a"
+    doc_string: "first."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "b"
+    doc_string: "keyword b."
+    mandatory: true
+    role: PARAM_ROLE_KEYWORD_ONLY
+  }
+  parameter {
+    name: "c"
+    default_value: "None"
+    role: PARAM_ROLE_KEYWORD_ONLY
+  }
+  parameter {
+    name: "rest"
+    doc_string: "the rest."
+    role: PARAM_ROLE_VARARGS
+  }
+  parameter {
+    name: "options"
+    doc_string: "the options."
+    role: PARAM_ROLE_KWARGS
+  }
+  doc_string: "Varargs before keyword-only parameters."
+  origin_key {
+    name: "varargs_middle"
+    file: "//edge:edge.bzl"
+  }
+}
+aspect_info {
+  aspect_name: "attr_fn_aspect"
+  origin_key {
+    name: "attr_fn_aspect"
+    file: "//edge:edge.bzl"
+  }
+}
+file: "//edge:edge.bzl"
+starlark_other_symbol_info {
+  name: "ANSWER"
+  doc: "The answer, with \303\274n\303\257c\303\266d\303\251."
+  type_name: "int"
+}
+starlark_other_symbol_info {
+  name: "CONFIG"
+  doc: "A struct constant."
+  type_name: "struct"
+}
+starlark_other_symbol_info {
+  name: "LIST"
+  doc: "Typed list."
+  type_name: "list"
+}
+starlark_other_symbol_info {
+  name: "LABEL"
+  doc: "A label."
+  type_name: "Label"
+}

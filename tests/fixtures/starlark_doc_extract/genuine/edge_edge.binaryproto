@@ -1,0 +1,88 @@
+
+
+setting,A build setting with ünïcödé and    tab.*
+nameA unique name for this target. "
+setting//edge:edge.bzl
+�
+	tool_ruleLeading blank line doc.*
+nameA unique name for this target. 
+tool
+Exec tool.2Noned
+srcs*V
+DefaultInfo
+ExtInfoAlias
+DefaultInfo<native> 
+ExtInfo@dep_mod//sub:lib.bzl2[]
+neg2-5$
+s2"quote\"back\\slash\nnewline"
+mixed2""J"x"J"y"4
+lkd	2+{"//edge:a": "x", "@dep_mod//sub:lib": "y"}#
+skd2{"k": "@dep_mod//sub:lib"}&
+lld2{"k": ["//edge:a", "//edge"]}0
+ll2(["//edge", "//:sde_fixture", "@dep_mod"]"
+	tool_rule//edge:edge.bzlQ
+ExtInfoAliasExternal provider.
+vThe v." 
+ExtInfo@dep_mod//sub:lib.bzlL
+ns.infoExternal provider.
+vThe v." 
+ExtInfo@dep_mod//sub:lib.bzlV
+ns.inner.deeper.pExternal provider.
+vThe v." 
+ExtInfo@dep_mod//sub:lib.bzl�
+ext_reexport!
+xLabel("@dep_mod//sub:lib")(#
+yLabel("@dep_mod//sub:other")(External function.2%
+ext_function@dep_mod//sub:lib.bzlY
+fn_with_tabs
+athe a. (Tab indented docstring.2
+fn_with_tabs//edge:edge.bzl�
+defaults$
+aalias Arguments: header.1.5((
+b!("x", Label("@dep_mod//sub:lib"))((
+c!{Label("//edge:a"): [None, True]}(
+d"é"(
+estruct(x = 1)(-
+fattributes in parentheses.
+<provider>(
+g<built-in function len>(	Defaults.2
+defaults//edge:edge.bzlY
+kwonly
+x (
+y2(Keyword only."
+Nothing
+ at all.2
+kwonly//edge:edge.bzl^
+ns.inner.fn
+x (
+y2(Keyword only."
+Nothing
+ at all.2
+kwonly//edge:edge.bzl�
+ns.other$
+aalias Arguments: header.1.5((
+b!("x", Label("@dep_mod//sub:lib"))((
+c!{Label("//edge:a"): [None, True]}(
+d"é"(
+estruct(x = 1)(-
+fattributes in parentheses.
+<provider>(
+g<built-in function len>(	Defaults.2
+defaults//edge:edge.bzlR
+ns2.x
+athe a. (Tab indented docstring.2
+fn_with_tabs//edge:edge.bzl�
+varargs_middle
+afirst. (
+b
+keyword b. (
+cNone(
+rest	the rest.(
+optionsthe options.('Varargs before keyword-only parameters.2!
+varargs_middle//edge:edge.bzl"3
+attr_fn_aspect*!
+attr_fn_aspect//edge:edge.bzl2//edge:edge.bzlR,
+ANSWERThe answer, with ünïcödé.intR$
+CONFIGA struct constant.structR
+LISTTyped list.listR
+LABELA label.Label

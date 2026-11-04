@@ -1,4 +1,6 @@
-//! Exported, closure-owning symbolic macro definitions (no user attributes yet).
+//! Exported, closure-owning symbolic macro definitions. User attributes and
+//! finalizers are retained for documentation (crate::starlark_doc_extract)
+//! but an invocation of such a macro fails explicitly.
 
 use allocative::Allocative;
 use anyhow::{anyhow, bail};
@@ -43,6 +45,18 @@ mod values {
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub exported: OnceLock<String>,
+        /// The effective user attributes in declaration order, `finalizer`
+        /// and `doc` (untrimmed): documented by crate::starlark_doc_extract;
+        /// an invocation with attributes or as a finalizer is unsupported.
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub attrs: Vec<(String, crate::custom_rule::AttrSpec)>,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub finalizer: bool,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub doc: Option<String>,
     }
 
     impl<V> fmt::Display for MacroDefinitionGen<V> {
@@ -85,6 +99,16 @@ mod values {
             args: &Arguments<'v, '_>,
             eval: &mut Evaluator<'v, '_, '_>,
         ) -> starlark::Result<Value<'v>> {
+            if !self.attrs.is_empty() {
+                return Err(starlark::Error::new_other(anyhow!(
+                    "macro user attributes are unsupported"
+                )));
+            }
+            if self.finalizer {
+                return Err(starlark::Error::new_other(anyhow!(
+                    "macro finalizer=True is unsupported"
+                )));
+            }
             crate::package::invoke_symbolic_macro(
                 eval,
                 &self.definition_label,
@@ -95,6 +119,27 @@ mod values {
             .map_err(starlark::Error::new_other)
         }
     }
+}
+
+/// What `starlark_doc_extract` documents of a `macro()` value
+/// (ModuleInfoExtractor.visitMacroFunction).
+pub(crate) fn macro_doc(value: Value<'_>) -> Option<crate::starlark_doc_extract::MacroDoc> {
+    let definition = values::MacroDefinition::from_value(value)?;
+    Some(crate::starlark_doc_extract::MacroDoc {
+        exported: definition.exported.get().cloned(),
+        file: definition.definition_label.clone(),
+        doc: definition.doc.clone(),
+        finalizer: definition.finalizer,
+        attrs: definition
+            .attrs
+            .iter()
+            .map(|(name, spec)| crate::starlark_doc_extract::DocAttr {
+                name: name.clone(),
+                spec: spec.clone(),
+                starlark_defined: true,
+            })
+            .collect(),
+    })
 }
 
 #[starlark_module]
@@ -124,13 +169,10 @@ pub(crate) fn globals(builder: &mut GlobalsBuilder) {
         if !inherit_attrs.is_none() {
             bail!("macro inherit_attrs is unsupported");
         }
-        if finalizer {
-            bail!("macro finalizer=True is unsupported");
-        }
         let attrs =
             DictRef::from_value(attrs).ok_or_else(|| anyhow!("macro attrs must be a dict"))?;
         let mut budget = crate::repository_budget::HostBudget::default();
-        let mut effective = false;
+        let mut effective = Vec::new();
         for (name, descriptor) in attrs.iter() {
             let name = name
                 .unpack_str()
@@ -140,19 +182,20 @@ pub(crate) fn globals(builder: &mut GlobalsBuilder) {
                 bail!("macro attribute {name:?} is reserved");
             }
             if !descriptor.is_none() {
-                if crate::custom_rule::attribute_spec_ref(descriptor).is_none() {
+                let Some(spec) = crate::custom_rule::attribute_spec(descriptor) else {
                     bail!("macro attribute {name:?} must be an attr descriptor or None");
-                }
-                effective = true;
+                };
+                budget.spec(&spec).map_err(anyhow::Error::msg)?;
+                effective.push((name.to_owned(), spec));
             }
-        }
-        if effective {
-            bail!("macro user attributes are unsupported");
         }
         Ok(eval.heap().alloc(values::MacroDefinitionGen {
             implementation,
             definition_label: context.label.to_string(),
             exported: OnceLock::new(),
+            attrs: effective,
+            finalizer,
+            doc: doc.unpack_str().map(str::to_owned),
         }))
     }
 }
@@ -215,14 +258,9 @@ mod tests {
             ),
             ("macro(implementation=impl, attrs={'x':1})", "descriptor"),
             (
-                "macro(implementation=impl, attrs={'x':attr.string()})",
-                "unsupported",
-            ),
-            (
                 "macro(implementation=impl, inherit_attrs=impl)",
                 "unsupported",
             ),
-            ("macro(implementation=impl, finalizer=True)", "unsupported"),
             ("macro(implementation=impl, doc=1)", "string or None"),
         ] {
             let source = format!("def impl():\n    pass\nm = {call}");
@@ -234,6 +272,9 @@ mod tests {
             "macro(implementation=impl)",
             "macro(implementation=impl, attrs={}, inherit_attrs=None, finalizer=False, doc=None)",
             "macro(implementation=impl, attrs={'ignored':None, '':None}, doc='help')",
+            // Retained for documentation; invoking them fails explicitly.
+            "macro(implementation=impl, attrs={'x':attr.string()})",
+            "macro(implementation=impl, finalizer=True)",
         ] {
             // Zero-argument implementations are accepted at construction.
             extension(

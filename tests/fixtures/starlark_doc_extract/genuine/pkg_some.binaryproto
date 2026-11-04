@@ -1,0 +1,94 @@
+
+™
+my_ruleA rule.
+
+Detail line.*
+nameA unique name for this target. 
+srcsSources.2[]9
+depA dep.*"
+MyInfo
+MyInfo//pkg:defs.bzl2Noneˆ
+deps2*Q
+MyInfo
+reexported_dep_info
+MyInfo//pkg:defs.bzl
+DepInfo//lib:dep.bzl*&
+ListInfo
+ListInfo//pkg:defs.bzl2[] 
+requiredRequired string. 
+choice2"a"J"a"J"b"
+count23J1J3
+flag2True
+names2
+["x", "y"]
+ints2[1, 2]
+sd
+2
+{"k": "v"}
+sld2{"k": ["v"]}
+lsd	2{}
+out
+An output.2None8
+outs2[]8
+default_label2"//pkg:foo"
+default_label22"//lib:dep"6
+	ext_label2'"@bazel_tools//tools/sh:toolchain_type"
+
+sk2{}
+lld2{}"
+my_rule//pkg:defs.bzl*Q
+MyInfo
+reexported_dep_info
+MyInfo//pkg:defs.bzl
+DepInfo//lib:dep.bzl
+¦
+namespace.inner.ruleA rule.
+
+Detail line.*
+nameA unique name for this target. 
+srcsSources.2[]9
+depA dep.*"
+MyInfo
+MyInfo//pkg:defs.bzl2Noneˆ
+deps2*Q
+MyInfo
+reexported_dep_info
+MyInfo//pkg:defs.bzl
+DepInfo//lib:dep.bzl*&
+ListInfo
+ListInfo//pkg:defs.bzl2[] 
+requiredRequired string. 
+choice2"a"J"a"J"b"
+count23J1J3
+flag2True
+names2
+["x", "y"]
+ints2[1, 2]
+sd
+2
+{"k": "v"}
+sld2{"k": ["v"]}
+lsd	2{}
+out
+An output.2None8
+outs2[]8
+default_label2"//pkg:foo"
+default_label22"//lib:dep"6
+	ext_label2'"@bazel_tools//tools/sh:toolchain_type"
+
+sk2{}
+lld2{}"
+my_rule//pkg:defs.bzl*Q
+MyInfo
+reexported_dep_info
+MyInfo//pkg:defs.bzl
+DepInfo//lib:dep.bzlq
+MyInfoMy provider.
+
+Indented detail.
+fooThe foo field.
+barMulti
+line bar."
+MyInfo//pkg:defs.bzl*+Module docstring.
+
+With a second paragraph.2//pkg:defs.bzl

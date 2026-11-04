@@ -1,0 +1,567 @@
+rule_info {
+  rule_name: "analysis_test"
+  doc_string: "Test rule checking that other targets can be successfully analyzed.\n\nThis rule essentially verifies that all targets under `targets` would\ngenerate no errors when analyzed with `bazel build [targets] --nobuild`.\nAction success/failure for the targets and their transitive dependencies\nare not verified. An analysis test simply ensures that each target in the transitive\ndependencies propagate providers appropriately and register actions for their outputs\nappropriately.\n\nNOTE: If the targets fail to analyze, instead of the analysis_test failing, the analysis_test\nwill fail to build. Ideally, it would instead result in a test failure. This is a current\ninfrastructure limitation that may be fixed in the future.\n\nTypical usage:\n\n  load(\"@bazel_skylib//rules:analysis_test.bzl\", \"analysis_test\")\n  analysis_test(\n      name = \"my_analysis_test\",\n      targets = [\n          \"//some/package:rule\",\n      ],\n  )\n\nArgs:\n  name: The name of the test rule.\n  targets: A list of targets to ensure build."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "targets"
+    type: LABEL_LIST
+    mandatory: true
+  }
+  origin_key {
+    name: "analysis_test"
+    file: "@bazel_skylib//rules:analysis_test.bzl"
+  }
+  test: true
+  executable: true
+}
+rule_info {
+  rule_name: "bool_flag"
+  doc_string: "A bool-typed build setting that can be set on the command line"
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "scope"
+    doc_string: "The scope indicates where a flag can propagate to"
+    type: STRING
+    default_value: "\"universal\""
+  }
+  origin_key {
+    name: "bool_flag"
+    file: "@bazel_skylib//rules:common_settings.bzl"
+  }
+}
+rule_info {
+  rule_name: "bool_setting"
+  doc_string: "A bool-typed build setting that cannot be set on the command line"
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "scope"
+    doc_string: "The scope indicates where a flag can propagate to"
+    type: STRING
+    default_value: "\"universal\""
+  }
+  origin_key {
+    name: "bool_setting"
+    file: "@bazel_skylib//rules:common_settings.bzl"
+  }
+}
+rule_info {
+  rule_name: "int_flag"
+  doc_string: "An int-typed build setting that can be set on the command line"
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "make_variable"
+    doc_string: "If set, the build setting\'s value will be available as a Make variable with this name in the attributes of rules that list this build setting in their \'toolchains\' attribute."
+    type: STRING
+    default_value: "\"\""
+  }
+  attribute {
+    name: "scope"
+    doc_string: "The scope indicates where a flag can propagate to"
+    type: STRING
+    default_value: "\"universal\""
+  }
+  origin_key {
+    name: "int_flag"
+    file: "@bazel_skylib//rules:common_settings.bzl"
+  }
+}
+rule_info {
+  rule_name: "string_flag"
+  doc_string: "A string-typed build setting that can be set on the command line"
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "values"
+    doc_string: "The list of allowed values for this setting. An error is raised if any other value is given."
+    type: STRING_LIST
+    default_value: "[]"
+  }
+  attribute {
+    name: "make_variable"
+    doc_string: "If set, the build setting\'s value will be available as a Make variable with this name in the attributes of rules that list this build setting in their \'toolchains\' attribute."
+    type: STRING
+    default_value: "\"\""
+  }
+  attribute {
+    name: "scope"
+    doc_string: "The scope indicates where a flag can propagate to"
+    type: STRING
+    default_value: "\"universal\""
+  }
+  origin_key {
+    name: "string_flag"
+    file: "@bazel_skylib//rules:common_settings.bzl"
+  }
+}
+rule_info {
+  rule_name: "string_list_flag"
+  doc_string: "A string list-typed build setting that can be set on the command line"
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "scope"
+    doc_string: "The scope indicates where a flag can propagate to"
+    type: STRING
+    default_value: "\"universal\""
+  }
+  origin_key {
+    name: "string_list_flag"
+    file: "@bazel_skylib//rules:common_settings.bzl"
+  }
+}
+rule_info {
+  rule_name: "repeatable_string_flag"
+  doc_string: "A build setting that accepts one or more string-typed settings on the command line, with the values concatenated into a single string list; for example, `--//my/setting=foo` `--//my/setting=bar` will be parsed as `[\'foo\', \'bar\']`. Contrast with `string_list_flag`"
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "scope"
+    doc_string: "The scope indicates where a flag can propagate to"
+    type: STRING
+    default_value: "\"universal\""
+  }
+  origin_key {
+    name: "repeatable_string_flag"
+    file: "@bazel_skylib//rules:common_settings.bzl"
+  }
+}
+rule_info {
+  rule_name: "diff_test"
+  doc_string: "A test that compares two files.\n\nThe test succeeds if the files\' contents match."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "file1"
+    doc_string: "Label of the file to compare to `file2`."
+    type: LABEL
+    mandatory: true
+  }
+  attribute {
+    name: "file2"
+    doc_string: "Label of the file to compare to `file1`."
+    type: LABEL
+    mandatory: true
+  }
+  attribute {
+    name: "failure_message"
+    doc_string: "Additional message to log if the files\' contents do not match."
+    type: STRING
+    default_value: "\"\""
+  }
+  origin_key {
+    name: "diff_test"
+    file: "@bazel_skylib//rules:diff_test.bzl"
+  }
+  test: true
+  executable: true
+}
+rule_info {
+  rule_name: "expand_template"
+  doc_string: "Template expansion\n\nThis performs a simple search over the template file for the keys in\nsubstitutions, and replaces them with the corresponding values.\n\nThere is no special syntax for the keys. To avoid conflicts, you would need to\nexplicitly add delimiters to the key strings, for example \"{KEY}\" or \"@KEY@\"."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "template"
+    doc_string: "The template file to expand."
+    type: LABEL
+    mandatory: true
+  }
+  attribute {
+    name: "substitutions"
+    doc_string: "A dictionary mapping strings to their substitutions."
+    type: STRING_DICT
+    mandatory: true
+  }
+  attribute {
+    name: "out"
+    doc_string: "The destination of the expanded file."
+    type: OUTPUT
+    mandatory: true
+    nonconfigurable: true
+  }
+  origin_key {
+    name: "expand_template"
+    file: "@bazel_skylib//rules:expand_template.bzl"
+  }
+}
+rule_info {
+  rule_name: "native_binary"
+  doc_string: "Wraps a pre-built binary or script with a binary rule.\n\nYou can \"bazel run\" this rule like any other binary rule, and use it as a tool\nin genrule.tools for example. You can also augment the binary with runfiles."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "src"
+    doc_string: "path of the pre-built executable"
+    type: LABEL
+    mandatory: true
+  }
+  attribute {
+    name: "data"
+    doc_string: "data dependencies. See https://bazel.build/reference/be/common-definitions#typical.data"
+    type: LABEL_LIST
+    default_value: "[]"
+  }
+  attribute {
+    name: "out"
+    doc_string: "An output name for the copy of the binary. Defaults to name.exe. (We add .exe to the name by default because it\'s required on Windows and tolerated on other platforms.)"
+    type: STRING
+    default_value: "\"\""
+  }
+  attribute {
+    name: "env"
+    doc_string: "Environment variables to set when running the binary."
+    type: STRING_DICT
+    default_value: "{}"
+  }
+  origin_key {
+    name: "native_binary"
+    file: "@bazel_skylib//rules:native_binary.bzl"
+  }
+  executable: true
+}
+rule_info {
+  rule_name: "native_test"
+  doc_string: "Wraps a pre-built binary or script with a test rule.\n\nYou can \"bazel test\" this rule like any other test rule. You can also augment\nthe binary with runfiles."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "src"
+    doc_string: "path of the pre-built executable"
+    type: LABEL
+    mandatory: true
+  }
+  attribute {
+    name: "data"
+    doc_string: "data dependencies. See https://bazel.build/reference/be/common-definitions#typical.data"
+    type: LABEL_LIST
+    default_value: "[]"
+  }
+  attribute {
+    name: "out"
+    doc_string: "An output name for the copy of the binary. Defaults to name.exe. (We add .exe to the name by default because it\'s required on Windows and tolerated on other platforms.)"
+    type: STRING
+    default_value: "\"\""
+  }
+  attribute {
+    name: "env"
+    doc_string: "Environment variables to set when running the binary."
+    type: STRING_DICT
+    default_value: "{}"
+  }
+  origin_key {
+    name: "native_test"
+    file: "@bazel_skylib//rules:native_binary.bzl"
+  }
+  test: true
+  executable: true
+}
+rule_info {
+  rule_name: "run_binary"
+  doc_string: "Runs a binary as a build action.\n\nThis rule does not require Bash (unlike `native.genrule`)."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "tool"
+    doc_string: "The tool to run in the action.\n\nMust be the label of a *_binary rule, of a rule that generates an executable file, or of a file that can be executed as a subprocess (e.g. an .exe or .bat file on Windows or a binary with executable permission on Linux). This label is available for `$(execpath)` and `$(location)` expansion in `args` and `env`."
+    type: LABEL
+    mandatory: true
+  }
+  attribute {
+    name: "env"
+    doc_string: "Environment variables of the action.\n\nSubject to  [`$(execpath)` and `$(location)`](https://bazel.build/reference/be/make-variables#predefined_label_variables) expansion."
+    type: STRING_DICT
+    default_value: "{}"
+  }
+  attribute {
+    name: "srcs"
+    doc_string: "Additional inputs of the action.\n\nThese labels are available for `$(execpath)` and `$(location)` expansion in `args` and `env`."
+    type: LABEL_LIST
+    default_value: "[]"
+  }
+  attribute {
+    name: "outs"
+    doc_string: "Output files generated by the action.\n\nThese labels are available for `$(execpath)` and `$(location)` expansion in `args` and `env`."
+    type: OUTPUT_LIST
+    mandatory: true
+    nonconfigurable: true
+  }
+  attribute {
+    name: "args"
+    doc_string: "Command line arguments of the binary.\n\nSubject to [`$(execpath)` and `$(location)`](https://bazel.build/reference/be/make-variables#predefined_label_variables) expansion."
+    type: STRING_LIST
+    default_value: "[]"
+  }
+  origin_key {
+    name: "run_binary"
+    file: "@bazel_skylib//rules:run_binary.bzl"
+  }
+}
+rule_info {
+  rule_name: "select_file"
+  doc_string: "Selects a single file from the outputs of a target by given relative path"
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "srcs"
+    doc_string: "The target producing the file among other outputs"
+    type: LABEL
+    mandatory: true
+  }
+  attribute {
+    name: "subpath"
+    doc_string: "Relative path to the file"
+    type: STRING
+    mandatory: true
+  }
+  origin_key {
+    name: "select_file"
+    file: "@bazel_skylib//rules:select_file.bzl"
+  }
+}
+provider_info {
+  provider_name: "BuildSettingInfo"
+  doc_string: "A singleton provider that contains the raw value of a build setting"
+  field_info {
+    name: "value"
+    doc_string: "The value of the build setting in the current configuration. This value may come from the command line or an upstream transition, or else it will be the build setting\'s default."
+  }
+  origin_key {
+    name: "BuildSettingInfo"
+    file: "@bazel_skylib//rules:common_settings.bzl"
+  }
+}
+provider_info {
+  provider_name: "StarlarkLibraryInfo"
+  doc_string: "Information on contained Starlark rules."
+  field_info {
+    name: "srcs"
+    doc_string: "Top level rules files."
+  }
+  field_info {
+    name: "transitive_srcs"
+    doc_string: "Transitive closure of rules files required for interpretation of the srcs"
+  }
+  origin_key {
+    name: "StarlarkLibraryInfo"
+    file: "@bazel_skylib//rules/private:bzl_library.bzl"
+  }
+}
+func_info {
+  function_name: "build_test"
+  parameter {
+    name: "name"
+    doc_string: "The name of the test rule."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "targets"
+    doc_string: "A list of targets to ensure build."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "kwargs"
+    doc_string: "The [common attributes for tests](https://bazel.build/reference/be/common-definitions#common-attributes-tests)."
+    role: PARAM_ROLE_KWARGS
+  }
+  doc_string: "Test rule checking that other targets build.\n\nThis works not by an instance of this test failing, but instead by\nthe targets it depends on failing to build, and hence failing\nthe attempt to run this test.\n\nTypical usage:\n\n```\n  load(\"@bazel_skylib//rules:build_test.bzl\", \"build_test\")\n  build_test(\n      name = \"my_build_test\",\n      targets = [\n          \"//some/package:rule\",\n      ],\n  )\n```\n"
+  origin_key {
+    name: "build_test"
+    file: "@bazel_skylib//rules:build_test.bzl"
+  }
+}
+func_info {
+  function_name: "copy_directory"
+  parameter {
+    name: "name"
+    doc_string: "Name of the rule."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "src"
+    doc_string: "The directory to make a copy of. Can be a source directory or TreeArtifact."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "out"
+    doc_string: "Path of the output directory, relative to this package."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "kwargs"
+    doc_string: "further keyword arguments, e.g. `visibility`"
+    role: PARAM_ROLE_KWARGS
+  }
+  doc_string: "Copies a directory to another location.\n\nThis rule uses a Bash command on Linux/macOS/non-Windows, and a cmd.exe command on Windows (no Bash is required).\n\nIf using this rule with source directories, it is recommended that you use the\n`--host_jvm_args=-DBAZEL_TRACK_SOURCE_DIRECTORIES=1` startup option so that changes\nto files within source directories are detected. See\nhttps://github.com/bazelbuild/bazel/commit/c64421bc35214f0414e4f4226cc953e8c55fa0d2\nfor more context.\n"
+  origin_key {
+    name: "copy_directory"
+    file: "@bazel_skylib//rules/private:copy_directory_private.bzl"
+  }
+}
+func_info {
+  function_name: "copy_file"
+  parameter {
+    name: "name"
+    doc_string: "Name of the rule."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "src"
+    doc_string: "A Label. The file to make a copy of. (Can also be the label of a rule\nthat generates a file.)"
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "out"
+    doc_string: "Path of the output file, relative to this package."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "is_executable"
+    doc_string: "A boolean. Whether to make the output file executable. When\nTrue, the rule\'s output can be executed using `bazel run` and can be\nin the srcs of binary and test rules that require executable sources.\nWARNING: If `allow_symlink` is True, `src` must also be executable."
+    default_value: "False"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "allow_symlink"
+    doc_string: "A boolean. Whether to allow symlinking instead of copying.\nWhen False, the output is always a hard copy. When True, the output\n*can* be a symlink, but there is no guarantee that a symlink is\ncreated (i.e., at the time of writing, we don\'t create symlinks on\nWindows). Set this to True if you need fast copying and your tools can\nhandle symlinks (which most UNIX tools can)."
+    default_value: "False"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "kwargs"
+    doc_string: "further keyword arguments, e.g. `visibility`"
+    role: PARAM_ROLE_KWARGS
+  }
+  doc_string: "Copies a file to another location.\n\n`native.genrule()` is sometimes used to copy files (often wishing to rename them). The \'copy_file\' rule does this with a simpler interface than genrule.\n\nThis rule uses a Bash command on Linux/macOS/non-Windows, and a cmd.exe command on Windows (no Bash is required).\n"
+  origin_key {
+    name: "copy_file"
+    file: "@bazel_skylib//rules/private:copy_file_private.bzl"
+  }
+}
+func_info {
+  function_name: "write_file"
+  parameter {
+    name: "name"
+    doc_string: "Name of the rule."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "out"
+    doc_string: "Path of the output file, relative to this package."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "content"
+    doc_string: "A list of strings. Lines of text, the contents of the file.\nNewlines are added automatically after every line except the last one."
+    default_value: "[]"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "is_executable"
+    doc_string: "A boolean. Whether to make the output file executable.\nWhen True, the rule\'s output can be executed using `bazel run` and can\nbe in the srcs of binary and test rules that require executable\nsources."
+    default_value: "False"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "newline"
+    doc_string: "one of [\"auto\", \"unix\", \"windows\"]: line endings to use. \"auto\"\nfor platform-determined, \"unix\" for LF, and \"windows\" for CRLF."
+    default_value: "\"auto\""
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "kwargs"
+    doc_string: "further keyword arguments, e.g. `visibility`"
+    role: PARAM_ROLE_KWARGS
+  }
+  doc_string: "Creates a UTF-8 encoded text file."
+  origin_key {
+    name: "write_file"
+    file: "@bazel_skylib//rules/private:write_file_private.bzl"
+  }
+}
+func_info {
+  function_name: "bzl_library"
+  parameter {
+    name: "name"
+    doc_string: "name"
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "kwargs"
+    doc_string: "see the generated doc for rules/private/bzl_library."
+    role: PARAM_ROLE_KWARGS
+  }
+  doc_string: "Wrapper for bzl_library."
+  origin_key {
+    name: "bzl_library"
+    file: "@bazel_skylib//:bzl_library.bzl"
+  }
+}
+module_docstring: "Re-exports of bazel_skylib\'s rules."
+file: "//docs:skylib_rules.bzl"

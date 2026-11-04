@@ -54,6 +54,8 @@ mod values {
     pub(super) struct TagClass {
         pub schema: BTreeMap<String, AttrSpec>,
         pub doc: Option<String>,
+        /// Attribute names in declaration order (crate::starlark_doc_extract).
+        pub order: Vec<String>,
     }
 
     impl fmt::Display for TagClass {
@@ -95,6 +97,15 @@ mod values {
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub environ: crate::repository_environment::DeclaredEnvironment,
+        /// Tag class names in declaration order and the `.bzl` file being
+        /// initialized (ModuleExtension.definingBzlFileLabel), for
+        /// crate::starlark_doc_extract.
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub tag_class_order: Vec<String>,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub definition_label: String,
     }
 
     impl<V> fmt::Display for ModuleExtensionGen<V> {
@@ -119,6 +130,38 @@ mod values {
     }
 }
 use values::{FrozenModuleExtension, ModuleExtensionGen, TagClass};
+
+/// What `starlark_doc_extract` documents of a `module_extension()` value
+/// (ModuleInfoExtractor.visitModuleExtension).
+pub(crate) fn module_extension_doc(
+    value: Value<'_>,
+) -> Option<crate::starlark_doc_extract::ModuleExtensionDoc> {
+    let definition = values::ModuleExtension::from_value(value)?;
+    let tag_classes = definition
+        .tag_class_order
+        .iter()
+        .filter_map(|name| {
+            let class = definition.tag_classes.get(name)?;
+            let attrs = class
+                .order
+                .iter()
+                .filter_map(|attribute| {
+                    Some(crate::starlark_doc_extract::DocAttr {
+                        name: attribute.clone(),
+                        spec: class.schema.get(attribute)?.clone(),
+                        starlark_defined: true,
+                    })
+                })
+                .collect();
+            Some((name.clone(), class.doc.clone(), attrs))
+        })
+        .collect();
+    Some(crate::starlark_doc_extract::ModuleExtensionDoc {
+        file: definition.definition_label.clone(),
+        doc: definition.doc.clone(),
+        tag_classes,
+    })
+}
 
 /// Retain the implementation's owning heap, without requiring any export name.
 pub fn unpack(value: &OwnedFrozenValue) -> Result<ExtensionDefinition, String> {
@@ -203,6 +246,7 @@ pub fn globals(builder: &mut GlobalsBuilder) {
         let attrs = DictRef::from_value(attrs)
             .ok_or_else(|| anyhow!("tag_class attrs must be a dict of attribute descriptors"))?;
         let mut schema = BTreeMap::new();
+        let mut order = Vec::new();
         for (name, descriptor) in attrs.iter() {
             let name = name
                 .unpack_str()
@@ -224,9 +268,11 @@ pub fn globals(builder: &mut GlobalsBuilder) {
             }
             budget.string(name).map_err(anyhow::Error::msg)?;
             budget.spec(spec).map_err(anyhow::Error::msg)?;
-            schema.insert(name.to_owned(), spec.clone());
+            if schema.insert(name.to_owned(), spec.clone()).is_none() {
+                order.push(name.to_owned());
+            }
         }
-        Ok(eval.heap().alloc(TagClass { schema, doc }))
+        Ok(eval.heap().alloc(TagClass { schema, doc, order }))
     }
 
     fn module_extension<'v>(
@@ -265,6 +311,7 @@ pub fn globals(builder: &mut GlobalsBuilder) {
         let classes = DictRef::from_value(tag_classes)
             .ok_or_else(|| anyhow!("module_extension tag_classes must be a dict"))?;
         let mut tag_classes = BTreeMap::new();
+        let mut tag_class_order = Vec::new();
         for (name, class) in classes.iter() {
             let name = name
                 .unpack_str()
@@ -280,8 +327,15 @@ pub fn globals(builder: &mut GlobalsBuilder) {
             if let Some(doc) = &class.doc {
                 budget.string(doc).map_err(anyhow::Error::msg)?;
             }
-            tag_classes.insert(name.to_owned(), class.clone());
+            if tag_classes.insert(name.to_owned(), class.clone()).is_none() {
+                tag_class_order.push(name.to_owned());
+            }
         }
+        let definition_label = eval
+            .extra
+            .and_then(|extra| extra.downcast_ref::<ExtensionContext>())
+            .map(|context| context.label.to_string())
+            .unwrap_or_default();
         Ok(eval.heap().alloc(ModuleExtensionGen {
             implementation,
             os_dependent,
@@ -290,6 +344,8 @@ pub fn globals(builder: &mut GlobalsBuilder) {
             tag_classes,
             doc,
             environ,
+            tag_class_order,
+            definition_label,
         }))
     }
 }

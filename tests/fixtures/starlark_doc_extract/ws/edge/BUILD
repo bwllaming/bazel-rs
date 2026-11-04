@@ -1,0 +1,8 @@
+genrule(name = "gen", outs = ["gen.bzl"], cmd = "echo 'X = 1' > $@")
+starlark_doc_extract(name = "edge", src = "edge.bzl", deps = ["@dep_mod//sub:lib"])
+starlark_doc_extract(name = "edge_main", src = "edge.bzl", deps = ["@dep_mod//sub:lib"], render_main_repo_name = True)
+starlark_doc_extract(name = "ext", src = "@dep_mod//sub:lib.bzl")
+starlark_doc_extract(name = "ext_main", src = "@dep_mod//sub:lib.bzl", render_main_repo_name = True)
+starlark_doc_extract(name = "nested", src = "edge.bzl", deps = ["@dep_mod//sub:lib"], symbol_names = ["ns.inner", "ns2"])
+starlark_doc_extract(name = "generated", src = ":gen.bzl")
+starlark_doc_extract(name = "gen_dep", src = "edge.bzl", deps = [":gen.bzl"])

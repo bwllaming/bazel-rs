@@ -647,6 +647,57 @@ pub(crate) fn load_shared_definition_any_in(
     })
 }
 
+/// A `.bzl` module loaded for `starlark_doc_extract`
+/// (StarlarkDocExtract.loadModule: BzlLoadValue.keyForBuild), with what the
+/// extractor reads besides the module: its source text and file path, and
+/// the load graph (BazelModuleContext.loads).
+pub(crate) struct DocModule {
+    pub module: FrozenModule,
+    pub source: String,
+    pub path: PathBuf,
+    pub load_graph: HashMap<Label, Vec<Label>>,
+}
+
+/// [`load_shared_definition_any_in`] of a whole module: the same
+/// BUILD-phase load over the shared `.bzl` cache, then the source read
+/// again for the extractor's syntax scan.
+pub(crate) fn load_doc_module_in(
+    repositories: Arc<RepositorySet>,
+    label: &Label,
+    globals: &Globals,
+    prints: &LoadPrints,
+) -> Result<DocModule, String> {
+    if !label.name.ends_with(".bzl") && !label.name.ends_with(".scl") {
+        return Err(format!("load {label} requires a .bzl or .scl suffix"));
+    }
+    let mut loader = Loader::shared_build_phase(repositories, globals, prints);
+    let loaded = loader.load(label.clone());
+    note_definition_modules(&loader, label);
+    loaded.map_err(|error| {
+        if crate::repository_demand::is_parallel_bzl_cycle(&error) {
+            format!("load cycle: {label} (demanded while already being evaluated)")
+        } else {
+            error
+        }
+    })?;
+    let module = loader
+        .cache
+        .get(label)
+        .cloned()
+        .ok_or_else(|| format!("internal loader error: module {label} was not evaluated"))?;
+    let path = loader.source_path(label)?;
+    let bytes = crate::observed_fs::read(&path)
+        .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?;
+    let source = String::from_utf8(bytes)
+        .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?;
+    Ok(DocModule {
+        module,
+        source,
+        path,
+        load_graph: loader.load_graph,
+    })
+}
+
 /// A BUILD-phase `.bzl` module evaluated anew, outside the invocation's
 /// shared cache (crate::snapshot::mapper: the defining module of a portable
 /// `map_each` function, on a snapshot hit against a pinned repository set

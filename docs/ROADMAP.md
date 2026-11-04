@@ -265,7 +265,7 @@ cannot accidentally publish telemetry or change the checkout during testing.
 
 Status: analysis of all of `//src/...` succeeds; `cquery` subset with
 target-determinator support (docs/CQUERY.md); `aquery` (docs/AQUERY.md).
-Open: `cquery --output=starlark|files|jsonproto|transitions`, `starlark_doc_extract`,
+Open: `cquery --output=starlark|files|jsonproto|transitions`,
 aquery action keys for depset-built `Args` and native C++/runfiles actions
 (docs/AQUERY.md), one toolchain on two execution platforms in one configuration.
 

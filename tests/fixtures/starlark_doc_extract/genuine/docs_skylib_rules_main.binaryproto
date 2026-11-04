@@ -1,0 +1,229 @@
+
+Ò
+analysis_testÁTest rule checking that other targets can be successfully analyzed.
+
+This rule essentially verifies that all targets under `targets` would
+generate no errors when analyzed with `bazel build [targets] --nobuild`.
+Action success/failure for the targets and their transitive dependencies
+are not verified. An analysis test simply ensures that each target in the transitive
+dependencies propagate providers appropriately and register actions for their outputs
+appropriately.
+
+NOTE: If the targets fail to analyze, instead of the analysis_test failing, the analysis_test
+will fail to build. Ideally, it would instead result in a test failure. This is a current
+infrastructure limitation that may be fixed in the future.
+
+Typical usage:
+
+  load("@bazel_skylib//rules:analysis_test.bzl", "analysis_test")
+  analysis_test(
+      name = "my_analysis_test",
+      targets = [
+          "//some/package:rule",
+      ],
+  )
+
+Args:
+  name: The name of the test rule.
+  targets: A list of targets to ensure build.*
+nameA unique name for this target. 
+targets "7
+analysis_test&@bazel_skylib//rules:analysis_test.bzl08
+˘
+	bool_flag>A bool-typed build setting that can be set on the command line*
+nameA unique name for this target. I
+scope1The scope indicates where a flag can propagate to2"universal""5
+	bool_flag(@bazel_skylib//rules:common_settings.bzl
+Ç
+bool_settingAA bool-typed build setting that cannot be set on the command line*
+nameA unique name for this target. I
+scope1The scope indicates where a flag can propagate to2"universal""8
+bool_setting(@bazel_skylib//rules:common_settings.bzl
+¿
+int_flag>An int-typed build setting that can be set on the command line*
+nameA unique name for this target. ∆
+make_variableÆIf set, the build setting's value will be available as a Make variable with this name in the attributes of rules that list this build setting in their 'toolchains' attribute.2""I
+scope1The scope indicates where a flag can propagate to2"universal""4
+int_flag(@bazel_skylib//rules:common_settings.bzl
+∂
+string_flag@A string-typed build setting that can be set on the command line*
+nameA unique name for this target. l
+values\The list of allowed values for this setting. An error is raised if any other value is given.2[]∆
+make_variableÆIf set, the build setting's value will be available as a Make variable with this name in the attributes of rules that list this build setting in their 'toolchains' attribute.2""I
+scope1The scope indicates where a flag can propagate to2"universal""7
+string_flag(@bazel_skylib//rules:common_settings.bzl
+é
+string_list_flagEA string list-typed build setting that can be set on the command line*
+nameA unique name for this target. I
+scope1The scope indicates where a flag can propagate to2"universal""<
+string_list_flag(@bazel_skylib//rules:common_settings.bzl
+›
+repeatable_string_flagáA build setting that accepts one or more string-typed settings on the command line, with the values concatenated into a single string list; for example, `--//my/setting=foo` `--//my/setting=bar` will be parsed as `['foo', 'bar']`. Contrast with `string_list_flag`*
+nameA unique name for this target. I
+scope1The scope indicates where a flag can propagate to2"universal""B
+repeatable_string_flag(@bazel_skylib//rules:common_settings.bzl
+Ö
+	diff_testPA test that compares two files.
+
+The test succeeds if the files' contents match.*
+nameA unique name for this target. 5
+file1(Label of the file to compare to `file2`. 5
+file2(Label of the file to compare to `file1`. W
+failure_message>Additional message to log if the files' contents do not match.2"""/
+	diff_test"@bazel_skylib//rules:diff_test.bzl08
+‡
+expand_template∂Template expansion
+
+This performs a simple search over the template file for the keys in
+substitutions, and replaces them with the corresponding values.
+
+There is no special syntax for the keys. To avoid conflicts, you would need to
+explicitly add delimiters to the key strings, for example "{KEY}" or "@KEY@".*
+nameA unique name for this target. ,
+templateThe template file to expand. I
+substitutions4A dictionary mapping strings to their substitutions.
+ 2
+out%The destination of the expanded file. 8";
+expand_template(@bazel_skylib//rules:expand_template.bzl
+›
+native_binary”Wraps a pre-built binary or script with a binary rule.
+
+You can "bazel run" this rule like any other binary rule, and use it as a tool
+in genrule.tools for example. You can also augment the binary with runfiles.*
+nameA unique name for this target. +
+src path of the pre-built executable e
+dataWdata dependencies. See https://bazel.build/reference/be/common-definitions#typical.data2[]∂
+out®An output name for the copy of the binary. Defaults to name.exe. (We add .exe to the name by default because it's required on Windows and tolerated on other platforms.)2""B
+env5Environment variables to set when running the binary.
+2{}"7
+native_binary&@bazel_skylib//rules:native_binary.bzl8
+•
+native_testùWraps a pre-built binary or script with a test rule.
+
+You can "bazel test" this rule like any other test rule. You can also augment
+the binary with runfiles.*
+nameA unique name for this target. +
+src path of the pre-built executable e
+dataWdata dependencies. See https://bazel.build/reference/be/common-definitions#typical.data2[]∂
+out®An output name for the copy of the binary. Defaults to name.exe. (We add .exe to the name by default because it's required on Windows and tolerated on other platforms.)2""B
+env5Environment variables to set when running the binary.
+2{}"5
+native_test&@bazel_skylib//rules:native_binary.bzl08
+Õ	
+
+run_binary\Runs a binary as a build action.
+
+This rule does not require Bash (unlike `native.genrule`).*
+nameA unique name for this target. ‰
+tool◊The tool to run in the action.
+
+Must be the label of a *_binary rule, of a rule that generates an executable file, or of a file that can be executed as a subprocess (e.g. an .exe or .bat file on Windows or a binary with executable permission on Linux). This label is available for `$(execpath)` and `$(location)` expansion in `args` and `env`. ∏
+env™Environment variables of the action.
+
+Subject to  [`$(execpath)` and `$(location)`](https://bazel.build/reference/be/make-variables#predefined_label_variables) expansion.
+2{}ç
+srcsAdditional inputs of the action.
+
+These labels are available for `$(execpath)` and `$(location)` expansion in `args` and `env`.2[]ì
+outsÑOutput files generated by the action.
+
+These labels are available for `$(execpath)` and `$(location)` expansion in `args` and `env`. 8π
+args™Command line arguments of the binary.
+
+Subject to [`$(execpath)` and `$(location)`](https://bazel.build/reference/be/make-variables#predefined_label_variables) expansion.2[]"1
+
+run_binary#@bazel_skylib//rules:run_binary.bzl
+¢
+select_fileISelects a single file from the outputs of a target by given relative path*
+nameA unique name for this target. =
+srcs1The target producing the file among other outputs (
+subpathRelative path to the file "3
+select_file$@bazel_skylib//rules:select_file.bzl”
+BuildSettingInfoCA singleton provider that contains the raw value of a build settingª
+value±The value of the build setting in the current configuration. This value may come from the command line or an upstream transition, or else it will be the build setting's default."<
+BuildSettingInfo(@bazel_skylib//rules:common_settings.bzlÇ
+StarlarkLibraryInfo(Information on contained Starlark rules.
+srcsTop level rules files.\
+transitive_srcsITransitive closure of rules files required for interpretation of the srcs"C
+StarlarkLibraryInfo,@bazel_skylib//rules/private:bzl_library.bzl®
+
+build_test&
+nameThe name of the test rule. (1
+targets"A list of targets to ensure build. ({
+kwargsoThe [common attributes for tests](https://bazel.build/reference/be/common-definitions#common-attributes-tests).(éTest rule checking that other targets build.
+
+This works not by an instance of this test failing, but instead by
+the targets it depends on failing to build, and hence failing
+the attempt to run this test.
+
+Typical usage:
+
+```
+  load("@bazel_skylib//rules:build_test.bzl", "build_test")
+  build_test(
+      name = "my_build_test",
+      targets = [
+          "//some/package:rule",
+      ],
+  )
+```
+21
+
+build_test#@bazel_skylib//rules:build_test.bzl≠
+copy_directory
+nameName of the rule. (V
+srcKThe directory to make a copy of. Can be a source directory or TreeArtifact. (B
+out7Path of the output directory, relative to this package. (8
+kwargs,further keyword arguments, e.g. `visibility`(⁄Copies a directory to another location.
+
+This rule uses a Bash command on Linux/macOS/non-Windows, and a cmd.exe command on Windows (no Bash is required).
+
+If using this rule with source directories, it is recommended that you use the
+`--host_jvm_args=-DBAZEL_TRACK_SOURCE_DIRECTORIES=1` startup option so that changes
+to files within source directories are detected. See
+https://github.com/bazelbuild/bazel/commit/c64421bc35214f0414e4f4226cc953e8c55fa0d2
+for more context.
+2I
+copy_directory7@bazel_skylib//rules/private:copy_directory_private.bzlº
+
+	copy_file
+nameName of the rule. (h
+src]A Label. The file to make a copy of. (Can also be the label of a rule
+that generates a file.) (=
+out2Path of the output file, relative to this package. (•
+is_executableäA boolean. Whether to make the output file executable. When
+True, the rule's output can be executed using `bazel run` and can be
+in the srcs of binary and test rules that require executable sources.
+WARNING: If `allow_symlink` is True, `src` must also be executable.False(ê
+allow_symlinkıA boolean. Whether to allow symlinking instead of copying.
+When False, the output is always a hard copy. When True, the output
+*can* be a symlink, but there is no guarantee that a symlink is
+created (i.e., at the time of writing, we don't create symlinks on
+Windows). Set this to True if you need fast copying and your tools can
+handle symlinks (which most UNIX tools can).False(8
+kwargs,further keyword arguments, e.g. `visibility`(∞Copies a file to another location.
+
+`native.genrule()` is sometimes used to copy files (often wishing to rename them). The 'copy_file' rule does this with a simpler interface than genrule.
+
+This rule uses a Bash command on Linux/macOS/non-Windows, and a cmd.exe command on Windows (no Bash is required).
+2?
+	copy_file2@bazel_skylib//rules/private:copy_file_private.bzlù
+
+write_file
+nameName of the rule. (=
+out2Path of the output file, relative to this package. (î
+contentÇA list of strings. Lines of text, the contents of the file.
+Newlines are added automatically after every line except the last one.[](·
+is_executable∆A boolean. Whether to make the output file executable.
+When True, the rule's output can be executed using `bazel run` and can
+be in the srcs of binary and test rules that require executable
+sources.False(î
+newlineone of ["auto", "unix", "windows"]: line endings to use. "auto"
+for platform-determined, "unix" for LF, and "windows" for CRLF."auto"(8
+kwargs,further keyword arguments, e.g. `visibility`("Creates a UTF-8 encoded text file.2A
+
+write_file3@bazel_skylib//rules/private:write_file_private.bzl´
+bzl_library
+namename (@
+kwargs4see the generated doc for rules/private/bzl_library.(Wrapper for bzl_library.2.
+bzl_library@bazel_skylib//:bzl_library.bzl*#Re-exports of bazel_skylib's rules.2#@sde_fixture//docs:skylib_rules.bzl

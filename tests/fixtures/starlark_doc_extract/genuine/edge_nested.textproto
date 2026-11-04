@@ -1,0 +1,48 @@
+provider_info {
+  provider_name: "ns.inner.deeper.p"
+  doc_string: "External provider."
+  field_info {
+    name: "v"
+    doc_string: "The v."
+  }
+  origin_key {
+    name: "ExtInfo"
+    file: "@dep_mod//sub:lib.bzl"
+  }
+}
+func_info {
+  function_name: "ns.inner.fn"
+  parameter {
+    name: "x"
+    mandatory: true
+    role: PARAM_ROLE_KEYWORD_ONLY
+  }
+  parameter {
+    name: "y"
+    default_value: "2"
+    role: PARAM_ROLE_KEYWORD_ONLY
+  }
+  doc_string: "Keyword only."
+  return {
+    doc_string: "Nothing\n at all."
+  }
+  origin_key {
+    name: "kwonly"
+    file: "//edge:edge.bzl"
+  }
+}
+func_info {
+  function_name: "ns2.x"
+  parameter {
+    name: "a"
+    doc_string: "the a."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  doc_string: "Tab indented docstring."
+  origin_key {
+    name: "fn_with_tabs"
+    file: "//edge:edge.bzl"
+  }
+}
+file: "//edge:edge.bzl"

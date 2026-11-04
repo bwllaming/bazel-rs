@@ -652,6 +652,30 @@ pub(crate) struct AspectDeclaration {
     /// `exec_groups = {...}` with each group's declaration, in the dict's
     /// order (resolved per application, crate::engine).
     pub exec_groups: Vec<DeclaredExecGroup>,
+    /// `doc=`, untrimmed (crate::starlark_doc_extract).
+    pub doc: Option<String>,
+}
+
+/// What `starlark_doc_extract` documents of an `aspect()` value
+/// (ModuleInfoExtractor.visitAspect).
+pub(crate) fn aspect_doc(value: Value<'_>) -> Option<crate::starlark_doc_extract::AspectDoc> {
+    let aspect = Aspect::from_value(value)?;
+    Some(crate::starlark_doc_extract::AspectDoc {
+        exported: aspect.exported.get().cloned(),
+        file: aspect.definition_label.clone(),
+        doc: aspect.declaration.doc.clone(),
+        attr_aspects: aspect.declaration.attr_aspects.clone(),
+        attrs: aspect
+            .declaration
+            .attrs
+            .iter()
+            .map(|(name, spec)| crate::starlark_doc_extract::DocAttr {
+                name: name.clone(),
+                spec: spec.clone(),
+                starlark_defined: true,
+            })
+            .collect(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1853,6 +1877,7 @@ fn construct_aspect<'v>(
             apply_to_generating_rules: args.apply_to_generating_rules,
             exec_compatible_with,
             exec_groups,
+            doc: args.doc.unpack_str().map(str::to_owned),
         },
         definition_label: label,
         exported: OnceLock::new(),

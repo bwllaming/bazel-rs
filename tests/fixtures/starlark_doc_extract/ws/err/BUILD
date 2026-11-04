@@ -1,0 +1,5 @@
+starlark_doc_extract(name = "unused", src = "unused.bzl")
+starlark_doc_extract(name = "unused_ok", src = "unused.bzl", allow_unused_doc_comments = True)
+starlark_doc_extract(name = "rule_comment", src = "rule_comment.bzl")
+starlark_doc_extract(name = "bad_docstring", src = "bad_docstring.bzl")
+starlark_doc_extract(name = "bad_docstring2", src = "bad_docstring2.bzl")

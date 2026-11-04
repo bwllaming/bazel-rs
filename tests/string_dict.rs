@@ -611,8 +611,10 @@ fn string_dict_repository_and_tag_binding_none_empty_mandatory_and_invalid_value
 
 #[test]
 fn string_dict_native_profile_configurable_and_select_boundaries() {
-    // Reference repository/tag classes accept explicit bools. Native intentionally
-    // retains the narrower existing descriptor profile in every schema context.
+    // `configurable` is a bool or unbound (StarlarkAttrModuleApi.java:197-205):
+    // None is a type error everywhere; an explicit bool is rejected by rule()
+    // (only symbolic macros may set it) and accepted, like the reference, by
+    // repository rules and tag classes.
     for value in ["None", "False", "True"] {
         for schema in ["rule", "repository_rule", "tag_class"] {
             let f = Fixture::new();
@@ -630,7 +632,12 @@ fn string_dict_native_profile_configurable_and_select_boundaries() {
                 format!("def _impl(ctx):\n    return []\n{declaration}\n"),
             );
             f.file("BUILD.bazel", "load(':defs.bzl','schema')\n");
-            f.reject(&["query", "//:all"], &["configurable", "unsupported"]);
+            if value == "None" || schema == "rule" {
+                f.reject(&["query", "//:all"], &["configurable"]);
+            } else {
+                let query = f.run(&["query", "//:all"]);
+                assert!(query.status.success(), "{}", errors(&query));
+            }
         }
     }
     let f = Fixture::new();

@@ -1,0 +1,225 @@
+
+…
+my_ruleA rule.
+
+Detail line.*
+nameA unique name for this target. 
+srcsSources.2[]E
+depA dep.*.
+MyInfo$
+MyInfo@sde_fixture//pkg:defs.bzl2None¬
+deps2*i
+MyInfo
+reexported_dep_info$
+MyInfo@sde_fixture//pkg:defs.bzl$
+DepInfo@sde_fixture//lib:dep.bzl*2
+ListInfo&
+ListInfo@sde_fixture//pkg:defs.bzl2[] 
+requiredRequired string. 
+choice2"a"J"a"J"b"
+count23J1J3
+flag2True
+names2
+["x", "y"]
+ints2[1, 2]
+sd
+2
+{"k": "v"}
+sld2{"k": ["v"]}
+lsd	2{}
+out
+An output.2None8
+outs2[]8*
+default_label2"@sde_fixture//pkg:foo"+
+default_label22"@sde_fixture//lib:dep"6
+	ext_label2'"@bazel_tools//tools/sh:toolchain_type"
+
+sk2{}
+lld2{}"%
+my_rule@sde_fixture//pkg:defs.bzl*i
+MyInfo
+reexported_dep_info$
+MyInfo@sde_fixture//pkg:defs.bzl$
+DepInfo@sde_fixture//lib:dep.bzl
+b
+	my_binary*
+nameA unique name for this target. "'
+	my_binary@sde_fixture//pkg:defs.bzl8
+o
+my_test*
+nameA unique name for this target. 
+size22"""%
+my_test@sde_fixture//pkg:defs.bzl08
+’
+namespace.inner.ruleA rule.
+
+Detail line.*
+nameA unique name for this target. 
+srcsSources.2[]E
+depA dep.*.
+MyInfo$
+MyInfo@sde_fixture//pkg:defs.bzl2None¬
+deps2*i
+MyInfo
+reexported_dep_info$
+MyInfo@sde_fixture//pkg:defs.bzl$
+DepInfo@sde_fixture//lib:dep.bzl*2
+ListInfo&
+ListInfo@sde_fixture//pkg:defs.bzl2[] 
+requiredRequired string. 
+choice2"a"J"a"J"b"
+count23J1J3
+flag2True
+names2
+["x", "y"]
+ints2[1, 2]
+sd
+2
+{"k": "v"}
+sld2{"k": ["v"]}
+lsd	2{}
+out
+An output.2None8
+outs2[]8*
+default_label2"@sde_fixture//pkg:foo"+
+default_label22"@sde_fixture//lib:dep"6
+	ext_label2'"@bazel_tools//tools/sh:toolchain_type"
+
+sk2{}
+lld2{}"%
+my_rule@sde_fixture//pkg:defs.bzl*i
+MyInfo
+reexported_dep_info$
+MyInfo@sde_fixture//pkg:defs.bzl$
+DepInfo@sde_fixture//lib:dep.bzl}
+MyInfoMy provider.
+
+Indented detail.
+fooThe foo field.
+barMulti
+line bar."$
+MyInfo@sde_fixture//pkg:defs.bzl4
+	PlainInfo"'
+	PlainInfo@sde_fixture//pkg:defs.bzlM
+ListInfoFields as list.
+a
+b"&
+ListInfo@sde_fixture//pkg:defs.bzlâ
+InitInfo	Has init.
+x
+y"&
+InitInfo@sde_fixture//pkg:defs.bzl*˜
+InitInfo
+xthe x. (
+ythe y.2(
+z
+keyword z."z"(
+kwargsextras.(Init for InitInfo.2(
+
+_init_impl@sde_fixture//pkg:defs.bzlZ
+reexported_dep_infoA provider from the dep.
+x"$
+DepInfo@sde_fixture//lib:dep.bzl…
+namespace.infoMy provider.
+
+Indented detail.
+fooThe foo field.
+barMulti
+line bar."$
+MyInfo@sde_fixture//pkg:defs.bzlæ
+my_function
+name	The name. (C
+srcs5Source files
+continued here.
+
+And a second paragraph.[](
+depsDeps.None(3
+labelA label.Label("@sde_fixture//pkg:foo")(@
+otherAnother label.%Label("@bazel_tools//tools:bzl_srcs")(
+flagA flag.True(
+argsPositional extras.(
+kwargsKeyword extras.(:Does something.
+
+A longer description
+spanning two lines.
+"
+A thing,
+  indented more.*
+Use something else.2)
+my_function@sde_fixture//pkg:defs.bzlq
+undocumented
+a (
+b{"k": [1, 2]}(
+c(1,)(	
+d-3(2*
+undocumented@sde_fixture//pkg:defs.bzlK
+summary_onlyJust a summary.2*
+summary_only@sde_fixture//pkg:defs.bzl^
+renamed_dep_helper
+athe a. (Helper in dep.2'
+
+dep_helper@sde_fixture//lib:dep.bzl=
+	lambda_fn
+x (2'
+	lambda_fn@sde_fixture//pkg:defs.bzlç
+namespace.fn
+name	The name. (C
+srcs5Source files
+continued here.
+
+And a second paragraph.[](
+depsDeps.None(3
+labelA label.Label("@sde_fixture//pkg:foo")(@
+otherAnother label.%Label("@bazel_tools//tools:bzl_srcs")(
+flagA flag.True(
+argsPositional extras.(
+kwargsKeyword extras.(:Does something.
+
+A longer description
+spanning two lines.
+"
+A thing,
+  indented more.*
+Use something else.2)
+my_function@sde_fixture//pkg:defs.bzl"h
+	my_aspect
+An aspect.deps" 
+paramParam.2"p"J"p"J"q"*'
+	my_aspect@sde_fixture//pkg:defs.bzl":
+plain_aspect**
+plain_aspect@sde_fixture//pkg:defs.bzl*+Module docstring.
+
+With a second paragraph.2@sde_fixture//pkg:defs.bzl:q
+my_extAn extension.1
+installA tag.
+
+name 
+vVersion.21
+other"@sde_fixture//pkg:defs.bzlB¬
+my_repoA repo rule..
+name"A unique name for this repository. 
+urlURL.2""	
+sha 
+
+build_file2None"FOO"BAR*%
+my_repo@sde_fixture//pkg:defs.bzlBf
+
+plain_repo.
+name"A unique name for this repository. *(
+
+plain_repo@sde_fixture//pkg:defs.bzlJî
+my_macroA symbolic macro.Ü
+nameÏA unique name for this macro instance. Normally, this is also the name for the macro's main or only target. The names of any other targets that this macro might create will be this name with a string suffix. œ
+
+visibility‡The visibility to be passed to this macro's exported targets. It always implicitly includes the location where this macro is instantiated, so this attribute only needs to be explicitly set if you want the macro's targets to be additionally visible somewhere else.8@
+srcsMacro srcs.2[]
+opt2"o"8"&
+my_macro@sde_fixture//pkg:defs.bzlJº
+my_finalizerÜ
+nameÏA unique name for this macro instance. Normally, this is also the name for the macro's main or only target. The names of any other targets that this macro might create will be this name with a string suffix. œ
+
+visibility‡The visibility to be passed to this macro's exported targets. It always implicitly includes the location where this macro is instantiated, so this attribute only needs to be explicitly set if you want the macro's targets to be additionally visible somewhere else.8@"*
+my_finalizer@sde_fixture//pkg:defs.bzl(R<
+MY_CONSTANT(Doc comment for a constant.
+Second line.intR&
+OTHERTrailing doc comment.string

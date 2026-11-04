@@ -140,9 +140,14 @@ mod values {
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub fields: Option<BTreeSet<String>>,
+        /// The schema in declaration order with each field's doc
+        /// (StarlarkProvider.getSchema), for crate::starlark_doc_extract.
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
-        pub _doc: Option<String>,
+        pub field_docs: Option<Vec<(String, Option<String>)>>,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub doc: Option<String>,
         // Bazel StarlarkProvider.init: None, or a callable invoked with the
         // caller's exact positional and keyword arguments. (Option is not
         // Coerce, so None is the absent sentinel, exactly as in provider().)
@@ -548,6 +553,22 @@ pub(crate) fn alloc_instance<'v>(
 }
 
 /// Stable identity of an exported constructor, never of an instance.
+/// What `starlark_doc_extract` documents of a `provider()` value
+/// (ModuleInfoExtractor.visitProvider).
+pub(crate) fn provider_doc(
+    value: Value<'_>,
+) -> Option<crate::starlark_doc_extract::ProviderDoc<'_>> {
+    let constructor = ProviderConstructor::from_value(value)?;
+    let init = constructor.init.to_value();
+    Some(crate::starlark_doc_extract::ProviderDoc {
+        exported: constructor.exported.get().cloned(),
+        file: constructor.extension.clone(),
+        doc: constructor.doc.clone(),
+        fields: constructor.field_docs.clone(),
+        init: (!init.is_none()).then_some(init),
+    })
+}
+
 pub fn provider_identity(value: Value<'_>) -> Option<String> {
     if crate::rule_declarations::is_output_group_info(value) {
         return Some(crate::output_group_info::PROVIDER_ID.to_owned());
@@ -777,18 +798,27 @@ pub(crate) fn unsupported_payload_freeze(error: starlark::values::FreezeError) -
     anyhow!("unsupported provider payload: {}", error.err_msg)
 }
 
-fn field_schema(value: Value<'_>) -> anyhow::Result<Option<BTreeSet<String>>> {
+/// The field schema: the names, and the names in order with their docs.
+#[allow(clippy::type_complexity)]
+fn field_schema(
+    value: Value<'_>,
+) -> anyhow::Result<(
+    Option<BTreeSet<String>>,
+    Option<Vec<(String, Option<String>)>>,
+)> {
     if value.is_none() {
-        return Ok(None);
+        return Ok((None, None));
     }
     let mut fields = BTreeSet::new();
+    let mut docs = Vec::new();
     let names = if let Some(dict) = DictRef::from_value(value) {
         let mut names = Vec::new();
         for (key, doc) in dict.iter() {
-            if doc.unpack_str().is_none() {
+            let Some(doc) = doc.unpack_str() else {
                 bail!("provider field documentation must be a string");
-            }
+            };
             names.push(key);
+            docs.push(Some(doc.to_owned()));
         }
         names
     } else {
@@ -798,7 +828,7 @@ fn field_schema(value: Value<'_>) -> anyhow::Result<Option<BTreeSet<String>>> {
             )
         })?
     };
-    for name in names {
+    for name in &names {
         let name = name
             .unpack_str()
             .ok_or_else(|| anyhow!("provider field names must be strings"))?;
@@ -806,7 +836,17 @@ fn field_schema(value: Value<'_>) -> anyhow::Result<Option<BTreeSet<String>>> {
             bail!("duplicate provider field {name:?}");
         }
     }
-    Ok(Some(fields))
+    let ordered = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            (
+                name.unpack_str().unwrap_or_default().to_owned(),
+                docs.get(index).cloned().flatten(),
+            )
+        })
+        .collect();
+    Ok((Some(fields), Some(ordered)))
 }
 
 #[starlark_module]
@@ -846,11 +886,13 @@ pub fn globals(builder: &mut GlobalsBuilder) {
                 init.get_type()
             );
         }
+        let (fields, field_docs) = field_schema(fields)?;
         let provider = eval.heap().alloc(ProviderConstructorGen {
             extension: context.label.to_string(),
             exported: OnceLock::new(),
-            fields: field_schema(fields)?,
-            _doc: doc,
+            fields,
+            field_docs,
+            doc,
             init,
         });
         if init.is_none() {
@@ -1602,7 +1644,8 @@ template = platform_common.TemplateVariableInfo({})
                 extension: "x".repeat(8 * 1024 * 1024),
                 exported: OnceLock::from("Name".to_owned()),
                 fields: None,
-                _doc: None,
+                field_docs: None,
+                doc: None,
                 init: Value::new_none(),
             });
             assert!(

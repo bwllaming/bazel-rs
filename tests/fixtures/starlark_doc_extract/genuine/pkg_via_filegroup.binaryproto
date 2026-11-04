@@ -1,0 +1,225 @@
+
+™
+my_ruleA rule.
+
+Detail line.*
+nameA unique name for this target. 
+srcsSources.2[]9
+depA dep.*"
+MyInfo
+MyInfo//pkg:defs.bzl2Noneˆ
+deps2*Q
+MyInfo
+reexported_dep_info
+MyInfo//pkg:defs.bzl
+DepInfo//lib:dep.bzl*&
+ListInfo
+ListInfo//pkg:defs.bzl2[] 
+requiredRequired string. 
+choice2"a"J"a"J"b"
+count23J1J3
+flag2True
+names2
+["x", "y"]
+ints2[1, 2]
+sd
+2
+{"k": "v"}
+sld2{"k": ["v"]}
+lsd	2{}
+out
+An output.2None8
+outs2[]8
+default_label2"//pkg:foo"
+default_label22"//lib:dep"6
+	ext_label2'"@bazel_tools//tools/sh:toolchain_type"
+
+sk2{}
+lld2{}"
+my_rule//pkg:defs.bzl*Q
+MyInfo
+reexported_dep_info
+MyInfo//pkg:defs.bzl
+DepInfo//lib:dep.bzl
+V
+	my_binary*
+nameA unique name for this target. "
+	my_binary//pkg:defs.bzl8
+c
+my_test*
+nameA unique name for this target. 
+size22"""
+my_test//pkg:defs.bzl08
+¦
+namespace.inner.ruleA rule.
+
+Detail line.*
+nameA unique name for this target. 
+srcsSources.2[]9
+depA dep.*"
+MyInfo
+MyInfo//pkg:defs.bzl2Noneˆ
+deps2*Q
+MyInfo
+reexported_dep_info
+MyInfo//pkg:defs.bzl
+DepInfo//lib:dep.bzl*&
+ListInfo
+ListInfo//pkg:defs.bzl2[] 
+requiredRequired string. 
+choice2"a"J"a"J"b"
+count23J1J3
+flag2True
+names2
+["x", "y"]
+ints2[1, 2]
+sd
+2
+{"k": "v"}
+sld2{"k": ["v"]}
+lsd	2{}
+out
+An output.2None8
+outs2[]8
+default_label2"//pkg:foo"
+default_label22"//lib:dep"6
+	ext_label2'"@bazel_tools//tools/sh:toolchain_type"
+
+sk2{}
+lld2{}"
+my_rule//pkg:defs.bzl*Q
+MyInfo
+reexported_dep_info
+MyInfo//pkg:defs.bzl
+DepInfo//lib:dep.bzlq
+MyInfoMy provider.
+
+Indented detail.
+fooThe foo field.
+barMulti
+line bar."
+MyInfo//pkg:defs.bzl(
+	PlainInfo"
+	PlainInfo//pkg:defs.bzlA
+ListInfoFields as list.
+a
+b"
+ListInfo//pkg:defs.bzlÊ
+InitInfo	Has init.
+x
+y"
+InitInfo//pkg:defs.bzl*Œ
+InitInfo
+xthe x. (
+ythe y.2(
+z
+keyword z."z"(
+kwargsextras.(Init for InitInfo.2
+
+_init_impl//pkg:defs.bzlN
+reexported_dep_infoA provider from the dep.
+x"
+DepInfo//lib:dep.bzly
+namespace.infoMy provider.
+
+Indented detail.
+fooThe foo field.
+barMulti
+line bar."
+MyInfo//pkg:defs.bzlÎ
+my_function
+name	The name. (C
+srcs5Source files
+continued here.
+
+And a second paragraph.[](
+depsDeps.None('
+labelA label.Label("//pkg:foo")(@
+otherAnother label.%Label("@bazel_tools//tools:bzl_srcs")(
+flagA flag.True(
+argsPositional extras.(
+kwargsKeyword extras.(:Does something.
+
+A longer description
+spanning two lines.
+"
+A thing,
+  indented more.*
+Use something else.2
+my_function//pkg:defs.bzle
+undocumented
+a (
+b{"k": [1, 2]}(
+c(1,)(	
+d-3(2
+undocumented//pkg:defs.bzl?
+summary_onlyJust a summary.2
+summary_only//pkg:defs.bzlR
+renamed_dep_helper
+athe a. (Helper in dep.2
+
+dep_helper//lib:dep.bzl1
+	lambda_fn
+x (2
+	lambda_fn//pkg:defs.bzlÏ
+namespace.fn
+name	The name. (C
+srcs5Source files
+continued here.
+
+And a second paragraph.[](
+depsDeps.None('
+labelA label.Label("//pkg:foo")(@
+otherAnother label.%Label("@bazel_tools//tools:bzl_srcs")(
+flagA flag.True(
+argsPositional extras.(
+kwargsKeyword extras.(:Does something.
+
+A longer description
+spanning two lines.
+"
+A thing,
+  indented more.*
+Use something else.2
+my_function//pkg:defs.bzl"\
+	my_aspect
+An aspect.deps" 
+paramParam.2"p"J"p"J"q"*
+	my_aspect//pkg:defs.bzl".
+plain_aspect*
+plain_aspect//pkg:defs.bzl*+Module docstring.
+
+With a second paragraph.2//pkg:defs.bzl:e
+my_extAn extension.1
+installA tag.
+
+name 
+vVersion.21
+other"//pkg:defs.bzlB 
+my_repoA repo rule..
+name"A unique name for this repository. 
+urlURL.2""	
+sha 
+
+build_file2None"FOO"BAR*
+my_repo//pkg:defs.bzlBZ
+
+plain_repo.
+name"A unique name for this repository. *
+
+plain_repo//pkg:defs.bzlJâ
+my_macroA symbolic macro.Ü
+nameÏA unique name for this macro instance. Normally, this is also the name for the macro's main or only target. The names of any other targets that this macro might create will be this name with a string suffix. œ
+
+visibility‡The visibility to be passed to this macro's exported targets. It always implicitly includes the location where this macro is instantiated, so this attribute only needs to be explicitly set if you want the macro's targets to be additionally visible somewhere else.8@
+srcsMacro srcs.2[]
+opt2"o"8"
+my_macro//pkg:defs.bzlJ®
+my_finalizerÜ
+nameÏA unique name for this macro instance. Normally, this is also the name for the macro's main or only target. The names of any other targets that this macro might create will be this name with a string suffix. œ
+
+visibility‡The visibility to be passed to this macro's exported targets. It always implicitly includes the location where this macro is instantiated, so this attribute only needs to be explicitly set if you want the macro's targets to be additionally visible somewhere else.8@"
+my_finalizer//pkg:defs.bzl(R<
+MY_CONSTANT(Doc comment for a constant.
+Second line.intR&
+OTHERTrailing doc comment.string

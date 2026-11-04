@@ -182,14 +182,5 @@ ordinary dependencies.
 
 ## `starlark_doc_extract`
 
-Not implemented: analysis fails with `native rule starlark_doc_extract
-analysis not implemented`. It needs a ModuleInfo (stardoc_output.proto)
-extractor over a loaded module: RuleInfo (attributes with AttributeType,
-default value reprs, mandatory, provider name groups, docs), ProviderInfo
-(fields, docs, init), StarlarkFunctionInfo (parameter kinds/defaults and
-Starlark docstring parsing: Args/Returns/Deprecated sections),
-AspectInfo, MacroInfo, ModuleExtensionInfo and RepositoryRuleInfo; the
-OriginKey of each entity (exporting name and defining file label); the
-module docstring; `symbol_names`, `render_main_repo_name` and
-`allow_unused_doc_comments`; and binary/text proto encoding of the result.
-The loader keeps the evaluated globals but none of this metadata today.
+Native: the ModuleInfo binary and text protos byte-identical to genuine
+(docs/STARLARK_DOC_EXTRACT.md). Its two outputs are `FileWrite` actions.

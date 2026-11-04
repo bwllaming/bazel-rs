@@ -1,0 +1,27 @@
+provider_info {
+  provider_name: "DepInfo"
+  doc_string: "A provider from the dep."
+  field_info {
+    name: "x"
+  }
+  origin_key {
+    name: "DepInfo"
+    file: "//lib:dep.bzl"
+  }
+}
+func_info {
+  function_name: "dep_helper"
+  parameter {
+    name: "a"
+    doc_string: "the a."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  doc_string: "Helper in dep."
+  origin_key {
+    name: "dep_helper"
+    file: "//lib:dep.bzl"
+  }
+}
+module_docstring: "Dependency module."
+file: "//lib:dep.bzl"

@@ -1617,6 +1617,7 @@ pub(crate) fn instantiate<'v>(
                         .map(|choice| crate::custom_rule::AllowedValue {
                             value: Some(AttrValue::String((*choice).to_owned())),
                             display: (*choice).to_owned(),
+                            repr: String::new(),
                         })
                         .collect(),
                     ..Default::default()

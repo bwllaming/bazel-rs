@@ -106,6 +106,10 @@ fn is_false(value: &bool) -> bool {
 pub struct AllowedValue {
     pub value: Option<AttrValue>,
     pub display: String,
+    /// The entry's Starlark repr (AttributeInfoExtractor's `values`,
+    /// crate::starlark_doc_extract); not part of the serialized schema.
+    #[serde(skip)]
+    pub repr: String,
 }
 
 /// Retained Bazel attribute options that the native analysis does not model.
@@ -161,6 +165,14 @@ pub struct AttrDeclaration {
     /// set it (StarlarkRuleClassFunctions.java:964-970, :1374-1379).
     #[serde(skip_serializing_if = "is_false")]
     pub configurable_set: bool,
+    /// `configurable = False` (Attribute.isConfigurable false; symbolic
+    /// macro attributes only), for crate::starlark_doc_extract.
+    #[serde(skip)]
+    pub nonconfigurable: bool,
+    /// The `doc` argument, untrimmed (crate::starlark_doc_extract trims it
+    /// like StarlarkAttrModule.java:318); not part of the serialized schema.
+    #[serde(skip)]
+    pub doc: Option<String>,
 }
 
 /// A `configuration_field(fragment, name)` identity.
@@ -174,6 +186,8 @@ impl AttrDeclaration {
     pub(crate) fn is_default(&self) -> bool {
         Self {
             explicit_default: false,
+            nonconfigurable: false,
+            doc: None,
             ..self.clone()
         } == Self::default()
     }
@@ -1946,6 +1960,8 @@ pub(crate) struct RuleDeclaration {
     /// RuleClass.getCallStack: the stack of the rule() call
     /// (StarlarkRuleClassFunctions.java:916-918), for `query --output=build`.
     pub definition_stack: Vec<(String, String)>,
+    /// `rule(doc=...)`, untrimmed (crate::starlark_doc_extract).
+    pub doc: Option<String>,
 }
 
 /// `rule(outputs=...)` (StarlarkRuleClassFunctions.java:1102-1122).
@@ -3266,6 +3282,38 @@ pub(crate) fn rule_declaration(value: Value<'_>) -> Option<RuleDeclarationView> 
     })
 }
 
+/// What `starlark_doc_extract` documents of a `rule()` value
+/// (RuleInfoExtractor.buildRuleInfo): the attributes the rule declared in
+/// Starlark, in declaration order; `build_setting_default` and `help` of a
+/// build setting are built in.
+pub(crate) fn rule_doc(value: Value<'_>) -> Option<crate::starlark_doc_extract::RuleDoc> {
+    let definition = Definition::from_value(value)?;
+    let attrs = definition
+        .attr_order
+        .iter()
+        .filter_map(|name| {
+            let spec = definition.schema.get(name)?;
+            let built_in = definition.build_setting.is_some()
+                && matches!(name.as_str(), "build_setting_default" | "help");
+            Some(crate::starlark_doc_extract::DocAttr {
+                name: name.clone(),
+                spec: spec.clone(),
+                starlark_defined: !built_in,
+            })
+        })
+        .collect();
+    let declaration = &definition.declaration;
+    Some(crate::starlark_doc_extract::RuleDoc {
+        exported: definition.exported.get().cloned(),
+        file: declaration.definition_environment_label.clone(),
+        doc: declaration.doc.clone(),
+        test: declaration.test,
+        executable: declaration.executable,
+        attrs,
+        advertised: declaration.provides.clone(),
+    })
+}
+
 /// Copy the owned schema without exposing the private Starlark descriptor type.
 pub(crate) fn attribute_spec(value: Value<'_>) -> Option<AttrSpec> {
     attribute_spec_ref(value).cloned()
@@ -3443,7 +3491,11 @@ fn allowed_values(kind: &AttrKind, values: Value<'_>) -> anyhow::Result<Vec<Allo
             .iter()
             .any(|seen| seen.display == display && seen.value == value)
         {
-            allowed.push(AllowedValue { value, display });
+            allowed.push(AllowedValue {
+                value,
+                display,
+                repr: item.to_repr(),
+            });
         }
     }
     Ok(allowed)
@@ -3511,6 +3563,8 @@ struct DependencyOptions<'v> {
     /// `configurable=` (bool or unbound), recorded as user-set
     /// (StarlarkAttrModule.java:402-410).
     configurable: Option<bool>,
+    /// `doc=` (crate::starlark_doc_extract).
+    doc: Option<String>,
 }
 
 /// StarlarkAttrModule.createAttribute for dependency attributes, in Bazel's
@@ -3640,6 +3694,8 @@ fn dependency_descriptor<'v>(
     declaration.computed_default = computed.is_some();
     declaration.explicit_default |= late_bound || computed.is_some();
     declaration.configurable_set = options.configurable.is_some();
+    declaration.nonconfigurable = options.configurable == Some(false);
+    declaration.doc = options.doc.clone();
     declaration.flags = crate::rule_declarations::noneable_strings(options.flags, "flags")?;
     if let Some(flag) = declaration
         .flags
@@ -3714,112 +3770,164 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = false)] mandatory: bool,
         #[starlark(require = named)] doc: Option<&str>,
         #[starlark(require = named, default = AllocList::EMPTY)] values: Value<'v>,
+        #[starlark(require = named)] configurable: Option<bool>,
     ) -> anyhow::Result<Descriptor> {
-        let _ = doc;
-        let mut descriptor = descriptor(AttrKind::String, default, mandatory, false, false)?;
-        descriptor.0.declaration.values = allowed_values(&AttrKind::String, values)?;
-        Ok(descriptor)
+        let declared: anyhow::Result<Descriptor> = (|| {
+            let mut descriptor = descriptor(AttrKind::String, default, mandatory, false, false)?;
+            descriptor.0.declaration.values = allowed_values(&AttrKind::String, values)?;
+            Ok(descriptor)
+        })();
+        declared.map(|mut descriptor| {
+            descriptor.0.declaration.doc = doc.map(str::to_owned);
+            descriptor.0.declaration.configurable_set = configurable.is_some();
+            descriptor.0.declaration.nonconfigurable = configurable == Some(false);
+            descriptor
+        })
     }
     fn string_list(
         #[starlark(require = named, default = false)] mandatory: bool,
         #[starlark(require = named, default = true)] allow_empty: bool,
         #[starlark(require = named)] default: Option<Value<'_>>,
         #[starlark(require = named)] doc: Option<&str>,
+        #[starlark(require = named)] configurable: Option<bool>,
     ) -> anyhow::Result<Descriptor> {
-        let _ = doc;
-        let mut descriptor = descriptor(AttrKind::StringList, default, mandatory, false, false)?;
-        descriptor.0.non_empty = !allow_empty;
-        Ok(descriptor)
+        let declared: anyhow::Result<Descriptor> = (|| {
+            let mut descriptor =
+                descriptor(AttrKind::StringList, default, mandatory, false, false)?;
+            descriptor.0.non_empty = !allow_empty;
+            Ok(descriptor)
+        })();
+        declared.map(|mut descriptor| {
+            descriptor.0.declaration.doc = doc.map(str::to_owned);
+            descriptor.0.declaration.configurable_set = configurable.is_some();
+            descriptor.0.declaration.nonconfigurable = configurable == Some(false);
+            descriptor
+        })
     }
     fn int_list(
         #[starlark(require = named, default = false)] mandatory: bool,
         #[starlark(require = named, default = true)] allow_empty: bool,
         #[starlark(require = named)] default: Option<Value<'_>>,
         #[starlark(require = named)] doc: Option<&str>,
+        #[starlark(require = named)] configurable: Option<bool>,
     ) -> anyhow::Result<Descriptor> {
-        let _ = doc;
-        if let Some(value) = default {
-            // @Param allowedTypes Sequence<StarlarkInt> (StarlarkAttrModuleApi.java:577-582),
-            // then IntegerListType conversion of each element.
-            if sequence_ref(value).is_none() {
-                return Err(crate::rule_declarations::param_type_error(
-                    "int_list", "default", value, "sequence",
-                ));
+        let declared: anyhow::Result<Descriptor> = (|| {
+            if let Some(value) = default {
+                // @Param allowedTypes Sequence<StarlarkInt> (StarlarkAttrModuleApi.java:577-582),
+                // then IntegerListType conversion of each element.
+                if sequence_ref(value).is_none() {
+                    return Err(crate::rule_declarations::param_type_error(
+                        "int_list", "default", value, "sequence",
+                    ));
+                }
+                if let Some(error) =
+                    AttrKind::IntList.conversion_error(value, "parameter 'default' of attribute ''")
+                {
+                    bail!("{error}");
+                }
             }
-            if let Some(error) =
-                AttrKind::IntList.conversion_error(value, "parameter 'default' of attribute ''")
-            {
-                bail!("{error}");
-            }
-        }
-        let mut descriptor = descriptor(AttrKind::IntList, default, mandatory, false, false)?;
-        descriptor.0.non_empty = !allow_empty;
-        Ok(descriptor)
+            let mut descriptor = descriptor(AttrKind::IntList, default, mandatory, false, false)?;
+            descriptor.0.non_empty = !allow_empty;
+            Ok(descriptor)
+        })();
+        declared.map(|mut descriptor| {
+            descriptor.0.declaration.doc = doc.map(str::to_owned);
+            descriptor.0.declaration.configurable_set = configurable.is_some();
+            descriptor.0.declaration.nonconfigurable = configurable == Some(false);
+            descriptor
+        })
     }
     fn string_dict(
         #[starlark(default = true)] allow_empty: bool,
         #[starlark(require = named)] default: Option<Value<'_>>,
-        #[starlark(require = named)] configurable: Option<Value<'_>>,
+        #[starlark(require = named)] configurable: Option<bool>,
         #[starlark(require = named, default = false)] mandatory: bool,
         #[starlark(require = named, default = NoneType)] doc: Value<'_>,
     ) -> anyhow::Result<Descriptor> {
-        if configurable.is_some() {
-            bail!("attr.string_dict configurable is unsupported");
-        }
-        if !doc.is_none() && doc.unpack_str().is_none() {
-            bail!("attr.string_dict doc must be a string or None");
-        }
-        let mut descriptor = descriptor(AttrKind::StringDict, default, mandatory, false, false)?;
-        descriptor.0.non_empty = !allow_empty;
-        Ok(descriptor)
+        let declared: anyhow::Result<Descriptor> = (|| {
+            if !doc.is_none() && doc.unpack_str().is_none() {
+                bail!("attr.string_dict doc must be a string or None");
+            }
+            let mut descriptor =
+                descriptor(AttrKind::StringDict, default, mandatory, false, false)?;
+            descriptor.0.non_empty = !allow_empty;
+            Ok(descriptor)
+        })();
+        declared.map(|mut descriptor| {
+            descriptor.0.declaration.doc = doc.unpack_str().map(str::to_owned);
+            descriptor.0.declaration.configurable_set = configurable.is_some();
+            descriptor.0.declaration.nonconfigurable = configurable == Some(false);
+            descriptor
+        })
     }
     fn string_list_dict(
         #[starlark(default = true)] allow_empty: bool,
         #[starlark(require = named)] default: Option<Value<'_>>,
-        #[starlark(require = named)] configurable: Option<Value<'_>>,
+        #[starlark(require = named)] configurable: Option<bool>,
         #[starlark(require = named, default = false)] mandatory: bool,
         #[starlark(require = named, default = NoneType)] doc: Value<'_>,
     ) -> anyhow::Result<Descriptor> {
-        if configurable.is_some() {
-            bail!("attr.string_list_dict configurable is unsupported");
-        }
-        if !doc.is_none() && doc.unpack_str().is_none() {
-            bail!("attr.string_list_dict doc must be a string or None");
-        }
-        let mut descriptor =
-            descriptor(AttrKind::StringListDict, default, mandatory, false, false)?;
-        descriptor.0.non_empty = !allow_empty;
-        Ok(descriptor)
+        let declared: anyhow::Result<Descriptor> = (|| {
+            if !doc.is_none() && doc.unpack_str().is_none() {
+                bail!("attr.string_list_dict doc must be a string or None");
+            }
+            let mut descriptor =
+                descriptor(AttrKind::StringListDict, default, mandatory, false, false)?;
+            descriptor.0.non_empty = !allow_empty;
+            Ok(descriptor)
+        })();
+        declared.map(|mut descriptor| {
+            descriptor.0.declaration.doc = doc.unpack_str().map(str::to_owned);
+            descriptor.0.declaration.configurable_set = configurable.is_some();
+            descriptor.0.declaration.nonconfigurable = configurable == Some(false);
+            descriptor
+        })
     }
     fn int<'v>(
         #[starlark(require = named)] default: Option<Value<'v>>,
         #[starlark(require = named, default = false)] mandatory: bool,
         #[starlark(require = named)] doc: Option<&str>,
         #[starlark(require = named, default = AllocList::EMPTY)] values: Value<'v>,
+        #[starlark(require = named)] configurable: Option<bool>,
     ) -> anyhow::Result<Descriptor> {
-        let _ = doc;
-        let mut descriptor = descriptor(AttrKind::Int, default, mandatory, false, false)?;
-        descriptor.0.declaration.values = allowed_values(&AttrKind::Int, values)?;
-        Ok(descriptor)
+        let declared: anyhow::Result<Descriptor> = (|| {
+            let mut descriptor = descriptor(AttrKind::Int, default, mandatory, false, false)?;
+            descriptor.0.declaration.values = allowed_values(&AttrKind::Int, values)?;
+            Ok(descriptor)
+        })();
+        declared.map(|mut descriptor| {
+            descriptor.0.declaration.doc = doc.map(str::to_owned);
+            descriptor.0.declaration.configurable_set = configurable.is_some();
+            descriptor.0.declaration.nonconfigurable = configurable == Some(false);
+            descriptor
+        })
     }
     fn bool(
         #[starlark(require = named)] default: Option<Value<'_>>,
         #[starlark(require = named, default = false)] mandatory: bool,
         #[starlark(require = named)] doc: Option<&str>,
+        #[starlark(require = named)] configurable: Option<bool>,
     ) -> anyhow::Result<Descriptor> {
-        let _ = doc;
-        // `default` is a Boolean parameter (StarlarkAttrModuleApi.java:1152-1157):
-        // the Starlark call check runs before any Type.BOOLEAN conversion, so
-        // unlike attribute values the integers 0 and 1 are rejected here.
-        if let Some(value) = default
-            && value.unpack_bool().is_none()
-        {
-            bail!(
-                "in call to bool(), parameter 'default' got value of type '{}', want 'bool'",
-                value.get_type()
-            );
-        }
-        descriptor(AttrKind::Bool, default, mandatory, false, false)
+        let declared: anyhow::Result<Descriptor> = (|| {
+            // `default` is a Boolean parameter (StarlarkAttrModuleApi.java:1152-1157):
+            // the Starlark call check runs before any Type.BOOLEAN conversion, so
+            // unlike attribute values the integers 0 and 1 are rejected here.
+            if let Some(value) = default
+                && value.unpack_bool().is_none()
+            {
+                bail!(
+                    "in call to bool(), parameter 'default' got value of type '{}', want 'bool'",
+                    value.get_type()
+                );
+            }
+            descriptor(AttrKind::Bool, default, mandatory, false, false)
+        })();
+        declared.map(|mut descriptor| {
+            descriptor.0.declaration.doc = doc.map(str::to_owned);
+            descriptor.0.declaration.configurable_set = configurable.is_some();
+            descriptor.0.declaration.nonconfigurable = configurable == Some(false);
+            descriptor
+        })
     }
     fn label<'v>(
         #[starlark(require = named)] default: Option<Value<'v>>,
@@ -3835,9 +3943,9 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = NoneType)] cfg: Value<'v>,
         #[starlark(require = named, default = AllocList::EMPTY)] aspects: Value<'v>,
         #[starlark(require = named, default = AllocList::EMPTY)] flags: Value<'v>,
+        #[starlark(require = named)] configurable: Option<bool>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
-        let _ = doc;
         const KIND_FUNCTION: &str = "label";
         dependency_descriptor(
             AttrKind::Label,
@@ -3856,7 +3964,8 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
                 cfg,
                 aspects,
                 flags,
-                configurable: None,
+                configurable,
+                doc: doc.map(str::to_owned),
             },
             eval,
         )
@@ -3874,9 +3983,9 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = false)] skip_validations: bool,
         #[starlark(require = named, default = NoneType)] cfg: Value<'v>,
         #[starlark(require = named, default = AllocList::EMPTY)] aspects: Value<'v>,
+        #[starlark(require = named)] configurable: Option<bool>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
-        let _ = doc;
         const KIND_FUNCTION: &str = "label_list";
         dependency_descriptor(
             AttrKind::LabelList,
@@ -3895,7 +4004,8 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
                 cfg,
                 aspects,
                 flags,
-                configurable: None,
+                configurable,
+                doc: doc.map(str::to_owned),
             },
             eval,
         )
@@ -3913,9 +4023,9 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = false)] skip_validations: bool,
         #[starlark(require = named, default = NoneType)] cfg: Value<'v>,
         #[starlark(require = named, default = AllocList::EMPTY)] aspects: Value<'v>,
+        #[starlark(require = named)] configurable: Option<bool>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
-        let _ = doc;
         const KIND_FUNCTION: &str = "label_keyed_string_dict";
         dependency_descriptor(
             AttrKind::LabelKeyedStringDict,
@@ -3934,7 +4044,8 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
                 cfg,
                 aspects,
                 flags,
-                configurable: None,
+                configurable,
+                doc: doc.map(str::to_owned),
             },
             eval,
         )
@@ -3955,7 +4066,6 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = AllocList::EMPTY)] aspects: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
-        let _ = doc;
         const KIND_FUNCTION: &str = "string_keyed_label_dict";
         dependency_descriptor(
             AttrKind::StringKeyedLabelDict,
@@ -3975,6 +4085,7 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
                 aspects,
                 flags,
                 configurable,
+                doc: doc.map(str::to_owned),
             },
             eval,
         )
@@ -3996,7 +4107,6 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = AllocList::EMPTY)] aspects: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
-        let _ = doc;
         const KIND_FUNCTION: &str = "label_list_dict";
         dependency_descriptor(
             AttrKind::LabelListDict,
@@ -4016,6 +4126,7 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
                 aspects,
                 flags,
                 configurable,
+                doc: doc.map(str::to_owned),
             },
             eval,
         )
@@ -4024,18 +4135,27 @@ fn attr_globals(builder: &mut GlobalsBuilder) {
         #[starlark(require = named, default = false)] mandatory: bool,
         #[starlark(require = named)] doc: Option<&str>,
     ) -> anyhow::Result<Descriptor> {
-        let _ = doc;
-        descriptor(AttrKind::Output, None, mandatory, false, false)
+        let declared: anyhow::Result<Descriptor> =
+            descriptor(AttrKind::Output, None, mandatory, false, false);
+        declared.map(|mut descriptor| {
+            descriptor.0.declaration.doc = doc.map(str::to_owned);
+            descriptor
+        })
     }
     fn output_list(
         #[starlark(default = true)] allow_empty: bool,
         #[starlark(require = named, default = false)] mandatory: bool,
         #[starlark(require = named)] doc: Option<&str>,
     ) -> anyhow::Result<Descriptor> {
-        let _ = doc;
-        let mut descriptor = descriptor(AttrKind::OutputList, None, mandatory, false, false)?;
-        descriptor.0.non_empty = !allow_empty;
-        Ok(descriptor)
+        let declared: anyhow::Result<Descriptor> = (|| {
+            let mut descriptor = descriptor(AttrKind::OutputList, None, mandatory, false, false)?;
+            descriptor.0.non_empty = !allow_empty;
+            Ok(descriptor)
+        })();
+        declared.map(|mut descriptor| {
+            descriptor.0.declaration.doc = doc.map(str::to_owned);
+            descriptor
+        })
     }
 }
 
@@ -4062,6 +4182,8 @@ struct RuleArguments<'v> {
     parent: Value<'v>,
     extendable: Value<'v>,
     subrules: Value<'v>,
+    /// `doc=` (untrimmed; crate::starlark_doc_extract).
+    doc: Option<String>,
 }
 
 /// StarlarkRuleClassFunctions.rule + createRule (StarlarkRuleClassFunctions.java:548-1171).
@@ -4455,6 +4577,7 @@ fn define_rule<'v>(
         implicit_outputs,
         extendable,
         definition_stack: crate::package::java_call_stack(eval),
+        doc: args.doc.clone(),
     };
     budget
         .string(&declaration.definition_label)
@@ -4597,7 +4720,6 @@ mod definitions {
             #[starlark(require = named, default = AllocList::EMPTY)] subrules: Value<'v>,
             eval: &mut Evaluator<'v, '_, '_>,
         ) -> anyhow::Result<Value<'v>> {
-            let _ = doc;
             define_rule(
                 RuleArguments {
                     implementation,
@@ -4621,6 +4743,7 @@ mod definitions {
                     parent,
                     extendable,
                     subrules,
+                    doc: doc.map(str::to_owned),
                 },
                 eval,
             )
@@ -5053,9 +5176,20 @@ z = attr.string_dict()
                 "{default}: {error}"
             );
         }
-        for value in ["None", "True", "False", "1"] {
+        // `configurable` is a bool or unbound (StarlarkAttrModuleApi.java:197-205);
+        // rule() rejects a set value, macro() keeps it (crate::starlark_doc_extract).
+        for value in ["None", "1"] {
             let error = definition_error(&format!("attr.string_dict(configurable={value})"));
-            assert!(error.contains("configurable is unsupported"), "{error}");
+            assert!(error.contains("configurable"), "{error}");
+        }
+        for value in ["True", "False"] {
+            let error = definition_error(&format!(
+                "rule(implementation=impl, attrs={{'a': attr.string_dict(configurable={value})}})"
+            ));
+            assert!(
+                error.contains("has the 'configurable' argument set"),
+                "{error}"
+            );
         }
         for (expression, expected) in [
             ("attr.string_dict(doc=1)", "doc must be a string or None"),
@@ -5227,9 +5361,20 @@ z = attr.string_dict()
                 "{expression}: {error}"
             );
         }
-        for value in ["None", "True", "False", "1"] {
+        // `configurable` is a bool or unbound (StarlarkAttrModuleApi.java:197-205);
+        // rule() rejects a set value, macro() keeps it (crate::starlark_doc_extract).
+        for value in ["None", "1"] {
             let error = definition_error(&format!("attr.string_list_dict(configurable={value})"));
-            assert!(error.contains("configurable is unsupported"), "{error}");
+            assert!(error.contains("configurable"), "{error}");
+        }
+        for value in ["True", "False"] {
+            let error = definition_error(&format!(
+                "rule(implementation=impl, attrs={{'a': attr.string_list_dict(configurable={value})}})"
+            ));
+            assert!(
+                error.contains("has the 'configurable' argument set"),
+                "{error}"
+            );
         }
         for (expression, expected) in [
             (

@@ -171,6 +171,7 @@ mod source_directories;
 pub mod source_links;
 pub mod spawn_lock;
 pub mod spawn_stats;
+mod starlark_doc_extract;
 pub mod starlark_options;
 mod starlark_transitions;
 pub mod starlark_types;

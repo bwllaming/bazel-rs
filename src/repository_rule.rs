@@ -86,6 +86,14 @@ mod values {
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub environ: DeclaredEnvironment,
+        /// `environ` in declaration order, each name once, and `doc`
+        /// (untrimmed), for crate::starlark_doc_extract.
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub environ_order: Vec<String>,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub doc: Option<String>,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub definition_label: String,
@@ -155,6 +163,31 @@ mod values {
     }
 }
 use values::{FrozenRepoDefinition, RepoDefinitionGen};
+
+/// What `starlark_doc_extract` documents of a `repository_rule()` value
+/// (ModuleInfoExtractor.visitRepositoryRule).
+pub(crate) fn repository_rule_doc(
+    value: Value<'_>,
+) -> Option<crate::starlark_doc_extract::RepositoryRuleDoc> {
+    let definition = values::RepoDefinition::from_value(value)?;
+    Some(crate::starlark_doc_extract::RepositoryRuleDoc {
+        exported: definition.exported.get().cloned(),
+        file: definition.definition_label.clone(),
+        doc: definition.doc.clone(),
+        attrs: definition
+            .attribute_order
+            .iter()
+            .filter_map(|name| {
+                Some(crate::starlark_doc_extract::DocAttr {
+                    name: name.clone(),
+                    spec: definition.schema.get(name)?.clone(),
+                    starlark_defined: true,
+                })
+            })
+            .collect(),
+        environ: definition.environ_order.clone(),
+    })
+}
 
 /// Called after the execution-phase guard, before recording any arguments.
 pub(crate) fn validate_invokable_value(value: Value<'_>) -> anyhow::Result<()> {
@@ -234,6 +267,18 @@ pub fn globals(builder: &mut GlobalsBuilder) {
                 "repository_rule environ must be a list or tuple of strings".to_owned()
             })
         };
+        let mut environ_order: Vec<String> = Vec::new();
+        for name in ListRef::from_value(environ)
+            .map(|list| list.content().to_vec())
+            .or_else(|| TupleRef::from_value(environ).map(|tuple| tuple.content().to_vec()))
+            .unwrap_or_default()
+        {
+            if let Some(name) = name.unpack_str()
+                && !environ_order.iter().any(|seen| seen == name)
+            {
+                environ_order.push(name.to_owned());
+            }
+        }
         let environ = if let Some(list) = ListRef::from_value(environ) {
             DeclaredEnvironment::from_names(list.iter().map(string), &mut budget)
         } else if let Some(tuple) = TupleRef::from_value(environ) {
@@ -312,6 +357,8 @@ pub fn globals(builder: &mut GlobalsBuilder) {
             local,
             configure,
             environ,
+            environ_order,
+            doc: doc.unpack_str().map(str::to_owned),
             // The initializing extension owns the rule's export. Attribute
             // defaults independently use the innermost helper's lexical label.
             definition_label: context.label.to_string(),

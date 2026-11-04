@@ -1,0 +1,798 @@
+rule_info {
+  rule_name: "my_rule"
+  doc_string: "A rule.\n\nDetail line."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "srcs"
+    doc_string: "Sources."
+    type: LABEL_LIST
+    default_value: "[]"
+  }
+  attribute {
+    name: "dep"
+    doc_string: "A dep."
+    type: LABEL
+    provider_name_group {
+      provider_name: "MyInfo"
+      origin_key {
+        name: "MyInfo"
+        file: "@sde_fixture//pkg:defs.bzl"
+      }
+    }
+    default_value: "None"
+  }
+  attribute {
+    name: "deps2"
+    type: LABEL_LIST
+    provider_name_group {
+      provider_name: "MyInfo"
+      provider_name: "reexported_dep_info"
+      origin_key {
+        name: "MyInfo"
+        file: "@sde_fixture//pkg:defs.bzl"
+      }
+      origin_key {
+        name: "DepInfo"
+        file: "@sde_fixture//lib:dep.bzl"
+      }
+    }
+    provider_name_group {
+      provider_name: "ListInfo"
+      origin_key {
+        name: "ListInfo"
+        file: "@sde_fixture//pkg:defs.bzl"
+      }
+    }
+    default_value: "[]"
+  }
+  attribute {
+    name: "required"
+    doc_string: "Required string."
+    type: STRING
+    mandatory: true
+  }
+  attribute {
+    name: "choice"
+    type: STRING
+    default_value: "\"a\""
+    values: "\"a\""
+    values: "\"b\""
+  }
+  attribute {
+    name: "count"
+    type: INT
+    default_value: "3"
+    values: "1"
+    values: "3"
+  }
+  attribute {
+    name: "flag"
+    type: BOOLEAN
+    default_value: "True"
+  }
+  attribute {
+    name: "names"
+    type: STRING_LIST
+    default_value: "[\"x\", \"y\"]"
+  }
+  attribute {
+    name: "ints"
+    type: INT_LIST
+    default_value: "[1, 2]"
+  }
+  attribute {
+    name: "sd"
+    type: STRING_DICT
+    default_value: "{\"k\": \"v\"}"
+  }
+  attribute {
+    name: "sld"
+    type: STRING_LIST_DICT
+    default_value: "{\"k\": [\"v\"]}"
+  }
+  attribute {
+    name: "lsd"
+    type: LABEL_STRING_DICT
+    default_value: "{}"
+  }
+  attribute {
+    name: "out"
+    doc_string: "An output."
+    type: OUTPUT
+    default_value: "None"
+    nonconfigurable: true
+  }
+  attribute {
+    name: "outs"
+    type: OUTPUT_LIST
+    default_value: "[]"
+    nonconfigurable: true
+  }
+  attribute {
+    name: "default_label"
+    type: LABEL
+    default_value: "\"@sde_fixture//pkg:foo\""
+  }
+  attribute {
+    name: "default_label2"
+    type: LABEL
+    default_value: "\"@sde_fixture//lib:dep\""
+  }
+  attribute {
+    name: "ext_label"
+    type: LABEL
+    default_value: "\"@bazel_tools//tools/sh:toolchain_type\""
+  }
+  attribute {
+    name: "sk"
+    type: LABEL_DICT_UNARY
+    default_value: "{}"
+  }
+  attribute {
+    name: "lld"
+    type: LABEL_LIST_DICT
+    default_value: "{}"
+  }
+  origin_key {
+    name: "my_rule"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+  advertised_providers {
+    provider_name: "MyInfo"
+    provider_name: "reexported_dep_info"
+    origin_key {
+      name: "MyInfo"
+      file: "@sde_fixture//pkg:defs.bzl"
+    }
+    origin_key {
+      name: "DepInfo"
+      file: "@sde_fixture//lib:dep.bzl"
+    }
+  }
+}
+rule_info {
+  rule_name: "my_binary"
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  origin_key {
+    name: "my_binary"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+  executable: true
+}
+rule_info {
+  rule_name: "my_test"
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "size2"
+    type: STRING
+    default_value: "\"\""
+  }
+  origin_key {
+    name: "my_test"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+  test: true
+  executable: true
+}
+rule_info {
+  rule_name: "namespace.inner.rule"
+  doc_string: "A rule.\n\nDetail line."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this target."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "srcs"
+    doc_string: "Sources."
+    type: LABEL_LIST
+    default_value: "[]"
+  }
+  attribute {
+    name: "dep"
+    doc_string: "A dep."
+    type: LABEL
+    provider_name_group {
+      provider_name: "MyInfo"
+      origin_key {
+        name: "MyInfo"
+        file: "@sde_fixture//pkg:defs.bzl"
+      }
+    }
+    default_value: "None"
+  }
+  attribute {
+    name: "deps2"
+    type: LABEL_LIST
+    provider_name_group {
+      provider_name: "MyInfo"
+      provider_name: "reexported_dep_info"
+      origin_key {
+        name: "MyInfo"
+        file: "@sde_fixture//pkg:defs.bzl"
+      }
+      origin_key {
+        name: "DepInfo"
+        file: "@sde_fixture//lib:dep.bzl"
+      }
+    }
+    provider_name_group {
+      provider_name: "ListInfo"
+      origin_key {
+        name: "ListInfo"
+        file: "@sde_fixture//pkg:defs.bzl"
+      }
+    }
+    default_value: "[]"
+  }
+  attribute {
+    name: "required"
+    doc_string: "Required string."
+    type: STRING
+    mandatory: true
+  }
+  attribute {
+    name: "choice"
+    type: STRING
+    default_value: "\"a\""
+    values: "\"a\""
+    values: "\"b\""
+  }
+  attribute {
+    name: "count"
+    type: INT
+    default_value: "3"
+    values: "1"
+    values: "3"
+  }
+  attribute {
+    name: "flag"
+    type: BOOLEAN
+    default_value: "True"
+  }
+  attribute {
+    name: "names"
+    type: STRING_LIST
+    default_value: "[\"x\", \"y\"]"
+  }
+  attribute {
+    name: "ints"
+    type: INT_LIST
+    default_value: "[1, 2]"
+  }
+  attribute {
+    name: "sd"
+    type: STRING_DICT
+    default_value: "{\"k\": \"v\"}"
+  }
+  attribute {
+    name: "sld"
+    type: STRING_LIST_DICT
+    default_value: "{\"k\": [\"v\"]}"
+  }
+  attribute {
+    name: "lsd"
+    type: LABEL_STRING_DICT
+    default_value: "{}"
+  }
+  attribute {
+    name: "out"
+    doc_string: "An output."
+    type: OUTPUT
+    default_value: "None"
+    nonconfigurable: true
+  }
+  attribute {
+    name: "outs"
+    type: OUTPUT_LIST
+    default_value: "[]"
+    nonconfigurable: true
+  }
+  attribute {
+    name: "default_label"
+    type: LABEL
+    default_value: "\"@sde_fixture//pkg:foo\""
+  }
+  attribute {
+    name: "default_label2"
+    type: LABEL
+    default_value: "\"@sde_fixture//lib:dep\""
+  }
+  attribute {
+    name: "ext_label"
+    type: LABEL
+    default_value: "\"@bazel_tools//tools/sh:toolchain_type\""
+  }
+  attribute {
+    name: "sk"
+    type: LABEL_DICT_UNARY
+    default_value: "{}"
+  }
+  attribute {
+    name: "lld"
+    type: LABEL_LIST_DICT
+    default_value: "{}"
+  }
+  origin_key {
+    name: "my_rule"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+  advertised_providers {
+    provider_name: "MyInfo"
+    provider_name: "reexported_dep_info"
+    origin_key {
+      name: "MyInfo"
+      file: "@sde_fixture//pkg:defs.bzl"
+    }
+    origin_key {
+      name: "DepInfo"
+      file: "@sde_fixture//lib:dep.bzl"
+    }
+  }
+}
+provider_info {
+  provider_name: "MyInfo"
+  doc_string: "My provider.\n\nIndented detail."
+  field_info {
+    name: "foo"
+    doc_string: "The foo field."
+  }
+  field_info {
+    name: "bar"
+    doc_string: "Multi\nline bar."
+  }
+  origin_key {
+    name: "MyInfo"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+}
+provider_info {
+  provider_name: "PlainInfo"
+  origin_key {
+    name: "PlainInfo"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+}
+provider_info {
+  provider_name: "ListInfo"
+  doc_string: "Fields as list."
+  field_info {
+    name: "a"
+  }
+  field_info {
+    name: "b"
+  }
+  origin_key {
+    name: "ListInfo"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+}
+provider_info {
+  provider_name: "InitInfo"
+  doc_string: "Has init."
+  field_info {
+    name: "x"
+  }
+  field_info {
+    name: "y"
+  }
+  origin_key {
+    name: "InitInfo"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+  init {
+    function_name: "InitInfo"
+    parameter {
+      name: "x"
+      doc_string: "the x."
+      mandatory: true
+      role: PARAM_ROLE_ORDINARY
+    }
+    parameter {
+      name: "y"
+      doc_string: "the y."
+      default_value: "2"
+      role: PARAM_ROLE_ORDINARY
+    }
+    parameter {
+      name: "z"
+      doc_string: "keyword z."
+      default_value: "\"z\""
+      role: PARAM_ROLE_KEYWORD_ONLY
+    }
+    parameter {
+      name: "kwargs"
+      doc_string: "extras."
+      role: PARAM_ROLE_KWARGS
+    }
+    doc_string: "Init for InitInfo."
+    origin_key {
+      name: "_init_impl"
+      file: "@sde_fixture//pkg:defs.bzl"
+    }
+  }
+}
+provider_info {
+  provider_name: "reexported_dep_info"
+  doc_string: "A provider from the dep."
+  field_info {
+    name: "x"
+  }
+  origin_key {
+    name: "DepInfo"
+    file: "@sde_fixture//lib:dep.bzl"
+  }
+}
+provider_info {
+  provider_name: "namespace.info"
+  doc_string: "My provider.\n\nIndented detail."
+  field_info {
+    name: "foo"
+    doc_string: "The foo field."
+  }
+  field_info {
+    name: "bar"
+    doc_string: "Multi\nline bar."
+  }
+  origin_key {
+    name: "MyInfo"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+}
+func_info {
+  function_name: "my_function"
+  parameter {
+    name: "name"
+    doc_string: "The name."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "srcs"
+    doc_string: "Source files\ncontinued here.\n\nAnd a second paragraph."
+    default_value: "[]"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "deps"
+    doc_string: "Deps."
+    default_value: "None"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "label"
+    doc_string: "A label."
+    default_value: "Label(\"@sde_fixture//pkg:foo\")"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "other"
+    doc_string: "Another label."
+    default_value: "Label(\"@bazel_tools//tools:bzl_srcs\")"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "flag"
+    doc_string: "A flag."
+    default_value: "True"
+    role: PARAM_ROLE_KEYWORD_ONLY
+  }
+  parameter {
+    name: "args"
+    doc_string: "Positional extras."
+    role: PARAM_ROLE_VARARGS
+  }
+  parameter {
+    name: "kwargs"
+    doc_string: "Keyword extras."
+    role: PARAM_ROLE_KWARGS
+  }
+  doc_string: "Does something.\n\nA longer description\nspanning two lines.\n"
+  return {
+    doc_string: "A thing,\n  indented more."
+  }
+  deprecated {
+    doc_string: "Use something else."
+  }
+  origin_key {
+    name: "my_function"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+}
+func_info {
+  function_name: "undocumented"
+  parameter {
+    name: "a"
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "b"
+    default_value: "{\"k\": [1, 2]}"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "c"
+    default_value: "(1,)"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "d"
+    default_value: "-3"
+    role: PARAM_ROLE_ORDINARY
+  }
+  origin_key {
+    name: "undocumented"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+}
+func_info {
+  function_name: "summary_only"
+  doc_string: "Just a summary."
+  origin_key {
+    name: "summary_only"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+}
+func_info {
+  function_name: "renamed_dep_helper"
+  parameter {
+    name: "a"
+    doc_string: "the a."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  doc_string: "Helper in dep."
+  origin_key {
+    name: "dep_helper"
+    file: "@sde_fixture//lib:dep.bzl"
+  }
+}
+func_info {
+  function_name: "lambda_fn"
+  parameter {
+    name: "x"
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  origin_key {
+    name: "lambda_fn"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+}
+func_info {
+  function_name: "namespace.fn"
+  parameter {
+    name: "name"
+    doc_string: "The name."
+    mandatory: true
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "srcs"
+    doc_string: "Source files\ncontinued here.\n\nAnd a second paragraph."
+    default_value: "[]"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "deps"
+    doc_string: "Deps."
+    default_value: "None"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "label"
+    doc_string: "A label."
+    default_value: "Label(\"@sde_fixture//pkg:foo\")"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "other"
+    doc_string: "Another label."
+    default_value: "Label(\"@bazel_tools//tools:bzl_srcs\")"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "flag"
+    doc_string: "A flag."
+    default_value: "True"
+    role: PARAM_ROLE_KEYWORD_ONLY
+  }
+  parameter {
+    name: "args"
+    doc_string: "Positional extras."
+    role: PARAM_ROLE_VARARGS
+  }
+  parameter {
+    name: "kwargs"
+    doc_string: "Keyword extras."
+    role: PARAM_ROLE_KWARGS
+  }
+  doc_string: "Does something.\n\nA longer description\nspanning two lines.\n"
+  return {
+    doc_string: "A thing,\n  indented more."
+  }
+  deprecated {
+    doc_string: "Use something else."
+  }
+  origin_key {
+    name: "my_function"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+}
+aspect_info {
+  aspect_name: "my_aspect"
+  doc_string: "An aspect."
+  aspect_attribute: "deps"
+  attribute {
+    name: "param"
+    doc_string: "Param."
+    type: STRING
+    default_value: "\"p\""
+    values: "\"p\""
+    values: "\"q\""
+  }
+  origin_key {
+    name: "my_aspect"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+}
+aspect_info {
+  aspect_name: "plain_aspect"
+  origin_key {
+    name: "plain_aspect"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+}
+module_docstring: "Module docstring.\n\nWith a second paragraph."
+file: "@sde_fixture//pkg:defs.bzl"
+module_extension_info {
+  extension_name: "my_ext"
+  doc_string: "An extension."
+  tag_class {
+    tag_name: "install"
+    doc_string: "A tag."
+    attribute {
+      name: "name"
+      type: NAME
+      mandatory: true
+    }
+    attribute {
+      name: "v"
+      doc_string: "Version."
+      type: INT
+      default_value: "1"
+    }
+  }
+  tag_class {
+    tag_name: "other"
+  }
+  origin_key {
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+}
+repository_rule_info {
+  rule_name: "my_repo"
+  doc_string: "A repo rule."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this repository."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "url"
+    doc_string: "URL."
+    type: STRING
+    default_value: "\"\""
+  }
+  attribute {
+    name: "sha"
+    type: STRING
+    mandatory: true
+  }
+  attribute {
+    name: "build_file"
+    type: LABEL
+    default_value: "None"
+  }
+  environ: "FOO"
+  environ: "BAR"
+  origin_key {
+    name: "my_repo"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+}
+repository_rule_info {
+  rule_name: "plain_repo"
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this repository."
+    type: NAME
+    mandatory: true
+  }
+  origin_key {
+    name: "plain_repo"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+}
+macro_info {
+  macro_name: "my_macro"
+  doc_string: "A symbolic macro."
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this macro instance. Normally, this is also the name for the macro\'s main or only target. The names of any other targets that this macro might create will be this name with a string suffix."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "visibility"
+    doc_string: "The visibility to be passed to this macro\'s exported targets. It always implicitly includes the location where this macro is instantiated, so this attribute only needs to be explicitly set if you want the macro\'s targets to be additionally visible somewhere else."
+    type: LABEL_LIST
+    nonconfigurable: true
+    natively_defined: true
+  }
+  attribute {
+    name: "srcs"
+    doc_string: "Macro srcs."
+    type: LABEL_LIST
+    default_value: "[]"
+  }
+  attribute {
+    name: "opt"
+    type: STRING
+    default_value: "\"o\""
+    nonconfigurable: true
+  }
+  origin_key {
+    name: "my_macro"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+}
+macro_info {
+  macro_name: "my_finalizer"
+  attribute {
+    name: "name"
+    doc_string: "A unique name for this macro instance. Normally, this is also the name for the macro\'s main or only target. The names of any other targets that this macro might create will be this name with a string suffix."
+    type: NAME
+    mandatory: true
+  }
+  attribute {
+    name: "visibility"
+    doc_string: "The visibility to be passed to this macro\'s exported targets. It always implicitly includes the location where this macro is instantiated, so this attribute only needs to be explicitly set if you want the macro\'s targets to be additionally visible somewhere else."
+    type: LABEL_LIST
+    nonconfigurable: true
+    natively_defined: true
+  }
+  origin_key {
+    name: "my_finalizer"
+    file: "@sde_fixture//pkg:defs.bzl"
+  }
+  finalizer: true
+}
+starlark_other_symbol_info {
+  name: "MY_CONSTANT"
+  doc: "Doc comment for a constant.\nSecond line."
+  type_name: "int"
+}
+starlark_other_symbol_info {
+  name: "OTHER"
+  doc: "Trailing doc comment."
+  type_name: "string"
+}

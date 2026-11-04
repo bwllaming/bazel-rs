@@ -1,0 +1,88 @@
+
+ã
+setting,A build setting with √ºn√Øc√∂d√© and    tab.*
+nameA unique name for this target. "&
+setting@sde_fixture//edge:edge.bzl
+´
+	tool_ruleLeading blank line doc.*
+nameA unique name for this target. 
+tool
+Exec tool.2Noned
+srcs*V
+DefaultInfo
+ExtInfoAlias
+DefaultInfo<native> 
+ExtInfo@dep_mod//sub:lib.bzl2[]
+neg2-5$
+s2"quote\"back\\slash\nnewline"
+mixed2""J"x"J"y"@
+lkd	27{"@sde_fixture//edge:a": "x", "@dep_mod//sub:lib": "y"}#
+skd2{"k": "@dep_mod//sub:lib"}>
+lld25{"k": ["@sde_fixture//edge:a", "@sde_fixture//edge"]}:
+ll22["@sde_fixture//edge", "@sde_fixture", "@dep_mod"]"(
+	tool_rule@sde_fixture//edge:edge.bzlQ
+ExtInfoAliasExternal provider.
+vThe v." 
+ExtInfo@dep_mod//sub:lib.bzlL
+ns.infoExternal provider.
+vThe v." 
+ExtInfo@dep_mod//sub:lib.bzlV
+ns.inner.deeper.pExternal provider.
+vThe v." 
+ExtInfo@dep_mod//sub:lib.bzlë
+ext_reexport!
+xLabel("@dep_mod//sub:lib")(#
+yLabel("@dep_mod//sub:other")(External function.2%
+ext_function@dep_mod//sub:lib.bzle
+fn_with_tabs
+athe a. (Tab indented docstring.2+
+fn_with_tabs@sde_fixture//edge:edge.bzl∂
+defaults$
+aalias Arguments: header.1.5((
+b!("x", Label("@dep_mod//sub:lib"))(4
+c-{Label("@sde_fixture//edge:a"): [None, True]}(
+d"√©"(
+estruct(x = 1)(-
+fattributes in parentheses.
+<provider>(
+g<built-in function len>(	Defaults.2'
+defaults@sde_fixture//edge:edge.bzle
+kwonly
+x (
+y2(Keyword only."
+Nothing
+ at all.2%
+kwonly@sde_fixture//edge:edge.bzlj
+ns.inner.fn
+x (
+y2(Keyword only."
+Nothing
+ at all.2%
+kwonly@sde_fixture//edge:edge.bzl∂
+ns.other$
+aalias Arguments: header.1.5((
+b!("x", Label("@dep_mod//sub:lib"))(4
+c-{Label("@sde_fixture//edge:a"): [None, True]}(
+d"√©"(
+estruct(x = 1)(-
+fattributes in parentheses.
+<provider>(
+g<built-in function len>(	Defaults.2'
+defaults@sde_fixture//edge:edge.bzl^
+ns2.x
+athe a. (Tab indented docstring.2+
+fn_with_tabs@sde_fixture//edge:edge.bzlÀ
+varargs_middle
+afirst. (
+b
+keyword b. (
+cNone(
+rest	the rest.(
+optionsthe options.('Varargs before keyword-only parameters.2-
+varargs_middle@sde_fixture//edge:edge.bzl"?
+attr_fn_aspect*-
+attr_fn_aspect@sde_fixture//edge:edge.bzl2@sde_fixture//edge:edge.bzlR,
+ANSWERThe answer, with √ºn√Øc√∂d√©.intR$
+CONFIGA struct constant.structR
+LISTTyped list.listR
+LABELA label.Label

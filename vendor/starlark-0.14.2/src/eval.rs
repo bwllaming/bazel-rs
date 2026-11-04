@@ -45,6 +45,8 @@ pub use compiler::def::PortableDef;
 pub use compiler::def::PortableParamKind;
 pub use compiler::def::def_module_is;
 pub use compiler::def::def_same_code;
+pub use compiler::def::DefDocumentation;
+pub use compiler::def::def_documentation;
 pub use runtime::profile::data::ProfileData;
 pub use runtime::profile::mode::ProfileMode;
 pub use soft_error::SoftErrorHandler;

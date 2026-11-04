@@ -1,0 +1,32 @@
+provider_info {
+  provider_name: "ExtInfo"
+  doc_string: "External provider."
+  field_info {
+    name: "v"
+    doc_string: "The v."
+  }
+  origin_key {
+    name: "ExtInfo"
+    file: "@dep_mod//sub:lib.bzl"
+  }
+}
+func_info {
+  function_name: "ext_function"
+  parameter {
+    name: "x"
+    default_value: "Label(\"@dep_mod//sub:lib\")"
+    role: PARAM_ROLE_ORDINARY
+  }
+  parameter {
+    name: "y"
+    default_value: "Label(\"@dep_mod//sub:other\")"
+    role: PARAM_ROLE_ORDINARY
+  }
+  doc_string: "External function."
+  origin_key {
+    name: "ext_function"
+    file: "@dep_mod//sub:lib.bzl"
+  }
+}
+module_docstring: "External lib."
+file: "@dep_mod//sub:lib.bzl"

@@ -49,6 +49,7 @@ use starlark_syntax::syntax::def::DefParams;
 use crate as starlark;
 use crate::any::ProvidesStaticType;
 use crate::codemap::CodeMap;
+use crate::codemap::FileSpan;
 use crate::codemap::Spanned;
 use crate::collections::Hashed;
 use crate::const_frozen_string;
@@ -1265,4 +1266,57 @@ pub fn def_module_is(value: FrozenValue, module: &crate::environment::FrozenModu
                 .to_value()
                 .ptr_eq(module.data().to_frozen_value().to_value())
         })
+}
+
+/// Modified (bazel-rs): what Bazel's `starlark_doc_extract` reads of a `def`
+/// or `lambda` (StarlarkFunction.getDocumentation, getLocation, getModule):
+/// see [`def_documentation`].
+#[derive(Debug, Clone)]
+pub struct DefDocumentation<'v> {
+    /// The function's name (`lambda` for a lambda).
+    pub name: String,
+    /// The raw (untrimmed) docstring literal, if the body starts with one.
+    pub docstring: Option<String>,
+    /// The function's location: the `def` identifier, or the start of a
+    /// `lambda` expression.
+    pub location: FileSpan,
+    /// The globals of the module the function was defined in (private ones
+    /// included), in slot order; empty when that module is not frozen yet.
+    pub module_globals: Vec<(String, Value<'v>)>,
+    /// The parameter names as written (`*args`/`**kwargs` without stars;
+    /// the parameter list names them generically), in parameter order.
+    pub parameter_names: Vec<String>,
+}
+
+/// Modified (bazel-rs): the [`DefDocumentation`] of a `def` or `lambda`
+/// value; `None` for any other value.
+pub fn def_documentation<'v>(value: Value<'v>) -> Option<DefDocumentation<'v>> {
+    let (info, module, count) = if let Some(def) = value.downcast_ref::<FrozenDef>() {
+        (def.def_info, def.module.load_relaxed(), def.parameters.len())
+    } else if let Some(def) = value.downcast_ref::<Def>() {
+        (def.def_info, def.module.load_relaxed(), def.parameters.len())
+    } else {
+        return None;
+    };
+    // A parameter's local slot is its index (see PortableDef::instantiate).
+    let parameter_names = (0..count)
+        .filter_map(|index| info.used.get(index).map(|name| name.as_str().to_owned()))
+        .collect();
+    let mut module_globals = Vec::new();
+    if let Some(module) = module {
+        let mut slots: Vec<_> = module.names.all_symbols().collect();
+        slots.sort_by_key(|(_, slot)| slot.0);
+        for (name, slot) in slots {
+            if let Some(global) = module.get_slot(slot) {
+                module_globals.push((name.as_str().to_owned(), global.to_value()));
+            }
+        }
+    }
+    Some(DefDocumentation {
+        name: info.name.as_str().to_owned(),
+        docstring: info.docstring.clone(),
+        location: info.identifier_span.to_file_span(),
+        module_globals,
+        parameter_names,
+    })
 }
