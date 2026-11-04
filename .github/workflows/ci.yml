@@ -45,6 +45,7 @@ jobs:
             export PATH="$HOME/.cargo/bin:$PATH"
           fi
           rustup toolchain install --no-self-update
+          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do rustup target add "$target"; done
           rustc --version
           cargo --version
 
@@ -64,6 +65,12 @@ jobs:
 
       - name: cargo clippy
         run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: zig (C compiler of the musl targets)
+        run: scripts/setup-zig.sh
+
+      - name: Check the static release targets (musl)
+        run: python3 scripts/check_cross.py
 
       - name: Library unit tests
         run: cargo test --locked --lib
