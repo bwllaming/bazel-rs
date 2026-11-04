@@ -772,15 +772,19 @@ fn refresh_in_background(
                 inputs.workspace_status,
             ),
         )];
+        // DERIVE too (affected-reuse-cold): a refreshed snapshot keeps
+        // serving derived hits (its family marker stays; without the
+        // section the next lookup dropped the marker).
         for kind in [
             Section::Events,
             Section::Plan,
             Section::Stats,
             Section::Index,
+            Section::Derive,
         ] {
             match reader.stored_section(kind) {
                 Ok(bytes) => sections.push((kind, bytes)),
-                Err(_) if matches!(kind, Section::Stats | Section::Index) => {}
+                Err(_) if matches!(kind, Section::Stats | Section::Index | Section::Derive) => {}
                 Err(_) => return,
             }
         }

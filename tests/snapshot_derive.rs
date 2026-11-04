@@ -442,3 +442,30 @@ fn derivation_can_be_switched_off() {
         text(&output.stderr)
     );
 }
+
+/// A derived hit that settles racy keys rewrites its snapshot with the
+/// refreshed INPUTS (crate::snapshot::hit): the rewrite keeps the DERIVE
+/// section, so the snapshot keeps serving derived hits (affected-reuse-cold:
+/// the `test` after a `build` derived from `affected`'s head planning found
+/// no candidate — the rewrite had dropped the section and the next lookup
+/// its family marker).
+#[test]
+fn a_refreshed_snapshot_keeps_serving_derived_hits() {
+    let twin = fixture();
+    let build = pattern_file(&twin, "build.txt", &["//:a", "//:b", "//:pass_test"]);
+    twin.same(&["build", "--keep_going", &build])
+        .assert_success()
+        .assert_full()
+        .assert_diagnostic("saved ");
+    // The inputs written just before the save are racy; once settled, the
+    // next hit checks them by content and refreshes them.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    twin.same(&["build", "//:a"])
+        .assert_success()
+        .assert_derived();
+    for label in ["//:b", "//:a"] {
+        twin.same(&["build", label])
+            .assert_success()
+            .assert_derived();
+    }
+}
