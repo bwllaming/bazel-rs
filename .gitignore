@@ -7,3 +7,6 @@ __pycache__/
 /bazel-*
 # crate_universe writes these for the [patch] path crates (docs/SELF_BUILD.md).
 /vendor/*/BUILD.bazel
+# Per checkout (docs/SELF_BUILD.md): crate_universe records the absolute path
+# of the [patch] path crates (vendor/) in it.
+/MODULE.bazel.lock

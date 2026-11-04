@@ -57,6 +57,24 @@ class SelfBuildTest(unittest.TestCase):
             ["tests/fixtures/a", "tests/fixtures/b/workspace"],
         )
 
+    def test_no_tracked_lockfile_holds_an_absolute_path(self):
+        # docs/SELF_BUILD.md "The lockfile": crate_universe records the
+        # checkout's absolute vendor/ path; a committed copy breaks every other
+        # checkout (genuine 9.3.1 and bazel-rs alike).
+        for name in self_build.tracked_files(ROOT):
+            if name.rsplit("/", 1)[-1] != "MODULE.bazel.lock" or name.startswith("tests/"):
+                continue
+            text = (ROOT / name).read_text()
+            self.assertEqual(self_build.absolute_paths(text), [], name)
+        self.assertNotIn("MODULE.bazel.lock", self_build.tracked_files(ROOT))
+
+    def test_absolute_path_finder(self):
+        self.assertEqual(
+            self_build.absolute_paths('{"path": "/tmp/x/vendor/a", "u": "https://h/x", "l": "//:a"}'),
+            ["/tmp/x/vendor/a"],
+        )
+        self.assertEqual(self_build.absolute_paths('{"a": "@@//pkg:x", "b": "rel/path"}'), [])
+
     def test_rust_toolchain_matches_rust_toolchain_toml(self):
         channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
         module = (ROOT / "MODULE.bazel").read_text()

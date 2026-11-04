@@ -56,6 +56,15 @@ PROCESSES_RE = re.compile(r"^INFO: (\d+) process(?:es)?: (.*?)\.?$", re.M)
 ELAPSED_RE = re.compile(r"^INFO: Elapsed time: ([0-9.]+)s", re.M)
 
 
+# A JSON string value that starts with an absolute path (not `//label`).
+ABSOLUTE_PATH_RE = re.compile(r'"(/(?!/)[^"\\]*)')
+
+
+def absolute_paths(text: str) -> list[str]:
+    """Absolute filesystem paths quoted in a lockfile's text."""
+    return sorted(set(ABSOLUTE_PATH_RE.findall(text)))
+
+
 class SelfBuildError(Exception):
     pass
 
