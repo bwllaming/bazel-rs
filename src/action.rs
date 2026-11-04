@@ -303,80 +303,18 @@ pub fn check_up_to_date() -> bool {
     CHECK_UP_TO_DATE.load(Ordering::Relaxed)
 }
 
-/// The action's progress text as `-s` prints it (Bazel's describe():
-/// `Executing genrule L` for genrules, `MNEMONIC primary-output` otherwise).
-fn progress_text(action: &Action) -> String {
-    let label = action.id.split('#').next().unwrap_or(&action.id);
-    let mnemonic = action.extra.mnemonic.as_str();
-    if mnemonic == "Genrule" {
-        format!("Executing genrule {label}")
-    } else if mnemonic == "BazelWorkspaceStatusAction" {
-        // Bazel's one status action (both nodes here) names its primary
-        // output (BazelWorkspaceStatusModule.java:87-98: stable first).
-        format!("{mnemonic} stable-status.txt")
-    } else {
-        let primary = action
-            .outputs
-            .first()
-            .map(|path| path.display().to_string())
-            .unwrap_or_default();
-        format!("{mnemonic} {primary}")
-    }
-}
-
-/// ActionExecutionContext.maybeReportSubcommand (:459-499) with
-/// CommandFailureUtils.describeCommand's COMPLETE form (:76-170) and the
-/// Linux ScriptUtil emitter: a SUBCOMMAND event before a spawn reaches its
-/// runner. Native actions carry no ActionOwner, progress message or
-/// configuration checksum: the owner is the action's label, the progress
-/// text `MNEMONIC primary-output` (Bazel's for genrules, `Executing genrule
-/// L`), the configuration the output directory name, and no execution
-/// platform is printed; `cwd` is the spawn's own execution root.
+/// ActionExecutionContext.maybeReportSubcommand (:459-499): a SUBCOMMAND
+/// event before a spawn reaches its runner (crate::action_console);
+/// `execroot` is the spawn's own execution root.
 fn report_subcommand(action: &Action, execroot: &Path, runner: &str) {
     let mode = SUBCOMMANDS.load(Ordering::Relaxed);
     if mode == 0 {
         return;
     }
-    let label = action.id.split('#').next().unwrap_or(&action.id);
-    let mnemonic = action.extra.mnemonic.as_str();
-    let primary = action
-        .outputs
-        .first()
-        .map(|path| path.display().to_string())
-        .unwrap_or_default();
-    let progress = progress_text(action);
-    let configuration = primary
-        .strip_prefix("bazel-out/")
-        .and_then(|rest| rest.split('/').next())
-        .unwrap_or("");
-    let escape = crate::args::shell_escape;
-    let mut message = format!(
-        "# {label} [action '{progress}', configuration: {configuration}, mnemonic: {mnemonic}]\n"
+    crate::note!(
+        "SUBCOMMAND: {}",
+        crate::action_console::subcommand(action, execroot, runner, mode == 2)
     );
-    message.push_str(&format!(
-        "(cd {} && \\\n  exec env - \\\n  ",
-        escape(&execroot.display().to_string())
-    ));
-    for (name, value) in resolved_environment(action) {
-        message.push_str(&format!(
-            "  {}={} \\\n  ",
-            escape(&name),
-            escape(&value.to_string_lossy())
-        ));
-    }
-    let separator = if mode == 2 { " \\\n    " } else { " " };
-    let argv = arguments(action);
-    message.push_str(
-        &argv
-            .iter()
-            .map(|argument| escape(argument))
-            .collect::<Vec<_>>()
-            .join(separator),
-    );
-    message.push(')');
-    message.push_str(&format!("\n# Configuration: {configuration}"));
-    message.push_str(&format!("\n# Runner: {runner}"));
-    crate::note!("SUBCOMMAND: {message}");
 }
 
 /// Spawns.mayBeCachedRemotely and mayBeExecutedRemotely
@@ -514,6 +452,18 @@ pub struct ActionExtra {
     /// executed or persisted.
     #[serde(skip)]
     pub aquery: Option<std::sync::Arc<crate::aquery::Meta>>,
+    /// The owner as the console reports it (ActionOwner: label, location,
+    /// target kind, aspects, tool configuration; crate::action_console),
+    /// one shared value per configured target, set by planning. Never
+    /// keyed.
+    #[serde(with = "crate::snapshot::codec::optional_shared_path")]
+    pub owner: Option<SharedPath>,
+    /// The raw progress message when it is not the mnemonic's default
+    /// (`progress_message`, a genrule's `message`, a C++ compile's source;
+    /// `%{label}`/`%{output}` placeholders resolved when printed,
+    /// crate::action_console::describe). Never keyed.
+    #[serde(with = "crate::snapshot::codec::optional_shared_path")]
+    pub progress: Option<SharedPath>,
 }
 
 /// A runfiles mapping: each runfiles path with its input's execution path
@@ -5525,6 +5475,19 @@ fn log_tail(file: &mut File) -> io::Result<String> {
     Ok(result)
 }
 
+/// A spawn's whole log, or in its place the oversize notice
+/// (crate::output_filter::oversized) without reading it.
+fn read_log(file: &mut File, path: &Path, name: &str, id: &str) -> io::Result<Vec<u8>> {
+    let length = file.metadata()?.len();
+    if let Some(notice) = crate::output_filter::oversized(name, id, path, length) {
+        return Ok(notice);
+    }
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::with_capacity(usize::try_from(length).unwrap_or(0));
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 fn create_log(path: &Path) -> Result<File, String> {
     OpenOptions::new()
         .read(true)
@@ -6662,23 +6625,13 @@ pub fn write_downloaded(
     }
 }
 
-fn replay_logs(id: &str, stdout: &str, stderr: &str) {
-    if !stdout.is_empty() || !stderr.is_empty() {
-        // `--output_filter`/`--auto_output_filter`: a successful action's
-        // output shows only when its owner label matches
-        // (SkyframeActionExecutor.java:1305-1315, crate::output_filter).
-        let owner = id.split('#').next().unwrap_or(id);
-        if !crate::output_filter::shows_output(owner) {
-            return;
-        }
-        // `--experimental_ui_max_stdouterr_bytes` (UiEventHandler
-        // .getContentIfSmallEnough): an oversized stream is replaced.
-        let stdout = crate::output_filter::small_enough("stdout", id, stdout);
-        let stderr = crate::output_filter::small_enough("stderr", id, stderr);
-        // Bazel's `INFO: From …` event, the output bound to it: dropped
-        // with it under --quiet (crate::ui).
-        crate::note!("action '{id}' logs:\nstdout:\n{stdout}\nstderr:\n{stderr}");
-    }
+/// A successful action's recorded output: `INFO: From DESCRIPTION:` with
+/// it (crate::action_console, subject to the output filters).
+fn replay_logs(action: &Action, stdout: &[u8], stderr: &[u8]) {
+    crate::action_console::report_output(
+        action,
+        crate::action_console::Logs::of(&action.id, stdout, stderr),
+    );
 }
 
 /// The outputs of a spawn that ran remotely or hit the remote cache.
@@ -6931,6 +6884,7 @@ fn run_remotely(
     action: &Action,
     spec: &crate::remote_cache::RemoteAction,
     blobs: &BTreeMap<crate::reapi::Digest, crate::remote_cache::BlobSource<'_>>,
+    execroot: &Path,
 ) -> Result<RemoteRun, String> {
     let declared = declared_outputs(action)?;
     let failure = format!("action '{}'", action.id);
@@ -6951,12 +6905,15 @@ fn run_remotely(
         RemoteSpawn::Timeout => Err(format!(
             "{failure} failed: (Exit 142): remote spawn timed out (failed due to timeout.)"
         )),
-        RemoteSpawn::Done { result, .. } if result.exit_code != 0 => Err(format!(
-            "{failure} failed (exit status: {}):\nstdout:\n{}\nstderr:\n{}",
-            result.exit_code,
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
-        )),
+        RemoteSpawn::Done { result, .. } if result.exit_code != 0 => {
+            Err(crate::action_console::spawn_failure(
+                action,
+                result.exit_code,
+                execroot,
+                false,
+                crate::action_console::Logs::of(&action.id, &result.stdout, &result.stderr),
+            ))
+        }
         RemoteSpawn::Done { result, cached } => Ok(RemoteRun::Done(RemoteDone {
             disk: false,
             outputs: result.outputs,
@@ -7136,7 +7093,7 @@ pub fn execute_with_remote(
     if CHECK_UP_TO_DATE.load(Ordering::Relaxed) {
         return Err(format!(
             "action '{}' is not up-to-date",
-            progress_text(action)
+            crate::action_console::describe(action)
         ));
     }
     CHECKS[5].fetch_add(1, Ordering::Relaxed);
@@ -7250,7 +7207,7 @@ pub fn execute_with_remote(
     // `--remote_local_fallback` after a failed remote execution.
     let mut fallback = false;
     if remote_exec && let (Some(remote), Some((spec, blobs))) = (remote, &remote_spec) {
-        match run_remotely(remote, action, spec, blobs)? {
+        match run_remotely(remote, action, spec, blobs, &execroot)? {
             RemoteRun::Done(done) => remote_hit = Some(done),
             RemoteRun::Fallback => fallback = true,
         }
@@ -7429,11 +7386,7 @@ pub fn execute_with_remote(
         for (name, output) in action.outputs.iter().zip(&hit.outputs) {
             write_downloaded(&execroot.join(name), output)?;
         }
-        replay_logs(
-            &action.id,
-            &String::from_utf8_lossy(&hit.stdout),
-            &String::from_utf8_lossy(&hit.stderr),
-        );
+        replay_logs(action, &hit.stdout, &hit.stderr);
         if crate::exec_log::active() {
             // SpawnResult runner names: RemoteSpawnCache's "remote cache
             // hit", RemoteSpawnRunner's "remote" (a server-side cached
@@ -7551,12 +7504,16 @@ pub fn execute_with_remote(
             );
         }
         if response.exit_code != 0 {
-            return Err(format!(
-                "action '{}' failed (exit status: {}):\nstdout:\n\nstderr:\n{}",
-                action.id, response.exit_code, response.output
+            // WorkerSpawnRunner: the response's output is the spawn's stderr.
+            return Err(crate::action_console::spawn_failure(
+                action,
+                response.exit_code,
+                &execroot,
+                false,
+                crate::action_console::Logs::of(&action.id, b"", response.output.as_bytes()),
             ));
         }
-        replay_logs(&action.id, "", &response.output);
+        replay_logs(action, b"", response.output.as_bytes());
         if remote_spec.is_some() {
             logs = (Vec::new(), response.output.into_bytes());
         }
@@ -7644,10 +7601,20 @@ pub fn execute_with_remote(
                     .map_err(|e| format!("cannot read action stderr: {e}"))?,
             );
         }
-        let stdout =
-            log_tail(&mut stdout).map_err(|e| format!("cannot read action stdout: {e}"))?;
-        let stderr =
-            log_tail(&mut stderr).map_err(|e| format!("cannot read action stderr: {e}"))?;
+        let stdout = read_log(
+            &mut stdout,
+            &work.0.join("stdout.log"),
+            "stdout",
+            &action.id,
+        )
+        .map_err(|e| format!("cannot read action stdout: {e}"))?;
+        let stderr = read_log(
+            &mut stderr,
+            &work.0.join("stderr.log"),
+            "stderr",
+            &action.id,
+        )
+        .map_err(|e| format!("cannot read action stderr: {e}"))?;
         // A sandbox setup failure is an infrastructure failure of the
         // strategy (AbstractSandboxSpawnRunner.runSpawn:
         // sandbox.createFileSystem -> "Could not copy inputs into sandbox"),
@@ -7690,37 +7657,35 @@ pub fn execute_with_remote(
             );
         }
         if !status.success() {
-            // The sandbox strategy's failure message appends Bazel's
+            // The sandbox strategies' failure message appends Bazel's
             // suggestion unless --sandbox_debug itself is on (makeFailureMessage,
             // AbstractSandboxSpawnRunner.java:186-195). The sandbox contents —
             // this action's execroot, with the failed action's outputs in it —
             // are retained below exactly when --sandbox_debug is on
             // (runSpawn's finally: sandbox.delete() unless sandboxDebug).
-            if sandboxed {
-                if crate::sandbox::debug() {
-                    let sandbox_root = work.0.display().to_string();
-                    std::mem::forget(work);
-                    return Err(format!(
-                        "action '{}' failed ({}):\nstdout:\n{}\nstderr:\n{}\n\n\
-                         (sandbox build root retained at '{sandbox_root}')",
-                        action.id, status, stdout, stderr
-                    ));
-                }
-                return Err(format!(
-                    "action '{}' failed ({}):\nstdout:\n{}\nstderr:\n{}{}",
-                    action.id,
-                    status,
-                    stdout,
-                    stderr,
-                    crate::sandbox::SANDBOX_DEBUG_SUGGESTION
-                ));
+            let sandbox_strategy = matches!(
+                strategy,
+                crate::sandbox::Strategy::Sandboxed | crate::sandbox::Strategy::ProcessWrapper
+            );
+            let debug = sandboxed && crate::sandbox::debug();
+            let reported = crate::action_console::spawn_failure(
+                action,
+                crate::action_console::raw_exit(status),
+                &execroot,
+                sandbox_strategy && !crate::sandbox::debug(),
+                crate::action_console::Logs::checked(stdout, stderr),
+            );
+            if debug {
+                let sandbox_root = work.0.display().to_string();
+                std::mem::forget(work);
+                crate::note!("bazel-rs: sandbox build root retained at '{sandbox_root}'");
             }
-            return Err(format!(
-                "action '{}' failed ({}):\nstdout:\n{}\nstderr:\n{}",
-                action.id, status, stdout, stderr
-            ));
+            return Err(reported);
         }
-        replay_logs(&action.id, &stdout, &stderr);
+        crate::action_console::report_output(
+            action,
+            crate::action_console::Logs::checked(stdout, stderr),
+        );
     }
     let wall = clock.elapsed();
     // Publish every output into the completed directory by link or rename,
@@ -7827,6 +7792,25 @@ pub fn execute_with_remote(
     let mut published_trees = Vec::new();
     // Published regular files and their contents, for the digest memos.
     let mut published_files = Vec::new();
+    // SkyframeActionExecutor.checkOutputs: every output the action did not
+    // create is reported (reportMissingOutputFile), then the action fails
+    // with `not all outputs were created or valid`.
+    let missing: Vec<(&PathBuf, bool)> = outputs
+        .iter()
+        .filter(|name| {
+            !remote_only.contains_key(*name) && !action.extra.symlink_outputs.contains(*name)
+        })
+        .filter(|name| {
+            fs::symlink_metadata(execroot.join(name))
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+        })
+        .map(|name| (name, action.extra.tree_outputs.contains(name)))
+        .collect();
+    if !missing.is_empty() {
+        return Err(crate::action_console::missing_outputs(
+            action, &missing, runner,
+        ));
+    }
     for name in outputs {
         let source = execroot.join(name);
         let target = completed.join("outputs").join(name);
@@ -8546,10 +8530,17 @@ mod tests {
             "#!/bin/sh\nprintf partial > out/result\nhead -c 100000 /dev/zero\nprintf stdout-end\nhead -c 100000 /dev/zero >&2\nprintf stderr-end >&2\nexit 7\n",
         );
         let error = execute(&fixture.cache(), &action).unwrap_err();
-        assert!(error.contains("failed (exit status: 7)"));
+        assert!(error.contains("failed: (Exit 7): "));
+        // The whole output, as the console shows it (bounded by
+        // --experimental_ui_max_stdouterr_bytes, crate::output_filter).
         assert!(error.contains("stdout-end") && error.contains("stderr-end"));
-        assert_eq!(error.matches("[truncated:").count(), 2);
-        assert!(error.len() < 2 * LOG_TAIL_BYTES + 1024);
+        assert!(error.contains("partial") || error.contains("stdout-end"));
+        assert_eq!(error.matches("[truncated:").count(), 0);
+        assert!(
+            error.len() > 200_000 && error.len() < 200_000 + 1024,
+            "{}",
+            error.len()
+        );
         fixture.assert_unpublished();
         fs::write(
             &action.inputs[0].0,
@@ -8611,7 +8602,7 @@ mod tests {
             assert!(
                 execute(&fixture.cache(), &action)
                     .unwrap_err()
-                    .contains("failed (exit status: 1)")
+                    .contains("failed: (Exit 1): ")
             );
         }
         action.shell_strict = false;
@@ -8619,7 +8610,7 @@ mod tests {
         assert!(
             execute(&fixture.cache(), &action)
                 .unwrap_err()
-                .contains("failed (exit status: 1)")
+                .contains("failed: (Exit 1): ")
         );
     }
 
@@ -8912,7 +8903,7 @@ mod tests {
         assert!(
             execute(&fixture.cache(), &action)
                 .unwrap_err()
-                .contains("missing or invalid output")
+                .contains("not all outputs were created or valid")
         );
         fixture.assert_unpublished();
         // The same key retries cleanly when an external prerequisite changes.
@@ -8935,7 +8926,7 @@ mod tests {
         for command in ["false; echo ok > out/result", "false | cat > out/result"] {
             action.command = format!("{command}; touch '{}'", marker.display());
             let error = execute(&fixture.cache(), &action).unwrap_err();
-            assert!(error.contains("failed (exit status: 1)"), "{error}");
+            assert!(error.contains("failed: (Exit 1): "), "{error}");
             assert!(!marker.exists());
             fixture.assert_unpublished();
         }
@@ -8958,10 +8949,18 @@ mod tests {
         let failed_fixture = Fixture::new();
         action.command = format!("{logs}; printf partial > out/result; false");
         let error = execute(&failed_fixture.cache(), &action).unwrap_err();
-        assert!(error.len() < 2 * LOG_TAIL_BYTES + 1024);
-        assert_eq!(error.matches("[truncated:").count(), 2);
-        assert!(error.contains("stdout-end") && error.contains("stderr-end"));
-        assert!(!error.contains("stdout-start") && !error.contains("stderr-start"));
+        // As the console shows it: each stream past
+        // --experimental_ui_max_stdouterr_bytes (1 MiB) replaced by the
+        // notice, unread (crate::output_filter::oversized).
+        assert_eq!(
+            error
+                .matches("exceeds maximum size of --experimental_ui_max_stdouterr_bytes=1048576 bytes; skipping")
+                .count(),
+            2,
+            "{error}"
+        );
+        assert!(error.len() < 4096);
+        assert!(!error.contains("stdout-end") && !error.contains("stderr-start"));
         failed_fixture.assert_unpublished();
     }
 
@@ -9268,7 +9267,7 @@ mod tests {
         let marker = fixture.0.join("ran");
         action.arguments = vec![marker.to_str().unwrap().into()];
         let error = execute(&fixture.cache(), &action).unwrap_err();
-        assert!(error.contains("failed (exit status: 26)"), "{error}");
+        assert!(error.contains("failed: (Exit 26): "), "{error}");
         assert_eq!(fs::read_to_string(marker).unwrap(), "run");
         fixture.assert_unpublished();
     }

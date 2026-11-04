@@ -691,6 +691,26 @@ pub fn execute_graph_keep_going(
     )
 }
 
+/// [`execute_graph`] that keeps the failures apart: the build stops at the
+/// first failure (no `--keep_going`), the actions that completed keep their
+/// results, and each failure is returned by action id.
+pub fn execute_graph_outcome(
+    cache: &Path,
+    nodes: Vec<PlannedAction>,
+    jobs: usize,
+) -> Result<KeepGoingOutcome, String> {
+    execute_outcome(
+        cache,
+        nodes,
+        jobs,
+        &|cache: &Path, action: &Action| {
+            action::execute(cache, &crate::bazel_bytes::platform_action(action))
+        },
+        None,
+        false,
+    )
+}
+
 /// The results a leaf reads: each dependency's id and result, in the order
 /// of [`Leaves::dependencies`] (duplicates removed).
 pub type LeafInputs = [(String, Arc<ActionResult>)];

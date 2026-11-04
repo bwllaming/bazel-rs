@@ -41,6 +41,7 @@ tests/fixtures/cc_toolchain/vendor
 tests/fixtures/cc_toolchain/workspace
 tests/fixtures/cc_virtual_includes/workspace
 tests/fixtures/config_flag_options/workspace
+tests/fixtures/console_action_output/workspace
 tests/fixtures/console_text/workspace
 tests/fixtures/coverage_command/workspace
 tests/fixtures/cpp_flag_options/workspace

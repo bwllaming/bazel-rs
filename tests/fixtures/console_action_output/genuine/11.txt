@@ -1,0 +1,27 @@
+### build --verbose_failures //fail:exit3
+rc=1
+--- stderr
+OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.
+Computing main repo mapping: 
+Loading: 
+Loading: 0 packages loaded
+Analyzing: target //fail:exit3 (5 packages loaded, 6 targets configured)
+Analyzing: target //fail:exit3 (5 packages loaded, 6 targets configured)
+
+INFO: Analyzed target //fail:exit3 (6 packages loaded, 8 targets configured).
+ERROR: <WS>/fail/BUILD:2:8: Executing genrule //fail:exit3 failed: (Exit 3): bash failed: error executing Genrule command (from genrule rule target //fail:exit3) 
+  (cd <OB>/sandbox/processwrapper-sandbox/1/execroot/_main && \
+  exec env - \
+    PATH=/bin:/usr/bin:/usr/local/bin \
+  /bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo before-fail; echo fail-err >&2; exit 3')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+fail-err
+Target //fail:exit3 failed to build
+INFO: Elapsed time: 1.235s, Critical Path: 0.02s
+INFO: 2 processes: 2 internal.
+ERROR: Build did NOT complete successfully
+--- stdout
+before-fail

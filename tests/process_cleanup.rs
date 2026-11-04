@@ -489,15 +489,16 @@ genrule(name = "exits", outs = ["exits.txt"], cmd = "echo out; echo err >&2; exi
     // A spawn's own status survives the supervisor exactly: a signal it
     // could not re-raise (SIGPIPE) as much as SIGKILL or an exit code.
     for (target, status) in [
-        ("killed", "(signal: 9 (SIGKILL))"),
-        ("piped", "(signal: 13 (SIGPIPE))"),
-        ("exits", "(exit status: 3)"),
+        ("killed", "(Killed)"),
+        ("piped", "(Broken pipe)"),
+        ("exits", "(Exit 3)"),
     ] {
         let output = ws.run("cache", &["build", &format!("//pkg:{target}")]);
         let text = stderr(&output);
         assert_eq!(output.status.code(), Some(1), "{text}");
+        // TerminationStatus.toShortString (crate::action_console).
         assert!(
-            text.contains(&format!("action '//pkg:{target}' failed {status}:")),
+            text.contains(&format!("//pkg:{target} failed: {status}: ")),
             "{target}: {text}"
         );
     }
@@ -506,10 +507,14 @@ genrule(name = "exits", outs = ["exits.txt"], cmd = "echo out; echo err >&2; exi
         &["build", "--spawn_strategy=standalone", "//pkg:exits"],
     );
     let text = stderr(&output);
+    // The standalone strategy: no sandbox suggestion; the action's stderr
+    // after the ERROR, its stdout on stdout.
     assert!(
-        text.contains("failed (exit status: 3):\nstdout:\nout\n\nstderr:\nerr\n"),
+        text.contains("failed: (Exit 3): ") && text.contains("'\nerr\n"),
         "{text}"
     );
+    assert!(!text.contains("--sandbox_debug"), "{text}");
+    assert_eq!(stdout(&output), "out\n");
 }
 
 /// The supervisor itself, driven through its control channel the way the

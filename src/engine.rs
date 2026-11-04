@@ -1834,6 +1834,10 @@ pub struct BuildSummary {
     pub cache_hits: usize,
     /// Actions whose outputs came from the remote cache (crate::remote_cache).
     pub remote_hits: usize,
+    /// A build without `--keep_going` stopped at a failed action, already
+    /// reported (crate::action_console): the results print, then the build
+    /// fails.
+    pub action_failed: bool,
 }
 
 /// A target pattern evaluation failure (`Engine::expand_pattern`).
@@ -1955,6 +1959,10 @@ pub struct Engine {
     /// aquery: the cquery capture also plans every action, and the planned
     /// actions with their owners are kept (crate::engine::aquery).
     aquery_capture: Option<aquery::Capture>,
+    /// Each action owner's console identity (crate::action_console::owner),
+    /// recorded as its configured target or aspect application is analyzed
+    /// and stamped on the planned actions it owns.
+    console_owners: HashMap<String, crate::shared_path::SharedPath>,
     /// `.bzl` labels whose buffered top-level print lines the coordinator
     /// already emitted (one emission per evaluated module, review §1.4);
     /// lookups only, never iterated.
@@ -2233,6 +2241,7 @@ impl Engine {
             cquery_capture: None,
             cquery_files: false,
             aquery_capture: None,
+            console_owners: HashMap::new(),
             declared_inputs: HashMap::new(),
             source_targets: HashMap::new(),
             analyzed_sources: HashSet::new(),
@@ -12352,6 +12361,17 @@ impl Engine {
                 .action_environment(),
         );
         let action_owner = key.action_owner(top);
+        self.console_owners.insert(
+            action_owner.clone(),
+            crate::action_console::owner(&crate::action_console::OwnerParts {
+                label: &base_key.label.to_string(),
+                location: base_rule.location.as_deref(),
+                target_kind: &format!("{} rule", base_rule.rule_class_name()),
+                aspects: &collection.path_descriptions(&aspect.descriptor),
+                tool: self.configurations.get(base_key.config).native.is_exec,
+                configuration: &base_key.config.to_string(),
+            }),
+        );
         self.aquery_owner(&action_owner, base_key, || {
             collection
                 .path_aspects(&aspect.descriptor)
@@ -13018,6 +13038,17 @@ impl Engine {
         // configuration (SHELL_ACTION_ENV; crate::action_env).
         let action_env = Arc::new(self.configurations.get(config).native.action_environment());
         let action_owner = key.action_owner(top);
+        self.console_owners.insert(
+            action_owner.clone(),
+            crate::action_console::owner(&crate::action_console::OwnerParts {
+                label: &key.label.to_string(),
+                location: rule.location.as_deref(),
+                target_kind: &format!("{} rule", rule.rule_class_name()),
+                aspects: &[],
+                tool: self.configurations.get(config).native.is_exec,
+                configuration: &config.to_string(),
+            }),
+        );
         self.aquery_owner(&action_owner, &key, Vec::new);
         // The configuration of the target's exec-transition edges.
         let exec_config = self
@@ -14566,17 +14597,20 @@ impl Engine {
                 // The `message` attribute's progress message
                 // (GenRuleBase.java:177-186): `MESSAGE LABEL`, else
                 // `Executing genrule LABEL`.
-                if crate::aquery::capturing()
-                    && let Some(message) = rule
-                        .native
-                        .as_deref()
-                        .and_then(|native| native.string("message"))
-                        .filter(|message| !message.is_empty())
+                if let Some(message) = rule
+                    .native
+                    .as_deref()
+                    .and_then(|native| native.string("message"))
+                    .filter(|message| !message.is_empty())
                 {
-                    action.extra.aquery = Some(std::sync::Arc::new(crate::aquery::Meta {
-                        progress: Some(format!("{message} %{{label}}")),
-                        ..Default::default()
-                    }));
+                    let raw = format!("{message} %{{label}}");
+                    action.extra.progress = Some(raw.as_str().into());
+                    if crate::aquery::capturing() {
+                        action.extra.aquery = Some(std::sync::Arc::new(crate::aquery::Meta {
+                            progress: Some(raw),
+                            ..Default::default()
+                        }));
+                    }
                 }
                 self.set_remote_platform(&mut action, rule, config, None, true);
                 let action_inputs = inputs
@@ -16521,6 +16555,57 @@ impl Engine {
             }
         }
         nodes.retain(|node| required.contains(&node.action.id));
+        // The console identity of each action's owner (ActionOwner,
+        // crate::action_console): the configured target's or aspect
+        // application's, shared by all its actions.
+        // With the execution platform it resolved to (PlatformInfo.label,
+        // `# Execution platform:` of --verbose_failures).
+        {
+            let mut platforms: HashMap<Label, String> = HashMap::new();
+            let mut stamped: HashMap<(String, String), crate::shared_path::SharedPath> =
+                HashMap::new();
+            for node in &mut nodes {
+                if node.action.extra.owner.is_some() {
+                    continue;
+                }
+                let id = node.action.id.as_str();
+                let owner_id = id.rsplit_once('#').map_or(id, |(owner, _)| owner);
+                let Some((owner_id, base)) = self
+                    .console_owners
+                    .get_key_value(owner_id)
+                    .or_else(|| self.console_owners.get_key_value(id))
+                else {
+                    continue;
+                };
+                let label = self
+                    .action_executions
+                    .get(id)
+                    .map(|execution| execution.platform.clone())
+                    .or_else(|| Label::parse_canonical(&node.action.remote_platform.label).ok())
+                    .unwrap_or_else(crate::configuration::default_host_platform);
+                let platform = platforms
+                    .entry(label)
+                    .or_insert_with_key(|label| {
+                        match self.aquery_platform_info(label) {
+                            Some(info) => crate::rule_declarations::canonical_form(&info.label),
+                            // The default --host_platform, an alias of
+                            // @platforms//host (PlatformOptions.java:46-56)
+                            // planning never analyzes.
+                            None if *label == crate::configuration::default_host_platform() => {
+                                "@@platforms//host:host".to_owned()
+                            }
+                            None => crate::rule_declarations::canonical_form(label),
+                        }
+                    })
+                    .clone();
+                let packed = stamped
+                    .entry((owner_id.clone(), platform))
+                    .or_insert_with_key(|(_, platform)| {
+                        crate::action_console::with_platform(base, platform)
+                    });
+                node.action.extra.owner = Some(packed.clone());
+            }
+        }
         // SourceManifestAction.newDeterministicWriter (:233-273): prefix
         // conflicts of an executed manifest action are events at the
         // owner's location, errors under ConflictPolicy.ERROR.

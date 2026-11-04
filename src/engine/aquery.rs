@@ -364,7 +364,10 @@ impl Engine {
         )
     }
 
-    fn aquery_platform_info(&self, label: &Label) -> Option<Arc<crate::platforms::PlatformInfo>> {
+    pub(super) fn aquery_platform_info(
+        &self,
+        label: &Label,
+    ) -> Option<Arc<crate::platforms::PlatformInfo>> {
         self.platforms
             .iter()
             .filter(|(key, _)| key.label == *label)
@@ -527,7 +530,13 @@ impl Engine {
                 } else {
                     "Symlink".into()
                 };
-                record.description = progress(message);
+                // SolibSymlinkAction has no raw progress message: describe()'s
+                // default, without the tool configuration's ` [for tool]`.
+                record.description = if record.mnemonic == "SolibSymlink" {
+                    message.clone()
+                } else {
+                    progress(message)
+                };
                 let kind = match (record.mnemonic.as_str(), primary_output, primary_input) {
                     ("SolibSymlink", Some(symlink), Some(library)) => {
                         KeyKind::SolibSymlink { symlink, library }
@@ -686,6 +695,15 @@ impl Engine {
                     .position(|argument| argument == "-c")
                     .and_then(|index| arguments.get(index + 1));
                 record.description = match (record.mnemonic.as_str(), source) {
+                    // CppCompileAction.getRawProgressMessage over its source
+                    // file, recorded at registration (a header-parsing
+                    // action's header; crate::cc_actions).
+                    (_, _)
+                        if action.extra.mnemonic.starts_with("Cpp")
+                            && let Some(recorded) = &action.extra.progress =>
+                    {
+                        progress(&recorded.as_path().to_string_lossy())
+                    }
                     ("CppCompile" | "ObjcCompile", Some(source)) => {
                         crate::aquery::progress_message(
                             &raw,

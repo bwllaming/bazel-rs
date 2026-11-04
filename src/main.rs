@@ -2065,6 +2065,20 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
         action_summary(&summary, remote_enabled);
     }
     bazel_rs::memory_limit::report_peak(memory_limit_mb);
+    // A failed action (reported when it failed, crate::action_console)
+    // fails the build once the results and the summary printed.
+    if summary.action_failed {
+        snapshot.execution_failed("an action failed");
+        bazel_rs::snapshot::hit::heal_after_failure(None);
+        bazel_rs::progress::failed_build_summary();
+        eprintln!("ERROR: Build did NOT complete successfully");
+        if run {
+            eprintln!("ERROR: Build failed. Not running target");
+        }
+        write_lockfile();
+        bazel_rs::digest_memo::finish();
+        exit(failure_exit_code());
+    }
     // --keep_going: a build with failures fails once everything else built.
     if let Some(result) = keep_going {
         snapshot.execution_failed("the --keep_going build failed");
@@ -3095,7 +3109,10 @@ fn report_keep_going(result: &bazel_rs::request::KeepGoingResult, execute: bool)
         eprintln!("ERROR: {}", located(error));
     }
     for (id, error) in &result.actions {
-        eprintln!("ERROR: {}", located(&format!("action '{id}': {error}")));
+        // An action failure printed when it happened (crate::action_console).
+        if !bazel_rs::action_console::is_reported(error) {
+            eprintln!("ERROR: {}", located(&format!("action '{id}': {error}")));
+        }
     }
     for (label, dependency) in &result.plan.failed {
         let mut message = format!(
@@ -4340,7 +4357,8 @@ fn test_build_failure(
     let aborted = error == bazel_rs::test_runner::TEST_FAILED_ABORTING;
     if aborted {
         eprintln!("ERROR: {error}");
-    } else {
+    } else if !bazel_rs::action_console::is_reported(error) {
+        // (An action failure printed when it happened, crate::action_console.)
         eprintln!("bazel-rs: {error}");
     }
     if tests.is_empty() {
@@ -6714,7 +6732,13 @@ fn main() {
             eprintln!("ERROR: Fetching some target dependencies failed with errors: {error}");
             exit(2);
         }
-        eprintln!("bazel-rs: {error}");
+        if bazel_rs::action_console::is_reported(&error) {
+            // An action failure printed when it happened
+            // (crate::action_console).
+            eprintln!("ERROR: Build did NOT complete successfully");
+        } else {
+            eprintln!("bazel-rs: {error}");
+        }
         // A sandbox setup failure is an environmental failure of the
         // strategy (Bazel's EnvironmentalExecException class): exit code 36.
         // The typed flag, never the error text: an action's own output could

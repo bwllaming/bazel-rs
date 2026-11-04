@@ -7,6 +7,7 @@ include!("../tests/support/temp_root.rs");
 pub const COMPATIBILITY_VERSION: &str = "9.3.1";
 
 pub mod action;
+pub mod action_console;
 pub mod action_env;
 pub mod affected;
 pub mod affected_changes;

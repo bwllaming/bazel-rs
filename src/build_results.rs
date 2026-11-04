@@ -41,6 +41,12 @@ pub fn set_options(show_result: usize, verbose_failures: bool) {
     VERBOSE_FAILURES.store(verbose_failures, Ordering::Relaxed);
 }
 
+/// `--verbose_failures` of this command (crate::action_console's failure
+/// messages print the complete command).
+pub fn verbose_failures() -> bool {
+    VERBOSE_FAILURES.load(Ordering::Relaxed)
+}
+
 /// The native `LABEL<TAB>PATH` result lines are requested
 /// (`BAZEL_RS_RESULT_LINES=1`).
 pub fn native_lines() -> bool {

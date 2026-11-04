@@ -23,7 +23,7 @@ use crate::scheduler::{self, Dependency, InputGroup, PlannedAction};
 use crate::test_command::TestRuleInfo;
 use crate::workspace_status::{ComputedWorkspaceStatus, WorkspaceStatusOptions};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -988,8 +988,12 @@ pub fn execute_with_tests(
     // at their exec paths, as BuildResultPrinter reports artifactsToBuild
     // under --nobuild (no status nodes are planned under --nobuild).
     let symlink_outputs = symlink_outputs(&nodes, &run_plans);
+    let tool_trees = tool_runfiles_trees(&nodes);
     set_remote_downloads(&command, &requested, &aspect_reports, &run_plans);
     let mut action_errors: Vec<(String, String)> = Vec::new();
+    // A build without --keep_going whose action failed (reported).
+    let mut action_failed = false;
+    crate::action_console::set_keep_going(keep_going.is_some());
     let results = if execute {
         crate::perf_mark("execute.start");
         // The runfiles trees link as whole directories in the output tree.
@@ -1016,15 +1020,33 @@ pub fn execute_with_tests(
             None if keep_going.is_some() => {
                 scheduler::execute_graph_keep_going(options.cache, nodes, options.jobs, None)?
             }
-            None => scheduler::KeepGoingOutcome {
-                results: scheduler::execute_graph(options.cache, nodes, options.jobs)?,
-                errors: BTreeMap::new(),
-            },
+            None => {
+                // An action failure was printed when it happened
+                // (crate::action_console): the build reports what it built
+                // and fails afterwards (BuildResultPrinter, the summary);
+                // any other failure fails the request as before.
+                let outcome = scheduler::execute_graph_outcome(options.cache, nodes, options.jobs)?;
+                let unreported: Vec<String> = outcome
+                    .errors
+                    .iter()
+                    .filter(|(_, error)| !crate::action_console::is_reported(error))
+                    .map(|(id, error)| format!("action '{id}': {error}"))
+                    .collect();
+                if !unreported.is_empty() {
+                    return Err(unreported.join("\n"));
+                }
+                action_failed = !outcome.errors.is_empty();
+                outcome
+            }
         };
         action_errors = errors.into_iter().collect();
-        // A failed action completed without a spawn result (internal).
-        for _ in &action_errors {
-            crate::spawn_stats::action_completed(&[]);
+        // A failed action completed without a spawn result (internal),
+        // unless its spawn succeeded and its outputs were missing.
+        for (_, error) in &action_errors {
+            match crate::action_console::reported_runner(error) {
+                Some(runner) => crate::spawn_stats::action_completed(&[runner]),
+                None => crate::spawn_stats::action_completed(&[]),
+            }
         }
         crate::perf_mark("execute.graph");
         // `$(bazel-rs info bazel-bin)/...` names the built files
@@ -1058,6 +1080,25 @@ pub fn execute_with_tests(
     // (internal) on every build.
     if results.keys().any(|id| id.starts_with(STATUS_ID_PREFIX)) {
         crate::spawn_stats::action_completed(&[]);
+    }
+    // A tool's runfiles tree, which the native plan stages as a shared
+    // input group of its consumers, is three internal actions to Bazel
+    // (SourceManifestAction, SymlinkTreeAction, RunfilesTreeAction), run
+    // or cached with the tree's repository mapping manifest.
+    for id in &tool_trees {
+        match results.get(id) {
+            Some(result) if result.cache_hit => {
+                for _ in 0..3 {
+                    crate::spawn_stats::action_cache_hit();
+                }
+            }
+            Some(_) => {
+                for _ in 0..3 {
+                    crate::spawn_stats::action_completed(&[]);
+                }
+            }
+            None => {}
+        }
     }
     for (id, result) in &results {
         crate::spawn_stats::critical_path_at_least(result.critical);
@@ -1107,7 +1148,36 @@ pub fn execute_with_tests(
             unbuilt,
         }
     });
-    let reported = |label: &Label| keep_going.as_ref().is_none_or(|result| result.built(label));
+    // A failed build without --keep_going reports the requested targets
+    // whose artifacts did not all build as failed (BuildResultPrinter).
+    let built_all = |produced: &[Produced]| {
+        produced.iter().all(|produced| {
+            produced
+                .producer
+                .as_ref()
+                .is_none_or(|(id, _)| results.contains_key(id))
+        })
+    };
+    let failed_requested: BTreeSet<Label> = if action_failed {
+        requested
+            .iter()
+            .filter(|(_, produced)| !built_all(std::slice::from_ref(produced)))
+            .map(|(label, _)| label.clone())
+            .chain(
+                result_targets
+                    .iter()
+                    .filter(|(_, produced)| !built_all(produced))
+                    .map(|(label, _)| label.clone()),
+            )
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
+    summary.action_failed = action_failed;
+    let reported = |label: &Label| {
+        !failed_requested.contains(label)
+            && keep_going.as_ref().is_none_or(|result| result.built(label))
+    };
     let published = |produced: &Produced| executed_path(&results, execute, produced);
     for (label, produced) in &requested {
         if reported(label) {
@@ -1146,7 +1216,7 @@ pub fn execute_with_tests(
         // --keep_going: a run plan whose artifacts did not all build has no
         // run target.
         if execute
-            && keep_going.is_some()
+            && (keep_going.is_some() || action_failed)
             && !plan
                 .test_dependencies()
                 .iter()
@@ -1164,6 +1234,30 @@ pub fn execute_with_tests(
         execute,
         keep_going,
     })
+}
+
+/// The distinct runfiles trees the plan stages as shared input groups
+/// (PA-1's tool runfiles), each by the id of the repository mapping
+/// manifest action among its inputs (`L#repo_mapping`, executed or cached
+/// with the tree; [`execute_with_tests`]'s process tally).
+fn tool_runfiles_trees(nodes: &[PlannedAction]) -> Vec<String> {
+    let mut seen: HashSet<&Path> = HashSet::new();
+    let mut trees = Vec::new();
+    for node in nodes {
+        for group in &node.groups {
+            if !seen.insert(group.root.as_path()) {
+                continue;
+            }
+            if let Some(dependency) = group
+                .dependencies
+                .iter()
+                .find(|dependency| dependency.action_id.ends_with("#repo_mapping"))
+            {
+                trees.push(dependency.action_id.clone());
+            }
+        }
+    }
+    trees
 }
 
 /// Where a planned artifact is reported or published after the execution

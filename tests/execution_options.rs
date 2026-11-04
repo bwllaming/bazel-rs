@@ -69,6 +69,10 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
 fn reference() -> serde_json::Value {
     serde_json::from_str(&fs::read_to_string(fixture().join("reference.json")).unwrap()).unwrap()
 }
@@ -151,8 +155,15 @@ fn output_filters_and_stream_limits_shape_successful_action_output() {
         all.push("//:g");
         workspace.build(&all)
     };
+    // `INFO: From Executing genrule //:g:`, the action's stderr on stderr
+    // and its stdout on stdout (crate::action_console).
     let shown = fresh(&[]);
-    assert!(stderr(&shown).contains("warn-out"), "{}", stderr(&shown));
+    assert!(
+        stderr(&shown).contains("INFO: From Executing genrule //:g:\nwarn-err\n"),
+        "{}",
+        stderr(&shown)
+    );
+    assert!(stdout(&shown).contains("warn-out"), "{}", stdout(&shown));
     for hidden in [
         vec!["--output_filter=^//other"],
         vec!["--auto_output_filter=all"],
@@ -160,7 +171,8 @@ fn output_filters_and_stream_limits_shape_successful_action_output() {
     ] {
         let output = fresh(&hidden);
         assert!(output.status.success(), "{hidden:?}: {}", stderr(&output));
-        assert!(!stderr(&output).contains("warn-out"), "{hidden:?}");
+        assert!(!stdout(&output).contains("warn-out"), "{hidden:?}");
+        assert!(!stderr(&output).contains("warn-err"), "{hidden:?}");
     }
     for kept in [
         vec!["--output_filter=//:g"],
@@ -168,10 +180,10 @@ fn output_filters_and_stream_limits_shape_successful_action_output() {
         vec!["--auto_output_filter=subpackages"],
     ] {
         let output = fresh(&kept);
-        assert!(stderr(&output).contains("warn-out"), "{kept:?}");
+        assert!(stdout(&output).contains("warn-out"), "{kept:?}");
     }
     let limited = fresh(&["--experimental_ui_max_stdouterr_bytes=3"]);
-    let text = stderr(&limited);
+    let text = format!("{}{}", stderr(&limited), stdout(&limited));
     assert!(
         text.contains(
             ") 9 exceeds maximum size of --experimental_ui_max_stdouterr_bytes=3 bytes; skipping"

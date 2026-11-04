@@ -276,9 +276,24 @@ pub(super) fn run(
             );
         }
         if !result.status.success() {
-            return Err(format!(
-                "action '{}' failed ({}):\nstdout:\n{}\nstderr:\n{}",
-                logical.id, result.status, result.stdout, result.stderr
+            // The attempt's command line, the logical action's owner and
+            // progress message (crate::action_console).
+            let mut failed = attempt.clone();
+            failed.extra.owner = logical.extra.owner.clone();
+            failed.extra.progress = logical.extra.progress.clone();
+            return Err(crate::action_console::spawn_failure(
+                &failed,
+                crate::action_console::raw_exit(result.status),
+                execroot,
+                matches!(
+                    strategy,
+                    crate::sandbox::Strategy::Sandboxed | crate::sandbox::Strategy::ProcessWrapper
+                ) && !crate::sandbox::debug(),
+                crate::action_console::Logs::of(
+                    &logical.id,
+                    result.stdout.as_bytes(),
+                    result.stderr.as_bytes(),
+                ),
             ));
         }
         // RemoteSpawnCache.store: a successful executed spawn's outputs.
@@ -325,7 +340,7 @@ pub(super) fn run(
                 )
             })?;
         }
-        replay_logs(&logical.id, &result.stdout, &result.stderr);
+        replay_logs(logical, result.stdout.as_bytes(), result.stderr.as_bytes());
         return Ok(Outcome {
             fallback,
             runner,
@@ -666,7 +681,7 @@ if [ "$CASE" = second_fallback ]; then printf '\050\001' >> out/result.jdeps; fi
             ("missing", 1, "result.jdeps"),
             ("corrupt", 1, "invalid Java .jdeps"),
             ("absent_output", 1, "missing or invalid output"),
-            ("initial_failure", 1, "exit status: 4"),
+            ("initial_failure", 1, "(Exit 4)"),
             ("final_failure", 2, "final-error"),
         ] {
             let f = Fixture::new(case);

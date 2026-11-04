@@ -219,8 +219,9 @@ fn deleted_packages_like_bazel() {
 
 /// `--subcommands` / `-s` print each executed spawn as a SUBCOMMAND event in
 /// Bazel's copy-pastable form (CommandFailureUtils.describeCommand
-/// COMPLETE); `pretty_print` puts one argument per line. The native header
-/// differs where actions carry no ActionOwner (docs/BENCHMARKS.md).
+/// COMPLETE); `pretty_print` puts one argument per line. The header is the
+/// ActionOwner's (crate::action_console; the configuration is the native
+/// ConfigId).
 #[test]
 fn subcommands_print_spawns_like_bazel() {
     let ws = Workspace::new(&[
@@ -238,7 +239,9 @@ fn subcommands_print_spawns_like_bazel() {
     let start = lines
         .iter()
         .position(|line| {
-            line.starts_with("SUBCOMMAND: # //:g [action 'Executing genrule //:g', configuration: ")
+            line.starts_with(
+                "SUBCOMMAND: # genrule rule target //:g [action 'Executing genrule //:g', configuration: ",
+            ) && line.ends_with(", mnemonic: Genrule]")
         })
         .unwrap_or_else(|| panic!("{err}"));
     assert!(lines[start + 1].starts_with("(cd /"), "{err}");
@@ -254,13 +257,17 @@ fn subcommands_print_spawns_like_bazel() {
         "{err}"
     );
     assert!(lines[start + 5].starts_with("# Configuration: "), "{err}");
-    assert!(lines[start + 6].starts_with("# Runner: "), "{err}");
+    assert!(
+        lines[start + 6].starts_with("# Execution platform: "),
+        "{err}"
+    );
+    assert!(lines[start + 7].starts_with("# Runner: "), "{err}");
     let output = ws.run(&["build", "--subcommands=pretty_print", "//:p"]);
     let err = stderr(&output);
     let lines: Vec<&str> = err.lines().collect();
     let start = lines
         .iter()
-        .position(|line| line.starts_with("SUBCOMMAND: # //:p "))
+        .position(|line| line.starts_with("SUBCOMMAND: # genrule rule target //:p "))
         .unwrap_or_else(|| panic!("{err}"));
     assert_eq!(
         lines[start + 4..start + 7],

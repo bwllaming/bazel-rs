@@ -1202,6 +1202,24 @@ fn register_spawn(
         // cache" (ExecutionRequirements.REMOTE_EXECUTION_INLINE_OUTPUTS).
         execution_info.insert("internal-inline-outputs".to_owned(), list.path.clone());
     }
+    // The raw progress message for the console (crate::action_console):
+    // `%{input}` (the primary input: the inputs, then the tools, a File
+    // executable last) resolved now, `%{label}`/`%{output}` when printed.
+    let console_progress = raw_progress.as_deref().map(|raw| {
+        if raw.contains("%{input}") {
+            match inputs[initial_inputs..]
+                .iter()
+                .chain(&inputs[..initial_inputs])
+                .next()
+            {
+                Some(input) => raw.replace("%{input}", crate::aquery::root_relative(&input.path)),
+                None => raw.to_owned(),
+            }
+        } else {
+            raw.to_owned()
+        }
+        .into()
+    });
     let extra = ActionExtra {
         inherited_environment: environment.inherited,
         // As given: the shared-action key filters it to the legal keys and
@@ -1209,6 +1227,7 @@ fn register_spawn(
         // (crate::shared_actions).
         execution_info,
         mnemonic: options.mnemonic,
+        progress: console_progress,
         ..ActionExtra::default()
     };
     let environment = environment.fixed;

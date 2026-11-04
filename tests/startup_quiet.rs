@@ -133,10 +133,13 @@ fn expected(name: &str) -> (i32, &'static str, &'static str) {
             "//:noisy\t<WS>/cache/actions/<H>/outputs/bazel-out/k8-fastbuild/bin/noisy.txt\n//:uses_old\t<WS>/cache/actions/<H>/outputs/bazel-out/k8-fastbuild/bin/uses_old.txt\n",
             "",
         ),
+        // The failed action's ERROR event with its stderr (its stdout on
+        // stdout), then the build results and the final ERROR
+        // (crate::action_console; INFO lines dropped).
         "build_action_failure" => (
             1,
-            "",
-            "bazel-rs: action '//:broken': action '//:broken' failed (exit status: 1):\nstdout:\nbroken-stdout\n\nstderr:\nbroken-stderr\n\n\nUse --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging\n",
+            "broken-stdout\n",
+            "ERROR: <WS>/BUILD.bazel:9:8: Executing genrule //:broken failed: (Exit 1): bash failed: error executing Genrule command (from genrule rule target //:broken) /bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo broken-stdout; echo broken-stderr >&2; exit 1'\n\nUse --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging\nbroken-stderr\nTarget //:broken failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Build did NOT complete successfully\n",
         ),
         "build_analysis_failure" => (
             1,
@@ -145,8 +148,8 @@ fn expected(name: &str) -> (i32, &'static str, &'static str) {
         ),
         "build_keep_going" => (
             1,
-            "//:noisy\t<WS>/cache/actions/<H>/outputs/bazel-out/k8-fastbuild/bin/noisy.txt\n//:uses_old\t<WS>/cache/actions/<H>/outputs/bazel-out/k8-fastbuild/bin/uses_old.txt\n",
-            "ERROR: analysis of //:bad: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:15, in _fails\n      fail(\"intentional analysis failure\")\nerror: fail: intentional analysis failure\n  --> //:defs.bzl:15:5\n   |\n15 |     fail(\"intentional analysis failure\")\n   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\nERROR: action '//:broken': action '//:broken' failed (exit status: 1):\nstdout:\nbroken-stdout\n\nstderr:\nbroken-stderr\n\n\nUse --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Build did NOT complete successfully\n",
+            "broken-stdout\n//:noisy\t<WS>/cache/actions/<H>/outputs/bazel-out/k8-fastbuild/bin/noisy.txt\n//:uses_old\t<WS>/cache/actions/<H>/outputs/bazel-out/k8-fastbuild/bin/uses_old.txt\n",
+            "ERROR: analysis of //:bad: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:15, in _fails\n      fail(\"intentional analysis failure\")\nerror: fail: intentional analysis failure\n  --> //:defs.bzl:15:5\n   |\n15 |     fail(\"intentional analysis failure\")\n   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\nERROR: <WS>/BUILD.bazel:9:8: Executing genrule //:broken failed: (Exit 1): bash failed: error executing Genrule command (from genrule rule target //:broken) /bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo broken-stdout; echo broken-stderr >&2; exit 1'\n\nUse --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging\nbroken-stderr\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Build did NOT complete successfully\n",
         ),
         "test" | "test_output_errors" => (
             3,
@@ -341,7 +344,7 @@ fn test_times(text: &str) -> String {
 fn planning_lines(text: &str) -> String {
     text.lines()
         .take_while(|line| {
-            !line.starts_with("action '")
+            !line.starts_with("INFO: From ")
                 && !line.contains(" actions executed, ")
                 && !line.starts_with("Target ")
         })

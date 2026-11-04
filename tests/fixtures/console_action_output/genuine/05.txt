@@ -1,0 +1,21 @@
+### build //ok:partial
+rc=0
+--- stderr
+OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.
+Computing main repo mapping: 
+Loading: 
+Loading: 0 packages loaded
+Analyzing: target //ok:partial (5 packages loaded, 6 targets configured)
+Analyzing: target //ok:partial (5 packages loaded, 6 targets configured)
+
+INFO: Analyzed target //ok:partial (6 packages loaded, 8 targets configured).
+INFO: From Executing genrule //ok:partial:
+no-newline-err
+INFO: Found 1 target...
+Target //ok:partial up-to-date:
+  bazel-bin/ok/p.txt
+INFO: Elapsed time: 1.491s, Critical Path: 0.02s
+INFO: 2 processes: 1 internal, 1 processwrapper-sandbox.
+INFO: Build completed successfully, 2 total actions
+--- stdout
+no-newline-out

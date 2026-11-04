@@ -1,0 +1,6 @@
+load("//:defs.bzl", "talk")
+genrule(name = "exit3", outs = ["e3.txt"], cmd = "echo before-fail; echo fail-err >&2; exit 3")
+genrule(name = "signal", outs = ["s.txt"], cmd = "kill -9 $$$$")
+genrule(name = "noout", outs = ["no.txt"], cmd = "true")
+load("//:defs.bzl", "failrule")
+failrule(name = "sfail")

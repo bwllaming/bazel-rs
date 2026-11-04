@@ -466,6 +466,10 @@ impl Fingerprint {
             java_compile,
             // Description only (crate::aquery), never compared.
             aquery: _,
+            // The console's owner and progress message
+            // (crate::action_console): like the action id, not compared.
+            owner: _,
+            progress: _,
         } = extra;
         self.paths(tree_outputs.iter());
         self.paths(tree_inputs.iter());

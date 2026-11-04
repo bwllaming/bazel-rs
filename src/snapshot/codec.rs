@@ -89,7 +89,9 @@ pub const MAGIC: &[u8; 8] = b"BZRSPLN1";
 /// build event plan (crate::bep::plan).
 // 7: incompatible skipped roots and BEP compatibility decisions in META.
 // 8: GROUPS and NODES sections carry a path table, paths as indices (MEM5).
-pub const FORMAT: u32 = 8;
+// 9: actions carry their console owner and raw progress message
+// (crate::action_console).
+pub const FORMAT: u32 = 9;
 /// Actions per NODES section (fixed: the encoding must not depend on the
 /// machine).
 pub const CHUNK: usize = 1024;
@@ -1224,6 +1226,29 @@ pub(crate) mod optional_path {
     }
 }
 
+/// `Option<SharedPath>` as raw bytes: in a section, one table entry for
+/// every equal value (an action's console owner, crate::action_console,
+/// is one per configured target), decoded shared.
+pub(crate) mod optional_shared_path {
+    use super::*;
+
+    pub(crate) fn serialize<S: Serializer>(
+        value: &Option<SharedPath>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value
+            .as_ref()
+            .map(|path| PathRef(path.as_path()))
+            .serialize(serializer)
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<SharedPath>, D::Error> {
+        Option::<PathIn>::deserialize(deserializer).map(|value| value.map(SharedPath::from_path_in))
+    }
+}
+
 /// `Vec<PathBuf>` as raw bytes.
 pub(crate) mod paths {
     use super::*;
@@ -1788,6 +1813,11 @@ mod tests {
                 constant_metadata: vec!["bazel-out/volatile-status.txt".into()],
                 java_compile: None,
                 aquery: None,
+                owner: Some(
+                    "//pkg:gen\0/ws/pkg/BUILD:1:8\0genrule rule\0\x000\0c\0@@platforms//host:host"
+                        .into(),
+                ),
+                progress: Some("Making %{output}".into()),
             },
             shell_pad: true,
             executable_file: false,

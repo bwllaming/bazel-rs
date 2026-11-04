@@ -1,0 +1,19 @@
+### build //fail:noout
+rc=1
+--- stderr
+OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.
+Computing main repo mapping: 
+Loading: 
+Loading: 0 packages loaded
+Analyzing: target //fail:noout (5 packages loaded, 6 targets configured)
+Analyzing: target //fail:noout (5 packages loaded, 6 targets configured)
+
+INFO: Analyzed target //fail:noout (6 packages loaded, 8 targets configured).
+ERROR: <WS>/fail/BUILD:4:8: declared output 'fail/no.txt' was not created by genrule. This is probably because the genrule actually didn't create this output, or because the output was a directory and the genrule was run remotely (note that only the contents of declared file outputs are copied from genrules run remotely)
+ERROR: <WS>/fail/BUILD:4:8: Executing genrule //fail:noout failed: not all outputs were created or valid
+Target //fail:noout failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: 1.408s, Critical Path: 0.02s
+INFO: 2 processes: 1 internal, 1 processwrapper-sandbox.
+ERROR: Build did NOT complete successfully
+--- stdout

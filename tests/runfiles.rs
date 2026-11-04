@@ -668,13 +668,10 @@ outexe = rule(_out, executable = True, attrs = {"executable": attr.output()})
         ),
         // Like Bazel, the tool's runfiles tree is attached (N23f); the
         // build then fails because //pkg:lazy writes no output.
-        (
-            "run_lazy",
-            "has missing or invalid output 'bazel-out/k8-fastbuild/bin/pkg/run_lazy.out'",
-        ),
+        ("run_lazy", "output 'pkg/run_lazy.out' was not created"),
         (
             "run_provider",
-            "has missing or invalid output 'bazel-out/k8-fastbuild/bin/pkg/run_provider.out'",
+            "output 'pkg/run_provider.out' was not created",
         ),
         (
             "outexe",

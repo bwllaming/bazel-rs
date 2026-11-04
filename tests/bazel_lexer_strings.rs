@@ -355,7 +355,10 @@ fn lone_byte_target_names_name_raw_bytes_like_bazel() {
         "def _w(ctx):\n    out = ctx.actions.declare_file('w\\377.txt')\n    ctx.actions.write(out, 'written\\n')\n    return [DefaultInfo(files = depset([out]))]\nw = rule(_w)\n",
     );
     f.file("w/BUILD", "load(':defs.bzl', 'w')\nw(name = 'w')\n");
-    rejected(&f.run(&["build", "//:g"]), "missing or invalid output");
+    rejected(
+        &f.run(&["build", "//:g"]),
+        "not all outputs were created or valid",
+    );
     rejected(&f.run(&["build", "//:s"]), "1 input file(s) do not exist");
     let output = f.run(&["build", "//w:w"]);
     assert!(output.status.success(), "{}", stderr(&output));

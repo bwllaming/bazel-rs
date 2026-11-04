@@ -1210,6 +1210,17 @@ fn create_cc_compile_action<'v>(
         execution_info.insert(requirement, String::new());
     }
     let mnemonic = compile_mnemonic(&action_name);
+    // CppCompileAction.getRawProgressMessage (:1330-1337): the action
+    // name's verb and the source file (a header-parsing action's header).
+    let progress = format!(
+        "{}{}",
+        match action_name.as_str() {
+            "c++-header-analysis" => "Header analysis for ",
+            "c++-module-deps-scanning" => "Deps scanning for ",
+            _ => "Compiling ",
+        },
+        crate::aquery::root_relative(&source.path)
+    );
     let compute_key = if crate::aquery::capturing() {
         Some(compile_compute_key(&CompileKeyParts {
             compilation: compilation_info,
@@ -1247,6 +1258,7 @@ fn create_cc_compile_action<'v>(
                 // The configuration's inherited --action_env names
                 // (ActionEnvironment.getInheritedEnv).
                 inherited_environment: action_environment.inherited,
+                progress: Some(progress.into()),
                 ..Default::default()
             },
             shell_pad: false,

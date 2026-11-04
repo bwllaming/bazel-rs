@@ -1150,8 +1150,20 @@ pub fn action_done(
     });
 }
 
-/// The exit code in a failed action's error (`failed (exit status: N)`).
+/// The exit code in a failed action's error: its `failed: (Exit N)` or
+/// `failed: (SIGNAL NAME)` (crate::action_console, 128 + the signal), or a
+/// native `failed (exit status: N)`.
 fn exit_code_of(error: &str) -> i32 {
+    if let Some((_, rest)) = error.split_once(" failed: (")
+        && let Some((status, _)) = rest.split_once(')')
+    {
+        if let Some(code) = status.strip_prefix("Exit ") {
+            return code.parse().unwrap_or(1);
+        }
+        if let Some(raw) = crate::action_console::raw_status_of(status) {
+            return raw;
+        }
+    }
     error
         .split_once("exit status: ")
         .and_then(|(_, rest)| {
@@ -1466,7 +1478,11 @@ fn post_execution(state: &mut State, exit_code: i32) {
             );
         }
         if let Some(error) = &action.error {
-            if let Some((_, stderr)) = error.split_once("\nstderr:\n") {
+            let stderr = match crate::action_console::reported(error) {
+                Some(reported) => Some(reported.stderr),
+                None => error.split_once("\nstderr:\n").map(|(_, stderr)| stderr),
+            };
+            if let Some(stderr) = stderr {
                 let stderr = stderr
                     .strip_suffix(crate::sandbox::SANDBOX_DEBUG_SUGGESTION)
                     .unwrap_or(stderr);
@@ -1729,12 +1745,23 @@ fn write_stderr(execution_root: &Path, index: usize, stderr: &str) -> Option<Pat
 /// A FailureDetail: the message, and for a spawn's non-zero exit its
 /// Spawn category (failure_details.proto Spawn.Code NON_ZERO_EXIT).
 fn failure_detail(error: &str, exit_code: i32) -> Msg {
-    let message = error
-        .split_once("\nstdout:\n")
-        .map_or(error, |(head, _)| head)
-        .to_owned();
+    let reported = crate::action_console::reported(error);
+    let message = match &reported {
+        Some(reported) => reported.message,
+        None => error
+            .split_once("\nstdout:\n")
+            .map_or(error, |(head, _)| head),
+    }
+    .to_owned();
+    let spawn_exit = match &reported {
+        Some(reported) => reported
+            .message
+            .split_once(" failed: (")
+            .is_some_and(|(_, rest)| !rest.starts_with("Timeout)")),
+        None => error.contains("exit status: "),
+    };
     let mut detail = Msg::new().str(1, "message", message);
-    if error.contains("exit status: ") {
+    if spawn_exit {
         detail = detail.msg(
             123,
             "spawn",
@@ -2280,6 +2307,14 @@ mod tests {
         assert_eq!(
             exit_code_of("action 'x' failed (exit status: 3):\nstdout:"),
             3
+        );
+        assert_eq!(
+            exit_code_of("LOC: Executing genrule //x failed: (Exit 4): bash failed: ..."),
+            4
+        );
+        assert_eq!(
+            exit_code_of("LOC: Executing genrule //x failed: (Killed): bash failed: ..."),
+            137
         );
         assert_eq!(action_label("//pkg:a#0"), "//pkg:a");
         assert_eq!(action_label("@@r+//p:t#runfiles_tree"), "@@r+//p:t");

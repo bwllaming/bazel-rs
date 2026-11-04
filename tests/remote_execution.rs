@@ -397,9 +397,14 @@ fn trees_symlinks_and_failures_come_back() {
     let failed = ws.run("c1", &["build", &flag, "//pkg:fails"]);
     assert!(!failed.status.success());
     assert!(
-        stderr(&failed).contains("failed (exit status: 3):\nstdout:\noops\n\nstderr:\nbad\n"),
+        stderr(&failed).contains("failed: (Exit 3): ") && stderr(&failed).contains("\nbad\n"),
         "{}",
         stderr(&failed)
+    );
+    assert!(
+        String::from_utf8_lossy(&failed.stdout).contains("oops\n"),
+        "{}",
+        String::from_utf8_lossy(&failed.stdout)
     );
     // An execution timeout (Action.timeout from the `timeout` requirement).
     let timed = ws.run("c1", &["build", &flag, "//pkg:timed"]);

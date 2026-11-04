@@ -120,6 +120,54 @@ pub fn note(text: &str) {
     }
 }
 
+/// Serializes [`event_with_output`]: one event and its output are never
+/// interleaved with another's.
+static EVENT_OUTPUT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// An event bound to a process's output (UiEventHandler.handleLocked,
+/// :455-495): `text` (`INFO: From …:`, `ERROR: …`) and its newline on
+/// stderr, then the process's stderr on stderr and its stdout on stdout.
+/// A last line without its newline (UiEventHandler.writeToStream keeps it
+/// buffered until the next event, which flushes it, stdout first, then
+/// ends the line on stderr) is written right away, the same bytes on each
+/// stream. An `informational` event (INFO) is dropped with its output
+/// under `--quiet` and the hidden kinds, like [`note`]; an error never.
+pub fn event_with_output(text: &str, stdout: &[u8], stderr: &[u8], informational: bool) {
+    if informational && (suppress_note() || quiet() || hidden(text.as_bytes())) {
+        return;
+    }
+    count_print();
+    fn split(bytes: &[u8]) -> (&[u8], &[u8]) {
+        match bytes.iter().rposition(|&byte| byte == b'\n') {
+            Some(index) => bytes.split_at(index + 1),
+            None => (&[], bytes),
+        }
+    }
+    let (err_lines, err_rest) = split(stderr);
+    let (out_lines, out_rest) = split(stdout);
+    let _serial = EVENT_OUTPUT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut err = std::io::stderr().lock();
+    let _ = err.write_all(text.as_bytes());
+    if !text.ends_with('\n') {
+        let _ = err.write_all(b"\n");
+    }
+    let _ = err.write_all(err_lines);
+    let _ = err.flush();
+    if !out_lines.is_empty() || !out_rest.is_empty() {
+        let mut out = std::io::stdout().lock();
+        let _ = out.write_all(out_lines);
+        let _ = out.write_all(out_rest);
+        let _ = out.flush();
+    }
+    if !err_rest.is_empty() || !out_rest.is_empty() {
+        let _ = err.write_all(err_rest);
+        let _ = err.write_all(b"\n");
+    }
+    let _ = err.flush();
+}
+
 /// Write stderr bytes that may hold marked notes ([`marked`]): as they are
 /// into an active capture (whose reader filters what it forwards), else
 /// filtered.

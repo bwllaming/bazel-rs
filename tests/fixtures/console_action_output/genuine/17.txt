@@ -1,0 +1,28 @@
+### build --subcommands=pretty_print //ok:quiet
+rc=0
+--- stderr
+OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.
+Computing main repo mapping: 
+Loading: 
+Loading: 0 packages loaded
+Analyzing: target //ok:quiet (5 packages loaded, 6 targets configured)
+Analyzing: target //ok:quiet (5 packages loaded, 6 targets configured)
+
+INFO: Analyzed target //ok:quiet (6 packages loaded, 8 targets configured).
+SUBCOMMAND: # genrule rule target //ok:quiet [action 'Executing genrule //ok:quiet', configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18, execution platform: @@platforms//host:host, mnemonic: Genrule]
+(cd <OB>/execroot/_main && \
+  exec env - \
+    PATH=/bin:/usr/bin:/usr/local/bin \
+  /bin/bash \
+    -c \
+    'source external/bazel_tools/tools/genrule/genrule-setup.sh; touch bazel-out/k8-fastbuild/bin/ok/q.txt')
+# Configuration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18
+# Execution platform: @@platforms//host:host
+# Runner: processwrapper-sandbox
+INFO: Found 1 target...
+Target //ok:quiet up-to-date:
+  bazel-bin/ok/q.txt
+INFO: Elapsed time: 1.348s, Critical Path: 0.03s
+INFO: 2 processes: 1 internal, 1 processwrapper-sandbox.
+INFO: Build completed successfully, 2 total actions
+--- stdout

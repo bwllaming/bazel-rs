@@ -230,35 +230,67 @@ pub fn shows_output(owner: &str) -> bool {
     filter.is_match(label).unwrap_or(true)
 }
 
-/// UiEventHandler.getContentIfSmallEnough: `text`, or the oversize notice
-/// (the stream saved to a file named after the action).
-pub fn small_enough<'a>(name: &str, id: &str, text: &'a str) -> std::borrow::Cow<'a, str> {
+/// The limit and the saved-streams directory of this command.
+fn limit_and_saved() -> (usize, Option<PathBuf>) {
     let guard = POLICY.read().unwrap_or_else(|error| error.into_inner());
-    let (limit, saved) = guard.as_ref().map_or((1_048_576, None), |policy| {
+    guard.as_ref().map_or((1_048_576, None), |policy| {
         (policy.max_stdouterr_bytes, policy.saved.clone())
-    });
-    if text.len() <= limit {
-        return std::borrow::Cow::Borrowed(text);
-    }
-    let file_name = format!(
+    })
+}
+
+/// The saved file of action `id`'s stream `name`.
+fn saved_file(directory: &std::path::Path, name: &str, id: &str) -> PathBuf {
+    directory.join(format!(
         "{name}-{}",
         id.chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
             .collect::<String>()
-    );
+    ))
+}
+
+fn notice(name: &str, path: &std::path::Path, size: u64, limit: usize) -> Vec<u8> {
+    format!(
+        "{name} ({}) {size} exceeds maximum size of --experimental_ui_max_stdouterr_bytes={limit} bytes; skipping\n",
+        path.display(),
+    )
+    .into_bytes()
+}
+
+/// [`small_enough`] of a stream still in its file `log` (`size` bytes):
+/// `None` when it is small enough to read, else the notice, the file
+/// copied where the notice says.
+pub fn oversized(name: &str, id: &str, log: &std::path::Path, size: u64) -> Option<Vec<u8>> {
+    let (limit, saved) = limit_and_saved();
+    if size <= limit as u64 {
+        return None;
+    }
     let path = saved
         .map(|directory| {
-            let path = directory.join(file_name);
+            let path = saved_file(&directory, name, id);
             let _ = std::fs::create_dir_all(&directory);
-            let _ = std::fs::write(&path, text);
+            let _ = std::fs::copy(log, &path);
             path
         })
         .unwrap_or_default();
-    std::borrow::Cow::Owned(format!(
-        "{name} ({}) {} exceeds maximum size of --experimental_ui_max_stdouterr_bytes={limit} bytes; skipping\n",
-        path.display(),
-        text.len()
-    ))
+    Some(notice(name, &path, size, limit))
+}
+
+/// UiEventHandler.getContentIfSmallEnough: `bytes`, or the oversize notice
+/// (the stream saved to a file named after the action).
+pub fn small_enough<'a>(name: &str, id: &str, bytes: &'a [u8]) -> std::borrow::Cow<'a, [u8]> {
+    let (limit, saved) = limit_and_saved();
+    if bytes.len() <= limit {
+        return std::borrow::Cow::Borrowed(bytes);
+    }
+    let path = saved
+        .map(|directory| {
+            let path = saved_file(&directory, name, id);
+            let _ = std::fs::create_dir_all(&directory);
+            let _ = std::fs::write(&path, bytes);
+            path
+        })
+        .unwrap_or_default();
+    std::borrow::Cow::Owned(notice(name, &path, bytes.len() as u64, limit))
 }
 
 #[cfg(test)]

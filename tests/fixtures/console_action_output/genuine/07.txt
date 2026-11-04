@@ -1,0 +1,20 @@
+### build //ok:usetool
+rc=0
+--- stderr
+OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.
+Computing main repo mapping: 
+Loading: 
+Loading: 0 packages loaded
+Analyzing: target //ok:usetool (5 packages loaded, 6 targets configured)
+Analyzing: target //ok:usetool (5 packages loaded, 6 targets configured)
+
+INFO: Analyzed target //ok:usetool (7 packages loaded, 9 targets configured).
+INFO: From Executing genrule //tool:gen [for tool]:
+tool-talks
+INFO: Found 1 target...
+Target //ok:usetool up-to-date:
+  bazel-bin/ok/u.txt
+INFO: Elapsed time: 1.515s, Critical Path: 0.04s
+INFO: 3 processes: 1 internal, 2 processwrapper-sandbox.
+INFO: Build completed successfully, 3 total actions
+--- stdout
