@@ -123,6 +123,7 @@ tests/fixtures/repository_cache/workspace
 tests/fixtures/repository_slots/workspace
 tests/fixtures/runfiles_repo_links/workspace
 tests/fixtures/runfiles_transitions/workspace
+tests/fixtures/sealed_copies/workspace
 tests/fixtures/sh_binary/rules_shell
 tests/fixtures/sh_binary/workspace
 tests/fixtures/shared_actions/workspace
