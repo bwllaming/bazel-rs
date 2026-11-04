@@ -9,6 +9,7 @@ bazel-rs-out
 target
 tests/fixtures/action_tmpdir/workspace
 tests/fixtures/aquery/depsets
+tests/fixtures/aquery/genrules
 tests/fixtures/aquery/kitchen
 tests/fixtures/args_map_each/workspace
 tests/fixtures/artifact_identity/workspace
@@ -45,12 +46,14 @@ tests/fixtures/coverage_command/workspace
 tests/fixtures/cpp_flag_options/workspace
 tests/fixtures/cquery_artifacts/workspace
 tests/fixtures/cquery_aspect_edges/workspace
+tests/fixtures/cquery_output/workspace
 tests/fixtures/cquery_proto/workspace
 tests/fixtures/custom
 tests/fixtures/depset_structs/workspace
 tests/fixtures/directory_expander/workspace
 tests/fixtures/disk_cache/workspace
 tests/fixtures/distinct_inodes/workspace
+tests/fixtures/dump_command/ws
 tests/fixtures/eager_resolution_mapping/localdep
 tests/fixtures/eager_resolution_mapping/workspace
 tests/fixtures/enable_runfiles_option/workspace
@@ -72,6 +75,7 @@ tests/fixtures/genrule_toolchains/workspace
 tests/fixtures/go_transitions/workspace
 tests/fixtures/implicit_outputs/workspace
 tests/fixtures/instrumented_files/workspace
+tests/fixtures/java_action_parity/ws
 tests/fixtures/java_actions/python
 tests/fixtures/java_actions/workspace
 tests/fixtures/java_expand_opts/workspace
@@ -125,6 +129,7 @@ tests/fixtures/signal_dispositions/workspace
 tests/fixtures/snapshot_audit/workspace
 tests/fixtures/source_directories/workspace
 tests/fixtures/split_transitions/workspace
+tests/fixtures/starlark_doc_extract/ws
 tests/fixtures/starlark_transitions/go_shaped
 tests/fixtures/target_compatible_with/workspace
 tests/fixtures/td_support
