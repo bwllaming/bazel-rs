@@ -66,8 +66,20 @@ transition names) and `--show_config_fragments` (per rule node its own
 required fragments, build-setting label and requested aspects'
 fragments). `--output=files|build|transitions` key their own analysis
 (cquery_state `presentation`); `--show_config_fragments` is part of every
-key. Measured on the private ~/code clone, `deps(//...)` label output is
-unaffected (the facts are not recorded; table below).
+key. Measured on the private ~/code clone (ff579ddf), `deps(//...)` with the
+snapshot off, release builds, one run each on a shared host:
+
+| binary / format | wall | peak RSS (ru_maxrss) | lines |
+|---|---|---|---|
+| main 22a491f3, `--output=label` | 197.0 s | 6,711 MiB | 261,817 |
+| this branch, `--output=label` (byte-identical) | 200.5 s | 6,746 MiB | 261,817 |
+| this branch, `--output=build` | 204.1 s | 6,730 MiB | 619,432 |
+| this branch, `--output=transitions --transitions=full` | 200.9 s | 6,728 MiB | 1,508,579 |
+| this branch, `--show_config_fragments=transitive` | 195.6 s | 6,732 MiB | 261,817 |
+
+The peak is the analysis; the recorded facts stay below it (differences are
+run-to-run noise). The ~/code outputs of the new formats are not compared
+with genuine (genuine Bazel never runs on ~/code).
 
 ## `--output=build`
 
@@ -96,7 +108,10 @@ ConfigFeatureFlagTaggedTrimmingTransition)`, `NoTransition` parts for test
 rules, aliases, test-option config_settings and the
 `//command_line_option/fragment:test` tag; none for a rule named `alias`,
 genuine's `getName().equals("alias")`). Toolchain edges print as
-`[toolchain dependency]`, private attributes as `$name`. `full` adds
+`[toolchain dependency]`, private attributes as `$name`; an edge into the
+no-config configuration (`package_metadata`, BaseRuleClasses.java:292-297) is
+`NoConfigTransition` and prints no option diff (only the unmodelled
+`flag_alias` differs there in genuine). `full` adds
 OptionsDiff.getPrettyPrintList per transitioned edge: the modelled native
 options that differ (options class, then name; `name:old -> [new, …]`),
 `is exec configuration`, `platform_suffix` and the exec transition's

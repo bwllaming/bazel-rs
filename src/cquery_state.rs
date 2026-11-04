@@ -991,6 +991,7 @@ mod tests {
             build_recorded: false,
             transitions: Default::default(),
             transitions_recorded: false,
+            no_config_configurations: Default::default(),
             fragments: Default::default(),
             fragments_recorded: false,
         };

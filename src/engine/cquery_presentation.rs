@@ -608,7 +608,12 @@ impl Graph {
                     self.display_label(label)
                 )
                 .map_err(io)?;
-                if full && changed {
+                // Into the empty configuration only unmodelled CoreOptions
+                // (`flag_alias`) can differ: no native diff lines.
+                let to_no_config = first
+                    .configuration
+                    .is_some_and(|id| self.no_config_configurations.contains(&id));
+                if full && changed && !to_no_config {
                     let Some(from) = node.configuration else {
                         continue;
                     };

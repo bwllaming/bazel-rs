@@ -228,6 +228,9 @@ pub struct Graph {
     /// `--output=transitions` graphs only (super::cquery_presentation).
     pub transitions: BTreeMap<u32, super::cquery_presentation::NodeTransitions>,
     pub transitions_recorded: bool,
+    /// The no-config (NoConfigTransition) configurations, by index
+    /// (`--output=transitions` graphs only).
+    pub no_config_configurations: BTreeSet<u32>,
     /// `--show_config_fragments` graphs only (super::cquery_presentation).
     pub fragments: BTreeMap<u32, super::cquery_presentation::NodeFragments>,
     pub fragments_recorded: bool,
@@ -2181,6 +2184,14 @@ impl Engine {
         // `--output=transitions` / `--show_config_fragments` facts.
         let mut transitions = BTreeMap::new();
         let mut fragments = BTreeMap::new();
+        let mut no_config_configurations = BTreeSet::new();
+        if self.cquery_transitions {
+            for (config, index) in &config_ids {
+                if self.configurations.get(*config).native.no_config {
+                    no_config_configurations.insert(*index);
+                }
+            }
+        }
         if self.cquery_transitions || self.cquery_fragments {
             let mut aspect_fragments: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
             for (requester, applications) in &capture.requests {
@@ -2234,6 +2245,7 @@ impl Engine {
             build_recorded: self.cquery_build,
             transitions,
             transitions_recorded: self.cquery_transitions,
+            no_config_configurations,
             fragments,
             fragments_recorded: self.cquery_fragments,
         })
