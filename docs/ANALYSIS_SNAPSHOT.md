@@ -983,7 +983,10 @@ run uses to reuse it runs in this run and is recorded instead:
 On ~/code a cold head planning now records what a warm one records (5,369
 pointer reads, 5,409 trees, no taint but `extension-output`), and a
 lukewarm one is saved; the build after `affected` derives from it
-(docs/AFFECTED_TARGETS.md §8.10).
+(docs/AFFECTED_TARGETS.md §8.10). On a cold cache too, since published
+trees are sealed (docs/REPOSITORY_SLOTS.md, "Sealed trees"): the `query`
+in between no longer writes `pip/__pycache__` into the `pypi__pip` tree
+the planning verified, and the cold build derives (137 s → 52 s).
 
 *Refresh keeps DERIVE.* A hit that settled racy keys rewrites its snapshot
 with the refreshed INPUTS (step 6); the rewrite dropped the DERIVE section,

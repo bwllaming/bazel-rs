@@ -137,7 +137,11 @@ Tests: `published_trees_are_sealed_against_writes` (modes on disk and in
 the manifest, `EACCES` for a new `__pycache__`, a new file, a rewrite and a
 removal, a Python importing from the tree writes nothing, reuse and
 republication over a sealed tree), `writes_into_a_self_referencing_slot_never_change_its_tree`,
-`mutable_slots_of_sealed_trees_are_writable`, the stores' tamper tests
+`mutable_slots_of_sealed_trees_are_writable`,
+`tests/snapshot.rs` `a_repository_rule_writing_into_another_tree_leaves_the_snapshot_valid`
+(a rule writing through another tree's root is denied — a new `__pycache__`,
+a new file, an appended file — a Python import from it writes nothing, and
+the snapshot that verified the tree hits after it), the stores' tamper tests
 (which write through `tampering`), `tests/vendor_tempfile.rs`, and the
 ~/code CI sequence (docs/AFFECTED_TARGETS.md §8.10).
 

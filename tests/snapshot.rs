@@ -1670,6 +1670,71 @@ watching_rule = repository_rule(implementation = _watching)
     twin.same(args, &[]).assert_hit();
 }
 
+/// Published trees are sealed (docs/REPOSITORY_SLOTS.md, "Sealed trees"):
+/// a repository rule that writes into another repository's published tree —
+/// rules_python's `pip` building an sdist with the `pypi__pip` tree on its
+/// PYTHONPATH wrote `pip/__pycache__` there (docs/AFFECTED_TARGETS.md §8.10)
+/// through the tree's root it was given — is denied, and a snapshot that
+/// verified that tree keeps hitting after
+/// the command that ran the writer (before, its next lookup missed on the
+/// tree's extra entry and the full analysis republished it).
+#[test]
+fn a_repository_rule_writing_into_another_tree_leaves_the_snapshot_valid() {
+    let twin = fixture();
+    twin.write(
+        "py/repos.bzl",
+        r#"def _lib(ctx):
+    ctx.file("BUILD.bazel", "exports_files(['pkg/mod.py'])\n")
+    ctx.file("pkg/__init__.py", "")
+    ctx.file("pkg/mod.py", "VALUE = 42\n")
+
+lib_rule = repository_rule(implementation = _lib)
+
+def _writer(ctx):
+    lib = ctx.path(Label("@pylib//:pkg/mod.py")).dirname.dirname
+    # The tree's root as the tool learns it (PYTHONPATH): an existing path,
+    # so the repository is not converted into a mutable copy
+    # (docs/REPOSITORY_SLOTS.md, "Written-into repository").
+    script = 'mkdir "$LIB/pkg/__pycache__" 2>/dev/null && echo created-dir; echo x > "$LIB/extra" 2>/dev/null && echo created-file; echo y >> "$LIB/pkg/mod.py" 2>/dev/null && echo rewrote; echo done'
+    shell = ctx.execute(["/bin/sh", "-c", script], environment = {"LIB": str(lib)})
+    python = ctx.which("python3")
+    imported = "no python"
+    if python:
+        result = ctx.execute([python, "-c", "import pkg.mod; print(pkg.mod.VALUE)"], environment = {"PYTHONPATH": str(lib), "PYTHONDONTWRITEBYTECODE": ""})
+        imported = result.stdout.strip() + " " + str(result.return_code)
+    ctx.file("BUILD.bazel", "exports_files(['out.txt'])\n")
+    ctx.file("out.txt", shell.stdout + imported + "\n")
+
+writer_rule = repository_rule(implementation = _writer)
+"#,
+    );
+    twin.write(
+        "py/BUILD.bazel",
+        "genrule(name = 'lib', srcs = ['@pylib//:pkg/mod.py'], outs = ['lib.txt'], cmd = 'cp $< $@')\ngenrule(name = 'writer', srcs = ['@writer//:out.txt'], outs = ['writer.txt'], cmd = 'cp $< $@')\n",
+    );
+    twin.write(
+        "MODULE.bazel",
+        &format!(
+            "{MODULE}\nlib_rule = use_repo_rule('//py:repos.bzl', 'lib_rule')\nlib_rule(name = 'pylib')\nwriter_rule = use_repo_rule('//py:repos.bzl', 'writer_rule')\nwriter_rule(name = 'writer')\n"
+        ),
+    );
+    let lib = &["build", "//py:lib"];
+    twin.same(lib, &[]).assert_saved();
+    // Settle the tree's keys (a racy one is verified on every hit).
+    std::thread::sleep(std::time::Duration::from_millis(2200));
+    twin.same(lib, &[]).assert_hit();
+    let writer = twin.same(&["build", "//py:writer"], &[]);
+    writer.assert_success();
+    let written = built_output(&twin, ON, &writer.on);
+    let python = if written.contains("no python") {
+        "no python"
+    } else {
+        "42 0"
+    };
+    assert_eq!(written, format!("done\n{python}\n"));
+    twin.same(lib, &[]).assert_hit();
+}
+
 const STAMP_BUILD: &str = r##"load("//:rules.bzl", "script_binary", "script_test", "stamped")
 
 stamped(name = "stamped")

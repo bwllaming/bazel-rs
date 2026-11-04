@@ -1084,4 +1084,29 @@ analyze in full.
   writes `pip/__pycache__` into rules_python's published `pypi__pip` tree;
   the derived lookup sees that tree changed (`does not match its manifest
   (extra pip/__pycache__)`) — correctly, the full analysis repairs the tree.
-  Not changed here.
+  Not changed here; fixed by sealed trees (below).
+
+**Sealed trees (published-tree-writes).** Published repository trees are
+sealed now (docs/REPOSITORY_SLOTS.md, "Sealed trees"): no file or directory
+has a write bit, so `pip`'s build subprocesses, importing `pip` from the
+`pypi__pip` tree without `-B`, skip the bytecode they cannot write, and the
+tree stays as published. Measured on the same private clone at `4445d0f`,
+same sequence, cold `--cache-dir` (the snapshot.debian.org blobs seeded into
+its download cache identically for every run: the archive answered 503 over
+IPv6 that day), a populated local HTTP remote cache, `nice -n 10`, one run
+each, seconds:
+
+| binary | affected | query | build | test |
+|---|---|---|---|---|
+| main `f7d0c36e` (0.4.9) | 220 | 111 | 137 (`37854 targets configured`) | 3.6 |
+| sealed trees | 213 | 113 | **52 (derived: `0 targets configured`)** | 2.6 (derived) |
+
+affected's output, the query's output, the build's and the test's stdout
+and the build's completed events (480 targets, all successful) are
+identical; the derived build does not print the analysis-time `DEBUG` /
+`WARNING` lines of rules_python's full analysis (as every derived build).
+After `affected` and `query`, main's store had one tree written into — the
+`pypi__pip` tree, 353 entries below `pip/**/__pycache__` — and nothing
+else (no file of any tree changed after its publication, no other extra
+entry, in any tree area); the sealed store had none, and no command printed
+a permission error.
