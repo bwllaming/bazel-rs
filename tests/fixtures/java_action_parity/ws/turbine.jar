@@ -1,0 +1,3 @@
+#!/bin/sh
+echo unexpectedly-executed >&2
+exit 97

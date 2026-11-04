@@ -1,0 +1,4 @@
+module(name = "java_action_parity")
+
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_java", version = "9.1.0")

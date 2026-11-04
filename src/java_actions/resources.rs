@@ -187,6 +187,12 @@ pub(super) fn register<'v>(
     }
     line.add_paths("--classpath_resources", classpath_resources);
     let flags = line.expand();
+    // SpawnAction.ensureCallable: PathFragment.getCallablePathString.
+    let callable = if executable.path.contains('/') {
+        executable.path.clone()
+    } else {
+        format!("./{}", executable.path)
+    };
     let meta = crate::aquery::capturing().then(|| {
         let mut key_info: BTreeMap<String, String> = context
             .propagated_tags
@@ -196,8 +202,8 @@ pub(super) fn register<'v>(
         key_info.insert("supports-path-mapping".into(), "1".into());
         let key_info: Vec<(String, String)> = key_info.into_iter().collect();
         let mut executable_line = command::Line::default();
-        executable_line.add(executable.path.clone());
-        let mut arguments = vec![executable.path.clone()];
+        executable_line.add(callable.clone());
+        let mut arguments = vec![callable.clone()];
         arguments.extend(flags.iter().cloned());
         crate::aquery::Meta {
             progress: Some("Building Java resource jar".into()),
@@ -220,7 +226,7 @@ pub(super) fn register<'v>(
         }
     });
     let spec = CommandLineSpec {
-        executable: vec![executable.path.clone()],
+        executable: vec![callable.clone()],
         parts: vec![Part {
             groups: vec![Group::Strings(flags)],
             flag_per_line: false,
@@ -251,7 +257,7 @@ pub(super) fn register<'v>(
             inputs,
             command: String::new(),
             write: None,
-            program: Some(executable.path.clone()),
+            program: Some(callable.clone()),
             arguments,
             environment: environment.fixed,
             extra: crate::action::ActionExtra {

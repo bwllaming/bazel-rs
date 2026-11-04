@@ -1,0 +1,33 @@
+{
+  "bazel": "9.3.1 (/home/coder/bazel/.direnv/reference/bazel-9.3.1-linux-x86_64)",
+  "sha256": "7f775b54bbec487efaf0f49ccda1d2ed02cd34f582edfdd6aeeec76e39ef585c",
+  "invocation": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 bazel --batch --ignore_all_rc_files --output_user_root=<private> aquery --repository_cache=<private> //pkg:all --extra_toolchains=//:registered, in a copy of ws/ (MODULE.bazel: bazel_dep platforms 1.0.0 and rules_java 9.1.0 from bcr.bazel.build)",
+  "captured": "2026-11-04",
+  "script": "/tmp/opencode/w/jap-g.sh (not committed)",
+  "fixture_files_sha256": {
+    "ws/BUILD.bazel": "4e1f5a5efb90c51e78fc25cc12f5fab067373a8e9d38c8a3c0bbc43c0a215762",
+    "ws/MODULE.bazel": "e6eeea7f960ffe25d080d5c06a6043c20fa013558e1243c092c40d8edf1d2036",
+    "ws/genclass.jar": "f0abafc96c497956bfcc9508e90af9a8a0b01b0e08ce57eee39c365424b11d1b",
+    "ws/ijar": "f0abafc96c497956bfcc9508e90af9a8a0b01b0e08ce57eee39c365424b11d1b",
+    "ws/javabuilder.jar": "f0abafc96c497956bfcc9508e90af9a8a0b01b0e08ce57eee39c365424b11d1b",
+    "ws/jdk/bin/java": "f0abafc96c497956bfcc9508e90af9a8a0b01b0e08ce57eee39c365424b11d1b",
+    "ws/jdk/lib/ct.sym": "f0abafc96c497956bfcc9508e90af9a8a0b01b0e08ce57eee39c365424b11d1b",
+    "ws/pkg/A.java": "d7c12e72cb7af21c72ca7bbf4d7c990b3e75c78e2863104b759c9bc10f53d9fd",
+    "ws/pkg/ApiUser.java": "363093266ee08786dab075635077237cc3622f43283c0b8cff25f72da499a902",
+    "ws/pkg/B.java": "aa0687253b3665bf1a980f6c55b2ee284a5ad02bdf3bf98e567d76ed6a64e7c7",
+    "ws/pkg/BUILD.bazel": "fd0305762f434adaf088306dceb46608011435e5dfd8d8d77f20aedc495b54b7",
+    "ws/pkg/C.java": "3b780a240d9ba03d1caf969e921bf36611322da768ff6ee1eef56ec644ed3d0a",
+    "ws/pkg/M.java": "db53a4e02d62dda25170439a83b43e7b63a1255a60349260138477039d9ff0bd",
+    "ws/pkg/Off.java": "4cdceb08b6e8d1f5bb3110002ea52b85ceffa58f55dff47a0ebc209441f7c106",
+    "ws/pkg/data.txt": "6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f",
+    "ws/pkg/imported.jar": "f07628a6852d20da2a93088742d97ecdf2b70522768f64fd98e518d61a147d19",
+    "ws/pkg/proc/Gen.java": "79d343d4b78e512716654471e521bf41246f2b328dd4b59f00fcaee37276413b",
+    "ws/pkg/src/main/resources/r/r.txt": "8e54b0ca18020275e4aef1ca0eb5e197e066c065c1864817652a8a39c55402cd",
+    "ws/singlejar": "f0abafc96c497956bfcc9508e90af9a8a0b01b0e08ce57eee39c365424b11d1b",
+    "ws/turbine.jar": "f0abafc96c497956bfcc9508e90af9a8a0b01b0e08ce57eee39c365424b11d1b"
+  },
+  "outputs": {
+    "genuine/all.txt": "17221e8494ede2188a7a9e85b5c7d6a8f41063d1810d3675e496f027e7c1f6b9"
+  },
+  "notes": "45 actions: Javac (deps/exports/resources/javacopts/annotation processors/source jar/empty), Turbine, JavacTurbine (generates_api plugin), GenClass and source jars (JavaSourceJar), JavaResourceJar (resources, resource_strip_prefix), JavaIjar (java_import), a genrule. The native test analyzes the same BUILD files with the same rules_java 9.1.0 Starlark from the builtin fixture registry archive (tests/support/java_scaffold.rs); every block, ActionKey included, is byte-identical up to the configuration checksum."
+}

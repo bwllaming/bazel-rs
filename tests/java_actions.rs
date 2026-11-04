@@ -5,6 +5,7 @@
 #![allow(clippy::disallowed_methods)]
 include!("support/temp_root.rs");
 include!("support/module_archives.rs");
+include!("support/java_scaffold.rs");
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -29,140 +30,15 @@ fn copy(from: &Path, to: &Path) {
     }
 }
 
-fn empty_builds(dir: &Path) {
-    for entry in fs::read_dir(dir).unwrap() {
-        let entry = entry.unwrap();
-        if entry.file_type().unwrap().is_dir() {
-            empty_builds(&entry.path());
-        } else if matches!(entry.file_name().to_str(), Some("BUILD" | "BUILD.bazel")) {
-            fs::set_permissions(entry.path(), fs::Permissions::from_mode(0o644)).unwrap();
-            fs::write(entry.path(), "").unwrap();
-        }
-    }
-}
-
 impl Fixture {
     fn new() -> Self {
-        use base64::Engine as _;
         let f = Self(tempfile::tempdir_in(crate::test_temp::root()).unwrap());
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
         copy(
             &manifest.join("tests/fixtures/java_actions/workspace"),
             f.path(),
         );
-        seed_module_archives(
-            &f.path().join("cache"),
-            &[
-                "rules_java@9.1.0",
-                "rules_cc@0.2.17",
-                "platforms@1.0.0",
-                "bazel_skylib@1.8.2",
-                "rules_license@1.0.0",
-            ],
-        );
-        let mut module = "module(name='java_actions_fixture')\n".to_owned();
-        for (name, version) in [
-            ("rules_java", "9.1.0"),
-            ("rules_cc", "0.2.17"),
-            ("platforms", "1.0.0"),
-            ("bazel_skylib", "1.8.2"),
-            ("rules_license", "1.0.0"),
-        ] {
-            let pin: serde_json::Value = serde_json::from_slice(
-                &fs::read(manifest.join(format!(
-                    "tests/fixtures/builtin_modules/registry/modules/{name}/{version}/source.json"
-                )))
-                .unwrap(),
-            )
-            .unwrap();
-            let digest = base64::engine::general_purpose::STANDARD
-                .decode(
-                    pin["integrity"]
-                        .as_str()
-                        .unwrap()
-                        .strip_prefix("sha256-")
-                        .unwrap(),
-                )
-                .unwrap();
-            let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-            let archive = fs::File::open(
-                f.path()
-                    .join("cache/repositories/downloads/sha256")
-                    .join(hex),
-            )
-            .unwrap();
-            let staging = f.path().join(format!("extract-{name}"));
-            tar::Archive::new(flate2::read::GzDecoder::new(archive))
-                .unpack(&staging)
-                .unwrap();
-            fs::rename(
-                staging.join(pin["strip_prefix"].as_str().unwrap_or("")),
-                f.path().join(name),
-            )
-            .unwrap();
-            if name != "platforms" {
-                empty_builds(&f.path().join(name));
-                let deps = match name {
-                    "rules_java" => {
-                        "bazel_dep(name='rules_cc',version='0.2.17')\nbazel_dep(name='bazel_skylib',version='1.8.2')\nbazel_dep(name='platforms',version='1.0.0')\n"
-                    }
-                    "rules_cc" => {
-                        "bazel_dep(name='bazel_skylib',version='1.8.2')\nbazel_dep(name='cc_compatibility_proxy',version='1')\n"
-                    }
-                    _ => "",
-                };
-                f.write(
-                    &format!("{name}/MODULE.bazel"),
-                    &format!("module(name='{name}',version='{version}')\n{deps}"),
-                );
-            }
-            module += &format!(
-                "bazel_dep(name='{name}',version='{version}')\nlocal_path_override(module_name='{name}',path='{name}')\n"
-            );
-        }
-        // Restrict public exports to the actual java_import implementation
-        // used by @bazel_tools' otherwise unrelated TestRunner declaration.
-        f.write("rules_java/java/defs.bzl", "load('//java/bazel/rules:bazel_java_import.bzl', _import='java_import')\njava_import=_import\n");
-        f.write("rules_java/toolchains/BUILD", "alias(name='current_java_toolchain',actual='@@//:compiler',visibility=['//visibility:public'])\n");
-        let cc = fs::read_to_string(f.path().join("rules_cc/cc/extensions.bzl")).unwrap();
-        let symbols = cc
-            .split_once("\"symbols.bzl\",")
-            .unwrap()
-            .1
-            .split_once("\"\"\"")
-            .unwrap()
-            .1
-            .split_once("\"\"\"")
-            .unwrap()
-            .0;
-        f.write("cc_proxy/symbols.bzl", symbols);
-        f.write("cc_proxy/BUILD.bazel", "");
-        f.write("cc_proxy/MODULE.bazel", "module(name='cc_compatibility_proxy',version='1')\nbazel_dep(name='rules_cc',version='0.2.17')\n");
-        module += "local_path_override(module_name='cc_compatibility_proxy',path='cc_proxy')\n";
-        for name in [
-            "apple_support",
-            "buildozer",
-            "protobuf",
-            "rules_shell",
-            "zlib",
-        ] {
-            module += &format!(
-                "local_path_override(module_name='{name}',path='{}')\n",
-                manifest
-                    .join("tests/fixtures/test_flags/stubs")
-                    .join(name)
-                    .display()
-            );
-        }
-        copy(
-            &manifest.join("tests/fixtures/java_actions/python"),
-            &f.path().join("python_stub/python"),
-        );
-        f.write(
-            "python_stub/MODULE.bazel",
-            "module(name='rules_python',version='0.40.0')\n",
-        );
-        module += "local_path_override(module_name='rules_python',path='python_stub')\n";
+        let module = "module(name='java_actions_fixture')\n".to_owned() + &java_scaffold(f.path());
         f.write("MODULE.bazel", &module);
         for name in [
             "turbine.jar",

@@ -1,0 +1,83 @@
+load("@rules_java//java/bazel/rules:bazel_java_import.bzl", "java_import")
+load("@rules_java//java/bazel/rules:bazel_java_library.bzl", "java_library")
+load("@rules_java//java/bazel/rules:bazel_java_plugin.bzl", "java_plugin")
+
+java_plugin(
+    name = "gen",
+    srcs = ["proc/Gen.java"],
+    processor_class = "proc.Gen",
+)
+
+java_plugin(
+    name = "api",
+    srcs = ["proc/Gen.java"],
+    generates_api = True,
+    processor_class = "proc.Gen",
+)
+
+java_import(
+    name = "imported",
+    jars = ["imported.jar"],
+)
+
+java_library(
+    name = "c",
+    srcs = ["C.java"],
+)
+
+java_library(
+    name = "b",
+    srcs = ["B.java"],
+    exports = [":c"],
+    deps = [":c"],
+)
+
+java_library(
+    name = "a",
+    srcs = ["A.java"],
+    javacopts = ["-Xlint:all"],
+    plugins = [":gen"],
+    resources = ["data.txt"],
+    tags = ["requires-network"],
+    exports = [":b"],
+    deps = [
+        ":b",
+        ":imported",
+    ],
+)
+
+java_library(
+    name = "api_user",
+    srcs = ["ApiUser.java"],
+    plugins = [":api"],
+    deps = [":c"],
+)
+
+java_library(
+    name = "empty",
+    exports = [":a"],
+)
+
+java_library(
+    name = "mixed",
+    srcs = [
+        "M.java",
+        ":gensrc",
+    ],
+    resource_strip_prefix = "pkg/src/main/resources",
+    resources = ["src/main/resources/r/r.txt"],
+    deps = [":a"],
+)
+
+java_library(
+    name = "strict_off",
+    srcs = ["Off.java"],
+    javacopts = ["-Xep:DefaultCharset:OFF"],
+    deps = [":b"],
+)
+
+genrule(
+    name = "gensrc",
+    outs = ["gen.srcjar"],
+    cmd = "touch $@",
+)

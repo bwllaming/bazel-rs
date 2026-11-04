@@ -1809,7 +1809,13 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
                 })?,
                 None => unpack_file(executable)?,
             };
-            let path = file.path.clone();
+            // SpawnAction.Builder.ensureCallable: a single-segment exec path
+            // runs as `./<name>` (PathFragment.getCallablePathString).
+            let path = if file.path.contains('/') {
+                file.path.clone()
+            } else {
+                format!("./{}", file.path)
+            };
             extra_inputs.push(file);
             (path.clone(), path)
         };
