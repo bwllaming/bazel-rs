@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 include!("support/explicit_modules.rs");
 include!("support/console.rs");
+include!("support/sealed_trees.rs");
 
 /// A loopback HTTP server answering `GET /<name>` with `payload <name>`
 /// after `delay` (a `/trickle/<name>` body arrives one byte per 100 ms),
@@ -186,7 +187,7 @@ impl Workspace {
 
     /// A cold build: no cache, no lockfile.
     fn cold(&self, threads: usize, jitter: u64, args: &[&str]) -> Run {
-        let _ = fs::remove_dir_all(self.path().join("cache"));
+        let _ = sealed_trees::remove_tree(self.path().join("cache"));
         let _ = fs::remove_file(self.path().join("MODULE.bazel.lock"));
         let started = Instant::now();
         let output = self.command(threads, jitter, args).output().unwrap();
@@ -434,7 +435,7 @@ fn cold_builds_are_identical_at_every_thread_count_and_downloads_overlap() {
     }
     // Without speculation the threaded engine is the sequential one too.
     let mut command = ws.command(8, 0, &["build", "//:everything"]);
-    let _ = fs::remove_dir_all(ws.path().join("cache"));
+    let _ = sealed_trees::remove_tree(ws.path().join("cache"));
     let _ = fs::remove_file(ws.path().join("MODULE.bazel.lock"));
     let output = command
         .env("BAZEL_RS_DEBUG_NO_SPECULATION", "1")
@@ -591,7 +592,7 @@ fn an_interrupted_build_leaves_a_consistent_store() {
     let (ws, _) = fixture(&server);
     let reference = ws.cold(1, 0, &["build", "//:everything"]);
     assert!(reference.output.status.success());
-    let _ = fs::remove_dir_all(ws.path().join("cache"));
+    let _ = sealed_trees::remove_tree(ws.path().join("cache"));
     let _ = fs::remove_file(ws.path().join("MODULE.bazel.lock"));
     let mut child = ws
         .command(8, 0, &["build", "//:everything"])
@@ -633,7 +634,7 @@ fn the_snapshot_recording_is_the_sequential_engines() {
     let server = Server::new(Duration::from_millis(300));
     let (ws, _) = fixture(&server);
     let record = |threads: usize| {
-        let _ = fs::remove_dir_all(ws.path().join("cache"));
+        let _ = sealed_trees::remove_tree(ws.path().join("cache"));
         let _ = fs::remove_file(ws.path().join("MODULE.bazel.lock"));
         let dump = ws.path().join(format!("dump-{threads}.txt"));
         let output = ws

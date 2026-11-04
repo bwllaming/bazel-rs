@@ -76,6 +76,71 @@ was `-L../<32-hex stage>` (TEST-SURVEY L2).
 * A canonical name longer than NAME_MAX (255 bytes; genuine fails with "File
   name too long") gets the slot `#long-<digest>`.
 
+## Sealed trees
+
+Published trees are immutable entries of a store that every command,
+worktree and process sharing the cache reads, and their identity is their
+content. So no file or directory of a published tree has a write
+permission bit (`chmod a-w`): nothing — another repository rule's tool, a
+Python importing a module from the tree, an unsandboxed action — can add,
+remove, rename or rewrite an entry. Genuine 9.3 does the same for the
+repositories it takes from its remote repository contents cache
+(`RemoteExternalOverlayFileSystem.java:327-331`: files "not writable to
+ensure that other repo rules can't accidentally modify the cached repo"),
+and rules_python seals its interpreter's `lib/` (`chmod -R ugo-w`) so no
+`.pyc` is ever written into it.
+
+The case that made it necessary (docs/AFFECTED_TARGETS.md §8.10): on
+~/code a cold `query` builds sdists with `pip` (whl_library), whose build
+subprocesses import `pip` from rules_python's `pypi__pip` tree without
+`-B` and wrote `pip/__pycache__` into it; every later lookup then found
+the tree changed (`does not match its manifest (extra pip/__pycache__)`)
+and the next command re-executed the repository and analyzed in full.
+CPython skips bytecode it cannot write (`importlib._bootstrap_external`
+`_write_atomic` errors are ignored), so a sealed tree changes nothing a
+Python process computes.
+
+* The modes a manifest records — and the identity covers — are the sealed
+  ones: the snapshot's modes without their write bits, the executable bit
+  kept (`repository_store::sealed_view`). Every repository executed by
+  this binary therefore gets a new identity once (republished trees of
+  older binaries keep theirs and stay writable until the repository runs
+  again; a tree written into is repaired by that re-execution). Action keys
+  are unchanged (they cover contents and the executable bit only).
+* Direct trees: an ordinary slot is sealed below its root after the
+  snapshot and its root once it is in place under `direct/trees` (moving a
+  directory to another parent needs its own write permission; a replaced
+  tree gets it back before it moves). A self-referencing slot stays the
+  repository's writable directory — gazelle's `go_repository` fills the
+  GOPATH of `go_repository_cache` through it, as in genuine's `external/` —
+  and only its published copy is sealed. A mutable slot made from a tree
+  (`restore_mutable`: a written-into repository, a missing self-referencing
+  slot) gets its owner's write permission back on every entry.
+* Registry and Git trees are sealed in their stages (inside `trees/`)
+  before their snapshot; Git's checkout modes are recorded as `0555` /
+  `0444`. The embedded `@bazel_tools` tree keeps the bundle's modes.
+* A process that tries to write into a tree now fails with `EACCES`
+  instead of changing it (before, the stat fingerprints caught the change
+  and the tree was republished by the next command). Copies of tree files
+  are read-only like copies of Bazel's outputs (`cp` keeps the mode):
+  a tool that copies a repository's files and then writes them in place
+  needs `chmod u+w` on its copy, as under remote execution, whose input
+  files are read-only too.
+* Removal: the store's own removals (quarantines, replaced trees,
+  `remove_tree`, the cache collection, docs/CACHE_GC.md) give directories
+  their owner's permissions first. Removing a cache by hand needs
+  `chmod -R u+w <cache>` first (like Go's module cache). The vendored
+  tempfile (`vendor/tempfile-3.27.0.provenance.json`) removes temporary
+  directories holding sealed trees (every test workspace's cache).
+
+Tests: `published_trees_are_sealed_against_writes` (modes on disk and in
+the manifest, `EACCES` for a new `__pycache__`, a new file, a rewrite and a
+removal, a Python importing from the tree writes nothing, reuse and
+republication over a sealed tree), `writes_into_a_self_referencing_slot_never_change_its_tree`,
+`mutable_slots_of_sealed_trees_are_writable`, the stores' tamper tests
+(which write through `tampering`), `tests/vendor_tempfile.rs`, and the
+~/code CI sequence (docs/AFFECTED_TARGETS.md §8.10).
+
 ## The bazel_tools slot
 
 Genuine's `<output_base>/external/bazel_tools` is a link to the install
@@ -155,14 +220,15 @@ store with their own pointers and stages.
 
 * A tool that writes below another repository's tree through an EXISTING
   path it was given (no missing path named, the slot not yet converted) or
-  through a path it learns at run time still writes into the tree; the
-  stat fingerprints catch that (the tree is republished). Conversely, a
+  through a path it learns at run time fails with `EACCES`: the tree is
+  sealed ("Sealed trees"; before, it wrote into the tree and the stat
+  fingerprints made the next command republish it). Conversely, a
   command naming a missing path below another repository only to probe it
   converts that repository (a copy of its tree; harmless otherwise).
 * A tool that learns a slot's path at run time (not from a label, its
   arguments, environment or working directory) and writes there later is not
   covered: into a mutable slot unlocked, or through an ordinary slot's link
-  into its tree (the stat fingerprints catch that: the tree is republished).
+  into its tree (which is sealed: the write fails).
 * Build actions writing into slots are not covered.
 * The cache's garbage collection (docs/CACHE_GC.md) removes unused trees
   with their pointers, slot links, markers and mutable slots; kept trees keep

@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 include!("support/explicit_modules.rs");
 include!("support/console.rs");
+include!("support/sealed_trees.rs");
 
 /// A loopback HTTP server answering `GET /<name>` with `payload <name>`
 /// after `delay` (`/missing/...` with a 404), one thread per connection; it
@@ -237,7 +238,7 @@ impl Workspace {
 
     /// A cold build (no cache, no lockfile).
     fn cold(&self, threads: usize, sequential: bool) -> Run {
-        let _ = fs::remove_dir_all(self.path().join("cache"));
+        let _ = sealed_trees::remove_tree(self.path().join("cache"));
         let _ = fs::remove_file(self.path().join("MODULE.bazel.lock"));
         let mut command = Command::new("timeout");
         command

@@ -521,11 +521,12 @@ unless the path holds a regular file with the keyed content and mode
 inode by identical bytes and modes; test
 `tree_links_count_replaced_tree_files_as_modified_unless_identical`). The
 tree's file is never removed (the executor removes only `cas/` blobs).
-Through the link a process can write to the tree file or, if the repository
-left them writable, next to it (a Python without rules_python's read-only
-`lib/` writes `__pycache__` there, as it does into Bazel's `external/`); the
-store's verification then makes the repository re-execute on the next
-command. Tests:
+Through the link a process cannot write to the tree file or next to it:
+published trees are sealed (docs/REPOSITORY_SLOTS.md, "Sealed trees"; a
+Python importing from a tree skips the `__pycache__` it cannot write, as it
+does in rules_python's read-only `lib/`). A tree of an older binary, still
+writable, that is written into makes the repository re-execute on the next
+command (the store's verification). Tests:
 `generated_executables_aliasing_tree_files_resolve_into_the_tree` (unit:
 alias, own path, runfile and plain input),
 `aliases_of_sources_and_outputs_keep_blob_staging` (unit),

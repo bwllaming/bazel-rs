@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 include!("support/explicit_modules.rs");
 include!("support/console.rs");
+include!("support/sealed_trees.rs");
 
 const ON: &str = "on";
 const OFF: &str = "off";
@@ -994,7 +995,7 @@ fn a_file_or_directory_deleted_from_a_repository_tree_misses() {
             if directory {
                 writable(sub.parent().unwrap());
                 writable(&sub);
-                fs::remove_dir_all(&sub).unwrap();
+                sealed_trees::remove_tree(&sub).unwrap();
             } else {
                 writable(&sub);
                 fs::remove_file(file).unwrap();
@@ -3702,7 +3703,7 @@ fn mutate(twin: &Twin, rng: &mut Rng, state: &mut FuzzState, step: usize) -> (St
             twin.each(|root| {
                 for entry in fs::read_dir(root.join("ws")).unwrap().flatten() {
                     if entry.file_name().to_string_lossy().starts_with("newpkg") {
-                        fs::remove_dir_all(entry.path()).unwrap();
+                        sealed_trees::remove_tree(entry.path()).unwrap();
                     }
                 }
             });
@@ -3803,7 +3804,7 @@ fn mutate(twin: &Twin, rng: &mut Rng, state: &mut FuzzState, step: usize) -> (St
         23 => {
             twin.each(|root| {
                 if let Some(tree) = fuzz_tree(root) {
-                    let _ = fs::remove_dir_all(tree.join("sub/deeper"));
+                    let _ = sealed_trees::remove_tree(tree.join("sub/deeper"));
                 }
             });
             name("store tree: a directory deleted")
@@ -6219,7 +6220,7 @@ fn a_cold_cache_with_locked_registry_hashes_saves() {
         .assert_not_saved("taint");
     twin.same(args, &[]).assert_saved();
     // A cold cache: everything is downloaded again.
-    twin.each(|root| fs::remove_dir_all(root.join("cache")).unwrap());
+    twin.each(|root| sealed_trees::remove_tree(root.join("cache")).unwrap());
     let before = server.requests();
     let cold = twin.same(args, &[]);
     cold.assert_success().assert_saved();

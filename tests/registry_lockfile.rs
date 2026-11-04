@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 include!("support/explicit_modules.rs");
+include!("support/sealed_trees.rs");
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -253,7 +254,7 @@ fn update_writes_bazel_lockfile_then_serves_hashed_files_from_the_cache() {
     );
     assert_eq!(f.lock().unwrap(), lock);
     // Without the repository cache, known files are fetched and verified.
-    fs::remove_dir_all(f.temp.path().join("cache")).unwrap();
+    sealed_trees::remove_tree(f.temp.path().join("cache")).unwrap();
     assert_eq!(f.ok(&[ALLOW]).len(), 6);
     // A registry file changed after locking.
     let module = f.temp.path().join("r1/modules/lockdemo_a/1.0/MODULE.bazel");
@@ -263,7 +264,7 @@ fn update_writes_bazel_lockfile_then_serves_hashed_files_from_the_cache() {
     )
     .unwrap();
     assert!(f.ok(&[ALLOW]).is_empty(), "cached by hash");
-    fs::remove_dir_all(f.temp.path().join("cache")).unwrap();
+    sealed_trees::remove_tree(f.temp.path().join("cache")).unwrap();
     let wanted = &hashes[&r("r1/modules/lockdemo_a/1.0/MODULE.bazel")];
     f.fails(
         &[ALLOW],

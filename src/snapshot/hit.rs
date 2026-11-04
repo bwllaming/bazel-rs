@@ -1275,7 +1275,9 @@ mod tests {
         ));
         assert!(kept());
         // A file of the named tree deleted: removed.
-        std::fs::remove_file(root.join("data.txt")).unwrap();
+        crate::repository_store::tampering(&root.join("data.txt"), || {
+            std::fs::remove_file(root.join("data.txt")).unwrap()
+        });
         session(cache.path()).failed(&format!(
             "cannot inspect '{}': No such file or directory (os error 2)",
             root.join("data.txt").display()
@@ -1331,7 +1333,9 @@ mod tests {
             owned.first_mismatch().map(|mismatch| mismatch.class),
             Some("mode")
         );
-        std::fs::write(root.join("data.txt"), "bad!\n").unwrap();
+        crate::repository_store::tampering(&root.join("data.txt"), || {
+            std::fs::write(root.join("data.txt"), "bad!\n").unwrap()
+        });
         let mismatch = crossed.first_mismatch().unwrap();
         assert_eq!(
             (mismatch.class, mismatch.path),
@@ -1432,7 +1436,7 @@ mod tests {
             "external/+local_rule+tools/tool.sh: Permission denied"
         )));
         assert!(!kept());
-        set_mode(&local_root.join("tool.sh"), 0o755);
+        set_mode(&local_root.join("tool.sh"), 0o555);
         save();
         assert!(!heals(None));
         // The store tree's runfile edited in place: removed (a failing test

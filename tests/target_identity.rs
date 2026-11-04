@@ -30,6 +30,7 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 include!("support/explicit_modules.rs");
+include!("support/sealed_trees.rs");
 
 /// cc_internal through a main-repository file on cc_common's private-API
 /// allowlist ("", "third_party/bazel_rules/rules_cc"); freeze itself has no
@@ -337,7 +338,7 @@ impl Workspace {
 }
 impl Drop for Workspace {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = sealed_trees::remove_tree(&self.0);
     }
 }
 

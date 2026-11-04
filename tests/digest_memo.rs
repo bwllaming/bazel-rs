@@ -11,6 +11,7 @@
 //! verifies any more (a cached symlink output still points into it).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 include!("support/module_archives.rs");
+include!("support/sealed_trees.rs");
 
 use std::fs;
 use std::io::Write;
@@ -183,9 +184,13 @@ fn edit_keeping_size_and_mtime(path: &Path) {
     let original = fs::read(path).unwrap();
     let edited = original.to_ascii_uppercase();
     assert_ne!(edited, original, "{}", path.display());
-    let mut file = fs::File::options().write(true).open(path).unwrap();
-    file.write_all(&edited).unwrap();
-    file.set_modified(modified).unwrap();
+    // Published trees are sealed: the edit gets the owner's write
+    // permission meanwhile (the sealed mode is restored after).
+    sealed_trees::tampering(path, || {
+        let mut file = fs::File::options().write(true).open(path).unwrap();
+        file.write_all(&edited).unwrap();
+        file.set_modified(modified).unwrap();
+    });
 }
 
 /// The published directories in `directory` (a tree store).

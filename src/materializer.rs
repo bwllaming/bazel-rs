@@ -556,6 +556,9 @@ fn materialize_registry(
             false,
         )?;
         local_patches.apply_tree(staging.path())?;
+        // Published sealed (crate::repository_store::seal_tree; staged in
+        // `trees`, so the root may be sealed before the rename).
+        crate::repository_store::seal_tree(staging.path())?;
         let manifest = Manifest {
             format: FORMAT.into(),
             files: snapshot(staging.path())?,
@@ -1161,7 +1164,9 @@ mod tests {
         let mut changed = source.clone();
         changed.insert("strip_prefix".into(), json!("different-current-source"));
         assert!(probe(&changed).is_err());
-        fs::write(root.join("data"), "tampered").unwrap();
+        crate::repository_store::tampering(&root.join("data"), || {
+            fs::write(root.join("data"), "tampered").unwrap()
+        });
         assert!(probe(&source).is_err());
         assert_eq!(fs::read(root.join("data")).unwrap(), b"tampered");
         assert_eq!(
@@ -1244,7 +1249,7 @@ mod tests {
             "valid tree does not need its blob"
         );
         assert_eq!(fs::read(&manifest).unwrap(), before);
-        fs::remove_dir_all(&first).unwrap();
+        crate::repository_ctx::remove_tree(&first).unwrap();
         fs::write(&blob, archive).unwrap();
         fs::remove_file(&archive_path).unwrap();
         assert_eq!(
@@ -1255,7 +1260,7 @@ mod tests {
         assert_eq!(fs::read(first.join("MODULE.bazel")).unwrap(), module);
         assert_eq!(fs::read(&manifest).unwrap(), before);
         fs::write(&blob, b"corrupt").unwrap();
-        fs::remove_dir_all(&first).unwrap();
+        crate::repository_ctx::remove_tree(&first).unwrap();
         assert!(
             disabled()
                 .unwrap_err()
@@ -1345,12 +1350,14 @@ mod tests {
         // Retargeting to identical content, or replacing a link with a regular
         // copy of its referent, is a cache mismatch repaired from the blob.
         for tamper in [0, 1] {
-            fs::remove_file(root.join("link")).unwrap();
-            if tamper == 0 {
-                symlink("hard", root.join("link")).unwrap();
-            } else {
-                fs::write(root.join("link"), b"original").unwrap();
-            }
+            crate::repository_store::tampering(&root.join("link"), || {
+                fs::remove_file(root.join("link")).unwrap();
+                if tamper == 0 {
+                    symlink("hard", root.join("link")).unwrap();
+                } else {
+                    fs::write(root.join("link"), b"original").unwrap();
+                }
+            });
             assert_eq!(
                 materialize(&registry, "dep", "1", module, &source, &cache).unwrap(),
                 root
@@ -1482,7 +1489,9 @@ mod tests {
             ),
         ];
         for (name, tamper, class, entry) in tampers {
-            tamper(&root);
+            // The tree is sealed: the tamper gets the owner's write
+            // permission on the entry and its directory (restored after).
+            crate::repository_store::tampering(&root.join(entry), || tamper(&root));
             let error = verify_published_tree(&tree).unwrap_err();
             assert!(
                 error.contains("does not match its manifest"),
@@ -1631,8 +1640,10 @@ mod tests {
         let module = b"module(name=\"dep\",version=\"1\")\n";
         let first = materialize(&registry, "dep", "1", module, &source, &cache).unwrap();
         assert_eq!(fs::read(first.join("MODULE.bazel")).unwrap(), module);
-        fs::write(first.join("data"), b"corrupt").unwrap();
-        fs::write(first.join("extra"), b"unexpected").unwrap();
+        crate::repository_store::tampering(&first.join("data"), || {
+            fs::write(first.join("data"), b"corrupt").unwrap();
+            fs::write(first.join("extra"), b"unexpected").unwrap();
+        });
         let integrity = Integrity::parse(source["integrity"].as_str().unwrap()).unwrap();
         let blob = cache.join("downloads/sha256").join(hex(&integrity.digest));
         fs::write(&blob, b"bad blob").unwrap();
@@ -1646,7 +1657,9 @@ mod tests {
             materialize(&registry, "dep", "1", module, &source, &cache).unwrap(),
             first
         );
-        fs::write(first.join("data"), b"corrupt again").unwrap();
+        crate::repository_store::tampering(&first.join("data"), || {
+            fs::write(first.join("data"), b"corrupt again").unwrap()
+        });
         materialize(&registry, "dep", "1", module, &source, &cache).unwrap();
         assert_eq!(fs::read(first.join("data")).unwrap(), b"original");
         assert!(fs::read_dir(cache.join("trees")).unwrap().all(|e| {
@@ -1692,7 +1705,7 @@ mod tests {
                     .permissions()
                     .mode()
                     & 0o777,
-                0o755
+                0o555
             );
         }
     }
@@ -1982,19 +1995,21 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn repairs_read_only_directory_tampering() {
-        // A read-only tree root (tampering) does not stop the replacement of
-        // a corrupt tree: removal makes directories writable first.
+        // A read-only tree root (every published tree's: trees are sealed,
+        // crate::repository_store::seal_tree; here also a tampered one) does
+        // not stop the replacement of a corrupt tree: removal makes
+        // directories writable first.
         use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
         let (registry, source) = fixture(temp.path());
         let cache = temp.path().join("cache");
         let root = materialize(&registry, "dep", "1", b"module", &source, &cache).unwrap();
         fs::set_permissions(root.join("data"), fs::Permissions::from_mode(0o755)).unwrap();
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).unwrap();
         let again = materialize(&registry, "dep", "1", b"module", &source, &cache).unwrap();
         assert_eq!(again, root);
         let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
-        assert_eq!((mode(&root), mode(&root.join("data"))), (0o755, 0o644));
+        assert_eq!((mode(&root), mode(&root.join("data"))), (0o555, 0o444));
     }
 
     #[cfg(unix)]
@@ -2027,7 +2042,7 @@ mod tests {
                 .permissions()
                 .mode()
                 & 0o777,
-            0o644
+            0o444
         );
     }
 }

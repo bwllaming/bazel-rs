@@ -21,6 +21,7 @@ use std::process::{Command, Output};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 include!("support/explicit_modules.rs");
+include!("support/sealed_trees.rs");
 
 const DEFS: &str = r##"def _t(ctx):
     out = ctx.actions.declare_file(ctx.label.name + ".sh")
@@ -135,7 +136,7 @@ impl Drop for OutsideBase {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _ = fs::remove_file(&self.marker);
         if OUTSIDE_BASE_USERS.fetch_sub(1, Ordering::SeqCst) == 1 {
-            let _ = fs::remove_dir_all(&self.dir);
+            let _ = sealed_trees::remove_tree(&self.dir);
         }
     }
 }

@@ -178,7 +178,7 @@ fn busy_publisher_and_evicted_publication_are_precommit_misses() {
     assert_eq!(f.state(), state);
     drop(writer);
     let (prepared, recording) = f.prepare();
-    fs::remove_dir_all(f.receipt().root(&f.store)).unwrap();
+    crate::repository_ctx::remove_tree(&f.receipt().root(&f.store)).unwrap();
     assert!(
         prepared
             .commit(&|| f.repositories(), &recording, &Environment::default())

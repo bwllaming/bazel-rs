@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 include!("support/explicit_modules.rs");
+include!("support/sealed_trees.rs");
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -161,7 +162,7 @@ fn update_writes_bazel_entries_and_warm_runs_reuse_them() {
     assert_eq!(evaluated(&off).len(), 6);
     // Without the hidden lockfile (fresh cache) only the reproducible
     // extensions run again; the facts reach module_ctx.facts.
-    fs::remove_dir_all(f.dir.path().join("cache")).unwrap();
+    sealed_trees::remove_tree(f.dir.path().join("cache")).unwrap();
     let cold = f.run("update", ALL, "a");
     assert!(cold.status.success(), "{}", error(&cold));
     assert_eq!(

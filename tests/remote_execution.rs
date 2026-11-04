@@ -17,6 +17,7 @@ include!("support/explicit_modules.rs");
 include!("support/grpc_cache_server.rs");
 
 use grpc_cache_server::{Config, ExecStep, Server};
+include!("support/sealed_trees.rs");
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -75,7 +76,7 @@ impl Workspace {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        let _ = fs::remove_dir_all(&root);
+        let _ = sealed_trees::remove_tree(&root);
         fs::create_dir_all(root.join("ws/pkg")).unwrap();
         fs::create_dir_all(root.join("home")).unwrap();
         let ws = Self(root);
@@ -114,7 +115,7 @@ impl Workspace {
 
 impl Drop for Workspace {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = sealed_trees::remove_tree(&self.0);
     }
 }
 
@@ -790,7 +791,7 @@ fn genuine_bazel_sends_identical_execute_requests() {
     let genuine_outputs = bazel_bin(&ws);
     let genuine_view = execute_view(&genuine_server);
     let genuine_log = genuine_server.method_counts(&genuine_server.take_log());
-    let _ = fs::remove_dir_all(ws.0.join("our-1"));
+    let _ = sealed_trees::remove_tree(ws.0.join("our-1"));
     let native_server = executor();
     let built = native(&ws, "ncache-1", &registry, &native_server.url());
     assert!(built.status.success(), "{}", stderr(&built));
@@ -850,7 +851,7 @@ impl NativeLink {
                 .port()
         };
         let (port, worker) = (free(), free());
-        let _ = fs::remove_dir_all(&dir);
+        let _ = sealed_trees::remove_tree(&dir);
         fs::create_dir_all(&dir).unwrap();
         let d = dir.display();
         let config = format!(
@@ -925,7 +926,7 @@ impl Drop for NativeLink {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        let _ = fs::remove_dir_all(&self.dir);
+        let _ = sealed_trees::remove_tree(&self.dir);
     }
 }
 
@@ -970,7 +971,7 @@ fn genuine_bazel_and_native_share_a_nativelink_executor() {
         .map(|(name, path)| (name, fs::read_to_string(path).unwrap_or_default()))
         .collect::<BTreeMap<_, _>>();
     let native_keys = second.ac_keys();
-    let _ = fs::remove_dir_all(ws.0.join("our-1"));
+    let _ = sealed_trees::remove_tree(ws.0.join("our-1"));
     let read_back = genuine(&binary, &ws, "our-2", &registry, &second.url());
     assert!(
         read_back.status.success(),

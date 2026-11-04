@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 include!("support/snapshot_off.rs");
 include!("support/explicit_modules.rs");
+include!("support/sealed_trees.rs");
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Fixture(PathBuf);
@@ -109,7 +110,7 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = sealed_trees::remove_tree(&self.0);
     }
 }
 fn stderr(output: &Output) -> String {
@@ -450,7 +451,7 @@ fn relative_library_cache_reuses_discovery_tree_when_origin_goes_offline() {
     impl Drop for WrongCache {
         fn drop(&mut self) {
             if self.0.exists() {
-                fs::remove_dir_all(&self.0).unwrap();
+                sealed_trees::remove_tree(&self.0).unwrap();
             }
         }
     }

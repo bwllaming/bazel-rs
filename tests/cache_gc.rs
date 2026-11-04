@@ -14,6 +14,7 @@ use std::fs;
 include!("support/temp_root.rs");
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/sealed_trees.rs");
 
 const DAY: i64 = 24 * 60 * 60;
 
@@ -368,7 +369,7 @@ fn the_state_of_a_deleted_worktree_is_swept() {
         assert!(base.is_dir());
     }
     assert!(fixture.cache().join("gc/worktrees/explicit-base").is_file());
-    fs::remove_dir_all(fixture.base().join("other")).unwrap();
+    sealed_trees::remove_tree(fixture.base().join("other")).unwrap();
     let output = fixture.gc(&[], &[]);
     assert!(output.status.success());
     let report = stdout(&output);
@@ -389,7 +390,7 @@ fn the_state_of_a_deleted_worktree_is_swept() {
     assert_eq!(list(&fixture.cache().join("gc/worktrees")).len(), 2);
     fixture.build("ws", &["//:a"], &[]);
     // The explicit base's workspace gone: its state goes too.
-    fs::remove_dir_all(fixture.base().join("ws")).unwrap();
+    sealed_trees::remove_tree(fixture.base().join("ws")).unwrap();
     fixture.workspace("ws2");
     let output = fixture.run("ws2", &["gc"], &[]);
     assert!(output.status.success());

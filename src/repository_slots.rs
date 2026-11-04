@@ -825,15 +825,26 @@ pub fn restore_mutable(
     writer.unmark()?;
     let slot = writer.fresh()?;
     let scratch = SlotScratch::new(&writer);
+    // The tree is sealed (crate::repository_store::sealed_view); its
+    // mutable copy is the repository's writable directory again, as
+    // genuine's `external/<name>` is: every entry gets its owner's write
+    // permission back.
     for entry in fs::read_dir(tree).map_err(|e| format!("cannot read {}: {e}", tree.display()))? {
         let entry = entry.map_err(|e| e.to_string())?;
-        copy_tree(&entry.path(), &slot.join(entry.file_name()))?;
+        copy_entries(&entry.path(), &slot.join(entry.file_name()), OWNER_WRITE)?;
     }
-    fs::set_permissions(
-        &slot,
-        fs::metadata(tree).map_err(|e| e.to_string())?.permissions(),
-    )
-    .map_err(|e| e.to_string())?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(tree)
+            .map_err(|e| e.to_string())?
+            .permissions()
+            .mode();
+        fs::set_permissions(
+            &slot,
+            fs::Permissions::from_mode((mode & 0o7777) | OWNER_WRITE),
+        )
+        .map_err(|e| e.to_string())?;
+    }
     writer.mark(identity)?;
     scratch.keep();
     Ok(())
@@ -876,6 +887,16 @@ pub fn named_slots<'a>(
 /// mutable. Directories get their modes after their entries, so read-only
 /// ones copy too.
 pub fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+    copy_entries(from, to, 0)
+}
+
+/// The owner's write permission, which a mutable copy of a sealed tree
+/// gets back ([`restore_mutable`]).
+const OWNER_WRITE: u32 = 0o200;
+
+/// [`copy_tree`], adding the permission bits `add` to every copied file and
+/// directory.
+fn copy_entries(from: &Path, to: &Path, add: u32) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     let metadata = fs::symlink_metadata(from).map_err(|e| e.to_string())?;
     if metadata.file_type().is_symlink() {
@@ -887,10 +908,13 @@ pub fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
         fs::create_dir(to).map_err(|e| format!("cannot copy {}: {e}", from.display()))?;
         for entry in fs::read_dir(from).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
-            copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+            copy_entries(&entry.path(), &to.join(entry.file_name()), add)?;
         }
-        return fs::set_permissions(to, metadata.permissions())
-            .map_err(|e| format!("cannot copy {}: {e}", from.display()));
+        return fs::set_permissions(
+            to,
+            fs::Permissions::from_mode((metadata.permissions().mode() & 0o7777) | add),
+        )
+        .map_err(|e| format!("cannot copy {}: {e}", from.display()));
     }
     if !metadata.is_file() {
         return Err(format!(
@@ -908,7 +932,7 @@ pub fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
     std::io::copy(&mut source, &mut copy)
         .map_err(|e| format!("cannot copy {}: {e}", from.display()))?;
     copy.set_permissions(fs::Permissions::from_mode(
-        metadata.permissions().mode() & 0o7777,
+        (metadata.permissions().mode() & 0o7777) | add,
     ))
     .map_err(|e| format!("cannot copy {}: {e}", from.display()))
 }
@@ -1315,6 +1339,52 @@ mod tests {
         fs::create_dir_all(slot.join("pkg/mod")).unwrap();
         restore_mutable(&store, "gocache", &identity, &tree, false).unwrap();
         assert!(slot.join("pkg/mod").is_dir());
+    }
+
+    /// Published trees are sealed (crate::repository_store::sealed_view);
+    /// a mutable slot made from one is writable again — its tools write
+    /// into it as into genuine's `external/<name>` — with the tree's modes
+    /// otherwise (the executable bit kept).
+    #[test]
+    fn mutable_slots_of_sealed_trees_are_writable() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = temp();
+        let store = temp.path().to_path_buf();
+        fs::create_dir_all(store.join("direct/locks")).unwrap();
+        let identity = "b".repeat(64);
+        let tree = store.join("direct/trees").join(&identity);
+        fs::create_dir_all(tree.join("bin")).unwrap();
+        fs::write(tree.join("go.env"), b"GOPATH=x\n").unwrap();
+        fs::write(tree.join("bin/tool"), b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(tree.join("bin/tool"), fs::Permissions::from_mode(0o755)).unwrap();
+        crate::repository_store::seal_tree(&tree).unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            [
+                &tree,
+                &tree.join("bin"),
+                &tree.join("go.env"),
+                &tree.join("bin/tool")
+            ]
+            .map(|p| mode(p)),
+            [0o555, 0o555, 0o444, 0o555]
+        );
+        let slot = slot_path(&store, "gocache");
+        restore_mutable(&store, "gocache", &identity, &tree, false).unwrap();
+        assert_eq!(
+            [
+                &slot,
+                &slot.join("bin"),
+                &slot.join("go.env"),
+                &slot.join("bin/tool")
+            ]
+            .map(|p| mode(p)),
+            [0o755, 0o755, 0o644, 0o755]
+        );
+        fs::create_dir_all(slot.join("pkg/mod")).unwrap();
+        fs::write(slot.join("go.env"), b"GOPATH=y\n").unwrap();
+        assert_eq!(fs::read(tree.join("go.env")).unwrap(), b"GOPATH=x\n");
+        crate::repository_ctx::remove_tree(temp.path()).unwrap();
     }
 
     #[test]

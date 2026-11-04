@@ -14,6 +14,7 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 include!("support/explicit_modules.rs");
 include!("support/console.rs");
+include!("support/sealed_trees.rs");
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -58,7 +59,7 @@ impl Workspace {
 
 impl Drop for Workspace {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = sealed_trees::remove_tree(&self.0);
     }
 }
 

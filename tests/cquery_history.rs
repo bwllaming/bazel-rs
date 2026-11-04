@@ -5,6 +5,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 include!("support/temp_root.rs");
+include!("support/sealed_trees.rs");
 
 const BUILD: &str = r#"
 load(":defs.bzl", "custom")
@@ -318,7 +319,7 @@ fn build_module_source_presence_glob_directory_and_symlink_observations_remain_l
                 if b {
                     ws.write("newpkg/BUILD.bazel", "filegroup(name='new')\n")
                 } else {
-                    fs::remove_dir_all(ws.root.join("newpkg")).unwrap()
+                    sealed_trees::remove_tree(ws.root.join("newpkg")).unwrap()
                 }
             }
             "symlink" => {
@@ -616,7 +617,9 @@ repo = repository_rule(implementation = _impl, environ = ['HISTORY_NAME'], local
         }
         assert!(!roots.is_empty(), "fixture must exercise local replay");
         for root in roots {
-            fs::write(root.join("BUILD.bazel"), "filegroup(name='tampered')\n").unwrap();
+            sealed_trees::tampering(&root.join("BUILD.bazel"), || {
+                fs::write(root.join("BUILD.bazel"), "filegroup(name='tampered')\n").unwrap()
+            });
         }
         let repaired = query("two");
         state(&repaired, "miss");

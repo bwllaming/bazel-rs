@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 include!("support/verify_env.rs");
 include!("support/explicit_modules.rs");
+include!("support/sealed_trees.rs");
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/disk_cache");
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -66,7 +67,7 @@ impl Scratch {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        let _ = fs::remove_dir_all(&root);
+        let _ = sealed_trees::remove_tree(&root);
         copy_tree(&Path::new(FIXTURE).join("workspace"), &root.join("ws"));
         fs::create_dir_all(root.join("home")).unwrap();
         Self(root)
@@ -98,7 +99,7 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = sealed_trees::remove_tree(&self.0);
     }
 }
 

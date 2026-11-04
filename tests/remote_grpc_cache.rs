@@ -15,6 +15,7 @@ include!("support/explicit_modules.rs");
 include!("support/grpc_cache_server.rs");
 
 use grpc_cache_server::{Config, Server, Tls};
+include!("support/sealed_trees.rs");
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -45,7 +46,7 @@ impl Workspace {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        let _ = fs::remove_dir_all(&root);
+        let _ = sealed_trees::remove_tree(&root);
         fs::create_dir_all(root.join("ws/pkg")).unwrap();
         fs::create_dir_all(root.join("home")).unwrap();
         let ws = Self(root);
@@ -111,7 +112,7 @@ impl Workspace {
 
 impl Drop for Workspace {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = sealed_trees::remove_tree(&self.0);
     }
 }
 
@@ -999,7 +1000,7 @@ fn genuine_bazel_shares_grpc_entries_both_ways() {
     let native_keys = cache.ac_keys();
     let native_headers = cache.header_names();
     let native_log = cache.log();
-    let _ = fs::remove_dir_all(ws.0.join("our-1"));
+    let _ = sealed_trees::remove_tree(ws.0.join("our-1"));
     let read_back = genuine(&binary, &ws, "our-2", &registry, &cache.url());
     assert!(
         read_back.status.success(),

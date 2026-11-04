@@ -5,6 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 include!("support/explicit_modules.rs");
+include!("support/sealed_trees.rs");
 
 struct Fixture(tempfile::TempDir);
 impl Fixture {
@@ -179,6 +180,9 @@ fn label_template_repositories_keep_their_pre_n21_publication_identity() {
     // only use ctx.file and Label templates (direct and extension-generated).
     // N51 intentionally rekeyed both: every repository mapping now includes
     // the built-in @bazel_tools entry (Bazel 9.3 ModuleThreadContext.java:383-401).
+    // Sealed trees intentionally rekeyed both again: the identity covers the
+    // published (sealed) modes, without write bits (docs/REPOSITORY_SLOTS.md;
+    // the previous direct pin was 8cc88f0f…).
     let f = Fixture::new();
     f.file("MODULE.bazel", "module(name='main')\nmake = use_repo_rule('//:defs.bzl','make')\nmake(name='made', source='//:data.tpl')\n");
     f.file("BUILD.bazel", "genrule(name='copy',srcs=['@made//:data.txt','@made//:tool.sh'],outs=['copy.txt'],cmd='cat $(SRCS) > $@')\n");
@@ -198,20 +202,20 @@ fn label_template_repositories_keep_their_pre_n21_publication_identity() {
     if golden {
         assert_eq!(
             identity(&f),
-            "8cc88f0fed662a69614784526c4b0d4f94024b376009932143424822113bae3d"
+            "bd52c6d6bcba7803d5d78e6409c3937e37e19a9ffe3c7da0bb342b6f0d5bdaf6"
         );
     }
     // Template content changes still rekey through the templates entry.
     let first = identity(&f);
     f.file("tool.tpl", "#!/bin/sh\necho changed %{name}\n");
-    fs::remove_dir_all(f.0.path().join("cache")).unwrap();
+    sealed_trees::remove_tree(f.0.path().join("cache")).unwrap();
     assert_eq!(
         bytes(&f.build("//:copy")[0].1),
         b"B B BB\r\n\xff#!/bin/sh\necho changed x\n"
     );
     assert_ne!(identity(&f), first);
     f.file("tool.tpl", "#!/bin/sh\necho %{name}\n");
-    fs::remove_dir_all(f.0.path().join("cache")).unwrap();
+    sealed_trees::remove_tree(f.0.path().join("cache")).unwrap();
     f.file(
         "MODULE.bazel",
         "module(name='main')\next = use_extension('//:ext.bzl','ext')\nuse_repo(ext,'made')\n",
@@ -229,10 +233,11 @@ fn label_template_repositories_keep_their_pre_n21_publication_identity() {
         // ea2fc9f3…). Re-pinned for affected-reuse-cold: a generated
         // repository is keyed by its own specification, no longer by its
         // siblings' and the group's mapping (ordinary-file-template-v2;
-        // the previous pin was d0e5e900…).
+        // the previous pin was d0e5e900…). Re-pinned for sealed trees: the
+        // identity covers the sealed modes (the previous pin was b82a1530…).
         assert_eq!(
             identity(&f),
-            "b82a1530aba0ff038b210db18fd1dfaf1c3c158a2f4f4b49064fc98e783cc3f6"
+            "c415af2d48446aa4b3ab8e049ab356e0a64fd284352aa2ab8d97679850ee65e9"
         );
     }
 }
@@ -377,7 +382,7 @@ fn direct_source_profile_rejects_hidden_unicode_computation_but_metadata_stays_l
 fn cache_corruption_is_repaired_and_concurrent_cli_publication_is_complete() {
     let f = Fixture::new();
     let source = f.build("@made//:data.txt")[0].1.clone();
-    fs::write(&source, b"corrupted").unwrap();
+    sealed_trees::tampering(&source, || fs::write(&source, b"corrupted").unwrap());
     fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(bytes(&f.build("@made//:data.txt")[0].1), b"hello Ada\n");
     assert_eq!(

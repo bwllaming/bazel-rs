@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 
 include!("support/verify_env.rs");
 include!("support/temp_root.rs");
+include!("support/sealed_trees.rs");
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -127,7 +128,7 @@ impl Fixture {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        let _ = fs::remove_dir_all(&root);
+        let _ = sealed_trees::remove_tree(&root);
         let served = root.join("served");
         let server = Server::new(served.clone());
         for name in ["files", "registry"] {
@@ -273,7 +274,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
+        let _ = sealed_trees::remove_tree(&self.root);
     }
 }
 

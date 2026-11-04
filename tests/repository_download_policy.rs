@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 include!("support/explicit_modules.rs");
+include!("support/sealed_trees.rs");
 
 const ARCHIVE: &[u8] = include_bytes!("fixtures/build_settings/bazel-skylib-1.8.2.tar.gz");
 const MODULE: &[u8] =
@@ -608,14 +609,14 @@ fn completed_tree_missing_blob_and_verified_blob_rebuild_work_without_repair_req
     success(&fixture.run("build", &[DISABLED], "cache"));
     assert_eq!(fixture.materialize(false).unwrap(), tree);
     assert_eq!(fixture.server.acquisitions(), 1);
-    fs::remove_dir_all(&tree).unwrap();
+    sealed_trees::remove_tree(&tree).unwrap();
     fixture.seed(ARCHIVE);
     success(&fixture.run("query", &[DISABLED], "cache"));
     assert_eq!(fixture.materialize(false).unwrap(), tree);
     assert_eq!(fs::read(&manifest).unwrap(), before);
     assert_eq!(fs::read(tree.join("MODULE.bazel")).unwrap(), MODULE);
     assert_eq!(fixture.server.acquisitions(), 1);
-    fs::remove_dir_all(&tree).unwrap();
+    sealed_trees::remove_tree(&tree).unwrap();
     fs::write(fixture.blob(ARCHIVE), b"corrupt archive blob").unwrap();
     rejected(&fixture.run("build", &[DISABLED], "cache"), DISABLED);
     assert_eq!(fixture.server.acquisitions(), 1);
@@ -709,7 +710,7 @@ fn policy_changes_start_fresh_registry_root_success_and_failure_slots() {
             .unwrap(),
         tree
     );
-    fs::remove_dir_all(&tree).unwrap();
+    sealed_trees::remove_tree(&tree).unwrap();
     fs::remove_file(fixture.blob(ARCHIVE)).unwrap();
     let fresh = enabled.clone().with_repository_downloads_enabled(false);
     assert!(fresh.root("bazel_skylib+").unwrap_err().contains(DISABLED));

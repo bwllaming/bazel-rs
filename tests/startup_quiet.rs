@@ -20,6 +20,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
 use std::process::{Command, Output};
+include!("support/sealed_trees.rs");
 
 const MODULE: &str = r##"module(name = "q")
 
@@ -270,7 +271,7 @@ impl Workspace {
                 .args(["-R", "u+w"])
                 .arg(&path)
                 .status();
-            fs::remove_dir_all(&path).unwrap();
+            sealed_trees::remove_tree(&path).unwrap();
         }
     }
 

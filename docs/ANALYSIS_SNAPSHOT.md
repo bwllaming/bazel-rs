@@ -561,8 +561,10 @@ verify-details.log holding the details), every failed hit that removed its
 snapshot (`healed`, step 6) or kept it (`heal-kept`, L2-W5i) and every
 snapshot garbage collection evicted (`evicted`: an `absent` miss of an
 evicted key is no snapshot that was never saved). A reason that repeats
-shows without EXPLAIN — a tool that writes into a store tree's directory,
-say, makes every lookup miss on that directory's INTEGRITY entry. Every
+shows without EXPLAIN — a tool that writes into a store tree's directory
+(an older binary's tree; published trees are sealed now,
+docs/REPOSITORY_SLOTS.md), say, makes every lookup miss on that directory's
+INTEGRITY entry. Every
 line has the same fields:
 
 ```text

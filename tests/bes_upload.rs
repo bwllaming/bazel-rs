@@ -16,6 +16,7 @@ include!("support/explicit_modules.rs");
 include!("support/grpc_cache_server.rs");
 
 use grpc_cache_server::{Config, Server, fs_canonical_tmp};
+include!("support/sealed_trees.rs");
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -30,7 +31,7 @@ impl Workspace {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        let _ = fs::remove_dir_all(&root);
+        let _ = sealed_trees::remove_tree(&root);
         fs::create_dir_all(root.join("ws/pkg")).unwrap();
         fs::create_dir_all(root.join("home")).unwrap();
         fs::write(root.join("ws/MODULE.bazel"), "module(name = \"bes\")\n").unwrap();
@@ -55,7 +56,7 @@ impl Workspace {
 
 impl Drop for Workspace {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = sealed_trees::remove_tree(&self.0);
     }
 }
 

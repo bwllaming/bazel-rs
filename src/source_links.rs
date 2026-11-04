@@ -1193,7 +1193,9 @@ mod tests {
         );
         // A tree that no longer matches its manifest is refused on its first
         // crossing (memoized per repository set).
-        fs::write(tree.join("defs.bzl"), b"tampered").unwrap();
+        crate::repository_store::tampering(&tree.join("defs.bzl"), || {
+            fs::write(tree.join("defs.bzl"), b"tampered").unwrap()
+        });
         let fresh = LinkPolicy {
             store: Some(StoreTrees::new(store.clone(), Arc::default())),
             ..policy.clone()

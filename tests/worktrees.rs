@@ -18,6 +18,7 @@ include!("support/explicit_modules.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+include!("support/sealed_trees.rs");
 
 const BUILTIN_REGISTRY: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -268,7 +269,7 @@ fn a_linked_worktree_shares_the_main_checkouts_cache() {
     assert_eq!(count(&own, "REPO_EXECUTED"), 1, "{own}");
     assert!(!own.contains("is no longer used"));
     assert!(private.join("repositories").is_dir());
-    fs::remove_dir_all(wt.join("bazel-rs-out")).unwrap();
+    sealed_trees::remove_tree(wt.join("bazel-rs-out")).unwrap();
     assert!(
         !repo
             .ok(&wt, &["build", "//:out"])

@@ -32,6 +32,7 @@ use std::process::{Command, Output};
 include!("support/snapshot_off.rs");
 include!("support/console.rs");
 include!("support/explicit_modules.rs");
+include!("support/sealed_trees.rs");
 
 const DEFS: &str = r##"def _tree_impl(ctx):
     d = ctx.actions.declare_directory(ctx.label.name + "_dir")
@@ -211,7 +212,7 @@ impl Workspace {
         }
         let cache = self.cache();
         writable(&cache);
-        let _ = fs::remove_dir_all(&cache);
+        let _ = sealed_trees::remove_tree(&cache);
     }
 
     fn run(&self, arguments: &[&str], env: &[(&str, &str)]) -> Output {

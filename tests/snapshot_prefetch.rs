@@ -20,6 +20,7 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 include!("support/explicit_modules.rs");
 include!("support/console.rs");
+include!("support/sealed_trees.rs");
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -92,8 +93,8 @@ impl Workspace {
 
 impl Drop for Workspace {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
-        let _ = fs::remove_dir_all(&self.scratch);
+        let _ = sealed_trees::remove_tree(&self.root);
+        let _ = sealed_trees::remove_tree(&self.scratch);
     }
 }
 
@@ -968,7 +969,7 @@ fn snapshots_saved_at_one_thread_count_verify_and_hit_at_the_others() {
     });
     assert!(off.status.success(), "{}", stderr(&off));
     for (save, verifies) in [(1, [8, 32]), (8, [1, 32])] {
-        let _ = fs::remove_dir_all(ws.snapshots());
+        let _ = sealed_trees::remove_tree(ws.snapshots());
         let (saved, explain) = snapshot_run(&ws, "verify", save, &args);
         assert!(saved.status.success(), "{}", stderr(&saved));
         assert!(explain.contains(" saved "), "save at {save}: {explain}");
@@ -991,7 +992,7 @@ fn snapshots_saved_at_one_thread_count_verify_and_hit_at_the_others() {
     }
     // `on`: saved at threads 8 (prefetch on; its PERF-PREFETCH line goes
     // to the diagnostics stream), hits at 1 and 32 replay no PERF-PREFETCH.
-    let _ = fs::remove_dir_all(ws.snapshots());
+    let _ = sealed_trees::remove_tree(ws.snapshots());
     let (saved, explain) = snapshot_run(&ws, "on", 8, &args);
     assert!(saved.status.success(), "{}", stderr(&saved));
     assert!(explain.contains(" saved "), "{explain}");

@@ -873,11 +873,14 @@ fn snapshot(root: &Path, normalize: bool) -> Result<BTreeMap<String, Entry>, Str
             size: 0,
             sha256: String::new(),
         };
+        // Git's checkout modes (0755 / 0644), published sealed: without their
+        // write bits (crate::repository_store::seal_tree; the stage is in
+        // `trees`, so its root is sealed before the rename too).
         if normalize && !matches!(entry.kind, EntryKind::Symlink { .. }) {
             entry.mode = if entry.kind == EntryKind::Directory || entry.mode & 0o100 != 0 {
-                0o755
+                0o555
             } else {
-                0o644
+                0o444
             };
             set_mode(path, entry.mode)?;
         }
@@ -976,7 +979,9 @@ mod tests {
         let mut different = fixture.spec.clone();
         different.commit = "b".repeat(40);
         assert!(probe(&different).is_err());
-        fs::write(tree.root.join("data"), "tampered").unwrap();
+        crate::repository_store::tampering(&tree.root.join("data"), || {
+            fs::write(tree.root.join("data"), "tampered").unwrap()
+        });
         assert!(probe(&fixture.spec).is_err());
         assert_eq!(fs::read(tree.root.join("data")).unwrap(), b"tampered");
         assert_eq!(FETCH_EXPORTS.with(std::cell::Cell::get), before + 1);
@@ -1237,7 +1242,7 @@ mod tests {
         assert_eq!(fixture.git(&["status", "--porcelain"]), b"");
         assert!(!tree.root.join(".git").exists());
         #[cfg(unix)]
-        assert_eq!(mode(&fs::metadata(tree.root.join("run")).unwrap()), 0o755);
+        assert_eq!(mode(&fs::metadata(tree.root.join("run")).unwrap()), 0o555);
         fs::rename(&fixture.origin, fixture.temp.path().join("offline-origin")).unwrap();
         fixture.spec.commit.make_ascii_uppercase();
         let calls = AtomicUsize::new(0);
@@ -1276,8 +1281,10 @@ mod tests {
     fn corrupt_content_extra_files_and_missing_or_invalid_manifests_refetch() {
         let fixture = Fixture::new("");
         let tree = fixture.tree();
-        fs::write(tree.root.join("data"), b"corrupt").unwrap();
-        fs::write(tree.root.join("extra"), b"untracked").unwrap();
+        crate::repository_store::tampering(&tree.root.join("data"), || {
+            fs::write(tree.root.join("data"), b"corrupt").unwrap();
+            fs::write(tree.root.join("extra"), b"untracked").unwrap();
+        });
         assert_eq!(fixture.tree(), tree);
         assert_eq!(fs::read(tree.root.join("data")).unwrap(), b"original\n");
         assert!(!tree.root.join("extra").exists());
@@ -1738,7 +1745,8 @@ mod tests {
         assert_eq!(original["link"].sha256, "");
         for corruption in 0..7 {
             let link = tree.root.join("link");
-            match corruption {
+            // Trees are sealed: the root and `data` are writable meanwhile.
+            crate::repository_store::tampering(&tree.root.join("data"), || match corruption {
                 0 | 1 => {
                     fs::remove_file(&link).unwrap();
                     symlink(
@@ -1767,7 +1775,7 @@ mod tests {
                     symlink("../outside", &link).unwrap();
                 }
                 _ => unreachable!(),
-            }
+            });
             let calls = AtomicUsize::new(0);
             let repaired = materialize(
                 &fixture.spec,
@@ -1892,7 +1900,9 @@ mod tests {
             ),
         ];
         for (name, tamper, class, entry) in tampers {
-            tamper(&tree.root);
+            // The tree is sealed: the tamper gets the owner's write
+            // permission on the entry and its directory (restored after).
+            crate::repository_store::tampering(&tree.root.join(entry), || tamper(&tree.root));
             let error = verify_published_tree(&published).unwrap_err();
             assert!(
                 error.contains("does not match its manifest"),
@@ -2360,30 +2370,34 @@ mod tests {
         set_mode(&tree.root.join("data"), 0o755).unwrap();
         set_mode(&tree.root, 0o700).unwrap();
         assert_eq!(fixture.tree(), tree);
-        assert_eq!(mode(&fs::metadata(tree.root.join("data")).unwrap()), 0o644);
-        assert_eq!(mode(&fs::metadata(&tree.root).unwrap()), 0o755);
+        assert_eq!(mode(&fs::metadata(tree.root.join("data")).unwrap()), 0o444);
+        assert_eq!(mode(&fs::metadata(&tree.root).unwrap()), 0o555);
         let path = fixture.manifest(&tree);
         let mut manifest: Manifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        manifest.files.get_mut("run").unwrap().mode = 0o644;
+        manifest.files.get_mut("run").unwrap().mode = 0o444;
         fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         fixture.tree();
         let repaired: Manifest = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        assert_eq!(repaired.files["run"].mode, 0o755);
+        assert_eq!(repaired.files["run"].mode, 0o555);
     }
 
-    /// A read-only tree directory (tampering) does not stop the replacement
-    /// of a corrupt tree: removal makes directories writable first, like
-    /// the direct store's (crate::repository_ctx::remove_tree).
+    /// A read-only tree directory (every published tree's: trees are sealed,
+    /// crate::repository_store::seal_tree; here also a tampered one) does
+    /// not stop the replacement of a corrupt tree: removal makes
+    /// directories writable first, like the direct store's
+    /// (crate::repository_ctx::remove_tree).
     #[test]
     #[cfg(unix)]
     fn repairs_read_only_directory_tampering() {
         let fixture = Fixture::new("pkg");
         let tree = fixture.tree();
         let original = fs::read(tree.root.join("data")).unwrap();
-        fs::write(tree.root.join("data"), b"tampered").unwrap();
-        set_mode(&tree.root, 0o555).unwrap();
+        crate::repository_store::tampering(&tree.root.join("data"), || {
+            fs::write(tree.root.join("data"), b"tampered").unwrap()
+        });
+        set_mode(&tree.root, 0o500).unwrap();
         assert_eq!(fixture.tree(), tree);
-        assert_eq!(mode(&fs::metadata(&tree.root).unwrap()), 0o755);
+        assert_eq!(mode(&fs::metadata(&tree.root).unwrap()), 0o555);
         assert_eq!(fs::read(tree.root.join("data")).unwrap(), original);
     }
 
@@ -2426,7 +2440,7 @@ mod tests {
             .contains("symlink")
         );
         fs::remove_file(&manifest).unwrap();
-        fs::remove_dir_all(&tree.root).unwrap();
+        crate::repository_ctx::remove_tree(&tree.root).unwrap();
         symlink(&target, &tree.root).unwrap();
         assert!(
             materialize(
@@ -2463,7 +2477,7 @@ mod tests {
     fn non_directory_destination_is_never_removed() {
         let fixture = Fixture::new("");
         let tree = fixture.tree();
-        fs::remove_dir_all(&tree.root).unwrap();
+        crate::repository_ctx::remove_tree(&tree.root).unwrap();
         fs::write(&tree.root, b"keep").unwrap();
         assert!(
             materialize(

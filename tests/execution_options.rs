@@ -14,6 +14,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
 };
+include!("support/sealed_trees.rs");
 
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/execution_options")
@@ -150,7 +151,7 @@ fn check_up_to_date_fails_on_any_action_to_run() {
 fn output_filters_and_stream_limits_shape_successful_action_output() {
     let workspace = Workspace::new();
     let fresh = |args: &[&str]| {
-        let _ = fs::remove_dir_all(workspace.path().join("cache/actions"));
+        let _ = sealed_trees::remove_tree(workspace.path().join("cache/actions"));
         let mut all = args.to_vec();
         all.push("//:g");
         workspace.build(&all)

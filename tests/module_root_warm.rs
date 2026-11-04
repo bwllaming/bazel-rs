@@ -19,6 +19,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 include!("support/explicit_modules.rs");
 include!("support/console.rs");
+include!("support/sealed_trees.rs");
 
 /// Every module's files (besides MODULE.bazel) and its bazel_dep.
 type Module = (
@@ -173,7 +174,7 @@ impl Fixture {
     /// A cold `build //:u` (fresh cache and lockfile) recording the
     /// analysis snapshot.
     fn cold(&self, threads: usize, env: &[(&str, &str)]) -> Run {
-        let _ = fs::remove_dir_all(self.path().join("cache"));
+        let _ = sealed_trees::remove_tree(self.path().join("cache"));
         let _ = fs::remove_file(self.path().join("MODULE.bazel.lock"));
         let dump = self.path().join("dump.txt");
         let _ = fs::remove_file(&dump);
@@ -369,7 +370,7 @@ fn a_files_extension_repositories_execute_ahead_while_patterns_load() {
         ),
     );
     let run = |threads: usize, env: &[(&str, &str)]| {
-        let _ = fs::remove_dir_all(fixture.path().join("cache"));
+        let _ = sealed_trees::remove_tree(fixture.path().join("cache"));
         let _ = fs::remove_file(fixture.path().join("MODULE.bazel.lock"));
         let mut command = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
         command

@@ -623,8 +623,10 @@ tree first and renaming the stage after it left a window without any tree
 between the two renames, which remains only as the fallback for a filesystem
 that cannot exchange. Test:
 `republication_never_leaves_the_tree_path_without_a_tree`.
-Trees may hold read-only directories (a callback's `chmod -R ugo-w`,
-as rules_python's `python_repository` does for the interpreter's `lib/`), so
+Trees hold read-only directories (every published tree is sealed,
+docs/REPOSITORY_SLOTS.md "Sealed trees"; before, only a callback's
+`chmod -R ugo-w`, as rules_python's `python_repository` does for the
+interpreter's `lib/`), so
 quarantines and repository directories are deleted like a writer clears an
 interrupted one: directories are made writable first and symlinks are never
 followed. A
@@ -650,11 +652,10 @@ republished over the read-only tree. Repository files are now copied into
 `cas/`, never linked (docs/HARDLINK_STAGING.md); the tree stays reusable.
 
 The Git and registry stores stage and replace corrupt trees the same way
-(`Scratch` stages, `remove_tree` for the replaced tree). Their trees cannot
-normally hold read-only directories (the archive extractor normalizes modes
-to 0755/0644, Git exports carry no directory modes, patches change none), but
-a tampered tree with one no longer makes its repair fail (tests
-`repairs_read_only_directory_tampering` in git_source and materializer).
+(`Scratch` stages, `remove_tree` for the replaced tree). Their trees are
+sealed too (read-only directories and files); a sealed or tampered tree
+never makes its repair fail (tests `repairs_read_only_directory_tampering`
+in git_source and materializer).
 
 ## Application boundary
 

@@ -1566,7 +1566,7 @@ where
     let executed = execute(&slot)?;
     let mut embedded =
         crate::repository_slots::EmbeddedPaths::new(&canonical_store(cache), stage_key);
-    let (_, encoded_snapshot) = stage_content(&slot, Some(&mut embedded))?;
+    let (_, encoded_snapshot) = published_content(stage_content(&slot, Some(&mut embedded))?)?;
     let embedded = embedded.finish();
     let replayed = Replayed {
         inputs_digest: Sha256::digest(&executed.inputs).into(),
@@ -1738,12 +1738,154 @@ fn sweep_legacy_stages(direct: &Path) {
 fn stage_content(
     stage: &Path,
     scan: Option<&mut crate::repository_slots::EmbeddedPaths>,
-) -> Result<(BTreeMap<String, Entry>, Vec<u8>), String> {
+) -> Result<BTreeMap<String, Entry>, String> {
     required_directory(stage)?;
     ensure_boundary(stage)?;
-    let files = snapshot_scanned(stage, scan)?;
+    snapshot_scanned(stage, scan)
+}
+
+/// A stage's snapshot as it is published — [`sealed_view`] — and the
+/// encoded content view the identity covers.
+fn published_content(
+    files: BTreeMap<String, Entry>,
+) -> Result<(BTreeMap<String, Entry>, Vec<u8>), String> {
+    let files = sealed_view(files);
     let encoded = serde_json::to_vec(&content_view(&files)).map_err(|e| e.to_string())?;
     Ok((files, encoded))
+}
+
+/// The write permission bits a published tree never has.
+const WRITE_BITS: u32 = 0o222;
+
+/// Published trees are sealed: no file or directory of a tree of the
+/// store (generated repositories, registry modules, Git sources) has a
+/// write permission bit, so nothing — another repository rule's tool, a
+/// Python importing a module from the tree (`__pycache__`), an
+/// unsandboxed action — can add, remove, rename or rewrite an entry of a
+/// shared, content-addressed tree (docs/REPOSITORY_SLOTS.md, "Sealed
+/// trees"). Genuine 9.3 makes the files of a repository it takes from its
+/// remote repository contents cache unwritable for this reason
+/// (RemoteExternalOverlayFileSystem.java:327-331: "to ensure that other
+/// repo rules can't accidentally modify the cached repo"); rules_python
+/// seals its interpreter's `lib/` (`chmod -R ugo-w`) so no pyc is ever
+/// written into it. The modes the manifest records (and the identity
+/// covers) are the sealed ones: `snapshot` entries with their write bits
+/// cleared. An entry whose mode changes here loses its stat fingerprint
+/// (sealing it on disk changes its ctime; the first verification hashes
+/// and refreshes it). Links have no mode and are never followed.
+fn sealed_view(files: BTreeMap<String, Entry>) -> BTreeMap<String, Entry> {
+    files
+        .into_iter()
+        .map(|(name, mut entry)| {
+            if entry.symlink.is_none() && entry.mode & WRITE_BITS != 0 {
+                entry.mode &= !WRITE_BITS;
+                entry.stat = None;
+            }
+            (name, entry)
+        })
+        .collect()
+}
+
+/// Seal every entry below `root` on disk ([`sealed_view`]), not `root`
+/// itself: a directory moved to another parent needs its own write
+/// permission (its `..` changes), so a tree's root is sealed once it is in
+/// place ([`seal_root`]). Links are never followed or changed.
+pub(crate) fn seal_below(root: &Path) -> Result<(), String> {
+    fn visit(path: &Path) -> Result<(), String> {
+        for child in fs::read_dir(path).map_err(|e| format!("{}: {e}", path.display()))? {
+            let child = child.map_err(|e| e.to_string())?.path();
+            let metadata = fs::symlink_metadata(&child).map_err(|e| e.to_string())?;
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                visit(&child)?;
+            }
+            seal_entry(&child, &metadata)?;
+        }
+        Ok(())
+    }
+    visit(root)
+}
+
+/// Seal the root of a tree in place ([`seal_below`]).
+pub(crate) fn seal_root(root: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(root).map_err(|e| e.to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!("{} is a link, not a tree", root.display()));
+    }
+    seal_entry(root, &metadata)
+}
+
+/// A whole tree that is published without leaving its parent directory
+/// (registry and Git trees: staged inside their `trees/`).
+pub(crate) fn seal_tree(root: &Path) -> Result<(), String> {
+    seal_below(root)?;
+    seal_root(root)
+}
+
+#[cfg(unix)]
+fn seal_entry(path: &Path, metadata: &fs::Metadata) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = metadata.permissions().mode() & 0o7777;
+    if mode & WRITE_BITS == 0 {
+        return Ok(());
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(mode & !WRITE_BITS))
+        .map_err(|e| format!("cannot seal {}: {e}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn seal_entry(_path: &Path, _metadata: &fs::Metadata) -> Result<(), String> {
+    Ok(())
+}
+
+/// Tests: run `tamper`, which writes `path` (a file or link to create,
+/// rewrite or remove) in a sealed tree, with the owner's write permission
+/// on `path` (when it is a file or directory) and its parent for the
+/// duration; their sealed modes are restored afterwards, so the tamper is
+/// all that differs.
+#[cfg(all(test, unix))]
+pub(crate) fn tampering<T>(path: &Path, tamper: impl FnOnce() -> T) -> T {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let open = |path: &Path| {
+        let metadata = fs::symlink_metadata(path).ok()?;
+        if metadata.file_type().is_symlink() {
+            return None;
+        }
+        let mode = metadata.permissions().mode() & 0o7777;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode | 0o700)).unwrap();
+        Some((metadata.ino(), mode))
+    };
+    let parent = path.parent().expect("a path in a tree");
+    let opened = [open(parent), open(path)];
+    let result = tamper();
+    for (path, opened) in [parent, path].into_iter().zip(opened) {
+        if let Some((inode, mode)) = opened
+            && fs::symlink_metadata(path)
+                .is_ok_and(|metadata| !metadata.file_type().is_symlink() && metadata.ino() == inode)
+        {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        }
+    }
+    result
+}
+
+/// Give a directory that is about to move to another parent (a tree root
+/// being replaced or quarantined) its owner's write permission back.
+fn unseal_for_move(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    if let Some(metadata) = optional_metadata(path)?
+        && metadata.is_dir()
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = metadata.permissions().mode() & 0o7777;
+        if mode & 0o700 != 0o700 {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode | 0o700))
+                .map_err(|e| format!("cannot replace {}: {e}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// A warm probe's recorded-input check (`try_reuse`).
@@ -1949,7 +2091,7 @@ where
     // hashed: a self-referencing repository keeps a mutable slot.
     let mut embedded =
         crate::repository_slots::EmbeddedPaths::new(&canonical_store(cache), stage_key);
-    let (files, encoded_snapshot) = {
+    let files = {
         let _span = crate::timeline::span("hash-tree", || stage_key.to_owned());
         stage_content(&slot, Some(&mut embedded))?
     };
@@ -1979,6 +2121,15 @@ where
     } else {
         crate::repository_slots::SlotClass::Ordinary
     };
+    // The tree is published sealed ([`sealed_view`]): an ordinary slot,
+    // which becomes the tree, is sealed now (its root once in place); a
+    // self-referencing one stays the repository's writable directory (its
+    // tools write into it, as into genuine's `external/<name>`) and only
+    // its published copy is sealed.
+    if matches!(class, crate::repository_slots::SlotClass::Ordinary) {
+        seal_below(&slot)?;
+    }
+    let (files, encoded_snapshot) = published_content(files)?;
     let mut digest = Sha256::new();
     digest.update(PROFILE.as_bytes());
     digest.update([0]);
@@ -2077,7 +2228,8 @@ where
             crate::repository_slots::SlotClass::SelfReferencing => {
                 let copy = trash.path().join("copy");
                 crate::repository_slots::copy_tree(&slot, &copy)?;
-                let copied = snapshot(&copy)?;
+                seal_below(&copy)?;
+                let copied = sealed_view(snapshot(&copy)?);
                 if content_view(&copied) != content_view(&manifest.files) {
                     return Err(format!(
                         "the repository directory {} changed while it was published",
@@ -2098,6 +2250,7 @@ where
             .map_err(|e| e.to_string())?;
         quarantine(&manifest_path, &trash.path().join("manifest"))?;
         install_tree(&tree_source, &destination, &trash.path().join("tree"))?;
+        seal_root(&destination)?;
         // These are two atomic renames, not an atomic pair. A failure/crash leaves
         // missing metadata, which forces repair on the next evaluated invocation.
         metadata_stage
@@ -2337,6 +2490,8 @@ fn quarantine(path: &Path, target: &Path) -> Result<(), String> {
 /// gets the quarantine first and the stage renamed after it, which leaves
 /// the path briefly without a tree.
 fn install_tree(stage: &Path, destination: &Path, trash: &Path) -> Result<(), String> {
+    // A sealed tree being replaced moves to another parent.
+    unseal_for_move(destination)?;
     #[cfg(target_os = "linux")]
     if optional_metadata(destination)?.is_some()
         && rustix::fs::renameat_with(
@@ -3799,7 +3954,9 @@ mod tests {
             fs::create_dir(cache.join("external/+rule+r")).unwrap();
             assert!(probe_candidate(&cache, &receipt_b, temp.path(), |_, _| Ok(true)).is_none());
             fs::remove_dir(cache.join("external/+rule+r")).unwrap();
-            fs::write(b.join("data"), "tampered").unwrap();
+            tampering(&b.join("data"), || {
+                fs::write(b.join("data"), "tampered").unwrap()
+            });
             assert!(probe_candidate(&cache, &receipt_b, temp.path(), |_, _| Ok(true)).is_none());
         }
     }
@@ -4651,6 +4808,111 @@ mod tests {
         no_stages(cache.path());
     }
 
+    /// Published trees are sealed: no entry has a write bit, on disk and in
+    /// the manifest (the identity covers the sealed modes, the executable
+    /// bit kept), so a process can neither add an entry (a Python's
+    /// `__pycache__`, rules_python's `pip` building an sdist with the
+    /// `pypi__pip` tree on its PYTHONPATH) nor rewrite one; the tree keeps
+    /// verifying and is reused. CPython skips the bytecode it cannot write.
+    #[cfg(unix)]
+    #[test]
+    fn published_trees_are_sealed_against_writes() {
+        use std::os::unix::fs::PermissionsExt;
+        let cache = temp();
+        let (tree, _) = publish(cache.path(), b"", |stage| {
+            fs::create_dir_all(stage.join("pkg")).map_err(|e| e.to_string())?;
+            fs::write(stage.join("pkg/__init__.py"), b"").map_err(|e| e.to_string())?;
+            fs::write(stage.join("pkg/mod.py"), b"VALUE = 42\n").map_err(|e| e.to_string())?;
+            fs::write(stage.join("tool"), b"#!/bin/sh\n").map_err(|e| e.to_string())?;
+            fs::set_permissions(stage.join("tool"), fs::Permissions::from_mode(0o755))
+                .map_err(|e| e.to_string())?;
+            fs::set_permissions(stage.join("pkg/mod.py"), fs::Permissions::from_mode(0o600))
+                .map_err(|e| e.to_string())?;
+            Ok(b"inputs".to_vec())
+        })
+        .unwrap();
+        let manifest: Manifest =
+            serde_json::from_slice(&fs::read(metadata_path(cache.path(), &tree)).unwrap()).unwrap();
+        let modes: BTreeMap<&str, u32> = manifest
+            .files
+            .iter()
+            .map(|(name, entry)| (name.as_str(), entry.mode))
+            .collect();
+        assert_eq!(modes[""], 0o555);
+        assert_eq!(modes["pkg"], 0o555);
+        assert_eq!(modes["pkg/mod.py"], 0o400);
+        assert_eq!(modes["pkg/__init__.py"], 0o444);
+        assert_eq!(modes["tool"], 0o555);
+        for (name, entry) in &manifest.files {
+            if entry.symlink.is_none() {
+                let path = if name.is_empty() {
+                    tree.clone()
+                } else {
+                    tree.join(name)
+                };
+                let on_disk = fs::symlink_metadata(&path).unwrap().permissions().mode() & 0o777;
+                assert_eq!(on_disk, entry.mode, "{name}");
+            }
+        }
+        if !rustix::process::geteuid().is_root() {
+            for denied in [
+                fs::create_dir(tree.join("pkg/__pycache__")),
+                fs::write(tree.join("extra"), b""),
+                fs::write(tree.join("pkg/mod.py"), b"VALUE = 0\n"),
+                fs::remove_file(tree.join("tool")),
+            ] {
+                assert_eq!(
+                    denied.unwrap_err().kind(),
+                    std::io::ErrorKind::PermissionDenied
+                );
+            }
+            // A Python importing from the tree, with bytecode writing on.
+            if let Ok(output) = std::process::Command::new("python3")
+                .args(["-c", "import pkg.mod; print(pkg.mod.__name__)"])
+                .env("PYTHONPATH", &tree)
+                .env_remove("PYTHONDONTWRITEBYTECODE")
+                .env_remove("PYTHONPYCACHEPREFIX")
+                .output()
+            {
+                assert!(output.status.success(), "{output:?}");
+                assert_eq!(output.stdout, b"pkg.mod\n");
+                assert!(!tree.join("pkg/__pycache__").exists());
+            }
+        }
+        verify_published_tree(&published_tree(cache.path(), &tree).unwrap()).unwrap();
+        let (again, status) = publish(cache.path(), b"", |_| panic!("must reuse")).unwrap();
+        assert_eq!((again, status), (tree.clone(), Publication::Reused));
+        // Republishing over the sealed tree (a corrupt mode) replaces it.
+        fs::set_permissions(tree.join("tool"), fs::Permissions::from_mode(0o755)).unwrap();
+        let (again, status) = publish(cache.path(), b"", |stage| {
+            fs::create_dir_all(stage.join("pkg")).map_err(|e| e.to_string())?;
+            fs::write(stage.join("pkg/__init__.py"), b"").map_err(|e| e.to_string())?;
+            fs::write(stage.join("pkg/mod.py"), b"VALUE = 42\n").map_err(|e| e.to_string())?;
+            fs::write(stage.join("tool"), b"#!/bin/sh\n").map_err(|e| e.to_string())?;
+            fs::set_permissions(stage.join("tool"), fs::Permissions::from_mode(0o755))
+                .map_err(|e| e.to_string())?;
+            fs::set_permissions(stage.join("pkg/mod.py"), fs::Permissions::from_mode(0o600))
+                .map_err(|e| e.to_string())?;
+            Ok(b"inputs".to_vec())
+        })
+        .unwrap();
+        assert_eq!((again, status), (tree.clone(), Publication::Executed));
+        assert_eq!(
+            fs::metadata(tree.join("tool"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o555
+        );
+        assert_eq!(
+            fs::metadata(&tree).unwrap().permissions().mode() & 0o777,
+            0o555
+        );
+        no_stages(cache.path());
+        crate::repository_ctx::remove_tree(cache.path()).unwrap();
+    }
+
     /// A self-referencing repository's tree is a copy: writes into its slot
     /// (another repository's `go` filling GOPATH) never change the tree,
     /// and a warm reuse keeps what was written there; a re-execution
@@ -4668,6 +4930,14 @@ mod tests {
         };
         let (tree, _) = publish_keyed(cache.path(), "gocache", b"", embed).unwrap();
         let gopath = slot(cache.path(), "gocache");
+        // The published copy is sealed; the slot stays writable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!((mode(&tree), mode(&tree.join("go.env"))), (0o555, 0o444));
+            assert_eq!(mode(&gopath.join("go.env")) & 0o200, 0o200);
+        }
         fs::create_dir_all(gopath.join("pkg/mod/example.com")).unwrap();
         fs::write(gopath.join("pkg/mod/example.com/m.go"), b"package m\n").unwrap();
         assert!(!tree.join("pkg").exists());
@@ -4831,7 +5101,7 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(
             mode(&fs::metadata(tree.join("data")).unwrap()).unwrap(),
-            0o755
+            0o555
         );
         let manifest: Manifest =
             serde_json::from_slice(&fs::read(metadata_path(cache.path(), &tree)).unwrap()).unwrap();
@@ -5191,12 +5461,16 @@ mod tests {
         let cache = temp();
         let (tree, _) = publish(cache.path(), b"", write).unwrap();
         let original = content_view(&snapshot(&tree).unwrap());
-        fs::write(tree.join("data"), b"bad").unwrap();
+        tampering(&tree.join("data"), || {
+            fs::write(tree.join("data"), b"bad").unwrap()
+        });
         let (again, status) = publish(cache.path(), b"", write).unwrap();
         assert_eq!(tree, again);
         assert_eq!(status, Publication::Executed);
         assert_eq!(original, content_view(&snapshot(&tree).unwrap()));
-        fs::remove_dir(tree.join("empty")).unwrap();
+        tampering(&tree.join("empty"), || {
+            fs::remove_dir(tree.join("empty")).unwrap()
+        });
         assert_eq!(tree, publish(cache.path(), b"", write).unwrap().0);
         assert_eq!(original, content_view(&snapshot(&tree).unwrap()));
         #[cfg(unix)]
@@ -5705,7 +5979,7 @@ mod tests {
         fs::write(outside.path().join("precious"), b"keep").unwrap();
         let (tree, _) = publish(cache.path(), b"", write).unwrap();
         let path = metadata_path(cache.path(), &tree);
-        fs::remove_dir_all(&tree).unwrap();
+        crate::repository_ctx::remove_tree(&tree).unwrap();
         fs::remove_file(&path).unwrap();
         symlink(outside.path(), &tree).unwrap();
         symlink(outside.path().join("precious"), &path).unwrap();
@@ -5837,7 +6111,9 @@ mod tests {
         assert_eq!(executions.load(Ordering::SeqCst), 1);
         assert!(manifest.files.values().all(|e| e.stat.is_none()));
         // (2) size change: re-execute.
-        fs::write(tree.join("data"), b"bad-longer-content").unwrap();
+        tampering(&tree.join("data"), || {
+            fs::write(tree.join("data"), b"bad-longer-content").unwrap()
+        });
         let (_, status) = run(cache.path());
         assert_eq!(status, Publication::Executed);
         assert_eq!(executions.load(Ordering::SeqCst), 2);
@@ -5845,8 +6121,10 @@ mod tests {
         // (3) same size, mtime restored: ctime betrays it; hash catches it.
         let path = tree.join("data");
         let mtime = fs::metadata(&path).unwrap().modified().unwrap();
-        fs::write(&path, [9u8, 9, 9, 9]).unwrap();
-        File::open(&path).unwrap().set_modified(mtime).unwrap();
+        tampering(&path, || {
+            fs::write(&path, [9u8, 9, 9, 9]).unwrap();
+            File::open(&path).unwrap().set_modified(mtime).unwrap();
+        });
         assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), mtime);
         let (_, status) = run(cache.path());
         assert_eq!(status, Publication::Executed);
@@ -6038,8 +6316,9 @@ mod tests {
             // times come from a coarse clock (one tick, ~1 ms here): the
             // round trip repeats until the ctime provably moved.
             for attempt in 0.. {
+                // The sealed mode, restored after the bump.
                 fs::set_permissions(tree.join("data"), fs::Permissions::from_mode(0o700)).unwrap();
-                fs::set_permissions(tree.join("data"), fs::Permissions::from_mode(0o755)).unwrap();
+                fs::set_permissions(tree.join("data"), fs::Permissions::from_mode(0o555)).unwrap();
                 if fingerprint(&fs::metadata(tree.join("data")).unwrap()) != current {
                     break;
                 }

@@ -128,8 +128,9 @@ impl Fixture {
                 0o100555
             } else {
                 assert!(path.starts_with(self.0.path().join("cache/repositories/direct/trees")));
-                // These repository source fixtures use executable=False.
-                0o100644
+                // These repository source fixtures use executable=False;
+                // published trees are sealed (no write bits).
+                0o100444
             };
             // Include the regular-file type and special bits; do not mask an
             // unexpected executable, writable, setuid/setgid, or sticky bit.
