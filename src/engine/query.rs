@@ -3317,7 +3317,7 @@ fn java_string(value: &AttrValue, shape: Shape, owner: &Label) -> Option<String>
 /// Digraph.getTopologicalOrder(comparator) (graph/Digraph.java:527-539):
 /// reverse postorder of a depth-first search started from every node in
 /// sorted order, successors in sorted order.
-fn topological_order<T: Ord + Clone>(graph: &BTreeMap<T, BTreeSet<T>>) -> Vec<T> {
+pub(super) fn topological_order<T: Ord + Clone>(graph: &BTreeMap<T, BTreeSet<T>>) -> Vec<T> {
     let mut marked = BTreeSet::new();
     let mut postorder = Vec::new();
     for start in graph.keys() {

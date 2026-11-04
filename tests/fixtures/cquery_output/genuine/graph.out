@@ -1,0 +1,19 @@
+digraph mygraph {
+  node [shape=box];
+  "//:top (cd728b0)"
+  "//:top (cd728b0)" -> "//:extra.txt (null)\n//:opt (cd728b0)"
+  "//:top (cd728b0)" -> "//:mid (cd728b0)"
+  "//:top (cd728b0)" -> "//:src.txt (null)"
+  "//:mid (cd728b0)"
+  "//:mid (cd728b0)" -> "//:gen (cd728b0)"
+  "//:mid (cd728b0)" -> "//:src.txt (null)"
+  "//:gen.txt (cd728b0)"
+  "//:gen.txt (cd728b0)" -> "//:gen (cd728b0)"
+  "//:fg (cd728b0)"
+  "//:fg (cd728b0)" -> "//:gen (cd728b0)"
+  "//:fg (cd728b0)" -> "//:src.txt (null)"
+  "//:gen (cd728b0)"
+  "//:gen (cd728b0)" -> "//:src.txt (null)"
+  "//:src.txt (null)"
+  "//:extra.txt (null)\n//:opt (cd728b0)"
+}

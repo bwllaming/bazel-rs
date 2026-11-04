@@ -1,0 +1,46 @@
+load(":defs.bzl", "lib", "string_flag")
+
+package(default_visibility = ["//visibility:public"])
+
+string_flag(name = "flag", build_setting_default = "default")
+
+config_setting(name = "is_transitioned", flag_values = {":flag": "transitioned"})
+
+config_setting(name = "opt", values = {"compilation_mode": "opt"})
+
+platform(
+    name = "linux",
+    constraint_values = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+lib(
+    name = "top",
+    srcs = select({":opt": ["opt.txt"], "//conditions:default": ["src.txt"]}),
+    deps = [":mid", ":alias"],
+    tool = ":tool",
+    tr_dep = ":leaf",
+    aspect_dep = ":mid",
+)
+
+lib(name = "mid", srcs = ["src.txt"], deps = [":gen"])
+
+lib(
+    name = "leaf",
+    srcs = select({":is_transitioned": ["opt.txt"], "//conditions:default": ["src.txt"]}),
+)
+
+lib(name = "tool", srcs = ["src.txt"])
+
+alias(name = "alias", actual = ":leaf")
+
+genrule(name = "gen", srcs = ["src.txt"], outs = ["gen.txt"], cmd = "cp $< $@")
+
+filegroup(name = "fg", srcs = ["src.txt", ":gen"])
+
+lib(name = "windows_only", target_compatible_with = ["@platforms//os:windows"])
+
+lib(name = "indirect", deps = [":windows_only"])
+
+alias(name = "incompatible_alias", actual = ":windows_only")
+
+exports_files(["extra.txt"])

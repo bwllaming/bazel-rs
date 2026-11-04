@@ -18,6 +18,22 @@ pub(super) struct Capture {
     strings: BTreeSet<Arc<str>>,
     applications: Vec<CapturedAspect>,
     requests: BTreeMap<u32, Vec<u32>>,
+    /// Formatter facts of each configured identity, read from the live
+    /// analysis state at the cquery boundary (provider key names, important
+    /// output files). Not providers: their values never enter the graph.
+    facts: BTreeMap<(Label, Option<ConfigId>), Result<Facts, String>>,
+}
+
+/// What `--output=starlark|files` read from a configured target that the
+/// provider-free graph cannot reconstruct ([`Engine::capture_cquery_facts`]).
+#[derive(Clone, Debug, Default)]
+pub(super) struct Facts {
+    /// The configured target's providers, as `providers(target)` keys them
+    /// (AbstractConfiguredTarget.tryAddProviderForQuery), in genuine order.
+    providers: Vec<String>,
+    /// The exec paths of the important artifacts of the requested output
+    /// groups (TopLevelArtifactHelper.getAllArtifactsToBuild).
+    files: Vec<String>,
 }
 
 /// Sparse Skyframe-like provenance, not copies of providers or base rule edges.
@@ -178,6 +194,14 @@ pub struct Graph {
     pub top_checksum: String,
     pub patterns: BTreeMap<String, Vec<u32>>,
     pub repository_mapping: BTreeMap<String, String>,
+    /// Interned `providers(target)` key lists ([`Node::providers`]).
+    pub provider_sets: Vec<Vec<String>>,
+    /// `build_options(target)` of each configuration (same indices as
+    /// `configurations`), computed while the native options are live.
+    pub build_options: Vec<Vec<(String, crate::cquery_starlark::BuildOption)>>,
+    /// Nodes whose formatter facts could not be read at the analysis
+    /// boundary; only `--output=starlark|files` report them.
+    pub fact_errors: BTreeMap<u32, String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,7 +213,15 @@ pub struct Node {
     /// Only failed select projections. Label output never inspects ordinary
     /// attributes; proto/attr() fail explicitly rather than inventing values.
     pub attribute_errors: Option<Box<BTreeMap<String, String>>>,
+    /// Index into [`Graph::provider_sets`]; [`NO_PROVIDERS`] when
+    /// `providers(target)` is None (package groups).
+    pub providers: u32,
+    /// Important artifacts of the requested output groups (`--output=files`).
+    pub files: Box<[String]>,
 }
+
+/// [`Node::providers`] of a target without a providers dict.
+pub const NO_PROVIDERS: u32 = u32::MAX;
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphEdge {
@@ -206,6 +238,11 @@ pub struct Options {
     pub universe: Vec<String>,
     pub include_aspects: bool,
     pub writer: wire::WriterOptions,
+    /// `--starlark:expr` / `--starlark:file` (CqueryOptions.expr/file).
+    pub starlark_expr: String,
+    pub starlark_file: String,
+    /// `--show_config_fragments` (off|direct|transitive).
+    pub show_config_fragments: String,
 }
 
 impl Default for Options {
@@ -215,9 +252,15 @@ impl Default for Options {
             universe: Vec::new(),
             include_aspects: true,
             writer: Default::default(),
+            starlark_expr: String::new(),
+            starlark_file: String::new(),
+            show_config_fragments: "off".into(),
         }
     }
 }
+
+/// CqueryCommand's formatter names, in its error message order.
+const OUTPUT_FORMATS: &str = "label_kind, label, transitions, proto, streamed_proto, textproto, jsonproto, build, graph, starlark, files";
 
 impl Options {
     pub fn parse(&mut self, arg: &str, next: Option<&str>) -> Result<Option<bool>, String> {
@@ -242,6 +285,8 @@ impl Options {
             "transitions",
             "starlark:expr",
             "starlark:file",
+            "show_config_fragments",
+            "graph:node_limit",
         ] {
             let (value, used) = if let Some(value) = arg.strip_prefix(&format!("--{name}=")) {
                 (value, false)
@@ -254,9 +299,38 @@ impl Options {
                 continue;
             };
             match name {
-                "universe_scope" => self.universe = value.split(',').filter(|s| !s.is_empty()).map(str::to_owned).collect(),
-                "transitions" => self.writer.transitions = match value { "none" => wire::Transitions::None, "lite" => wire::Transitions::Lite, "full" => return Err("cquery --transitions=full is not implemented (use lite)".into()), _ => return Err(format!("invalid --transitions={value}")) },
-                _ => return Err("Starlark cquery output is not implemented; target-determinator must use -filter-incompatible-targets=false".into()),
+                "universe_scope" => {
+                    self.universe = value
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                }
+                "transitions" => {
+                    self.writer.transitions = match value {
+                        "none" => wire::Transitions::None,
+                        "lite" => wire::Transitions::Lite,
+                        "full" => wire::Transitions::Full,
+                        _ => {
+                            return Err(format!(
+                                "While parsing option --transitions={value}: Not a valid transition verbosity: '{value}' (should be full, lite or none)"
+                            ));
+                        }
+                    }
+                }
+                "starlark:expr" => self.starlark_expr = value.to_owned(),
+                "starlark:file" => self.starlark_file = value.to_owned(),
+                "show_config_fragments" => {
+                    if !matches!(value, "off" | "direct" | "transitive" | "direct_host_only") {
+                        return Err(format!(
+                            "While parsing option --show_config_fragments={value}: Not a valid configuration fragment mode: '{value}' (should be off, direct_host_only, direct or transitive)"
+                        ));
+                    }
+                    self.show_config_fragments = value.to_owned();
+                }
+                _ => {
+                    self.common.parse(&format!("--{name}={value}"), None)?;
+                }
             }
             return Ok(Some(used));
         }
@@ -273,6 +347,7 @@ impl Options {
                 &mut self.writer.include_default_values,
             ),
             ("proto:locations", &mut self.writer.include_locations),
+            ("graph:factored", &mut self.common.graph_factored),
             (
                 "proto:rule_inputs_and_outputs",
                 &mut self.writer.include_rule_inputs_and_outputs,
@@ -287,14 +362,26 @@ impl Options {
     }
 
     pub fn expression(&self, text: &str) -> Result<Expr, String> {
-        if !matches!(
-            self.common.output.as_str(),
-            "label" | "label_kind" | "proto" | "streamed_proto"
-        ) {
-            return Err(format!(
-                "cquery output {:?} is not implemented; supported: label, label_kind, proto, streamed_proto (Starlark filtering is not implemented)",
-                self.common.output
-            ));
+        match self.common.output.as_str() {
+            "label" | "label_kind" | "proto" | "streamed_proto" | "jsonproto" | "textproto"
+            | "starlark" | "files" | "graph" => {}
+            "build" | "transitions" => {
+                return Err(format!(
+                    "cquery --output={} is not implemented in the native profile",
+                    self.common.output
+                ));
+            }
+            other => {
+                crate::exit_code::record(crate::exit_code::COMMAND_LINE_ERROR);
+                return Err(format!(
+                    "Invalid output format '{other}'. Valid values are: {OUTPUT_FORMATS}"
+                ));
+            }
+        }
+        if self.show_config_fragments != "off" {
+            return Err(
+                "cquery --show_config_fragments is not implemented in the native profile".into(),
+            );
         }
         crate::query_language::parse_cquery(text).map_err(|e| e.to_string())
     }
@@ -621,15 +708,38 @@ impl Graph {
     ) -> Result<(), String> {
         let ids = self.evaluate(expression, options, relative, &mut BTreeMap::new())?;
         let mut destination = std::io::BufWriter::new(destination);
+        match options.common.output.as_str() {
+            "starlark" => {
+                self.write_starlark(&self.sorted(&ids), options, &mut destination)?;
+                return destination.flush().map_err(|e| e.to_string());
+            }
+            "files" => {
+                self.write_files(&self.sorted(&ids), &mut destination)?;
+                return destination.flush().map_err(|e| e.to_string());
+            }
+            "graph" => {
+                self.write_graph(&ids, options, &mut destination)?;
+                return destination.flush().map_err(|e| e.to_string());
+            }
+            "jsonproto" | "textproto" => {
+                let mut transcoder = crate::cquery_text::Transcoder::new(
+                    &mut destination,
+                    options.common.output == "jsonproto",
+                    options.writer.include_configurations,
+                );
+                self.write_proto(
+                    &ids,
+                    options,
+                    wire::OutputFormat::StreamedProto,
+                    &mut transcoder,
+                )?;
+                transcoder.finish().map_err(|e| e.to_string())?;
+                return destination.flush().map_err(|e| e.to_string());
+            }
+            _ => {}
+        }
         if matches!(options.common.output.as_str(), "label" | "label_kind") {
-            let mut ids: Vec<_> = ids.into_iter().collect();
-            ids.sort_by(|a, b| {
-                self.nodes[*a as usize]
-                    .label()
-                    .cmp(self.nodes[*b as usize].label())
-                    .then(a.cmp(b))
-            });
-            for id in ids {
+            for id in self.sorted(&ids) {
                 let node = &self.nodes[id as usize];
                 if options.common.output == "label_kind" {
                     write!(destination, "{} ", node.kind()).map_err(|e| e.to_string())?;
@@ -649,20 +759,228 @@ impl Graph {
             }
             return destination.flush().map_err(|e| e.to_string());
         }
-        for id in &ids {
+        let format = if options.common.output == "proto" {
+            wire::OutputFormat::Proto
+        } else {
+            wire::OutputFormat::StreamedProto
+        };
+        self.write_proto(&ids, options, format, destination)
+    }
+
+    /// Results in label order (then discovery order): the order of every
+    /// native line-oriented formatter.
+    fn sorted(&self, ids: &Nodes) -> Vec<u32> {
+        let mut ids: Vec<_> = ids.iter().copied().collect();
+        ids.sort_by(|a, b| {
+            self.nodes[*a as usize]
+                .label()
+                .cmp(self.nodes[*b as usize].label())
+                .then(a.cmp(b))
+        });
+        ids
+    }
+
+    /// The actual configured target an alias forwards to
+    /// (AliasConfiguredTarget.getActual, through alias chains).
+    fn actual(&self, mut id: u32) -> u32 {
+        for _ in 0..self.nodes.len() {
+            let node = &self.nodes[id as usize];
+            let wire::Target::Rule(rule) = &node.target else {
+                break;
+            };
+            if node.incompatible || rule.rule_class != "alias" {
+                break;
+            }
+            match node.edges.iter().find(|edge| edge.attribute == "actual") {
+                Some(edge) => id = edge.to,
+                None => break,
+            }
+        }
+        id
+    }
+
+    fn write_starlark(
+        &self,
+        ids: &[u32],
+        options: &Options,
+        destination: &mut impl Write,
+    ) -> Result<(), String> {
+        let formatter =
+            crate::cquery_starlark::Formatter::new(&options.starlark_expr, &options.starlark_file)
+                .map_err(|e| format!("Error doing post analysis query: {e}"))?;
+        for &id in ids {
+            let node = &self.nodes[id as usize];
+            let actual_id = self.actual(id);
+            let actual = &self.nodes[actual_id as usize];
+            let alias = (actual_id != id).then(|| node.label());
+            let providers_error = self.fact_errors.get(&actual_id).map(String::as_str);
+            let view = crate::cquery_starlark::TargetView {
+                original: node.label(),
+                label: actual.label(),
+                repr: crate::cquery_starlark::target_repr(&actual.target, actual.label(), alias),
+                providers: (actual.providers != NO_PROVIDERS)
+                    .then(|| self.provider_sets[actual.providers as usize].as_slice()),
+                providers_error,
+                build_options: node
+                    .configuration
+                    .and_then(|index| self.build_options.get(index as usize))
+                    .map(Vec::as_slice),
+            };
+            match formatter.format(&view) {
+                Ok(line) => writeln!(destination, "{line}").map_err(|e| e.to_string())?,
+                // StarlarkOutputFormatterCallback.processOutput: an error
+                // event per target; formatting continues.
+                Err(error) => eprintln!("ERROR: {error}"),
+            }
+        }
+        Ok(())
+    }
+
+    fn write_files(&self, ids: &[u32], destination: &mut impl Write) -> Result<(), String> {
+        let mut seen = HashSet::new();
+        for &id in ids {
+            let node = &self.nodes[id as usize];
+            if let wire::Target::Rule(rule) = &node.target
+                && rule.rule_class.contains('$')
+            {
+                continue;
+            }
+            if let Some(error) = self.fact_errors.get(&id) {
+                return Err(error.clone());
+            }
+            for file in node.files.iter() {
+                if seen.insert(file.as_str()) {
+                    writeln!(destination, "{file}").map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// GraphOutputFormatterCallback / GraphOutputWriter: the result's
+    /// subgraph, ordered by label then configuration checksum (null first).
+    fn write_graph(
+        &self,
+        ids: &Nodes,
+        options: &Options,
+        destination: &mut impl Write,
+    ) -> Result<(), String> {
+        type Key = (String, Option<String>, u32);
+        let key = |id: u32| -> Key {
+            let node = &self.nodes[id as usize];
+            let checksum = self.checksum(node);
+            (
+                node.label().to_owned(),
+                (checksum != "null").then(|| checksum.to_owned()),
+                id,
+            )
+        };
+        let mut graph: BTreeMap<Key, BTreeSet<Key>> = BTreeMap::new();
+        for &id in ids {
+            let successors = self.nodes[id as usize]
+                .edges
+                .iter()
+                .filter(|edge| Self::edge_allowed(edge, options) && ids.contains(&edge.to))
+                .map(|edge| key(edge.to))
+                .collect();
+            graph.insert(key(id), successors);
+        }
+        let name = |key: &Key| -> String {
+            let checksum = key.1.as_deref().map_or("null", |checksum| &checksum[..7]);
+            format!("{} ({checksum})", key.0)
+        };
+        let mut out = String::from("digraph mygraph {\n  node [shape=box];\n");
+        if !options.common.graph_factored {
+            for node in super::query::topological_order(&graph) {
+                let from = name(&node);
+                out.push_str(&format!("  \"{from}\"\n"));
+                for successor in &graph[&node] {
+                    out.push_str(&format!("  \"{from}\" -> \"{}\"\n", name(successor)));
+                }
+            }
+        } else {
+            let mut predecessors: BTreeMap<&Key, BTreeSet<&Key>> =
+                graph.keys().map(|node| (node, BTreeSet::new())).collect();
+            for (from, successors) in &graph {
+                for to in successors {
+                    if let Some(set) = predecessors.get_mut(to) {
+                        set.insert(from);
+                    }
+                }
+            }
+            let mut classes: BTreeMap<(Vec<&Key>, Vec<&Key>), Vec<&Key>> = BTreeMap::new();
+            for node in graph.keys() {
+                let class = (
+                    predecessors[node].iter().copied().collect(),
+                    graph[node].iter().collect(),
+                );
+                classes.entry(class).or_default().push(node);
+            }
+            let mut partition: Vec<Vec<&Key>> = classes.into_values().collect();
+            partition.sort();
+            let class_of: HashMap<&Key, usize> = partition
+                .iter()
+                .enumerate()
+                .flat_map(|(index, class)| class.iter().map(move |node| (*node, index)))
+                .collect();
+            let mut class_graph: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+            for (index, class) in partition.iter().enumerate() {
+                let successors = class
+                    .iter()
+                    .flat_map(|node| graph[*node].iter())
+                    .map(|successor| class_of[successor])
+                    .collect();
+                class_graph.insert(index, successors);
+            }
+            let limit = options.common.graph_node_limit;
+            let serialize = |class: &Vec<&Key>| -> String {
+                let reserved = "\\n...and 9999999 more items".len() as i64;
+                let actual = i64::from(limit) - reserved;
+                let mut buffer = String::new();
+                for (count, node) in class.iter().enumerate() {
+                    let text = name(node);
+                    if count > 0 {
+                        buffer.push_str("\\n");
+                        if limit != -1 && (buffer.len() + text.len()) as i64 > actual {
+                            buffer.push_str(&format!("...and {} more items", class.len() - count));
+                            break;
+                        }
+                    }
+                    buffer.push_str(&text);
+                }
+                buffer
+            };
+            let names: Vec<String> = partition.iter().map(serialize).collect();
+            for class in super::query::topological_order(&class_graph) {
+                let from = &names[class];
+                out.push_str(&format!("  \"{from}\"\n"));
+                for successor in &class_graph[&class] {
+                    out.push_str(&format!("  \"{from}\" -> \"{}\"\n", names[*successor]));
+                }
+            }
+        }
+        out.push_str("}\n");
+        destination
+            .write_all(out.as_bytes())
+            .map_err(|e| e.to_string())
+    }
+
+    fn write_proto(
+        &self,
+        ids: &Nodes,
+        options: &Options,
+        format: wire::OutputFormat,
+        destination: impl Write,
+    ) -> Result<(), String> {
+        for id in ids {
             if let Some(errors) = &self.nodes[*id as usize].attribute_errors
                 && let Some(error) = errors.values().next()
             {
                 return Err(error.clone());
             }
         }
-        let format = if options.common.output == "proto" {
-            wire::OutputFormat::Proto
-        } else {
-            wire::OutputFormat::StreamedProto
-        };
         let mut writer = wire::CqueryWriter::new(destination, format, options.writer);
-        for id in ids {
+        for &id in ids {
             let node = &self.nodes[id as usize];
             let configuration = node
                 .configuration
@@ -812,6 +1130,187 @@ impl Engine {
                 aspect,
             });
         }
+    }
+
+    /// The formatter facts of every captured configured rule/output/alias
+    /// identity, read from the still-live planning state (memoized
+    /// dependency views) right after provider analysis. Failures are kept
+    /// per identity: only the formatters that read facts report them.
+    pub(super) fn capture_cquery_facts(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        roots: &[Label],
+    ) {
+        if self.aquery_capture.is_some() {
+            return;
+        }
+        let Some(capture) = &self.cquery_capture else {
+            return;
+        };
+        let mut keys: Vec<ConfiguredTargetKey> = capture.rules.keys().cloned().collect();
+        keys.extend(capture.target_keys.iter().map(|key| (**key).clone()));
+        keys.extend(
+            roots
+                .iter()
+                .map(|label| self.configurations.top_key(label.clone())),
+        );
+        let selected = self.selected_output_groups();
+        let mut facts = BTreeMap::new();
+        for key in keys {
+            let Ok(identity) = self.cquery_key(&key) else {
+                continue;
+            };
+            if identity.1.is_none() || facts.contains_key(&identity) {
+                continue;
+            }
+            let result = self.cquery_target_facts(state, configured, &key, &selected);
+            facts.insert(identity, result);
+        }
+        if let Some(capture) = &mut self.cquery_capture {
+            capture.facts = facts;
+        }
+    }
+
+    fn cquery_target_facts(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        key: &ConfiguredTargetKey,
+        selected: &BTreeSet<String>,
+    ) -> Result<Facts, String> {
+        let PlanState {
+            dry,
+            custom_providers,
+            provider_keys,
+            runfiles_info,
+            artifact_index,
+            declared,
+            native_output_groups,
+            validation,
+            target_identities,
+            views,
+            ..
+        } = state.plan_state();
+        let view = self.plan_dependency_view(
+            configured,
+            dry,
+            custom_providers,
+            provider_keys,
+            runfiles_info,
+            artifact_index,
+            declared,
+            native_output_groups,
+            validation,
+            target_identities,
+            views,
+            &key.label,
+            key.config,
+        )?;
+        let mut files = Vec::new();
+        let mut seen = HashSet::new();
+        let mut add = |file: &File| {
+            if seen.insert(file.path.clone()) {
+                files.push(file.path.clone());
+            }
+        };
+        for group in selected {
+            if group.starts_with('_') {
+                continue;
+            }
+            if group == crate::output_group_info::DEFAULT {
+                view.files.iter().for_each(&mut add);
+            }
+            if !view.is_rule {
+                continue;
+            }
+            if let Some(groups) = view
+                .providers
+                .get(crate::output_group_info::PROVIDER_ID)
+                .and_then(|value| crate::output_group_info::groups(value.value()))
+                && let Some((_, depset)) = groups.iter().find(|(name, _)| name == group)
+            {
+                crate::output_group_info::depset_files(depset)
+                    .iter()
+                    .for_each(&mut add);
+            }
+        }
+        let actual = Label::parse_canonical(&view.label)?;
+        let native_kind = match self.target(&actual)? {
+            Target::Rule(rule) => match &rule.kind {
+                RuleKind::Native(kind) => Some(*kind),
+                _ => None,
+            },
+            _ => None,
+        };
+        let order = view.provider_keys.clone();
+        let mut declared: Vec<String> = Vec::new();
+        let mut output_group = false;
+        for id in view.providers.keys() {
+            match id.as_str() {
+                crate::output_group_info::PROVIDER_ID => output_group = true,
+                crate::providers::DEFAULT_INFO_PROVIDER_ID => {}
+                id => declared.push(crate::cquery_starlark::provider_key_name(id)),
+            }
+        }
+        if native_kind == Some("toolchain_type")
+            && !declared.iter().any(|n| n == "ToolchainTypeInfo")
+        {
+            declared.push("ToolchainTypeInfo".into());
+        }
+        // Declared providers in return order (RuleConfiguredTargetBuilder's
+        // LinkedHashMap); unlisted (native) ones keep identity order.
+        declared.sort_by_key(|name| {
+            let short = name.rsplit_once('%').map_or(name.as_str(), |(_, n)| n);
+            order
+                .iter()
+                .position(|key| key == short)
+                .unwrap_or(usize::MAX)
+        });
+        let mut providers = Vec::new();
+        if view.is_source {
+            providers.extend(
+                [
+                    "VisibilityProvider",
+                    "FileProvider",
+                    "FilesToRunProvider",
+                    "DefaultInfo",
+                ]
+                .map(String::from),
+            );
+        } else if view.is_rule {
+            let files_first = matches!(
+                native_kind,
+                Some("platform" | "constraint_setting" | "constraint_value")
+            );
+            if !files_first {
+                providers.append(&mut declared);
+            }
+            providers.extend(["FileProvider", "FilesToRunProvider"].map(String::from));
+            providers.append(&mut declared);
+            if output_group {
+                providers.push("OutputGroupInfo".into());
+            }
+            providers.push("DefaultInfo".into());
+        } else {
+            // OutputFileConfiguredTarget.getProvidersDictForQuery.
+            providers.extend(
+                [
+                    "VisibilityProvider",
+                    "FileProvider",
+                    "FilesToRunProvider",
+                    "DefaultInfo",
+                ]
+                .map(String::from),
+            );
+            if declared.iter().any(|n| n == "InstrumentedFilesInfo") {
+                providers.push("InstrumentedFilesInfo".into());
+            }
+            if output_group {
+                providers.push("OutputGroupInfo".into());
+            }
+        }
+        Ok(Facts { providers, files })
     }
 
     /// Full configured/provider analysis, never a PlannedRequest. This is not
@@ -1002,6 +1501,7 @@ impl Engine {
             intern(self.cquery_key(&self.configurations.top_key(label.clone()))?)?;
         }
         let mut configurations = Vec::new();
+        let mut build_options = Vec::new();
         let mut config_ids = BTreeMap::new();
         for (id, configuration) in self.configurations.iter() {
             let index = configurations.len() as u32;
@@ -1082,6 +1582,7 @@ impl Engine {
                         .collect(),
                 });
             }
+            build_options.push(crate::cquery_starlark::build_options(configuration));
             configurations.push(wire::Configuration {
                 id: index + 1,
                 checksum: id.to_string(),
@@ -1101,6 +1602,12 @@ impl Engine {
         let mut ordered = ids.iter().collect::<Vec<_>>();
         ordered.sort_by_key(|(_, id)| **id);
         let mut nodes = Vec::with_capacity(ids.len());
+        let mut provider_sets: Vec<Vec<String>> = Vec::new();
+        let mut provider_set_ids: HashMap<Vec<String>, u32> = HashMap::new();
+        let mut fact_errors = BTreeMap::new();
+        let default_group = self
+            .selected_output_groups()
+            .contains(crate::output_group_info::DEFAULT);
         let mut hashes = HashMap::new();
         let mut conditions: BTreeMap<&ConfiguredTargetKey, Vec<String>> = BTreeMap::new();
         for edge in &capture.edges {
@@ -1308,6 +1815,69 @@ impl Engine {
                     })
                 }
             };
+            let (provider_names, files) = match self.target(label)? {
+                Target::Source(_) => (
+                    Some(
+                        [
+                            "VisibilityProvider",
+                            "FileProvider",
+                            "FilesToRunProvider",
+                            "DefaultInfo",
+                        ]
+                        .map(String::from)
+                        .to_vec(),
+                    ),
+                    if default_group {
+                        vec![source_exec_path(label)]
+                    } else {
+                        Vec::new()
+                    },
+                ),
+                Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_)) => {
+                    (None, Vec::new())
+                }
+                // RuleConfiguredTargetBuilder of an incompatible target
+                // (IncompatibleTargetChecker.createIncompatibleTarget).
+                _ if incompatible => (
+                    Some(
+                        [
+                            "IncompatiblePlatformProvider",
+                            "FileProvider",
+                            "FilesToRunProvider",
+                            "DefaultInfo",
+                        ]
+                        .map(String::from)
+                        .to_vec(),
+                    ),
+                    Vec::new(),
+                ),
+                _ => match capture.facts.get(&(label.clone(), *config)) {
+                    Some(Ok(facts)) => (Some(facts.providers.clone()), facts.files.clone()),
+                    Some(Err(error)) => {
+                        fact_errors.insert(nodes.len() as u32, error.clone());
+                        (None, Vec::new())
+                    }
+                    None => {
+                        fact_errors.insert(
+                            nodes.len() as u32,
+                            format!("cquery recorded no providers of {label}"),
+                        );
+                        (None, Vec::new())
+                    }
+                },
+            };
+            let providers = match provider_names {
+                None => NO_PROVIDERS,
+                Some(names) => match provider_set_ids.get(&names) {
+                    Some(id) => *id,
+                    None => {
+                        let id = provider_sets.len() as u32;
+                        provider_sets.push(names.clone());
+                        provider_set_ids.insert(names, id);
+                        id
+                    }
+                },
+            };
             nodes.push(Node {
                 target,
                 configuration: config.map(|id| config_ids[&id]),
@@ -1315,6 +1885,8 @@ impl Engine {
                 incompatible,
                 attribute_errors: (!attribute_errors.is_empty())
                     .then(|| Box::new(attribute_errors)),
+                providers,
+                files: files.into_boxed_slice(),
             });
         }
         crate::perf_mark("cquery.graph_vertices_ready");
@@ -1471,7 +2043,25 @@ impl Engine {
             top_checksum: self.configurations.top().to_string(),
             patterns: graph_patterns,
             repository_mapping: self.repositories.mapping("")?.clone(),
+            provider_sets,
+            build_options,
+            fact_errors,
         })
+    }
+}
+
+/// A source artifact's exec path: main-repository files relative to the
+/// exec root, external ones under `external/<canonical name>`.
+fn source_exec_path(label: &Label) -> String {
+    let relative = if label.package.is_empty() {
+        label.name.clone()
+    } else {
+        format!("{}/{}", label.package, label.name)
+    };
+    if label.repository.is_empty() {
+        relative
+    } else {
+        format!("external/{}/{relative}", label.repository)
     }
 }
 

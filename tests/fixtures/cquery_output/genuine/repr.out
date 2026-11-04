@@ -1,0 +1,25 @@
+<target //:top> <target //:top>
+<target //:tool> <target //:tool>
+<alias target //:alias of //:leaf> <alias target //:alias of //:leaf>
+<target //:leaf> <target //:leaf>
+<target //:linux> <target //:linux>
+<input file target //:extra.txt> <input file target //:extra.txt>
+<input file target //:src.txt> <input file target //:src.txt>
+<target //:mid> <target //:mid>
+<target //:opt> <target //:opt>
+<unknown target //tools/allowlists/function_transition_allowlist:function_transition_allowlist> <unknown target //tools/allowlists/function_transition_allowlist:function_transition_allowlist>
+<target @@platforms//os:linux> <target @@platforms//os:linux>
+<target @@platforms//cpu:x86_64> <target @@platforms//cpu:x86_64>
+<input file target //:opt.txt> <input file target //:opt.txt>
+<target //:gen> <target //:gen>
+<target //:leaf> <target //:leaf>
+<target //:is_transitioned> <target //:is_transitioned>
+<target @@platforms//cpu:cpu> <target @@platforms//cpu:cpu>
+<target @@platforms//os:os> <target @@platforms//os:os>
+<input file target @@bazel_tools//tools/genrule:genrule-setup.sh> <input file target @@bazel_tools//tools/genrule:genrule-setup.sh>
+<target //:is_transitioned> <target //:is_transitioned>
+<target //:flag> <target //:flag>
+<target //:flag> <target //:flag>
+<output file target //:gen.txt> <output file target //:gen.txt>
+<target //:incompatible_alias> <target //:incompatible_alias>
+<target //:indirect> <target //:indirect>

@@ -155,7 +155,11 @@ fn configured_sets_keep_exec_identity_and_filter_edges() {
     assert!(labels(&out).contains(&"//:chosen".to_owned()));
     let out = ws.ok(&["kind(alias, deps(//:consumer))"]);
     assert_eq!(labels(&out), ["//:alias"]);
-    let out = ws.query(&["--output=starlark", "//:top"]);
+    // Starlark output reads the same graph (tests/cquery_output_formats.rs);
+    // formatters without a native implementation still fail explicitly.
+    let out = ws.ok(&["--output=starlark", "//:top"]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "@@//:top\n");
+    let out = ws.query(&["--output=build", "//:top"]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("not implemented"));
 }

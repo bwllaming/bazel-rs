@@ -1,0 +1,3 @@
+ERROR: Starlark evaluation error for //:top: Traceback (most recent call last):
+	File "--starlark:expr", line 1, column 33, in format
+Error in fail: boom

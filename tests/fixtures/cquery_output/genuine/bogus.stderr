@@ -1,0 +1,1 @@
+ERROR: Invalid output format 'bogus'. Valid values are: label_kind, label, transitions, proto, streamed_proto, textproto, jsonproto, build, graph, starlark, files

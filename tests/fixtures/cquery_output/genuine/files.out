@@ -1,0 +1,10 @@
+bazel-out/k8-fastbuild/bin/top.out
+src.txt
+bazel-out/linux-opt-exec/bin/tool.out
+bazel-out/k8-fastbuild/bin/leaf.out
+bazel-out/k8-fastbuild-ST-4d8db0ac2113/bin/leaf.out
+opt.txt
+extra.txt
+bazel-out/k8-fastbuild/bin/mid.out
+bazel-out/k8-fastbuild/bin/gen.txt
+external/bazel_tools/tools/genrule/genrule-setup.sh

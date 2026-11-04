@@ -1,0 +1,3 @@
+module(name = "cquery_output_fixture")
+bazel_dep(name = "platforms", version = "1.0.0")
+local_path_override(module_name = "platforms", path = "platforms")

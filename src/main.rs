@@ -3307,17 +3307,28 @@ fn config_command(
     let mut dump = false;
     let mut common = NativeOptions::with_startup("config", line);
     for unit in &options.priority {
-        match unit.option.text.as_str() {
-            "--output=json" => json = true,
-            "--output" if unit.value.as_ref().is_some_and(|v| v.text == "json") => json = true,
-            "--dump_all" | "--dump_all=true" => dump = true,
+        let text = unit.option.text.as_str();
+        let value = text.strip_prefix("--output=").or_else(|| {
+            (text == "--output")
+                .then(|| unit.value.as_ref().map(|v| v.text.as_str()))
+                .flatten()
+        });
+        match (text, value) {
+            (_, Some(value)) if text.starts_with("--output") => {
+                json = match value {
+                    "json" => true,
+                    "text" => false,
+                    _ => {
+                        return Err(bazel_rs::exit_code::command_line(format!(
+                            "While parsing option --output={value}: Not a valid output type: '{value}' (should be text or json)"
+                        )));
+                    }
+                }
+            }
+            ("--dump_all" | "--dump_all=true" | "--dump_all=1", _) => dump = true,
+            ("--nodump_all" | "--dump_all=false" | "--dump_all=0", _) => dump = false,
             _ => common.parse("config", unit)?,
         }
-    }
-    if !json || !dump || !options.residue.is_empty() {
-        return Err(
-            "native config supports --output=json --dump_all of the last successful cquery".into(),
-        );
     }
     bazel_rs::worktree::install(root);
     let cache = line
@@ -3330,7 +3341,8 @@ fn config_command(
     } else {
         cwd.join(cache)
     };
-    bazel_rs::cquery_state::dump_configurations(&cache)
+    let ids: Vec<String> = options.residue.iter().map(|arg| arg.text.clone()).collect();
+    bazel_rs::cquery_state::config_command(&cache, json, dump, &ids)
 }
 
 struct RunContext<'a> {

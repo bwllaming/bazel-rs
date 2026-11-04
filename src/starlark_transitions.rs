@@ -450,6 +450,34 @@ mod values {
 }
 pub(crate) use values::{CompilationModeValue, StripModeValue, TransitionAttrsGen, TriStateValue};
 
+/// The (type name, constant) of a native enum option value
+/// ([`native_input`]'s CompilationMode/StripMode/TriState).
+pub(crate) fn unpack_option_enum(value: Value<'_>) -> Option<(&'static str, &'static str)> {
+    OptionEnum::unpack(value).map(|option| (option.type_name, option.value))
+}
+
+/// The value [`unpack_option_enum`] read, re-allocated (`None` for an
+/// unknown constant).
+pub(crate) fn alloc_option_enum<'v>(
+    heap: Heap<'v>,
+    type_name: &str,
+    value: &str,
+) -> Option<Value<'v>> {
+    let constants: &[&'static str] = match type_name {
+        "CompilationMode" => &["fastbuild", "dbg", "opt"],
+        "StripMode" => &["always", "sometimes", "never"],
+        "TriState" => &["AUTO", "YES", "NO", "auto", "yes", "no"],
+        _ => return None,
+    };
+    let value = *constants.iter().find(|constant| **constant == value)?;
+    let type_name = match type_name {
+        "CompilationMode" => "CompilationMode",
+        "StripMode" => "StripMode",
+        _ => "TriState",
+    };
+    Some(OptionEnum { type_name, value }.alloc(heap))
+}
+
 /// A native enum option value: its Starlark type name and constant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct OptionEnum {
@@ -799,7 +827,7 @@ fn validate_native_options(def: &TransitionDef, location: &str) -> Result<(), Fa
 /// The value a transition reads for a native option
 /// (FunctionTransitionUtil.findNativeOptionValue, :556-575, then
 /// RegularTransition.createBuildSettingsDict's Starlark.fromJava, :428-450).
-fn native_input<'v>(
+pub(crate) fn native_input<'v>(
     native: &NativeOptions,
     name: &str,
     heap: Heap<'v>,

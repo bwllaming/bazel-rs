@@ -103,6 +103,11 @@ fn presentation(option: &crate::bazelrc::Unit) -> bool {
             | "--notool_deps"
             | "--include_aspects"
             | "--noinclude_aspects"
+            | "--starlark:expr"
+            | "--starlark:file"
+            | "--graph:node_limit"
+            | "--graph:factored"
+            | "--nograph:factored"
     ) || name.starts_with("--proto:")
         || name.starts_with("--noproto:")
 }
@@ -706,6 +711,10 @@ pub fn save_configurations(cache: &Path, graph: &Graph) -> Result<(), String> {
 }
 
 pub fn dump_configurations(cache: &Path) -> Result<(), String> {
+    config_command(cache, true, true, &[])
+}
+
+fn read_configurations(cache: &Path) -> Result<Vec<crate::cquery_proto::Configuration>, String> {
     let root = store::root(cache);
     let binary = snapshot::exe_id::binary_id(&root).map_err(|e| e.to_string())?;
     // snapshot-unrecorded: binary command state, never an analysis input.
@@ -718,17 +727,206 @@ pub fn dump_configurations(cache: &Path) -> Result<(), String> {
     {
         return Err("invalid or incompatible configured-query state".into());
     }
-    let configurations: Vec<crate::cquery_proto::Configuration> =
+    let mut configurations: Vec<crate::cquery_proto::Configuration> =
         postcard::from_bytes(&bytes[56..]).map_err(|e| e.to_string())?;
-    let values: Vec<_> = configurations.into_iter().map(|c| serde_json::json!({
-        "skyKey": format!("BuildConfigurationKey[{}]", c.checksum), "configHash": c.checksum,
-        "mnemonic": c.mnemonic, "isExec": c.is_tool,
-        "fragments": c.fragments.iter().map(|f| serde_json::json!({"name":f.name, "fragmentOptions": f.fragment_option_names})).collect::<Vec<_>>(),
-        "fragmentOptions": c.fragment_options.iter().map(|f| serde_json::json!({"name":f.name, "options": f.options.iter().filter_map(|o| Some((o.name.clone()?, o.value.clone()?))).collect::<std::collections::BTreeMap<_,_>>()})).collect::<Vec<_>>()
-    })).collect();
-    serde_json::to_writer(std::io::stdout().lock(), &values).map_err(|e| e.to_string())?;
-    println!();
-    Ok(())
+    // ConfigCommand.forOutput: ordered by configuration hash.
+    configurations.sort_by(|a, b| a.checksum.cmp(&b.checksum));
+    Ok(configurations)
+}
+
+/// A configuration's fragment options as name -> sorted option map
+/// (FragmentOptionsForOutput).
+fn option_maps(
+    configuration: &crate::cquery_proto::Configuration,
+) -> Vec<(String, std::collections::BTreeMap<String, String>)> {
+    configuration
+        .fragment_options
+        .iter()
+        .map(|fragment| {
+            (
+                fragment.name.clone(),
+                fragment
+                    .options
+                    .iter()
+                    .filter_map(|o| Some((o.name.clone()?, o.value.clone()?)))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+fn configuration_json(configuration: &crate::cquery_proto::Configuration) -> serde_json::Value {
+    serde_json::json!({
+        "skyKey": format!("BuildConfigurationKey[{}]", configuration.checksum),
+        "configHash": configuration.checksum,
+        "mnemonic": configuration.mnemonic,
+        "isExec": configuration.is_tool,
+        "fragments": configuration.fragments.iter().map(|f| serde_json::json!({"name": f.name, "fragmentOptions": f.fragment_option_names})).collect::<Vec<_>>(),
+        "fragmentOptions": option_maps(configuration).into_iter().map(|(name, options)| serde_json::json!({"name": name, "options": options})).collect::<Vec<_>>(),
+    })
+}
+
+/// TextOutputFormatter.writeConfiguration.
+fn configuration_text(configuration: &crate::cquery_proto::Configuration) -> String {
+    let mut out = format!(
+        "BuildConfigurationValue {}:\nSkyframe Key: BuildConfigurationKey[{}]\nFragments: ",
+        configuration.checksum, configuration.checksum
+    );
+    for fragment in &configuration.fragments {
+        out.push_str(&format!(
+            "{}: [{}], ",
+            fragment.name,
+            fragment.fragment_option_names.join(",")
+        ));
+    }
+    out.push('\n');
+    for (name, options) in option_maps(configuration) {
+        out.push_str(&format!("FragmentOptions {name} {{\n"));
+        for (option, value) in options {
+            out.push_str(&format!("  {option}: {value}\n"));
+        }
+        out.push_str("}\n");
+    }
+    out
+}
+
+fn find_configuration<'a>(
+    configurations: &'a [crate::cquery_proto::Configuration],
+    prefix: &str,
+) -> Result<&'a crate::cquery_proto::Configuration, String> {
+    let matches: Vec<_> = configurations
+        .iter()
+        .filter(|c| c.checksum.starts_with(prefix))
+        .collect();
+    match matches.as_slice() {
+        [] => Err(format!("No configuration found with ID prefix {prefix}")),
+        [only] => Ok(only),
+        _ => Err(format!(
+            "Configuration identifier '{prefix}' is ambiguous.\n'{prefix}' is a prefix of multiple configurations:\n {}\n\nUse a sufficient prefix to uniquely identify one configuration.",
+            matches
+                .iter()
+                .map(|c| c.checksum.as_str())
+                .collect::<Vec<_>>()
+                .join("\n ")
+        )),
+    }
+}
+
+/// `config [--output=text|json] [--dump_all] [ID [ID2]]` (ConfigCommand)
+/// over the configurations of the last successful native cquery.
+pub fn config_command(
+    cache: &Path,
+    json: bool,
+    dump_all: bool,
+    ids: &[String],
+) -> Result<(), String> {
+    use std::io::Write;
+    if ids.len() > 2 {
+        return Err("Too many config ids.".into());
+    }
+    let configurations = read_configurations(cache)?;
+    let mut out = String::new();
+    match ids {
+        [] if dump_all => {
+            if json {
+                let values: Vec<_> = configurations.iter().map(configuration_json).collect();
+                out = serde_json::to_string(&values).map_err(|e| e.to_string())?;
+                out.push('\n');
+            } else {
+                configurations
+                    .iter()
+                    .for_each(|c| out.push_str(&configuration_text(c)));
+            }
+        }
+        [] => {
+            if json {
+                let ids: Vec<_> = configurations.iter().map(|c| c.checksum.as_str()).collect();
+                out = serde_json::to_string(&serde_json::json!({"configuration-IDs": ids}))
+                    .map_err(|e| e.to_string())?;
+                out.push('\n');
+            } else {
+                out.push_str("Available configurations:\n");
+                for configuration in &configurations {
+                    out.push_str(&format!(
+                        "{} {}{}\n",
+                        configuration.checksum,
+                        configuration.mnemonic,
+                        if configuration.is_tool { " (exec)" } else { "" }
+                    ));
+                }
+            }
+        }
+        [id] => {
+            eprintln!("INFO: Displaying config with id {id}");
+            let configuration = find_configuration(&configurations, id)?;
+            if json {
+                out = serde_json::to_string(&configuration_json(configuration))
+                    .map_err(|e| e.to_string())?;
+                out.push('\n');
+            } else {
+                out = configuration_text(configuration);
+            }
+        }
+        [first, second] => {
+            eprintln!("INFO: Displaying diff between configs {first} and {second}");
+            let one = option_maps(find_configuration(&configurations, first)?);
+            let two = option_maps(find_configuration(&configurations, second)?);
+            let names: std::collections::BTreeSet<&String> =
+                one.iter().chain(two.iter()).map(|(name, _)| name).collect();
+            let mut diffs = Vec::new();
+            for name in names {
+                let empty = std::collections::BTreeMap::new();
+                let a = one
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map_or(&empty, |(_, o)| o);
+                let b = two
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map_or(&empty, |(_, o)| o);
+                let keys: std::collections::BTreeSet<&String> = a.keys().chain(b.keys()).collect();
+                let changed: Vec<(String, String, String)> = keys
+                    .into_iter()
+                    .filter(|key| a.get(*key) != b.get(*key))
+                    .map(|key| {
+                        let show = |v: Option<&String>| v.cloned().unwrap_or_else(|| "null".into());
+                        (key.clone(), show(a.get(key)), show(b.get(key)))
+                    })
+                    .collect();
+                if !changed.is_empty() {
+                    diffs.push((name.clone(), changed));
+                }
+            }
+            if json {
+                let value = serde_json::json!({
+                    "configHash1": first,
+                    "configHash2": second,
+                    "fragmentsDiff": diffs.iter().map(|(name, changed)| serde_json::json!({
+                        "name": name,
+                        "optionsDiff": changed.iter().map(|(k, a, b)| (k.clone(), serde_json::json!({"first": a, "second": b}))).collect::<serde_json::Map<_, _>>(),
+                    })).collect::<Vec<_>>(),
+                });
+                out = serde_json::to_string(&value).map_err(|e| e.to_string())?;
+                out.push('\n');
+            } else {
+                out.push_str(&format!(
+                    "Displaying diff between configs {first} and {second}\n"
+                ));
+                for (name, changed) in diffs {
+                    out.push_str(&format!("FragmentOptions {name} {{\n"));
+                    for (key, a, b) in changed {
+                        out.push_str(&format!("  {key}: {a}, {b}\n"));
+                    }
+                    out.push_str("}\n");
+                }
+            }
+        }
+        _ => unreachable!("checked above"),
+    }
+    std::io::stdout()
+        .lock()
+        .write_all(out.as_bytes())
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -774,6 +972,9 @@ mod tests {
             top_checksum: String::new(),
             patterns: [("//:bad".to_owned(), vec![1])].into_iter().collect(),
             repository_mapping: Default::default(),
+            provider_sets: Vec::new(),
+            build_options: Vec::new(),
+            fact_errors: Default::default(),
         };
         let key = key::Key {
             g: [13; 32],

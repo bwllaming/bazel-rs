@@ -1,0 +1,6863 @@
+results {
+  target {
+    type: RULE
+    rule {
+      name: "//:top"
+      rule_class: "lib"
+      location: "/tmp/opencode/w/cqof-ws/BUILD.bazel:16:4"
+      attribute {
+        name: "$allowlist_function_transition"
+        type: LABEL
+        string_value: "@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist"
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "$config_dependencies"
+        type: LABEL_LIST
+        string_list_value: "//:opt"
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: ":action_listener"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "aspect_dep"
+        type: LABEL
+        string_value: "//:mid"
+        explicitly_specified: true
+        nodep: false
+      }
+      attribute {
+        name: "aspect_hints"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "compatible_with"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "deprecation"
+        type: STRING
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "deps"
+        type: LABEL_LIST
+        string_list_value: "//:mid"
+        string_list_value: "//:alias"
+        explicitly_specified: true
+        nodep: false
+      }
+      attribute {
+        name: "exec_compatible_with"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "exec_group_compatible_with"
+        type: LABEL_LIST_DICT
+        explicitly_specified: false
+      }
+      attribute {
+        name: "exec_properties"
+        type: STRING_DICT
+        explicitly_specified: false
+      }
+      attribute {
+        name: "expect_failure"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "features"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "generator_function"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "generator_location"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "generator_name"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "name"
+        type: STRING
+        string_value: "top"
+        explicitly_specified: true
+        nodep: false
+      }
+      attribute {
+        name: "package_metadata"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "restricted_to"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "srcs"
+        type: LABEL_LIST
+        string_list_value: "//:src.txt"
+        explicitly_specified: true
+        nodep: false
+      }
+      attribute {
+        name: "tags"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "target_compatible_with"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "testonly"
+        type: BOOLEAN
+        int_value: 0
+        string_value: "false"
+        explicitly_specified: false
+        boolean_value: false
+      }
+      attribute {
+        name: "tool"
+        type: LABEL
+        string_value: "//:tool"
+        explicitly_specified: true
+        nodep: false
+      }
+      attribute {
+        name: "toolchains"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "tr_dep"
+        type: LABEL
+        string_value: "//:leaf"
+        explicitly_specified: true
+        nodep: false
+      }
+      attribute {
+        name: "transitive_configs"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: true
+      }
+      attribute {
+        name: "visibility"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: true
+      }
+      attribute {
+        name: "$rule_implementation_hash"
+        type: STRING
+        string_value: "ee5606a5a8767d2d91bd3f654b407e9f20e41120847a43e96ae0a6faadd9b4de"
+      }
+      attribute {
+        name: "$extra"
+        type: LABEL
+        string_value: "//:extra.txt"
+        explicitly_specified: false
+        nodep: false
+      }
+      rule_input: "//:extra.txt"
+      rule_input: "//:alias"
+      rule_input: "//:leaf"
+      rule_input: "//:mid"
+      rule_input: "//:opt"
+      rule_input: "//:opt.txt"
+      rule_input: "//:src.txt"
+      rule_input: "//:tool"
+      rule_input: "@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist"
+      configured_rule_input {
+        label: "//:tool"
+        configuration_checksum: "92bce568a5fa85df1936d02e542b6b3d1c4ffb59021e045aecb83d0ef0ad62bf"
+        configuration_id: 1
+      }
+      configured_rule_input {
+        label: "//:alias"
+        configuration_checksum: "cd728b05a9534bcb142aa7266b4ae5d26c36954bf6968de51f765b0b3edd126e"
+        configuration_id: 2
+      }
+      configured_rule_input {
+        label: "//:leaf"
+        configuration_checksum: "f8cea2d610cd5691d06e902cb6310e3680a23f6d606af77e7669eca9426f4ba3"
+        configuration_id: 3
+      }
+      configured_rule_input {
+        label: "//:linux"
+        configuration_checksum: "3030ed4c810cf3435d066294fa495e650fe75173e4b4ef410ea56cb683458569"
+        configuration_id: 4
+      }
+      configured_rule_input {
+        label: "//:extra.txt"
+      }
+      configured_rule_input {
+        label: "//:src.txt"
+      }
+      configured_rule_input {
+        label: "//:mid"
+        configuration_checksum: "cd728b05a9534bcb142aa7266b4ae5d26c36954bf6968de51f765b0b3edd126e"
+        configuration_id: 2
+      }
+      configured_rule_input {
+        label: "//:opt"
+        configuration_checksum: "cd728b05a9534bcb142aa7266b4ae5d26c36954bf6968de51f765b0b3edd126e"
+        configuration_id: 2
+      }
+      configured_rule_input {
+        label: "@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist"
+      }
+    }
+  }
+  configuration {
+    checksum: "cd728b05a9534bcb142aa7266b4ae5d26c36954bf6968de51f765b0b3edd126e"
+  }
+  configuration_id: 2
+}
+results {
+  target {
+    type: SOURCE_FILE
+    source_file {
+      name: "//:src.txt"
+      location: "/tmp/opencode/w/cqof-ws/src.txt:1:1"
+      visibility_label: "//visibility:public"
+    }
+  }
+  configuration {
+    checksum: "null"
+  }
+}
+results {
+  target {
+    type: GENERATED_FILE
+    generated_file {
+      name: "//:gen.txt"
+      generating_rule: "//:gen"
+      location: "/tmp/opencode/w/cqof-ws/BUILD.bazel:36:8"
+    }
+  }
+  configuration {
+    checksum: "cd728b05a9534bcb142aa7266b4ae5d26c36954bf6968de51f765b0b3edd126e"
+  }
+  configuration_id: 2
+}
+results {
+  target {
+    type: RULE
+    rule {
+      name: "//:windows_only"
+      rule_class: "lib"
+      location: "/tmp/opencode/w/cqof-ws/BUILD.bazel:48:4"
+      attribute {
+        name: "$allowlist_function_transition"
+        type: LABEL
+        string_value: "@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist"
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "$config_dependencies"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: ":action_listener"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "aspect_dep"
+        type: LABEL
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "aspect_hints"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "compatible_with"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "deprecation"
+        type: STRING
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "deps"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "exec_compatible_with"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "exec_group_compatible_with"
+        type: LABEL_LIST_DICT
+        explicitly_specified: false
+      }
+      attribute {
+        name: "exec_properties"
+        type: STRING_DICT
+        explicitly_specified: false
+      }
+      attribute {
+        name: "expect_failure"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "features"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "generator_function"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "generator_location"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "generator_name"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "name"
+        type: STRING
+        string_value: "windows_only"
+        explicitly_specified: true
+        nodep: false
+      }
+      attribute {
+        name: "package_metadata"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "restricted_to"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "srcs"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "tags"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "target_compatible_with"
+        type: LABEL_LIST
+        string_list_value: "@platforms//os:windows"
+        explicitly_specified: true
+        nodep: false
+      }
+      attribute {
+        name: "testonly"
+        type: BOOLEAN
+        int_value: 0
+        string_value: "false"
+        explicitly_specified: false
+        boolean_value: false
+      }
+      attribute {
+        name: "tool"
+        type: LABEL
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "toolchains"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "tr_dep"
+        type: LABEL
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "transitive_configs"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: true
+      }
+      attribute {
+        name: "visibility"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: true
+      }
+      attribute {
+        name: "$rule_implementation_hash"
+        type: STRING
+        string_value: "ee5606a5a8767d2d91bd3f654b407e9f20e41120847a43e96ae0a6faadd9b4de"
+      }
+      attribute {
+        name: "$extra"
+        type: LABEL
+        string_value: "//:extra.txt"
+        explicitly_specified: false
+        nodep: false
+      }
+      rule_input: "//:extra.txt"
+      rule_input: "@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist"
+      rule_input: "@platforms//os:windows"
+      configured_rule_input {
+        label: "@platforms//os:windows"
+        configuration_checksum: "3030ed4c810cf3435d066294fa495e650fe75173e4b4ef410ea56cb683458569"
+        configuration_id: 4
+      }
+    }
+  }
+  configuration {
+    checksum: "cd728b05a9534bcb142aa7266b4ae5d26c36954bf6968de51f765b0b3edd126e"
+  }
+  configuration_id: 2
+}
+results {
+  target {
+    type: RULE
+    rule {
+      name: "//:alias"
+      rule_class: "alias"
+      location: "/tmp/opencode/w/cqof-ws/BUILD.bazel:34:6"
+      attribute {
+        name: "$config_dependencies"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "actual"
+        type: LABEL
+        string_value: "//:leaf"
+        explicitly_specified: true
+        nodep: false
+      }
+      attribute {
+        name: "aspect_hints"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "compatible_with"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "deprecation"
+        type: STRING
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "features"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "generator_function"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "generator_location"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "generator_name"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "name"
+        type: STRING
+        string_value: "alias"
+        explicitly_specified: true
+        nodep: false
+      }
+      attribute {
+        name: "package_metadata"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "restricted_to"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "tags"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "target_compatible_with"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "testonly"
+        type: BOOLEAN
+        int_value: 0
+        string_value: "false"
+        explicitly_specified: false
+        boolean_value: false
+      }
+      attribute {
+        name: "transitive_configs"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: true
+      }
+      attribute {
+        name: "visibility"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: true
+      }
+      rule_input: "//:leaf"
+      configured_rule_input {
+        label: "//:leaf"
+        configuration_checksum: "cd728b05a9534bcb142aa7266b4ae5d26c36954bf6968de51f765b0b3edd126e"
+        configuration_id: 2
+      }
+    }
+  }
+  configuration {
+    checksum: "cd728b05a9534bcb142aa7266b4ae5d26c36954bf6968de51f765b0b3edd126e"
+  }
+  configuration_id: 2
+}
+results {
+  target {
+    type: RULE
+    rule {
+      name: "//:alias"
+      rule_class: "alias"
+      location: "/tmp/opencode/w/cqof-ws/BUILD.bazel:34:6"
+      attribute {
+        name: "$config_dependencies"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "actual"
+        type: LABEL
+        string_value: "//:leaf"
+        explicitly_specified: true
+        nodep: false
+      }
+      attribute {
+        name: "aspect_hints"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "compatible_with"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "deprecation"
+        type: STRING
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "features"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "generator_function"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "generator_location"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "generator_name"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "name"
+        type: STRING
+        string_value: "alias"
+        explicitly_specified: true
+        nodep: false
+      }
+      attribute {
+        name: "package_metadata"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "restricted_to"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "tags"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "target_compatible_with"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "testonly"
+        type: BOOLEAN
+        int_value: 0
+        string_value: "false"
+        explicitly_specified: false
+        boolean_value: false
+      }
+      attribute {
+        name: "transitive_configs"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: true
+      }
+      attribute {
+        name: "visibility"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: true
+      }
+      rule_input: "//:leaf"
+      configured_rule_input {
+        label: "//:leaf"
+        configuration_checksum: "cd728b05a9534bcb142aa7266b4ae5d26c36954bf6968de51f765b0b3edd126e"
+        configuration_id: 2
+      }
+    }
+  }
+  configuration {
+    checksum: "d207fa4e6cd9646b1d7ccf1f8d6eb6921dbdfe530b576d7d4c14756b58e92de8"
+  }
+  configuration_id: 5
+}
+results {
+  target {
+    type: RULE
+    rule {
+      name: "//:fg"
+      rule_class: "filegroup"
+      location: "/tmp/opencode/w/cqof-ws/BUILD.bazel:38:10"
+      attribute {
+        name: "$config_dependencies"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: ":action_listener"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "aspect_hints"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "compatible_with"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "data"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "deprecation"
+        type: STRING
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "distribs"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "features"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "generator_function"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "generator_location"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "generator_name"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "licenses"
+        type: LICENSE
+        license {
+          license_type: "NONE"
+        }
+        explicitly_specified: false
+      }
+      attribute {
+        name: "name"
+        type: STRING
+        string_value: "fg"
+        explicitly_specified: true
+        nodep: false
+      }
+      attribute {
+        name: "output_group"
+        type: STRING
+        string_value: ""
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "output_licenses"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "package_metadata"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "restricted_to"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "srcs"
+        type: LABEL_LIST
+        string_list_value: "//:src.txt"
+        string_list_value: "//:gen"
+        explicitly_specified: true
+        nodep: false
+      }
+      attribute {
+        name: "tags"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "target_compatible_with"
+        type: LABEL_LIST
+        explicitly_specified: false
+        nodep: false
+      }
+      attribute {
+        name: "testonly"
+        type: BOOLEAN
+        int_value: 0
+        string_value: "false"
+        explicitly_specified: false
+        boolean_value: false
+      }
+      attribute {
+        name: "transitive_configs"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: true
+      }
+      attribute {
+        name: "visibility"
+        type: STRING_LIST
+        explicitly_specified: false
+        nodep: true
+      }
+      rule_input: "//:gen"
+      rule_input: "//:src.txt"
+      configured_rule_input {
+        label: "//:linux"
+        configuration_checksum: "3030ed4c810cf3435d066294fa495e650fe75173e4b4ef410ea56cb683458569"
+        configuration_id: 4
+      }
+      configured_rule_input {
+        label: "//:gen"
+        configuration_checksum: "cd728b05a9534bcb142aa7266b4ae5d26c36954bf6968de51f765b0b3edd126e"
+        configuration_id: 2
+      }
+      configured_rule_input {
+        label: "//:src.txt"
+      }
+    }
+  }
+  configuration {
+    checksum: "cd728b05a9534bcb142aa7266b4ae5d26c36954bf6968de51f765b0b3edd126e"
+  }
+  configuration_id: 2
+}
+configurations {
+  id: 1
+  mnemonic: "linux-opt-exec"
+  platform_name: "k8"
+  checksum: "92bce568a5fa85df1936d02e542b6b3d1c4ffb59021e045aecb83d0ef0ad62bf"
+  is_tool: true
+  fragments {
+    name: "com.google.devtools.build.lib.analysis.PlatformConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.PlatformOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.analysis.ShellConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.ShellConfiguration$Options"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.analysis.test.CoverageConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.config.CoreOptions"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.test.CoverageConfiguration$CoverageOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.bazel.rules.BazelRuleClassProvider$StrictActionEnvConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.bazel.rules.BazelRuleClassProvider$StrictActionEnvOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.android.AndroidConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.android.AndroidConfiguration$Options"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.android.BazelAndroidConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.android.BazelAndroidConfiguration$Options"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.apple.AppleConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.apple.AppleCommandLineOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.config.ConfigFeatureFlagConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.config.ConfigFeatureFlagOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.cpp.CppConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.cpp.CppOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.java.JavaConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.PlatformOptions"
+    fragment_option_names: "com.google.devtools.build.lib.rules.java.JavaOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.objc.J2ObjcConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.objc.J2ObjcCommandLineOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.objc.ObjcConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.objc.ObjcCommandLineOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.proto.ProtoConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.proto.ProtoConfiguration$Options"
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.PlatformOptions"
+    options {
+      name: "extra_execution_platforms"
+      value: "[]"
+    }
+    options {
+      name: "extra_toolchains"
+      value: "[]"
+    }
+    options {
+      name: "host_platform"
+      value: "//:linux"
+    }
+    options {
+      name: "incompatible_use_toolchain_resolution_for_java_rules"
+      value: "true"
+    }
+    options {
+      name: "platform_mappings"
+      value: "PlatformMappingKey{path=platform_mappings, wasExplicitlySetByUser=false}"
+    }
+    options {
+      name: "platforms"
+      value: "[//:linux]"
+    }
+    options {
+      name: "toolchain_resolution_debug"
+      value: "-(?:(?>.*))"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.ShellConfiguration$Options"
+    options {
+      name: "shell_executable"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.config.CoreOptions"
+    options {
+      name: "action_env"
+      value: "[]"
+    }
+    options {
+      name: "affected by starlark transition"
+      value: "[]"
+    }
+    options {
+      name: "allow_analysis_failures"
+      value: "false"
+    }
+    options {
+      name: "allow_unresolved_symlinks"
+      value: "true"
+    }
+    options {
+      name: "allowed_cpu_values"
+      value: "[]"
+    }
+    options {
+      name: "analysis_testing_deps_limit"
+      value: "2000"
+    }
+    options {
+      name: "archived_tree_artifact_mnemonics_filter"
+      value: "-(?:(?>.*))"
+    }
+    options {
+      name: "build_runfile_links"
+      value: "true"
+    }
+    options {
+      name: "build_runfile_manifests"
+      value: "true"
+    }
+    options {
+      name: "check_licenses"
+      value: "false"
+    }
+    options {
+      name: "check_visibility"
+      value: "true"
+    }
+    options {
+      name: "collect_code_coverage"
+      value: "false"
+    }
+    options {
+      name: "compilation_mode"
+      value: "opt"
+    }
+    options {
+      name: "cpu"
+      value: "k8"
+    }
+    options {
+      name: "enable_runfiles"
+      value: "AUTO"
+    }
+    options {
+      name: "enforce_constraints"
+      value: "true"
+    }
+    options {
+      name: "evaluating for analysis test"
+      value: "false"
+    }
+    options {
+      name: "exec_aspects"
+      value: "[]"
+    }
+    options {
+      name: "experimental_action_listener"
+      value: "[]"
+    }
+    options {
+      name: "experimental_allow_map_directory"
+      value: "true"
+    }
+    options {
+      name: "experimental_collect_code_coverage_for_generated_files"
+      value: "false"
+    }
+    options {
+      name: "experimental_debug_selects_always_succeed"
+      value: "false"
+    }
+    options {
+      name: "experimental_enforce_transitive_visibility"
+      value: "false"
+    }
+    options {
+      name: "experimental_exclude_defines_from_exec_config"
+      value: "false"
+    }
+    options {
+      name: "experimental_exec_config"
+      value: "@_builtins//:common/builtin_exec_platforms.bzl%bazel_exec_transition"
+    }
+    options {
+      name: "experimental_exec_configuration_distinguisher"
+      value: "OFF"
+    }
+    options {
+      name: "experimental_extended_sanity_checks"
+      value: "false"
+    }
+    options {
+      name: "experimental_output_directory_naming_scheme"
+      value: "DIFF_AGAINST_DYNAMIC_BASELINE"
+    }
+    options {
+      name: "experimental_output_paths"
+      value: "OFF"
+    }
+    options {
+      name: "experimental_override_platform_cpu_name"
+      value: "[]"
+    }
+    options {
+      name: "experimental_platform_in_output_dir"
+      value: "AUTO"
+    }
+    options {
+      name: "experimental_propagate_custom_flag"
+      value: "[]"
+    }
+    options {
+      name: "experimental_remotable_source_manifests"
+      value: "false"
+    }
+    options {
+      name: "experimental_strict_fileset_output"
+      value: "false"
+    }
+    options {
+      name: "experimental_throttle_action_cache_check"
+      value: "true"
+    }
+    options {
+      name: "experimental_use_platforms_in_output_dir_legacy_heuristic"
+      value: "true"
+    }
+    options {
+      name: "experimental_writable_outputs"
+      value: "false"
+    }
+    options {
+      name: "features"
+      value: "[]"
+    }
+    options {
+      name: "flag_alias"
+      value: "[build_python_zip=@@rules_python+//python/config_settings:build_python_zip, experimental_python_import_all_repositories=@@rules_python+//python/config_settings:experimental_python_import_all_repositories, incompatible_default_to_explicit_init_py=@@rules_python+//python/config_settings:incompatible_default_to_explicit_init_py, python_path=@@rules_python+//python/config_settings:python_path]"
+    }
+    options {
+      name: "host_action_env"
+      value: "[]"
+    }
+    options {
+      name: "host_compilation_mode"
+      value: "opt"
+    }
+    options {
+      name: "host_cpu"
+      value: "k8"
+    }
+    options {
+      name: "host_features"
+      value: "[]"
+    }
+    options {
+      name: "include_config_fragments_provider"
+      value: "OFF"
+    }
+    options {
+      name: "incompatible_always_include_files_in_data"
+      value: "true"
+    }
+    options {
+      name: "incompatible_auto_exec_groups"
+      value: "false"
+    }
+    options {
+      name: "incompatible_bazel_test_exec_run_under"
+      value: "true"
+    }
+    options {
+      name: "incompatible_bep_cpu_from_platform"
+      value: "false"
+    }
+    options {
+      name: "incompatible_check_testonly_for_output_files"
+      value: "false"
+    }
+    options {
+      name: "incompatible_compact_repo_mapping_manifest"
+      value: "true"
+    }
+    options {
+      name: "incompatible_disable_select_on"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_exclude_starlark_flags_from_exec_config"
+      value: "false"
+    }
+    options {
+      name: "incompatible_filegroup_runfiles_for_data"
+      value: "true"
+    }
+    options {
+      name: "incompatible_limit_platforms_in_output_dir_to"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_merge_genfiles_directory"
+      value: "true"
+    }
+    options {
+      name: "incompatible_modify_execution_info_additive"
+      value: "true"
+    }
+    options {
+      name: "incompatible_target_cpu_from_platform"
+      value: "true"
+    }
+    options {
+      name: "instrument_test_targets"
+      value: "false"
+    }
+    options {
+      name: "instrumentation_filter"
+      value: "-(?:(?>/javatests[/:])|(?>/test/java[/:]))"
+    }
+    options {
+      name: "is exec configuration"
+      value: "true"
+    }
+    options {
+      name: "min_param_file_size"
+      value: "32768"
+    }
+    options {
+      name: "modify_execution_info"
+      value: "[]"
+    }
+    options {
+      name: "platform_suffix"
+      value: "exec"
+    }
+    options {
+      name: "run_under"
+      value: "null"
+    }
+    options {
+      name: "scl_config"
+      value: "null"
+    }
+    options {
+      name: "stamp"
+      value: "false"
+    }
+    options {
+      name: "strict_filesets"
+      value: "false"
+    }
+    options {
+      name: "target_environment"
+      value: "[]"
+    }
+    options {
+      name: "use_target_platform_for_tests"
+      value: "false"
+    }
+    options {
+      name: "verbose_visibility_errors"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.test.CoverageConfiguration$CoverageOptions"
+    options {
+      name: "coverage_output_generator"
+      value: "@@bazel_tools//tools/test:lcov_merger"
+    }
+    options {
+      name: "coverage_report_generator"
+      value: "@@bazel_tools//tools/test:coverage_report_generator"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.bazel.rules.BazelRuleClassProvider$StrictActionEnvOptions"
+    options {
+      name: "incompatible_strict_action_env"
+      value: "true"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.bazel.rules.python.BazelPythonConfiguration$Options"
+    options {
+      name: "experimental_python_import_all_repositories"
+      value: "true"
+    }
+    options {
+      name: "incompatible_remove_ctx_bazel_py_fragment"
+      value: "true"
+    }
+    options {
+      name: "python_path"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.android.AndroidConfiguration$Options"
+    options {
+      name: "Android configuration distinguisher"
+      value: "MAIN"
+    }
+    options {
+      name: "android_compiler"
+      value: "null"
+    }
+    options {
+      name: "android_databinding_use_androidx"
+      value: "true"
+    }
+    options {
+      name: "android_databinding_use_v3_4_args"
+      value: "true"
+    }
+    options {
+      name: "android_dynamic_mode"
+      value: "OFF"
+    }
+    options {
+      name: "android_fixed_resource_neverlinking"
+      value: "true"
+    }
+    options {
+      name: "android_manifest_merger"
+      value: "ANDROID"
+    }
+    options {
+      name: "android_manifest_merger_order"
+      value: "ALPHABETICAL"
+    }
+    options {
+      name: "android_migration_tag_check"
+      value: "false"
+    }
+    options {
+      name: "android_platforms"
+      value: "[]"
+    }
+    options {
+      name: "android_resource_shrinking"
+      value: "false"
+    }
+    options {
+      name: "apk_signing_method"
+      value: "V1_V2"
+    }
+    options {
+      name: "break_build_on_parallel_dex2oat_failure"
+      value: "false"
+    }
+    options {
+      name: "desugar_for_android"
+      value: "true"
+    }
+    options {
+      name: "desugar_java8_libs"
+      value: "false"
+    }
+    options {
+      name: "dexopts_supported_in_dexmerger"
+      value: "[--minimal-main-dex, --set-max-idx-number]"
+    }
+    options {
+      name: "dexopts_supported_in_dexsharder"
+      value: "[--minimal-main-dex]"
+    }
+    options {
+      name: "dexopts_supported_in_incremental_dexing"
+      value: "[--no-optimize, --no-locals]"
+    }
+    options {
+      name: "experimental_allow_android_library_deps_without_srcs"
+      value: "false"
+    }
+    options {
+      name: "experimental_always_filter_duplicate_classes_from_android_test"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_assume_minsdkversion"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_compress_java_resources"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_databinding_v2"
+      value: "true"
+    }
+    options {
+      name: "experimental_android_library_exports_manifest_default"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_resource_cycle_shrinking"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_resource_name_obfuscation"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_resource_path_shortening"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_resource_shrinking"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_rewrite_dexes_with_rex"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_use_parallel_dex2oat"
+      value: "false"
+    }
+    options {
+      name: "experimental_check_desugar_deps"
+      value: "true"
+    }
+    options {
+      name: "experimental_disable_instrumentation_manifest_merge"
+      value: "false"
+    }
+    options {
+      name: "experimental_filter_library_jar_with_program_jar"
+      value: "false"
+    }
+    options {
+      name: "experimental_filter_r_jars_from_android_test"
+      value: "false"
+    }
+    options {
+      name: "experimental_get_android_java_resources_from_optimized_jar"
+      value: "false"
+    }
+    options {
+      name: "experimental_incremental_dexing_after_proguard"
+      value: "50"
+    }
+    options {
+      name: "experimental_incremental_dexing_after_proguard_by_default"
+      value: "true"
+    }
+    options {
+      name: "experimental_omit_resources_info_provider_from_android_binary"
+      value: "false"
+    }
+    options {
+      name: "experimental_one_version_enforcement_use_transitive_jars_for_binary_under_test"
+      value: "false"
+    }
+    options {
+      name: "experimental_persistent_aar_extractor"
+      value: "false"
+    }
+    options {
+      name: "experimental_remove_r_classes_from_instrumentation_test_jar"
+      value: "true"
+    }
+    options {
+      name: "experimental_use_dex_splitter_for_incremental_dexing"
+      value: "true"
+    }
+    options {
+      name: "experimental_use_rtxt_from_merged_resources"
+      value: "false"
+    }
+    options {
+      name: "fat_apk_hwasan"
+      value: "false"
+    }
+    options {
+      name: "incompatible_disable_native_android_rules"
+      value: "false"
+    }
+    options {
+      name: "incompatible_remove_ctx_android_fragment"
+      value: "false"
+    }
+    options {
+      name: "incremental_dexing"
+      value: "true"
+    }
+    options {
+      name: "internal_persistent_android_dex_desugar"
+      value: "false"
+    }
+    options {
+      name: "internal_persistent_busybox_tools"
+      value: "false"
+    }
+    options {
+      name: "internal_persistent_multiplex_android_dex_desugar"
+      value: "false"
+    }
+    options {
+      name: "internal_persistent_multiplex_busybox_tools"
+      value: "false"
+    }
+    options {
+      name: "legacy_main_dex_list_generator"
+      value: "null"
+    }
+    options {
+      name: "non_incremental_per_target_dexopts"
+      value: "[--positions]"
+    }
+    options {
+      name: "optimizing_dexer"
+      value: "null"
+    }
+    options {
+      name: "output_library_merged_assets"
+      value: "true"
+    }
+    options {
+      name: "persistent_android_dex_desugar"
+      value: "null"
+    }
+    options {
+      name: "persistent_android_resource_processor"
+      value: "null"
+    }
+    options {
+      name: "persistent_multiplex_android_dex_desugar"
+      value: "null"
+    }
+    options {
+      name: "persistent_multiplex_android_resource_processor"
+      value: "null"
+    }
+    options {
+      name: "persistent_multiplex_android_tools"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.android.BazelAndroidConfiguration$Options"
+    options {
+      name: "merge_android_manifest_permissions"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.apple.AppleCommandLineOptions"
+    options {
+      name: "apple configuration distinguisher"
+      value: "UNKNOWN"
+    }
+    options {
+      name: "apple_platform_type"
+      value: "macos"
+    }
+    options {
+      name: "apple_platforms"
+      value: "[]"
+    }
+    options {
+      name: "apple_split_cpu"
+      value: ""
+    }
+    options {
+      name: "catalyst_cpus"
+      value: "[]"
+    }
+    options {
+      name: "experimental_include_xcode_execution_requirements"
+      value: "false"
+    }
+    options {
+      name: "experimental_objc_provider_from_linked"
+      value: "false"
+    }
+    options {
+      name: "experimental_prefer_mutual_xcode"
+      value: "true"
+    }
+    options {
+      name: "host_macos_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "incompatible_enable_apple_toolchain_resolution"
+      value: "false"
+    }
+    options {
+      name: "ios_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "ios_multi_cpus"
+      value: "[]"
+    }
+    options {
+      name: "ios_sdk_version"
+      value: "null"
+    }
+    options {
+      name: "macos_cpus"
+      value: "[]"
+    }
+    options {
+      name: "macos_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "macos_sdk_version"
+      value: "null"
+    }
+    options {
+      name: "tvos_cpus"
+      value: "[]"
+    }
+    options {
+      name: "tvos_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "tvos_sdk_version"
+      value: "null"
+    }
+    options {
+      name: "use_platforms_in_apple_crosstool_transition"
+      value: "false"
+    }
+    options {
+      name: "visionos_cpus"
+      value: "[]"
+    }
+    options {
+      name: "watchos_cpus"
+      value: "[]"
+    }
+    options {
+      name: "watchos_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "watchos_sdk_version"
+      value: "null"
+    }
+    options {
+      name: "xcode_version"
+      value: "null"
+    }
+    options {
+      name: "xcode_version_config"
+      value: "@@bazel_tools//tools/cpp:host_xcodes"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.config.ConfigFeatureFlagOptions"
+    options {
+      name: "all feature flag values are present (internal)"
+      value: "true"
+    }
+    options {
+      name: "enforce_transitive_configs_for_config_feature_flag"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.cpp.CppOptions"
+    options {
+      name: "apple_generate_dsym"
+      value: "false"
+    }
+    options {
+      name: "build_test_dwp"
+      value: "false"
+    }
+    options {
+      name: "cc_dotd_files"
+      value: "true"
+    }
+    options {
+      name: "cc_include_scanning"
+      value: "false"
+    }
+    options {
+      name: "cc_output_directory_tag"
+      value: ""
+    }
+    options {
+      name: "compiler"
+      value: "null"
+    }
+    options {
+      name: "conlyopt"
+      value: "[]"
+    }
+    options {
+      name: "copt"
+      value: "[-g0]"
+    }
+    options {
+      name: "crosstool_top"
+      value: "@@bazel_tools//tools/cpp:toolchain"
+    }
+    options {
+      name: "cs_fdo_absolute_path"
+      value: "null"
+    }
+    options {
+      name: "cs_fdo_instrument"
+      value: "null"
+    }
+    options {
+      name: "cs_fdo_profile"
+      value: "null"
+    }
+    options {
+      name: "custom_malloc"
+      value: "null"
+    }
+    options {
+      name: "cxxopt"
+      value: "[-g0]"
+    }
+    options {
+      name: "dynamic_mode"
+      value: "DEFAULT"
+    }
+    options {
+      name: "enable_propeller_optimize_absolute_paths"
+      value: "true"
+    }
+    options {
+      name: "enable_remaining_fdo_absolute_paths"
+      value: "true"
+    }
+    options {
+      name: "experimental_cc_implementation_deps"
+      value: "true"
+    }
+    options {
+      name: "experimental_cpp_compile_resource_estimation"
+      value: "false"
+    }
+    options {
+      name: "experimental_cpp_modules"
+      value: "false"
+    }
+    options {
+      name: "experimental_generate_llvm_lcov"
+      value: "false"
+    }
+    options {
+      name: "experimental_inmemory_dotd_files"
+      value: "true"
+    }
+    options {
+      name: "experimental_link_static_libraries_once"
+      value: "true"
+    }
+    options {
+      name: "experimental_omitfp"
+      value: "false"
+    }
+    options {
+      name: "experimental_save_feature_state"
+      value: "false"
+    }
+    options {
+      name: "experimental_unsupported_and_brittle_include_scanning"
+      value: "false"
+    }
+    options {
+      name: "experimental_use_cpp_compile_action_args_params_file"
+      value: "false"
+    }
+    options {
+      name: "experimental_use_llvm_covmap"
+      value: "false"
+    }
+    options {
+      name: "fdo_instrument"
+      value: "null"
+    }
+    options {
+      name: "fdo_optimize"
+      value: "null"
+    }
+    options {
+      name: "fdo_prefetch_hints"
+      value: "null"
+    }
+    options {
+      name: "fdo_profile"
+      value: "null"
+    }
+    options {
+      name: "fission"
+      value: "[]"
+    }
+    options {
+      name: "force_pic"
+      value: "false"
+    }
+    options {
+      name: "grte_top"
+      value: "null"
+    }
+    options {
+      name: "host_compiler"
+      value: "null"
+    }
+    options {
+      name: "host_conlyopt"
+      value: "[]"
+    }
+    options {
+      name: "host_copt"
+      value: "[]"
+    }
+    options {
+      name: "host_cxxopt"
+      value: "[]"
+    }
+    options {
+      name: "host_grte_top"
+      value: "null"
+    }
+    options {
+      name: "host_linkopt"
+      value: "[]"
+    }
+    options {
+      name: "host_per_file_copt"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_disable_legacy_cc_provider"
+      value: "true"
+    }
+    options {
+      name: "incompatible_disable_nocopts"
+      value: "true"
+    }
+    options {
+      name: "incompatible_dont_enable_host_nonhost_crosstool_features"
+      value: "true"
+    }
+    options {
+      name: "incompatible_enable_cc_toolchain_resolution"
+      value: "true"
+    }
+    options {
+      name: "incompatible_make_thinlto_command_lines_standalone"
+      value: "true"
+    }
+    options {
+      name: "incompatible_remove_legacy_whole_archive"
+      value: "true"
+    }
+    options {
+      name: "incompatible_require_ctx_in_configure_features"
+      value: "true"
+    }
+    options {
+      name: "incompatible_use_cpp_compile_header_mnemonic"
+      value: "false"
+    }
+    options {
+      name: "incompatible_use_specific_tool_files"
+      value: "true"
+    }
+    options {
+      name: "incompatible_validate_top_level_header_inclusions"
+      value: "true"
+    }
+    options {
+      name: "interface_shared_objects"
+      value: "true"
+    }
+    options {
+      name: "legacy_whole_archive"
+      value: "true"
+    }
+    options {
+      name: "linkopt"
+      value: "[]"
+    }
+    options {
+      name: "ltobackendopt"
+      value: "[]"
+    }
+    options {
+      name: "ltoindexopt"
+      value: "[]"
+    }
+    options {
+      name: "memprof_profile"
+      value: "null"
+    }
+    options {
+      name: "minimum_os_version"
+      value: "null"
+    }
+    options {
+      name: "objc_enable_binary_stripping"
+      value: "false"
+    }
+    options {
+      name: "objc_generate_linkmap"
+      value: "false"
+    }
+    options {
+      name: "objc_use_dotd_pruning"
+      value: "true"
+    }
+    options {
+      name: "objccopt"
+      value: "[]"
+    }
+    options {
+      name: "per_file_copt"
+      value: "[]"
+    }
+    options {
+      name: "per_file_ltobackendopt"
+      value: "[]"
+    }
+    options {
+      name: "process_headers_in_dependencies"
+      value: "false"
+    }
+    options {
+      name: "propeller_optimize"
+      value: "null"
+    }
+    options {
+      name: "propeller_optimize_absolute_cc_profile"
+      value: "null"
+    }
+    options {
+      name: "propeller_optimize_absolute_ld_profile"
+      value: "null"
+    }
+    options {
+      name: "proto_profile"
+      value: "true"
+    }
+    options {
+      name: "proto_profile_path"
+      value: "null"
+    }
+    options {
+      name: "save_temps"
+      value: "false"
+    }
+    options {
+      name: "share_native_deps"
+      value: "true"
+    }
+    options {
+      name: "start_end_lib"
+      value: "true"
+    }
+    options {
+      name: "strict_system_includes"
+      value: "false"
+    }
+    options {
+      name: "strip"
+      value: "always"
+    }
+    options {
+      name: "stripopt"
+      value: "[]"
+    }
+    options {
+      name: "xbinary_fdo"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.java.JavaOptions"
+    options {
+      name: "bytecode_optimization_pass_actions"
+      value: "1"
+    }
+    options {
+      name: "bytecode_optimizers"
+      value: "{Proguard=null}"
+    }
+    options {
+      name: "enforce_proguard_file_extension"
+      value: "false"
+    }
+    options {
+      name: "experimental_add_test_support_to_compile_time_deps"
+      value: "true"
+    }
+    options {
+      name: "experimental_enable_jspecify"
+      value: "true"
+    }
+    options {
+      name: "experimental_fix_deps_tool"
+      value: "add_dep"
+    }
+    options {
+      name: "experimental_inmemory_jdeps_files"
+      value: "true"
+    }
+    options {
+      name: "experimental_java_classpath"
+      value: "BAZEL"
+    }
+    options {
+      name: "experimental_java_test_auto_create_deploy_jar"
+      value: "false"
+    }
+    options {
+      name: "experimental_local_java_optimization_configuration"
+      value: "null"
+    }
+    options {
+      name: "experimental_local_java_optimizations"
+      value: "false"
+    }
+    options {
+      name: "experimental_one_version_enforcement"
+      value: "OFF"
+    }
+    options {
+      name: "experimental_run_android_lint_on_java_rules"
+      value: "false"
+    }
+    options {
+      name: "experimental_strict_java_deps"
+      value: "DEFAULT"
+    }
+    options {
+      name: "experimental_turbine_annotation_processing"
+      value: "false"
+    }
+    options {
+      name: "explicit_java_test_deps"
+      value: "false"
+    }
+    options {
+      name: "host_java_launcher"
+      value: "null"
+    }
+    options {
+      name: "host_javacopt"
+      value: "[]"
+    }
+    options {
+      name: "host_jvmopt"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_disallow_java_import_exports"
+      value: "false"
+    }
+    options {
+      name: "incompatible_multi_release_deploy_jars"
+      value: "true"
+    }
+    options {
+      name: "java_debug"
+      value: "null"
+    }
+    options {
+      name: "java_deps"
+      value: "true"
+    }
+    options {
+      name: "java_header_compilation"
+      value: "true"
+    }
+    options {
+      name: "java_language_version"
+      value: ""
+    }
+    options {
+      name: "java_launcher"
+      value: "null"
+    }
+    options {
+      name: "java_runtime_version"
+      value: "remotejdk_11"
+    }
+    options {
+      name: "javacopt"
+      value: "[]"
+    }
+    options {
+      name: "jvmopt"
+      value: "[-XX:ErrorFile=/dev/stderr]"
+    }
+    options {
+      name: "one_version_enforcement_on_java_tests"
+      value: "true"
+    }
+    options {
+      name: "plugin"
+      value: "[]"
+    }
+    options {
+      name: "proguard_top"
+      value: "null"
+    }
+    options {
+      name: "split_bytecode_optimization_pass"
+      value: "false"
+    }
+    options {
+      name: "tool_java_language_version"
+      value: ""
+    }
+    options {
+      name: "tool_java_runtime_version"
+      value: "remotejdk_11"
+    }
+    options {
+      name: "use_ijars"
+      value: "true"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.objc.J2ObjcCommandLineOptions"
+    options {
+      name: "j2objc_dead_code_report"
+      value: "null"
+    }
+    options {
+      name: "j2objc_translation_flags"
+      value: "[]"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.objc.ObjcCommandLineOptions"
+    options {
+      name: "device_debug_entitlements"
+      value: "true"
+    }
+    options {
+      name: "experimental_objc_fastbuild_options"
+      value: "[-O0, -DDEBUG=1]"
+    }
+    options {
+      name: "incompatible_avoid_hardcoded_objc_compilation_flags"
+      value: "true"
+    }
+    options {
+      name: "incompatible_builtin_objc_strip_action"
+      value: "true"
+    }
+    options {
+      name: "incompatible_disable_native_apple_binary_rule"
+      value: "false"
+    }
+    options {
+      name: "incompatible_disallow_sdk_frameworks_attributes"
+      value: "false"
+    }
+    options {
+      name: "incompatible_objc_alwayslink_by_default"
+      value: "false"
+    }
+    options {
+      name: "incompatible_strip_executable_safely"
+      value: "false"
+    }
+    options {
+      name: "ios_memleaks"
+      value: "false"
+    }
+    options {
+      name: "ios_signing_cert_name"
+      value: "null"
+    }
+    options {
+      name: "ios_simulator_device"
+      value: "null"
+    }
+    options {
+      name: "ios_simulator_version"
+      value: "null"
+    }
+    options {
+      name: "objc_debug_with_GLIBCXX"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.proto.ProtoConfiguration$Options"
+    options {
+      name: "cc_proto_library_header_suffixes"
+      value: "[.pb.h]"
+    }
+    options {
+      name: "cc_proto_library_source_suffixes"
+      value: "[.pb.cc]"
+    }
+    options {
+      name: "experimental_proto_descriptor_sets_include_source_info"
+      value: "false"
+    }
+    options {
+      name: "proto_compiler"
+      value: "@@bazel_tools//tools/proto:protoc"
+    }
+    options {
+      name: "proto_toolchain_for_cc"
+      value: "@@bazel_tools//tools/proto:cc_toolchain"
+    }
+    options {
+      name: "proto_toolchain_for_j2objc"
+      value: "@@bazel_tools//tools/j2objc:j2objc_proto_toolchain"
+    }
+    options {
+      name: "proto_toolchain_for_java"
+      value: "@@bazel_tools//tools/proto:java_toolchain"
+    }
+    options {
+      name: "proto_toolchain_for_javalite"
+      value: "@@bazel_tools//tools/proto:javalite_toolchain"
+    }
+    options {
+      name: "protocopt"
+      value: "[]"
+    }
+    options {
+      name: "strict_proto_deps"
+      value: "ERROR"
+    }
+    options {
+      name: "strict_public_imports"
+      value: "OFF"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.python.PythonOptions"
+    options {
+      name: "build_python_zip"
+      value: "AUTO"
+    }
+    options {
+      name: "experimental_py_binaries_include_label"
+      value: "false"
+    }
+    options {
+      name: "incompatible_default_to_explicit_init_py"
+      value: "false"
+    }
+    options {
+      name: "incompatible_python_disallow_native_rules"
+      value: "false"
+    }
+    options {
+      name: "incompatible_remove_ctx_py_fragment"
+      value: "true"
+    }
+    options {
+      name: "python_native_rules_allowlist"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "user-defined"
+  }
+}
+configurations {
+  id: 2
+  mnemonic: "k8-fastbuild"
+  platform_name: "k8"
+  checksum: "cd728b05a9534bcb142aa7266b4ae5d26c36954bf6968de51f765b0b3edd126e"
+  fragments {
+    name: "com.google.devtools.build.lib.analysis.PlatformConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.PlatformOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.analysis.ShellConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.ShellConfiguration$Options"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.analysis.test.CoverageConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.config.CoreOptions"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.test.CoverageConfiguration$CoverageOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.bazel.rules.BazelRuleClassProvider$StrictActionEnvConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.bazel.rules.BazelRuleClassProvider$StrictActionEnvOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.android.AndroidConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.android.AndroidConfiguration$Options"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.android.BazelAndroidConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.android.BazelAndroidConfiguration$Options"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.apple.AppleConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.apple.AppleCommandLineOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.config.ConfigFeatureFlagConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.config.ConfigFeatureFlagOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.cpp.CppConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.cpp.CppOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.java.JavaConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.PlatformOptions"
+    fragment_option_names: "com.google.devtools.build.lib.rules.java.JavaOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.objc.J2ObjcConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.objc.J2ObjcCommandLineOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.objc.ObjcConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.objc.ObjcCommandLineOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.proto.ProtoConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.proto.ProtoConfiguration$Options"
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.PlatformOptions"
+    options {
+      name: "extra_execution_platforms"
+      value: "[]"
+    }
+    options {
+      name: "extra_toolchains"
+      value: "[]"
+    }
+    options {
+      name: "host_platform"
+      value: "//:linux"
+    }
+    options {
+      name: "incompatible_use_toolchain_resolution_for_java_rules"
+      value: "true"
+    }
+    options {
+      name: "platform_mappings"
+      value: "PlatformMappingKey{path=platform_mappings, wasExplicitlySetByUser=false}"
+    }
+    options {
+      name: "platforms"
+      value: "[//:linux]"
+    }
+    options {
+      name: "toolchain_resolution_debug"
+      value: "-(?:(?>.*))"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.ShellConfiguration$Options"
+    options {
+      name: "shell_executable"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.config.CoreOptions"
+    options {
+      name: "action_env"
+      value: "[]"
+    }
+    options {
+      name: "affected by starlark transition"
+      value: "[]"
+    }
+    options {
+      name: "allow_analysis_failures"
+      value: "false"
+    }
+    options {
+      name: "allow_unresolved_symlinks"
+      value: "true"
+    }
+    options {
+      name: "allowed_cpu_values"
+      value: "[]"
+    }
+    options {
+      name: "analysis_testing_deps_limit"
+      value: "2000"
+    }
+    options {
+      name: "archived_tree_artifact_mnemonics_filter"
+      value: "-(?:(?>.*))"
+    }
+    options {
+      name: "build_runfile_links"
+      value: "true"
+    }
+    options {
+      name: "build_runfile_manifests"
+      value: "true"
+    }
+    options {
+      name: "check_licenses"
+      value: "false"
+    }
+    options {
+      name: "check_visibility"
+      value: "true"
+    }
+    options {
+      name: "collect_code_coverage"
+      value: "false"
+    }
+    options {
+      name: "compilation_mode"
+      value: "fastbuild"
+    }
+    options {
+      name: "cpu"
+      value: "k8"
+    }
+    options {
+      name: "enable_runfiles"
+      value: "AUTO"
+    }
+    options {
+      name: "enforce_constraints"
+      value: "true"
+    }
+    options {
+      name: "evaluating for analysis test"
+      value: "false"
+    }
+    options {
+      name: "exec_aspects"
+      value: "[]"
+    }
+    options {
+      name: "experimental_action_listener"
+      value: "[]"
+    }
+    options {
+      name: "experimental_allow_map_directory"
+      value: "true"
+    }
+    options {
+      name: "experimental_collect_code_coverage_for_generated_files"
+      value: "false"
+    }
+    options {
+      name: "experimental_debug_selects_always_succeed"
+      value: "false"
+    }
+    options {
+      name: "experimental_enforce_transitive_visibility"
+      value: "false"
+    }
+    options {
+      name: "experimental_exclude_defines_from_exec_config"
+      value: "false"
+    }
+    options {
+      name: "experimental_exec_config"
+      value: "@_builtins//:common/builtin_exec_platforms.bzl%bazel_exec_transition"
+    }
+    options {
+      name: "experimental_exec_configuration_distinguisher"
+      value: "OFF"
+    }
+    options {
+      name: "experimental_extended_sanity_checks"
+      value: "false"
+    }
+    options {
+      name: "experimental_output_directory_naming_scheme"
+      value: "DIFF_AGAINST_DYNAMIC_BASELINE"
+    }
+    options {
+      name: "experimental_output_paths"
+      value: "OFF"
+    }
+    options {
+      name: "experimental_override_platform_cpu_name"
+      value: "[]"
+    }
+    options {
+      name: "experimental_platform_in_output_dir"
+      value: "AUTO"
+    }
+    options {
+      name: "experimental_propagate_custom_flag"
+      value: "[]"
+    }
+    options {
+      name: "experimental_remotable_source_manifests"
+      value: "false"
+    }
+    options {
+      name: "experimental_strict_fileset_output"
+      value: "false"
+    }
+    options {
+      name: "experimental_throttle_action_cache_check"
+      value: "true"
+    }
+    options {
+      name: "experimental_use_platforms_in_output_dir_legacy_heuristic"
+      value: "true"
+    }
+    options {
+      name: "experimental_writable_outputs"
+      value: "false"
+    }
+    options {
+      name: "features"
+      value: "[]"
+    }
+    options {
+      name: "flag_alias"
+      value: "[build_python_zip=@@rules_python+//python/config_settings:build_python_zip, experimental_python_import_all_repositories=@@rules_python+//python/config_settings:experimental_python_import_all_repositories, incompatible_default_to_explicit_init_py=@@rules_python+//python/config_settings:incompatible_default_to_explicit_init_py, python_path=@@rules_python+//python/config_settings:python_path]"
+    }
+    options {
+      name: "host_action_env"
+      value: "[]"
+    }
+    options {
+      name: "host_compilation_mode"
+      value: "opt"
+    }
+    options {
+      name: "host_cpu"
+      value: "k8"
+    }
+    options {
+      name: "host_features"
+      value: "[]"
+    }
+    options {
+      name: "include_config_fragments_provider"
+      value: "OFF"
+    }
+    options {
+      name: "incompatible_always_include_files_in_data"
+      value: "true"
+    }
+    options {
+      name: "incompatible_auto_exec_groups"
+      value: "false"
+    }
+    options {
+      name: "incompatible_bazel_test_exec_run_under"
+      value: "true"
+    }
+    options {
+      name: "incompatible_bep_cpu_from_platform"
+      value: "false"
+    }
+    options {
+      name: "incompatible_check_testonly_for_output_files"
+      value: "false"
+    }
+    options {
+      name: "incompatible_compact_repo_mapping_manifest"
+      value: "true"
+    }
+    options {
+      name: "incompatible_disable_select_on"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_exclude_starlark_flags_from_exec_config"
+      value: "false"
+    }
+    options {
+      name: "incompatible_filegroup_runfiles_for_data"
+      value: "true"
+    }
+    options {
+      name: "incompatible_limit_platforms_in_output_dir_to"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_merge_genfiles_directory"
+      value: "true"
+    }
+    options {
+      name: "incompatible_modify_execution_info_additive"
+      value: "true"
+    }
+    options {
+      name: "incompatible_target_cpu_from_platform"
+      value: "true"
+    }
+    options {
+      name: "instrument_test_targets"
+      value: "false"
+    }
+    options {
+      name: "instrumentation_filter"
+      value: "-(?:(?>/javatests[/:])|(?>/test/java[/:]))"
+    }
+    options {
+      name: "is exec configuration"
+      value: "false"
+    }
+    options {
+      name: "min_param_file_size"
+      value: "32768"
+    }
+    options {
+      name: "modify_execution_info"
+      value: "[]"
+    }
+    options {
+      name: "platform_suffix"
+      value: "null"
+    }
+    options {
+      name: "run_under"
+      value: "null"
+    }
+    options {
+      name: "scl_config"
+      value: "null"
+    }
+    options {
+      name: "stamp"
+      value: "false"
+    }
+    options {
+      name: "strict_filesets"
+      value: "false"
+    }
+    options {
+      name: "target_environment"
+      value: "[]"
+    }
+    options {
+      name: "use_target_platform_for_tests"
+      value: "false"
+    }
+    options {
+      name: "verbose_visibility_errors"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.test.CoverageConfiguration$CoverageOptions"
+    options {
+      name: "coverage_output_generator"
+      value: "@@bazel_tools//tools/test:lcov_merger"
+    }
+    options {
+      name: "coverage_report_generator"
+      value: "@@bazel_tools//tools/test:coverage_report_generator"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.bazel.rules.BazelRuleClassProvider$StrictActionEnvOptions"
+    options {
+      name: "incompatible_strict_action_env"
+      value: "true"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.bazel.rules.python.BazelPythonConfiguration$Options"
+    options {
+      name: "experimental_python_import_all_repositories"
+      value: "true"
+    }
+    options {
+      name: "incompatible_remove_ctx_bazel_py_fragment"
+      value: "true"
+    }
+    options {
+      name: "python_path"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.android.AndroidConfiguration$Options"
+    options {
+      name: "Android configuration distinguisher"
+      value: "MAIN"
+    }
+    options {
+      name: "android_compiler"
+      value: "null"
+    }
+    options {
+      name: "android_databinding_use_androidx"
+      value: "true"
+    }
+    options {
+      name: "android_databinding_use_v3_4_args"
+      value: "true"
+    }
+    options {
+      name: "android_dynamic_mode"
+      value: "OFF"
+    }
+    options {
+      name: "android_fixed_resource_neverlinking"
+      value: "true"
+    }
+    options {
+      name: "android_manifest_merger"
+      value: "ANDROID"
+    }
+    options {
+      name: "android_manifest_merger_order"
+      value: "ALPHABETICAL"
+    }
+    options {
+      name: "android_migration_tag_check"
+      value: "false"
+    }
+    options {
+      name: "android_platforms"
+      value: "[]"
+    }
+    options {
+      name: "android_resource_shrinking"
+      value: "false"
+    }
+    options {
+      name: "apk_signing_method"
+      value: "V1_V2"
+    }
+    options {
+      name: "break_build_on_parallel_dex2oat_failure"
+      value: "false"
+    }
+    options {
+      name: "desugar_for_android"
+      value: "true"
+    }
+    options {
+      name: "desugar_java8_libs"
+      value: "false"
+    }
+    options {
+      name: "dexopts_supported_in_dexmerger"
+      value: "[--minimal-main-dex, --set-max-idx-number]"
+    }
+    options {
+      name: "dexopts_supported_in_dexsharder"
+      value: "[--minimal-main-dex]"
+    }
+    options {
+      name: "dexopts_supported_in_incremental_dexing"
+      value: "[--no-optimize, --no-locals]"
+    }
+    options {
+      name: "experimental_allow_android_library_deps_without_srcs"
+      value: "false"
+    }
+    options {
+      name: "experimental_always_filter_duplicate_classes_from_android_test"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_assume_minsdkversion"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_compress_java_resources"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_databinding_v2"
+      value: "true"
+    }
+    options {
+      name: "experimental_android_library_exports_manifest_default"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_resource_cycle_shrinking"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_resource_name_obfuscation"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_resource_path_shortening"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_resource_shrinking"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_rewrite_dexes_with_rex"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_use_parallel_dex2oat"
+      value: "false"
+    }
+    options {
+      name: "experimental_check_desugar_deps"
+      value: "true"
+    }
+    options {
+      name: "experimental_disable_instrumentation_manifest_merge"
+      value: "false"
+    }
+    options {
+      name: "experimental_filter_library_jar_with_program_jar"
+      value: "false"
+    }
+    options {
+      name: "experimental_filter_r_jars_from_android_test"
+      value: "false"
+    }
+    options {
+      name: "experimental_get_android_java_resources_from_optimized_jar"
+      value: "false"
+    }
+    options {
+      name: "experimental_incremental_dexing_after_proguard"
+      value: "50"
+    }
+    options {
+      name: "experimental_incremental_dexing_after_proguard_by_default"
+      value: "true"
+    }
+    options {
+      name: "experimental_omit_resources_info_provider_from_android_binary"
+      value: "false"
+    }
+    options {
+      name: "experimental_one_version_enforcement_use_transitive_jars_for_binary_under_test"
+      value: "false"
+    }
+    options {
+      name: "experimental_persistent_aar_extractor"
+      value: "false"
+    }
+    options {
+      name: "experimental_remove_r_classes_from_instrumentation_test_jar"
+      value: "true"
+    }
+    options {
+      name: "experimental_use_dex_splitter_for_incremental_dexing"
+      value: "true"
+    }
+    options {
+      name: "experimental_use_rtxt_from_merged_resources"
+      value: "false"
+    }
+    options {
+      name: "fat_apk_hwasan"
+      value: "false"
+    }
+    options {
+      name: "incompatible_disable_native_android_rules"
+      value: "false"
+    }
+    options {
+      name: "incompatible_remove_ctx_android_fragment"
+      value: "false"
+    }
+    options {
+      name: "incremental_dexing"
+      value: "true"
+    }
+    options {
+      name: "internal_persistent_android_dex_desugar"
+      value: "false"
+    }
+    options {
+      name: "internal_persistent_busybox_tools"
+      value: "false"
+    }
+    options {
+      name: "internal_persistent_multiplex_android_dex_desugar"
+      value: "false"
+    }
+    options {
+      name: "internal_persistent_multiplex_busybox_tools"
+      value: "false"
+    }
+    options {
+      name: "legacy_main_dex_list_generator"
+      value: "null"
+    }
+    options {
+      name: "non_incremental_per_target_dexopts"
+      value: "[--positions]"
+    }
+    options {
+      name: "optimizing_dexer"
+      value: "null"
+    }
+    options {
+      name: "output_library_merged_assets"
+      value: "true"
+    }
+    options {
+      name: "persistent_android_dex_desugar"
+      value: "null"
+    }
+    options {
+      name: "persistent_android_resource_processor"
+      value: "null"
+    }
+    options {
+      name: "persistent_multiplex_android_dex_desugar"
+      value: "null"
+    }
+    options {
+      name: "persistent_multiplex_android_resource_processor"
+      value: "null"
+    }
+    options {
+      name: "persistent_multiplex_android_tools"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.android.BazelAndroidConfiguration$Options"
+    options {
+      name: "merge_android_manifest_permissions"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.apple.AppleCommandLineOptions"
+    options {
+      name: "apple configuration distinguisher"
+      value: "UNKNOWN"
+    }
+    options {
+      name: "apple_platform_type"
+      value: "macos"
+    }
+    options {
+      name: "apple_platforms"
+      value: "[]"
+    }
+    options {
+      name: "apple_split_cpu"
+      value: ""
+    }
+    options {
+      name: "catalyst_cpus"
+      value: "[]"
+    }
+    options {
+      name: "experimental_include_xcode_execution_requirements"
+      value: "false"
+    }
+    options {
+      name: "experimental_objc_provider_from_linked"
+      value: "false"
+    }
+    options {
+      name: "experimental_prefer_mutual_xcode"
+      value: "true"
+    }
+    options {
+      name: "host_macos_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "incompatible_enable_apple_toolchain_resolution"
+      value: "false"
+    }
+    options {
+      name: "ios_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "ios_multi_cpus"
+      value: "[]"
+    }
+    options {
+      name: "ios_sdk_version"
+      value: "null"
+    }
+    options {
+      name: "macos_cpus"
+      value: "[]"
+    }
+    options {
+      name: "macos_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "macos_sdk_version"
+      value: "null"
+    }
+    options {
+      name: "tvos_cpus"
+      value: "[]"
+    }
+    options {
+      name: "tvos_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "tvos_sdk_version"
+      value: "null"
+    }
+    options {
+      name: "use_platforms_in_apple_crosstool_transition"
+      value: "false"
+    }
+    options {
+      name: "visionos_cpus"
+      value: "[]"
+    }
+    options {
+      name: "watchos_cpus"
+      value: "[]"
+    }
+    options {
+      name: "watchos_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "watchos_sdk_version"
+      value: "null"
+    }
+    options {
+      name: "xcode_version"
+      value: "null"
+    }
+    options {
+      name: "xcode_version_config"
+      value: "@@bazel_tools//tools/cpp:host_xcodes"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.config.ConfigFeatureFlagOptions"
+    options {
+      name: "all feature flag values are present (internal)"
+      value: "true"
+    }
+    options {
+      name: "enforce_transitive_configs_for_config_feature_flag"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.cpp.CppOptions"
+    options {
+      name: "apple_generate_dsym"
+      value: "false"
+    }
+    options {
+      name: "build_test_dwp"
+      value: "false"
+    }
+    options {
+      name: "cc_dotd_files"
+      value: "true"
+    }
+    options {
+      name: "cc_include_scanning"
+      value: "false"
+    }
+    options {
+      name: "cc_output_directory_tag"
+      value: ""
+    }
+    options {
+      name: "compiler"
+      value: "null"
+    }
+    options {
+      name: "conlyopt"
+      value: "[]"
+    }
+    options {
+      name: "copt"
+      value: "[]"
+    }
+    options {
+      name: "crosstool_top"
+      value: "@@bazel_tools//tools/cpp:toolchain"
+    }
+    options {
+      name: "cs_fdo_absolute_path"
+      value: "null"
+    }
+    options {
+      name: "cs_fdo_instrument"
+      value: "null"
+    }
+    options {
+      name: "cs_fdo_profile"
+      value: "null"
+    }
+    options {
+      name: "custom_malloc"
+      value: "null"
+    }
+    options {
+      name: "cxxopt"
+      value: "[]"
+    }
+    options {
+      name: "dynamic_mode"
+      value: "DEFAULT"
+    }
+    options {
+      name: "enable_propeller_optimize_absolute_paths"
+      value: "true"
+    }
+    options {
+      name: "enable_remaining_fdo_absolute_paths"
+      value: "true"
+    }
+    options {
+      name: "experimental_cc_implementation_deps"
+      value: "true"
+    }
+    options {
+      name: "experimental_cpp_compile_resource_estimation"
+      value: "false"
+    }
+    options {
+      name: "experimental_cpp_modules"
+      value: "false"
+    }
+    options {
+      name: "experimental_generate_llvm_lcov"
+      value: "false"
+    }
+    options {
+      name: "experimental_inmemory_dotd_files"
+      value: "true"
+    }
+    options {
+      name: "experimental_link_static_libraries_once"
+      value: "true"
+    }
+    options {
+      name: "experimental_omitfp"
+      value: "false"
+    }
+    options {
+      name: "experimental_save_feature_state"
+      value: "false"
+    }
+    options {
+      name: "experimental_unsupported_and_brittle_include_scanning"
+      value: "false"
+    }
+    options {
+      name: "experimental_use_cpp_compile_action_args_params_file"
+      value: "false"
+    }
+    options {
+      name: "experimental_use_llvm_covmap"
+      value: "false"
+    }
+    options {
+      name: "fdo_instrument"
+      value: "null"
+    }
+    options {
+      name: "fdo_optimize"
+      value: "null"
+    }
+    options {
+      name: "fdo_prefetch_hints"
+      value: "null"
+    }
+    options {
+      name: "fdo_profile"
+      value: "null"
+    }
+    options {
+      name: "fission"
+      value: "[]"
+    }
+    options {
+      name: "force_pic"
+      value: "false"
+    }
+    options {
+      name: "grte_top"
+      value: "null"
+    }
+    options {
+      name: "host_compiler"
+      value: "null"
+    }
+    options {
+      name: "host_conlyopt"
+      value: "[]"
+    }
+    options {
+      name: "host_copt"
+      value: "[]"
+    }
+    options {
+      name: "host_cxxopt"
+      value: "[]"
+    }
+    options {
+      name: "host_grte_top"
+      value: "null"
+    }
+    options {
+      name: "host_linkopt"
+      value: "[]"
+    }
+    options {
+      name: "host_per_file_copt"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_disable_legacy_cc_provider"
+      value: "true"
+    }
+    options {
+      name: "incompatible_disable_nocopts"
+      value: "true"
+    }
+    options {
+      name: "incompatible_dont_enable_host_nonhost_crosstool_features"
+      value: "true"
+    }
+    options {
+      name: "incompatible_enable_cc_toolchain_resolution"
+      value: "true"
+    }
+    options {
+      name: "incompatible_make_thinlto_command_lines_standalone"
+      value: "true"
+    }
+    options {
+      name: "incompatible_remove_legacy_whole_archive"
+      value: "true"
+    }
+    options {
+      name: "incompatible_require_ctx_in_configure_features"
+      value: "true"
+    }
+    options {
+      name: "incompatible_use_cpp_compile_header_mnemonic"
+      value: "false"
+    }
+    options {
+      name: "incompatible_use_specific_tool_files"
+      value: "true"
+    }
+    options {
+      name: "incompatible_validate_top_level_header_inclusions"
+      value: "true"
+    }
+    options {
+      name: "interface_shared_objects"
+      value: "true"
+    }
+    options {
+      name: "legacy_whole_archive"
+      value: "true"
+    }
+    options {
+      name: "linkopt"
+      value: "[]"
+    }
+    options {
+      name: "ltobackendopt"
+      value: "[]"
+    }
+    options {
+      name: "ltoindexopt"
+      value: "[]"
+    }
+    options {
+      name: "memprof_profile"
+      value: "null"
+    }
+    options {
+      name: "minimum_os_version"
+      value: "null"
+    }
+    options {
+      name: "objc_enable_binary_stripping"
+      value: "false"
+    }
+    options {
+      name: "objc_generate_linkmap"
+      value: "false"
+    }
+    options {
+      name: "objc_use_dotd_pruning"
+      value: "true"
+    }
+    options {
+      name: "objccopt"
+      value: "[]"
+    }
+    options {
+      name: "per_file_copt"
+      value: "[]"
+    }
+    options {
+      name: "per_file_ltobackendopt"
+      value: "[]"
+    }
+    options {
+      name: "process_headers_in_dependencies"
+      value: "false"
+    }
+    options {
+      name: "propeller_optimize"
+      value: "null"
+    }
+    options {
+      name: "propeller_optimize_absolute_cc_profile"
+      value: "null"
+    }
+    options {
+      name: "propeller_optimize_absolute_ld_profile"
+      value: "null"
+    }
+    options {
+      name: "proto_profile"
+      value: "true"
+    }
+    options {
+      name: "proto_profile_path"
+      value: "null"
+    }
+    options {
+      name: "save_temps"
+      value: "false"
+    }
+    options {
+      name: "share_native_deps"
+      value: "true"
+    }
+    options {
+      name: "start_end_lib"
+      value: "true"
+    }
+    options {
+      name: "strict_system_includes"
+      value: "false"
+    }
+    options {
+      name: "strip"
+      value: "sometimes"
+    }
+    options {
+      name: "stripopt"
+      value: "[]"
+    }
+    options {
+      name: "xbinary_fdo"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.java.JavaOptions"
+    options {
+      name: "bytecode_optimization_pass_actions"
+      value: "1"
+    }
+    options {
+      name: "bytecode_optimizers"
+      value: "{Proguard=null}"
+    }
+    options {
+      name: "enforce_proguard_file_extension"
+      value: "false"
+    }
+    options {
+      name: "experimental_add_test_support_to_compile_time_deps"
+      value: "true"
+    }
+    options {
+      name: "experimental_enable_jspecify"
+      value: "true"
+    }
+    options {
+      name: "experimental_fix_deps_tool"
+      value: "add_dep"
+    }
+    options {
+      name: "experimental_inmemory_jdeps_files"
+      value: "true"
+    }
+    options {
+      name: "experimental_java_classpath"
+      value: "BAZEL"
+    }
+    options {
+      name: "experimental_java_test_auto_create_deploy_jar"
+      value: "false"
+    }
+    options {
+      name: "experimental_local_java_optimization_configuration"
+      value: "null"
+    }
+    options {
+      name: "experimental_local_java_optimizations"
+      value: "false"
+    }
+    options {
+      name: "experimental_one_version_enforcement"
+      value: "OFF"
+    }
+    options {
+      name: "experimental_run_android_lint_on_java_rules"
+      value: "false"
+    }
+    options {
+      name: "experimental_strict_java_deps"
+      value: "DEFAULT"
+    }
+    options {
+      name: "experimental_turbine_annotation_processing"
+      value: "false"
+    }
+    options {
+      name: "explicit_java_test_deps"
+      value: "false"
+    }
+    options {
+      name: "host_java_launcher"
+      value: "null"
+    }
+    options {
+      name: "host_javacopt"
+      value: "[]"
+    }
+    options {
+      name: "host_jvmopt"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_disallow_java_import_exports"
+      value: "false"
+    }
+    options {
+      name: "incompatible_multi_release_deploy_jars"
+      value: "true"
+    }
+    options {
+      name: "java_debug"
+      value: "null"
+    }
+    options {
+      name: "java_deps"
+      value: "true"
+    }
+    options {
+      name: "java_header_compilation"
+      value: "true"
+    }
+    options {
+      name: "java_language_version"
+      value: ""
+    }
+    options {
+      name: "java_launcher"
+      value: "null"
+    }
+    options {
+      name: "java_runtime_version"
+      value: "local_jdk"
+    }
+    options {
+      name: "javacopt"
+      value: "[]"
+    }
+    options {
+      name: "jvmopt"
+      value: "[]"
+    }
+    options {
+      name: "one_version_enforcement_on_java_tests"
+      value: "true"
+    }
+    options {
+      name: "plugin"
+      value: "[]"
+    }
+    options {
+      name: "proguard_top"
+      value: "null"
+    }
+    options {
+      name: "split_bytecode_optimization_pass"
+      value: "false"
+    }
+    options {
+      name: "tool_java_language_version"
+      value: ""
+    }
+    options {
+      name: "tool_java_runtime_version"
+      value: "remotejdk_11"
+    }
+    options {
+      name: "use_ijars"
+      value: "true"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.objc.J2ObjcCommandLineOptions"
+    options {
+      name: "j2objc_dead_code_report"
+      value: "null"
+    }
+    options {
+      name: "j2objc_translation_flags"
+      value: "[]"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.objc.ObjcCommandLineOptions"
+    options {
+      name: "device_debug_entitlements"
+      value: "true"
+    }
+    options {
+      name: "experimental_objc_fastbuild_options"
+      value: "[-O0, -DDEBUG=1]"
+    }
+    options {
+      name: "incompatible_avoid_hardcoded_objc_compilation_flags"
+      value: "true"
+    }
+    options {
+      name: "incompatible_builtin_objc_strip_action"
+      value: "true"
+    }
+    options {
+      name: "incompatible_disable_native_apple_binary_rule"
+      value: "false"
+    }
+    options {
+      name: "incompatible_disallow_sdk_frameworks_attributes"
+      value: "false"
+    }
+    options {
+      name: "incompatible_objc_alwayslink_by_default"
+      value: "false"
+    }
+    options {
+      name: "incompatible_strip_executable_safely"
+      value: "false"
+    }
+    options {
+      name: "ios_memleaks"
+      value: "false"
+    }
+    options {
+      name: "ios_signing_cert_name"
+      value: "null"
+    }
+    options {
+      name: "ios_simulator_device"
+      value: "null"
+    }
+    options {
+      name: "ios_simulator_version"
+      value: "null"
+    }
+    options {
+      name: "objc_debug_with_GLIBCXX"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.proto.ProtoConfiguration$Options"
+    options {
+      name: "cc_proto_library_header_suffixes"
+      value: "[.pb.h]"
+    }
+    options {
+      name: "cc_proto_library_source_suffixes"
+      value: "[.pb.cc]"
+    }
+    options {
+      name: "experimental_proto_descriptor_sets_include_source_info"
+      value: "false"
+    }
+    options {
+      name: "proto_compiler"
+      value: "@@bazel_tools//tools/proto:protoc"
+    }
+    options {
+      name: "proto_toolchain_for_cc"
+      value: "@@bazel_tools//tools/proto:cc_toolchain"
+    }
+    options {
+      name: "proto_toolchain_for_j2objc"
+      value: "@@bazel_tools//tools/j2objc:j2objc_proto_toolchain"
+    }
+    options {
+      name: "proto_toolchain_for_java"
+      value: "@@bazel_tools//tools/proto:java_toolchain"
+    }
+    options {
+      name: "proto_toolchain_for_javalite"
+      value: "@@bazel_tools//tools/proto:javalite_toolchain"
+    }
+    options {
+      name: "protocopt"
+      value: "[]"
+    }
+    options {
+      name: "strict_proto_deps"
+      value: "ERROR"
+    }
+    options {
+      name: "strict_public_imports"
+      value: "OFF"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.python.PythonOptions"
+    options {
+      name: "build_python_zip"
+      value: "AUTO"
+    }
+    options {
+      name: "experimental_py_binaries_include_label"
+      value: "false"
+    }
+    options {
+      name: "incompatible_default_to_explicit_init_py"
+      value: "false"
+    }
+    options {
+      name: "incompatible_python_disallow_native_rules"
+      value: "false"
+    }
+    options {
+      name: "incompatible_remove_ctx_py_fragment"
+      value: "true"
+    }
+    options {
+      name: "python_native_rules_allowlist"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "user-defined"
+  }
+}
+configurations {
+  id: 3
+  mnemonic: "k8-fastbuild-ST-4d8db0ac2113"
+  platform_name: "k8"
+  checksum: "f8cea2d610cd5691d06e902cb6310e3680a23f6d606af77e7669eca9426f4ba3"
+  fragments {
+    name: "com.google.devtools.build.lib.analysis.PlatformConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.PlatformOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.analysis.ShellConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.ShellConfiguration$Options"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.analysis.test.CoverageConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.config.CoreOptions"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.test.CoverageConfiguration$CoverageOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.bazel.rules.BazelRuleClassProvider$StrictActionEnvConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.bazel.rules.BazelRuleClassProvider$StrictActionEnvOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.android.AndroidConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.android.AndroidConfiguration$Options"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.android.BazelAndroidConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.android.BazelAndroidConfiguration$Options"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.apple.AppleConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.apple.AppleCommandLineOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.config.ConfigFeatureFlagConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.config.ConfigFeatureFlagOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.cpp.CppConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.cpp.CppOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.java.JavaConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.PlatformOptions"
+    fragment_option_names: "com.google.devtools.build.lib.rules.java.JavaOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.objc.J2ObjcConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.objc.J2ObjcCommandLineOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.objc.ObjcConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.objc.ObjcCommandLineOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.proto.ProtoConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.proto.ProtoConfiguration$Options"
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.PlatformOptions"
+    options {
+      name: "extra_execution_platforms"
+      value: "[]"
+    }
+    options {
+      name: "extra_toolchains"
+      value: "[]"
+    }
+    options {
+      name: "host_platform"
+      value: "//:linux"
+    }
+    options {
+      name: "incompatible_use_toolchain_resolution_for_java_rules"
+      value: "true"
+    }
+    options {
+      name: "platform_mappings"
+      value: "PlatformMappingKey{path=platform_mappings, wasExplicitlySetByUser=false}"
+    }
+    options {
+      name: "platforms"
+      value: "[//:linux]"
+    }
+    options {
+      name: "toolchain_resolution_debug"
+      value: "-(?:(?>.*))"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.ShellConfiguration$Options"
+    options {
+      name: "shell_executable"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.config.CoreOptions"
+    options {
+      name: "action_env"
+      value: "[]"
+    }
+    options {
+      name: "affected by starlark transition"
+      value: "[]"
+    }
+    options {
+      name: "allow_analysis_failures"
+      value: "false"
+    }
+    options {
+      name: "allow_unresolved_symlinks"
+      value: "true"
+    }
+    options {
+      name: "allowed_cpu_values"
+      value: "[]"
+    }
+    options {
+      name: "analysis_testing_deps_limit"
+      value: "2000"
+    }
+    options {
+      name: "archived_tree_artifact_mnemonics_filter"
+      value: "-(?:(?>.*))"
+    }
+    options {
+      name: "build_runfile_links"
+      value: "true"
+    }
+    options {
+      name: "build_runfile_manifests"
+      value: "true"
+    }
+    options {
+      name: "check_licenses"
+      value: "false"
+    }
+    options {
+      name: "check_visibility"
+      value: "true"
+    }
+    options {
+      name: "collect_code_coverage"
+      value: "false"
+    }
+    options {
+      name: "compilation_mode"
+      value: "fastbuild"
+    }
+    options {
+      name: "cpu"
+      value: "k8"
+    }
+    options {
+      name: "enable_runfiles"
+      value: "AUTO"
+    }
+    options {
+      name: "enforce_constraints"
+      value: "true"
+    }
+    options {
+      name: "evaluating for analysis test"
+      value: "false"
+    }
+    options {
+      name: "exec_aspects"
+      value: "[]"
+    }
+    options {
+      name: "experimental_action_listener"
+      value: "[]"
+    }
+    options {
+      name: "experimental_allow_map_directory"
+      value: "true"
+    }
+    options {
+      name: "experimental_collect_code_coverage_for_generated_files"
+      value: "false"
+    }
+    options {
+      name: "experimental_debug_selects_always_succeed"
+      value: "false"
+    }
+    options {
+      name: "experimental_enforce_transitive_visibility"
+      value: "false"
+    }
+    options {
+      name: "experimental_exclude_defines_from_exec_config"
+      value: "false"
+    }
+    options {
+      name: "experimental_exec_config"
+      value: "@_builtins//:common/builtin_exec_platforms.bzl%bazel_exec_transition"
+    }
+    options {
+      name: "experimental_exec_configuration_distinguisher"
+      value: "OFF"
+    }
+    options {
+      name: "experimental_extended_sanity_checks"
+      value: "false"
+    }
+    options {
+      name: "experimental_output_directory_naming_scheme"
+      value: "DIFF_AGAINST_DYNAMIC_BASELINE"
+    }
+    options {
+      name: "experimental_output_paths"
+      value: "OFF"
+    }
+    options {
+      name: "experimental_override_platform_cpu_name"
+      value: "[]"
+    }
+    options {
+      name: "experimental_platform_in_output_dir"
+      value: "AUTO"
+    }
+    options {
+      name: "experimental_propagate_custom_flag"
+      value: "[]"
+    }
+    options {
+      name: "experimental_remotable_source_manifests"
+      value: "false"
+    }
+    options {
+      name: "experimental_strict_fileset_output"
+      value: "false"
+    }
+    options {
+      name: "experimental_throttle_action_cache_check"
+      value: "true"
+    }
+    options {
+      name: "experimental_use_platforms_in_output_dir_legacy_heuristic"
+      value: "true"
+    }
+    options {
+      name: "experimental_writable_outputs"
+      value: "false"
+    }
+    options {
+      name: "features"
+      value: "[]"
+    }
+    options {
+      name: "flag_alias"
+      value: "[build_python_zip=@@rules_python+//python/config_settings:build_python_zip, experimental_python_import_all_repositories=@@rules_python+//python/config_settings:experimental_python_import_all_repositories, incompatible_default_to_explicit_init_py=@@rules_python+//python/config_settings:incompatible_default_to_explicit_init_py, python_path=@@rules_python+//python/config_settings:python_path]"
+    }
+    options {
+      name: "host_action_env"
+      value: "[]"
+    }
+    options {
+      name: "host_compilation_mode"
+      value: "opt"
+    }
+    options {
+      name: "host_cpu"
+      value: "k8"
+    }
+    options {
+      name: "host_features"
+      value: "[]"
+    }
+    options {
+      name: "include_config_fragments_provider"
+      value: "OFF"
+    }
+    options {
+      name: "incompatible_always_include_files_in_data"
+      value: "true"
+    }
+    options {
+      name: "incompatible_auto_exec_groups"
+      value: "false"
+    }
+    options {
+      name: "incompatible_bazel_test_exec_run_under"
+      value: "true"
+    }
+    options {
+      name: "incompatible_bep_cpu_from_platform"
+      value: "false"
+    }
+    options {
+      name: "incompatible_check_testonly_for_output_files"
+      value: "false"
+    }
+    options {
+      name: "incompatible_compact_repo_mapping_manifest"
+      value: "true"
+    }
+    options {
+      name: "incompatible_disable_select_on"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_exclude_starlark_flags_from_exec_config"
+      value: "false"
+    }
+    options {
+      name: "incompatible_filegroup_runfiles_for_data"
+      value: "true"
+    }
+    options {
+      name: "incompatible_limit_platforms_in_output_dir_to"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_merge_genfiles_directory"
+      value: "true"
+    }
+    options {
+      name: "incompatible_modify_execution_info_additive"
+      value: "true"
+    }
+    options {
+      name: "incompatible_target_cpu_from_platform"
+      value: "true"
+    }
+    options {
+      name: "instrument_test_targets"
+      value: "false"
+    }
+    options {
+      name: "instrumentation_filter"
+      value: "-(?:(?>/javatests[/:])|(?>/test/java[/:]))"
+    }
+    options {
+      name: "is exec configuration"
+      value: "false"
+    }
+    options {
+      name: "min_param_file_size"
+      value: "32768"
+    }
+    options {
+      name: "modify_execution_info"
+      value: "[]"
+    }
+    options {
+      name: "platform_suffix"
+      value: "null"
+    }
+    options {
+      name: "run_under"
+      value: "null"
+    }
+    options {
+      name: "scl_config"
+      value: "null"
+    }
+    options {
+      name: "stamp"
+      value: "false"
+    }
+    options {
+      name: "strict_filesets"
+      value: "false"
+    }
+    options {
+      name: "target_environment"
+      value: "[]"
+    }
+    options {
+      name: "use_target_platform_for_tests"
+      value: "false"
+    }
+    options {
+      name: "verbose_visibility_errors"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.test.CoverageConfiguration$CoverageOptions"
+    options {
+      name: "coverage_output_generator"
+      value: "@@bazel_tools//tools/test:lcov_merger"
+    }
+    options {
+      name: "coverage_report_generator"
+      value: "@@bazel_tools//tools/test:coverage_report_generator"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.bazel.rules.BazelRuleClassProvider$StrictActionEnvOptions"
+    options {
+      name: "incompatible_strict_action_env"
+      value: "true"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.bazel.rules.python.BazelPythonConfiguration$Options"
+    options {
+      name: "experimental_python_import_all_repositories"
+      value: "true"
+    }
+    options {
+      name: "incompatible_remove_ctx_bazel_py_fragment"
+      value: "true"
+    }
+    options {
+      name: "python_path"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.android.AndroidConfiguration$Options"
+    options {
+      name: "Android configuration distinguisher"
+      value: "MAIN"
+    }
+    options {
+      name: "android_compiler"
+      value: "null"
+    }
+    options {
+      name: "android_databinding_use_androidx"
+      value: "true"
+    }
+    options {
+      name: "android_databinding_use_v3_4_args"
+      value: "true"
+    }
+    options {
+      name: "android_dynamic_mode"
+      value: "OFF"
+    }
+    options {
+      name: "android_fixed_resource_neverlinking"
+      value: "true"
+    }
+    options {
+      name: "android_manifest_merger"
+      value: "ANDROID"
+    }
+    options {
+      name: "android_manifest_merger_order"
+      value: "ALPHABETICAL"
+    }
+    options {
+      name: "android_migration_tag_check"
+      value: "false"
+    }
+    options {
+      name: "android_platforms"
+      value: "[]"
+    }
+    options {
+      name: "android_resource_shrinking"
+      value: "false"
+    }
+    options {
+      name: "apk_signing_method"
+      value: "V1_V2"
+    }
+    options {
+      name: "break_build_on_parallel_dex2oat_failure"
+      value: "false"
+    }
+    options {
+      name: "desugar_for_android"
+      value: "true"
+    }
+    options {
+      name: "desugar_java8_libs"
+      value: "false"
+    }
+    options {
+      name: "dexopts_supported_in_dexmerger"
+      value: "[--minimal-main-dex, --set-max-idx-number]"
+    }
+    options {
+      name: "dexopts_supported_in_dexsharder"
+      value: "[--minimal-main-dex]"
+    }
+    options {
+      name: "dexopts_supported_in_incremental_dexing"
+      value: "[--no-optimize, --no-locals]"
+    }
+    options {
+      name: "experimental_allow_android_library_deps_without_srcs"
+      value: "false"
+    }
+    options {
+      name: "experimental_always_filter_duplicate_classes_from_android_test"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_assume_minsdkversion"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_compress_java_resources"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_databinding_v2"
+      value: "true"
+    }
+    options {
+      name: "experimental_android_library_exports_manifest_default"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_resource_cycle_shrinking"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_resource_name_obfuscation"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_resource_path_shortening"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_resource_shrinking"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_rewrite_dexes_with_rex"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_use_parallel_dex2oat"
+      value: "false"
+    }
+    options {
+      name: "experimental_check_desugar_deps"
+      value: "true"
+    }
+    options {
+      name: "experimental_disable_instrumentation_manifest_merge"
+      value: "false"
+    }
+    options {
+      name: "experimental_filter_library_jar_with_program_jar"
+      value: "false"
+    }
+    options {
+      name: "experimental_filter_r_jars_from_android_test"
+      value: "false"
+    }
+    options {
+      name: "experimental_get_android_java_resources_from_optimized_jar"
+      value: "false"
+    }
+    options {
+      name: "experimental_incremental_dexing_after_proguard"
+      value: "50"
+    }
+    options {
+      name: "experimental_incremental_dexing_after_proguard_by_default"
+      value: "true"
+    }
+    options {
+      name: "experimental_omit_resources_info_provider_from_android_binary"
+      value: "false"
+    }
+    options {
+      name: "experimental_one_version_enforcement_use_transitive_jars_for_binary_under_test"
+      value: "false"
+    }
+    options {
+      name: "experimental_persistent_aar_extractor"
+      value: "false"
+    }
+    options {
+      name: "experimental_remove_r_classes_from_instrumentation_test_jar"
+      value: "true"
+    }
+    options {
+      name: "experimental_use_dex_splitter_for_incremental_dexing"
+      value: "true"
+    }
+    options {
+      name: "experimental_use_rtxt_from_merged_resources"
+      value: "false"
+    }
+    options {
+      name: "fat_apk_hwasan"
+      value: "false"
+    }
+    options {
+      name: "incompatible_disable_native_android_rules"
+      value: "false"
+    }
+    options {
+      name: "incompatible_remove_ctx_android_fragment"
+      value: "false"
+    }
+    options {
+      name: "incremental_dexing"
+      value: "true"
+    }
+    options {
+      name: "internal_persistent_android_dex_desugar"
+      value: "false"
+    }
+    options {
+      name: "internal_persistent_busybox_tools"
+      value: "false"
+    }
+    options {
+      name: "internal_persistent_multiplex_android_dex_desugar"
+      value: "false"
+    }
+    options {
+      name: "internal_persistent_multiplex_busybox_tools"
+      value: "false"
+    }
+    options {
+      name: "legacy_main_dex_list_generator"
+      value: "null"
+    }
+    options {
+      name: "non_incremental_per_target_dexopts"
+      value: "[--positions]"
+    }
+    options {
+      name: "optimizing_dexer"
+      value: "null"
+    }
+    options {
+      name: "output_library_merged_assets"
+      value: "true"
+    }
+    options {
+      name: "persistent_android_dex_desugar"
+      value: "null"
+    }
+    options {
+      name: "persistent_android_resource_processor"
+      value: "null"
+    }
+    options {
+      name: "persistent_multiplex_android_dex_desugar"
+      value: "null"
+    }
+    options {
+      name: "persistent_multiplex_android_resource_processor"
+      value: "null"
+    }
+    options {
+      name: "persistent_multiplex_android_tools"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.android.BazelAndroidConfiguration$Options"
+    options {
+      name: "merge_android_manifest_permissions"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.apple.AppleCommandLineOptions"
+    options {
+      name: "apple configuration distinguisher"
+      value: "UNKNOWN"
+    }
+    options {
+      name: "apple_platform_type"
+      value: "macos"
+    }
+    options {
+      name: "apple_platforms"
+      value: "[]"
+    }
+    options {
+      name: "apple_split_cpu"
+      value: ""
+    }
+    options {
+      name: "catalyst_cpus"
+      value: "[]"
+    }
+    options {
+      name: "experimental_include_xcode_execution_requirements"
+      value: "false"
+    }
+    options {
+      name: "experimental_objc_provider_from_linked"
+      value: "false"
+    }
+    options {
+      name: "experimental_prefer_mutual_xcode"
+      value: "true"
+    }
+    options {
+      name: "host_macos_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "incompatible_enable_apple_toolchain_resolution"
+      value: "false"
+    }
+    options {
+      name: "ios_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "ios_multi_cpus"
+      value: "[]"
+    }
+    options {
+      name: "ios_sdk_version"
+      value: "null"
+    }
+    options {
+      name: "macos_cpus"
+      value: "[]"
+    }
+    options {
+      name: "macos_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "macos_sdk_version"
+      value: "null"
+    }
+    options {
+      name: "tvos_cpus"
+      value: "[]"
+    }
+    options {
+      name: "tvos_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "tvos_sdk_version"
+      value: "null"
+    }
+    options {
+      name: "use_platforms_in_apple_crosstool_transition"
+      value: "false"
+    }
+    options {
+      name: "visionos_cpus"
+      value: "[]"
+    }
+    options {
+      name: "watchos_cpus"
+      value: "[]"
+    }
+    options {
+      name: "watchos_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "watchos_sdk_version"
+      value: "null"
+    }
+    options {
+      name: "xcode_version"
+      value: "null"
+    }
+    options {
+      name: "xcode_version_config"
+      value: "@@bazel_tools//tools/cpp:host_xcodes"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.config.ConfigFeatureFlagOptions"
+    options {
+      name: "all feature flag values are present (internal)"
+      value: "true"
+    }
+    options {
+      name: "enforce_transitive_configs_for_config_feature_flag"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.cpp.CppOptions"
+    options {
+      name: "apple_generate_dsym"
+      value: "false"
+    }
+    options {
+      name: "build_test_dwp"
+      value: "false"
+    }
+    options {
+      name: "cc_dotd_files"
+      value: "true"
+    }
+    options {
+      name: "cc_include_scanning"
+      value: "false"
+    }
+    options {
+      name: "cc_output_directory_tag"
+      value: ""
+    }
+    options {
+      name: "compiler"
+      value: "null"
+    }
+    options {
+      name: "conlyopt"
+      value: "[]"
+    }
+    options {
+      name: "copt"
+      value: "[]"
+    }
+    options {
+      name: "crosstool_top"
+      value: "@@bazel_tools//tools/cpp:toolchain"
+    }
+    options {
+      name: "cs_fdo_absolute_path"
+      value: "null"
+    }
+    options {
+      name: "cs_fdo_instrument"
+      value: "null"
+    }
+    options {
+      name: "cs_fdo_profile"
+      value: "null"
+    }
+    options {
+      name: "custom_malloc"
+      value: "null"
+    }
+    options {
+      name: "cxxopt"
+      value: "[]"
+    }
+    options {
+      name: "dynamic_mode"
+      value: "DEFAULT"
+    }
+    options {
+      name: "enable_propeller_optimize_absolute_paths"
+      value: "true"
+    }
+    options {
+      name: "enable_remaining_fdo_absolute_paths"
+      value: "true"
+    }
+    options {
+      name: "experimental_cc_implementation_deps"
+      value: "true"
+    }
+    options {
+      name: "experimental_cpp_compile_resource_estimation"
+      value: "false"
+    }
+    options {
+      name: "experimental_cpp_modules"
+      value: "false"
+    }
+    options {
+      name: "experimental_generate_llvm_lcov"
+      value: "false"
+    }
+    options {
+      name: "experimental_inmemory_dotd_files"
+      value: "true"
+    }
+    options {
+      name: "experimental_link_static_libraries_once"
+      value: "true"
+    }
+    options {
+      name: "experimental_omitfp"
+      value: "false"
+    }
+    options {
+      name: "experimental_save_feature_state"
+      value: "false"
+    }
+    options {
+      name: "experimental_unsupported_and_brittle_include_scanning"
+      value: "false"
+    }
+    options {
+      name: "experimental_use_cpp_compile_action_args_params_file"
+      value: "false"
+    }
+    options {
+      name: "experimental_use_llvm_covmap"
+      value: "false"
+    }
+    options {
+      name: "fdo_instrument"
+      value: "null"
+    }
+    options {
+      name: "fdo_optimize"
+      value: "null"
+    }
+    options {
+      name: "fdo_prefetch_hints"
+      value: "null"
+    }
+    options {
+      name: "fdo_profile"
+      value: "null"
+    }
+    options {
+      name: "fission"
+      value: "[]"
+    }
+    options {
+      name: "force_pic"
+      value: "false"
+    }
+    options {
+      name: "grte_top"
+      value: "null"
+    }
+    options {
+      name: "host_compiler"
+      value: "null"
+    }
+    options {
+      name: "host_conlyopt"
+      value: "[]"
+    }
+    options {
+      name: "host_copt"
+      value: "[]"
+    }
+    options {
+      name: "host_cxxopt"
+      value: "[]"
+    }
+    options {
+      name: "host_grte_top"
+      value: "null"
+    }
+    options {
+      name: "host_linkopt"
+      value: "[]"
+    }
+    options {
+      name: "host_per_file_copt"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_disable_legacy_cc_provider"
+      value: "true"
+    }
+    options {
+      name: "incompatible_disable_nocopts"
+      value: "true"
+    }
+    options {
+      name: "incompatible_dont_enable_host_nonhost_crosstool_features"
+      value: "true"
+    }
+    options {
+      name: "incompatible_enable_cc_toolchain_resolution"
+      value: "true"
+    }
+    options {
+      name: "incompatible_make_thinlto_command_lines_standalone"
+      value: "true"
+    }
+    options {
+      name: "incompatible_remove_legacy_whole_archive"
+      value: "true"
+    }
+    options {
+      name: "incompatible_require_ctx_in_configure_features"
+      value: "true"
+    }
+    options {
+      name: "incompatible_use_cpp_compile_header_mnemonic"
+      value: "false"
+    }
+    options {
+      name: "incompatible_use_specific_tool_files"
+      value: "true"
+    }
+    options {
+      name: "incompatible_validate_top_level_header_inclusions"
+      value: "true"
+    }
+    options {
+      name: "interface_shared_objects"
+      value: "true"
+    }
+    options {
+      name: "legacy_whole_archive"
+      value: "true"
+    }
+    options {
+      name: "linkopt"
+      value: "[]"
+    }
+    options {
+      name: "ltobackendopt"
+      value: "[]"
+    }
+    options {
+      name: "ltoindexopt"
+      value: "[]"
+    }
+    options {
+      name: "memprof_profile"
+      value: "null"
+    }
+    options {
+      name: "minimum_os_version"
+      value: "null"
+    }
+    options {
+      name: "objc_enable_binary_stripping"
+      value: "false"
+    }
+    options {
+      name: "objc_generate_linkmap"
+      value: "false"
+    }
+    options {
+      name: "objc_use_dotd_pruning"
+      value: "true"
+    }
+    options {
+      name: "objccopt"
+      value: "[]"
+    }
+    options {
+      name: "per_file_copt"
+      value: "[]"
+    }
+    options {
+      name: "per_file_ltobackendopt"
+      value: "[]"
+    }
+    options {
+      name: "process_headers_in_dependencies"
+      value: "false"
+    }
+    options {
+      name: "propeller_optimize"
+      value: "null"
+    }
+    options {
+      name: "propeller_optimize_absolute_cc_profile"
+      value: "null"
+    }
+    options {
+      name: "propeller_optimize_absolute_ld_profile"
+      value: "null"
+    }
+    options {
+      name: "proto_profile"
+      value: "true"
+    }
+    options {
+      name: "proto_profile_path"
+      value: "null"
+    }
+    options {
+      name: "save_temps"
+      value: "false"
+    }
+    options {
+      name: "share_native_deps"
+      value: "true"
+    }
+    options {
+      name: "start_end_lib"
+      value: "true"
+    }
+    options {
+      name: "strict_system_includes"
+      value: "false"
+    }
+    options {
+      name: "strip"
+      value: "sometimes"
+    }
+    options {
+      name: "stripopt"
+      value: "[]"
+    }
+    options {
+      name: "xbinary_fdo"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.java.JavaOptions"
+    options {
+      name: "bytecode_optimization_pass_actions"
+      value: "1"
+    }
+    options {
+      name: "bytecode_optimizers"
+      value: "{Proguard=null}"
+    }
+    options {
+      name: "enforce_proguard_file_extension"
+      value: "false"
+    }
+    options {
+      name: "experimental_add_test_support_to_compile_time_deps"
+      value: "true"
+    }
+    options {
+      name: "experimental_enable_jspecify"
+      value: "true"
+    }
+    options {
+      name: "experimental_fix_deps_tool"
+      value: "add_dep"
+    }
+    options {
+      name: "experimental_inmemory_jdeps_files"
+      value: "true"
+    }
+    options {
+      name: "experimental_java_classpath"
+      value: "BAZEL"
+    }
+    options {
+      name: "experimental_java_test_auto_create_deploy_jar"
+      value: "false"
+    }
+    options {
+      name: "experimental_local_java_optimization_configuration"
+      value: "null"
+    }
+    options {
+      name: "experimental_local_java_optimizations"
+      value: "false"
+    }
+    options {
+      name: "experimental_one_version_enforcement"
+      value: "OFF"
+    }
+    options {
+      name: "experimental_run_android_lint_on_java_rules"
+      value: "false"
+    }
+    options {
+      name: "experimental_strict_java_deps"
+      value: "DEFAULT"
+    }
+    options {
+      name: "experimental_turbine_annotation_processing"
+      value: "false"
+    }
+    options {
+      name: "explicit_java_test_deps"
+      value: "false"
+    }
+    options {
+      name: "host_java_launcher"
+      value: "null"
+    }
+    options {
+      name: "host_javacopt"
+      value: "[]"
+    }
+    options {
+      name: "host_jvmopt"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_disallow_java_import_exports"
+      value: "false"
+    }
+    options {
+      name: "incompatible_multi_release_deploy_jars"
+      value: "true"
+    }
+    options {
+      name: "java_debug"
+      value: "null"
+    }
+    options {
+      name: "java_deps"
+      value: "true"
+    }
+    options {
+      name: "java_header_compilation"
+      value: "true"
+    }
+    options {
+      name: "java_language_version"
+      value: ""
+    }
+    options {
+      name: "java_launcher"
+      value: "null"
+    }
+    options {
+      name: "java_runtime_version"
+      value: "local_jdk"
+    }
+    options {
+      name: "javacopt"
+      value: "[]"
+    }
+    options {
+      name: "jvmopt"
+      value: "[]"
+    }
+    options {
+      name: "one_version_enforcement_on_java_tests"
+      value: "true"
+    }
+    options {
+      name: "plugin"
+      value: "[]"
+    }
+    options {
+      name: "proguard_top"
+      value: "null"
+    }
+    options {
+      name: "split_bytecode_optimization_pass"
+      value: "false"
+    }
+    options {
+      name: "tool_java_language_version"
+      value: ""
+    }
+    options {
+      name: "tool_java_runtime_version"
+      value: "remotejdk_11"
+    }
+    options {
+      name: "use_ijars"
+      value: "true"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.objc.J2ObjcCommandLineOptions"
+    options {
+      name: "j2objc_dead_code_report"
+      value: "null"
+    }
+    options {
+      name: "j2objc_translation_flags"
+      value: "[]"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.objc.ObjcCommandLineOptions"
+    options {
+      name: "device_debug_entitlements"
+      value: "true"
+    }
+    options {
+      name: "experimental_objc_fastbuild_options"
+      value: "[-O0, -DDEBUG=1]"
+    }
+    options {
+      name: "incompatible_avoid_hardcoded_objc_compilation_flags"
+      value: "true"
+    }
+    options {
+      name: "incompatible_builtin_objc_strip_action"
+      value: "true"
+    }
+    options {
+      name: "incompatible_disable_native_apple_binary_rule"
+      value: "false"
+    }
+    options {
+      name: "incompatible_disallow_sdk_frameworks_attributes"
+      value: "false"
+    }
+    options {
+      name: "incompatible_objc_alwayslink_by_default"
+      value: "false"
+    }
+    options {
+      name: "incompatible_strip_executable_safely"
+      value: "false"
+    }
+    options {
+      name: "ios_memleaks"
+      value: "false"
+    }
+    options {
+      name: "ios_signing_cert_name"
+      value: "null"
+    }
+    options {
+      name: "ios_simulator_device"
+      value: "null"
+    }
+    options {
+      name: "ios_simulator_version"
+      value: "null"
+    }
+    options {
+      name: "objc_debug_with_GLIBCXX"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.proto.ProtoConfiguration$Options"
+    options {
+      name: "cc_proto_library_header_suffixes"
+      value: "[.pb.h]"
+    }
+    options {
+      name: "cc_proto_library_source_suffixes"
+      value: "[.pb.cc]"
+    }
+    options {
+      name: "experimental_proto_descriptor_sets_include_source_info"
+      value: "false"
+    }
+    options {
+      name: "proto_compiler"
+      value: "@@bazel_tools//tools/proto:protoc"
+    }
+    options {
+      name: "proto_toolchain_for_cc"
+      value: "@@bazel_tools//tools/proto:cc_toolchain"
+    }
+    options {
+      name: "proto_toolchain_for_j2objc"
+      value: "@@bazel_tools//tools/j2objc:j2objc_proto_toolchain"
+    }
+    options {
+      name: "proto_toolchain_for_java"
+      value: "@@bazel_tools//tools/proto:java_toolchain"
+    }
+    options {
+      name: "proto_toolchain_for_javalite"
+      value: "@@bazel_tools//tools/proto:javalite_toolchain"
+    }
+    options {
+      name: "protocopt"
+      value: "[]"
+    }
+    options {
+      name: "strict_proto_deps"
+      value: "ERROR"
+    }
+    options {
+      name: "strict_public_imports"
+      value: "OFF"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.python.PythonOptions"
+    options {
+      name: "build_python_zip"
+      value: "AUTO"
+    }
+    options {
+      name: "experimental_py_binaries_include_label"
+      value: "false"
+    }
+    options {
+      name: "incompatible_default_to_explicit_init_py"
+      value: "false"
+    }
+    options {
+      name: "incompatible_python_disallow_native_rules"
+      value: "false"
+    }
+    options {
+      name: "incompatible_remove_ctx_py_fragment"
+      value: "true"
+    }
+    options {
+      name: "python_native_rules_allowlist"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "user-defined"
+    options {
+      name: "//:flag"
+      value: "transitioned"
+    }
+  }
+}
+configurations {
+  id: 4
+  mnemonic: "fastbuild-noconfig"
+  platform_name: "k8"
+  checksum: "3030ed4c810cf3435d066294fa495e650fe75173e4b4ef410ea56cb683458569"
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.config.CoreOptions"
+    options {
+      name: "action_env"
+      value: "[]"
+    }
+    options {
+      name: "affected by starlark transition"
+      value: "[]"
+    }
+    options {
+      name: "allow_analysis_failures"
+      value: "false"
+    }
+    options {
+      name: "allow_unresolved_symlinks"
+      value: "true"
+    }
+    options {
+      name: "allowed_cpu_values"
+      value: "[]"
+    }
+    options {
+      name: "analysis_testing_deps_limit"
+      value: "2000"
+    }
+    options {
+      name: "archived_tree_artifact_mnemonics_filter"
+      value: "-(?:(?>.*))"
+    }
+    options {
+      name: "build_runfile_links"
+      value: "true"
+    }
+    options {
+      name: "build_runfile_manifests"
+      value: "true"
+    }
+    options {
+      name: "check_licenses"
+      value: "false"
+    }
+    options {
+      name: "check_visibility"
+      value: "true"
+    }
+    options {
+      name: "collect_code_coverage"
+      value: "false"
+    }
+    options {
+      name: "compilation_mode"
+      value: "fastbuild"
+    }
+    options {
+      name: "cpu"
+      value: "k8"
+    }
+    options {
+      name: "enable_runfiles"
+      value: "AUTO"
+    }
+    options {
+      name: "enforce_constraints"
+      value: "true"
+    }
+    options {
+      name: "evaluating for analysis test"
+      value: "false"
+    }
+    options {
+      name: "exec_aspects"
+      value: "[]"
+    }
+    options {
+      name: "experimental_action_listener"
+      value: "[]"
+    }
+    options {
+      name: "experimental_allow_map_directory"
+      value: "true"
+    }
+    options {
+      name: "experimental_collect_code_coverage_for_generated_files"
+      value: "false"
+    }
+    options {
+      name: "experimental_debug_selects_always_succeed"
+      value: "false"
+    }
+    options {
+      name: "experimental_enforce_transitive_visibility"
+      value: "false"
+    }
+    options {
+      name: "experimental_exclude_defines_from_exec_config"
+      value: "false"
+    }
+    options {
+      name: "experimental_exec_config"
+      value: "@_builtins//:common/builtin_exec_platforms.bzl%bazel_exec_transition"
+    }
+    options {
+      name: "experimental_exec_configuration_distinguisher"
+      value: "OFF"
+    }
+    options {
+      name: "experimental_extended_sanity_checks"
+      value: "false"
+    }
+    options {
+      name: "experimental_output_directory_naming_scheme"
+      value: "DIFF_AGAINST_DYNAMIC_BASELINE"
+    }
+    options {
+      name: "experimental_output_paths"
+      value: "OFF"
+    }
+    options {
+      name: "experimental_override_platform_cpu_name"
+      value: "[]"
+    }
+    options {
+      name: "experimental_platform_in_output_dir"
+      value: "AUTO"
+    }
+    options {
+      name: "experimental_propagate_custom_flag"
+      value: "[]"
+    }
+    options {
+      name: "experimental_remotable_source_manifests"
+      value: "false"
+    }
+    options {
+      name: "experimental_strict_fileset_output"
+      value: "false"
+    }
+    options {
+      name: "experimental_throttle_action_cache_check"
+      value: "true"
+    }
+    options {
+      name: "experimental_use_platforms_in_output_dir_legacy_heuristic"
+      value: "true"
+    }
+    options {
+      name: "experimental_writable_outputs"
+      value: "false"
+    }
+    options {
+      name: "features"
+      value: "[]"
+    }
+    options {
+      name: "flag_alias"
+      value: "[]"
+    }
+    options {
+      name: "host_action_env"
+      value: "[]"
+    }
+    options {
+      name: "host_compilation_mode"
+      value: "opt"
+    }
+    options {
+      name: "host_cpu"
+      value: "k8"
+    }
+    options {
+      name: "host_features"
+      value: "[]"
+    }
+    options {
+      name: "include_config_fragments_provider"
+      value: "OFF"
+    }
+    options {
+      name: "incompatible_always_include_files_in_data"
+      value: "true"
+    }
+    options {
+      name: "incompatible_auto_exec_groups"
+      value: "false"
+    }
+    options {
+      name: "incompatible_bazel_test_exec_run_under"
+      value: "true"
+    }
+    options {
+      name: "incompatible_bep_cpu_from_platform"
+      value: "false"
+    }
+    options {
+      name: "incompatible_check_testonly_for_output_files"
+      value: "false"
+    }
+    options {
+      name: "incompatible_compact_repo_mapping_manifest"
+      value: "true"
+    }
+    options {
+      name: "incompatible_disable_select_on"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_exclude_starlark_flags_from_exec_config"
+      value: "false"
+    }
+    options {
+      name: "incompatible_filegroup_runfiles_for_data"
+      value: "true"
+    }
+    options {
+      name: "incompatible_limit_platforms_in_output_dir_to"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_merge_genfiles_directory"
+      value: "true"
+    }
+    options {
+      name: "incompatible_modify_execution_info_additive"
+      value: "true"
+    }
+    options {
+      name: "incompatible_target_cpu_from_platform"
+      value: "true"
+    }
+    options {
+      name: "instrument_test_targets"
+      value: "false"
+    }
+    options {
+      name: "instrumentation_filter"
+      value: "-(?:(?>/javatests[/:])|(?>/test/java[/:]))"
+    }
+    options {
+      name: "is exec configuration"
+      value: "false"
+    }
+    options {
+      name: "min_param_file_size"
+      value: "32768"
+    }
+    options {
+      name: "modify_execution_info"
+      value: "[]"
+    }
+    options {
+      name: "platform_suffix"
+      value: "null"
+    }
+    options {
+      name: "run_under"
+      value: "null"
+    }
+    options {
+      name: "scl_config"
+      value: "null"
+    }
+    options {
+      name: "stamp"
+      value: "false"
+    }
+    options {
+      name: "strict_filesets"
+      value: "false"
+    }
+    options {
+      name: "target_environment"
+      value: "[]"
+    }
+    options {
+      name: "use_target_platform_for_tests"
+      value: "false"
+    }
+    options {
+      name: "verbose_visibility_errors"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "user-defined"
+  }
+}
+configurations {
+  id: 5
+  mnemonic: "k8-fastbuild"
+  platform_name: "k8"
+  checksum: "d207fa4e6cd9646b1d7ccf1f8d6eb6921dbdfe530b576d7d4c14756b58e92de8"
+  fragments {
+    name: "com.google.devtools.build.lib.analysis.PlatformConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.PlatformOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.analysis.ShellConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.ShellConfiguration$Options"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.analysis.test.CoverageConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.config.CoreOptions"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.test.CoverageConfiguration$CoverageOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.analysis.test.TestConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.test.TestConfiguration$TestOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.bazel.rules.BazelRuleClassProvider$StrictActionEnvConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.bazel.rules.BazelRuleClassProvider$StrictActionEnvOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.android.AndroidConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.android.AndroidConfiguration$Options"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.android.BazelAndroidConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.android.BazelAndroidConfiguration$Options"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.apple.AppleConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.apple.AppleCommandLineOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.config.ConfigFeatureFlagConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.config.ConfigFeatureFlagOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.cpp.CppConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.cpp.CppOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.java.JavaConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.analysis.PlatformOptions"
+    fragment_option_names: "com.google.devtools.build.lib.rules.java.JavaOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.objc.J2ObjcConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.objc.J2ObjcCommandLineOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.objc.ObjcConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.objc.ObjcCommandLineOptions"
+  }
+  fragments {
+    name: "com.google.devtools.build.lib.rules.proto.ProtoConfiguration"
+    fragment_option_names: "com.google.devtools.build.lib.rules.proto.ProtoConfiguration$Options"
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.PlatformOptions"
+    options {
+      name: "extra_execution_platforms"
+      value: "[]"
+    }
+    options {
+      name: "extra_toolchains"
+      value: "[]"
+    }
+    options {
+      name: "host_platform"
+      value: "//:linux"
+    }
+    options {
+      name: "incompatible_use_toolchain_resolution_for_java_rules"
+      value: "true"
+    }
+    options {
+      name: "platform_mappings"
+      value: "PlatformMappingKey{path=platform_mappings, wasExplicitlySetByUser=false}"
+    }
+    options {
+      name: "platforms"
+      value: "[//:linux]"
+    }
+    options {
+      name: "toolchain_resolution_debug"
+      value: "-(?:(?>.*))"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.ShellConfiguration$Options"
+    options {
+      name: "shell_executable"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.config.CoreOptions"
+    options {
+      name: "action_env"
+      value: "[]"
+    }
+    options {
+      name: "affected by starlark transition"
+      value: "[]"
+    }
+    options {
+      name: "allow_analysis_failures"
+      value: "false"
+    }
+    options {
+      name: "allow_unresolved_symlinks"
+      value: "true"
+    }
+    options {
+      name: "allowed_cpu_values"
+      value: "[]"
+    }
+    options {
+      name: "analysis_testing_deps_limit"
+      value: "2000"
+    }
+    options {
+      name: "archived_tree_artifact_mnemonics_filter"
+      value: "-(?:(?>.*))"
+    }
+    options {
+      name: "build_runfile_links"
+      value: "true"
+    }
+    options {
+      name: "build_runfile_manifests"
+      value: "true"
+    }
+    options {
+      name: "check_licenses"
+      value: "false"
+    }
+    options {
+      name: "check_visibility"
+      value: "true"
+    }
+    options {
+      name: "collect_code_coverage"
+      value: "false"
+    }
+    options {
+      name: "compilation_mode"
+      value: "fastbuild"
+    }
+    options {
+      name: "cpu"
+      value: "k8"
+    }
+    options {
+      name: "enable_runfiles"
+      value: "AUTO"
+    }
+    options {
+      name: "enforce_constraints"
+      value: "true"
+    }
+    options {
+      name: "evaluating for analysis test"
+      value: "false"
+    }
+    options {
+      name: "exec_aspects"
+      value: "[]"
+    }
+    options {
+      name: "experimental_action_listener"
+      value: "[]"
+    }
+    options {
+      name: "experimental_allow_map_directory"
+      value: "true"
+    }
+    options {
+      name: "experimental_collect_code_coverage_for_generated_files"
+      value: "false"
+    }
+    options {
+      name: "experimental_debug_selects_always_succeed"
+      value: "false"
+    }
+    options {
+      name: "experimental_enforce_transitive_visibility"
+      value: "false"
+    }
+    options {
+      name: "experimental_exclude_defines_from_exec_config"
+      value: "false"
+    }
+    options {
+      name: "experimental_exec_config"
+      value: "@_builtins//:common/builtin_exec_platforms.bzl%bazel_exec_transition"
+    }
+    options {
+      name: "experimental_exec_configuration_distinguisher"
+      value: "OFF"
+    }
+    options {
+      name: "experimental_extended_sanity_checks"
+      value: "false"
+    }
+    options {
+      name: "experimental_output_directory_naming_scheme"
+      value: "DIFF_AGAINST_DYNAMIC_BASELINE"
+    }
+    options {
+      name: "experimental_output_paths"
+      value: "OFF"
+    }
+    options {
+      name: "experimental_override_platform_cpu_name"
+      value: "[]"
+    }
+    options {
+      name: "experimental_platform_in_output_dir"
+      value: "AUTO"
+    }
+    options {
+      name: "experimental_propagate_custom_flag"
+      value: "[]"
+    }
+    options {
+      name: "experimental_remotable_source_manifests"
+      value: "false"
+    }
+    options {
+      name: "experimental_strict_fileset_output"
+      value: "false"
+    }
+    options {
+      name: "experimental_throttle_action_cache_check"
+      value: "true"
+    }
+    options {
+      name: "experimental_use_platforms_in_output_dir_legacy_heuristic"
+      value: "true"
+    }
+    options {
+      name: "experimental_writable_outputs"
+      value: "false"
+    }
+    options {
+      name: "features"
+      value: "[]"
+    }
+    options {
+      name: "flag_alias"
+      value: "[build_python_zip=@@rules_python+//python/config_settings:build_python_zip, experimental_python_import_all_repositories=@@rules_python+//python/config_settings:experimental_python_import_all_repositories, incompatible_default_to_explicit_init_py=@@rules_python+//python/config_settings:incompatible_default_to_explicit_init_py, python_path=@@rules_python+//python/config_settings:python_path]"
+    }
+    options {
+      name: "host_action_env"
+      value: "[]"
+    }
+    options {
+      name: "host_compilation_mode"
+      value: "opt"
+    }
+    options {
+      name: "host_cpu"
+      value: "k8"
+    }
+    options {
+      name: "host_features"
+      value: "[]"
+    }
+    options {
+      name: "include_config_fragments_provider"
+      value: "OFF"
+    }
+    options {
+      name: "incompatible_always_include_files_in_data"
+      value: "true"
+    }
+    options {
+      name: "incompatible_auto_exec_groups"
+      value: "false"
+    }
+    options {
+      name: "incompatible_bazel_test_exec_run_under"
+      value: "true"
+    }
+    options {
+      name: "incompatible_bep_cpu_from_platform"
+      value: "false"
+    }
+    options {
+      name: "incompatible_check_testonly_for_output_files"
+      value: "false"
+    }
+    options {
+      name: "incompatible_compact_repo_mapping_manifest"
+      value: "true"
+    }
+    options {
+      name: "incompatible_disable_select_on"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_exclude_starlark_flags_from_exec_config"
+      value: "false"
+    }
+    options {
+      name: "incompatible_filegroup_runfiles_for_data"
+      value: "true"
+    }
+    options {
+      name: "incompatible_limit_platforms_in_output_dir_to"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_merge_genfiles_directory"
+      value: "true"
+    }
+    options {
+      name: "incompatible_modify_execution_info_additive"
+      value: "true"
+    }
+    options {
+      name: "incompatible_target_cpu_from_platform"
+      value: "true"
+    }
+    options {
+      name: "instrument_test_targets"
+      value: "false"
+    }
+    options {
+      name: "instrumentation_filter"
+      value: "-(?:(?>/javatests[/:])|(?>/test/java[/:]))"
+    }
+    options {
+      name: "is exec configuration"
+      value: "false"
+    }
+    options {
+      name: "min_param_file_size"
+      value: "32768"
+    }
+    options {
+      name: "modify_execution_info"
+      value: "[]"
+    }
+    options {
+      name: "platform_suffix"
+      value: "null"
+    }
+    options {
+      name: "run_under"
+      value: "null"
+    }
+    options {
+      name: "scl_config"
+      value: "null"
+    }
+    options {
+      name: "stamp"
+      value: "false"
+    }
+    options {
+      name: "strict_filesets"
+      value: "false"
+    }
+    options {
+      name: "target_environment"
+      value: "[]"
+    }
+    options {
+      name: "use_target_platform_for_tests"
+      value: "false"
+    }
+    options {
+      name: "verbose_visibility_errors"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.test.CoverageConfiguration$CoverageOptions"
+    options {
+      name: "coverage_output_generator"
+      value: "@@bazel_tools//tools/test:lcov_merger"
+    }
+    options {
+      name: "coverage_report_generator"
+      value: "@@bazel_tools//tools/test:coverage_report_generator"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.analysis.test.TestConfiguration$TestOptions"
+    options {
+      name: "allow_local_tests"
+      value: "true"
+    }
+    options {
+      name: "cache_test_results"
+      value: "AUTO"
+    }
+    options {
+      name: "coverage_support"
+      value: "@@bazel_tools//tools/test:coverage_support"
+    }
+    options {
+      name: "default_test_resources"
+      value: "[]"
+    }
+    options {
+      name: "experimental_cancel_concurrent_tests"
+      value: "NEVER"
+    }
+    options {
+      name: "experimental_fetch_all_coverage_outputs"
+      value: "false"
+    }
+    options {
+      name: "experimental_retain_test_configuration_across_testonly"
+      value: "true"
+    }
+    options {
+      name: "experimental_split_coverage_postprocessing"
+      value: "false"
+    }
+    options {
+      name: "incompatible_check_sharding_support"
+      value: "true"
+    }
+    options {
+      name: "incompatible_exclusive_test_sandboxed"
+      value: "true"
+    }
+    options {
+      name: "runs_per_test"
+      value: "[(?:(?>.*)) Options: [1]]"
+    }
+    options {
+      name: "runs_per_test_detects_flakes"
+      value: "false"
+    }
+    options {
+      name: "test_arg"
+      value: "[]"
+    }
+    options {
+      name: "test_env"
+      value: "[]"
+    }
+    options {
+      name: "test_filter"
+      value: "null"
+    }
+    options {
+      name: "test_result_expiration"
+      value: "-1"
+    }
+    options {
+      name: "test_runner_fail_fast"
+      value: "false"
+    }
+    options {
+      name: "test_sharding_strategy"
+      value: "EXPLICIT"
+    }
+    options {
+      name: "test_timeout"
+      value: "{short=PT1M, moderate=PT5M, long=PT15M, eternal=PT1H}"
+    }
+    options {
+      name: "trim_test_configuration"
+      value: "true"
+    }
+    options {
+      name: "zip_undeclared_test_outputs"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.bazel.rules.BazelRuleClassProvider$StrictActionEnvOptions"
+    options {
+      name: "incompatible_strict_action_env"
+      value: "true"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.bazel.rules.python.BazelPythonConfiguration$Options"
+    options {
+      name: "experimental_python_import_all_repositories"
+      value: "true"
+    }
+    options {
+      name: "incompatible_remove_ctx_bazel_py_fragment"
+      value: "true"
+    }
+    options {
+      name: "python_path"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.android.AndroidConfiguration$Options"
+    options {
+      name: "Android configuration distinguisher"
+      value: "MAIN"
+    }
+    options {
+      name: "android_compiler"
+      value: "null"
+    }
+    options {
+      name: "android_databinding_use_androidx"
+      value: "true"
+    }
+    options {
+      name: "android_databinding_use_v3_4_args"
+      value: "true"
+    }
+    options {
+      name: "android_dynamic_mode"
+      value: "OFF"
+    }
+    options {
+      name: "android_fixed_resource_neverlinking"
+      value: "true"
+    }
+    options {
+      name: "android_manifest_merger"
+      value: "ANDROID"
+    }
+    options {
+      name: "android_manifest_merger_order"
+      value: "ALPHABETICAL"
+    }
+    options {
+      name: "android_migration_tag_check"
+      value: "false"
+    }
+    options {
+      name: "android_platforms"
+      value: "[]"
+    }
+    options {
+      name: "android_resource_shrinking"
+      value: "false"
+    }
+    options {
+      name: "apk_signing_method"
+      value: "V1_V2"
+    }
+    options {
+      name: "break_build_on_parallel_dex2oat_failure"
+      value: "false"
+    }
+    options {
+      name: "desugar_for_android"
+      value: "true"
+    }
+    options {
+      name: "desugar_java8_libs"
+      value: "false"
+    }
+    options {
+      name: "dexopts_supported_in_dexmerger"
+      value: "[--minimal-main-dex, --set-max-idx-number]"
+    }
+    options {
+      name: "dexopts_supported_in_dexsharder"
+      value: "[--minimal-main-dex]"
+    }
+    options {
+      name: "dexopts_supported_in_incremental_dexing"
+      value: "[--no-optimize, --no-locals]"
+    }
+    options {
+      name: "experimental_allow_android_library_deps_without_srcs"
+      value: "false"
+    }
+    options {
+      name: "experimental_always_filter_duplicate_classes_from_android_test"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_assume_minsdkversion"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_compress_java_resources"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_databinding_v2"
+      value: "true"
+    }
+    options {
+      name: "experimental_android_library_exports_manifest_default"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_resource_cycle_shrinking"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_resource_name_obfuscation"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_resource_path_shortening"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_resource_shrinking"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_rewrite_dexes_with_rex"
+      value: "false"
+    }
+    options {
+      name: "experimental_android_use_parallel_dex2oat"
+      value: "false"
+    }
+    options {
+      name: "experimental_check_desugar_deps"
+      value: "true"
+    }
+    options {
+      name: "experimental_disable_instrumentation_manifest_merge"
+      value: "false"
+    }
+    options {
+      name: "experimental_filter_library_jar_with_program_jar"
+      value: "false"
+    }
+    options {
+      name: "experimental_filter_r_jars_from_android_test"
+      value: "false"
+    }
+    options {
+      name: "experimental_get_android_java_resources_from_optimized_jar"
+      value: "false"
+    }
+    options {
+      name: "experimental_incremental_dexing_after_proguard"
+      value: "50"
+    }
+    options {
+      name: "experimental_incremental_dexing_after_proguard_by_default"
+      value: "true"
+    }
+    options {
+      name: "experimental_omit_resources_info_provider_from_android_binary"
+      value: "false"
+    }
+    options {
+      name: "experimental_one_version_enforcement_use_transitive_jars_for_binary_under_test"
+      value: "false"
+    }
+    options {
+      name: "experimental_persistent_aar_extractor"
+      value: "false"
+    }
+    options {
+      name: "experimental_remove_r_classes_from_instrumentation_test_jar"
+      value: "true"
+    }
+    options {
+      name: "experimental_use_dex_splitter_for_incremental_dexing"
+      value: "true"
+    }
+    options {
+      name: "experimental_use_rtxt_from_merged_resources"
+      value: "false"
+    }
+    options {
+      name: "fat_apk_hwasan"
+      value: "false"
+    }
+    options {
+      name: "incompatible_disable_native_android_rules"
+      value: "false"
+    }
+    options {
+      name: "incompatible_remove_ctx_android_fragment"
+      value: "false"
+    }
+    options {
+      name: "incremental_dexing"
+      value: "true"
+    }
+    options {
+      name: "internal_persistent_android_dex_desugar"
+      value: "false"
+    }
+    options {
+      name: "internal_persistent_busybox_tools"
+      value: "false"
+    }
+    options {
+      name: "internal_persistent_multiplex_android_dex_desugar"
+      value: "false"
+    }
+    options {
+      name: "internal_persistent_multiplex_busybox_tools"
+      value: "false"
+    }
+    options {
+      name: "legacy_main_dex_list_generator"
+      value: "null"
+    }
+    options {
+      name: "non_incremental_per_target_dexopts"
+      value: "[--positions]"
+    }
+    options {
+      name: "optimizing_dexer"
+      value: "null"
+    }
+    options {
+      name: "output_library_merged_assets"
+      value: "true"
+    }
+    options {
+      name: "persistent_android_dex_desugar"
+      value: "null"
+    }
+    options {
+      name: "persistent_android_resource_processor"
+      value: "null"
+    }
+    options {
+      name: "persistent_multiplex_android_dex_desugar"
+      value: "null"
+    }
+    options {
+      name: "persistent_multiplex_android_resource_processor"
+      value: "null"
+    }
+    options {
+      name: "persistent_multiplex_android_tools"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.android.BazelAndroidConfiguration$Options"
+    options {
+      name: "merge_android_manifest_permissions"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.apple.AppleCommandLineOptions"
+    options {
+      name: "apple configuration distinguisher"
+      value: "UNKNOWN"
+    }
+    options {
+      name: "apple_platform_type"
+      value: "macos"
+    }
+    options {
+      name: "apple_platforms"
+      value: "[]"
+    }
+    options {
+      name: "apple_split_cpu"
+      value: ""
+    }
+    options {
+      name: "catalyst_cpus"
+      value: "[]"
+    }
+    options {
+      name: "experimental_include_xcode_execution_requirements"
+      value: "false"
+    }
+    options {
+      name: "experimental_objc_provider_from_linked"
+      value: "false"
+    }
+    options {
+      name: "experimental_prefer_mutual_xcode"
+      value: "true"
+    }
+    options {
+      name: "host_macos_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "incompatible_enable_apple_toolchain_resolution"
+      value: "false"
+    }
+    options {
+      name: "ios_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "ios_multi_cpus"
+      value: "[]"
+    }
+    options {
+      name: "ios_sdk_version"
+      value: "null"
+    }
+    options {
+      name: "macos_cpus"
+      value: "[]"
+    }
+    options {
+      name: "macos_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "macos_sdk_version"
+      value: "null"
+    }
+    options {
+      name: "tvos_cpus"
+      value: "[]"
+    }
+    options {
+      name: "tvos_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "tvos_sdk_version"
+      value: "null"
+    }
+    options {
+      name: "use_platforms_in_apple_crosstool_transition"
+      value: "false"
+    }
+    options {
+      name: "visionos_cpus"
+      value: "[]"
+    }
+    options {
+      name: "watchos_cpus"
+      value: "[]"
+    }
+    options {
+      name: "watchos_minimum_os"
+      value: "null"
+    }
+    options {
+      name: "watchos_sdk_version"
+      value: "null"
+    }
+    options {
+      name: "xcode_version"
+      value: "null"
+    }
+    options {
+      name: "xcode_version_config"
+      value: "@@bazel_tools//tools/cpp:host_xcodes"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.config.ConfigFeatureFlagOptions"
+    options {
+      name: "all feature flag values are present (internal)"
+      value: "true"
+    }
+    options {
+      name: "enforce_transitive_configs_for_config_feature_flag"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.cpp.CppOptions"
+    options {
+      name: "apple_generate_dsym"
+      value: "false"
+    }
+    options {
+      name: "build_test_dwp"
+      value: "false"
+    }
+    options {
+      name: "cc_dotd_files"
+      value: "true"
+    }
+    options {
+      name: "cc_include_scanning"
+      value: "false"
+    }
+    options {
+      name: "cc_output_directory_tag"
+      value: ""
+    }
+    options {
+      name: "compiler"
+      value: "null"
+    }
+    options {
+      name: "conlyopt"
+      value: "[]"
+    }
+    options {
+      name: "copt"
+      value: "[]"
+    }
+    options {
+      name: "crosstool_top"
+      value: "@@bazel_tools//tools/cpp:toolchain"
+    }
+    options {
+      name: "cs_fdo_absolute_path"
+      value: "null"
+    }
+    options {
+      name: "cs_fdo_instrument"
+      value: "null"
+    }
+    options {
+      name: "cs_fdo_profile"
+      value: "null"
+    }
+    options {
+      name: "custom_malloc"
+      value: "null"
+    }
+    options {
+      name: "cxxopt"
+      value: "[]"
+    }
+    options {
+      name: "dynamic_mode"
+      value: "DEFAULT"
+    }
+    options {
+      name: "enable_propeller_optimize_absolute_paths"
+      value: "true"
+    }
+    options {
+      name: "enable_remaining_fdo_absolute_paths"
+      value: "true"
+    }
+    options {
+      name: "experimental_cc_implementation_deps"
+      value: "true"
+    }
+    options {
+      name: "experimental_cpp_compile_resource_estimation"
+      value: "false"
+    }
+    options {
+      name: "experimental_cpp_modules"
+      value: "false"
+    }
+    options {
+      name: "experimental_generate_llvm_lcov"
+      value: "false"
+    }
+    options {
+      name: "experimental_inmemory_dotd_files"
+      value: "true"
+    }
+    options {
+      name: "experimental_link_static_libraries_once"
+      value: "true"
+    }
+    options {
+      name: "experimental_omitfp"
+      value: "false"
+    }
+    options {
+      name: "experimental_save_feature_state"
+      value: "false"
+    }
+    options {
+      name: "experimental_unsupported_and_brittle_include_scanning"
+      value: "false"
+    }
+    options {
+      name: "experimental_use_cpp_compile_action_args_params_file"
+      value: "false"
+    }
+    options {
+      name: "experimental_use_llvm_covmap"
+      value: "false"
+    }
+    options {
+      name: "fdo_instrument"
+      value: "null"
+    }
+    options {
+      name: "fdo_optimize"
+      value: "null"
+    }
+    options {
+      name: "fdo_prefetch_hints"
+      value: "null"
+    }
+    options {
+      name: "fdo_profile"
+      value: "null"
+    }
+    options {
+      name: "fission"
+      value: "[]"
+    }
+    options {
+      name: "force_pic"
+      value: "false"
+    }
+    options {
+      name: "grte_top"
+      value: "null"
+    }
+    options {
+      name: "host_compiler"
+      value: "null"
+    }
+    options {
+      name: "host_conlyopt"
+      value: "[]"
+    }
+    options {
+      name: "host_copt"
+      value: "[]"
+    }
+    options {
+      name: "host_cxxopt"
+      value: "[]"
+    }
+    options {
+      name: "host_grte_top"
+      value: "null"
+    }
+    options {
+      name: "host_linkopt"
+      value: "[]"
+    }
+    options {
+      name: "host_per_file_copt"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_disable_legacy_cc_provider"
+      value: "true"
+    }
+    options {
+      name: "incompatible_disable_nocopts"
+      value: "true"
+    }
+    options {
+      name: "incompatible_dont_enable_host_nonhost_crosstool_features"
+      value: "true"
+    }
+    options {
+      name: "incompatible_enable_cc_toolchain_resolution"
+      value: "true"
+    }
+    options {
+      name: "incompatible_make_thinlto_command_lines_standalone"
+      value: "true"
+    }
+    options {
+      name: "incompatible_remove_legacy_whole_archive"
+      value: "true"
+    }
+    options {
+      name: "incompatible_require_ctx_in_configure_features"
+      value: "true"
+    }
+    options {
+      name: "incompatible_use_cpp_compile_header_mnemonic"
+      value: "false"
+    }
+    options {
+      name: "incompatible_use_specific_tool_files"
+      value: "true"
+    }
+    options {
+      name: "incompatible_validate_top_level_header_inclusions"
+      value: "true"
+    }
+    options {
+      name: "interface_shared_objects"
+      value: "true"
+    }
+    options {
+      name: "legacy_whole_archive"
+      value: "true"
+    }
+    options {
+      name: "linkopt"
+      value: "[]"
+    }
+    options {
+      name: "ltobackendopt"
+      value: "[]"
+    }
+    options {
+      name: "ltoindexopt"
+      value: "[]"
+    }
+    options {
+      name: "memprof_profile"
+      value: "null"
+    }
+    options {
+      name: "minimum_os_version"
+      value: "null"
+    }
+    options {
+      name: "objc_enable_binary_stripping"
+      value: "false"
+    }
+    options {
+      name: "objc_generate_linkmap"
+      value: "false"
+    }
+    options {
+      name: "objc_use_dotd_pruning"
+      value: "true"
+    }
+    options {
+      name: "objccopt"
+      value: "[]"
+    }
+    options {
+      name: "per_file_copt"
+      value: "[]"
+    }
+    options {
+      name: "per_file_ltobackendopt"
+      value: "[]"
+    }
+    options {
+      name: "process_headers_in_dependencies"
+      value: "false"
+    }
+    options {
+      name: "propeller_optimize"
+      value: "null"
+    }
+    options {
+      name: "propeller_optimize_absolute_cc_profile"
+      value: "null"
+    }
+    options {
+      name: "propeller_optimize_absolute_ld_profile"
+      value: "null"
+    }
+    options {
+      name: "proto_profile"
+      value: "true"
+    }
+    options {
+      name: "proto_profile_path"
+      value: "null"
+    }
+    options {
+      name: "save_temps"
+      value: "false"
+    }
+    options {
+      name: "share_native_deps"
+      value: "true"
+    }
+    options {
+      name: "start_end_lib"
+      value: "true"
+    }
+    options {
+      name: "strict_system_includes"
+      value: "false"
+    }
+    options {
+      name: "strip"
+      value: "sometimes"
+    }
+    options {
+      name: "stripopt"
+      value: "[]"
+    }
+    options {
+      name: "xbinary_fdo"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.java.JavaOptions"
+    options {
+      name: "bytecode_optimization_pass_actions"
+      value: "1"
+    }
+    options {
+      name: "bytecode_optimizers"
+      value: "{Proguard=null}"
+    }
+    options {
+      name: "enforce_proguard_file_extension"
+      value: "false"
+    }
+    options {
+      name: "experimental_add_test_support_to_compile_time_deps"
+      value: "true"
+    }
+    options {
+      name: "experimental_enable_jspecify"
+      value: "true"
+    }
+    options {
+      name: "experimental_fix_deps_tool"
+      value: "add_dep"
+    }
+    options {
+      name: "experimental_inmemory_jdeps_files"
+      value: "true"
+    }
+    options {
+      name: "experimental_java_classpath"
+      value: "BAZEL"
+    }
+    options {
+      name: "experimental_java_test_auto_create_deploy_jar"
+      value: "false"
+    }
+    options {
+      name: "experimental_local_java_optimization_configuration"
+      value: "null"
+    }
+    options {
+      name: "experimental_local_java_optimizations"
+      value: "false"
+    }
+    options {
+      name: "experimental_one_version_enforcement"
+      value: "OFF"
+    }
+    options {
+      name: "experimental_run_android_lint_on_java_rules"
+      value: "false"
+    }
+    options {
+      name: "experimental_strict_java_deps"
+      value: "DEFAULT"
+    }
+    options {
+      name: "experimental_turbine_annotation_processing"
+      value: "false"
+    }
+    options {
+      name: "explicit_java_test_deps"
+      value: "false"
+    }
+    options {
+      name: "host_java_launcher"
+      value: "null"
+    }
+    options {
+      name: "host_javacopt"
+      value: "[]"
+    }
+    options {
+      name: "host_jvmopt"
+      value: "[]"
+    }
+    options {
+      name: "incompatible_disallow_java_import_exports"
+      value: "false"
+    }
+    options {
+      name: "incompatible_multi_release_deploy_jars"
+      value: "true"
+    }
+    options {
+      name: "java_debug"
+      value: "null"
+    }
+    options {
+      name: "java_deps"
+      value: "true"
+    }
+    options {
+      name: "java_header_compilation"
+      value: "true"
+    }
+    options {
+      name: "java_language_version"
+      value: ""
+    }
+    options {
+      name: "java_launcher"
+      value: "null"
+    }
+    options {
+      name: "java_runtime_version"
+      value: "local_jdk"
+    }
+    options {
+      name: "javacopt"
+      value: "[]"
+    }
+    options {
+      name: "jvmopt"
+      value: "[]"
+    }
+    options {
+      name: "one_version_enforcement_on_java_tests"
+      value: "true"
+    }
+    options {
+      name: "plugin"
+      value: "[]"
+    }
+    options {
+      name: "proguard_top"
+      value: "null"
+    }
+    options {
+      name: "split_bytecode_optimization_pass"
+      value: "false"
+    }
+    options {
+      name: "tool_java_language_version"
+      value: ""
+    }
+    options {
+      name: "tool_java_runtime_version"
+      value: "remotejdk_11"
+    }
+    options {
+      name: "use_ijars"
+      value: "true"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.objc.J2ObjcCommandLineOptions"
+    options {
+      name: "j2objc_dead_code_report"
+      value: "null"
+    }
+    options {
+      name: "j2objc_translation_flags"
+      value: "[]"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.objc.ObjcCommandLineOptions"
+    options {
+      name: "device_debug_entitlements"
+      value: "true"
+    }
+    options {
+      name: "experimental_objc_fastbuild_options"
+      value: "[-O0, -DDEBUG=1]"
+    }
+    options {
+      name: "incompatible_avoid_hardcoded_objc_compilation_flags"
+      value: "true"
+    }
+    options {
+      name: "incompatible_builtin_objc_strip_action"
+      value: "true"
+    }
+    options {
+      name: "incompatible_disable_native_apple_binary_rule"
+      value: "false"
+    }
+    options {
+      name: "incompatible_disallow_sdk_frameworks_attributes"
+      value: "false"
+    }
+    options {
+      name: "incompatible_objc_alwayslink_by_default"
+      value: "false"
+    }
+    options {
+      name: "incompatible_strip_executable_safely"
+      value: "false"
+    }
+    options {
+      name: "ios_memleaks"
+      value: "false"
+    }
+    options {
+      name: "ios_signing_cert_name"
+      value: "null"
+    }
+    options {
+      name: "ios_simulator_device"
+      value: "null"
+    }
+    options {
+      name: "ios_simulator_version"
+      value: "null"
+    }
+    options {
+      name: "objc_debug_with_GLIBCXX"
+      value: "false"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.proto.ProtoConfiguration$Options"
+    options {
+      name: "cc_proto_library_header_suffixes"
+      value: "[.pb.h]"
+    }
+    options {
+      name: "cc_proto_library_source_suffixes"
+      value: "[.pb.cc]"
+    }
+    options {
+      name: "experimental_proto_descriptor_sets_include_source_info"
+      value: "false"
+    }
+    options {
+      name: "proto_compiler"
+      value: "@@bazel_tools//tools/proto:protoc"
+    }
+    options {
+      name: "proto_toolchain_for_cc"
+      value: "@@bazel_tools//tools/proto:cc_toolchain"
+    }
+    options {
+      name: "proto_toolchain_for_j2objc"
+      value: "@@bazel_tools//tools/j2objc:j2objc_proto_toolchain"
+    }
+    options {
+      name: "proto_toolchain_for_java"
+      value: "@@bazel_tools//tools/proto:java_toolchain"
+    }
+    options {
+      name: "proto_toolchain_for_javalite"
+      value: "@@bazel_tools//tools/proto:javalite_toolchain"
+    }
+    options {
+      name: "protocopt"
+      value: "[]"
+    }
+    options {
+      name: "strict_proto_deps"
+      value: "ERROR"
+    }
+    options {
+      name: "strict_public_imports"
+      value: "OFF"
+    }
+  }
+  fragment_options {
+    name: "com.google.devtools.build.lib.rules.python.PythonOptions"
+    options {
+      name: "build_python_zip"
+      value: "AUTO"
+    }
+    options {
+      name: "experimental_py_binaries_include_label"
+      value: "false"
+    }
+    options {
+      name: "incompatible_default_to_explicit_init_py"
+      value: "false"
+    }
+    options {
+      name: "incompatible_python_disallow_native_rules"
+      value: "false"
+    }
+    options {
+      name: "incompatible_remove_ctx_py_fragment"
+      value: "true"
+    }
+    options {
+      name: "python_native_rules_allowlist"
+      value: "null"
+    }
+  }
+  fragment_options {
+    name: "user-defined"
+  }
+}

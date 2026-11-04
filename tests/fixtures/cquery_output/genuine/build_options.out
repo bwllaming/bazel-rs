@@ -1,0 +1,17 @@
+@@//:tool opt "k8" [Label("//:linux")] Label("//:linux") False <unknown object com.google.devtools.common.options.TriState> <unknown object com.google.devtools.build.lib.rules.cpp.CppConfiguration$StripMode> None
+@@//:leaf fastbuild "k8" [Label("//:linux")] Label("//:linux") False <unknown object com.google.devtools.common.options.TriState> <unknown object com.google.devtools.build.lib.rules.cpp.CppConfiguration$StripMode> None
+@@//:flag fastbuild "k8" [Label("//:linux")] Label("//:linux") False <unknown object com.google.devtools.common.options.TriState> <unknown object com.google.devtools.build.lib.rules.cpp.CppConfiguration$StripMode> None
+@@bazel_tools//tools/genrule:genrule-setup.sh None None None None None None None None
+@@//:leaf fastbuild "k8" [Label("//:linux")] Label("//:linux") False <unknown object com.google.devtools.common.options.TriState> <unknown object com.google.devtools.build.lib.rules.cpp.CppConfiguration$StripMode> "transitioned"
+@@//:opt.txt None None None None None None None None
+@@//:extra.txt None None None None None None None None
+@@//:gen fastbuild "k8" [Label("//:linux")] Label("//:linux") False <unknown object com.google.devtools.common.options.TriState> <unknown object com.google.devtools.build.lib.rules.cpp.CppConfiguration$StripMode> None
+@@//:src.txt None None None None None None None None
+@@//:is_transitioned fastbuild "k8" [Label("//:linux")] Label("//:linux") False <unknown object com.google.devtools.common.options.TriState> <unknown object com.google.devtools.build.lib.rules.cpp.CppConfiguration$StripMode> None
+@@//:mid fastbuild "k8" [Label("//:linux")] Label("//:linux") False <unknown object com.google.devtools.common.options.TriState> <unknown object com.google.devtools.build.lib.rules.cpp.CppConfiguration$StripMode> None
+@@//:opt fastbuild "k8" [Label("//:linux")] Label("//:linux") False <unknown object com.google.devtools.common.options.TriState> <unknown object com.google.devtools.build.lib.rules.cpp.CppConfiguration$StripMode> None
+@@//tools/allowlists/function_transition_allowlist:function_transition_allowlist None None None None None None None None
+@@//:leaf fastbuild "k8" [Label("//:linux")] Label("//:linux") False <unknown object com.google.devtools.common.options.TriState> <unknown object com.google.devtools.build.lib.rules.cpp.CppConfiguration$StripMode> None
+@@//:top fastbuild "k8" [Label("//:linux")] Label("//:linux") False <unknown object com.google.devtools.common.options.TriState> <unknown object com.google.devtools.build.lib.rules.cpp.CppConfiguration$StripMode> None
+@@//:flag fastbuild "k8" [Label("//:linux")] Label("//:linux") False <unknown object com.google.devtools.common.options.TriState> <unknown object com.google.devtools.build.lib.rules.cpp.CppConfiguration$StripMode> "transitioned"
+@@//:is_transitioned fastbuild "k8" [Label("//:linux")] Label("//:linux") False <unknown object com.google.devtools.common.options.TriState> <unknown object com.google.devtools.build.lib.rules.cpp.CppConfiguration$StripMode> "transitioned"

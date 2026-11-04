@@ -1,0 +1,23 @@
+td_filter	//... - kind(alias, //...)	--output=starlark	--starlark:expr=target.label if "IncompatiblePlatformProvider" not in (providers(target) or []) else ""
+td_filter_alias	kind(alias, //...)	--output=starlark	--starlark:expr=repr(target).split(" ")[2] if "IncompatiblePlatformProvider" not in (providers(target) or []) else ""
+td_incompatible	//... - kind(alias, //...)	--output=starlark	--starlark:expr=target.label if "IncompatiblePlatformProvider" in (providers(target) or []) else ""
+default_expr	deps(//:top)	--output=starlark
+repr	deps(//:top) + //:gen.txt + //:incompatible_alias + //:indirect	--output=starlark	--starlark:expr=repr(target) + " " + str(target)
+keys	deps(//...) + //:gen.txt	--output=starlark	--starlark:file=fmt.star
+types	//:top	--output=starlark	--starlark:expr=[type(target), type(target.label), type(providers(target)), type(build_options(target)), type(build_options(target)["//command_line_option:compilation_mode"])]
+build_options	deps(//:top) except deps(//:linux)	--output=starlark	--starlark:expr=" ".join([str(target.label)] + [repr((build_options(target) or {}).get(k)) for k in ["//command_line_option:compilation_mode", "//command_line_option:cpu", "//command_line_option:platforms", "//command_line_option:host_platform", "//command_line_option:stamp", "//command_line_option:enable_runfiles", "//command_line_option:strip", "//:flag"]])
+none_options	//:src.txt + //tools/allowlists/function_transition_allowlist	--output=starlark	--starlark:expr=str(target.label) + " " + str(build_options(target)) + " " + str(providers(target))
+both	//:top	--output=starlark	--starlark:expr=1	--starlark:file=fmt.star
+missing	//:top	--output=starlark	--starlark:file=missing.star
+noformat	//:top	--output=starlark	--starlark:file=noformat.star
+notfn	//:top	--output=starlark	--starlark:file=notfn.star
+two	//:top	--output=starlark	--starlark:file=two.star
+fail	//:top + //:mid	--output=starlark	--starlark:expr=fail("boom") if target.label.name == "top" else "ok"
+files	deps(//:top) + //:fg + //:gen.txt + //:windows_only	--output=files
+files_extra	deps(//:top) + //:fg	--output=files	--output_groups=extra
+files_plus	deps(//:top) + //:fg	--output=files	--output_groups=+extra
+graph	//:top + //:mid + //:src.txt + //:gen + //:extra.txt + //:fg + //:gen.txt + //:opt	--output=graph
+graph_flat	//:top + //:mid + //:src.txt + //:gen + //:extra.txt + //:fg + //:gen.txt + //:opt	--output=graph	--nograph:factored
+graph_limit	//:top + //:mid + //:src.txt + //:gen + //:extra.txt + //:fg + //:gen.txt + //:opt	--output=graph	--graph:node_limit=30
+label_kind	//...	--output=label_kind
+bogus	//:top	--output=bogus

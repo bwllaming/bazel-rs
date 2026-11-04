@@ -1,0 +1,819 @@
+target {
+  type: RULE
+  rule {
+    name: "//:top"
+    rule_class: "lib"
+    location: "/tmp/opencode/w/cqof-ws/BUILD.bazel:16:4"
+    attribute {
+      name: "$allowlist_function_transition"
+      type: LABEL
+      string_value: "@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist"
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "$config_dependencies"
+      type: LABEL_LIST
+      string_list_value: "//:opt"
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: ":action_listener"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "aspect_dep"
+      type: LABEL
+      string_value: "//:mid"
+      explicitly_specified: true
+      nodep: false
+    }
+    attribute {
+      name: "aspect_hints"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "compatible_with"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "deprecation"
+      type: STRING
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "deps"
+      type: LABEL_LIST
+      string_list_value: "//:mid"
+      string_list_value: "//:alias"
+      explicitly_specified: true
+      nodep: false
+    }
+    attribute {
+      name: "exec_compatible_with"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "exec_group_compatible_with"
+      type: LABEL_LIST_DICT
+      explicitly_specified: false
+    }
+    attribute {
+      name: "exec_properties"
+      type: STRING_DICT
+      explicitly_specified: false
+    }
+    attribute {
+      name: "expect_failure"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "features"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "generator_function"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "generator_location"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "generator_name"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "name"
+      type: STRING
+      string_value: "top"
+      explicitly_specified: true
+      nodep: false
+    }
+    attribute {
+      name: "package_metadata"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "restricted_to"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "srcs"
+      type: LABEL_LIST
+      string_list_value: "//:src.txt"
+      explicitly_specified: true
+      nodep: false
+    }
+    attribute {
+      name: "tags"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "target_compatible_with"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "testonly"
+      type: BOOLEAN
+      int_value: 0
+      string_value: "false"
+      explicitly_specified: false
+      boolean_value: false
+    }
+    attribute {
+      name: "tool"
+      type: LABEL
+      string_value: "//:tool"
+      explicitly_specified: true
+      nodep: false
+    }
+    attribute {
+      name: "toolchains"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "tr_dep"
+      type: LABEL
+      string_value: "//:leaf"
+      explicitly_specified: true
+      nodep: false
+    }
+    attribute {
+      name: "transitive_configs"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: true
+    }
+    attribute {
+      name: "visibility"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: true
+    }
+    attribute {
+      name: "$rule_implementation_hash"
+      type: STRING
+      string_value: "ee5606a5a8767d2d91bd3f654b407e9f20e41120847a43e96ae0a6faadd9b4de"
+    }
+    attribute {
+      name: "$extra"
+      type: LABEL
+      string_value: "//:extra.txt"
+      explicitly_specified: false
+      nodep: false
+    }
+    rule_input: "//:extra.txt"
+    rule_input: "//:alias"
+    rule_input: "//:leaf"
+    rule_input: "//:mid"
+    rule_input: "//:opt"
+    rule_input: "//:opt.txt"
+    rule_input: "//:src.txt"
+    rule_input: "//:tool"
+    rule_input: "@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist"
+  }
+}
+target {
+  type: SOURCE_FILE
+  source_file {
+    name: "//:src.txt"
+    location: "/tmp/opencode/w/cqof-ws/src.txt:1:1"
+    visibility_label: "//visibility:public"
+  }
+}
+target {
+  type: GENERATED_FILE
+  generated_file {
+    name: "//:gen.txt"
+    generating_rule: "//:gen"
+    location: "/tmp/opencode/w/cqof-ws/BUILD.bazel:36:8"
+  }
+}
+target {
+  type: RULE
+  rule {
+    name: "//:windows_only"
+    rule_class: "lib"
+    location: "/tmp/opencode/w/cqof-ws/BUILD.bazel:48:4"
+    attribute {
+      name: "$allowlist_function_transition"
+      type: LABEL
+      string_value: "@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist"
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "$config_dependencies"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: ":action_listener"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "aspect_dep"
+      type: LABEL
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "aspect_hints"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "compatible_with"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "deprecation"
+      type: STRING
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "deps"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "exec_compatible_with"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "exec_group_compatible_with"
+      type: LABEL_LIST_DICT
+      explicitly_specified: false
+    }
+    attribute {
+      name: "exec_properties"
+      type: STRING_DICT
+      explicitly_specified: false
+    }
+    attribute {
+      name: "expect_failure"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "features"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "generator_function"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "generator_location"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "generator_name"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "name"
+      type: STRING
+      string_value: "windows_only"
+      explicitly_specified: true
+      nodep: false
+    }
+    attribute {
+      name: "package_metadata"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "restricted_to"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "srcs"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "tags"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "target_compatible_with"
+      type: LABEL_LIST
+      string_list_value: "@platforms//os:windows"
+      explicitly_specified: true
+      nodep: false
+    }
+    attribute {
+      name: "testonly"
+      type: BOOLEAN
+      int_value: 0
+      string_value: "false"
+      explicitly_specified: false
+      boolean_value: false
+    }
+    attribute {
+      name: "tool"
+      type: LABEL
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "toolchains"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "tr_dep"
+      type: LABEL
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "transitive_configs"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: true
+    }
+    attribute {
+      name: "visibility"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: true
+    }
+    attribute {
+      name: "$rule_implementation_hash"
+      type: STRING
+      string_value: "ee5606a5a8767d2d91bd3f654b407e9f20e41120847a43e96ae0a6faadd9b4de"
+    }
+    attribute {
+      name: "$extra"
+      type: LABEL
+      string_value: "//:extra.txt"
+      explicitly_specified: false
+      nodep: false
+    }
+    rule_input: "//:extra.txt"
+    rule_input: "@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist"
+    rule_input: "@platforms//os:windows"
+  }
+}
+target {
+  type: RULE
+  rule {
+    name: "//:alias"
+    rule_class: "alias"
+    location: "/tmp/opencode/w/cqof-ws/BUILD.bazel:34:6"
+    attribute {
+      name: "$config_dependencies"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "actual"
+      type: LABEL
+      string_value: "//:leaf"
+      explicitly_specified: true
+      nodep: false
+    }
+    attribute {
+      name: "aspect_hints"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "compatible_with"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "deprecation"
+      type: STRING
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "features"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "generator_function"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "generator_location"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "generator_name"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "name"
+      type: STRING
+      string_value: "alias"
+      explicitly_specified: true
+      nodep: false
+    }
+    attribute {
+      name: "package_metadata"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "restricted_to"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "tags"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "target_compatible_with"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "testonly"
+      type: BOOLEAN
+      int_value: 0
+      string_value: "false"
+      explicitly_specified: false
+      boolean_value: false
+    }
+    attribute {
+      name: "transitive_configs"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: true
+    }
+    attribute {
+      name: "visibility"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: true
+    }
+    rule_input: "//:leaf"
+  }
+}
+target {
+  type: RULE
+  rule {
+    name: "//:alias"
+    rule_class: "alias"
+    location: "/tmp/opencode/w/cqof-ws/BUILD.bazel:34:6"
+    attribute {
+      name: "$config_dependencies"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "actual"
+      type: LABEL
+      string_value: "//:leaf"
+      explicitly_specified: true
+      nodep: false
+    }
+    attribute {
+      name: "aspect_hints"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "compatible_with"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "deprecation"
+      type: STRING
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "features"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "generator_function"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "generator_location"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "generator_name"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "name"
+      type: STRING
+      string_value: "alias"
+      explicitly_specified: true
+      nodep: false
+    }
+    attribute {
+      name: "package_metadata"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "restricted_to"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "tags"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "target_compatible_with"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "testonly"
+      type: BOOLEAN
+      int_value: 0
+      string_value: "false"
+      explicitly_specified: false
+      boolean_value: false
+    }
+    attribute {
+      name: "transitive_configs"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: true
+    }
+    attribute {
+      name: "visibility"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: true
+    }
+    rule_input: "//:leaf"
+  }
+}
+target {
+  type: RULE
+  rule {
+    name: "//:fg"
+    rule_class: "filegroup"
+    location: "/tmp/opencode/w/cqof-ws/BUILD.bazel:38:10"
+    attribute {
+      name: "$config_dependencies"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: ":action_listener"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "aspect_hints"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "compatible_with"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "data"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "deprecation"
+      type: STRING
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "distribs"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "features"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "generator_function"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "generator_location"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "generator_name"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "licenses"
+      type: LICENSE
+      license {
+        license_type: "NONE"
+      }
+      explicitly_specified: false
+    }
+    attribute {
+      name: "name"
+      type: STRING
+      string_value: "fg"
+      explicitly_specified: true
+      nodep: false
+    }
+    attribute {
+      name: "output_group"
+      type: STRING
+      string_value: ""
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "output_licenses"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "package_metadata"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "restricted_to"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "srcs"
+      type: LABEL_LIST
+      string_list_value: "//:src.txt"
+      string_list_value: "//:gen"
+      explicitly_specified: true
+      nodep: false
+    }
+    attribute {
+      name: "tags"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "target_compatible_with"
+      type: LABEL_LIST
+      explicitly_specified: false
+      nodep: false
+    }
+    attribute {
+      name: "testonly"
+      type: BOOLEAN
+      int_value: 0
+      string_value: "false"
+      explicitly_specified: false
+      boolean_value: false
+    }
+    attribute {
+      name: "transitive_configs"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: true
+    }
+    attribute {
+      name: "visibility"
+      type: STRING_LIST
+      explicitly_specified: false
+      nodep: true
+    }
+    rule_input: "//:gen"
+    rule_input: "//:src.txt"
+  }
+}

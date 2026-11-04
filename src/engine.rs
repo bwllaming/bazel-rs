@@ -15751,6 +15751,9 @@ impl Engine {
             // aquery keeps the planned actions of the whole universe.
             self.aquery_top_level(labels, top, &state);
             self.aquery_nodes(&mut state.nodes);
+            // Formatter facts (provider names, important files) are read
+            // while the planning state is live; the graph keeps no providers.
+            self.capture_cquery_facts(&mut state, &mut configured, all_labels);
             // Full provider analysis (including top-level aspects) succeeded.
             // Nothing below this boundary is part of configured querying.
             crate::perf_mark("cquery.analysis_done");
