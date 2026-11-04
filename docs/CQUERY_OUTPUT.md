@@ -91,10 +91,12 @@ official binary with `-nocache_results`:
 | | TD result | filter cquery (both revisions) | alias filter | wall |
 |---|---|---|---|---|
 | genuine 9.3.1 | `//src/beyondwork.ai/bworker/wcb/wcbservice:wcbservice_test` | 42,358 lines | 31 lines | 264 s |
-| bazel-rs | identical | identical when sorted | same set; genuine repeats 2 aliases in a second configuration (known alias identity difference) | 1,019 s cold (new binary: repository publication + uncached analysis) |
+| bazel-rs | identical | identical when sorted | same set; genuine repeats 2 aliases in a second configuration (known alias identity difference) | 1,019 s cold (first binary: repository publication + uncached analysis); 261 s with the final binary on the warm private cache |
 
-Both filter cqueries are graph hits natively (6–11 s, the deps universe is the
-same `//...`).
+Natively both filter cqueries are graph hits of the `deps(//...)` analysis
+(same `//...` universe): 1.8–2.1 s each on the final run (genuine 2.2–3.0 s on
+its warm server). The final binary's run repeated the comparison with the same
+result.
 
 ## `--output=files`
 
