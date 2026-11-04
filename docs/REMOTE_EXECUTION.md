@@ -127,8 +127,10 @@ change remote resolution (they are the server's business, as in Bazel).
 
 **Failures** (`RemoteSpawnRunner.handleError`, `Utils.grpcAwareErrorMessage`):
 
-* A non-zero exit fails the action like a local one:
-  `action 'ID' failed (exit status: N):\nstdout:…\nstderr:…`.
+* A non-zero exit fails the action like a local one (crate::action_console):
+  `ERROR: LOCATION: DESCRIPTION failed: (Exit N): ARGV0 failed: error
+  executing MNEMONIC command (from KIND rule target L) COMMAND` with its
+  output.
 * An execution timeout (`DEADLINE_EXCEEDED` as the response's status):
   `action 'ID' failed: (Exit 142): remote spawn timed out (failed due to
   timeout.)`; a test is TIMEOUT.

@@ -137,11 +137,16 @@ Not reproduced (a deterministic native key is printed instead):
   command lines other than get_link_args.
 
 Known gaps seen on stardoc 0.8.0's `deps(//:docs)` (2026-11-04; keys equal
-unless stated): the description of header-parsing CppCompile actions names
-another header, SolibSymlink descriptions carry ` [for tool]` in the exec
-configuration (genuine's do not); the starlark_doc_extract binary
+unless stated): the starlark_doc_extract binary
 proto write (BinaryFileWriteAction) differs in key and prints
 `IsExecutable`.
+
+Descriptions follow AbstractAction.getProgressMessage (crate::action_console
+shares the rules with the console): a C++ compile names its source file
+(CppCompileAction.getRawProgressMessage, recorded at registration, so a
+header-parsing action names its header), `%{input}` is the first of the
+action's own inputs, and an action without a raw progress message
+(SolibSymlinkAction) prints `MNEMONIC output` without ` [for tool]`.
 
 The text output's `Execution platform:` prints the platform through the main
 repository mapping (`@platforms//host:host` when `platforms` is a direct

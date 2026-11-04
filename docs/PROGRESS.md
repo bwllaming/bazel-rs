@@ -67,18 +67,26 @@ tests/console_text.rs):
   completed, K tests FAILED, N total actions` (exit 3) (crate::spawn_stats,
   BuildSummaryStatsModule, SpawnStats): N counts the completed actions —
   executed, with or without a process (`internal`: writes, native transforms,
-  the workspace status action, a failed action), not the action cache hits
+  the workspace status action, a failed spawn — one whose outputs are
+  missing counts under its runner —, and three per tool runfiles tree the
+  plan stages as a shared input group: Bazel's SourceManifestAction,
+  SymlinkTreeAction and RunfilesTreeAction, run or cached with the tree's
+  repository mapping manifest), not the action cache hits
   (`M action cache hit`) — then the spawns by runner name (`remote cache
   hit`, then alphabetically `linux-sandbox` for the Landlock sandbox,
   `local`, `processwrapper-sandbox`, `remote`, `worker`; a test action counts
   its attempts and its test.xml generation). The critical path is the
   longest chain of action execution times (a cache hit adds nothing; tests
   are not on it). No thousands separator (UiStateTracker). Without the
-  display they are printed for exits 0 and 3, and before `--keep_going`'s
-  `ERROR: Build did NOT complete successfully` (without its completion
-  line); another failure ends with its own `ERROR:` lines; the display
-  prints them for every exit. The native `bazel-rs: N actions executed, M
-  cache hits …` line stays.
+  display they are printed for exits 0 and 3, and before the `ERROR: Build
+  did NOT complete successfully` of a failed action (with or without
+  `--keep_going`; without the completion line); another failure ends with
+  its own `ERROR:` lines; the display prints them for every exit. The
+  native `bazel-rs: N actions executed, M cache hits …` line stays. The
+  counts are a cold server's: genuine with `--batch` (or after `shutdown`)
+  reports an unchanged rebuild as `1 process: N action cache hit, 1
+  internal.` like bazel-rs, a warm genuine server checks no unchanged action
+  (Skyframe) and reports only the status action.
 * `print()` everywhere but MODULE.bazel files (crate::bzlmod's own) goes
   through crate::debug_print: `DEBUG: FILE:LINE:COL: TEXT` at the call's
   left parenthesis, FILE a BUILD file's path or a `.bzl` file's path:
@@ -92,6 +100,55 @@ tests/console_text.rs):
 
 Interactive-only: `INFO: Analysis snapshot hit: loading and analysis
 skipped.` on a hit.
+
+## Action output and failures
+
+Executed actions report like Bazel 9.3.1 (crate::action_console;
+SkyframeActionExecutor, UiEventHandler, CommandFailureUtils; genuine
+captures in tests/fixtures/console_action_output, tests/console_action_output.rs):
+
+* A successful action that printed: `INFO: From DESCRIPTION:`, then its
+  stderr on stderr and its stdout on stdout (UiEventHandler.handleLocked; a
+  last line without its newline is ended on stderr). Remote and disk cache
+  hits and workers' responses alike. `--output_filter` /
+  `--auto_output_filter` decide by the owner's label;
+  `--experimental_ui_max_stdouterr_bytes` (default 1 MiB) replaces a larger
+  stream by `stdout (PATH) N exceeds maximum size of
+  --experimental_ui_max_stdouterr_bytes=M bytes; skipping` without reading
+  it (PATH: a copy below `execroot/_main/bazel-out/_tmp/actions`). Dropped
+  with the INFO event under `--quiet`. Without color (`--color=no`, or
+  `auto` off a terminal) the ANSI control codes are stripped
+  (AnsiStrippingOutputStream).
+* A failed spawn: `ERROR: LOCATION: DESCRIPTION failed: (Exit N): ARGV0
+  failed: error executing MNEMONIC command (from KIND rule target L)
+  COMMAND`, the sandbox strategies' `Use --sandbox_debug …` suggestion, then
+  its output. A signal is its strsignal name (`(Killed)`, a raw status 128
+  + N). COMMAND is abbreviated (`... (remaining N arguments skipped)` past
+  200 characters); `--verbose_failures` prints it complete: `(cd EXECROOT
+  && \ exec env - \ VARS ARGV)`, `# Configuration: C` (the native
+  ConfigId) and `# Execution platform: P`. Missing outputs: `LOCATION:
+  output 'P' was not created` (a genrule's `declared output 'P' was not
+  created by genrule. This is probably because …`) per output, then
+  `DESCRIPTION failed: not all outputs were created or valid`.
+* The build then reports what it built: the results (`Target L failed to
+  build` for each requested target with an unbuilt action, `Use
+  --verbose_failures …`), `INFO: Elapsed time: …`, `INFO: N processes: …`,
+  `ERROR: Build did NOT complete successfully`, exit 1. Without
+  `--keep_going` only the first failure prints, and no later action output
+  (SkyframeActionExecutor.isBuilderAborting).
+* DESCRIPTION is AbstractAction.describe(): `progress_message` (Starlark;
+  `%{label}`, `%{output}`, `%{input}`), a genrule's `MESSAGE LABEL` or
+  `Executing genrule LABEL`, `Compiling SOURCE` (a header-parsing action's
+  header), else `MNEMONIC OUTPUT`; ` [for tool]` in an exec configuration,
+  except for actions without a raw message (SolibSymlink, RunfilesTree). The
+  owner (label, BUILD location, rule kind, aspects, configuration,
+  execution platform) is recorded per configured target by planning and
+  kept in the analysis snapshot (interned; snapshot format 9).
+
+Declared differences: genuine's merged analysis and execution prints
+`INFO: Found N targets...` after the actions (bazel-rs before them), the
+execution root of `cd` is the action's private one, and the configuration
+checksum is the native ConfigId.
 
 ## When it runs
 

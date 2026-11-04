@@ -130,8 +130,8 @@ PostgreSQL servers in one survey, /tmp/opencode/perf-research/TEST-SURVEY.md B1)
 * tests/process_cleanup.rs: tests (sandboxed and standalone, pass/fail/timeout),
   genrules (sandboxed and `local`) and repository `execute` (normal and timed
   out) that leave `setsid`, double-fork and same-group daemons: none survives the
-  command; results, exit codes and failure messages (`signal: 9 (SIGKILL)`,
-  `signal: 13 (SIGPIPE)`, `exit status: 3`) are the spawn's own; Ctrl-C (SIGINT
+  command; results, exit codes and failure messages (`(Killed)`, `(Broken pipe)`, `(Exit 3)`,
+  TerminationStatus.toShortString) are the spawn's own; Ctrl-C (SIGINT
   to bazel-rs's process group) still ends bazel-rs by the signal and its running
   test and daemons are killed; the supervisor's protocol (`S`/`E`/`X`, `T`, `K`,
   end-of-file, execvp candidates) and the prompt reaping of an exited daemon
