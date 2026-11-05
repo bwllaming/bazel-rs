@@ -335,8 +335,9 @@ docs/BENCHMARKS.md (harness: `scripts/bench_genuine.py`).
   server and are 7–17× faster than genuine after `shutdown` or with `--batch`,
   using 2–12× less memory.
 - **Open:** incremental re-analysis after a BUILD or watched-source edit (13.8 s
-  against 1.1 s on gazelle) and the cold fetch phase on larger repositories
-  (86 s against 49 s).
+  against 1.1 s on gazelle) and the cold build on larger repositories (the
+  fetch phase is at or below genuine's since cold-fetch-speed, docs/COLD_FETCH.md;
+  the full cold gazelle build is 64–66 s against 49 s: analysis and execution).
 - **Not yet covered:** configuration changes, remote cache/execution and
   persistent workers.
 

@@ -165,6 +165,22 @@ Each repository was used as published, with only these modifications:
   - Also note that bazel-rs ran some actions unsandboxed here ("not
     sandboxed"), while genuine used processwrapper-sandbox for all but 5.
 
+### Cold fetch phase (cold-fetch-speed, 2026-11-05)
+
+`build --nobuild` from empty caches (fetch and analysis, no execution),
+median of 3 interleaved runs, genuine 9.3.1 `--batch`; method and changes in
+docs/COLD_FETCH.md:
+
+| repository | bazel-rs 0.4.10 | bazel-rs cold-fetch-speed | genuine 9.3.1 |
+|---|---|---|---|
+| gazelle | 33.1 | **28.9** | 30.4 |
+| pip_parse | 24.2 | **21.2** | 21.7 |
+| basic_gazelle | 22.9 | **22.3** | 26.7 |
+
+The full cold gazelle build is 64–66 s against genuine's 49 s (2 runs each):
+the remaining gap is analysis and execution, which genuine overlaps with
+fetching (the "86 s against 49 s" above predates parallel fetching).
+
 ## Correctness and compatibility findings (bug reports)
 
 None of these changes outputs: every finding either rejects the command

@@ -296,11 +296,28 @@ Done since the last increment recorded under "History", one line each:
 
 - [x] Cold bworker_env 124 → 75 s: overlapped `download(block=False)`, 32 fetch
       workers with 8 download permits.
-- [ ] Cold, remaining: `zig_config` holds the coordinator 14–24 s (download,
-      xz extract, `zig build-exe`, a second extract); toolchain extensions run one
-      after another (~10 s; evaluate independent extensions in parallel like
-      Skyframe); let the prefetcher decide `select()` conditions early so wheels
-      fetch during that wait. Cold `//src/...` pattern loading (237 s) is unprofiled.
+- [x] Cold fetch phase (docs/COLD_FETCH.md): one pooled download client,
+      demanded transfers first with permits per host (8, total 16), pipelined
+      decompression, a repeated extraction of the same xz/zstd/bzip2 archive
+      skips decoding (zig_config's second extract 4.1 → 1.3 s), registry files
+      MODULE.bazel.lock names fetched at once (~/code resolution 5.2 → 3.2 s),
+      label-list siblings fetched ahead, `execute()` exit polling with backoff
+      (~/code's 10,468 short commands 101 → 58 s of worker time). Cold
+      `build --nobuild` on the benchmark repositories: gazelle 33.1 → 28.9 s
+      (genuine 30.4), pip_parse 24.2 → 21.2 (21.7), basic_gazelle 22.9 → 22.3
+      (26.7). ~/code (private clone 80d6724f3a, Debian packages seeded): cold
+      `//src/...` 381 → 373–386 s, CI `affected --base=HEAD^` 329 → 324 s, one
+      run each: analysis-bound, the fetch share is not the critical path there.
+      Cold `//src/...` pattern loading now takes 20–22 s (select.start → end).
+- [ ] Cold, remaining: module extensions still evaluate one after another
+      (14.7 s summed on ~/code, spread over the run; a few seconds to gain);
+      rules_python's environment-marker select()s (torch's `nvidia_*` wheels)
+      are decided only by the coordinator's analysis (10–16 s waits each);
+      a demanded download shares bandwidth with the speculative ones (zig's
+      45 MB took 2.7–16 s; pausing speculative transfers moved the waits
+      elsewhere, not adopted); registered toolchains' implementations are
+      fetched at the first resolution (fetching each type's likely one at
+      registration also fetched 44 unused multitool repositories, not adopted).
 - [x] Snapshot-miss repository-tree checks: measured ≤ 0.2 s of wall time (the
       3.5 s is summed over threads); not worth weakening tamper detection.
 - [x] Analysis speed on a snapshot miss (docs/COLD_ANALYSIS.md): warm
