@@ -24,14 +24,12 @@
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
-use sha2::{Digest, Sha256};
-
 use crate::action::{Action, ActionExtra, Transform, WriteAction};
 use crate::analysis_runtime::ToolRunfilesTree;
 use crate::label::Label;
 use crate::starlark_types::File;
 
-/// The owner-independent identity of one registered action: a SHA-256 over
+/// The owner-independent identity of one registered action: a BLAKE3 digest over
 /// a framed encoding of every part [`Sharing`] compares (the stand-in for
 /// Bazel's action key plus the ownerless mandatory inputs and outputs; 32
 /// bytes per action, so the build's producer map can keep one per action),
@@ -118,8 +116,8 @@ impl ActionKey {
         for tree in parts.runfiles_trees {
             // A fixed-width digest of the tree's framed content, computed
             // once per tree: equal trees contribute equal bytes, different
-            // ones (but for a SHA-256 collision) different bytes.
-            key.0.update(tree.digest());
+            // ones (but for a BLAKE3 collision) different bytes.
+            key.update(tree.digest());
         }
         match parts.execution.platform {
             Some(platform) => {
@@ -137,7 +135,7 @@ impl ActionKey {
             None
         };
         Self {
-            digest: key.0.finalize().into(),
+            digest: key.finalize(),
             uncompared,
             shareable: parts.shareable,
         }
@@ -172,7 +170,7 @@ impl ActionKey {
 
 /// The digest a tool's runfiles tree contributes to the key of every
 /// action using the tool (PA-1 follow-up B4,
-/// crate::analysis_runtime::ToolRunfilesTree::digest): SHA-256 over the
+/// crate::analysis_runtime::ToolRunfilesTree::digest): BLAKE3 over the
 /// framed tree — its directory, its entry count, then each entry's
 /// runfiles path and its File compared without owner (exec path and kind),
 /// or the empty-file tag — the bytes each key hashed per tree before.
@@ -190,7 +188,7 @@ impl ActionKey {
 /// pure function of the tree's content (not its identity), so equal trees
 /// of different providers still share, and the framing is injective with
 /// fixed-width digests in the outer key, so two keys of different trees
-/// collide only through a SHA-256 collision, the assumption every key
+/// collide only through a BLAKE3 collision, the assumption every key
 /// comparison already makes.
 pub(crate) fn tree_digest(directory: &str, mapping: &crate::runfiles::RunfilesMapping) -> [u8; 32] {
     let mut key = Fingerprint::default();
@@ -206,7 +204,7 @@ pub(crate) fn tree_digest(directory: &str, mapping: &crate::runfiles::RunfilesMa
             None => key.tag(0),
         }
     }
-    key.0.finalize().into()
+    key.finalize()
 }
 
 /// The first lines of Bazel's ActionConflictException
@@ -264,19 +262,48 @@ fn root_relative(path: &str) -> &str {
     crate::label::split_generated_root(path).map_or(path, |(_, relative)| relative)
 }
 
-/// A length-framed SHA-256 encoding: every variable-length part carries its
-/// length and every optional or enumerated part a tag, so distinct field
-/// sequences never encode alike.
-#[derive(Default)]
-struct Fingerprint(Sha256);
+/// A length-framed encoding, digested with BLAKE3: every variable-length
+/// part carries its length and every optional or enumerated part a tag, so
+/// distinct field sequences never encode alike. The encoding is collected
+/// in a buffer (reused per thread) and digested once: BLAKE3 hashes a large
+/// buffer several chunks at a time (an action listing a 1,657-file Python
+/// runtime encodes ~200 KB). Keys never leave the process, so the digest
+/// function is free to choose; any collision-resistant one keeps the
+/// comparisons' outcomes.
+struct Fingerprint(Vec<u8>);
+
+thread_local! {
+    static FINGERPRINT_BUFFER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+impl Default for Fingerprint {
+    fn default() -> Self {
+        Fingerprint(FINGERPRINT_BUFFER.with(|buffer| std::mem::take(&mut *buffer.borrow_mut())))
+    }
+}
 
 impl Fingerprint {
+    fn update(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+    }
+
+    fn finalize(mut self) -> [u8; 32] {
+        let digest = *blake3::hash(&self.0).as_bytes();
+        let mut buffer = std::mem::take(&mut self.0);
+        buffer.clear();
+        // Keep a buffer of the usual size for the next key.
+        if buffer.capacity() <= 1 << 20 {
+            FINGERPRINT_BUFFER.with(|cell| *cell.borrow_mut() = buffer);
+        }
+        digest
+    }
+
     fn count(&mut self, count: usize) {
-        self.0.update((count as u64).to_le_bytes());
+        self.update(&(count as u64).to_le_bytes());
     }
 
     fn tag(&mut self, tag: u8) {
-        self.0.update([tag]);
+        self.update(&[tag]);
     }
 
     fn flag(&mut self, flag: bool) {
@@ -285,7 +312,7 @@ impl Fingerprint {
 
     fn bytes(&mut self, bytes: &[u8]) {
         self.count(bytes.len());
-        self.0.update(bytes);
+        self.update(bytes);
     }
 
     fn str(&mut self, text: &str) {

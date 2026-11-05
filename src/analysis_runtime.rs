@@ -111,6 +111,10 @@ pub(crate) fn is_workspace_status_file(file: &File) -> bool {
 pub struct RegisteredAction {
     pub action: Action,
     pub inputs: Vec<File>,
+    /// `inputs[start..]` begins with these files, a memoized depset walk
+    /// many actions share (crate::starlark_types::FlatFiles): the
+    /// registration and the commit reuse its per-input checks.
+    pub(crate) input_memo: Option<(usize, Arc<crate::starlark_types::FlatFiles>)>,
     pub outputs: Vec<File>,
     /// Execution-time completion (tree artifact expansion).
     pub deferred: Option<Deferred>,
@@ -395,12 +399,22 @@ impl Context {
     }
 
     pub(crate) fn register_action(&self, registration: Registration) -> anyhow::Result<()> {
+        self.register_action_with_memo(registration, None)
+    }
+
+    /// [`Self::register_action`] of inputs whose `start..` begins with a
+    /// memoized depset walk ([`RegisteredAction::input_memo`]).
+    pub(crate) fn register_action_with_memo(
+        &self,
+        registration: Registration,
+        input_memo: Option<(usize, Arc<crate::starlark_types::FlatFiles>)>,
+    ) -> anyhow::Result<()> {
         if self.analysis_test {
             bail!(
                 "implementation function of a rule with analysis_test=true may not register actions. Analysis test rules may only return success/failure information via AnalysisTestResultInfo."
             );
         }
-        self.register_action_unchecked(registration)
+        self.register_action_memo_unchecked(registration, input_memo)
     }
 
     /// [`Self::register_action`] without the analysis-test check: the
@@ -408,6 +422,14 @@ impl Context {
     pub(crate) fn register_action_unchecked(
         &self,
         registration: Registration,
+    ) -> anyhow::Result<()> {
+        self.register_action_memo_unchecked(registration, None)
+    }
+
+    fn register_action_memo_unchecked(
+        &self,
+        registration: Registration,
+        input_memo: Option<(usize, Arc<crate::starlark_types::FlatFiles>)>,
     ) -> anyhow::Result<()> {
         let Registration {
             outputs,
@@ -494,16 +516,55 @@ impl Context {
         };
         // Validate with the inputs at their execution paths; the engine maps
         // them to artifacts (plan_action) and validates again.
-        action.inputs = inputs
-            .iter()
-            .map(|file| (file.path.clone().into(), file.path.clone().into()))
-            .collect();
         action.extra.tree_inputs = inputs
             .iter()
             .filter(|file| file.is_directory)
             .map(|file| file.path.clone().into())
             .collect();
-        crate::action::validate_structure(&action).map_err(anyhow::Error::msg)?;
+        let listed = |files: &mut dyn Iterator<Item = &File>| {
+            files
+                .map(|file| {
+                    let path: crate::shared_path::SharedPath = file.path.as_str().into();
+                    (path.clone(), path)
+                })
+                .collect::<Vec<_>>()
+        };
+        // A memoized walk's paths are checked once, as a namespace
+        // (crate::action::validate_structure_with); any doubt validates
+        // the full listing.
+        let checked = input_memo.as_ref().is_some_and(|(start, files)| {
+            let end = start + files.files().len();
+            debug_assert!(
+                inputs[*start..end] == *files.files(),
+                "internal error: the inputs of {} do not hold their memoized walk",
+                action.id
+            );
+            let paths = files.files();
+            let path = |index: usize| paths[index].path.as_bytes();
+            let namespace = files
+                .namespace
+                .get_or_init(|| crate::action::InputNamespace::of(paths.len(), &path));
+            action.inputs = listed(&mut inputs[..*start].iter().chain(&inputs[end..]));
+            let shared = crate::action::SharedPaths {
+                namespace,
+                path: &path,
+            };
+            let valid = crate::action::validate_structure_with(&action, &shared);
+            debug_assert!(
+                !valid || {
+                    let mut full = action.clone();
+                    full.inputs = listed(&mut inputs.iter());
+                    crate::action::validate_structure(&full).is_ok()
+                },
+                "internal error: the memoized-input validation of {} differs from the full one",
+                action.id
+            );
+            valid
+        });
+        if !checked {
+            action.inputs = listed(&mut inputs.iter());
+            crate::action::validate_structure(&action).map_err(anyhow::Error::msg)?;
+        }
         action.inputs.clear();
         action.extra.tree_inputs.clear();
         // A spawn carries the rule's execution-requirement tags
@@ -527,6 +588,7 @@ impl Context {
         let registered = RegisteredAction {
             action,
             inputs,
+            input_memo,
             outputs,
             deferred,
             exec_group,
@@ -1141,13 +1203,13 @@ fn register_spawn(
     ensure!(!outputs.is_empty(), "param 'outputs' may not be empty");
     // The files the caller passed (a File executable), before `inputs`.
     let initial_inputs = inputs.len();
-    inputs.extend(
-        options
-            .inputs
-            .map(file_list)
-            .transpose()?
-            .unwrap_or_default(),
-    );
+    let (listed, memo) = options
+        .inputs
+        .map(crate::starlark_types::file_list_with_memo)
+        .transpose()?
+        .unwrap_or_default();
+    inputs.extend(listed);
+    let input_memo = memo.map(|files| (initial_inputs, files));
     if let Some(tools) = options.tools {
         let (files, trees) = action_tools(context, tools, function, &options.groups)?;
         inputs.extend(files);
@@ -1292,26 +1354,29 @@ fn register_spawn(
         let (arguments, files) = spec.expand(None).map_err(anyhow::Error::msg)?;
         (arguments, files, None)
     };
-    context.register_action(Registration {
-        outputs,
-        inputs,
-        command,
-        write: None,
-        program,
-        arguments,
-        environment,
-        extra: ActionExtra {
-            param_files,
-            ..extra
+    context.register_action_with_memo(
+        Registration {
+            outputs,
+            inputs,
+            command,
+            write: None,
+            program,
+            arguments,
+            environment,
+            extra: ActionExtra {
+                param_files,
+                ..extra
+            },
+            shell_pad,
+            executable_file,
+            deferred,
+            exec_group,
+            runfiles_trees,
+            build_info: None,
+            shareable: true,
         },
-        shell_pad,
-        executable_file,
-        deferred,
-        exec_group,
-        runfiles_trees,
-        build_info: None,
-        shareable: true,
-    })
+        input_memo,
+    )
 }
 
 /// The runfiles tree a FilesToRunProvider with runfiles support attaches to

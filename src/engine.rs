@@ -325,6 +325,9 @@ struct ActionPlanning {
     /// hit check, in debug builds, that the identity's content is the one
     /// expanded. In-process only: identities are never persisted.
     input_groups: HashMap<u64, ExpandedTree>,
+    /// The shared inputs of the build's memoized depset walks, by the
+    /// walk's address ([`SharedInputs`]; each entry holds its walk).
+    input_memos: HashMap<usize, Arc<SharedInputs>>,
     /// Actions whose tool runfiles trees are listed in the action instead
     /// (the groups could not stay shared, crate::scheduler::groups_apart):
     /// reported by PERF-GROUPS.
@@ -333,6 +336,9 @@ struct ActionPlanning {
     /// under (Engine::rule_delegations), waiting for that key to be planned
     /// (flush_delegations).
     delegations: Vec<(ConfiguredTargetKey, ConfiguredTargetKey)>,
+    /// The size of Engine::rule_delegations at the last scan for new
+    /// delegations (Engine::flush_delegations).
+    delegations_scanned: usize,
     /// The framework OutputGroupInfo of native rule targets (custom rules
     /// carry theirs in custom_providers), built once per configured target
     /// (the end of an alias chain) so every dependent sees one instance.
@@ -1988,6 +1994,10 @@ pub struct Engine {
     /// [`Self::target`]; its filesystem side effects are recorded once
     /// (lookups only).
     source_targets: HashMap<Label, PathBuf>,
+    /// Rule targets already resolved, by the label's hash: a pure memo of
+    /// [`Self::target`] (loaded packages never change), whose entry serves
+    /// a label equal to its rule's (a hash collision takes the lookup).
+    rule_targets: crate::fast_hash::FxHashMap<u64, Arc<Rule>>,
     /// Source-file targets analyzed: their analysis (the target and its
     /// visibility's package groups) does not depend on the configuration or
     /// the consumer, so it runs once per label (a ConfiguredTargetKey of an
@@ -2255,6 +2265,7 @@ impl Engine {
             console_owners: HashMap::new(),
             declared_inputs: HashMap::new(),
             source_targets: HashMap::new(),
+            rule_targets: Default::default(),
             analyzed_sources: HashSet::new(),
             loaded_functions: Arc::default(),
             generated: BTreeMap::new(),
@@ -3323,6 +3334,7 @@ impl Engine {
     fn package_mut(&mut self, package: &PackageId) -> &mut Package {
         self.declared_inputs.clear();
         self.source_targets.clear();
+        self.rule_targets.clear();
         self.analyzed_sources.clear();
         self.packages.get_mut(package).unwrap()
     }
@@ -3333,13 +3345,28 @@ impl Engine {
         }
         // Loaded packages are immutable: a label resolved as a source file
         // stays one (its rule, output and filesystem facts are fixed).
+        let hash = {
+            use std::hash::BuildHasher;
+            crate::fast_hash::FxBuildHasher::default().hash_one(label)
+        };
+        if let Some(rule) = self.rule_targets.get(&hash)
+            && rule.label == *label
+        {
+            return Ok(Target::Rule(rule.clone()));
+        }
         if let Some(path) = self.source_targets.get(label) {
             return Ok(Target::Source(path.clone()));
         }
         let package_id = label.package_id();
         self.load_package(&package_id)?;
         if let Some(rule) = self.packages[&package_id].get(label) {
-            return Ok(Target::Rule(rule.clone()));
+            let rule = rule.clone();
+            if rule.label == *label {
+                self.rule_targets
+                    .entry(hash)
+                    .or_insert_with(|| rule.clone());
+            }
+            return Ok(Target::Rule(rule));
         }
         if let Some((owner, output)) = self.generated.get(label) {
             return Ok(Target::Output(
@@ -12764,6 +12791,7 @@ impl Engine {
                 &owner,
                 &main_ignored,
                 &mut commit,
+                None,
             )?;
         }
         Ok(analyzed.providers)
@@ -13735,6 +13763,7 @@ impl Engine {
             workspace_status,
             input_groups,
             listed_tree_actions,
+            input_memos,
             ..
         } = state;
         let mut snapshot = snapshot;
@@ -13964,18 +13993,50 @@ impl Engine {
                 self.build_info_actions.insert(registered.action.id.clone());
             }
             self.resolve_build_info(commit.workspace_status, &mut registered)?;
-            let own = registered
-                .inputs
-                .iter()
-                .map(|file| {
-                    commit.artifact_index.get(file).cloned().ok_or_else(|| {
-                        format!(
-                            "{}: input has no declared artifact: {}",
-                            rule.label, file.path
-                        )
-                    })
+            // Inputs beginning with a memoized depset walk (the Python
+            // runtime's files of every PyCompile action) reuse its
+            // artifacts, resolved once per build (SharedInputs).
+            let shared_inputs = registered.input_memo.as_ref().and_then(|(start, files)| {
+                SharedInputs::resolve(input_memos, commit.artifact_index, files)
+                    .map(|shared| (*start, shared))
+            });
+            let resolve = |file: &File| {
+                commit.artifact_index.get(file).cloned().ok_or_else(|| {
+                    format!(
+                        "{}: input has no declared artifact: {}",
+                        rule.label, file.path
+                    )
                 })
-                .collect::<Result<Vec<_>, _>>()?;
+            };
+            let own = match &shared_inputs {
+                Some((start, shared)) => {
+                    let end = start + shared.artifacts.len();
+                    let mut own = Vec::with_capacity(registered.inputs.len());
+                    for file in &registered.inputs[..*start] {
+                        own.push(resolve(file)?);
+                    }
+                    own.extend(shared.artifacts.iter().cloned());
+                    for file in &registered.inputs[end..] {
+                        own.push(resolve(file)?);
+                    }
+                    debug_assert!(
+                        own.iter()
+                            .zip(&registered.inputs)
+                            .all(|(artifact, file)| commit
+                                .artifact_index
+                                .get(file)
+                                .is_some_and(|indexed| Arc::ptr_eq(&indexed.0, &artifact.0))),
+                        "internal error: the shared inputs of {} resolve differently",
+                        registered.action.id
+                    );
+                    own
+                }
+                None => registered
+                    .inputs
+                    .iter()
+                    .map(resolve)
+                    .collect::<Result<Vec<_>, _>>()?,
+            };
             // The action's exec group decides its execution platform and
             // exec properties (RuleContext.getActionOwner(execGroup)).
             let execution = action_execution
@@ -13999,6 +14060,9 @@ impl Engine {
                 &owner,
                 &main_ignored,
                 &mut commit,
+                shared_inputs
+                    .as_ref()
+                    .map(|(start, shared)| (*start, &**shared)),
             )?;
         }
         let defaults = analyzed
@@ -14041,6 +14105,7 @@ impl Engine {
         owner: &str,
         main_ignored: &IgnoredSubdirectories,
         commit: &mut ActionCommit<'_>,
+        shared: Option<(usize, &SharedInputs)>,
     ) -> Result<(), String> {
         if self.semantic_only() {
             return Ok(());
@@ -14089,10 +14154,47 @@ impl Engine {
         // be dropped as a duplicate and the listed action validates
         // exactly when its own part does. Otherwise they are listed in
         // the action, as without sharing.
-        let shared_groups = !groups.is_empty() && {
-            list_artifacts(&mut action, &own);
-            scheduler::groups_apart(&action, &groups) && action::validate_structure(&action).is_ok()
-        };
+        let shared_groups = !groups.is_empty()
+            && {
+                list_artifacts(&mut action, &own);
+                match shared {
+                    // The shared inputs are checked once (SharedInputs): the
+                    // action's own listing here, theirs from the memo. The
+                    // planning below clears the listing.
+                    Some((start, shared)) => {
+                        let end = start + shared.artifacts.len();
+                        let listed = std::mem::take(&mut action.inputs);
+                        action.inputs = listed[..start]
+                            .iter()
+                            .chain(&listed[end..])
+                            .cloned()
+                            .collect();
+                        let apart =
+                            scheduler::groups_apart(&action, &groups) && shared.apart_from(&groups);
+                        let valid = apart && shared.validate(&action);
+                        action.inputs = listed;
+                        debug_assert!(
+                            !apart || scheduler::groups_apart(&action, &groups),
+                            "internal error: the shared-input group check of {} differs from the full one",
+                            action.id
+                        );
+                        if valid {
+                            debug_assert!(
+                                action::validate_structure(&action).is_ok(),
+                                "internal error: the shared-input validation of {} differs from the full one",
+                                action.id
+                            );
+                            true
+                        } else {
+                            apart && action::validate_structure(&action).is_ok()
+                        }
+                    }
+                    None => {
+                        scheduler::groups_apart(&action, &groups)
+                            && action::validate_structure(&action).is_ok()
+                    }
+                }
+            };
         if shared_groups {
             let id = action.id.clone();
             let (mut planned, sources) = plan_action_sources(
@@ -14102,6 +14204,7 @@ impl Engine {
                 commit.client_environment,
                 true,
                 groups.clone(),
+                shared,
             )?;
             commit.source_inputs.insert(id, sources);
             planned.groups = groups;
@@ -14148,6 +14251,7 @@ impl Engine {
             commit.client_environment,
             false,
             Vec::new(),
+            shared,
         )?;
         commit.source_inputs.insert(id, sources);
         // A deferred command line recomputes the parameter files;
@@ -14664,6 +14768,7 @@ impl Engine {
                     &key.label.to_string(),
                     &main_ignored,
                     &mut commit,
+                    None,
                 )?;
             }
             let artifacts = outputs
@@ -14747,6 +14852,7 @@ impl Engine {
                         &key.label.to_string(),
                         &main_ignored,
                         &mut commit,
+                        None,
                     )?;
                 }
                 let artifact = Artifact::new(
@@ -14809,6 +14915,7 @@ impl Engine {
                     &key.label.to_string(),
                     &main_ignored,
                     &mut commit,
+                    None,
                 )?;
             }
             let artifact = Artifact::new(
@@ -15120,12 +15227,19 @@ impl Engine {
     /// since the last call (also between early flushes, Self::plan_pending)
     /// join the pending ones first.
     fn flush_delegations(&self, state: &mut ActionPlanning) {
-        for (requested, owner) in &self.rule_delegations {
-            if !state.dry.contains_key(requested)
-                && !state.delegations.iter().any(|(seen, _)| seen == requested)
-            {
-                state.delegations.push((requested.clone(), owner.clone()));
+        // After a scan every delegation is planned (in `dry`) or pending,
+        // and stays so (`dry` only grows; a pending one moves to it): only
+        // a new delegation (the map grew) needs another scan. A delegation
+        // re-recorded for a requested key is skipped by the scan either way.
+        if state.delegations_scanned != self.rule_delegations.len() {
+            for (requested, owner) in &self.rule_delegations {
+                if !state.dry.contains_key(requested)
+                    && !state.delegations.iter().any(|(seen, _)| seen == requested)
+                {
+                    state.delegations.push((requested.clone(), owner.clone()));
+                }
             }
+            state.delegations_scanned = self.rule_delegations.len();
         }
         flush_delegations(
             &mut state.delegations,
@@ -15903,6 +16017,18 @@ impl Engine {
         if crate::plan_timings::enabled() {
             // After the top-level aspects: their actions hold groups too.
             report_input_groups(&state.nodes, state.listed_tree_actions);
+            // The memoized depset walks (process-wide) and the shared
+            // inputs this build resolved from them.
+            let (walks, files) = crate::starlark_types::flat_memo_stats();
+            let shared: usize = state
+                .input_memos
+                .values()
+                .map(|shared| shared.artifacts.len())
+                .sum();
+            crate::snapshot::diag::line_fmt(format_args!(
+                "PERF-MEMO walks={walks} walk_files={files} shared_inputs={} shared_artifacts={shared}",
+                state.input_memos.len()
+            ));
         }
         crate::perf_mark("plan.phase2_actions_done");
         if self.cquery_capture.is_some() {
@@ -15971,6 +16097,8 @@ impl Engine {
             views,
             input_groups,
             listed_tree_actions: _,
+            input_memos: _,
+            delegations_scanned: _,
         } = state;
         // The top-level lookups below: a workspace status File no target
         // registered (only possible under --nobuild, which plans no status
@@ -16203,7 +16331,7 @@ impl Engine {
                 }
             }
         }
-        let mut seen: std::collections::HashSet<(usize, File)> = requested
+        let mut seen: crate::fast_hash::FxHashSet<(usize, File)> = requested
             .iter()
             .map(|(key, artifact)| (owners.index(key.clone()), artifact.file()))
             .collect();
@@ -16656,11 +16784,21 @@ impl Engine {
         // ActionExecutionFunction.createSourceErrorCodeAndMessage,
         // skyframe/ActionExecutionFunction.java:1543-1583).
         let missing_sources = self.missing_sources.clone();
+        // Looked up for every source input of every action: hashed, with
+        // `Path` equality (crate::path_key).
+        let missing_lookup: HashMap<
+            crate::path_key::PathKey<'_>,
+            &Label,
+            crate::path_key::FastState,
+        > = missing_sources
+            .iter()
+            .map(|(path, label)| (crate::path_key::PathKey(path), label))
+            .collect();
         let missing = |real: &Path| {
-            missing_sources
-                .get(real)
+            missing_lookup
+                .get(&crate::path_key::PathKey(real))
                 .filter(|_| crate::observed_fs::symlink_metadata(real).is_err())
-                .map(crate::rule_declarations::canonical_form)
+                .map(|label| crate::rule_declarations::canonical_form(label))
         };
         // Source directories (source artifacts naming a directory) are
         // tracked by content like Bazel 9.3's default
@@ -16673,13 +16811,20 @@ impl Engine {
         // (crate::source_directories), reported like a missing input file
         // (docs/SOURCE_DIRECTORIES.md).
         let source_directories = self.source_directories.clone();
-        let is_directory =
-            |real: &Path| source_directories.contains_key(real) && crate::observed_fs::is_dir(real);
+        let directory_lookup: crate::path_key::PathSet<'_> = source_directories
+            .keys()
+            .map(|path| crate::path_key::PathKey(path))
+            .collect();
+        let is_directory = |real: &Path| {
+            directory_lookup.contains(&crate::path_key::PathKey(real))
+                && crate::observed_fs::is_dir(real)
+        };
         // PA-1: a tool runfiles tree's shared group holding a source
         // directory is listed in the node (exactly what planning lists
         // without sharing), so its destination is marked like an own input.
         let mut directory_groups: HashMap<*const scheduler::InputGroup, bool> = HashMap::new();
-        for node in &mut nodes {
+        // Without source directories nothing is marked.
+        for node in nodes.iter_mut().filter(|_| !directory_lookup.is_empty()) {
             let holds_directory = node.groups.iter().any(|group| {
                 *directory_groups
                     .entry(Arc::as_ptr(group))
@@ -16821,24 +16966,24 @@ impl Engine {
         // tree (RunfilesSupport: the hidden group holds the tree artifact,
         // whose SymlinkTreeAction has them as inputs), so a source
         // directory among them fails that action, not the target.
+        // By owner index (one per key, KeyTable).
         let hidden_owners: BTreeSet<usize> = hidden.iter().map(|(owner, _)| *owner).collect();
-        let tree_runfiles: BTreeSet<&ConfiguredTargetKey> = hidden_owners
-            .into_iter()
-            .map(|owner| &owners.keys[owner])
-            .filter(|key| {
-                let actual = forwarded.get(*key).unwrap_or(&key.label);
-                let key = self.configurations.top_key(actual.clone());
-                runfiles_nodes.contains_key(self.rule_delegations.get(&key).unwrap_or(&key))
-            })
-            .collect();
+        let mut tree_runfiles = vec![false; owners.keys.len()];
+        for owner in hidden_owners {
+            let key = &owners.keys[owner];
+            let actual = forwarded.get(key).unwrap_or(&key.label);
+            let key = self.configurations.top_key(actual.clone());
+            tree_runfiles[owner] =
+                runfiles_nodes.contains_key(self.rule_delegations.get(&key).unwrap_or(&key));
+        }
         let mut by_target: Vec<(Label, Vec<InputFailure>)> = Vec::new();
         let targets = requested
             .iter()
-            .map(|(key, artifact)| ((key, artifact), false))
+            .map(|(key, artifact)| ((key, artifact), None))
             .chain(
                 hidden
                     .iter()
-                    .map(|(owner, artifact)| ((&owners.keys[*owner], artifact), true)),
+                    .map(|(owner, artifact)| ((&owners.keys[*owner], artifact), Some(*owner))),
             );
         for ((key, artifact), runfile) in targets {
             if artifact.producer.is_some() {
@@ -16846,7 +16991,7 @@ impl Engine {
             }
             let failure = match missing(&artifact.real) {
                 Some(missing_label) => InputFailure::Missing(missing_label),
-                None if runfile && tree_runfiles.contains(key) => continue,
+                None if runfile.is_some_and(|owner| tree_runfiles[owner]) => continue,
                 None => match traversal_error(&artifact.real) {
                     Some(message) => InputFailure::InError(message),
                     None => continue,
@@ -16883,7 +17028,22 @@ impl Engine {
         // The actions whose inputs fail (--keep_going: they fail, and
         // what depends on them is not built).
         let mut missing_nodes: Vec<String> = Vec::new();
+        // Only a path that names a missing source or a source directory can
+        // fail: a node none of whose source paths does is skipped before
+        // its paths are listed (deduplicated) for the reports.
+        let may_fail = |real: &Path| {
+            missing_lookup.contains_key(&crate::path_key::PathKey(real))
+                || directory_lookup.contains(&crate::path_key::PathKey(real))
+        };
+        let none_may_fail = missing_lookup.is_empty() && directory_lookup.is_empty();
         for node in &nodes {
+            if none_may_fail
+                || source_inputs
+                    .get(&node.action.id)
+                    .is_none_or(|sources| !sources.any_listed(node, &flagged_groups, &may_fail))
+            {
+                continue;
+            }
             // SourceManifestAction has no inputs (SourceManifestAction.java:
             // 168): its source directories are never traversed.
             let paths_only = matches!(
@@ -17735,6 +17895,29 @@ impl SourceInputs {
         }
     }
 
+    /// Whether `test` holds for a path [`sources_of`] lists for `planned`
+    /// (its own source paths, and its groups' when one of them is
+    /// `flagged`), duplicates included.
+    fn any_listed(
+        &self,
+        planned: &PlannedAction,
+        flagged: &HashSet<*const scheduler::InputGroup>,
+        test: &dyn Fn(&Path) -> bool,
+    ) -> bool {
+        let own = match &self.own {
+            Some(own) => own.iter().any(|path| test(path)),
+            None => planned.action.inputs.iter().any(|(real, _)| test(real)),
+        };
+        own || (self
+            .groups
+            .iter()
+            .any(|group| flagged.contains(&Arc::as_ptr(group)))
+            && self
+                .groups
+                .iter()
+                .any(|group| group.sources.iter().any(|path| test(path))))
+    }
+
     /// Every source path of the action's listed inputs, deduplicated in
     /// order: [`source_paths`] over the own inputs followed by the groups'.
     fn listed<'a>(&'a self, planned: &'a PlannedAction) -> Vec<&'a Path> {
@@ -18102,6 +18285,7 @@ impl Engine {
                 &no_client_environment,
                 false,
                 Vec::new(),
+                None,
             )?;
             planning.source_inputs.insert(id.clone(), sources);
             planning.nodes.push(planned);
@@ -18135,6 +18319,7 @@ impl Engine {
                     &no_client_environment,
                     false,
                     Vec::new(),
+                    None,
                 )?;
                 planning.source_inputs.insert(tree_id.clone(), sources);
                 planning.nodes.push(planned);
@@ -18534,14 +18719,22 @@ fn plan_action(
     main_ignored: &IgnoredSubdirectories,
     client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
 ) -> Result<PlannedAction, String> {
-    plan_listed_action(action, &inputs, main_ignored, client_environment, false)
-        .map(|(planned, _)| planned)
+    plan_listed_action(
+        action,
+        &inputs,
+        main_ignored,
+        client_environment,
+        false,
+        None,
+    )
+    .map(|(planned, _)| planned)
 }
 
 /// [`plan_action`] with the action's [`SourceInputs`] (its `groups`
 /// shared): [`SourceInputs::planned`] of [`source_paths`], derived without
 /// listing or comparing the paths when planning dropped no source input
-/// (then the planned action lists exactly the sources, in order, so both
+/// but later occurrences at their first one's real path (then the planned
+/// action lists the sources' real paths in their order, so both
 /// deduplicate to the same paths). `listed`: `action` already lists
 /// `inputs` ([`list_artifacts`]) and passed [`action::validate_structure`]
 /// so (the shared-group check of [`Engine::commit_action`]); resolving the
@@ -18553,9 +18746,16 @@ fn plan_action_sources(
     client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
     listed: bool,
     groups: Vec<Arc<scheduler::InputGroup>>,
+    shared: Option<(usize, &SharedInputs)>,
 ) -> Result<(PlannedAction, SourceInputs), String> {
-    let (planned, dropped_source) =
-        plan_listed_action(action, inputs, main_ignored, client_environment, listed)?;
+    let (planned, dropped_source) = plan_listed_action(
+        action,
+        inputs,
+        main_ignored,
+        client_environment,
+        listed,
+        shared,
+    )?;
     let sources = if dropped_source {
         SourceInputs::planned(source_paths(inputs), &planned, groups)
     } else {
@@ -18571,17 +18771,259 @@ fn plan_action_sources(
     Ok((planned, sources))
 }
 
+/// Per input of an action: the first occurrence of its execution path
+/// (`Kept`), a later one of a source at the same real path as the kept one
+/// (`SameReal`: dropping it changes no real-path list deduplicated in
+/// order, [`source_paths`]), or any other later one (`Other`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Occurrence {
+    Kept,
+    SameReal,
+    Other,
+}
+
+/// What identifies an input at an execution path ([`plan_listed_action`]):
+/// (directory, producing action and index, owner of a source).
+type InputIdentity<'a> = (bool, Option<(&'a str, usize)>, &'a str);
+
+fn input_identity(artifact: &Artifact) -> InputIdentity<'_> {
+    (
+        artifact.directory,
+        artifact
+            .producer
+            .as_ref()
+            .map(|(id, index)| (id.as_str(), *index)),
+        if artifact.producer.is_some() {
+            ""
+        } else {
+            artifact.owner.as_str()
+        },
+    )
+}
+
+/// The occurrence of a later input at the execution path of the kept
+/// `known` (its identity and real path); `None`: another artifact.
+fn later_occurrence(known: (InputIdentity<'_>, &Path), artifact: &Artifact) -> Option<Occurrence> {
+    if known.0 != input_identity(artifact) {
+        return None;
+    }
+    // Bytes: equal bytes are equal paths (a conservative test, and no
+    // component parsing per input).
+    Some(if known.1.as_os_str() == artifact.real.as_os_str() {
+        Occurrence::SameReal
+    } else {
+        Occurrence::Other
+    })
+}
+
+/// The [`Occurrence`] of every input, in order. Inputs at one execution
+/// path must be one artifact without its owner (Artifact.equalsWithoutOwner):
+/// the first different one fails.
+fn input_occurrences(inputs: &[Artifact]) -> Result<Vec<Occurrence>, String> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut occurrences = Vec::with_capacity(inputs.len());
+    let mut seen: crate::fast_hash::FxHashMap<&[u8], (InputIdentity<'_>, &Path)> =
+        crate::fast_hash::FxHashMap::with_capacity_and_hasher(inputs.len(), Default::default());
+    for artifact in inputs {
+        match seen.entry(artifact.exec.as_os_str().as_bytes()) {
+            std::collections::hash_map::Entry::Occupied(previous) => {
+                let occurrence = later_occurrence(*previous.get(), artifact).ok_or_else(|| {
+                    format!(
+                        "different artifacts map to the same execution path: {}",
+                        artifact.exec.display()
+                    )
+                })?;
+                occurrences.push(occurrence);
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert((input_identity(artifact), artifact.real.as_path()));
+                occurrences.push(Occurrence::Kept);
+            }
+        }
+    }
+    Ok(occurrences)
+}
+
+/// FxHash of a path's bytes ([`SharedInputs::first`]).
+fn path_hash(bytes: &[u8]) -> u64 {
+    use std::hash::BuildHasher;
+    crate::fast_hash::FxBuildHasher::default().hash_one(bytes)
+}
+
+/// The inputs many actions share, resolved once per build
+/// (crate::input_segment): the artifacts of a memoized depset walk's files
+/// ([`crate::starlark_types::FlatFiles`]), the namespace of their execution
+/// paths and their own [`Occurrence`]s, so the commit of each action that
+/// lists them checks only its own inputs and their relation to these.
+struct SharedInputs {
+    /// Keeps the walk (and so its address, the memo's key) alive.
+    _files: Arc<crate::starlark_types::FlatFiles>,
+    artifacts: Vec<Artifact>,
+    namespace: action::InputNamespace,
+    /// The run's own occurrences; `None` when two of its artifacts share an
+    /// execution path (the action's planning reports it).
+    occurrences: Option<Vec<Occurrence>>,
+    /// The index of each execution path's first occurrence in the run, by
+    /// the path's hash ([`SharedInputs::first`]).
+    first: crate::fast_hash::FxHashMap<u64, u32>,
+    /// Whether no shared execution path is, contains or lies below a
+    /// group root ([`scheduler::groups_apart`]), by root.
+    apart: std::sync::Mutex<HashMap<PathBuf, bool>>,
+}
+
+impl SharedInputs {
+    /// The shared inputs of `files` in `memo` (by the walk's address),
+    /// resolved through `artifact_index` on first use; `None` when one of
+    /// them has no artifact (the action's own resolution reports it).
+    fn resolve(
+        memo: &mut HashMap<usize, Arc<SharedInputs>>,
+        artifact_index: &BTreeMap<File, Artifact>,
+        files: &Arc<crate::starlark_types::FlatFiles>,
+    ) -> Option<Arc<SharedInputs>> {
+        use std::os::unix::ffi::OsStrExt;
+        let address = Arc::as_ptr(files) as usize;
+        if let Some(shared) = memo.get(&address) {
+            return Some(Arc::clone(shared));
+        }
+        let artifacts = files
+            .files()
+            .iter()
+            .map(|file| artifact_index.get(file).cloned())
+            .collect::<Option<Vec<_>>>()?;
+        let namespace = action::InputNamespace::of(artifacts.len(), &|index| {
+            artifacts[index].exec.as_os_str().as_bytes()
+        });
+        let mut occurrences = input_occurrences(&artifacts).ok();
+        let mut first = crate::fast_hash::FxHashMap::default();
+        for (index, artifact) in artifacts.iter().enumerate() {
+            let exec = artifact.exec.as_os_str().as_bytes();
+            let known = *first.entry(path_hash(exec)).or_insert(index as u32);
+            // Two paths of one hash: the run's occurrences are not reused.
+            if artifacts[known as usize].exec.as_os_str().as_bytes() != exec
+                || u32::try_from(index).is_err()
+            {
+                occurrences = None;
+            }
+        }
+        let shared = Arc::new(SharedInputs {
+            _files: Arc::clone(files),
+            artifacts,
+            namespace,
+            occurrences,
+            first,
+            apart: Default::default(),
+        });
+        memo.insert(address, Arc::clone(&shared));
+        Some(shared)
+    }
+
+    /// The index of the run's first input at execution path `exec`.
+    fn first(&self, exec: &[u8]) -> Option<usize> {
+        use std::os::unix::ffi::OsStrExt;
+        let index = *self.first.get(&path_hash(exec))? as usize;
+        (self.artifacts[index].exec.as_os_str().as_bytes() == exec).then_some(index)
+    }
+
+    /// Their namespace with their execution paths
+    /// ([`action::validate_structure_with`]).
+    fn validate(&self, action: &Action) -> bool {
+        use std::os::unix::ffi::OsStrExt;
+        let path = |index: usize| self.artifacts[index].exec.as_os_str().as_bytes();
+        action::validate_structure_with(
+            action,
+            &action::SharedPaths {
+                namespace: &self.namespace,
+                path: &path,
+            },
+        )
+    }
+
+    /// The shared inputs' part of [`scheduler::groups_apart`]: none of
+    /// their execution paths is, contains or lies below a root of `groups`.
+    fn apart_from(&self, groups: &[Arc<scheduler::InputGroup>]) -> bool {
+        let mut apart = self.apart.lock().unwrap_or_else(|e| e.into_inner());
+        groups.iter().all(|group| {
+            *apart.entry(group.root.clone()).or_insert_with(|| {
+                !self.artifacts.iter().any(|artifact| {
+                    artifact.exec.starts_with(&group.root) || group.root.starts_with(&artifact.exec)
+                })
+            })
+        })
+    }
+
+    /// [`input_occurrences`] of `inputs`, whose `start..` lists these
+    /// shared inputs, from their own occurrences: `None` when it cannot
+    /// tell without the full pass (an execution path shared with another
+    /// artifact anywhere, or an earlier own input at a shared path with
+    /// another real path), which then reports the error.
+    fn occurrences(&self, inputs: &[Artifact], start: usize) -> Option<Vec<Occurrence>> {
+        use std::os::unix::ffi::OsStrExt;
+        let run = self.occurrences.as_ref()?;
+        let end = start + self.artifacts.len();
+        let mut occurrences = Vec::with_capacity(inputs.len());
+        let mut before: crate::fast_hash::FxHashMap<&[u8], (InputIdentity<'_>, &Path)> =
+            crate::fast_hash::FxHashMap::default();
+        // Shared paths an earlier own input keeps: the run's first
+        // occurrence of each becomes a later one.
+        let mut overridden = Vec::new();
+        for artifact in &inputs[..start] {
+            let exec = artifact.exec.as_os_str().as_bytes();
+            if let Some(known) = before.get(exec) {
+                occurrences.push(later_occurrence(*known, artifact)?);
+                continue;
+            }
+            before.insert(exec, (input_identity(artifact), artifact.real.as_path()));
+            occurrences.push(Occurrence::Kept);
+            if let Some(index) = self.first(exec) {
+                let shared = &self.artifacts[index];
+                if later_occurrence((input_identity(artifact), artifact.real.as_path()), shared)?
+                    != Occurrence::SameReal
+                {
+                    // The run's later occurrences of the path would compare
+                    // with another real path.
+                    return None;
+                }
+                overridden.push(index);
+            }
+        }
+        occurrences.extend_from_slice(run);
+        for index in overridden {
+            occurrences[start + index] = Occurrence::SameReal;
+        }
+        let mut after: crate::fast_hash::FxHashMap<&[u8], (InputIdentity<'_>, &Path)> =
+            crate::fast_hash::FxHashMap::default();
+        for artifact in &inputs[end..] {
+            let exec = artifact.exec.as_os_str().as_bytes();
+            let known = before.get(exec).copied().or_else(|| {
+                self.first(exec).map(|index| {
+                    let shared = &self.artifacts[index];
+                    (input_identity(shared), shared.real.as_path())
+                })
+            });
+            if let Some(known) = known.or_else(|| after.get(exec).copied()) {
+                occurrences.push(later_occurrence(known, artifact)?);
+                continue;
+            }
+            after.insert(exec, (input_identity(artifact), artifact.real.as_path()));
+            occurrences.push(Occurrence::Kept);
+        }
+        Some(occurrences)
+    }
+}
+
 /// The planning of [`plan_action`] over borrowed inputs, and whether it
-/// dropped a source input (a later occurrence of an execution path, or a
-/// source execroot planting leaves out).
+/// dropped a source input that may change its source paths (a later
+/// occurrence of an execution path at another real path, or a source
+/// execroot planting leaves out). `shared`: `inputs[start..]` begins with
+/// these shared inputs ([`SharedInputs`]), whose checks are reused.
 fn plan_listed_action(
     mut action: Action,
     inputs: &[Artifact],
     main_ignored: &IgnoredSubdirectories,
     client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
     listed: bool,
+    shared: Option<(usize, &SharedInputs)>,
 ) -> Result<(PlannedAction, bool), String> {
-    use std::os::unix::ffi::OsStrExt;
     // The inherited values are resolved here, keyed and fixed for the
     // execution (ActionExecutionFunction.java:221-242 reads them per action).
     if !action.extra.inherited_environment.is_empty() {
@@ -18591,8 +19033,26 @@ fn plan_listed_action(
         );
     }
     if !listed {
-        list_artifacts(&mut action, inputs);
-        action::validate_structure(&action)?;
+        let checked = shared.is_some_and(|(start, shared)| {
+            let end = start + shared.artifacts.len();
+            list_artifacts(&mut action, inputs);
+            action.inputs.drain(start..end);
+            let valid = shared.validate(&action);
+            debug_assert!(
+                !valid || {
+                    let mut full = action.clone();
+                    list_artifacts(&mut full, inputs);
+                    action::validate_structure(&full).is_ok()
+                },
+                "internal error: the shared-input validation of {} differs from the full one",
+                action.id
+            );
+            valid
+        });
+        if !checked {
+            list_artifacts(&mut action, inputs);
+            action::validate_structure(&action)?;
+        }
     }
     action.inputs.clear();
     // Inputs at one execution path must be one artifact without its owner
@@ -18606,46 +19066,29 @@ fn plan_listed_action(
     // File was computed from. Lookups only: dependencies and inputs keep the
     // declaration order. The execution paths passed validate_structure
     // (relative, normal, single separators): equal paths are equal bytes.
-    let mut first = Vec::with_capacity(inputs.len());
-    {
-        type Identity<'a> = (bool, Option<(&'a str, usize)>, &'a str);
-        let mut seen: crate::fast_hash::FxHashMap<&[u8], Identity<'_>> =
-            crate::fast_hash::FxHashMap::with_capacity_and_hasher(inputs.len(), Default::default());
-        for artifact in inputs {
-            let identity = (
-                artifact.directory,
-                artifact
-                    .producer
-                    .as_ref()
-                    .map(|(id, index)| (id.as_str(), *index)),
-                if artifact.producer.is_some() {
-                    ""
-                } else {
-                    artifact.owner.as_str()
-                },
+    let first = match shared.and_then(|(start, shared)| shared.occurrences(inputs, start)) {
+        Some(occurrences) => {
+            debug_assert_eq!(
+                Ok(&occurrences),
+                input_occurrences(inputs).as_ref(),
+                "internal error: the shared-input occurrences of {} differ from the full ones",
+                action.id
             );
-            match seen.entry(artifact.exec.as_os_str().as_bytes()) {
-                std::collections::hash_map::Entry::Occupied(previous) => {
-                    if *previous.get() != identity {
-                        return Err(format!(
-                            "different artifacts map to the same execution path: {}",
-                            artifact.exec.display()
-                        ));
-                    }
-                    first.push(false);
-                }
-                std::collections::hash_map::Entry::Vacant(slot) => {
-                    slot.insert(identity);
-                    first.push(true);
-                }
-            }
+            occurrences
         }
-    }
+        None => input_occurrences(inputs)?,
+    };
     let mut dependencies = Vec::new();
+    // Whether the planned sources may differ from [`source_paths`] of
+    // `inputs`: a source planting leaves out, or a later occurrence of a
+    // source's execution path at another real path. A later occurrence at
+    // the kept one's real path (an interpreter that is both a spawn's
+    // executable and one of its runtime inputs) follows its first
+    // occurrence (same identity, so a source too) in both lists.
     let mut dropped_source = false;
     for (artifact, first) in inputs.iter().zip(first) {
-        if !first {
-            dropped_source |= artifact.producer.is_none();
+        if first != Occurrence::Kept {
+            dropped_source |= first == Occurrence::Other && artifact.producer.is_none();
             continue;
         }
         // Constant-metadata inputs (N63) key without their digest
@@ -19094,6 +19537,7 @@ mod tests {
                 ..Action::default()
             },
             inputs: Vec::new(),
+            input_memo: None,
             outputs,
             deferred: None,
             exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
@@ -20401,6 +20845,138 @@ m = macro(implementation=emit)
         assert_eq!(planned.action.inputs.len(), 1);
         assert_eq!(kept.own.as_ref(), Some(&sources));
         assert_eq!(kept.own(&planned), sources.iter().collect::<Vec<_>>());
+    }
+
+    /// The occurrences of inputs beginning with shared ones (SharedInputs)
+    /// are the full pass's whenever they are reused; otherwise the full
+    /// pass runs (and reports the error).
+    #[test]
+    fn shared_input_occurrences_are_the_full_ones() {
+        let artifact = |real: &str, exec: &str, owner: &str| {
+            Artifact::new(real.into(), exec.into(), None, owner.into(), false, false)
+        };
+        let py = |name: &str| {
+            artifact(
+                &format!("/cache/py/{name}"),
+                &format!("external/py/{name}"),
+                "@@py//:files",
+            )
+        };
+        let run = vec![
+            py("bin/python3"),
+            py("lib/os.py"),
+            py("lib/os.py"),
+            py("lib/re.py"),
+        ];
+        let files: Vec<File> = run.iter().map(|artifact| artifact.file.clone()).collect();
+        let mut index = BTreeMap::new();
+        for artifact in &run {
+            register_artifact(&mut index, &artifact.file, artifact);
+        }
+        let mut memo = HashMap::new();
+        let flat = crate::starlark_types::FlatFiles::of_files(files);
+        let shared = SharedInputs::resolve(&mut memo, &index, &flat).unwrap();
+        let own = artifact("/ws/p/x.py", "p/x.py", "//p:x");
+        let cases: Vec<(Vec<Artifact>, usize)> = vec![
+            // The interpreter before its runtime, the source after.
+            (
+                [vec![py("bin/python3")], run.clone(), vec![own.clone()]].concat(),
+                1,
+            ),
+            // A later own input at a shared path.
+            (
+                [run.clone(), vec![py("lib/re.py"), own.clone()]].concat(),
+                0,
+            ),
+            // An earlier own input at a shared path with another real path.
+            (
+                [
+                    vec![artifact(
+                        "/elsewhere/os.py",
+                        "external/py/lib/os.py",
+                        "@@py//:files",
+                    )],
+                    run.clone(),
+                ]
+                .concat(),
+                1,
+            ),
+            // Another artifact at a shared path.
+            (
+                [
+                    run.clone(),
+                    vec![artifact("/x", "external/py/lib/re.py", "//other:x")],
+                ]
+                .concat(),
+                0,
+            ),
+        ];
+        let mut reused = 0;
+        for (inputs, start) in &cases {
+            let full = input_occurrences(inputs);
+            if let Some(occurrences) = shared.occurrences(inputs, *start) {
+                reused += 1;
+                assert_eq!(Ok(occurrences), full);
+            }
+        }
+        assert_eq!(reused, 2);
+        assert!(input_occurrences(&cases[3].0).is_err());
+        // One resolution per walk.
+        assert!(Arc::ptr_eq(
+            &shared,
+            &SharedInputs::resolve(&mut memo, &index, &flat).unwrap()
+        ));
+    }
+
+    /// A later occurrence of a source's execution path at the kept one's
+    /// real path (a spawn's interpreter, also one of its runtime inputs)
+    /// changes no source path: the sources are derived without listing
+    /// them; at another real path they are compared as before.
+    #[test]
+    fn same_real_duplicates_need_no_source_path_comparison() {
+        let artifact = |real: &str, exec: &str| {
+            Artifact::new(
+                real.into(),
+                exec.into(),
+                None,
+                "@@py//:files".into(),
+                false,
+                false,
+            )
+        };
+        let plan = |inputs: Vec<Artifact>| {
+            let action = Action {
+                id: "//app:x#0".into(),
+                outputs: vec!["bazel-out/bin/app/out".into()],
+                ..Action::default()
+            };
+            let (planned, dropped) = plan_listed_action(
+                action,
+                &inputs,
+                &IgnoredSubdirectories::default(),
+                &std::cell::OnceCell::new(),
+                false,
+                None,
+            )
+            .unwrap();
+            let derived = SourceInputs::planned(source_paths(&inputs), &planned, Vec::new());
+            (dropped, derived.own.is_none(), planned.action.inputs.len())
+        };
+        let python = "/cache/py/bin/python3";
+        let same = vec![
+            artifact(python, "external/py/bin/python3"),
+            artifact("/cache/py/lib/os.py", "external/py/lib/os.py"),
+            artifact(python, "external/py/bin/python3"),
+        ];
+        assert_eq!(plan(same), (false, true, 2));
+        let other = vec![
+            artifact(python, "external/py/bin/python3"),
+            artifact("/elsewhere/python3", "external/py/bin/python3"),
+        ];
+        let (dropped, derived, listed) = plan(other);
+        assert!(dropped);
+        assert!(!derived);
+        assert_eq!(listed, 1);
     }
 
     #[test]

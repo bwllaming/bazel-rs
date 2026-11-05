@@ -3545,6 +3545,237 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
     Ok(())
 }
 
+/// The namespace of a run of input destinations many actions share (the
+/// Python runtime's files in every PyCompile action,
+/// crate::input_segment): summarized once, so [`validate_structure_with`]
+/// checks each such action's own paths against it instead of every shared
+/// path again. It keeps no copy of the paths: hashes and the index of a
+/// path holding each, checked against the run's own paths
+/// ([`SharedPaths`]).
+pub(crate) struct InputNamespace {
+    /// Every destination passed [`validate_relative`], none is a proper
+    /// ancestor of another (equal ones are one input, as in
+    /// [`namespace_may_overlap`]), and no two different destinations (or
+    /// ancestors) share a hash.
+    valid: bool,
+    /// The destinations by hash: the index of the first.
+    paths: crate::fast_hash::FxHashMap<u64, u32>,
+    /// Every proper ancestor of a destination by hash: a destination's
+    /// index and the ancestor's length.
+    ancestors: crate::fast_hash::FxHashMap<u64, (u32, u32)>,
+}
+
+fn path_hash(bytes: &[u8]) -> u64 {
+    use std::hash::BuildHasher;
+    crate::fast_hash::FxBuildHasher::default().hash_one(bytes)
+}
+
+impl InputNamespace {
+    /// The summary of the run's destinations, `path(i)` for `i < count`.
+    pub(crate) fn of<'a>(count: usize, path: &dyn Fn(usize) -> &'a [u8]) -> Self {
+        let mut valid = u32::try_from(count).is_ok();
+        let mut paths = crate::fast_hash::FxHashMap::default();
+        for index in 0..count {
+            let bytes = path(index);
+            valid &= validate_relative(Path::new(std::ffi::OsStr::from_bytes(bytes))).is_ok();
+            let known = *paths.entry(path_hash(bytes)).or_insert(index as u32);
+            valid &= path(known as usize) == bytes;
+        }
+        let mut ancestors = crate::fast_hash::FxHashMap::default();
+        if valid {
+            for &index in paths.values() {
+                let bytes = path(index as usize);
+                for (at, byte) in bytes.iter().enumerate() {
+                    if *byte == b'/' {
+                        let (known, length) = *ancestors
+                            .entry(path_hash(&bytes[..at]))
+                            .or_insert((index, at as u32));
+                        valid &= path(known as usize)[..length as usize] == bytes[..at];
+                    }
+                }
+            }
+        }
+        let namespace = InputNamespace {
+            valid,
+            paths,
+            ancestors,
+        };
+        // No destination is a proper ancestor of another.
+        let valid = namespace.valid
+            && !namespace.ancestors.iter().any(|(hash, &(index, length))| {
+                namespace.paths.get(hash).is_some_and(|&known| {
+                    path(known as usize) == &path(index as usize)[..length as usize]
+                })
+            });
+        InputNamespace { valid, ..namespace }
+    }
+}
+
+/// An [`InputNamespace`] with the run's paths it indexes.
+pub(crate) struct SharedPaths<'a> {
+    pub(crate) namespace: &'a InputNamespace,
+    pub(crate) path: &'a dyn Fn(usize) -> &'a [u8],
+}
+
+impl SharedPaths<'_> {
+    /// Whether `bytes` is one of the run's destinations.
+    fn contains(&self, bytes: &[u8]) -> bool {
+        self.namespace
+            .paths
+            .get(&path_hash(bytes))
+            .is_some_and(|&index| (self.path)(index as usize) == bytes)
+    }
+
+    /// Whether `bytes` is a proper ancestor of one of them.
+    fn contains_ancestor(&self, bytes: &[u8]) -> bool {
+        self.namespace
+            .ancestors
+            .get(&path_hash(bytes))
+            .is_some_and(|&(index, length)| {
+                (self.path)(index as usize).get(..length as usize) == Some(bytes)
+            })
+    }
+}
+
+/// Whether `action` passes [`validate_structure`] once the inputs `shared`
+/// summarizes are listed too: `action.inputs` holds the other inputs, and
+/// `action.extra`'s tree, symlink and source-directory inputs are the whole
+/// action's. `false` when it may not, or when the check is not decided
+/// here (a write, a transform, a Java compilation): the caller lists the
+/// shared inputs and validates the action itself, so every error is
+/// [`validate_structure`]'s. The checks are [`validate_structure`]'s that
+/// apply to a plain spawn, with the shared paths taken from the summary.
+pub(crate) fn validate_structure_with(action: &Action, shared: &SharedPaths<'_>) -> bool {
+    if !shared.namespace.valid
+        || action.extra.java_compile.is_some()
+        || action.write.is_some()
+        || action.extra.transform.is_some()
+    {
+        return false;
+    }
+    if action.executable_file && action.program.is_none() {
+        return false;
+    }
+    if action
+        .extra
+        .client_environment
+        .keys()
+        .any(|name| !action.extra.inherited_environment.contains(name))
+    {
+        return false;
+    }
+    let own: crate::fast_hash::FxHashSet<&[u8]> = action
+        .inputs
+        .iter()
+        .map(|(_, name)| name.as_os_str().as_bytes())
+        .collect();
+    let is_input = |path: &Path| {
+        let bytes = path.as_os_str().as_bytes();
+        own.contains(bytes) || shared.contains(bytes)
+    };
+    if action.extra.tree_inputs.iter().any(|tree| !is_input(tree)) {
+        return false;
+    }
+    if action
+        .extra
+        .source_directories
+        .iter()
+        .any(|directory| !is_input(directory) || action.extra.tree_inputs.contains(directory))
+    {
+        return false;
+    }
+    if action
+        .extra
+        .tree_outputs
+        .iter()
+        .any(|tree| !action.outputs.contains(tree))
+    {
+        return false;
+    }
+    if action
+        .extra
+        .symlink_outputs
+        .iter()
+        .any(|link| !action.outputs.contains(link) || action.extra.tree_outputs.contains(link))
+    {
+        return false;
+    }
+    if action.extra.symlink_inputs.iter().any(|link| {
+        !is_input(link)
+            || action.extra.tree_inputs.contains(link)
+            || action.extra.source_directories.contains(link)
+    }) {
+        return false;
+    }
+    if let Some(program) = &action.program
+        && (program.is_empty() || program.as_bytes().contains(&0) || !action.command.is_empty())
+    {
+        return false;
+    }
+    if action.command.as_bytes().contains(&0)
+        || action
+            .arguments
+            .iter()
+            .any(|argument| argument.as_bytes().contains(&0))
+    {
+        return false;
+    }
+    if action
+        .environment
+        .iter()
+        .chain(&action.extra.execution_info)
+        .any(|(name, value)| {
+            name.is_empty()
+                || name.as_bytes().contains(&b'=')
+                || name.as_bytes().contains(&0)
+                || value.as_bytes().contains(&0)
+        })
+    {
+        return false;
+    }
+    let inputs = action
+        .inputs
+        .iter()
+        .map(|(_, destination)| destination.as_path())
+        .chain(
+            action
+                .embedded_inputs
+                .iter()
+                .map(|(destination, _)| destination.as_path()),
+        );
+    let others = action.outputs.iter().map(PathBuf::as_path).chain(
+        action
+            .extra
+            .param_files
+            .iter()
+            .map(|(path, _)| path.as_path()),
+    );
+    if inputs
+        .clone()
+        .chain(others.clone())
+        .any(|path| validate_relative(path).is_err())
+    {
+        return false;
+    }
+    // namespace_may_overlap over the shared paths and the action's own
+    // ones: an output or parameter file equal to an earlier path, or a
+    // path with a proper ancestor among them.
+    let mut paths: crate::fast_hash::FxHashSet<&[u8]> =
+        inputs.map(|path| path.as_os_str().as_bytes()).collect();
+    for path in others {
+        let bytes = path.as_os_str().as_bytes();
+        if shared.contains(bytes) || !paths.insert(bytes) {
+            return false;
+        }
+    }
+    !paths.iter().any(|path| {
+        shared.contains_ancestor(path)
+            || path.iter().enumerate().any(|(at, byte)| {
+                *byte == b'/' && (paths.contains(&path[..at]) || shared.contains(&path[..at]))
+            })
+    })
+}
+
 /// Runfiles entries: relative, normalized tree paths whose linked
 /// destinations are action inputs.
 fn check_runfiles_entries(action: &Action, entries: &RunfilesEntries) -> Result<(), String> {
@@ -12002,6 +12233,83 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         assert_eq!(
             fs::read_to_string(&result.outputs[0]).unwrap(),
             format!("{}\nhello\n", ino(&store))
+        );
+    }
+
+    /// `validate_structure_with` accepts exactly what `validate_structure`
+    /// accepts once the shared paths are listed, or declines (the caller
+    /// then validates the full listing): never accepts an action the full
+    /// validation rejects.
+    #[test]
+    fn shared_namespace_validation_agrees_with_the_full_one() {
+        let shared: Vec<&str> = vec![
+            "external/py/bin/python3",
+            "external/py/lib/os.py",
+            "external/py/lib/json/__init__.py",
+            "external/py/lib/json/decoder.py",
+        ];
+        let check = |shared: &[&str], own: &[&str], outputs: &[&str], trees: &[&str]| {
+            let path = |index: usize| shared[index].as_bytes();
+            let namespace = InputNamespace::of(shared.len(), &path);
+            let pair = |path: &&str| {
+                let path: SharedPath = PathBuf::from(path).into();
+                (path.clone(), path)
+            };
+            let action = Action {
+                id: "//p:x#0".into(),
+                program: Some("external/py/bin/python3".into()),
+                inputs: own.iter().map(pair).collect(),
+                outputs: outputs.iter().map(PathBuf::from).collect(),
+                extra: ActionExtra {
+                    tree_inputs: trees.iter().map(PathBuf::from).collect(),
+                    ..ActionExtra::default()
+                },
+                ..Action::default()
+            };
+            let with = validate_structure_with(
+                &action,
+                &SharedPaths {
+                    namespace: &namespace,
+                    path: &path,
+                },
+            );
+            let mut full = action.clone();
+            full.inputs.extend(shared.iter().map(pair));
+            let full = validate_structure(&full).is_ok();
+            assert!(!with || full, "accepted what the full validation rejects");
+            (with, full)
+        };
+        let out = ["bazel-out/bin/p/x.pyc"];
+        // A plain spawn: its source, an interpreter listed twice.
+        assert_eq!(
+            check(&shared, &["p/x.py", "external/py/bin/python3"], &out, &[]),
+            (true, true)
+        );
+        // An output at a shared path, below one, above one.
+        for output in [
+            "external/py/lib/os.py",
+            "external/py/lib/os.py/x",
+            "external/py/lib",
+        ] {
+            assert_eq!(check(&shared, &["p/x.py"], &[output], &[]), (false, false));
+        }
+        // An own input above or below a shared one.
+        for own in ["external/py/lib/json", "external/py/lib/os.py/x"] {
+            assert_eq!(check(&shared, &[own], &out, &[]), (false, false));
+        }
+        // A shared run that overlaps itself, or holds an unsafe path.
+        let overlapping = ["external/py/lib", "external/py/lib/os.py"];
+        assert_eq!(check(&overlapping, &["p/x.py"], &out, &[]), (false, false));
+        let unsafe_path = ["external/py/../x"];
+        assert_eq!(check(&unsafe_path, &["p/x.py"], &out, &[]), (false, false));
+        // A tree input among the shared paths, or listed nowhere.
+        assert_eq!(
+            check(&shared, &["p/x.py"], &out, &["external/py/lib/os.py"]),
+            (true, true)
+        );
+        assert_eq!(
+            check(&shared, &["p/x.py"], &out, &["p/tree"]),
+            (false, false)
         );
     }
 }

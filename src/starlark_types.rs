@@ -18,7 +18,7 @@ use starlark::{starlark_module, starlark_simple_value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::hash::Hash;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 // Only upstream derives generate unsafe marker implementations. All values own
 // their data, contain no heap references, and are safe to freeze unchanged.
@@ -201,6 +201,10 @@ mod owned {
         pub depth: usize,
         pub empty: bool,
         pub(super) singleton: Singleton,
+        /// How far the node's walk is memoized ([`memoized_walk`]):
+        /// derived, never serialized (one byte in the node's padding).
+        #[allocative(skip)]
+        pub(super) flat_walks: std::sync::atomic::AtomicU8,
     }
 
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagable)]
@@ -1360,6 +1364,7 @@ impl Depset {
                 order,
                 element_type,
                 depth,
+                flat_walks: std::sync::atomic::AtomicU8::new(0),
             }),
         })
     }
@@ -1405,48 +1410,275 @@ impl Depset {
     // takes no part in its ordering.
     #[allow(clippy::mutable_key_type)]
     pub(crate) fn flatten(&self) -> Vec<&Item> {
-        enum Visit<'a> {
-            Node(&'a DepsetNode),
-            Item(&'a Item),
-        }
-        let mut stack = vec![Visit::Node(&self.node)];
-        let mut seen_nodes = HashSet::new();
-        let mut seen_items = ItemSet::default();
-        let mut result = Vec::new();
-        while let Some(visit) = stack.pop() {
-            match visit {
-                Visit::Item(item) => {
-                    if seen_items.insert(item) {
-                        result.push(item);
-                    }
-                }
-                Visit::Node(node) => {
-                    if !seen_nodes.insert(node as *const DepsetNode) {
-                        continue;
-                    }
-                    let mut next = Vec::with_capacity(node.direct.len() + node.children.len());
-                    match node.order {
-                        Order::Preorder => {
-                            next.extend(node.direct.iter().map(Visit::Item));
-                            next.extend(node.children.iter().map(|child| Visit::Node(child)));
-                        }
-                        Order::Topological => {
-                            next.extend(node.children.iter().rev().map(|child| Visit::Node(child)));
-                            next.extend(node.direct.iter().rev().map(Visit::Item));
-                        }
-                        Order::Default | Order::Postorder => {
-                            next.extend(node.children.iter().map(|child| Visit::Node(child)));
-                            next.extend(node.direct.iter().map(Visit::Item));
-                        }
-                    }
-                    stack.extend(next.into_iter().rev());
-                }
-            }
-        }
+        let mut result = walk(&self.node);
         if self.node.order == Order::Topological {
             result.reverse();
         }
         result
+    }
+
+    /// [`Depset::flatten`] of a depset of Files, and, when the files begin
+    /// with the memoized walk of a large node ([`memoized_walk`]), that
+    /// walk: the first `files.files().len()` files are its files. `Err`
+    /// names a non-File element.
+    ///
+    /// The traversal is NestedSet.toList's. A walk reaches the memoized node
+    /// first, along the first-visited child of each node above it (the
+    /// first child of a default or postorder node, of a preorder node
+    /// without direct elements), with nothing seen yet: its items are all
+    /// new and come first, in the memoized order (its own walk's). The walk
+    /// then goes on exactly as without the memo, but for the deduplication
+    /// against the memoized items (its set) and the nodes below it, which
+    /// it may visit again: their items are all seen, so they add nothing.
+    #[allow(clippy::mutable_key_type)]
+    pub(crate) fn flatten_files_with_memo(
+        &self,
+    ) -> Result<(Vec<File>, Option<Arc<FlatFiles>>), &Item> {
+        let mut memo = None;
+        let mut chain: Vec<&DepsetNode> = Vec::new();
+        if self.node.order != Order::Topological {
+            let mut node: &Arc<DepsetNode> = &self.node;
+            loop {
+                if let Some(files) = memoized_walk(node) {
+                    memo = Some((files, Arc::as_ptr(node)));
+                    break;
+                }
+                let first = match node.order {
+                    Order::Default | Order::Postorder => node.children.first(),
+                    Order::Preorder if node.direct.is_empty() => node.children.first(),
+                    _ => None,
+                };
+                let Some(first) = first else {
+                    break;
+                };
+                chain.push(node);
+                node = first;
+            }
+        }
+        let Some((memo, memoized)) = memo else {
+            return self
+                .flatten()
+                .into_iter()
+                .map(|item| match item {
+                    Item::File(file) => Ok(file.clone()),
+                    _ => Err(item),
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(|files| (files, None));
+        };
+        let mut seen_nodes = HashSet::new();
+        let mut seen_items = ItemSet::default();
+        let mut files: Vec<File> = memo.files().to_vec();
+        // The nodes above the memoized one, expanded as the walk expands
+        // them, without their first entry (the next node down): stacked so
+        // that the deepest level's rest pops first, as after a walk of the
+        // memoized node.
+        let mut stack = Vec::new();
+        seen_nodes.insert(memoized);
+        for node in chain {
+            seen_nodes.insert(node as *const DepsetNode);
+            let mut next = expand(node);
+            next.remove(0);
+            stack.extend(next.into_iter().rev());
+        }
+        while let Some(visit) = stack.pop() {
+            match visit {
+                Visit::Item(item) => {
+                    let Item::File(file) = item else {
+                        return Err(item);
+                    };
+                    if !memo.set.contains(file) && seen_items.insert(item) {
+                        files.push(file.clone());
+                    }
+                }
+                Visit::Node(node) => {
+                    if seen_nodes.insert(node as *const DepsetNode) {
+                        stack.extend(expand(node).into_iter().rev());
+                    }
+                }
+            }
+        }
+        Ok((files, Some(memo)))
+    }
+}
+
+/// One step of NestedSet.toList's walk ([`Depset::flatten`]).
+enum Visit<'a> {
+    Node(&'a DepsetNode),
+    Item(&'a Item),
+}
+
+/// A node's children array as its own order lays it out
+/// ([`Depset::flatten`]): preorder = direct then transitive;
+/// default/postorder = transitive then direct; topological = transitive
+/// reversed then direct reversed.
+fn expand(node: &DepsetNode) -> Vec<Visit<'_>> {
+    let mut next = Vec::with_capacity(node.direct.len() + node.children.len());
+    match node.order {
+        Order::Preorder => {
+            next.extend(node.direct.iter().map(Visit::Item));
+            next.extend(node.children.iter().map(|child| Visit::Node(child)));
+        }
+        Order::Topological => {
+            next.extend(node.children.iter().rev().map(|child| Visit::Node(child)));
+            next.extend(node.direct.iter().rev().map(Visit::Item));
+        }
+        Order::Default | Order::Postorder => {
+            next.extend(node.children.iter().map(|child| Visit::Node(child)));
+            next.extend(node.direct.iter().map(Visit::Item));
+        }
+    }
+    next
+}
+
+/// The walk of one node alone, unreversed (how a walk of a node above it
+/// visits it when nothing is seen yet).
+#[allow(clippy::mutable_key_type)]
+fn walk(node: &DepsetNode) -> Vec<&Item> {
+    let mut stack = vec![Visit::Node(node)];
+    let mut seen_nodes = HashSet::new();
+    let mut seen_items = ItemSet::default();
+    let mut result = Vec::new();
+    while let Some(visit) = stack.pop() {
+        match visit {
+            Visit::Item(item) => {
+                if seen_items.insert(item) {
+                    result.push(item);
+                }
+            }
+            Visit::Node(node) => {
+                if seen_nodes.insert(node as *const DepsetNode) {
+                    stack.extend(expand(node).into_iter().rev());
+                }
+            }
+        }
+    }
+    result
+}
+
+/// The smallest walk a node memoizes ([`memoized_walk`]).
+const FLAT_MEMO_MIN_ITEMS: usize = 128;
+
+/// [`DepsetNode::flat_walks`]: never walked for its files, walked once,
+/// memoized (in [`flat_memos`]), or not memoizable.
+const FLAT_UNWALKED: u8 = 0;
+const FLAT_WALKED: u8 = 1;
+const FLAT_MEMOIZED: u8 = 2;
+const FLAT_NEVER: u8 = 3;
+
+/// The memoized walks by node address, with a weak reference that keeps
+/// the address the node's for as long as the entry lives.
+type FlatMemos = crate::fast_hash::FxHashMap<usize, (std::sync::Weak<DepsetNode>, Arc<FlatFiles>)>;
+
+fn flat_memos() -> &'static std::sync::Mutex<FlatMemos> {
+    static MEMOS: OnceLock<std::sync::Mutex<FlatMemos>> = OnceLock::new();
+    MEMOS.get_or_init(Default::default)
+}
+
+/// The memoized walks held now and their files (`PERF-MEMO`).
+pub(crate) fn flat_memo_stats() -> (usize, usize) {
+    let memos = flat_memos().lock().unwrap_or_else(|e| e.into_inner());
+    (
+        memos.len(),
+        memos.values().map(|(_, files)| files.files.len()).sum(),
+    )
+}
+
+/// The memoized walk ([`walk`]) of a node of File elements with at least
+/// [`FLAT_MEMO_MIN_ITEMS`] items, from its second request on (the first
+/// one walks it as before), so the walks of the depsets built over it
+/// (every PyCompile action's inputs over the Python runtime's files) start
+/// from it instead of hashing its items again
+/// ([`Depset::flatten_files_with_memo`]).
+fn memoized_walk(node: &Arc<DepsetNode>) -> Option<Arc<FlatFiles>> {
+    use std::sync::atomic::Ordering;
+    let lock = || flat_memos().lock().unwrap_or_else(|e| e.into_inner());
+    match node.flat_walks.load(Ordering::Relaxed) {
+        FLAT_MEMOIZED => {
+            let memos = lock();
+            let (weak, files) = memos.get(&(Arc::as_ptr(node) as usize))?;
+            (weak.as_ptr() == Arc::as_ptr(node)).then(|| Arc::clone(files))
+        }
+        FLAT_UNWALKED => {
+            if node.element_type == Some(ItemType::File) && !node.empty {
+                node.flat_walks.store(FLAT_WALKED, Ordering::Relaxed);
+            } else {
+                node.flat_walks.store(FLAT_NEVER, Ordering::Relaxed);
+            }
+            None
+        }
+        FLAT_WALKED => {
+            let items = walk(node);
+            let files = (items.len() >= FLAT_MEMO_MIN_ITEMS)
+                .then(|| {
+                    let mut set = crate::fast_hash::set_with_capacity(items.len());
+                    let mut files = Vec::with_capacity(items.len());
+                    for item in &items {
+                        let Item::File(file) = item else {
+                            return None;
+                        };
+                        set.insert(file.clone());
+                        files.push(file.clone());
+                    }
+                    Some(Arc::new(FlatFiles {
+                        files,
+                        set,
+                        namespace: OnceLock::new(),
+                    }))
+                })
+                .flatten();
+            let Some(files) = files else {
+                node.flat_walks.store(FLAT_NEVER, Ordering::Relaxed);
+                return None;
+            };
+            let mut memos = lock();
+            // Forget the walks of dropped nodes before the table grows.
+            if memos.len() >= 256 && memos.len().is_power_of_two() {
+                memos.retain(|_, (weak, _)| weak.strong_count() > 0);
+            }
+            memos.insert(
+                Arc::as_ptr(node) as usize,
+                (Arc::downgrade(node), Arc::clone(&files)),
+            );
+            node.flat_walks.store(FLAT_MEMOIZED, Ordering::Relaxed);
+            Some(files)
+        }
+        _ => None,
+    }
+}
+
+/// A memoized walk of a large node of File elements ([`memoized_walk`]): its
+/// items in walk order and their set. Shared by the actions whose inputs
+/// begin with it (crate::input_segment), which memoize their per-input
+/// checks of these files here too.
+pub(crate) struct FlatFiles {
+    files: Vec<File>,
+    set: crate::fast_hash::FxHashSet<File>,
+    /// The namespace of the files' execution paths
+    /// (crate::action::InputNamespace), computed on first use.
+    pub(crate) namespace: OnceLock<crate::action::InputNamespace>,
+}
+
+impl fmt::Debug for FlatFiles {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "FlatFiles({} files)", self.files.len())
+    }
+}
+
+impl FlatFiles {
+    /// The files, in walk order.
+    pub(crate) fn files(&self) -> &[File] {
+        &self.files
+    }
+
+    /// A walk of `files` (tests).
+    #[cfg(test)]
+    pub(crate) fn of_files(files: Vec<File>) -> Arc<Self> {
+        Arc::new(FlatFiles {
+            set: files.iter().cloned().collect(),
+            files,
+            namespace: OnceLock::new(),
+        })
     }
 }
 
@@ -1492,6 +1724,7 @@ impl starlark::pagable::StarlarkDeserialize for DepsetNode {
             element_type: Option::<ItemType>::starlark_deserialize(ctx)?,
             depth: usize::starlark_deserialize(ctx)?,
             empty: bool::starlark_deserialize(ctx)?,
+            flat_walks: std::sync::atomic::AtomicU8::new(0),
         })
     }
 }
@@ -1631,7 +1864,11 @@ impl Hash for PlainItem<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         std::mem::discriminant(self.0).hash(state);
         match self.0 {
-            Item::File(file) => file.hash(state),
+            // The execution path alone: equal Files have equal paths, and
+            // Files at one path nearly always are equal (hashing the short
+            // path and the owner too made a depset walk hash ~2.5x the
+            // bytes).
+            Item::File(file) => file.path.hash(state),
             Item::String(string) => string.hash(state),
             Item::Label(label) => label.hash(state),
             Item::Int(int) => int.hash(state),
@@ -1660,6 +1897,27 @@ pub fn alloc_depset<'v>(heap: Heap<'v>, files: Vec<File>) -> Value<'v> {
 }
 
 pub fn unpack_depset(value: Value<'_>) -> anyhow::Result<Vec<File>> {
+    unpack_depset_with_memo(value).map(|(files, _)| files)
+}
+
+/// [`file_list`] and, for a depset whose files begin with a memoized walk
+/// ([`Depset::flatten_files_with_memo`]), that walk: the first
+/// `memo.files().len()` files are its files.
+pub(crate) fn file_list_with_memo(
+    value: Value<'_>,
+) -> anyhow::Result<(Vec<File>, Option<Arc<FlatFiles>>)> {
+    if Depset::from_value(value).is_some() {
+        unpack_depset_with_memo(value)
+    } else {
+        Ok((file_list(value)?, None))
+    }
+}
+
+/// [`unpack_depset`] with the memoized walk its files begin with
+/// ([`file_list_with_memo`]).
+pub(crate) fn unpack_depset_with_memo(
+    value: Value<'_>,
+) -> anyhow::Result<(Vec<File>, Option<Arc<FlatFiles>>)> {
     let depset = Depset::from_value(value)
         .ok_or_else(|| anyhow!("expected depset of File, got {}", value.get_type()))?;
     if depset
@@ -1672,17 +1930,12 @@ pub fn unpack_depset(value: Value<'_>) -> anyhow::Result<Vec<File>> {
             depset.node.element_type.unwrap().name()
         );
     }
-    depset
-        .flatten()
-        .into_iter()
-        .map(|item| match item {
-            Item::File(file) => Ok(file.clone()),
-            _ => bail!(
-                "expected depset of File, got {} element",
-                item.kind().name()
-            ),
-        })
-        .collect()
+    depset.flatten_files_with_memo().map_err(|item| {
+        anyhow!(
+            "expected depset of File, got {} element",
+            item.kind().name()
+        )
+    })
 }
 
 /// BuiltinProvider.repr (packages/BuiltinProvider.java:94-97).
@@ -3917,5 +4170,90 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
                 .unwrap();
             assert_eq!(value.to_repr(), "True");
         });
+    }
+
+    /// The memoized walks (`flatten_files_with_memo`) list exactly what
+    /// `flatten` lists, on every request (the memo starts with the second),
+    /// across orders, chains of first children, nodes the memoized one
+    /// shares with later children, and direct elements it already holds.
+    #[test]
+    fn memoized_walks_list_what_flatten_lists() {
+        let files = |prefix: &str, count: usize| -> Vec<Item> {
+            (0..count)
+                .map(|index| Item::File(file(&format!("{prefix}/{index}"))))
+                .collect()
+        };
+        let node = |direct: Vec<Item>, children: Vec<&Depset>, order: Order| {
+            Depset::compose(
+                direct,
+                children
+                    .into_iter()
+                    .map(|child| child.node.clone())
+                    .collect(),
+                order,
+                Some(ItemType::File),
+            )
+            .unwrap()
+        };
+        let shared_leaf = node(files("leaf", 40), vec![], Order::Default);
+        let runtime = node(
+            files("runtime", 150),
+            vec![
+                &shared_leaf,
+                &node(files("lib", 30), vec![], Order::Default),
+            ],
+            Order::Default,
+        );
+        let small = node(files("small", 3), vec![], Order::Default);
+        let topological = node(files("topo", 200), vec![&small], Order::Topological);
+        let mut cases = Vec::new();
+        for order in [Order::Default, Order::Postorder, Order::Preorder] {
+            // A spawn's inputs: its source over the runtime.
+            cases.push(node(files("src", 1), vec![&runtime], order));
+            // The runtime again, a later child sharing its leaf, and direct
+            // elements it holds.
+            let mut direct = files("src", 2);
+            direct.push(Item::File(file("runtime/7")));
+            direct.push(Item::File(file("leaf/3")));
+            cases.push(node(direct, vec![&runtime, &shared_leaf, &small], order));
+            // A chain: the runtime below a node without direct elements.
+            let middle = node(vec![], vec![&runtime, &small], order);
+            cases.push(node(files("top", 2), vec![&middle], order));
+            // A topological node is a child of a default one only.
+            if order == Order::Default {
+                cases.push(node(vec![], vec![&topological, &small], order));
+            }
+        }
+        cases.push(runtime.clone());
+        cases.push(node(files("src", 1), vec![&runtime], Order::Topological));
+        for round in 0..3 {
+            for (index, depset) in cases.iter().enumerate() {
+                let expected: Vec<File> = depset
+                    .flatten()
+                    .into_iter()
+                    .map(|item| match item {
+                        Item::File(file) => file.clone(),
+                        _ => unreachable!(),
+                    })
+                    .collect();
+                let (listed, memo) = depset.flatten_files_with_memo().unwrap();
+                assert_eq!(listed, expected, "round {round}, case {index}");
+                if let Some(memo) = memo {
+                    assert_eq!(&listed[..memo.files().len()], memo.files());
+                }
+            }
+        }
+        // A new spawn's inputs begin with the runtime's memoized walk (a
+        // depset flattened again is memoized itself).
+        let spawn = node(files("other", 1), vec![&runtime], Order::Default);
+        let (_, memo) = spawn.flatten_files_with_memo().unwrap();
+        assert_eq!(memo.map(|memo| memo.files().len()), Some(220));
+        let (_, memo) = cases[0].flatten_files_with_memo().unwrap();
+        assert_eq!(memo.map(|memo| memo.files().len()), Some(221));
+        // A small node is never memoized.
+        let (_, memo) = node(files("x", 1), vec![&small], Order::Default)
+            .flatten_files_with_memo()
+            .unwrap();
+        assert!(memo.is_none());
     }
 }
