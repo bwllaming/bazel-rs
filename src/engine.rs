@@ -615,6 +615,11 @@ impl ArtifactIndex {
         self.entries.len()
     }
 
+    /// Phase 2 walks the plan with targets prepared ahead (stamps matter).
+    fn walking(&self) -> bool {
+        self.turn != u32::MAX
+    }
+
     #[cfg(test)]
     fn is_empty(&self) -> bool {
         self.entries.is_empty()
@@ -2273,6 +2278,11 @@ pub struct Engine {
     view_accesses: HashMap<ConfiguredTargetKey, Arc<[Label]>>,
     /// The open captures of Engine::target lookups (innermost last).
     access_capture: Vec<Vec<Label>>,
+    /// The artifacts a dependency view's miss path registered, by view
+    /// key: a memo hit registers them again, so a registration made by a
+    /// target prepared ahead of its turn becomes visible where the
+    /// sequential engine makes it (ArtifactIndex stamps; P3 review item 2).
+    view_artifacts: HashMap<ConfiguredTargetKey, Artifacts>,
     /// The work ahead of its turn hit such a step (sticky: a caller may
     /// swallow the error).
     ahead_aborted: bool,
@@ -2469,6 +2479,7 @@ impl Engine {
             ahead: false,
             view_accesses: HashMap::new(),
             access_capture: Vec::new(),
+            view_artifacts: HashMap::new(),
             ahead_aborted: false,
             analysis_pool: None,
             toolchain_implementations: BTreeMap::new(),
@@ -11827,6 +11838,22 @@ impl Engine {
                 );
                 verify_view(&key, &view, rebuilt);
             }
+            // What the miss path registered is visible from this turn on,
+            // as if this view had registered it (P3: it may have been
+            // registered by a target prepared ahead of its turn).
+            let ahead_built = if !artifact_index.walking() {
+                None
+            } else if self.ahead {
+                self.view_artifacts.get(&key).cloned()
+            } else {
+                // Visible from this turn on: once is enough.
+                self.view_artifacts.remove(&key)
+            };
+            if let Some(artifacts) = ahead_built {
+                for artifact in artifacts.iter() {
+                    register_artifact(artifact_index, &artifact.file, artifact);
+                }
+            }
             // The lookups the miss path made count for this frame too.
             if self.tracking()
                 && let Some(accessed) = self.view_accesses.get(&key).cloned()
@@ -11919,7 +11946,14 @@ impl Engine {
         for artifact in artifacts.iter() {
             register_artifact(artifact_index, &artifact.file, artifact);
         }
-        drop(artifacts);
+        if self.ahead {
+            // Stamped with the turn of the target prepared ahead: a memo
+            // hit at an earlier turn registers them again (Self::plan_dependency_view).
+            self.view_artifacts.insert(
+                ConfiguredTargetKey::new(label.clone(), edge_config),
+                artifacts,
+            );
+        }
         let dependency = ConfiguredTargetKey::new(label.clone(), edge_config);
         let forwarded = self.forwarded_actual(configured, &dependency);
         let actual = forwarded.clone().unwrap_or_else(|| label.clone());
@@ -16027,6 +16061,7 @@ impl Engine {
         self.workspace_status_once = std::sync::OnceLock::new();
         self.action_planning = None;
         self.view_accesses.clear();
+        self.view_artifacts.clear();
         self.build_info_actions.clear();
         self.keep_going_state = keep_going::State::default();
         self.keep_going_plan = None;

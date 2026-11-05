@@ -876,11 +876,75 @@ impl Engine {
             format!("{:?}", parts.action_execution),
             format!("{:?}", turn_parts.action_execution),
         );
+        // What prepare sets on the plan's rule (the rest is the plan's
+        // own, cloned): the ctx surface, C++ view, target platform,
+        // toolchain and exec-group contexts.
+        let prepared = |rule: &Rule| {
+            rule.custom.as_ref().map(|custom| {
+                format!(
+                    "{:?}",
+                    (
+                        &custom.cpp,
+                        &custom.target_platform,
+                        &custom.toolchains,
+                        &custom.exec_groups,
+                        custom.use_auto_exec_groups,
+                        &custom.action_exec_groups,
+                        &custom.surface,
+                    )
+                )
+            })
+        };
         check(
             "the rule context",
-            format!("{:?}", snapshot.rule),
-            format!("{:?}", turn_snapshot.rule),
+            format!("{:?}", prepared(&snapshot.rule)),
+            format!("{:?}", prepared(&turn_snapshot.rule)),
         );
+        // The ToolchainInfo values: the very same frozen values.
+        let toolchains = |rule: &Rule| {
+            let custom = rule.custom.as_ref()?;
+            let mut contexts: Vec<Arc<crate::toolchain_info::ToolchainContextData>> =
+                custom.toolchains.iter().cloned().collect();
+            for (_, group) in custom.exec_groups.iter().flat_map(|groups| &groups.groups) {
+                if let crate::exec_groups::GroupToolchains::Resolved(data) = group {
+                    contexts.push(Arc::clone(data));
+                }
+            }
+            Some(
+                contexts
+                    .iter()
+                    .flat_map(|context| context.toolchains.iter())
+                    .map(|(label, value)| (label.clone(), value.clone()))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let (ahead_values, turn_values) =
+            (toolchains(&snapshot.rule), toolchains(&turn_snapshot.rule));
+        let same = match (&ahead_values, &turn_values) {
+            (Some(ahead), Some(turn)) => {
+                ahead.len() == turn.len()
+                    && ahead
+                        .iter()
+                        .zip(turn)
+                        .all(|((a, x), (b, y))| a == b && x.value().ptr_eq(y.value()))
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            let labels = |values: &Option<Vec<(Label, starlark::values::OwnedFrozenValue)>>| {
+                values
+                    .iter()
+                    .flatten()
+                    .map(|(label, _)| label.to_string())
+                    .collect::<Vec<_>>()
+            };
+            fail(
+                "the toolchain values",
+                &labels(&ahead_values),
+                &labels(&turn_values),
+            );
+        }
         check(
             "the runfiles options and run_under",
             format!("{:?}", (&snapshot.runfiles, &snapshot.run_under)),

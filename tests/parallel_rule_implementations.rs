@@ -455,3 +455,50 @@ fn a_failing_build_does_not_wait_for_speculative_computes() {
         "the failing build waited {elapsed:?} for speculative computes"
     );
 }
+
+/// P3 review item 2 (found on ~/code): a later target prepared ahead of its
+/// turn builds the dependency view of a source file first (and registers
+/// its artifact, stamped with its own turn); an earlier target that reaches
+/// the same view at its turn through the view memo still resolves the file
+/// as an action input, as sequentially.
+#[test]
+fn a_source_view_built_ahead_resolves_for_an_earlier_target() {
+    let ws = Workspace::new();
+    ws.file("rules/BUILD", "");
+    ws.file("rules/defs.bzl", DEFS);
+    ws.file(
+        "rules/src.bzl",
+        r#"
+load(":defs.bzl", "Info")
+
+def _impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".out")
+    ctx.actions.run_shell(
+        inputs = ctx.files.srcs + [f for dep in ctx.attr.deps for f in dep[Info].files.to_list()],
+        outputs = [out],
+        command = "cat $@ > /dev/null; touch " + out.path,
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+use_src = rule(
+    implementation = _impl,
+    attrs = {"srcs": attr.label_list(allow_files = True), "deps": attr.label_list()},
+)
+"#,
+    );
+    ws.file("t/src.txt", "source\n");
+    ws.file(
+        "t/BUILD",
+        "load('//rules:defs.bzl', 'lib')\n\
+         load('//rules:src.bzl', 'use_src')\n\
+         lib(name = 'x', work = 300000)\n\
+         use_src(name = 'i', srcs = ['src.txt'], deps = [':x'])\n\
+         use_src(name = 'j', srcs = ['src.txt'])\n",
+    );
+    let reference = assert_like_sequential(
+        &ws,
+        &[("BAZEL_RS_DUMP_ACTIONS", "1")],
+        &["build", "--nobuild", "//t:i", "//t:j"],
+    );
+    assert!(reference.status.success(), "{}", stderr(&reference));
+}
