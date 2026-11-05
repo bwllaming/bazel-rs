@@ -43,6 +43,16 @@ use std::time::{Duration, Instant};
 use crate::process_wrapper::{Launch, Spawned};
 
 const POLL: Duration = Duration::from_millis(5);
+
+/// The `n`th wait of a poll loop: 50 µs doubling up to [`POLL`]. Most
+/// `execute()` calls are short (`uname -m`, `mkdir -p`: aspect_rules_js
+/// runs three per npm package, ~10,000 on a cold ~/code build); a fixed
+/// 5 ms first wait made each take ~9 ms.
+fn backoff(n: &mut u32) -> Duration {
+    let wait = Duration::from_micros(50 << (*n).min(7)).min(POLL);
+    *n += 1;
+    wait
+}
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 const ENOENT: i32 = 2;
 const EACCES: i32 = 13;
@@ -190,8 +200,9 @@ impl Capture {
     }
 
     fn finish(self, deadline: Instant, stream: &str, errors: &mut Vec<String>) -> Vec<u8> {
+        let mut polls = 0;
         while !self.thread.is_finished() && Instant::now() < deadline {
-            thread::sleep(POLL);
+            thread::sleep(backoff(&mut polls));
         }
         if !self.thread.is_finished() {
             errors.push(format!(
@@ -331,6 +342,7 @@ pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
     let mut errors = Vec::new();
     let mut timed_out = false;
     let mut status = None;
+    let mut polls = 0;
     if let Err(error) = &captures {
         errors.push(error.clone());
     } else {
@@ -349,9 +361,9 @@ pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
                     status = Some(exit);
                     break;
                 }
-                Ok(None) => {
-                    thread::sleep(POLL.min(deadline.saturating_duration_since(Instant::now())))
-                }
+                Ok(None) => thread::sleep(
+                    backoff(&mut polls).min(deadline.saturating_duration_since(Instant::now())),
+                ),
                 Err(error) => {
                     errors.push(format!("cannot wait for execute() process: {error}"));
                     break;
@@ -449,6 +461,14 @@ mod tests {
     /// with empty stdout (the flake); `write_executable_script` writes from
     /// another process and renames a fresh inode into place, so the same
     /// leaked descriptor cannot touch the script it produces.
+    /// Poll waits start at 50 µs and double up to POLL.
+    #[test]
+    fn poll_waits_back_off_to_the_poll_interval() {
+        let mut n = 0;
+        let waits: Vec<_> = (0..9).map(|_| backoff(&mut n).as_micros()).collect();
+        assert_eq!(waits, [50, 100, 200, 400, 800, 1600, 3200, 5000, 5000]);
+    }
+
     #[test]
     fn leaked_write_descriptors_make_exec_busy_but_never_for_written_scripts() {
         use std::os::unix::fs::PermissionsExt;
