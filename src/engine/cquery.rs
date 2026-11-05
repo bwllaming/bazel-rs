@@ -1149,7 +1149,7 @@ impl Node {
 pub(super) fn register_outputs<'a>(
     files: impl IntoIterator<Item = &'a File>,
     config: ConfigId,
-    index: &mut BTreeMap<File, Artifact>,
+    index: &mut ArtifactIndex,
     declared: &mut Declared,
     predeclared: impl Fn(&File) -> bool,
 ) {

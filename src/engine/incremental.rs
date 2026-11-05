@@ -163,7 +163,57 @@ pub(super) struct Tracker {
     /// Each planned key's phase-2 time (its implementation and actions),
     /// microseconds.
     costs: HashMap<u32, u32>,
+    /// While the coordinator prepares a target ahead of its turn (P3,
+    /// docs/PARALLEL_ANALYSIS.md): what the tracker would record, held
+    /// with the thread-local context of each event and replayed at the
+    /// target's turn ([`Engine::track_replay`]), so the recording is the
+    /// sequential engine's.
+    deferred: Option<Vec<Deferred>>,
 }
+
+/// One tracker event recorded while deferring ([`Tracker::deferred`]).
+type Deferred = Box<dyn FnOnce(&mut Tracker) + Send>;
+
+/// The thread-local scopes a tracker event reads, as it was recorded.
+#[derive(Clone, Copy)]
+struct ScopeContext {
+    shared_depth: u32,
+    shared_name: &'static str,
+    pattern_depth: u32,
+    suite_depth: u32,
+}
+
+impl ScopeContext {
+    fn current() -> Self {
+        Self {
+            shared_depth: SHARED_DEPTH.with(Cell::get),
+            shared_name: SHARED_NAME.with(Cell::get),
+            pattern_depth: PATTERN_DEPTH.with(Cell::get),
+            suite_depth: SUITE_DEPTH.with(Cell::get),
+        }
+    }
+
+    /// Run `f` with this context's scopes, restoring the current ones.
+    fn enter<R>(self, f: impl FnOnce() -> R) -> R {
+        let saved = Self::current();
+        self.install();
+        let result = f();
+        saved.install();
+        result
+    }
+
+    fn install(self) {
+        SHARED_DEPTH.with(|cell| cell.set(self.shared_depth));
+        SHARED_NAME.with(|cell| cell.set(self.shared_name));
+        PATTERN_DEPTH.with(|cell| cell.set(self.pattern_depth));
+        SUITE_DEPTH.with(|cell| cell.set(self.suite_depth));
+    }
+}
+
+/// The tracker events of one target prepared ahead of its turn
+/// ([`Engine::track_defer_start`]).
+#[derive(Default)]
+pub(super) struct TrackLog(Vec<Deferred>);
 
 #[derive(Default)]
 struct PackageRecord {
@@ -285,8 +335,75 @@ impl Engine {
         self.incremental.is_some()
     }
 
+    /// Apply `event` to the tracker, or hold it with its scope context
+    /// while deferring ([`Self::track_defer_start`]).
+    fn track_with(&mut self, event: impl FnOnce(&mut Tracker) + Send + 'static) {
+        let Some(tracker) = self.incremental.as_mut() else {
+            return;
+        };
+        match tracker.deferred.as_mut() {
+            Some(deferred) => {
+                let context = ScopeContext::current();
+                deferred.push(Box::new(move |tracker: &mut Tracker| {
+                    context.enter(|| event(tracker))
+                }));
+            }
+            None => event(tracker),
+        }
+    }
+
+    fn track_deferring(&self) -> bool {
+        self.incremental
+            .as_ref()
+            .is_some_and(|tracker| tracker.deferred.is_some())
+    }
+
+    /// Hold every tracker event from now on (P3: the coordinator prepares
+    /// a target ahead of its turn) until [`Self::track_defer_finish`].
+    pub(super) fn track_defer_start(&mut self) {
+        if let Some(tracker) = self.incremental.as_mut() {
+            debug_assert!(tracker.deferred.is_none(), "tracker deferrals do not nest");
+            tracker.deferred = Some(Vec::new());
+        }
+    }
+
+    /// The events held since [`Self::track_defer_start`].
+    pub(super) fn track_defer_finish(&mut self) -> TrackLog {
+        TrackLog(
+            self.incremental
+                .as_mut()
+                .and_then(|tracker| tracker.deferred.take())
+                .unwrap_or_default(),
+        )
+    }
+
+    /// Apply held events where the sequential engine records them (the
+    /// target's turn, its planning frame innermost), each in the scopes it
+    /// was recorded in.
+    pub(super) fn track_replay(&mut self, log: TrackLog) {
+        if let Some(tracker) = self.incremental.as_mut() {
+            debug_assert!(tracker.deferred.is_none());
+            for event in log.0 {
+                event(tracker);
+            }
+        }
+    }
+
     /// `analyze_key` reached `key` (before its memo check).
     pub(super) fn track_key(&mut self, key: &ConfiguredTargetKey) -> Option<u32> {
+        if self.track_deferring() {
+            // Held: no frame is entered for it while deferring (an
+            // analysis ahead of its turn aborts, Engine::ahead_abort).
+            let identity = (
+                key.label.clone(),
+                Some(key.config),
+                key.apply_rule_transition,
+            );
+            self.track_with(move |tracker| {
+                tracker.reach(identity);
+            });
+            return None;
+        }
         let tracker = self.incremental.as_mut()?;
         Some(tracker.reach((
             key.label.clone(),
@@ -297,8 +414,11 @@ impl Engine {
 
     /// `analyze_key` reached the source file `label`.
     pub(super) fn track_source(&mut self, label: &Label) {
-        if let Some(tracker) = self.incremental.as_mut() {
-            tracker.reach((label.clone(), None, true));
+        if self.tracking() {
+            let label = label.clone();
+            self.track_with(move |tracker| {
+                tracker.reach((label, None, true));
+            });
         }
     }
 
@@ -337,56 +457,67 @@ impl Engine {
     }
 
     pub(super) fn track_restore(&mut self, depth: usize) {
-        if let Some(tracker) = self.incremental.as_mut() {
+        // While deferring no frame is pushed (track_key holds the reach
+        // and returns no id): nothing to restore.
+        if let Some(tracker) = self.incremental.as_mut()
+            && tracker.deferred.is_none()
+        {
             tracker.frames.truncate(depth);
         }
     }
 
     /// The innermost frame's phase 2 took `elapsed`.
     pub(super) fn track_cost(&mut self, elapsed: std::time::Duration) {
-        if let Some(tracker) = self.incremental.as_mut()
-            && let Some((frame, _)) = tracker.frames.last().copied()
-        {
-            let micros = elapsed.as_micros().min(u32::MAX as u128) as u32;
-            let cost = tracker.costs.entry(frame).or_default();
-            *cost = cost.saturating_add(micros);
-        }
+        self.track_with(move |tracker| {
+            if let Some((frame, _)) = tracker.frames.last().copied() {
+                let micros = elapsed.as_micros().min(u32::MAX as u128) as u32;
+                let cost = tracker.costs.entry(frame).or_default();
+                *cost = cost.saturating_add(micros);
+            }
+        });
     }
 
     /// Phase 2 plans `key`: its frame (no edge: phase 1 recorded them).
     pub(super) fn track_planning(&mut self, key: &ConfiguredTargetKey) {
-        if let Some(tracker) = self.incremental.as_mut() {
-            let id = tracker.key((
+        if self.tracking() {
+            let identity = (
                 key.label.clone(),
                 Some(key.config),
                 key.apply_rule_transition,
-            ));
-            tracker.frames.push((id, shared_depth()));
+            );
+            self.track_with(move |tracker| {
+                let id = tracker.key(identity);
+                tracker.frames.push((id, shared_depth()));
+            });
         }
     }
 
     /// `Engine::target` looks up `label`.
     pub(super) fn track_access(&mut self, label: &Label) {
         if let Some(tracker) = self.incremental.as_mut() {
-            tracker.access(label);
+            if tracker.deferred.is_none() {
+                tracker.access(label);
+            } else {
+                let label = label.clone();
+                self.track_with(move |tracker| tracker.access(&label));
+            }
         }
     }
 
     /// Print a line an analysis printed (`print()`), noting the configured
     /// target whose frame is innermost.
     pub(super) fn note_analysis_print(&mut self, line: &str) {
-        if let Some(tracker) = self.incremental.as_mut()
-            && let Some((frame, _)) = tracker.frames.last().copied()
-        {
-            tracker.printed_keys.insert(frame);
-        }
+        self.track_with(|tracker| {
+            if let Some((frame, _)) = tracker.frames.last().copied() {
+                tracker.printed_keys.insert(frame);
+            }
+        });
         crate::ui::note(line);
     }
 
     /// The innermost key's planning uses the aspect application `key`.
     pub(super) fn track_aspect_application(&mut self, key: &crate::aspects::AspectApplicationKey) {
-        if let Some(tracker) = self.incremental.as_mut() {
-            let frame = tracker.frames.last().map_or(u32::MAX, |(frame, _)| *frame);
+        if self.tracking() {
             let base = &key.base;
             let identity = format!(
                 "{}|{}|{}|{}|{}",
@@ -396,17 +527,23 @@ impl Engine {
                 key.aspect,
                 key.bases.join(",")
             );
-            tracker.aspects.insert((frame, identity));
+            self.track_with(move |tracker| {
+                let frame = tracker.frames.last().map_or(u32::MAX, |(frame, _)| *frame);
+                tracker.aspects.insert((frame, identity));
+            });
         }
     }
 
     /// A package was committed; `printed`: its BUILD file printed.
     pub(super) fn track_package_printed(&mut self, package: &PackageId, printed: bool) {
-        if let Some(tracker) = self.incremental.as_mut() {
-            let id = tracker.package(package);
-            let record = &mut tracker.packages[id as usize];
-            record.printed |= printed;
-            record.pattern |= pattern();
+        if self.tracking() {
+            let package = package.clone();
+            self.track_with(move |tracker| {
+                let id = tracker.package(&package);
+                let record = &mut tracker.packages[id as usize];
+                record.printed |= printed;
+                record.pattern |= pattern();
+            });
         }
     }
 
@@ -479,9 +616,12 @@ impl Engine {
 
     /// A test suite's expansion read `label`'s package.
     pub(super) fn track_suite_package(&mut self, label: &Label) {
-        if let Some(tracker) = self.incremental.as_mut() {
-            let id = tracker.package(&label.package_id());
-            tracker.suite_packages.insert(id);
+        if self.tracking() {
+            let package = label.package_id();
+            self.track_with(move |tracker| {
+                let id = tracker.package(&package);
+                tracker.suite_packages.insert(id);
+            });
         }
     }
 

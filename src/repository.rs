@@ -6004,6 +6004,7 @@ fn guarded_root_slot<'a>(
         return result.as_ref().map(PathBuf::as_path).map_err(Clone::clone);
     }
     if crate::repository_demand::no_demand_active() {
+        crate::repository_demand::note_sentinel();
         return Err(format!(
             "{}: repository @@{repository} is unfetched and this thread does not fetch",
             crate::repository_demand::NEEDS_REPOSITORY

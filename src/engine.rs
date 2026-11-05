@@ -38,6 +38,7 @@ mod cquery_presentation;
 mod genquery;
 mod incremental;
 mod keep_going;
+mod parallel;
 pub mod query;
 mod query_attrs;
 pub mod root_checkpoint;
@@ -306,7 +307,7 @@ struct ActionPlanning {
     /// File never fails to resolve, whichever targets the build has. One
     /// producer per output path (register_output) and one label per source
     /// path make it a function of the File.
-    artifact_index: BTreeMap<File, Artifact>,
+    artifact_index: ArtifactIndex,
     declared: Declared,
     /// Output path -> its producer (register_output): the owning
     /// action-lookup key and, for a Starlark action, the action's id and
@@ -339,6 +340,9 @@ struct ActionPlanning {
     /// The size of Engine::rule_delegations at the last scan for new
     /// delegations (Engine::flush_delegations).
     delegations_scanned: usize,
+    /// The requested keys of the delegations flushed so far, in flush
+    /// order, until the P3 pipeline takes them (its readiness wake-ups).
+    delegated_keys: Vec<ConfiguredTargetKey>,
     /// The framework OutputGroupInfo of native rule targets (custom rules
     /// carry theirs in custom_providers), built once per configured target
     /// (the end of an alias chain) so every dependent sees one instance.
@@ -559,7 +563,11 @@ fn verify_artifacts() -> bool {
 /// invariant makes the same Artifact — re-registering it with a different
 /// one is an internal error, checked in debug builds and under
 /// BAZEL_RS_VERIFY_ARTIFACTS.
-fn register_artifact(index: &mut BTreeMap<File, Artifact>, file: &File, artifact: &Artifact) {
+/// The build's File -> Artifact resolver (ActionPlanning::artifact_index):
+/// looked up per input, never iterated, so hashed (by the File's path).
+type ArtifactIndex = crate::fast_hash::FxHashMap<File, Artifact>;
+
+fn register_artifact(index: &mut ArtifactIndex, file: &File, artifact: &Artifact) {
     match index.get(file) {
         Some(registered) => {
             if (cfg!(debug_assertions) || verify_artifacts())
@@ -628,7 +636,7 @@ struct PlanState<'a> {
         &'a mut BTreeMap<ConfiguredTargetKey, BTreeMap<String, starlark::values::OwnedFrozenValue>>,
     pub provider_keys: &'a mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
     pub runfiles_info: &'a mut BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
-    pub artifact_index: &'a mut BTreeMap<File, Artifact>,
+    pub artifact_index: &'a mut ArtifactIndex,
     pub declared: &'a mut Declared,
     pub native_output_groups:
         &'a mut BTreeMap<ConfiguredTargetKey, starlark::values::OwnedFrozenValue>,
@@ -1704,6 +1712,59 @@ struct ComputeSnapshot {
 struct ComputeOutcome {
     analyzed: Result<analysis::AnalysisResult, String>,
     printed: Vec<String>,
+    /// The pure part of the target's runfiles support, computed by the
+    /// analysis worker after the implementation (P3): `None` computes it
+    /// at the commit, as sequentially.
+    runfiles: Option<RunfilesPrecomputed>,
+}
+
+/// What plan_runfiles_support computes from the target's own runfiles and
+/// transitive repositories alone (RunfilesPrecomputed::compute): the repo
+/// mapping manifest's content and the runfiles tree mapping with its
+/// conflicts.
+struct RunfilesPrecomputed {
+    content: Result<Vec<u8>, String>,
+    mapping: crate::runfiles::RunfilesMapping,
+    conflicts: Vec<String>,
+}
+
+impl RunfilesPrecomputed {
+    /// `None` when the target has no runfiles support (nothing to plan).
+    fn compute(
+        target: &crate::runfiles::TargetRunfiles,
+        transitive: &BTreeSet<String>,
+        repositories: &RepositorySet,
+        options: &crate::runfiles_tree::RunfilesOptions,
+    ) -> Option<Self> {
+        let files_to_run = target.files_to_run.as_ref()?;
+        let (Some(runfiles), Some(_), Some(repo_mapping)) = (
+            files_to_run.runfiles(),
+            files_to_run.executable(),
+            files_to_run.repo_mapping_manifest(),
+        ) else {
+            return None;
+        };
+        let content = crate::runfiles_tree::repo_mapping_manifest(
+            runfiles,
+            transitive,
+            &|repository: &str| repositories.mapping(repository),
+            options.compact_repo_mapping,
+        );
+        let mut conflicts = Vec::new();
+        let mapping = runfiles.runfiles_inputs(Some(repo_mapping), Some(&mut conflicts));
+        Some(Self {
+            content,
+            mapping,
+            conflicts,
+        })
+    }
+}
+
+/// What Engine::custom_dependencies computes for a Starlark rule.
+struct CustomDependencies {
+    labels: Vec<(Label, ConfigId, String, String)>,
+    edge_aspects: BTreeMap<String, Vec<std::sync::Arc<crate::aspects::AspectDefinition>>>,
+    exec_groups: Option<crate::exec_groups::TargetExecGroups>,
 }
 
 /// One plan entry after prepare (the P1 split of plan_target): the
@@ -2112,6 +2173,17 @@ pub struct Engine {
     /// tree, Self::deferred_target_platform) appends them to it, so that
     /// every configured node phase 1 can later find memoized is planned.
     planning_plan: Option<Plan>,
+    /// P3 (docs/PARALLEL_ANALYSIS.md): the coordinator is preparing a
+    /// target ahead of its turn (or checking whether it may); anything
+    /// whose effect the turn order decides — analyzing a target, loading
+    /// a package — aborts that work instead (Self::ahead_abort).
+    ahead: bool,
+    /// The work ahead of its turn hit such a step (sticky: a caller may
+    /// swallow the error).
+    ahead_aborted: bool,
+    /// The analysis workers running rule implementations (P3), started by
+    /// the first pipelined plan_targets of a build.
+    analysis_pool: Option<parallel::AnalysisPool>,
     /// Targets analyzed as toolchain implementations, with their parent's
     /// execution platform (the PlatformInfo label), which their own
     /// resolution forces (ToolchainContextUtil.java:136-141; docs/TOOLCHAINS.md).
@@ -2299,6 +2371,9 @@ impl Engine {
             action_executions: BTreeMap::new(),
             action_planning: None,
             planning_plan: None,
+            ahead: false,
+            ahead_aborted: false,
+            analysis_pool: None,
             toolchain_implementations: BTreeMap::new(),
             deferred_duplicates: BTreeMap::new(),
             source_directories: BTreeMap::new(),
@@ -2856,6 +2931,9 @@ impl Engine {
             return Err(message);
         }
         if !self.packages.contains_key(package) {
+            if self.ahead {
+                return Err(self.ahead_abort("package loading"));
+            }
             let _span = crate::timeline::span("package", || {
                 format!("@@{}//{}", package.repository, package.package)
             });
@@ -4147,6 +4225,7 @@ impl Engine {
             return Ok(());
         }
         let rule = match self.target(label)? {
+            Target::Source(_) if self.ahead => return Err(self.ahead_abort("source analysis")),
             Target::Source(_) => {
                 self.track_source(label);
                 self.visible(&self.source_visibility(label), &label.package_id(), None)?;
@@ -4184,6 +4263,9 @@ impl Engine {
         }
         if configured.contains_key(&key) {
             return Ok(());
+        }
+        if self.ahead {
+            return Err(self.ahead_abort("configured-target analysis"));
         }
         self.track_enter(tracked);
         self.track_entry(tracked, plan.len());
@@ -11609,7 +11691,7 @@ impl Engine {
         >,
         provider_keys: &mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
         runfiles_info: &mut BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
-        artifact_index: &mut BTreeMap<File, Artifact>,
+        artifact_index: &mut ArtifactIndex,
         declared: &mut Declared,
         native_output_groups: &mut BTreeMap<
             ConfiguredTargetKey,
@@ -11683,7 +11765,7 @@ impl Engine {
         >,
         provider_keys: &mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
         runfiles_info: &mut BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
-        artifact_index: &mut BTreeMap<File, Artifact>,
+        artifact_index: &mut ArtifactIndex,
         declared: &mut Declared,
         native_output_groups: &mut BTreeMap<
             ConfiguredTargetKey,
@@ -13002,7 +13084,159 @@ impl Engine {
             snapshot.repositories.clone(),
             &outputs,
         );
-        (snapshot, ComputeOutcome { analyzed, printed })
+        (
+            snapshot,
+            ComputeOutcome {
+                analyzed,
+                printed,
+                runfiles: None,
+            },
+        )
+    }
+
+    /// The dependencies of a Starlark rule's planning, as prepare views
+    /// them (P1's prepare_target, factored out for P3's readiness check,
+    /// which must name exactly what prepare reads): each with the
+    /// configuration of its edge, its key in the implementation's
+    /// dependency map and its attribute; the attribute aspects of the
+    /// edges; the target's exec-group contexts.
+    fn custom_dependencies(
+        &mut self,
+        rule: &Rule,
+        key: &ConfiguredTargetKey,
+        edges: &[Edge],
+        exec_config: ConfigId,
+    ) -> Result<CustomDependencies, String> {
+        let config = key.config;
+        // Resolved dependencies only: `$config_dependencies` is never a
+        // prerequisite (DependencyResolutionHelpers.java:408-416). The
+        // resolved toolchain implementations are dependencies too
+        // (their ToolchainInfo files are action inputs).
+        // Each dependency with the configuration of its edge and its
+        // key in the implementation's dependency map
+        // (analysis::dependency_key).
+        let mut dependency_labels: Vec<(Label, ConfigId, String, String)> = Vec::new();
+        // N58: attribute aspects of the rule's edges, by resolved label
+        // (attr(aspects = [...]) propagation; an aspect list resolves to
+        // its definitions once).
+        let mut edge_aspects: BTreeMap<
+            String,
+            Vec<std::sync::Arc<crate::aspects::AspectDefinition>>,
+        > = BTreeMap::new();
+        for edge in edges {
+            let label = self.resolve_rule_src(rule, &edge.label)?;
+            if let Some(spec) = rule
+                .custom
+                .as_ref()
+                .and_then(|custom| custom.schema.get(&edge.attribute))
+                && !spec.declaration.aspects.is_empty()
+            {
+                let aspects = self.attribute_aspects(rule, &spec.declaration.aspects)?;
+                let entry = edge_aspects.entry(edge.attribute.clone()).or_default();
+                for aspect in aspects {
+                    if !entry.iter().any(
+                        |known: &std::sync::Arc<crate::aspects::AspectDefinition>| {
+                            known.descriptor == aspect.descriptor
+                        },
+                    ) {
+                        entry.push(aspect);
+                    }
+                }
+            }
+            if rule
+                .custom
+                .as_ref()
+                .is_some_and(|custom| custom.split_dependencies.contains_key(&edge.attribute))
+            {
+                continue;
+            }
+            let (edge_config, map_key) = match &edge.cfg {
+                EdgeCfg::Target => {
+                    (config, analysis::dependency_key(&label.to_string(), false))
+                }
+                EdgeCfg::Exec(None) => (
+                    exec_config,
+                    analysis::dependency_key(&label.to_string(), true),
+                ),
+                // A named exec group's configuration (N35); the
+                // transition is a no-op without toolchain contexts.
+                EdgeCfg::Exec(Some(group)) => (
+                    self.group_exec_configurations
+                        .get(&(key.clone(), group.clone()))
+                        .copied()
+                        .unwrap_or(config),
+                    analysis::dependency_key(&label.to_string(), true),
+                ),
+                EdgeCfg::NoConfig => (
+                    self.configurations.intern_no_config(),
+                    analysis::metadata_dependency_key(&label.to_string()),
+                ),
+                EdgeCfg::Starlark(attribute) => (
+                    self.edge_configs
+                        .get(key)
+                        .and_then(|configs| configs.get(attribute))
+                        .filter(|branches| branches.len() == 1 && branches[0].0.is_empty())
+                        .map(|branches| branches[0].1)
+                        .ok_or_else(|| {
+                            format!(
+                                "internal error: no transitioned configuration for {} attribute {attribute}",
+                                rule.label
+                            )
+                        })?,
+                    analysis::transition_dependency_key(&label.to_string(), attribute),
+                ),
+            };
+            dependency_labels.push((label, edge_config, map_key, edge.attribute.clone()));
+        }
+        if let Some(custom) = &rule.custom {
+            for (name, split) in custom.split_dependencies.iter() {
+                dependency_labels.extend(
+                    split
+                        .prerequisites
+                        .iter()
+                        .map(|p| (p.label.clone(), p.config, p.map_key.clone(), name.clone())),
+                );
+            }
+        }
+        let mut add_target = |label: Label| {
+            let map_key = label.to_string();
+            if !dependency_labels
+                .iter()
+                .any(|(_, _, seen, _)| *seen == map_key)
+            {
+                dependency_labels.push((label, config, map_key, String::new()));
+            }
+        };
+        let target_exec_groups = self.exec_group_contexts.get(key).cloned();
+        for context in std::iter::once(self.toolchain_contexts.get(key))
+            .chain(
+                target_exec_groups
+                    .iter()
+                    .flat_map(|groups| groups.groups.iter().map(|group| group.context.as_ref())),
+            )
+            .flatten()
+        {
+            for implementation in context.resolved_labels() {
+                add_target(implementation);
+            }
+        }
+        // The target's exec_compatible_with constraint values
+        // (ctx.attr.exec_compatible_with), analyzed by its toolchain
+        // resolution, and its configured target_compatible_with
+        // prerequisites (ctx.attr.target_compatible_with), analyzed by
+        // its compatibility check.
+        if let Some(custom) = &rule.custom {
+            for name in ["exec_compatible_with", "target_compatible_with"] {
+                for text in custom.declaration.builtin.target.labels(name) {
+                    add_target(self.resolve_rule_src(rule, &text)?);
+                }
+            }
+        }
+        Ok(CustomDependencies {
+            labels: dependency_labels,
+            edge_aspects,
+            exec_groups: target_exec_groups,
+        })
     }
 
     /// Phase 1 of one plan entry (the P1 split of plan_target): compute
@@ -13123,129 +13357,11 @@ impl Engine {
         }
         if custom_rule {
             let mut dependency_targets = BTreeMap::new();
-            // Resolved dependencies only: `$config_dependencies` is never a
-            // prerequisite (DependencyResolutionHelpers.java:408-416). The
-            // resolved toolchain implementations are dependencies too
-            // (their ToolchainInfo files are action inputs).
-            // Each dependency with the configuration of its edge and its
-            // key in the implementation's dependency map
-            // (analysis::dependency_key).
-            let mut dependency_labels: Vec<(Label, ConfigId, String, &str)> = Vec::new();
-            // N58: attribute aspects of the rule's edges, by resolved label
-            // (attr(aspects = [...]) propagation; an aspect list resolves to
-            // its definitions once).
-            let mut edge_aspects: BTreeMap<
-                String,
-                Vec<std::sync::Arc<crate::aspects::AspectDefinition>>,
-            > = BTreeMap::new();
-            for edge in &edges {
-                let label = self.resolve_rule_src(rule, &edge.label)?;
-                if let Some(spec) = rule
-                    .custom
-                    .as_ref()
-                    .and_then(|custom| custom.schema.get(&edge.attribute))
-                    && !spec.declaration.aspects.is_empty()
-                {
-                    let aspects = self.attribute_aspects(rule, &spec.declaration.aspects)?;
-                    let entry = edge_aspects.entry(edge.attribute.clone()).or_default();
-                    for aspect in aspects {
-                        if !entry.iter().any(
-                            |known: &std::sync::Arc<crate::aspects::AspectDefinition>| {
-                                known.descriptor == aspect.descriptor
-                            },
-                        ) {
-                            entry.push(aspect);
-                        }
-                    }
-                }
-                if rule
-                    .custom
-                    .as_ref()
-                    .is_some_and(|custom| custom.split_dependencies.contains_key(&edge.attribute))
-                {
-                    continue;
-                }
-                let (edge_config, map_key) = match &edge.cfg {
-                    EdgeCfg::Target => {
-                        (config, analysis::dependency_key(&label.to_string(), false))
-                    }
-                    EdgeCfg::Exec(None) => (
-                        exec_config,
-                        analysis::dependency_key(&label.to_string(), true),
-                    ),
-                    // A named exec group's configuration (N35); the
-                    // transition is a no-op without toolchain contexts.
-                    EdgeCfg::Exec(Some(group)) => (
-                        self.group_exec_configurations
-                            .get(&(key.clone(), group.clone()))
-                            .copied()
-                            .unwrap_or(config),
-                        analysis::dependency_key(&label.to_string(), true),
-                    ),
-                    EdgeCfg::NoConfig => (
-                        self.configurations.intern_no_config(),
-                        analysis::metadata_dependency_key(&label.to_string()),
-                    ),
-                    EdgeCfg::Starlark(attribute) => (
-                        self.edge_configs
-                            .get(&key)
-                            .and_then(|configs| configs.get(attribute))
-                            .filter(|branches| branches.len() == 1 && branches[0].0.is_empty())
-                            .map(|branches| branches[0].1)
-                            .ok_or_else(|| {
-                                format!(
-                                    "internal error: no transitioned configuration for {} attribute {attribute}",
-                                    rule.label
-                                )
-                            })?,
-                        analysis::transition_dependency_key(&label.to_string(), attribute),
-                    ),
-                };
-                dependency_labels.push((label, edge_config, map_key, &edge.attribute));
-            }
-            if let Some(custom) = &rule.custom {
-                for (name, split) in custom.split_dependencies.iter() {
-                    dependency_labels.extend(
-                        split
-                            .prerequisites
-                            .iter()
-                            .map(|p| (p.label.clone(), p.config, p.map_key.clone(), name.as_str())),
-                    );
-                }
-            }
-            let mut add_target = |label: Label| {
-                let map_key = label.to_string();
-                if !dependency_labels
-                    .iter()
-                    .any(|(_, _, seen, _)| *seen == map_key)
-                {
-                    dependency_labels.push((label, config, map_key, ""));
-                }
-            };
-            let target_exec_groups = self.exec_group_contexts.get(&key).cloned();
-            for context in
-                std::iter::once(self.toolchain_contexts.get(&key))
-                    .chain(target_exec_groups.iter().flat_map(|groups| {
-                        groups.groups.iter().map(|group| group.context.as_ref())
-                    }))
-                    .flatten()
-            {
-                for implementation in context.resolved_labels() {
-                    add_target(implementation);
-                }
-            }
-            // The target's exec_compatible_with constraint values
-            // (ctx.attr.exec_compatible_with), analyzed by its toolchain
-            // resolution, and its configured target_compatible_with
-            // prerequisites (ctx.attr.target_compatible_with), analyzed by
-            // its compatibility check.
-            if let Some(custom) = &rule.custom {
-                for name in ["exec_compatible_with", "target_compatible_with"] {
-                    for text in custom.declaration.builtin.target.labels(name) {
-                        add_target(self.resolve_rule_src(rule, &text)?);
-                    }
-                }
-            }
+            let CustomDependencies {
+                labels: dependency_labels,
+                edge_aspects,
+                exec_groups: target_exec_groups,
+            } = self.custom_dependencies(rule, &key, &edges, exec_config)?;
             let mut transitive: BTreeSet<String> = BTreeSet::new();
             if execution_plan {
                 transitive.insert(rule.label.repository.clone());
@@ -13258,7 +13374,7 @@ impl Engine {
                 }
             }
             for (label, edge_config, map_key, attribute) in dependency_labels {
-                let aspects = edge_aspects.get(attribute).cloned().unwrap_or_default();
+                let aspects = edge_aspects.get(&attribute).cloned().unwrap_or_default();
                 let view = if aspects.is_empty() {
                     self.plan_dependency_view(
                         configured,
@@ -13822,7 +13938,11 @@ impl Engine {
             drop(snapshot);
             outcome
         };
-        let ComputeOutcome { analyzed, printed } = outcome;
+        let ComputeOutcome {
+            analyzed,
+            printed,
+            runfiles: precomputed,
+        } = outcome;
         for line in printed {
             self.note_analysis_print(&line);
         }
@@ -13949,6 +14069,7 @@ impl Engine {
             &key,
             rule,
             &runfiles,
+            precomputed,
             &transitive,
             &action_owner,
             &main_ignored,
@@ -15243,6 +15364,7 @@ impl Engine {
         }
         flush_delegations(
             &mut state.delegations,
+            &mut state.delegated_keys,
             &mut state.dry,
             &mut state.custom_providers,
             &mut state.provider_keys,
@@ -15269,7 +15391,7 @@ impl Engine {
         // The plan lives in `self` while phase 2 walks it: a target's phase
         // 2 may analyze (and so plan) more targets (Self::planning_plan).
         let outer_plan = self.planning_plan.replace(std::mem::take(plan));
-        let result = self.plan_targets_timed(state, configured);
+        let result = self.plan_targets_walk(state, configured);
         *plan = std::mem::replace(&mut self.planning_plan, outer_plan).unwrap_or_default();
         crate::plan_timings::record_batch(outer, state.done.saturating_sub(before) as u64);
         if outer {
@@ -15294,6 +15416,7 @@ impl Engine {
             state.done += 1;
             crate::progress::analysis_configured(state.done);
             self.flush_delegations(state);
+            state.delegated_keys.clear();
             if !self.keep_going {
                 self.plan_one_target(state, key, rule, configured, index)?;
                 continue;
@@ -16030,6 +16153,7 @@ impl Engine {
                 state.input_memos.len()
             ));
         }
+        self.stop_analysis_pool();
         crate::perf_mark("plan.phase2_actions_done");
         if self.cquery_capture.is_some() {
             // aquery keeps the planned actions of the whole universe.
@@ -16099,6 +16223,7 @@ impl Engine {
             listed_tree_actions: _,
             input_memos: _,
             delegations_scanned: _,
+            delegated_keys: _,
         } = state;
         // The top-level lookups below: a workspace status File no target
         // registered (only possible under --nobuild, which plans no status
@@ -17243,6 +17368,7 @@ fn dependency_runfiles(
 /// requested key that delegates to it (a rule transition's key).
 fn flush_delegations(
     delegations: &mut Vec<(ConfiguredTargetKey, ConfiguredTargetKey)>,
+    delegated_keys: &mut Vec<ConfiguredTargetKey>,
     dry: &mut BTreeMap<ConfiguredTargetKey, Artifacts>,
     custom_providers: &mut BTreeMap<
         ConfiguredTargetKey,
@@ -17256,6 +17382,7 @@ fn flush_delegations(
             return true;
         };
         dry.insert(requested.clone(), files);
+        delegated_keys.push(requested.clone());
         if let Some(providers) = custom_providers.get(owner).cloned() {
             custom_providers.insert(requested.clone(), providers);
         }
@@ -17668,7 +17795,7 @@ fn register_action_outputs(
     actions: &[crate::analysis_runtime::RegisteredAction],
     (owner, label): (&str, &str),
     producers: &mut Producers,
-    artifact_index: &mut BTreeMap<File, Artifact>,
+    artifact_index: &mut ArtifactIndex,
     declared: &mut Declared,
     config: ConfigId,
     predeclared: impl Fn(&Path) -> bool,
@@ -18057,7 +18184,7 @@ fn runfiles_input_group(
 /// into ([`Engine::commit_action`]): a rule commit's and an aspect
 /// application's.
 struct ActionCommit<'a> {
-    artifact_index: &'a mut BTreeMap<File, Artifact>,
+    artifact_index: &'a mut ArtifactIndex,
     workspace_status: &'a mut Option<WorkspaceStatusPlan>,
     nodes: &'a mut Vec<PlannedAction>,
     producers: &'a mut Producers,
@@ -18087,7 +18214,7 @@ impl ActionCommit<'_> {
 /// what registering the workspace status files on first need takes
 /// ([`Engine::ensure_workspace_status`]).
 struct RunfilesPlanning<'a> {
-    artifact_index: &'a mut BTreeMap<File, Artifact>,
+    artifact_index: &'a mut ArtifactIndex,
     declared: &'a mut Declared,
     producers: &'a mut Producers,
     nodes: &'a mut Vec<PlannedAction>,
@@ -18165,6 +18292,7 @@ impl Engine {
         key: &ConfiguredTargetKey,
         rule: &Rule,
         target: &crate::runfiles::TargetRunfiles,
+        precomputed: Option<RunfilesPrecomputed>,
         transitive: &BTreeSet<String>,
         action_owner: &str,
         main_ignored: &IgnoredSubdirectories,
@@ -18191,14 +18319,14 @@ impl Engine {
                 })
             };
         let executable_artifact = lookup(&mut planning, executable)?;
+        // The pure part: precomputed by the analysis worker, else here.
+        let precomputed = match precomputed {
+            Some(precomputed) => precomputed,
+            None => RunfilesPrecomputed::compute(target, transitive, &self.repositories, &options)
+                .ok_or_else(|| "internal error: runfiles support without runfiles".to_owned())?,
+        };
         // RepoMappingManifestAction.
-        let repositories = &self.repositories;
-        let content = crate::runfiles_tree::repo_mapping_manifest(
-            runfiles,
-            transitive,
-            &|repository: &str| repositories.mapping(repository),
-            options.compact_repo_mapping,
-        )?;
+        let content = precomputed.content?;
         let id = format!("{action_owner}#repo_mapping");
         planning.nodes.push(PlannedAction {
             action: Action {
@@ -18223,8 +18351,8 @@ impl Engine {
         });
         let repo_mapping_artifact = planning.output(key, &id, repo_mapping)?;
         // The tree mapping; conflicts are reported by the manifest action.
-        let mut conflicts = Vec::new();
-        let mapping = runfiles.runfiles_inputs(Some(repo_mapping), Some(&mut conflicts));
+        let conflicts = precomputed.conflicts;
+        let mapping = precomputed.mapping;
         let mut inputs: Vec<Artifact> = Vec::new();
         // One copy of each runfiles path, shared by the manifest and tree
         // actions' entries and the target's runfiles entries (MEM4).
@@ -18390,7 +18518,7 @@ impl Engine {
             BTreeMap<String, std::ffi::OsString>,
         >,
         status_client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
-        artifact_index: &mut BTreeMap<File, Artifact>,
+        artifact_index: &mut ArtifactIndex,
     ) -> Result<[Artifact; 2], String> {
         if self.semantic_only() {
             let artifacts = [
@@ -18509,7 +18637,7 @@ impl Engine {
     fn indexed_artifact(
         &self,
         file: &File,
-        artifact_index: &mut BTreeMap<File, Artifact>,
+        artifact_index: &mut ArtifactIndex,
         workspace_status: &mut Option<WorkspaceStatusPlan>,
         nodes: &mut Vec<PlannedAction>,
         producers: &mut Producers,
@@ -18877,7 +19005,7 @@ impl SharedInputs {
     /// them has no artifact (the action's own resolution reports it).
     fn resolve(
         memo: &mut HashMap<usize, Arc<SharedInputs>>,
-        artifact_index: &BTreeMap<File, Artifact>,
+        artifact_index: &ArtifactIndex,
         files: &Arc<crate::starlark_types::FlatFiles>,
     ) -> Option<Arc<SharedInputs>> {
         use std::os::unix::ffi::OsStrExt;
@@ -19321,7 +19449,7 @@ mod tests {
     #[test]
     fn register_artifact_keeps_one_artifact_per_file() {
         let artifact = generated_out_txt();
-        let mut index = BTreeMap::new();
+        let mut index = ArtifactIndex::default();
         register_artifact(&mut index, &artifact.file, &artifact);
         register_artifact(&mut index, &artifact.file, &artifact.clone());
         assert_eq!(index.len(), 1);
@@ -19334,7 +19462,7 @@ mod tests {
     #[should_panic(expected = "re-registered with a different artifact")]
     fn register_artifact_rejects_a_second_artifact_for_a_file() {
         let artifact = generated_out_txt();
-        let mut index = BTreeMap::new();
+        let mut index = ArtifactIndex::default();
         register_artifact(&mut index, &artifact.file, &artifact);
         let mut other = artifact.clone();
         other.make_mut().producer = Some(("//pkg:other#0".into(), 0));
@@ -19550,7 +19678,7 @@ mod tests {
             std::slice::from_ref(&registered),
             ("//p:b", "//p:b"),
             &mut producers,
-            &mut BTreeMap::new(),
+            &mut ArtifactIndex::default(),
             &mut Declared::new(),
             crate::configuration::Configuration::default().id,
             |_| false,
@@ -19651,11 +19779,11 @@ mod tests {
     fn indexed_artifact_registers_only_the_workspace_status_files_on_a_miss() {
         let mut engine = Engine::new(PathBuf::new());
         engine.set_execute_build(false);
-        let mut index = BTreeMap::new();
+        let mut index = ArtifactIndex::default();
         let mut plan = None;
         let (mut nodes, mut producers) = (Vec::new(), BTreeMap::new());
         let (client, status) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
-        let mut lookup = |file: &File, index: &mut BTreeMap<File, Artifact>| {
+        let mut lookup = |file: &File, index: &mut ArtifactIndex| {
             engine
                 .indexed_artifact(
                     file,
@@ -19705,7 +19833,7 @@ mod tests {
                 command: String::new(),
                 embed_label: embed_label.to_owned(),
             });
-            let mut index = BTreeMap::new();
+            let mut index = ArtifactIndex::default();
             let (mut nodes, mut producers) = (Vec::new(), BTreeMap::new());
             let (client, status) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
             let planned = engine
@@ -20869,7 +20997,7 @@ m = macro(implementation=emit)
             py("lib/re.py"),
         ];
         let files: Vec<File> = run.iter().map(|artifact| artifact.file.clone()).collect();
-        let mut index = BTreeMap::new();
+        let mut index = ArtifactIndex::default();
         for artifact in &run {
             register_artifact(&mut index, &artifact.file, artifact);
         }

@@ -108,6 +108,9 @@ pub fn marked(text: &str) -> Vec<u8> {
 /// planning prints, written marked into it (its reader forwards it
 /// filtered, a snapshot hit replays it filtered).
 pub fn note(text: &str) {
+    if defer(|| Deferred::Note(text.to_owned())) {
+        return;
+    }
     if suppress_note() {
         return;
     }
@@ -214,6 +217,9 @@ pub fn emit(bytes: &[u8]) {
     if bytes.is_empty() {
         return;
     }
+    if defer(|| Deferred::Emit(bytes.to_vec())) {
+        return;
+    }
     if suppress_note() {
         return;
     }
@@ -225,6 +231,72 @@ pub fn emit(bytes: &[u8]) {
         let _ = stderr.write_all(&filtered(bytes));
     }
     let _ = stderr.flush();
+}
+
+/// One console write held by a [`DeferredConsole`].
+#[derive(Debug)]
+pub(crate) enum Deferred {
+    Note(String),
+    Emit(Vec<u8>),
+}
+
+thread_local! {
+    /// The open [`DeferredConsole`] of this thread, if any.
+    static DEFERRED: std::cell::RefCell<Option<Vec<Deferred>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Hold `write` in this thread's deferred console, if one is open.
+fn defer(write: impl FnOnce() -> Deferred) -> bool {
+    DEFERRED.with(|deferred| match deferred.borrow_mut().as_mut() {
+        Some(held) => {
+            held.push(write());
+            true
+        }
+        None => false,
+    })
+}
+
+/// While alive, this thread's [`note`]s and [`emit`]s are held instead of
+/// written (P3, docs/PARALLEL_ANALYSIS.md: an analysis worker, or the
+/// coordinator preparing a target ahead of its turn); [`Self::finish`]
+/// returns them for [`replay`] where the sequential engine writes them.
+pub(crate) struct DeferredConsole {
+    previous: Option<Option<Vec<Deferred>>>,
+}
+
+impl DeferredConsole {
+    pub(crate) fn start() -> Self {
+        Self {
+            previous: Some(DEFERRED.with(|deferred| deferred.replace(Some(Vec::new())))),
+        }
+    }
+
+    /// The writes held since [`Self::start`], in order.
+    pub(crate) fn finish(mut self) -> Vec<Deferred> {
+        let previous = self.previous.take().unwrap_or_default();
+        DEFERRED
+            .with(|deferred| deferred.replace(previous))
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for DeferredConsole {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            DEFERRED.with(|deferred| *deferred.borrow_mut() = previous);
+        }
+    }
+}
+
+/// Write held console writes ([`DeferredConsole`]) in order.
+pub(crate) fn replay(writes: Vec<Deferred>) {
+    for write in writes {
+        match write {
+            Deferred::Note(text) => note(&text),
+            Deferred::Emit(bytes) => emit(&bytes),
+        }
+    }
 }
 
 thread_local! {

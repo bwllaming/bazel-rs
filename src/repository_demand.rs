@@ -59,8 +59,35 @@ pub fn is_parallel_bzl_cycle(error: &str) -> bool {
 /// point, so a worker (no-demand mode) aborts its unit instead and the
 /// coordinator re-runs it inline there (W6 phase-1 prefetch; P2).
 pub fn order_dependent(what: &str) -> String {
+    note_sentinel();
     format!(
         "{NEEDS_REPOSITORY}: {what} depends on the repositories materialized so far and this thread does not decide it"
+    )
+}
+
+thread_local! {
+    /// How many no-demand sentinels this thread raised (P3: a sentinel a
+    /// caller swallowed still voids the work it aborted).
+    static SENTINELS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Count one sentinel raised on this thread ([`sentinels_raised`]).
+pub fn note_sentinel() {
+    SENTINELS.with(|count| count.set(count.get().wrapping_add(1)));
+}
+
+/// How many no-demand sentinels ([`NEEDS_REPOSITORY`]) this thread has
+/// raised so far: work during which the count moved depended on a demand
+/// it did not make, even when a caller swallowed the error.
+pub fn sentinels_raised() -> u64 {
+    SENTINELS.with(std::cell::Cell::get)
+}
+
+/// The sentinel of the unfetched value `key` of runtime `runtime_id`.
+fn unfetched(runtime_id: u64, key: &str) -> String {
+    note_sentinel();
+    format!(
+        "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
     )
 }
 
@@ -440,9 +467,7 @@ impl<T> DemandSlot<T> {
         if no_demand_active() {
             // Workers never fetch (review §1.2): the sentinel aborts the
             // unit; the coordinator re-runs it inline at its commit slot.
-            return Err(format!(
-                "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
-            ));
+            return Err(unfetched(runtime_id, key));
         }
         self.note_demanded(self.evaluate(runtime_id, key, init))
     }
@@ -497,9 +522,7 @@ impl<T> DemandSlot<T> {
             return self.note_demanded(self.evaluate(runtime_id, key, init));
         }
         if !reuse_only_active() {
-            return Err(format!(
-                "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
-            ));
+            return Err(unfetched(runtime_id, key));
         }
         let (nested, reentered) = PROBING.with(|probing| {
             let probing = probing.borrow();
@@ -508,9 +531,7 @@ impl<T> DemandSlot<T> {
         if reentered {
             // This thread is probing this very slot further up its stack:
             // a miss (the coordinator's evaluation reports a real cycle).
-            return Err(format!(
-                "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
-            ));
+            return Err(unfetched(runtime_id, key));
         }
         let claimed = if !nested {
             match self.claim_probe() {
@@ -518,9 +539,7 @@ impl<T> DemandSlot<T> {
                 ProbeClaim::Finished => {
                     return match self.ready.get() {
                         Some(result) => result.as_ref().map_err(Clone::clone),
-                        None => Err(format!(
-                            "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
-                        )),
+                        None => Err(unfetched(runtime_id, key)),
                     };
                 }
                 ProbeClaim::TimedOut => false,
@@ -557,9 +576,7 @@ impl<T> DemandSlot<T> {
                 };
                 if running.is_some() && self.ready.get().is_none() {
                     drop(running);
-                    return Err(format!(
-                        "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
-                    ));
+                    return Err(unfetched(runtime_id, key));
                 }
                 // Under this lock no evaluator runs (none can start) and
                 // every other probe publishes under it too: the value and
@@ -581,9 +598,7 @@ impl<T> DemandSlot<T> {
                     .as_ref()
                     .map_err(Clone::clone)
             }
-            None => Err(format!(
-                "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
-            )),
+            None => Err(unfetched(runtime_id, key)),
         }
     }
 
