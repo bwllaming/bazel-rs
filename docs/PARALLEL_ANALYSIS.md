@@ -668,14 +668,55 @@ ahead that fails keeps its error for its turn; a failing compute's error is
 reported by its commit; with `--keep_going` an entry whose dependency
 failed is skipped at its turn and what was held for it is dropped.
 
-**Residuals.** Work ahead registers its dependencies' artifacts in the
-artifact index (and builds dependency views) before the commits between it
-and its turn; an earlier target whose action names a source File it never
-reached would then resolve it instead of failing with `input has no
-declared artifact` (an internal-consistency error never seen on ~/code).
-Notes printed by discarded work are not replayed (`lost_notes`, 0 on
-~/code). Peak RSS grows with the workers' heaps and in-flight snapshots
-(docs/COLD_ANALYSIS.md).
+**Review fixes.**
+
+- *Tracker attribution.* A dependency view's miss path looks targets up
+  (`Engine::target` → the tracker's accesses of the innermost frame); a
+  memo hit used to look nothing up, so which frame recorded the accesses
+  depended on who built the view — a target prepared ahead, or an aborted
+  prepare whose tracker events were dropped. The miss path's lookups are
+  now kept with the memo (`Engine::view_accesses`) and every hit re-issues
+  them for its frame (an intended change at threads 1 too: consumers that
+  hit the memo now record what the view looked up; more accesses only make
+  incremental analysis re-analyze more). `BAZEL_RS_SNAPSHOT_INDEX_DUMP=<file>`
+  (hidden) writes the planned index with its timing costs cleared; tests
+  compare it at threads 1/8/32 and under jitter (an alias view shared by a
+  target prepared ahead and one prepared at its turn; the deferred default
+  host platform with an alias to a constraint value).
+- *Turn-stamped artifact index.* `ArtifactIndex` maps a File to its
+  artifact and the plan index from which it is visible: a prepare ahead of
+  its turn sees, and stamps, its own index; a turn stamps the turn (lowering
+  an ahead stamp); outside a walk everything is visible. So a registration
+  made ahead is invisible to every earlier turn, and an earlier target
+  resolves exactly what it resolves sequentially (unit test
+  `artifact_registrations_ahead_of_their_turn_are_visible_from_it`; Files
+  reach a target only through its dependency views, so no fixture reaches a
+  source File only a later target registers).
+- *Stopping.* A walk that fails stops the pool: computes queued for turns
+  that never come are skipped (a cancel flag checked before each starts; a
+  jitter sleep checks it too), the running ones are joined. A worker's panic
+  is recorded by a panic hook instead of printed and raised at the target's
+  turn with its message and location; a compute the build never reaches
+  prints nothing.
+- Work off its turn that printed notes is a debug assertion (the tests); an
+  order-dependent link decision (`repository_demand::note_order_dependent`)
+  during it counts as a sentinel, and the caller's record is restored.
+- `BAZEL_RS_VERIFY_AHEAD=1` prepares every target prepared ahead again at
+  its turn and compares the two snapshots — rule context (ctx surface,
+  toolchains, platform), every dependency view (BAZEL_RS_VERIFY_VIEWS'
+  comparison), output naming, transitive repositories, execution table
+  (`PERF-PARALLEL verified=`). Clean over the parallel, prefetch,
+  keep_going, snapshot_prefetch, platforms, custom_rules, aspects and
+  toolchains suites and over ~/code `//src/...`.
+- *Global identity counters* (FilesToRun, runfiles symlinks, HeaderInfo,
+  OutputGroupInfo, TemplateVariableInfo, FeatureFlagInfo): workers draw ids
+  in another order, so they were audited. They serve equality and hashing
+  only; `HeaderInfoItem`'s `Ord` by id is used only by `DictItem`'s sorted
+  comparison, whose equality result does not depend on the order chosen;
+  no id is written by the snapshot codec or decides an iteration order.
+
+**Residuals.** Peak RSS grows with the workers' heaps and in-flight
+snapshots (docs/COLD_ANALYSIS.md).
 
 **Determinism evidence.** `tests/parallel_rule_implementations.rs`: a DAG
 of 48 Starlark targets over six packages (chains, diamonds, cross-package
