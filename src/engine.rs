@@ -16931,9 +16931,10 @@ impl Engine {
         }
         // Analyze everything first, but execute only the actions reachable from
         // requested outputs. Empty DefaultInfo must not execute unused actions.
-        let by_id: BTreeMap<_, _> = nodes
+        // Lookups only (hashed): the reachable set, not its order, matters.
+        let by_id: crate::fast_hash::FxHashMap<&str, &PlannedAction> = nodes
             .iter()
-            .map(|node| (node.action.id.clone(), node))
+            .map(|node| (node.action.id.as_str(), node))
             .collect();
         let mut todo = requested
             .iter()
@@ -16952,11 +16953,11 @@ impl Engine {
                 .flat_map(|(_, _, artifacts)| artifacts)
                 .filter_map(|artifact| artifact.producer.as_ref().map(|(id, _)| id.clone())),
         );
-        let mut required = BTreeSet::new();
+        let mut required: crate::fast_hash::FxHashSet<String> = Default::default();
         while let Some(id) = todo.pop() {
             if required.insert(id.clone()) {
                 let node = by_id
-                    .get(&id)
+                    .get(id.as_str())
                     .ok_or_else(|| format!("missing producing action: {id}"))?;
                 todo.extend(
                     node.all_dependencies()
