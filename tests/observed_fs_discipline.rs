@@ -111,6 +111,9 @@ const ALLOWED_PREFIXES: &[&str] = &[
     "bep/",
     // repository_ctx's submodules (its non-blocking downloads' transfers).
     "repository_ctx/",
+    // `affected`'s submodules: the remote base digests (the orchestrator's
+    // key, and a helper process that never plans).
+    "affected/",
 ];
 
 /// Diagnostics switches and test hooks: never inputs of planning (runs with
