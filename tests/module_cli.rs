@@ -705,7 +705,8 @@ fn http_server_and_module_errors_never_fall_back() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    assert_eq!(server.requests(), vec!["/modules/a/1/MODULE.bazel"; 3]);
+    // The 500 is tried HttpConnector.MAX_ATTEMPTS (8) times, the others once.
+    assert_eq!(server.requests(), vec!["/modules/a/1/MODULE.bazel"; 8 + 2]);
 }
 
 #[test]
