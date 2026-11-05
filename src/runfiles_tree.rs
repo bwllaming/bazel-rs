@@ -130,9 +130,24 @@ pub type MappingLookup<'a, 'm> = &'a dyn Fn(&str) -> Result<&'m BTreeMap<String,
 /// The repository name a runfiles artifact's owner belongs to (`""` is the
 /// main repository; Artifact.getOwner().getRepository().getName()).
 fn owner_repository(owner: &str) -> Option<String> {
-    Label::parse_canonical(owner)
-        .ok()
-        .map(|label| label.repository)
+    thread_local! {
+        /// Owner label -> its repository (owners recur across the runfiles
+        /// of many targets; parsing them is a function of the text).
+        static OWNERS: std::cell::RefCell<crate::fast_hash::FxHashMap<String, Option<String>>> =
+            std::cell::RefCell::new(Default::default());
+    }
+    OWNERS.with(|owners| {
+        if let Some(known) = owners.borrow().get(owner) {
+            return known.clone();
+        }
+        let repository = Label::parse_canonical(owner)
+            .ok()
+            .map(|label| label.repository);
+        owners
+            .borrow_mut()
+            .insert(owner.to_owned(), repository.clone());
+        repository
+    })
 }
 
 /// The segment-0 name a canonical repository has in runfiles paths.

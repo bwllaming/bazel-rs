@@ -1314,6 +1314,7 @@ impl Engine {
             .analysis_pool
             .as_ref()
             .map(|pool| pool.finished.0.clone());
+        let compact_repo_mapping = self.compact_repo_mapping;
         let job: Job = Box::new(move || {
             if cancelled
                 .as_ref()
@@ -1346,6 +1347,33 @@ impl Engine {
                 timer.finish();
                 // The pure part of the runfiles support too (commit's
                 // plan_runfiles_support uses it), unless it would demand.
+                // P4: the repo mapping manifests its actions write
+                // (py_internal.create_repo_mapping_manifest), as the commit
+                // would (Engine::resolve_repo_mapping), unless that demands.
+                if let Ok(analyzed) = &mut outcome.analyzed {
+                    for registered in &mut analyzed.actions {
+                        let (Some(runfiles), Some(_)) =
+                            (&registered.repo_mapping, &registered.action.write)
+                        else {
+                            continue;
+                        };
+                        let sentinels = crate::repository_demand::sentinels_raised();
+                        let repositories = &snapshot.repositories;
+                        let content = crate::runfiles_tree::repo_mapping_manifest(
+                            runfiles,
+                            &transitive,
+                            &|repository: &str| repositories.mapping(repository),
+                            compact_repo_mapping,
+                        );
+                        if let Ok(content) = content
+                            && crate::repository_demand::sentinels_raised() == sentinels
+                            && let Some(write) = registered.action.write.as_mut()
+                        {
+                            write.content = content;
+                            registered.repo_mapping = None;
+                        }
+                    }
+                }
                 if let Ok(analyzed) = &outcome.analyzed {
                     let sentinels = crate::repository_demand::sentinels_raised();
                     let precomputed = RunfilesPrecomputed::compute(
