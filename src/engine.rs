@@ -8075,14 +8075,15 @@ impl Engine {
         if label.repository.is_empty() {
             return label.to_string();
         }
-        let mapping = self.repositories.mapping("").cloned().unwrap_or_default();
-        let repository = mapping
-            .iter()
-            .find(|(_, canonical)| **canonical == label.repository)
-            .map_or_else(
-                || format!("@@{}", label.repository),
-                |(apparent, _)| format!("@{apparent}"),
-            );
+        // Borrowed, not copied: one lookup per call (the main mapping has
+        // every module's apparent name).
+        let apparent = self.repositories.mapping("").ok().and_then(|mapping| {
+            mapping
+                .iter()
+                .find(|(_, canonical)| **canonical == label.repository)
+                .map(|(apparent, _)| format!("@{apparent}"))
+        });
+        let repository = apparent.unwrap_or_else(|| format!("@@{}", label.repository));
         format!("{repository}//{}:{}", label.package, label.name)
     }
 
@@ -14280,16 +14281,20 @@ impl Engine {
             let own = match &shared_inputs {
                 Some((start, shared)) => {
                     let end = start + shared.artifacts.len();
-                    let mut own = Vec::with_capacity(registered.inputs.len());
+                    // The action's own inputs only: the shared run joins
+                    // them at `start` where the action is lowered
+                    // (lower_action), not here.
+                    let mut own =
+                        Vec::with_capacity(registered.inputs.len() - shared.artifacts.len());
                     for file in &registered.inputs[..*start] {
                         own.push(resolve(file)?);
                     }
-                    own.extend(shared.artifacts.iter().cloned());
                     for file in &registered.inputs[end..] {
                         own.push(resolve(file)?);
                     }
                     debug_assert!(
-                        own.iter()
+                        with_shared_inputs(&own, Some((*start, shared)))
+                            .iter()
                             .zip(&registered.inputs)
                             .all(|(artifact, file)| commit
                                 .artifact_index
@@ -14353,7 +14358,8 @@ impl Engine {
     /// Plan the node of one registered Starlark action — a rule's
     /// (commit_custom_target) or an aspect application's
     /// (plan_aspect_application) alike: `action` with its own inputs `own`
-    /// (the registration's, resolved), its tools' runfiles trees and its
+    /// (the registration's, resolved; with `shared`, the shared run joins
+    /// them at its start where the action is lowered), its tools' runfiles trees and its
     /// execution-time completion `deferred`. `owner` names the registering
     /// target or aspect in the error of a tree entry without an artifact.
     ///
@@ -19056,6 +19062,22 @@ fn plan_action(
 /// `inputs` ([`list_artifacts`]) and passed [`action::validate_structure`]
 /// so (the shared-group check of [`Engine::commit_action`]); resolving the
 /// inherited environment then changes nothing that check covers.
+/// An action's inputs from its own ones and, when it lists a shared run
+/// (SharedInputs), that run inserted at its start.
+fn with_shared_inputs(
+    own: &[Artifact],
+    shared: Option<(usize, &Arc<SharedInputs>)>,
+) -> Vec<Artifact> {
+    let Some((start, shared)) = shared else {
+        return own.to_vec();
+    };
+    let mut inputs = Vec::with_capacity(own.len() + shared.artifacts.len());
+    inputs.extend_from_slice(&own[..start]);
+    inputs.extend(shared.artifacts.iter().cloned());
+    inputs.extend_from_slice(&own[start..]);
+    inputs
+}
+
 /// The pure part of [`Engine::commit_action`] (P4, crate::engine::lowering):
 /// whether the action's tool runfiles groups stay shared — listing them
 /// could change nothing but the list (crate::scheduler::groups_apart): no
@@ -19078,6 +19100,11 @@ fn lower_action(
         main_ignored,
         shared,
     } = listing;
+    // The action's inputs: its own with the shared run at its start.
+    let own = match &shared {
+        Some((start, shared)) => with_shared_inputs(&own, Some((*start, shared))),
+        None => own,
+    };
     let client_environment = ClientEnvironment::new();
     if let Some(environment) = environment {
         let _ = client_environment.set(environment);
