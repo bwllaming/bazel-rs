@@ -999,10 +999,49 @@ fn plannings(stderr: &str) -> usize {
     stderr.matches("bazel-rs affected: planning //...").count()
 }
 
+impl Repo {
+    /// [`Repo::run`] with extra environment variables.
+    fn run_with(
+        &self,
+        base: &str,
+        head: &str,
+        extra: &[&str],
+        env: &[(&str, &str)],
+    ) -> (Vec<String>, String) {
+        let mut args = vec![format!("--base={base}"), format!("--head={head}")];
+        args.extend(extra.iter().map(|arg| (*arg).to_owned()));
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = self.affected_with(&args, env);
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "{stderr}");
+        let labels = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        (labels, stderr)
+    }
+
+    /// Without `--head`: the working copy (clean, at HEAD) planned in place.
+    fn run_in_place(&self, base: &str, extra: &[&str]) -> (Vec<String>, String) {
+        let mut args = vec![format!("--base={base}")];
+        args.extend(extra.iter().map(|arg| (*arg).to_owned()));
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = self.affected(&args);
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "{stderr}");
+        let labels = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        (labels, stderr)
+    }
+}
+
 /// docs/AFFECTED_TARGETS.md §8.11: the base's digests go through the
 /// configured remote cache: a miss plans the base and writes them, a hit
-/// skips the base, a partial hit plans only the missing targets; the answer
-/// is always the one without the remote cache.
+/// skips the base, a partial hit plans only the missing targets; a head
+/// planned in a clean worktree writes its own; the answer is always the
+/// one without the remote cache.
 #[test]
 fn base_digests_are_shared_through_an_http_remote_cache() {
     let repo = Repo::new();
@@ -1016,26 +1055,37 @@ fn base_digests_are_shared_through_an_http_remote_cache() {
         args.extend(extra);
         let (labels, stderr) = repo.run(base, head, &args);
         assert_eq!(remote_hits(&stderr), None, "{stderr}");
+        assert!(!stderr.contains("wrote"), "{stderr}");
         labels
     };
     let want = reference(&first, &second, &[]);
     assert_eq!(want, ["//a", "//b"]);
-    // A miss: the base is planned and its digests are written.
+    // A miss: the base is planned and its digests are written, and so are
+    // the head's (a commit planned in a clean worktree: `--head`).
     let (labels, stderr) = repo.run(&first, &second, &[build, &remote]);
     assert_eq!(labels, want);
     assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
-    assert!(
-        stderr.contains("wrote 2 of 2 to the remote cache"),
-        "{stderr}"
-    );
+    assert!(stderr.contains("base digests: wrote 2 of 2"), "{stderr}");
+    assert!(stderr.contains("head digests: wrote 2 of 2"), "{stderr}");
     assert_eq!(plannings(&stderr), 2, "{stderr}");
-    assert_eq!(server.ac().len(), 2);
+    assert_eq!(server.ac().len(), 4);
     // All hit: the base is not planned (nor checked out).
     let (labels, stderr) = repo.run(&first, &second, &[build, &remote]);
     assert_eq!(labels, want);
     assert_eq!(remote_hits(&stderr), Some((2, 2)), "{stderr}");
     assert_eq!(plannings(&stderr), 1, "{stderr}");
-    assert!(!stderr.contains("wrote"), "{stderr}");
+    assert!(!stderr.contains("base digests: wrote"), "{stderr}");
+    // The next commit's base is that head: its entries hit.
+    let next = repo.commit(&[("a/a.txt", "a3\n")]);
+    let (labels, stderr) = repo.run(&second, &next, &[build, &remote]);
+    assert_eq!(labels, reference(&second, &next, &[]));
+    assert_eq!(remote_hits(&stderr), Some((2, 2)), "{stderr}");
+    assert_eq!(plannings(&stderr), 1, "{stderr}");
+    // A working copy planned in place writes no head digests (its ignored
+    // files can feed globs).
+    let (_, stderr) = repo.run_in_place(&second, &[build, &remote]);
+    assert_eq!(remote_hits(&stderr), Some((2, 2)), "{stderr}");
+    assert!(!stderr.contains("head digests: wrote"), "{stderr}");
     // The same tree through another commit: the same entries.
     let other = repo.git(&["commit-tree", &format!("{first}^{{tree}}"), "-m", "other"]);
     let (labels, stderr) = repo.run(&other, &second, &[build, &remote]);
@@ -1057,7 +1107,7 @@ fn base_digests_are_shared_through_an_http_remote_cache() {
         stderr.contains("scope 1 of 4 selected target(s) (the targets asked for)"),
         "{stderr}"
     );
-    assert!(stderr.contains("wrote 1 of 1"), "{stderr}");
+    assert!(stderr.contains("base digests: wrote 1 of 1"), "{stderr}");
     // A target new at the head: written as absent at the base, then a hit.
     let fourth = repo.commit(&[(
         "c/BUILD.bazel",
@@ -1077,34 +1127,54 @@ fn base_digests_are_shared_through_an_http_remote_cache() {
     let (labels, stderr) = repo.run(&first, &second, &[build, &remote, define]);
     assert_eq!(labels, reference(&first, &second, &[define]));
     assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
-    // Read-only (`--noremote_upload_local_results`): looked up, not
-    // written; the remote transport options are no part of the key.
+    // Another epoch (flag or variable): another key.
+    let epoch = "--affected_remote_digests_epoch=e2";
+    let (_, stderr) = repo.run(&first, &second, &[build, &remote, epoch]);
+    assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
+    let (_, stderr) = repo.run_with(
+        &first,
+        &second,
+        &[build, &remote],
+        &[("BAZEL_RS_AFFECTED_DIGESTS_EPOCH", "e2")],
+    );
+    assert_eq!(remote_hits(&stderr), Some((2, 2)), "{stderr}");
+    // Another LFS smudging: another key.
+    let (labels, stderr) = repo.run_with(
+        &first,
+        &second,
+        &[build, &remote],
+        &[("GIT_LFS_SKIP_SMUDGE", "1")],
+    );
+    assert_eq!(labels, want);
+    assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
+    // `read`: looked up, never written.
+    let read = [
+        build,
+        &remote,
+        "--affected_remote_digests=read",
+        "--define=k=r",
+    ];
+    let (labels, stderr) = repo.run(&first, &second, &read);
+    assert_eq!(labels, reference(&first, &second, &["--define=k=r"]));
+    assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
+    assert!(!stderr.contains("wrote"), "{stderr}");
+    let (_, stderr) = repo.run(&first, &second, &read);
+    assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
+    // `readwrite` whatever Bazel's action result options say; they are no
+    // part of the key either.
     let (_, stderr) = repo.run(
         &first,
         &second,
-        &[build, &remote, "--noremote_upload_local_results"],
+        &[
+            build,
+            &remote,
+            "--noremote_upload_local_results",
+            "--noremote_accept_cached",
+            "--define=k=x",
+        ],
     );
-    assert_eq!(remote_hits(&stderr), Some((2, 2)), "{stderr}");
-    let read_only = [
-        build,
-        &remote,
-        "--noremote_upload_local_results",
-        "--define=k=w",
-    ];
-    let (_, stderr) = repo.run(&first, &second, &read_only);
     assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
-    assert!(!stderr.contains("wrote"), "{stderr}");
-    let (_, stderr) = repo.run(&first, &second, &read_only);
-    assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
-    // `--noremote_accept_cached`: planned as without, written through.
-    let (labels, stderr) = repo.run(
-        &first,
-        &second,
-        &[build, &remote, "--noremote_accept_cached", "--define=k=x"],
-    );
-    assert_eq!(labels, want);
-    assert_eq!(remote_hits(&stderr), None, "{stderr}");
-    assert!(stderr.contains("wrote 2 of 2"), "{stderr}");
+    assert!(stderr.contains("base digests: wrote 2 of 2"), "{stderr}");
     let (_, stderr) = repo.run(&first, &second, &[build, &remote, "--define=k=x"]);
     assert_eq!(remote_hits(&stderr), Some((2, 2)), "{stderr}");
     // Corrupt entries are misses: analysed (and written again).
@@ -1148,6 +1218,44 @@ fn base_digests_are_shared_through_an_http_remote_cache() {
     assert_eq!(remote_hits(&stderr), None, "{stderr}");
 }
 
+/// A checkout whose `git submodule update` fails still plans and compares,
+/// but writes nothing to the remote cache.
+#[test]
+fn a_failed_submodule_update_writes_no_remote_digests() {
+    let repo = Repo::new();
+    let server = http_cache::Server::new();
+    let remote = format!("--remote_cache={}", server.url());
+    let build = "--affected_command=build";
+    let mut files: Vec<(&str, &str)> = PACKAGES.to_vec();
+    files.push((
+        ".gitmodules",
+        "[submodule \"sub\"]\n\tpath = sub\n\turl = /nonexistent/submodule\n",
+    ));
+    let first = repo.commit(&files);
+    repo.git(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("160000,{first},sub"),
+    ]);
+    repo.git(&["commit", "-q", "-m", "a submodule"]);
+    let with_sub = repo.git(&["rev-parse", "HEAD"]);
+    // An unpopulated submodule (an empty directory): no change of its own.
+    fs::create_dir_all(repo.main().join("sub")).unwrap();
+    let second = repo.commit(&[("a/a.txt", "a2\n")]);
+    let (want, _) = repo.run(&with_sub, &second, &[build, "--noaffected_remote_digests"]);
+    assert_eq!(want, ["//a", "//b"]);
+    let (labels, stderr) = repo.run(&with_sub, &second, &[build, &remote]);
+    assert_eq!(labels, want);
+    assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
+    assert!(
+        stderr.contains("nothing is written to the remote cache in this run"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("wrote"), "{stderr}");
+    assert!(server.ac().is_empty());
+}
+
 include!("support/grpc_cache_server.rs");
 
 /// The same through a gRPC cache, for a global change (both revisions
@@ -1166,12 +1274,12 @@ fn base_digests_are_shared_through_a_grpc_remote_cache() {
     let (want, stderr) = repo.run(&first, &second, &[build, "--noaffected_remote_digests"]);
     assert!(stderr.contains("global change: MODULE.bazel"), "{stderr}");
     assert_eq!(want, ["//a", "//b"]);
-    let (labels, stderr) = repo.run(&first, &second, &[build, &remote]);
+    let (labels, stderr) = repo.run_in_place(&first, &[build, &remote]);
     assert_eq!(labels, want);
     assert_eq!(remote_hits(&stderr), Some((0, 4)), "{stderr}");
     assert!(stderr.contains("wrote 4 of 4"), "{stderr}");
     assert_eq!(server.ac_keys("").len(), 4);
-    let (labels, stderr) = repo.run(&first, &second, &[build, &remote]);
+    let (labels, stderr) = repo.run_in_place(&first, &[build, &remote]);
     assert_eq!(labels, want);
     assert_eq!(remote_hits(&stderr), Some((4, 4)), "{stderr}");
     assert_eq!(plannings(&stderr), 1, "{stderr}");
@@ -1185,7 +1293,7 @@ fn base_digests_are_shared_through_a_grpc_remote_cache() {
         file.contents.clear();
         server.put_ac("", &key, result.encode());
     }
-    let (labels, stderr) = repo.run(&first, &second, &[build, &remote]);
+    let (labels, stderr) = repo.run_in_place(&first, &[build, &remote]);
     assert_eq!(labels, want);
     assert_eq!(remote_hits(&stderr), Some((4, 4)), "{stderr}");
     // ... and one evicted from it is a miss.
@@ -1193,7 +1301,7 @@ fn base_digests_are_shared_through_a_grpc_remote_cache() {
     let result =
         bazel_rs::reapi::ActionResult::decode(&server.ac_entry("", &key).unwrap()).unwrap();
     assert!(server.evict("", &result.output_files[0].digest.hash));
-    let (labels, stderr) = repo.run(&first, &second, &[build, &remote]);
+    let (labels, stderr) = repo.run_in_place(&first, &[build, &remote]);
     assert_eq!(labels, want);
     assert_eq!(remote_hits(&stderr), Some((3, 4)), "{stderr}");
 }

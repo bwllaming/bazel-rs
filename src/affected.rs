@@ -824,10 +824,35 @@ struct Options {
     /// The working copy a planning in place runs in: its analysis snapshot
     /// is saved for the commands after `affected` ([`SAVE_VAR`]).
     in_place: Option<PathBuf>,
-    /// `--[no]affected_remote_digests` (default on): share the base's
-    /// digests through the configured remote cache ([`remote`]).
-    remote: bool,
+    /// `--affected_remote_digests=off|read|readwrite` (default
+    /// `readwrite`): share digests through the configured remote cache
+    /// ([`remote`]).
+    remote: RemoteMode,
+    /// `--affected_remote_digests_epoch=STRING` (else
+    /// [`EPOCH_VAR`]): a salt of the remote key.
+    epoch: Option<String>,
 }
+
+/// What `affected` does with the remote cache's digests (§8.11),
+/// whatever `--remote_accept_cached` and `--remote_upload_local_results`
+/// say (they govern action results).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RemoteMode {
+    Off,
+    /// Look up, never write (PR jobs).
+    Read,
+    /// Look up and write through (main and merge-queue jobs).
+    #[default]
+    ReadWrite,
+}
+
+/// The remote key's salt when `--affected_remote_digests_epoch` is not
+/// given: changing it retires every entry written before.
+pub const EPOCH_VAR: &str = "BAZEL_RS_AFFECTED_DIGESTS_EPOCH";
+
+/// Set once a `git submodule update` of a checkout failed in this run: the
+/// run still plans and compares, but writes nothing to the remote cache.
+static SUBMODULES_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Set in a planning process that runs in the working copy (the head
 /// revision planned in place): its analysis snapshot is saved, under a key
@@ -840,7 +865,6 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut options = Options {
         command: "test".to_owned(),
         scope: true,
-        remote: true,
         ..Options::default()
     };
     let mut args = args.iter();
@@ -899,16 +923,20 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--noconcurrent_revisions" => options.concurrent = Some(false),
             "--affected_remote_digests" => {
                 options.remote = match arg.split_once('=').map(|(_, value)| value) {
-                    None | Some("true" | "yes" | "1") => true,
-                    Some("false" | "no" | "0") => false,
+                    None | Some("readwrite" | "true" | "yes" | "1") => RemoteMode::ReadWrite,
+                    Some("read") => RemoteMode::Read,
+                    Some("off" | "false" | "no" | "0") => RemoteMode::Off,
                     Some(other) => {
                         return Err(format!(
-                            "--affected_remote_digests must be true or false, not {other}"
+                            "--affected_remote_digests must be off, read or readwrite, not {other}"
                         ));
                     }
                 }
             }
-            "--noaffected_remote_digests" => options.remote = false,
+            "--noaffected_remote_digests" => options.remote = RemoteMode::Off,
+            "--affected_remote_digests_epoch" => {
+                options.epoch = Some(value("affected_remote_digests_epoch")?);
+            }
             "--include_incompatible" => options.include_incompatible = true,
             "--include_manual" => options.include_manual = true,
             "--noinclude_manual" => options.include_manual = false,
@@ -1013,10 +1041,19 @@ fn checkout(top: &Path, dir: &Path, commit: &str) -> Result<(), String> {
             ],
         )?;
     }
-    let _ = git(
+    if let Err(error) = git(
         dir,
         &["submodule", "--quiet", "update", "--init", "--recursive"],
-    );
+    ) {
+        // The checkout may lack files the commit's tree names: its digests
+        // are fine to compare here, never to share.
+        if !SUBMODULES_FAILED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!(
+                "bazel-rs affected: {error} in {}: nothing is written to the remote cache in this run",
+                dir.display()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1188,14 +1225,16 @@ fn read_scope(out: &Path) -> Option<Scope> {
     read_scope_file(out).ok()
 }
 
-/// The remote cache's base digests of this run (§8.11).
+/// The remote cache's digests of this run (§8.11).
 struct RemoteBase {
-    /// The base key ([`remote_base_key`]).
+    /// The base's key ([`remote_base_key`]).
     key: String,
-    /// `--remote_accept_cached`: looked up.
-    accept: bool,
-    /// `--remote_upload_local_results`: written through.
-    upload: bool,
+    /// `readwrite`.
+    write: bool,
+    /// What a key needs besides the tree.
+    binary: Digest32,
+    environment: String,
+    epoch: String,
 }
 
 /// Plans `options.patterns` in `workspace` and returns its digests.
@@ -1314,6 +1353,7 @@ fn remote_base_key(
     tree: &str,
     below: &Path,
     environment: &str,
+    epoch: &str,
 ) -> String {
     let filtered = Options {
         command: options.command.clone(),
@@ -1331,6 +1371,8 @@ fn remote_base_key(
         digests_key_of(binary, startup, &filtered).as_bytes(),
     );
     frame(&mut hash, environment.as_bytes());
+    frame(&mut hash, b"epoch");
+    frame(&mut hash, epoch.as_bytes());
     hex(&hash.finalize().into())
 }
 
@@ -1676,9 +1718,9 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             root: &root,
             dir: &keep,
         };
-        let remote_base = if options.remote && !from_file {
+        let remote_base = if options.remote != RemoteMode::Off {
             match helper.run("probe", "probe", "", []) {
-                Ok(probe) if probe.remote && (probe.accept || probe.upload) => {
+                Ok(probe) if probe.remote => {
                     let tree = git(
                         &root,
                         &["rev-parse", "--verify", &format!("{base_commit}^{{tree}}")],
@@ -1688,8 +1730,18 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                             format!("cannot read {}: {error}", binary.display())
                         })?)
                         .into();
-                    let environment =
-                        remote::environment_key(binary, startup, &root, &options.forwarded);
+                    let environment = remote::environment_key(
+                        binary,
+                        startup,
+                        &root,
+                        &options.forwarded,
+                        &remote::HostState::of(&top),
+                    );
+                    let epoch = options
+                        .epoch
+                        .clone()
+                        .or_else(|| std::env::var(EPOCH_VAR).ok())
+                        .unwrap_or_default();
                     Some(RemoteBase {
                         key: remote_base_key(
                             &binary_digest,
@@ -1698,15 +1750,18 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                             &tree,
                             &below,
                             &environment,
+                            &epoch,
                         ),
-                        accept: probe.accept,
-                        upload: probe.upload,
+                        write: options.remote == RemoteMode::ReadWrite,
+                        binary: binary_digest,
+                        environment,
+                        epoch,
                     })
                 }
                 Ok(_) => None,
                 Err(error) => {
                     eprintln!(
-                        "bazel-rs affected: remote base digests unavailable ({error}): planning the base"
+                        "bazel-rs affected: remote digests unavailable ({error}): planning the base"
                     );
                     None
                 }
@@ -1746,13 +1801,17 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 }
             }
         };
-        // Writes the base digests of `asked` (a successful planning's;
-        // `absent` for an asked target it does not have).
+        // Writes the digests of `asked` under `key` (a successful
+        // planning's of revision `what`; `absent` for an asked target it
+        // does not have): in `readwrite` mode, unless a checkout's
+        // submodules failed.
         let write_through = |remote: &RemoteBase,
+                             key: &str,
+                             what: &str,
                              planned: &BTreeMap<String, String>,
                              asked: &std::collections::BTreeSet<String>,
                              absent: bool| {
-            if !remote.upload {
+            if !remote.write || SUBMODULES_FAILED.load(std::sync::atomic::Ordering::Relaxed) {
                 return;
             }
             let puts: Vec<String> = asked
@@ -1768,23 +1827,23 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 return;
             }
             let count = puts.len();
-            match helper.run("upload", "upload", &remote.key, puts) {
+            match helper.run(&format!("upload-{what}"), "upload", key, puts) {
                 Ok(response) => {
                     if let Some(error) = &response.error {
-                        eprintln!("bazel-rs affected: remote base digests: {error}");
+                        eprintln!("bazel-rs affected: remote {what} digests: {error}");
                     }
                     eprintln!(
-                        "bazel-rs affected: base digests: wrote {} of {count} to the remote cache",
+                        "bazel-rs affected: {what} digests: wrote {} of {count} to the remote cache",
                         response.stored
                     );
                 }
                 Err(error) => {
-                    eprintln!("bazel-rs affected: remote base digests not written ({error})")
+                    eprintln!("bazel-rs affected: remote {what} digests not written ({error})")
                 }
             }
         };
         let mut base_entire = false;
-        let accepting = remote_base.as_ref().filter(|remote| remote.accept);
+        let accepting = remote_base.as_ref().filter(|_| !from_file);
         let (mut base_planned, head) = if let Some(remote) = accepting {
             let head_scope = if !scoped {
                 None
@@ -1974,7 +2033,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 }),
                 Some((Err(error), _)) => every(error)?,
                 Some((Ok((planned, entire)), asked)) => {
-                    write_through(remote, &planned.digests, &asked, true);
+                    write_through(remote, &remote.key, "base", &planned.digests, &asked, true);
                     if let Scope::Full(reason) = &planned.scope {
                         // A root reaching the change at the base: the base
                         // planned everything, and so is the head.
@@ -2164,14 +2223,37 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 };
             }
         }
-        // `--noremote_accept_cached`: the base was planned as without a
-        // remote cache; its digests are still written through.
-        if let Some(remote) = remote_base.as_ref().filter(|remote| !remote.accept)
-            && let Some(planned) = &base_planned
-            && !from_file
+        // The head's digests too, under its own tree's key, when it is a
+        // commit planned in a clean worktree (never the working copy in
+        // place: its ignored files can feed globs): the newest main commit
+        // gets the entries of the PRs based on it.
+        if let Some(remote) = &remote_base
+            && remote.write
+            && !head_in_place
+            && let Some(commit) = &head_commit
         {
-            let asked = planned.digests.keys().cloned().collect();
-            write_through(remote, &planned.digests, &asked, false);
+            let tree = git(
+                &root,
+                &["rev-parse", "--verify", &format!("{commit}^{{tree}}")],
+            )?;
+            let key = remote_base_key(
+                &remote.binary,
+                startup,
+                &options,
+                &tree,
+                &below,
+                &remote.environment,
+                &remote.epoch,
+            );
+            let asked = match &head.scope {
+                Scope::Scoped(scope) => scope
+                    .iter()
+                    .filter(|label| head.digests.contains_key(*label))
+                    .cloned()
+                    .collect(),
+                Scope::None | Scope::Full(_) => head.digests.keys().cloned().collect(),
+            };
+            write_through(remote, &key, "head", &head.digests, &asked, false);
         }
         if let (Some(path), Some(commit), Some(key)) = (&options.write_digests, &head_commit, &key)
         {
@@ -2373,7 +2455,7 @@ mod tests {
             parse(&all).unwrap()
         };
         let key = |options: &Options, tree: &str, environment: &str| {
-            remote_base_key(&binary, &[], options, tree, Path::new(""), environment)
+            remote_base_key(&binary, &[], options, tree, Path::new(""), environment, "")
         };
         let plain = parsed(&[]);
         let base = key(&plain, "t", "e");
@@ -2382,11 +2464,11 @@ mod tests {
         assert_ne!(base, key(&plain, "t", "e2"));
         assert_ne!(
             base,
-            remote_base_key(&[8u8; 32], &[], &plain, "t", Path::new(""), "e")
+            remote_base_key(&[8u8; 32], &[], &plain, "t", Path::new(""), "e", "")
         );
         assert_ne!(
             base,
-            remote_base_key(&binary, &[], &plain, "t", Path::new("sub"), "e")
+            remote_base_key(&binary, &[], &plain, "t", Path::new("sub"), "e", "")
         );
         for other in [
             &["--include_manual"][..],
@@ -2415,9 +2497,46 @@ mod tests {
             ]),
             ["--define=x=y", "--remote_executor=grpc://e"]
         );
-        let off = parsed(&["--noaffected_remote_digests"]);
-        assert!(!off.remote && plain.remote);
-        assert!(!parsed(&["--affected_remote_digests=false"]).remote);
+        // The epoch retires entries.
+        assert_ne!(
+            base,
+            remote_base_key(&binary, &[], &plain, "t", Path::new(""), "e", "2")
+        );
+        assert_eq!(
+            base,
+            key(&parsed(&["--affected_remote_digests_epoch=2"]), "t", "e"),
+            "the epoch enters as its own argument, not as an option"
+        );
+        // The modes and their aliases.
+        let mode = |args: &[&str]| parsed(args).remote;
+        assert_eq!(plain.remote, RemoteMode::ReadWrite);
+        for (args, want) in [
+            (&["--affected_remote_digests"][..], RemoteMode::ReadWrite),
+            (
+                &["--affected_remote_digests=readwrite"],
+                RemoteMode::ReadWrite,
+            ),
+            (&["--affected_remote_digests=yes"], RemoteMode::ReadWrite),
+            (&["--affected_remote_digests=read"], RemoteMode::Read),
+            (&["--affected_remote_digests=off"], RemoteMode::Off),
+            (&["--affected_remote_digests=false"], RemoteMode::Off),
+            (&["--noaffected_remote_digests"], RemoteMode::Off),
+        ] {
+            assert_eq!(mode(args), want, "{args:?}");
+        }
+        assert!(
+            parse(&[
+                "--base=x".to_owned(),
+                "--affected_remote_digests=rw".to_owned()
+            ])
+            .is_err()
+        );
+        assert_eq!(
+            parsed(&["--affected_remote_digests_epoch=e1"])
+                .epoch
+                .as_deref(),
+            Some("e1")
+        );
     }
 
     #[test]

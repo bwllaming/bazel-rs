@@ -1,14 +1,16 @@
 //! Base digests shared through the configured remote cache
 //! (docs/AFFECTED_TARGETS.md §8.11): one Action Cache entry per target of a
-//! base revision, written through by any `affected` that planned the base,
-//! read by the next one before it plans the base.
+//! revision, written through by a `readwrite` `affected` that planned it
+//! (a base, or a head in a clean worktree), read by the next one before it
+//! plans its base.
 //!
-//! **Entries.** The *base key* (computed by the orchestrator,
-//! [`super::remote_base_key`]) covers the base commit's tree, the
+//! **Entries.** A revision's key (computed by the orchestrator,
+//! [`super::remote_base_key`]) covers its commit's tree, the
 //! workspace's directory in it, this binary, the command, options and
-//! patterns, and the client state outside the tree that the planning reads
-//! (rc files outside the workspace, the variables an rc or command-line
-//! option names for inheritance). An entry's Action Cache key is the
+//! patterns, the client state outside the tree that the planning reads
+//! (OS and architecture, LFS smudging, rc files outside the workspace, the
+//! variables an rc or command-line option names for inheritance) and the
+//! epoch. An entry's Action Cache key is the
 //! sha256 of the framed bytes `bazel-rs-affected-digest-v1`, the base key
 //! and the label — no digest of any `Action`, so genuine Bazel never looks
 //! it up. Its ActionResult has one output file, [`RECORD_PATH`], whose
@@ -282,18 +284,15 @@ pub fn remote_op(request: &Path) -> i32 {
         let request = parse_request(&text)?;
         let cache = crate::remote_cache::active().filter(|cache| cache.has_remote());
         let flag = |value: bool| if value { "1" } else { "0" };
-        out.push_str(&format!(
-            "remote\t{}\naccept\t{}\nupload\t{}\n",
-            flag(cache.is_some()),
-            flag(cache.is_some_and(|cache| cache.accept_cached)),
-            flag(cache.is_some_and(|cache| cache.upload_local_results)),
-        ));
+        // `--remote_accept_cached` and `--remote_upload_local_results`
+        // govern action results: the orchestrator's mode decides here.
+        out.push_str(&format!("remote\t{}\n", flag(cache.is_some())));
         let Some(cache) = cache else {
             return Ok(());
         };
         match request.op.as_str() {
             "probe" => {}
-            "lookup" if cache.accept_cached => {
+            "lookup" => {
                 let (found, error) = until_failure(&request.labels, |label| {
                     lookup_one(cache, &request.key, label)
                 });
@@ -312,7 +311,7 @@ pub fn remote_op(request: &Path) -> i32 {
                     out.push_str(&format!("error\t{}\n", one_line(&error)));
                 }
             }
-            "upload" if cache.upload_local_results => {
+            "upload" => {
                 let (stored, error) = until_failure(&request.puts, |(label, value)| {
                     if !valid_value(value) {
                         return Err(format!("{label}: not a storable value {value:?}"));
@@ -325,7 +324,6 @@ pub fn remote_op(request: &Path) -> i32 {
                     out.push_str(&format!("error\t{}\n", one_line(&error)));
                 }
             }
-            "lookup" | "upload" => {}
             other => return Err(format!("unknown affected remote request {other:?}")),
         }
         Ok(())
@@ -353,10 +351,6 @@ pub fn remote_op(request: &Path) -> i32 {
 pub(super) struct Response {
     /// A remote cache is configured.
     pub remote: bool,
-    /// `--remote_accept_cached`.
-    pub accept: bool,
-    /// `--remote_upload_local_results`.
-    pub upload: bool,
     pub hits: BTreeMap<String, String>,
     pub malformed: usize,
     pub stored: usize,
@@ -378,8 +372,6 @@ fn parse_response(text: &str) -> Result<Response, String> {
     for line in lines {
         match line.split_once('\t') {
             Some(("remote", value)) => response.remote = value == "1",
-            Some(("accept", value)) => response.accept = value == "1",
-            Some(("upload", value)) => response.upload = value == "1",
             Some(("hit", rest)) => match rest.split_once('\t') {
                 Some((label, value)) if valid_value(value) => {
                     response.hits.insert(label.to_owned(), value.to_owned());
@@ -462,6 +454,45 @@ impl Helper<'_> {
     }
 }
 
+/// The host's state a checkout and its planning depend on beyond the
+/// tree: runners of other platforms, or with other LFS smudging, must not
+/// share (and overwrite) each other's entries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct HostState {
+    pub os: String,
+    pub arch: String,
+    /// `GIT_LFS_SKIP_SMUDGE`.
+    pub lfs_skip_smudge: Option<String>,
+    /// A `git-lfs` executable on `PATH`.
+    pub lfs_installed: bool,
+    /// `git config --get-regexp '^filter\.'` of the repository (the LFS
+    /// filter's configuration, and any other smudge filter).
+    pub filters: String,
+}
+
+impl HostState {
+    pub fn of(top: &Path) -> Self {
+        let lfs_installed = std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|dir| dir.join("git-lfs").is_file())
+        });
+        let filters =
+            crate::spawn_lock::output(std::process::Command::new("git").arg("-C").arg(top).args([
+                "config",
+                "--get-regexp",
+                "^filter\\.",
+            ]))
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .unwrap_or_else(|error| format!("unknown: {error}"));
+        Self {
+            os: std::env::consts::OS.to_owned(),
+            arch: std::env::consts::ARCH.to_owned(),
+            lfs_skip_smudge: std::env::var("GIT_LFS_SKIP_SMUDGE").ok(),
+            lfs_installed,
+            filters,
+        }
+    }
+}
+
 /// The client state outside the tree that a planning reads: the rc files
 /// outside the workspace `root` (system, home, `$BAZELRC`, `--bazelrc` and
 /// their imports, by path and contents), and the values of the client
@@ -476,9 +507,18 @@ pub(super) fn environment_key(
     startup: &[String],
     root: &Path,
     forwarded: &[String],
+    host: &HostState,
 ) -> String {
     let mut hash = Sha256::new();
-    frame(&mut hash, b"environment-v1");
+    frame(&mut hash, b"environment-v2");
+    frame(&mut hash, host.os.as_bytes());
+    frame(&mut hash, host.arch.as_bytes());
+    match &host.lfs_skip_smudge {
+        Some(value) => frame(&mut hash, format!("lfs-skip-smudge={value}").as_bytes()),
+        None => frame(&mut hash, b"lfs-skip-smudge unset"),
+    }
+    frame(&mut hash, &[u8::from(host.lfs_installed)]);
+    frame(&mut hash, host.filters.as_bytes());
     let var = |name: &str| std::env::var(name).unwrap_or_default();
     let env = crate::bazelrc::ClientEnv {
         cwd: root.to_string_lossy().into_owned(),
@@ -628,7 +668,7 @@ mod tests {
         let ignore = ["--ignore_all_rc_files".to_owned()];
         let key = |startup: &[String], forwarded: &[&str]| {
             let forwarded: Vec<String> = forwarded.iter().map(|arg| (*arg).to_owned()).collect();
-            environment_key(binary, startup, &root, &forwarded)
+            environment_key(binary, startup, &root, &forwarded, &HostState::default())
         };
         let plain = key(&ignore, &[]);
         assert_eq!(plain, key(&ignore, &["--define=a=b"]));
@@ -663,6 +703,54 @@ mod tests {
     }
 
     #[test]
+    fn the_environment_key_covers_the_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let startup = ["--ignore_all_rc_files".to_owned()];
+        let key = |host: &HostState| {
+            environment_key(Path::new("/bin/true"), &startup, dir.path(), &[], host)
+        };
+        let base = HostState {
+            os: "linux".into(),
+            arch: "x86_64".into(),
+            ..HostState::default()
+        };
+        let plain = key(&base);
+        assert_eq!(plain, key(&base.clone()));
+        for other in [
+            HostState {
+                os: "macos".into(),
+                ..base.clone()
+            },
+            HostState {
+                arch: "aarch64".into(),
+                ..base.clone()
+            },
+            HostState {
+                lfs_skip_smudge: Some("1".into()),
+                ..base.clone()
+            },
+            HostState {
+                lfs_skip_smudge: Some(String::new()),
+                ..base.clone()
+            },
+            HostState {
+                lfs_installed: true,
+                ..base.clone()
+            },
+            HostState {
+                filters: "filter.lfs.smudge git-lfs smudge -- %f\n".into(),
+                ..base.clone()
+            },
+        ] {
+            assert_ne!(plain, key(&other), "{other:?}");
+        }
+        // The host's own state is read.
+        let host = HostState::of(dir.path());
+        assert_eq!(host.os, std::env::consts::OS);
+        assert_eq!(host.arch, std::env::consts::ARCH);
+    }
+
+    #[test]
     fn requests_and_responses_parse() {
         let request = parse_request(&format!(
             "{EXCHANGE_HEADER}\nop\tupload\nkey\tk\nput\t//a:b\tabsent\nlabel\t//c:d\n"
@@ -673,10 +761,10 @@ mod tests {
         assert_eq!(request.labels, ["//c:d"]);
         assert!(parse_request("x\n").is_err());
         let response = parse_response(&format!(
-            "{EXCHANGE_HEADER}\nremote\t1\naccept\t1\nupload\t0\nhit\t//a:b\tincompatible\nmalformed\t2\nerror\tdown\n"
+            "{EXCHANGE_HEADER}\nremote\t1\nhit\t//a:b\tincompatible\nmalformed\t2\nerror\tdown\n"
         ))
         .unwrap();
-        assert!(response.remote && response.accept && !response.upload);
+        assert!(response.remote);
         assert_eq!(response.hits.len(), 1);
         assert_eq!(response.malformed, 2);
         assert_eq!(response.error.as_deref(), Some("down"));

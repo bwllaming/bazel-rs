@@ -325,7 +325,8 @@ bazel-rs [STARTUP...] affected --base=REV [--head=REV] [--worktree=DIR]
     [--affected_command=test|build] [--keep_digests=DIR] [--explain_affected]
     [--include_incompatible] [--include_manual] [--scope=auto|full]
     [--[no]concurrent_revisions] [--write_digests=FILE] [--base_digests=FILE]
-    [--[no]affected_remote_digests] [--base_failure=error|all]
+    [--affected_remote_digests=off|read|readwrite]
+    [--affected_remote_digests_epoch=STRING] [--base_failure=error|all]
     [BUILD OPTIONS...] [PATTERNS... | -- PATTERNS...]
 ```
 
@@ -536,11 +537,13 @@ CI job, instead of TD's four cqueries plus two more analyses.
 - **Non-hermetic inputs** are not seen, as in TD: host tools, inherited
   `--action_env=NAME` values (only the name is keyed, before `finalize`),
   files outside the plan.
-- **Remote base digests** (§8.11) carry a writer's world to a reader: the
-  key covers the tree, binary, options, outer rc files and inherited
-  variables, not host tools or the rest of the environment. A difference
-  there makes targets reported affected, which is the safe direction,
-  except when a change exactly undoes it (contrived).
+- **Remote digests** (§8.11) carry a writer's world to a reader. A gap in
+  the key (host tools, the environment beyond what is keyed) only
+  over-reports, except when a change exactly undoes it (§8.11, "Trust").
+  The real risk is trust: one entry decides "not affected" for every PR on
+  its base, so only trusted jobs should write (`readwrite`), PR jobs
+  `read`, and a cache that untrusted jobs can write to needs server-side
+  write authentication.
 - **Analysis cost.** The full `test --nobuild //...` analysis is about
   the cost of one TD cquery. Its peak is 9.1–9.2 GB; a scoped run peaks at
   4.2 GB, while loading `//...` (§8.5).
@@ -1137,8 +1140,27 @@ a remote cache (`--remote_cache` in `.bazelrc`, uploads on). `affected` now
 writes every base digest it computes there and looks them up before it plans
 a base: write-through, no separate job, no file to pass around.
 
-**Flow** (a remote cache configured, `--remote_accept_cached`, no
-`--base_digests` file that holds the base, not `--noaffected_remote_digests`):
+**Modes.** `--affected_remote_digests=off|read|readwrite`, default
+`readwrite` (the design: write-through from every job). `read` looks up and
+never writes; `off` does neither (the flow of §8.3 unchanged).
+`--affected_remote_digests` alone means `readwrite`, `--noaffected_remote_digests`
+`off` (and `=true|yes|1`, `=false|no|0`). The mode alone decides: Bazel's
+`--remote_accept_cached` and `--remote_upload_local_results` govern action
+results, not these entries.
+
+**Recommended CI setup.** PR jobs `--affected_remote_digests=read`; main
+and merge-queue jobs (trusted code) `readwrite`, with `--head=HEAD` so that
+they write their head's digests too (below). The flag only keeps honest
+jobs from writing: if untrusted PRs ever get credentials for the cache,
+server-side ACLs (authenticated writes, e.g. a write-only token for the
+trusted jobs) are the real protection. A bad batch (a writer's bug) is
+retired without a release by a new epoch:
+`--affected_remote_digests_epoch=STRING` or `BAZEL_RS_AFFECTED_DIGESTS_EPOCH`
+(the flag wins) enters the key, so every entry written under another epoch
+is ignored.
+
+**Flow** (a remote cache configured, mode not `off`, no `--base_digests`
+file that holds the base):
 
 1. The head is planned first (in place or in its worktree, scoped as
    before).
@@ -1156,10 +1178,24 @@ a base: write-through, no separate job, no file to pass around.
    before). It starts as soon as the lookup is done when both revisions
    are planned concurrently (§8.3), after the head otherwise. A failed
    base planning runs once more, then entirely, as before.
-5. Its digests of the asked targets are written (`absent` for an asked
-   target the base does not select), unless `--noremote_upload_local_results`.
-   With `--noremote_accept_cached` the base is planned as without a remote
-   cache and its digests are still written.
+5. In `readwrite` mode its digests of the asked targets are written
+   (`absent` for an asked target the base does not select).
+6. In `readwrite` mode the **head's** digests (the compared ones: its
+   scope's, or all) are written too, under its own tree's key, when the head
+   is a commit planned in a clean worktree — `--head=REV`, or
+   `BAZEL_RS_AFFECTED_HEAD_IN_PLACE=0` — never when the working copy is
+   planned in place (§8.8): its ignored files can feed globs, and they are
+   not the commit's. So the newest main commit has entries for the PRs
+   based on it. ~/code's main job runs `affected --base=HEAD^` in its
+   checkout, which plans the head in place: it writes head digests only
+   with `--head=HEAD` added, at the cost of §8.8's in-place snapshot for
+   the commands after it (a main job that only writes can afford that; one
+   that builds after `affected` keeps the in-place head and writes base
+   digests only).
+7. A checkout (base or head worktree) whose `git submodule update` failed
+   may lack files its tree names: the run still plans and compares, but
+   writes nothing (`... nothing is written to the remote cache in this
+   run`).
 
 The comparison is the one without the remote cache: the head's scope (or
 all its targets) against the base digests, hits and planned ones merged.
@@ -1176,9 +1212,9 @@ so every package loading it — every target whose analysis could use the
 transition — is marked at the head already. A planned base still runs the
 check (step 4); only an all-hit run skips it.
 
-**Keys.** The *base key* is the sha256 of the framed
-`bazel-rs-affected-remote-key-v1`, the base commit's **tree**
-(`git rev-parse BASE^{tree}`: an identical tree reached through another
+**Keys.** The key of a revision's entries is the sha256 of the framed
+`bazel-rs-affected-remote-key-v1`, the commit's **tree**
+(`git rev-parse REV^{tree}`: an identical tree reached through another
 commit shares the entries), the workspace's directory in the repository,
 the `--write_digests` key of this binary (its sha256), the command, the
 options and the patterns (with `--include_manual`) — without the remote
@@ -1186,14 +1222,41 @@ cache's transport and policy options (`--remote_cache`, `--remote_header`,
 `--[no]remote_upload_local_results`, `--[no]remote_accept_cached`,
 `--credential_helper`, `--disk_cache`, TLS, timeouts, retries: they change
 no digest, and a read-only PR job shares a writer's entries) — and the
-client state outside the tree: the rc files outside the workspace that the
-planning reads (system, home, `$BAZELRC`, `--bazelrc` and their imports, by
+client state outside the tree, and the epoch. The client state: the OS and architecture
+(`std::env::consts`), the LFS smudging (`GIT_LFS_SKIP_SMUDGE`, whether a
+`git-lfs` is on `PATH`, the repository's `filter.*` git configuration: a
+checkout without smudging holds pointer files), the rc files outside the
+workspace that the planning reads (system, home, `$BAZELRC`, `--bazelrc` and their imports, by
 path and contents) and the values of the variables an rc or command-line
 `--action_env`, `--host_action_env`, `--test_env` or `--repo_env` names
 without a value (the workspace's location in them normalized). The rest of
 the client environment is not keyed: `PATH` holds per-runner paths on
 ~/code's CI (`.envrc`), and the target digests do not key inherited values
 either (§7). `--include_incompatible` only filters the output: not keyed.
+
+**Trust: why a key gap only over-reports, and what remains.** A reader
+compares its head's digest with an entry a writer computed for the base. A
+gap in the key means the writer's world differed from the reader's (another
+host tool, another environment). The entry then holds the base's digest *in
+the writer's world*; the reader reports the target unaffected only when its
+head digest equals that entry, i.e. when the reader's head graph — every
+action, input content and producer, in the reader's world — is exactly the
+writer's base graph. A world difference that reaches the target's actions
+therefore makes the digests differ (reported affected: the safe
+direction), unless the PR's change exactly undoes the difference (an edit
+that sets explicitly what the writer's environment supplied). What a
+digest never sees, keyed or not, stays unseen as in §7: host tools found
+by path (`/usr/bin/...` outside the plan's inputs), tests that are not
+hermetic or never cached (`external`, `no-cache`, flaky), anything a
+target reads at run time. Those are risks of the digests themselves; the
+remote entries only extend them across machines. The new risk is
+**persistence and trust**: an entry decides "not affected" — no build, no
+test, for `push-changed-containers --include_manual` no push — for every
+PR on that base until it is evicted or the epoch changes, so a bad writer
+(an untrusted job, or an honest writer's bug) is amplified. Hence `read`
+for PR jobs, `readwrite` for trusted ones, the epoch to retire a batch,
+write-skipping after a failed submodule checkout, and server-side
+authenticated writes where untrusted jobs hold cache credentials.
 
 **The record format.** Per target, one Action Cache entry whose key is the
 sha256 of the framed `bazel-rs-affected-digest-v1`, base key and label
@@ -1226,13 +1289,18 @@ the working copy, under `BAZEL_RS_AFFECTED_REMOTE_OP` — sets the cache up
 exactly as a planning would (rc files, credential helpers, TLS), then makes
 the requests (16 at a time) instead of running the command. One probes
 before the head starts (no remote cache: the flow of §8.3 unchanged), one
-looks up, one writes.
+looks up, one writes the base's and one the head's digests.
 
 **Tests** (`tests/affected.rs`): an HTTP cache — miss, all hit (one
-planning), the same tree through another commit, a partial hit
-(sequential), a new target (`absent`), other options (another key),
-read-only, `--noremote_accept_cached`, corrupt entries (another label's
-record, garbage), the cache down, no cache; a gRPC cache with a global
+planning), head digests written from a worktree and hit as the next
+commit's base, none from a working copy in place, the same tree through
+another commit, a partial hit (sequential), a new target (`absent`), other
+options, another epoch (flag; the variable), another LFS smudging (another
+key each), `read` (never writes), `readwrite` with
+`--noremote_upload_local_results --noremote_accept_cached` (still reads and
+writes), corrupt entries (another label's record, garbage), the cache
+down, no cache; a failed submodule update (planned and compared, nothing
+written); a gRPC cache with a global
 change — miss, hit, entries without inlined contents (read from the CAS),
 an evicted record (a miss). Every run's output equals the run without the
 remote cache.

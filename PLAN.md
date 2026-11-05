@@ -350,6 +350,9 @@ Done since the last increment recorded under "History", one line each:
       missing targets (not at all on an all hit). PR 13252 warm: CPU 243 →
       94 s, peak 8.5 → 4.8 GB; cold all hit 493 → 400 s CPU, 9.2 → 4.9 GB;
       a partial hit (499 of 552) plans 53 base targets; output identical.
+      Modes `off|read|readwrite` (PR jobs `read`), head digests from a clean
+      worktree, a key epoch, OS/arch/LFS in the key, no writes after a failed
+      submodule update.
 - [ ] Lukewarm `affected`: a requirements bump re-executes every wheel
       repository of the `pip` extension group (~270–500 executions, ~25 s per
       planning) and re-evaluates `pip`, so the head is not saved for the build.
