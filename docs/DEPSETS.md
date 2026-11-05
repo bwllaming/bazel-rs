@@ -209,3 +209,20 @@ the same type; cannot mix ...`), and mutable elements are Bazel's
 Paired capture: `artifacts/depset_structs-capture.py`, receipt
 `tests/fixtures/depset_structs/reference_receipt.json` (N49b rows: package
 `df` of the fixture workspace; the N49 capture is in its `history`).
+
+## Memoized walks (cold-analysis-speed)
+
+The walks that list a depset's Files for natively consumed inputs
+(`file_list`/`unpack_depset`: action inputs, among others) may start from a
+memoized walk: a node of Files with at least 128 elements, walked a second
+time, keeps its walk (files in walk order and their set) in a process-wide
+table by address, with a weak reference; one byte in the node's padding
+records the state. A walk reaches a memoized node first along the
+first-visited children (default/postorder first child, preorder first child
+without direct elements; never under a topological depset), takes its files,
+and walks the rest exactly as above, deduplicating against the memoized set
+too. The result is NestedSet.toList's, element for element
+(`memoized_walks_list_what_flatten_lists`); the depset's identity, repr and
+`to_list()` are untouched (`flatten()` itself never memoizes). Action
+registration and commit reuse the walk's per-input checks
+(docs/COLD_ANALYSIS.md). Deduplication hashes a File by its path only.

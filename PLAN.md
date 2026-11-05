@@ -303,12 +303,16 @@ Done since the last increment recorded under "History", one line each:
       fetch during that wait. Cold `//src/...` pattern loading (237 s) is unprofiled.
 - [x] Snapshot-miss repository-tree checks: measured ≤ 0.2 s of wall time (the
       3.5 s is summed over threads); not worth weakening tamper detection.
-- [ ] Analysis speed on a snapshot miss: phase 1 is 46 of 51 s on
-      `//src/beyondwork.ai/...` and 95 of 138 s on `//src/...`. On ~/code's
-      `affected` scope (482 targets) the commit of rules_python's ~20k
-      `PyCompile` actions (1,657 runtime inputs each) dominated: commit 70 → 42 s
-      (planning 124 → ~96 s, docs/AFFECTED_TARGETS.md §8.9); registration of
-      those inputs (31 s compute) and phase 1 remain.
+- [x] Analysis speed on a snapshot miss (docs/COLD_ANALYSIS.md): warm
+      repositories, `build --nobuild //src/...` 176 → 78 s (genuine 9.3.1
+      `--batch`: 11 s), `test --nobuild //src/...` 185 → 79 s, the CI
+      `affected --base=HEAD^` 179 → 81 s; memoized depset walks and the
+      PyCompile runtime inputs' checks done once per build, action dumps and
+      affected digests byte-identical.
+- [ ] Analysis on a snapshot miss, remaining: one coordinator thread (genuine
+      spreads 279 s of CPU over 64 cores); parallel rule implementations (P3),
+      shared input vectors for PyCompile-style actions, hash indexes beside
+      the hot `BTreeMap`s (docs/COLD_ANALYSIS.md, "What remains").
 - [x] CI `affected` (PR 13252 sequence affected/query/build, private clone):
       cold 690 → 501 s, lukewarm 467 → 287 s, warm 379 → 151 s: both revisions
       at once by default when memory allows, the faster commit, and the `build`

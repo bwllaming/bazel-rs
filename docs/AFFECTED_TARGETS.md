@@ -48,6 +48,11 @@ same set as the full analysis every time):
 | P2 | lockfile + requirements (global) | 827 s | 800 s; **528 s** concurrent; **537 s** stored base digests | 270 s |
 | P5 | one BUILD edit | 809 s | **96 s** (783 s before the analysis-order fix, §8.6) | 259 s |
 
+A full analysis (no saved snapshot) is about twice as fast since
+docs/COLD_ANALYSIS.md: on the private clone at `80d6724f3a` with warm
+repositories, `affected --base=HEAD^` (802 targets in scope) takes 81 s
+instead of 179 s, with the same output and digests.
+
 Since §8.9 a local change plans both revisions at once by default, the
 planning itself is ~25% faster, and the CI's `build` after `affected`
 derives its plan from it: PR 13252's CI sequence (`affected`, `query`,
