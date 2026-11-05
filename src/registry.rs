@@ -344,6 +344,8 @@ fn redirect_allowed(target: &Url, previous: &[Url]) -> bool {
         && !(target.scheme() == "http" && previous.iter().any(|url| url.scheme() == "https"))
 }
 
+// Pooled keep-alive connections (reqwest's default pool), closed after 30 s
+// idle: below common server keep-alive timeouts (nginx 75 s, CDNs 60 s).
 static CLIENT: LazyLock<Result<Client, String>> =
     LazyLock::new(|| client_with(crate::extension_download::READ_TIMEOUT));
 
@@ -367,6 +369,7 @@ fn client_with(read_timeout: Duration) -> Result<Client, String> {
         .no_deflate()
         .no_zstd()
         .redirect(redirect_policy())
+        .pool_idle_timeout(Duration::from_secs(30))
         .build()
         .map_err(|_| "cannot initialize HTTP transport".into())
 }
@@ -392,7 +395,27 @@ fn read_http(url: Url) -> Result<Option<Vec<u8>>, String> {
         let mut bytes = Vec::new();
         return warm_http_to(url, &mut bytes).map(|found| found.map(|_| bytes));
     }
-    open_http(url)?.map(read_all).transpose()
+    // DownloadManager.downloadAndReadOneUrlForBzlmod (:455-485): a body
+    // cut at the socket is fetched again.
+    let mut round = 0;
+    loop {
+        let Some(response) = open_http(url.clone())? else {
+            return Ok(None);
+        };
+        let mut reader = response;
+        let mut bytes = Vec::new();
+        match reader.read_to_end(&mut bytes) {
+            Ok(_) => return Ok(Some(bytes)),
+            Err(error)
+                if round < crate::extension_download::DOWNLOAD_RETRIES
+                    && crate::extension_download::socket_error(&error)
+                    && crate::extension_download::wait_before_retry(round) =>
+            {
+                round += 1;
+            }
+            Err(_) => return Err("cannot read complete resource body".to_owned()),
+        }
+    }
 }
 
 /// Only module-root warm-ups use this transport. The ordinary blocking
@@ -513,21 +536,49 @@ fn open_http_with(
     // credentialFactory, bazel/BazelRepositoryModule.java:446-477; N41).
     // Redirect hops reuse them under reqwest's same-host rule instead of
     // asking the helper again (docs/REMOTE_CACHE.md).
-    let mut request = client
-        .get(url.as_str())
-        .header(reqwest::header::ACCEPT_ENCODING, "identity");
-    for (name, value) in crate::credentials::download_headers(url.as_str()) {
-        request = request.header(name, value);
-    }
-    // Do not expose reqwest errors: they may contain a redirect URL with secrets.
-    // No request-level timeout: it would bound the whole body transfer.
-    let response = request.send().map_err(|error| {
-        if error.is_timeout() {
-            "HTTP request timed out".to_owned()
-        } else {
-            "HTTP request failed (connection, TLS, or redirect error)".to_owned()
+    let headers = crate::credentials::download_headers(url.as_str());
+    // HttpConnector.connect (java:118-300): a connection failure (also a
+    // pooled keep-alive connection the server closed before answering) and
+    // 403/408/429/5xx (but 501/505) are tried again after a backoff, up to
+    // MAX_ATTEMPTS times; 404/410 and other 4xx are final.
+    let mut attempt = 0;
+    let response = loop {
+        let last = attempt + 1 == crate::extension_download::CONNECT_ATTEMPTS;
+        let mut request = client
+            .get(url.as_str())
+            .header(reqwest::header::ACCEPT_ENCODING, "identity");
+        for (name, value) in &headers {
+            request = request.header(name, value);
         }
-    })?;
+        // Do not expose reqwest errors: they may contain a redirect URL with secrets.
+        // No request-level timeout: it would bound the whole body transfer.
+        match request.send() {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let retry = matches!(status, 403 | 408 | 429)
+                    || (status >= 500 && !matches!(status, 501 | 505));
+                if retry && !last && crate::extension_download::wait_before_retry(attempt) {
+                    attempt += 1;
+                    continue;
+                }
+                break response;
+            }
+            Err(error)
+                if !last
+                    && crate::extension_download::retryable_request_error(&error)
+                    && crate::extension_download::wait_before_retry(attempt) =>
+            {
+                attempt += 1;
+            }
+            Err(error) => {
+                return Err(if error.is_timeout() {
+                    "HTTP request timed out".to_owned()
+                } else {
+                    "HTTP request failed (connection, TLS, or redirect error)".to_owned()
+                });
+            }
+        }
+    };
     if !check_response(response.status(), response.headers())? {
         return Ok(None);
     }
@@ -562,6 +613,7 @@ fn check_response(
     Ok(true)
 }
 
+#[cfg(test)]
 fn read_all(mut reader: impl Read) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     reader
@@ -889,15 +941,22 @@ mod tests {
 
     #[test]
     fn http_prefix_fresh_reads_status_and_utf8() {
-        let server = Server::new(vec![
-            response(200, "", b"first"),
-            response(200, "", b"second"),
-            response(404, "", b"missing"),
-            response(410, "", b"gone"),
-            response(500, "", b"failure"),
-            response(206, "", b"partial"),
-            response(200, "", &[255]),
-        ]);
+        let server = Server::new(
+            vec![
+                response(200, "", b"first"),
+                response(200, "", b"second"),
+                response(404, "", b"missing"),
+                response(410, "", b"gone"),
+            ]
+            .into_iter()
+            // HttpConnector tries a 500 MAX_ATTEMPTS times (404/410 once).
+            .chain(
+                (0..crate::extension_download::CONNECT_ATTEMPTS)
+                    .map(|_| response(500, "", b"failure")),
+            )
+            .chain([response(206, "", b"partial"), response(200, "", &[255])])
+            .collect(),
+        );
         let registry = server.registry();
         assert_eq!(
             registry
@@ -919,7 +978,10 @@ mod tests {
         assert!(registry.read("partial").unwrap_err().contains("206"));
         assert!(registry.read_text("utf8").unwrap_err().contains("UTF-8"));
         let requests = server.requests.lock().unwrap();
-        assert_eq!(requests.len(), 7);
+        assert_eq!(
+            requests.len(),
+            6 + crate::extension_download::CONNECT_ATTEMPTS as usize
+        );
         assert!(requests[0].starts_with("GET /prefix/modules/a/1/MODULE.bazel HTTP/1.1\r\n"));
         assert!(
             requests[0]
@@ -971,19 +1033,26 @@ mod tests {
 
     #[test]
     fn http_limits_truncation_and_raw_binary_downloads() {
-        let server = Server::new(vec![
-            response(200, "Content-Encoding: identity\r\n", &[0, 255, 42]),
-            response(200, "Content-Encoding: gzip\r\n", &[0, 255, 42]),
-            response(404, "", b""),
-            response(200, "", b"1234"),
-            b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n1234".to_vec(),
-            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nshort".to_vec(),
-            format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                16 * 1024 * 1024 + 1
-            )
-            .into_bytes(),
-        ]);
+        let server = Server::new(
+            vec![
+                response(200, "Content-Encoding: identity\r\n", &[0, 255, 42]),
+                response(200, "Content-Encoding: gzip\r\n", &[0, 255, 42]),
+                response(404, "", b""),
+                response(200, "", b"1234"),
+                b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n1234".to_vec(),
+                b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nshort".to_vec(),
+            ]
+            .into_iter()
+            // A body cut at the socket is fetched DOWNLOAD_RETRIES more times.
+            .chain((0..=crate::extension_download::DOWNLOAD_RETRIES).map(|_| {
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    16 * 1024 * 1024 + 1
+                )
+                .into_bytes()
+            }))
+            .collect(),
+        );
         assert_eq!(download(&server.url("/raw")).unwrap(), [0, 255, 42]);
         assert!(
             download(&server.url("/encoded"))
@@ -1011,6 +1080,29 @@ mod tests {
                 .unwrap_err()
                 .contains("complete resource body")
         );
+    }
+
+    /// Registry files: a request on a pooled keep-alive connection the
+    /// server closed meanwhile, and a reset before any response byte, are
+    /// retried on a new connection (HttpConnector), so the second read
+    /// succeeds.
+    #[test]
+    fn registry_reads_retry_a_closed_pooled_connection_or_a_reset() {
+        use crate::extension_download::tests::flaky_keepalive_server;
+        let client = client_with(crate::extension_download::READ_TIMEOUT).unwrap();
+        let (url, accepted) = flaky_keepalive_server(true, b"module()");
+        for _ in 0..2 {
+            let response = open_http_with(&client, Url::parse(&format!("{url}/m")).unwrap())
+                .unwrap()
+                .unwrap();
+            assert_eq!(read_all(response).unwrap(), b"module()");
+        }
+        assert_eq!(accepted.load(Ordering::SeqCst), 2);
+        let (url, _) = flaky_keepalive_server(false, b"module()");
+        let response = open_http_with(&client, Url::parse(&format!("{url}/m")).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(read_all(response).unwrap(), b"module()");
     }
 
     /// A server that sends `body` one byte at a time with `gap` between bytes.

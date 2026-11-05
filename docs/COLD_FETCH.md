@@ -72,6 +72,21 @@ repositories executed, the lockfile and every published tree are the same.
   label-list (or label-keyed / label-valued dict) attribute, the other
   repositories of that attribute are requested on the speculation pool.
   Scheduling only: a repository the rule never resolves costs one fetch.
+* **Retries like genuine's downloader.** A request that fails before any
+  response byte (a refused or reset connection, a pooled keep-alive
+  connection the server closed meanwhile — the keep-alive reuse race), and
+  403/408/429/5xx but 501/505, are tried up to 8 times per URL after
+  HttpConnector's backoff (100 ms doubling, ×0.75–1.25; HttpConnector.java
+  :118-300); unknown hosts, certificate failures, 404/410 and other 4xx are
+  final. A transfer cut at the socket (reset, truncated body) is downloaded
+  again up to 5 times (`--experimental_repository_downloader_retries`'
+  default; DownloadManager.shouldRetryDownload, :372-393; the option itself
+  is still accepted and ignored). Both for repository downloads and registry
+  files (`registry::open_http_with`, `read_http`). Before, registry files had
+  no retry at all and downloads one, for connect errors only; with pooled
+  connections a closed idle connection surfaced as `HTTP request failed`.
+  Pooled connections are dropped after 30 s idle (registry and download
+  clients), below common server keep-alive timeouts.
 * **`execute()` exit polling backs off** from 50 µs to 5 ms
   (`repository_process::backoff`).
 

@@ -168,7 +168,7 @@ stays a mutable directory (absolute links into it are replanted, below).
   tar.zst/tzst, tar.bz2/tbz and ar/deb; the single-file gz/xz/zst/bz2
   decompressors and 7z, and for zip and tar `strip_components > 0` and
   `rename_files`, fail explicitly. Downloads reuse the module-extension transport
-  (verified TLS, redirect/retry policy, Bazel's 10 s connect / 20 s read
+  (verified TLS, redirect/retry policy — HttpConnector's 8 attempts with backoff and DownloadManager's 5 retries of a transfer cut at the socket, docs/COLD_FETCH.md —, Bazel's 10 s connect / 20 s read
   timeouts, `--repository_disable_download` policy) and **stream** into a
   private temporary directory of the repository while hashing; extraction then
   streams through the decompressor (constant memory, no size caps; see

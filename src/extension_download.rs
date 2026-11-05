@@ -79,6 +79,105 @@ pub(crate) fn io_error(error: io::Error) -> TypedIoError {
     TypedIoError::Completion(format!("filesystem or response stream {:?}", error.kind()))
 }
 
+/// HttpConnector.MAX_ATTEMPTS (HttpConnector.java:57, 274): connection
+/// failures and retryable statuses are tried this often per URL.
+pub(crate) const CONNECT_ATTEMPTS: u32 = 8;
+
+/// DownloadManager's default `--experimental_repository_downloader_retries`
+/// (RepositoryOptions.java:180-187; DownloadManager.shouldRetryDownload,
+/// :372-393): a whole download whose transfer failed with a socket-level
+/// error (a reset, a closed pooled keep-alive connection, a truncated body)
+/// is tried again this many times.
+pub(crate) const DOWNLOAD_RETRIES: u32 = 5;
+
+/// HttpConnector's wait before retry `retries` (java:256-263): 100 ms
+/// doubled per retry, jittered by [0.75, 1.25). Microseconds instead of
+/// milliseconds in unit tests.
+pub(crate) fn retry_delay(retries: u32) -> Duration {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.subsec_nanos());
+    let jitter = 0.75 + f64::from(nanos % 1000) / 2000.0;
+    let raw = 100.0 * f64::from(2u32.saturating_pow(retries.min(16))) * jitter;
+    if cfg!(test) {
+        Duration::from_micros(raw as u64)
+    } else {
+        Duration::from_millis(raw as u64)
+    }
+}
+
+/// Sleep before a retry; `false` once the speculation this thread works
+/// for was cancelled (no retry then).
+pub(crate) fn wait_before_retry(retries: u32) -> bool {
+    let deadline = std::time::Instant::now() + retry_delay(retries);
+    loop {
+        if crate::repository_speculation::cancelled() {
+            return false;
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return true;
+        }
+        std::thread::sleep((deadline - now).min(Duration::from_millis(20)));
+    }
+}
+
+/// Whether a request error is worth retrying, like HttpConnector's
+/// IOException handler: not an unknown host or a certificate failure
+/// (UnrecoverableHttpException, java:166-190).
+pub(crate) fn retryable_request_error(error: &reqwest::Error) -> bool {
+    let mut source: Option<&dyn std::error::Error> = Some(error);
+    while let Some(current) = source {
+        let text = current.to_string();
+        if text.starts_with("dns error")
+            || text.contains("certificate")
+            || text.contains("CertPathValidator")
+        {
+            return false;
+        }
+        source = current.source();
+    }
+    !error.is_builder() && !error.is_redirect()
+}
+
+/// Whether a body read failed at the socket (DownloadManager's
+/// SocketException / ContentLengthMismatchException): a reset, an abort, a
+/// broken pipe, a connection closed before the body completed. Not a read
+/// timeout (SocketTimeoutException is not retried there).
+pub(crate) fn socket_error(error: &io::Error) -> bool {
+    use io::ErrorKind::*;
+    if matches!(
+        error.kind(),
+        ConnectionReset | ConnectionAborted | BrokenPipe | UnexpectedEof | NotConnected
+    ) {
+        return true;
+    }
+    let mut source: Option<&(dyn std::error::Error + 'static)> = error.get_ref().map(|e| e as _);
+    while let Some(current) = source {
+        if let Some(io) = current.downcast_ref::<io::Error>()
+            && matches!(
+                io.kind(),
+                ConnectionReset | ConnectionAborted | BrokenPipe | UnexpectedEof | NotConnected
+            )
+        {
+            return true;
+        }
+        if let Some(request) = current.downcast_ref::<reqwest::Error>()
+            && request.is_body()
+            && !request.is_timeout()
+        {
+            return true;
+        }
+        if let Some(hyper) = current.downcast_ref::<hyper::Error>()
+            && (hyper.is_incomplete_message() || hyper.is_closed())
+        {
+            return true;
+        }
+        source = current.source();
+    }
+    false
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Algorithm {
     Sha1,
@@ -566,7 +665,8 @@ pub(crate) fn open_with_headers(
     // Only a validated 301 updates the next attempt's origin. The immutable
     // original URL still controls original-path gzip suffix suppression.
     let mut retry_origin: Option<Url> = None;
-    for attempt in 0..2 {
+    for attempt in 0..CONNECT_ATTEMPTS {
+        let last = attempt + 1 == CONNECT_ATTEMPTS;
         let start = retry_origin.as_ref().unwrap_or(original);
         let mut current = start.clone();
         let mut redirects = 0;
@@ -584,7 +684,11 @@ pub(crate) fn open_with_headers(
             let response = match response {
                 Ok(response) => response,
                 Err(error) => {
-                    if attempt == 0 && (error.is_connect() || error.is_timeout()) {
+                    // A connection that failed or closed before any
+                    // response byte (also a pooled keep-alive connection
+                    // the server closed meanwhile) is tried again, on a
+                    // new connection, after HttpConnector's backoff.
+                    if !last && retryable_request_error(&error) && wait_before_retry(attempt) {
                         break;
                     }
                     return Err(connection_failure(&error, &current));
@@ -627,7 +731,7 @@ pub(crate) fn open_with_headers(
                 // Pinned HttpConnector: 403/408/429 and 5xx except 501/505.
                 let retry = matches!(status, 403 | 408 | 429)
                     || (status >= 500 && !matches!(status, 501 | 505));
-                if retry && attempt == 0 {
+                if retry && !last && wait_before_retry(attempt) {
                     break;
                 }
                 // describeHttpResponse (HttpConnector.java:309-315): the
@@ -905,83 +1009,95 @@ pub(crate) fn fetch_to_file(
     }
     let algorithm = expected.map_or(Algorithm::Sha256, |checksum| checksum.algorithm);
     let mut last = TypedIoError::Completion("no mirror succeeded".into());
-    for url in urls {
-        // HttpDownloader.downloadFromUrls (java:184-209): one of
-        // `--http_max_parallel_downloads` permits per mirror attempt.
-        let Some(_permit) = DownloadPermit::acquire(url) else {
-            return Err(TypedIoError::Completion(
-                crate::repository_speculation::CANCELLED.into(),
-            ));
-        };
-        // The transfer itself, permit held (BAZEL_RS_TIMING_TIMELINE).
-        let _transfer = crate::timeline::span("transfer", || url.as_str().to_owned());
-        let path = destination(url);
-        let mut opened = false;
-        let attempt = (|| -> Result<Fetched, OpenFailure> {
-            let mut reader = open_with_headers(client, url, headers)?;
-            opened = true;
-            // Like ctx.file, replace (never write through) an existing
-            // non-directory destination - a symlink or a hard-linked file -
-            // only once a mirror has responded, as Bazel opens its output
-            // stream only then (HttpDownloader.java:102-106).
-            if std::fs::symlink_metadata(&path).is_ok_and(|metadata| !metadata.is_dir()) {
-                std::fs::remove_file(&path).map_err(io_error)?;
-            }
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&path)
-                .map_err(|error| {
-                    if error.kind() == io::ErrorKind::IsADirectory {
-                        // HttpDownloader opens the output after connecting:
-                        // FileOutputStream's FileNotFoundException.
-                        let message = format!("{} (Is a directory)", path.display());
-                        OpenFailure {
-                            error: TypedIoError::Completion(message.clone()),
-                            bazel: BazelFailure::new("java.io.FileNotFoundException", message),
-                        }
-                    } else {
-                        io_error(error).into()
-                    }
-                })?;
-            let mut hash = Hash::new(algorithm);
-            // The download's bytes in the progress display (when on).
-            let _downloading = crate::progress::downloading(url.as_str());
-            let size = copy_hashed(&mut *reader, &mut file, &mut hash).map_err(io_error)?;
-            file.flush().map_err(io_error)?;
-            let actual = Checksum {
-                algorithm,
-                bytes: hash.finish(),
+    for round in 0..=DOWNLOAD_RETRIES {
+        // Whether a mirror's transfer failed at the socket this round.
+        let mut socket_failure = false;
+        for url in urls {
+            // HttpDownloader.downloadFromUrls (java:184-209): one of
+            // `--http_max_parallel_downloads` permits per mirror attempt.
+            let Some(_permit) = DownloadPermit::acquire(url) else {
+                return Err(TypedIoError::Completion(
+                    crate::repository_speculation::CANCELLED.into(),
+                ));
             };
-            if let Some(expected) = expected
-                && actual.bytes != expected.bytes
-            {
-                let message = checksum_mismatch(&actual, expected, sri);
-                return Err(OpenFailure {
-                    error: TypedIoError::Completion(message.clone()),
-                    bazel: BazelFailure::new(UNRECOVERABLE, message),
-                });
-            }
-            Ok(Fetched {
-                size,
-                checksum: actual,
-            })
-        })();
-        match attempt {
-            Ok(fetched) => return Ok(fetched),
-            Err(failure) => {
-                if opened && !keep_failed {
-                    let _ = std::fs::remove_file(&path);
+            // The transfer itself, permit held (BAZEL_RS_TIMING_TIMELINE).
+            let _transfer = crate::timeline::span("transfer", || url.as_str().to_owned());
+            let path = destination(url);
+            let mut opened = false;
+            let attempt = (|| -> Result<Fetched, OpenFailure> {
+                let mut reader = open_with_headers(client, url, headers)?;
+                opened = true;
+                // Like ctx.file, replace (never write through) an existing
+                // non-directory destination - a symlink or a hard-linked file -
+                // only once a mirror has responded, as Bazel opens its output
+                // stream only then (HttpDownloader.java:102-106).
+                if std::fs::symlink_metadata(&path).is_ok_and(|metadata| !metadata.is_dir()) {
+                    std::fs::remove_file(&path).map_err(io_error)?;
                 }
-                match failure.error {
-                    TypedIoError::Completion(_) => {
-                        on_failure(url, &failure.bazel);
-                        last = failure.error;
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&path)
+                    .map_err(|error| {
+                        if error.kind() == io::ErrorKind::IsADirectory {
+                            // HttpDownloader opens the output after connecting:
+                            // FileOutputStream's FileNotFoundException.
+                            let message = format!("{} (Is a directory)", path.display());
+                            OpenFailure {
+                                error: TypedIoError::Completion(message.clone()),
+                                bazel: BazelFailure::new("java.io.FileNotFoundException", message),
+                            }
+                        } else {
+                            io_error(error).into()
+                        }
+                    })?;
+                let mut hash = Hash::new(algorithm);
+                // The download's bytes in the progress display (when on).
+                let _downloading = crate::progress::downloading(url.as_str());
+                let size = copy_hashed(&mut *reader, &mut file, &mut hash).map_err(|error| {
+                    if socket_error(&error) {
+                        socket_failure = true;
                     }
-                    other => return Err(other),
+                    io_error(error)
+                })?;
+                file.flush().map_err(io_error)?;
+                let actual = Checksum {
+                    algorithm,
+                    bytes: hash.finish(),
+                };
+                if let Some(expected) = expected
+                    && actual.bytes != expected.bytes
+                {
+                    let message = checksum_mismatch(&actual, expected, sri);
+                    return Err(OpenFailure {
+                        error: TypedIoError::Completion(message.clone()),
+                        bazel: BazelFailure::new(UNRECOVERABLE, message),
+                    });
+                }
+                Ok(Fetched {
+                    size,
+                    checksum: actual,
+                })
+            })();
+            match attempt {
+                Ok(fetched) => return Ok(fetched),
+                Err(failure) => {
+                    if opened && !keep_failed {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                    match failure.error {
+                        TypedIoError::Completion(_) => {
+                            on_failure(url, &failure.bazel);
+                            last = failure.error;
+                        }
+                        other => return Err(other),
+                    }
                 }
             }
+        }
+        if !socket_failure || round == DOWNLOAD_RETRIES || !wait_before_retry(round) {
+            break;
         }
     }
     Err(last)
@@ -1049,6 +1165,96 @@ pub(crate) mod tests {
             .expect("a released permit is granted");
         drop(speculative_thread.join().unwrap());
     }
+    /// A loopback server misbehaving on its first connection: `idle_close`
+    /// answers the first request keep-alive and then closes the connection
+    /// when the next request arrives on it (the reuse race of a pooled
+    /// connection); otherwise it resets the first connection before
+    /// answering. Every later connection answers `body` and closes. Returns
+    /// the base URL and the number of connections accepted.
+    pub(crate) fn flaky_keepalive_server(
+        idle_close: bool,
+        body: &'static [u8],
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::BufRead;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = accepted.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { continue };
+                let index = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    let mut writer = stream.try_clone().unwrap();
+                    let mut reader = std::io::BufReader::new(stream);
+                    let read_request = |reader: &mut std::io::BufReader<std::net::TcpStream>| {
+                        let mut any = false;
+                        loop {
+                            let mut line = String::new();
+                            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                                return any;
+                            }
+                            any = true;
+                            if line == "\r\n" {
+                                return true;
+                            }
+                        }
+                    };
+                    if index == 0 && !idle_close {
+                        // Reset: close with the request unread.
+                        std::thread::sleep(Duration::from_millis(20));
+                        drop(writer);
+                        return;
+                    }
+                    if !read_request(&mut reader) {
+                        return;
+                    }
+                    let close = if index == 0 {
+                        ""
+                    } else {
+                        "Connection: close\r\n"
+                    };
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{close}\r\n",
+                        body.len()
+                    );
+                    let _ = writer.write_all(head.as_bytes());
+                    let _ = writer.write_all(body);
+                    let _ = writer.flush();
+                    if index == 0 {
+                        // The next request on this kept-alive connection is
+                        // never answered: the server closed it meanwhile.
+                        read_request(&mut reader);
+                    }
+                });
+            }
+        });
+        (url, accepted)
+    }
+
+    /// Bazel's HttpConnector retries a connection failure: a request on a
+    /// pooled keep-alive connection the server closed meanwhile, and a
+    /// connection reset before any response byte, succeed on a new
+    /// connection.
+    #[test]
+    fn a_closed_pooled_connection_or_a_reset_is_retried_on_a_new_connection() {
+        let client = client_builder().build().unwrap();
+        let (url, accepted) = flaky_keepalive_server(true, b"body");
+        for _ in 0..2 {
+            let mut reader = open(&client, &Url::parse(&format!("{url}/f")).unwrap()).unwrap();
+            let mut bytes = Vec::new();
+            reader.read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"body");
+        }
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let (url, accepted) = flaky_keepalive_server(false, b"body");
+        let mut reader = open(&client, &Url::parse(&format!("{url}/f")).unwrap()).unwrap();
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"body");
+        assert!(accepted.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+    }
+
     use crate::extension_io::tests::{Server, header_values, response};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1449,6 +1655,37 @@ pub(crate) mod tests {
         assert!(matches!(result, Err(TypedIoError::Unsupported(_))));
     }
 
+    /// DownloadManager retries a download whose body was cut at the socket
+    /// (ContentLengthMismatchException / SocketException); a checksum
+    /// mismatch is not retried.
+    #[test]
+    fn a_body_cut_at_the_socket_is_downloaded_again() {
+        let server = Server::new(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nshort".to_vec(),
+            response(200, b"0123456789", ""),
+        ]);
+        let directory = tempfile::tempdir().unwrap();
+        let urls = [Url::parse(&format!("{}/file", server.url)).unwrap()];
+        let mut failures = Vec::new();
+        let fetched = fetch_to_file(
+            &client().unwrap(),
+            &urls,
+            None,
+            false,
+            &RequestHeaders::default(),
+            &mut |_| directory.path().join("file"),
+            false,
+            &mut |url, failure| failures.push((url.clone(), failure.clone())),
+        )
+        .unwrap();
+        assert_eq!(fetched.size, 10);
+        assert_eq!(
+            std::fs::read(directory.path().join("file")).unwrap(),
+            b"0123456789"
+        );
+        assert_eq!(failures.len(), 1, "the cut transfer is reported once");
+    }
+
     #[test]
     fn streaming_fetch_hashes_while_writing_and_has_no_size_cap() {
         // 40 MiB: above every former module/repository I/O cap (8, 16, 32 MiB).
@@ -1564,13 +1801,17 @@ pub(crate) mod tests {
 
     #[test]
     fn bazel_failure_classes_and_messages_for_status_and_connection_errors() {
-        let server = Server::new(vec![
-            b"HTTP/1.1 404 File not found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                .to_vec(),
-            response(500, b"", ""),
-            response(500, b"", ""),
-            response(418, b"", ""),
-        ]);
+        let server = Server::new(
+            vec![
+                b"HTTP/1.1 404 File not found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_vec(),
+            ]
+            .into_iter()
+            // HttpConnector tries a 500 MAX_ATTEMPTS times.
+            .chain((0..CONNECT_ATTEMPTS).map(|_| response(500, b"", "")))
+            .chain([response(418, b"", "")])
+            .collect(),
+        );
         let failure = |path: &str| {
             open_detailed(
                 &client().unwrap(),
