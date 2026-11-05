@@ -900,13 +900,16 @@ impl RegistrySession {
     }
 
     /// Whether the native content-addressed cache holds an entry for `hash`
-    /// (its bytes are verified when read).
+    /// (its bytes are verified when read), or the shared
+    /// `--repository_cache` has it (copied into the native cache, as the
+    /// sequential read would).
     fn cas_has(&self, hash: &str) -> bool {
         let Some(directory) = &self.cas else {
             return false;
         };
         // snapshot-unrecorded: a scheduling probe of the content-addressed cache; the read that uses an entry verifies it.
         std::fs::symlink_metadata(directory.join(hash)).is_ok_and(|metadata| metadata.is_file())
+            || (crate::repository_cache::path().is_some() && self.cas_get(hash).is_some())
     }
 
     /// Fetch files concurrently into the memo; results (including errors)
