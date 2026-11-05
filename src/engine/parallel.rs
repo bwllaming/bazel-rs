@@ -48,6 +48,9 @@ type Job = Box<dyn FnOnce() + Send>;
 /// The analysis workers (16 MiB stacks: Starlark evaluation and depset
 /// walks recurse; P2's loading workers use the same).
 pub(super) struct AnalysisPool {
+    /// The plan index of each finished compute (P4: the coordinator commits
+    /// finished entries ahead of their turn).
+    finished: (mpsc::Sender<usize>, mpsc::Receiver<usize>),
     jobs: Option<mpsc::Sender<Job>>,
     workers: Vec<std::thread::JoinHandle<()>>,
     size: usize,
@@ -135,6 +138,7 @@ impl AnalysisPool {
             return None;
         }
         Some(Self {
+            finished: mpsc::channel(),
             jobs: Some(sender),
             size: workers.len(),
             workers,
@@ -354,6 +358,31 @@ enum Ahead {
         effects: Effects,
         track: incremental::TrackLog,
     },
+    /// Committed ahead of its turn (P4): what its turn applies.
+    Committed(Box<CommittedAhead>),
+}
+
+/// A target committed ahead of its turn (P4, [`Engine::commit_ahead`]):
+/// what its prepare, compute and commit would have written where the turn
+/// order is observable, applied at its turn in that order — and its
+/// commit's result.
+struct CommittedAhead {
+    prepare_effects: Effects,
+    prepare_track: incremental::TrackLog,
+    compute_effects: Effects,
+    commit_effects: Effects,
+    commit_track: incremental::TrackLog,
+    /// Its planned nodes and lowerings, with its console writes between
+    /// them (crate::engine::lowering::PlannedNodes::splice).
+    segment: lowering::PlannedNodes,
+    /// The warnings and errors its commit recorded, and the lengths of the
+    /// engine's lists when it started.
+    warnings: Vec<String>,
+    errors: Vec<String>,
+    marks: (usize, usize),
+    result: Result<(), String>,
+    /// Its prepare, compute and commit (the tracker's costs).
+    elapsed: std::time::Duration,
 }
 
 /// Why an entry cannot be prepared ahead yet.
@@ -380,6 +409,86 @@ struct Pipeline {
     /// applied at its turn (where the sequential engine's lookups that
     /// filled the memos it hit happen).
     stashed: HashMap<usize, Vec<Effects>>,
+    /// P4: the classified entries not committed yet, by package
+    /// (repository, package): an entry commits ahead of its turn only when
+    /// no earlier one of its package, an enclosing or an enclosed package
+    /// is uncommitted (they are the only ones that may register its
+    /// output paths or paths above or below them).
+    pending_packages: BTreeMap<(String, String), OrderedSet<usize>>,
+    /// The classified entries not committed yet that may register outputs
+    /// in other packages (aspect applications in their prepare): no entry
+    /// after one commits ahead of its turn.
+    barriers: OrderedSet<usize>,
+    /// Entries committed ahead of their turn.
+    committed: HashMap<usize, Box<CommittedAhead>>,
+    /// Entries whose compute finished, not committed yet (retried as the
+    /// entries before them commit).
+    finished: OrderedSet<usize>,
+}
+
+impl Pipeline {
+    /// `index` (of `label`) is classified and not committed.
+    fn note_pending(&mut self, index: usize, label: &Label, barrier: bool) {
+        self.pending_packages
+            .entry((label.repository.clone(), label.package.clone()))
+            .or_default()
+            .insert(index);
+        if barrier {
+            self.barriers.insert(index);
+        }
+    }
+
+    /// `index` (of `label`) is committed.
+    fn note_committed(&mut self, index: usize, label: &Label) {
+        let package = (label.repository.clone(), label.package.clone());
+        if let Some(pending) = self.pending_packages.get_mut(&package) {
+            pending.remove(&index);
+            if pending.is_empty() {
+                self.pending_packages.remove(&package);
+            }
+        }
+        self.barriers.remove(&index);
+    }
+
+    /// Whether an uncommitted entry before `index` may register `label`'s
+    /// output paths, or paths above or below them, and why: 0 one of its
+    /// package, 1 of an enclosing one, 2 of an enclosed one, 3 an aspect
+    /// barrier (`None`: its outputs are settled).
+    fn unsettled(&self, index: usize, label: &Label) -> Option<usize> {
+        if self.barriers.first().is_some_and(|first| *first < index) {
+            return Some(3);
+        }
+        let earlier =
+            |pending: &OrderedSet<usize>| pending.first().is_some_and(|first| *first < index);
+        let repository = &label.repository;
+        // The package and every enclosing one.
+        let mut package = label.package.as_str();
+        loop {
+            if self
+                .pending_packages
+                .get(&(repository.clone(), package.to_owned()))
+                .is_some_and(earlier)
+            {
+                return Some(if package == label.package { 0 } else { 1 });
+            }
+            if package.is_empty() {
+                break;
+            }
+            package = package.rsplit_once('/').map_or("", |(parent, _)| parent);
+        }
+        // Every enclosed one: `<package>/...` (every package of the
+        // repository below its root package).
+        let below = if label.package.is_empty() {
+            String::new()
+        } else {
+            format!("{}/", label.package)
+        };
+        let end = format!("{}\u{10FFFF}", below);
+        self.pending_packages
+            .range((repository.clone(), below)..(repository.clone(), end))
+            .any(|((_, package), pending)| package != &label.package && earlier(pending))
+            .then_some(2)
+    }
 }
 
 /// P3 counters (`BAZEL_RS_TIMING=1`: `PERF-PARALLEL`).
@@ -395,6 +504,22 @@ struct Stats {
     waited_us: AtomicU64,
     lost_notes: AtomicU64,
     verified: AtomicU64,
+    /// Implementations computed at their turn on the coordinator (µs).
+    turn_compute_us: AtomicU64,
+    /// P4: entries committed ahead of their turn.
+    committed_ahead: AtomicU64,
+    /// P4: tries left for later (an earlier aspect barrier, an earlier
+    /// entry of a related package) and entries left for their turn.
+    ahead_barrier: AtomicU64,
+    ahead_package: AtomicU64,
+    ahead_ineligible: AtomicU64,
+    unsettled: [AtomicU64; 3],
+    /// Implementations computed at their turn, by rule class (µs, count).
+    turn_classes: std::sync::Mutex<BTreeMap<String, (u64, u64)>>,
+    /// Per walk size (≤16, ≤256, ≤4096, more entries): the walks' entries
+    /// and their implementations computed at their turn (µs).
+    walk_entries: [AtomicU64; 4],
+    walk_turn_us: [AtomicU64; 4],
 }
 
 use std::sync::atomic::AtomicU64;
@@ -436,6 +561,207 @@ pub(super) fn report(workers: usize) {
         get(&stats.lost_notes),
         get(&stats.verified),
     ));
+    let buckets = (0..4)
+        .map(|bucket| {
+            format!(
+                "{}:{:.3}s",
+                get(&stats.walk_entries[bucket]),
+                get(&stats.walk_turn_us[bucket]) as f64 / 1e6
+            )
+        })
+        .collect::<Vec<_>>();
+    crate::snapshot::diag::line_fmt(format_args!(
+        "PERF-PARALLEL committed_ahead={} later_barrier={} later_package={} ineligible={} turn_compute={:.3}s walks(<=16,<=256,<=4096,more: entries:turn_compute)={}",
+        get(&stats.committed_ahead),
+        get(&stats.ahead_barrier),
+        get(&stats.ahead_package),
+        get(&stats.ahead_ineligible),
+        get(&stats.turn_compute_us) as f64 / 1e6,
+        buckets.join(" ")
+    ));
+    crate::snapshot::diag::line_fmt(format_args!(
+        "PERF-PARALLEL unsettled package={} enclosing={} enclosed={}",
+        get(&stats.unsettled[0]),
+        get(&stats.unsettled[1]),
+        get(&stats.unsettled[2])
+    ));
+    let mut classes: Vec<(String, (u64, u64))> = stats
+        .turn_classes
+        .lock()
+        .map(|classes| classes.clone().into_iter().collect())
+        .unwrap_or_default();
+    classes.sort_by_key(|(_, (us, _))| std::cmp::Reverse(*us));
+    for (class, (us, count)) in classes.into_iter().take(12) {
+        crate::snapshot::diag::line_fmt(format_args!(
+            "PERF-PARALLEL turn_class {class} count={count} compute={:.3}s",
+            us as f64 / 1e6
+        ));
+    }
+}
+
+/// BAZEL_RS_VERIFY_AHEAD's comparison ([`Engine::verify_ahead`]): the
+/// prepare made ahead of its turn (`parts`, `snapshot`) against the one
+/// made again (`turn_parts`, `turn_snapshot`).
+fn verify_prepared(
+    key: &ConfiguredTargetKey,
+    parts: &PreparedParts,
+    snapshot: &ComputeSnapshot,
+    turn_parts: &PreparedParts,
+    turn_snapshot: &ComputeSnapshot,
+) {
+    let fail = |what: &str, ahead: &dyn std::fmt::Debug, turn: &dyn std::fmt::Debug| -> ! {
+        panic!(
+            "internal error: BAZEL_RS_VERIFY_AHEAD: the prepare of {} ahead of its turn differs in {what}:\nahead: {ahead:#?}\nturn:  {turn:#?}",
+            key.label
+        )
+    };
+    let check = |what: &str, ahead: String, turn: String| {
+        if ahead != turn {
+            fail(what, &ahead, &turn);
+        }
+    };
+    check(
+        "the configurations",
+        format!("{:?}", (parts.config, parts.exec_config)),
+        format!("{:?}", (turn_parts.config, turn_parts.exec_config)),
+    );
+    check(
+        "the output naming",
+        format!(
+            "{:?}",
+            (&parts.output_root, &parts.action_owner, &parts.action_env)
+        ),
+        format!(
+            "{:?}",
+            (
+                &turn_parts.output_root,
+                &turn_parts.action_owner,
+                &turn_parts.action_env
+            )
+        ),
+    );
+    check(
+        "the transitive repositories",
+        format!("{:?}", parts.transitive),
+        format!("{:?}", turn_parts.transitive),
+    );
+    check(
+        "the execution table",
+        format!("{:?}", parts.action_execution),
+        format!("{:?}", turn_parts.action_execution),
+    );
+    // What prepare sets on the plan's rule (the rest is the plan's
+    // own, cloned): the ctx surface, C++ view, target platform,
+    // toolchain and exec-group contexts.
+    let prepared = |rule: &Rule| {
+        rule.custom.as_ref().map(|custom| {
+            format!(
+                "{:?}",
+                (
+                    &custom.cpp,
+                    &custom.target_platform,
+                    &custom.toolchains,
+                    &custom.exec_groups,
+                    custom.use_auto_exec_groups,
+                    &custom.action_exec_groups,
+                    &custom.surface,
+                )
+            )
+        })
+    };
+    check(
+        "the rule context",
+        format!("{:?}", prepared(&snapshot.rule)),
+        format!("{:?}", prepared(&turn_snapshot.rule)),
+    );
+    // The ToolchainInfo values: the very same frozen values.
+    let toolchains = |rule: &Rule| {
+        let custom = rule.custom.as_ref()?;
+        let mut contexts: Vec<Arc<crate::toolchain_info::ToolchainContextData>> =
+            custom.toolchains.iter().cloned().collect();
+        for (_, group) in custom.exec_groups.iter().flat_map(|groups| &groups.groups) {
+            if let crate::exec_groups::GroupToolchains::Resolved(data) = group {
+                contexts.push(Arc::clone(data));
+            }
+        }
+        Some(
+            contexts
+                .iter()
+                .flat_map(|context| context.toolchains.iter())
+                .map(|(label, value)| (label.clone(), value.clone()))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let (ahead_values, turn_values) = (toolchains(&snapshot.rule), toolchains(&turn_snapshot.rule));
+    let same = match (&ahead_values, &turn_values) {
+        (Some(ahead), Some(turn)) => {
+            ahead.len() == turn.len()
+                && ahead
+                    .iter()
+                    .zip(turn)
+                    .all(|((a, x), (b, y))| a == b && x.value().ptr_eq(y.value()))
+        }
+        (None, None) => true,
+        _ => false,
+    };
+    if !same {
+        let labels = |values: &Option<Vec<(Label, starlark::values::OwnedFrozenValue)>>| {
+            values
+                .iter()
+                .flatten()
+                .map(|(label, _)| label.to_string())
+                .collect::<Vec<_>>()
+        };
+        fail(
+            "the toolchain values",
+            &labels(&ahead_values),
+            &labels(&turn_values),
+        );
+    }
+    check(
+        "the runfiles options and run_under",
+        format!("{:?}", (&snapshot.runfiles, &snapshot.run_under)),
+        format!("{:?}", (&turn_snapshot.runfiles, &turn_snapshot.run_under)),
+    );
+    check(
+        "the dependency keys",
+        format!(
+            "{:?}",
+            snapshot.dependency_targets.keys().collect::<Vec<_>>()
+        ),
+        format!(
+            "{:?}",
+            turn_snapshot.dependency_targets.keys().collect::<Vec<_>>()
+        ),
+    );
+    for (map_key, view) in &snapshot.dependency_targets {
+        let turn_view = turn_snapshot.dependency_targets[map_key].clone();
+        verify_view(key, view, Ok(turn_view));
+    }
+}
+
+/// Whether [`Engine::commit_ahead`] tried an entry for good or later.
+enum Retry {
+    Later,
+    /// Committed ahead (`true`) or left for its turn.
+    Done(bool),
+}
+
+/// A compute's result put back in a channel of its own.
+fn refilled(result: Result<WorkerOutcome, String>) -> Pending {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let _ = sender.send(result);
+    receiver
+}
+
+/// `BAZEL_RS_NO_COMMIT_AHEAD` (hidden): every entry commits at its turn
+/// (P3's pipeline only).
+fn commit_ahead_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
+        std::env::var_os("BAZEL_RS_NO_COMMIT_AHEAD").is_none()
+    })
 }
 
 /// `BAZEL_RS_VERIFY_AHEAD=1` (hidden, like BAZEL_RS_VERIFY_VIEWS): every
@@ -533,7 +859,28 @@ impl Engine {
             self.ensure_lowering_pool();
             state.nodes.deferring = self.lowering_pool.is_some();
         }
+        let (walk_start, turn_before) = (
+            state.done,
+            stats()
+                .turn_compute_us
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
         let result = self.plan_targets_pipelined(state, configured, &mut pipe);
+        if crate::plan_timings::enabled() {
+            let entries = state.done - walk_start;
+            let bucket = match entries {
+                0..=16 => 0,
+                17..=256 => 1,
+                257..=4096 => 2,
+                _ => 3,
+            };
+            let turn = stats()
+                .turn_compute_us
+                .load(std::sync::atomic::Ordering::Relaxed)
+                - turn_before;
+            bump(&stats().walk_entries[bucket], entries as u64);
+            bump(&stats().walk_turn_us[bucket], turn);
+        }
         // A failed lowering queued before the walk's error (or its end) is
         // the first error.
         let drained = self.drain_lowerings(state, lowering::Drain::All);
@@ -572,8 +919,13 @@ impl Engine {
             crate::progress::analysis_configured(state.done);
             self.flush_delegations(state);
             self.pipeline_wake(state, pipe);
-            let ahead = pipe.ahead.remove(&index);
+            self.commit_finished_ahead(state, configured, pipe, index, false);
+            let ahead = pipe
+                .ahead
+                .remove(&index)
+                .or_else(|| pipe.committed.remove(&index).map(Ahead::Committed));
             pipe.ready.remove(&index);
+            pipe.finished.remove(&index);
             for effects in pipe.stashed.remove(&index).unwrap_or_default() {
                 effects.apply(self, false);
             }
@@ -585,6 +937,7 @@ impl Engine {
                 continue;
             }
             let result = self.pipelined_turn(state, configured, pipe, &key, &rule, index, ahead);
+            pipe.note_committed(index, &key.label);
             if !self.keep_going {
                 result?;
             } else {
@@ -709,6 +1062,34 @@ impl Engine {
                 effects.apply(self, true);
                 return Err(error);
             }
+            Some(Ahead::Committed(committed)) => {
+                // P4: everything it held, in the order its turn would have
+                // written it; its nodes and lowerings join the plan here.
+                let CommittedAhead {
+                    prepare_effects,
+                    prepare_track,
+                    compute_effects,
+                    commit_effects,
+                    commit_track,
+                    segment,
+                    warnings,
+                    errors,
+                    marks,
+                    result,
+                    elapsed,
+                } = *committed;
+                self.track_replay(prepare_track);
+                prepare_effects.apply(self, true);
+                compute_effects.apply(self, true);
+                self.track_replay(commit_track);
+                *off_turn += elapsed;
+                let now = (self.warnings.len(), self.errors.len());
+                self.warnings.extend(warnings);
+                self.errors.extend(errors);
+                commit_effects.apply(self, true);
+                state.nodes.splice(segment, marks, now);
+                return result;
+            }
             Some(Ahead::Computing {
                 parts,
                 effects,
@@ -748,6 +1129,19 @@ impl Engine {
                 let started = std::time::Instant::now();
                 let (snapshot, outcome) = Engine::compute_target(*snapshot);
                 *off_turn += started.elapsed();
+                bump(
+                    &stats().turn_compute_us,
+                    started.elapsed().as_micros() as u64,
+                );
+                if crate::plan_timings::enabled()
+                    && let Ok(mut classes) = stats().turn_classes.lock()
+                {
+                    let entry = classes
+                        .entry(rule.rule_class_name().to_owned())
+                        .or_default();
+                    entry.0 += started.elapsed().as_micros() as u64;
+                    entry.1 += 1;
+                }
                 timer.finish();
                 return self.commit_turn(
                     state, configured, key, rule, index, class, parts, snapshot, outcome, profiled,
@@ -755,7 +1149,19 @@ impl Engine {
             }
         };
         let waited = std::time::Instant::now();
-        let received = pending.recv();
+        let received = loop {
+            match pending.try_recv() {
+                Ok(received) => break Ok(received),
+                Err(mpsc::TryRecvError::Disconnected) => break Err(mpsc::RecvError),
+                Err(mpsc::TryRecvError::Empty) => {
+                    // P4: commit the finished entries ahead of their turn
+                    // (and prepare what they unblock) while this one runs.
+                    if !self.commit_finished_ahead(state, configured, pipe, index, true) {
+                        break pending.recv();
+                    }
+                }
+            }
+        };
         bump(&stats().waited_us, waited.elapsed().as_micros() as u64);
         let worker = match received {
             Ok(Ok(worker)) => worker,
@@ -859,130 +1265,7 @@ impl Engine {
         let Some((turn_parts, turn_snapshot)) = PreparedParts::split(again) else {
             fail("its kind", &"Custom", &"another kind")
         };
-        let check = |what: &str, ahead: String, turn: String| {
-            if ahead != turn {
-                fail(what, &ahead, &turn);
-            }
-        };
-        check(
-            "the configurations",
-            format!("{:?}", (parts.config, parts.exec_config)),
-            format!("{:?}", (turn_parts.config, turn_parts.exec_config)),
-        );
-        check(
-            "the output naming",
-            format!(
-                "{:?}",
-                (&parts.output_root, &parts.action_owner, &parts.action_env)
-            ),
-            format!(
-                "{:?}",
-                (
-                    &turn_parts.output_root,
-                    &turn_parts.action_owner,
-                    &turn_parts.action_env
-                )
-            ),
-        );
-        check(
-            "the transitive repositories",
-            format!("{:?}", parts.transitive),
-            format!("{:?}", turn_parts.transitive),
-        );
-        check(
-            "the execution table",
-            format!("{:?}", parts.action_execution),
-            format!("{:?}", turn_parts.action_execution),
-        );
-        // What prepare sets on the plan's rule (the rest is the plan's
-        // own, cloned): the ctx surface, C++ view, target platform,
-        // toolchain and exec-group contexts.
-        let prepared = |rule: &Rule| {
-            rule.custom.as_ref().map(|custom| {
-                format!(
-                    "{:?}",
-                    (
-                        &custom.cpp,
-                        &custom.target_platform,
-                        &custom.toolchains,
-                        &custom.exec_groups,
-                        custom.use_auto_exec_groups,
-                        &custom.action_exec_groups,
-                        &custom.surface,
-                    )
-                )
-            })
-        };
-        check(
-            "the rule context",
-            format!("{:?}", prepared(&snapshot.rule)),
-            format!("{:?}", prepared(&turn_snapshot.rule)),
-        );
-        // The ToolchainInfo values: the very same frozen values.
-        let toolchains = |rule: &Rule| {
-            let custom = rule.custom.as_ref()?;
-            let mut contexts: Vec<Arc<crate::toolchain_info::ToolchainContextData>> =
-                custom.toolchains.iter().cloned().collect();
-            for (_, group) in custom.exec_groups.iter().flat_map(|groups| &groups.groups) {
-                if let crate::exec_groups::GroupToolchains::Resolved(data) = group {
-                    contexts.push(Arc::clone(data));
-                }
-            }
-            Some(
-                contexts
-                    .iter()
-                    .flat_map(|context| context.toolchains.iter())
-                    .map(|(label, value)| (label.clone(), value.clone()))
-                    .collect::<Vec<_>>(),
-            )
-        };
-        let (ahead_values, turn_values) =
-            (toolchains(&snapshot.rule), toolchains(&turn_snapshot.rule));
-        let same = match (&ahead_values, &turn_values) {
-            (Some(ahead), Some(turn)) => {
-                ahead.len() == turn.len()
-                    && ahead
-                        .iter()
-                        .zip(turn)
-                        .all(|((a, x), (b, y))| a == b && x.value().ptr_eq(y.value()))
-            }
-            (None, None) => true,
-            _ => false,
-        };
-        if !same {
-            let labels = |values: &Option<Vec<(Label, starlark::values::OwnedFrozenValue)>>| {
-                values
-                    .iter()
-                    .flatten()
-                    .map(|(label, _)| label.to_string())
-                    .collect::<Vec<_>>()
-            };
-            fail(
-                "the toolchain values",
-                &labels(&ahead_values),
-                &labels(&turn_values),
-            );
-        }
-        check(
-            "the runfiles options and run_under",
-            format!("{:?}", (&snapshot.runfiles, &snapshot.run_under)),
-            format!("{:?}", (&turn_snapshot.runfiles, &turn_snapshot.run_under)),
-        );
-        check(
-            "the dependency keys",
-            format!(
-                "{:?}",
-                snapshot.dependency_targets.keys().collect::<Vec<_>>()
-            ),
-            format!(
-                "{:?}",
-                turn_snapshot.dependency_targets.keys().collect::<Vec<_>>()
-            ),
-        );
-        for (map_key, view) in &snapshot.dependency_targets {
-            let turn_view = turn_snapshot.dependency_targets[map_key].clone();
-            verify_view(key, view, Ok(turn_view));
-        }
+        verify_prepared(key, parts, snapshot, &turn_parts, &turn_snapshot);
         bump(&stats().verified, 1);
     }
 
@@ -1027,6 +1310,10 @@ impl Engine {
             .analysis_pool
             .as_ref()
             .map(|pool| Arc::clone(&pool.cancelled));
+        let finished = self
+            .analysis_pool
+            .as_ref()
+            .map(|pool| pool.finished.0.clone());
         let job: Job = Box::new(move || {
             if cancelled
                 .as_ref()
@@ -1087,6 +1374,9 @@ impl Engine {
                     .unwrap_or_else(|| "an analysis worker panicked".to_owned())
             });
             let _ = sender.send(result);
+            if let Some(finished) = finished {
+                let _ = finished.send(index);
+            }
         });
         if let Some(pool) = &self.analysis_pool
             && let Err(job) = pool.submit(job)
@@ -1142,6 +1432,11 @@ impl Engine {
                 if !stash.is_empty() {
                     pipe.stashed.entry(index).or_default().extend(stash);
                 }
+                // A Starlark rule never prepared ahead may apply aspects
+                // (outputs in other packages) at its turn.
+                let barrier = matches!(classified, Classified::Never)
+                    && matches!(rule.kind, RuleKind::Custom);
+                pipe.note_pending(index, &key.label, barrier);
                 match classified {
                     Classified::Never => bump(&stats().never, 1),
                     Classified::Waiting(keys) => Self::wait_or_ready(state, pipe, index, keys),
@@ -1294,6 +1589,362 @@ impl Engine {
         // dependency first.
         keys.reverse();
         Some(keys)
+    }
+
+    /// P4: whether finished entries may commit ahead of their turn (a
+    /// walk that defers its lowerings, so their nodes join the plan at
+    /// their turn; an execution plan without --keep_going, whose failures
+    /// skip dependents at the failing turn, and without an aquery capture).
+    fn commits_ahead(&self, state: &ActionPlanning) -> bool {
+        state.nodes.deferring
+            && !self.keep_going
+            && !self.semantic_only()
+            && self.aquery_capture.is_none()
+            && commit_ahead_enabled()
+    }
+
+    /// P4: commit the entries whose computes finished, ahead of their turn
+    /// where their outputs are settled ([`Pipeline::unsettled`]), and
+    /// prepare what they unblock. `block`: wait for a compute to finish
+    /// first. `false` when nothing can finish (no workers).
+    fn commit_finished_ahead(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        pipe: &mut Pipeline,
+        turn: usize,
+        block: bool,
+    ) -> bool {
+        let Some(pool) = self.analysis_pool.as_ref() else {
+            return false;
+        };
+        if block {
+            match pool.finished.1.recv() {
+                Ok(index) => {
+                    pipe.finished.insert(index);
+                }
+                Err(_) => return false,
+            }
+        }
+        while let Ok(index) = pool.finished.1.try_recv() {
+            pipe.finished.insert(index);
+        }
+        if !self.commits_ahead(state) {
+            pipe.finished.clear();
+            return true;
+        }
+        let candidates: Vec<usize> = pipe.finished.iter().copied().collect();
+        let mut committed = false;
+        for index in candidates {
+            if index <= turn {
+                pipe.finished.remove(&index);
+                continue;
+            }
+            match self.commit_ahead(state, configured, pipe, index) {
+                // Settled later (an earlier entry of its packages commits).
+                Retry::Later => {}
+                Retry::Done(done) => {
+                    committed |= done;
+                    pipe.finished.remove(&index);
+                }
+            }
+        }
+        if committed {
+            self.fill_lookahead(state, configured, pipe, turn);
+        }
+        true
+    }
+
+    /// Commit the finished entry `index` ahead of its turn
+    /// ([`CommittedAhead`]), when its commit cannot depend on the turn
+    /// order: its outputs are settled, it needs nothing registered on first
+    /// need (workspace status, tool runfiles groups, shared input runs) and
+    /// nothing its commit would fetch, analyze or load.
+    fn commit_ahead(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        pipe: &mut Pipeline,
+        index: usize,
+    ) -> Retry {
+        use crate::plan_timings::{PlanStage, StageTimer};
+        let Some((key, rule)) = self
+            .planning_plan
+            .as_ref()
+            .and_then(|plan| plan.get(index))
+            .cloned()
+        else {
+            return Retry::Done(false);
+        };
+        match pipe.ahead.get(&index) {
+            Some(Ahead::Computing { platform_known, .. }) => {
+                // Prepared again at its turn (Self::pipelined_turn_body).
+                if !platform_known && self.platform_resolved(&key) {
+                    return Retry::Done(false);
+                }
+            }
+            _ => return Retry::Done(false),
+        }
+        if pipe.barriers.first().is_some_and(|first| *first < index) {
+            bump(&stats().ahead_barrier, 1);
+            return Retry::Later;
+        }
+        if let Some(reason) = pipe.unsettled(index, &key.label) {
+            bump(&stats().ahead_package, 1);
+            bump(&stats().unsettled[reason.min(2)], 1);
+            return Retry::Later;
+        }
+        let Some(Ahead::Computing {
+            parts,
+            effects: prepare_effects,
+            track: prepare_track,
+            pending,
+            platform_known,
+            prepare_elapsed,
+        }) = pipe.ahead.remove(&index)
+        else {
+            return Retry::Done(false);
+        };
+        let put_back = |pipe: &mut Pipeline,
+                        parts: Box<PreparedParts>,
+                        effects: Effects,
+                        track: incremental::TrackLog,
+                        pending: Pending| {
+            pipe.ahead.insert(
+                index,
+                Ahead::Computing {
+                    parts,
+                    effects,
+                    track,
+                    pending,
+                    platform_known,
+                    prepare_elapsed,
+                },
+            );
+        };
+        let worker = match pending.try_recv() {
+            Ok(Ok(worker)) => worker,
+            Err(mpsc::TryRecvError::Empty) => {
+                put_back(pipe, parts, prepare_effects, prepare_track, pending);
+                return Retry::Later;
+            }
+            Ok(Err(panic)) => {
+                put_back(
+                    pipe,
+                    parts,
+                    prepare_effects,
+                    prepare_track,
+                    refilled(Err(panic)),
+                );
+                return Retry::Done(false);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                put_back(pipe, parts, prepare_effects, prepare_track, pending);
+                return Retry::Done(false);
+            }
+        };
+        let eligible = !worker.sentinel
+            && worker.outcome.analyzed.as_ref().is_ok_and(|analyzed| {
+                self.commit_ahead_safe(state, &rule, analyzed, &worker.outcome)
+            });
+        if !eligible {
+            bump(&stats().ahead_ineligible, 1);
+        }
+        if !eligible
+            || (verify_ahead()
+                && !self.verify_commit_ahead(
+                    state,
+                    configured,
+                    pipe,
+                    &key,
+                    &rule,
+                    index,
+                    &parts,
+                    &worker.snapshot,
+                ))
+        {
+            put_back(
+                pipe,
+                parts,
+                prepare_effects,
+                prepare_track,
+                refilled(Ok(worker)),
+            );
+            return Retry::Done(false);
+        }
+        let WorkerOutcome {
+            snapshot,
+            outcome,
+            effects: compute_effects,
+            sentinel: _,
+            elapsed: compute_elapsed,
+        } = worker;
+        let class = crate::plan_timings::class_id(rule.rule_class_name());
+        let marks = (self.warnings.len(), self.errors.len());
+        let main_nodes = std::mem::replace(&mut state.nodes, lowering::PlannedNodes::segment());
+        self.ahead = true;
+        self.ahead_aborted = false;
+        self.track_defer_start();
+        let isolation = Isolation::enter();
+        // What it registers is visible from its turn on (as sequentially).
+        let stamp = state.artifact_index.stamp_ahead(index);
+        let started = std::time::Instant::now();
+        let timer = StageTimer::start(PlanStage::Commit, index as u64, class);
+        let result = self.commit_target(
+            state,
+            configured,
+            &rule,
+            parts.join(snapshot),
+            Some(outcome),
+        );
+        timer.finish();
+        let commit_elapsed = started.elapsed();
+        state.artifact_index.restore_stamp(stamp);
+        let (mut commit_effects, sentinel) = isolation.finish();
+        let commit_track = self.track_defer_finish();
+        self.ahead = false;
+        let aborted = std::mem::take(&mut self.ahead_aborted);
+        let mut segment = std::mem::replace(&mut state.nodes, main_nodes);
+        segment.segment_close(std::mem::take(&mut commit_effects.console));
+        let result = if sentinel || aborted {
+            // Excluded by commit_ahead_safe: its commit fetches, analyzes
+            // and loads nothing.
+            debug_assert!(
+                false,
+                "internal error: the commit of {} ahead of its turn needed a fetch, an analysis or a package",
+                key.label
+            );
+            Err(format!(
+                "internal error: the commit of {} ahead of its turn needed a fetch, an analysis or a package",
+                key.label
+            ))
+        } else {
+            result
+        };
+        let warnings = self.warnings.split_off(marks.0);
+        let errors = self.errors.split_off(marks.1);
+        pipe.committed.insert(
+            index,
+            Box::new(CommittedAhead {
+                prepare_effects,
+                prepare_track,
+                compute_effects,
+                commit_effects,
+                commit_track,
+                segment,
+                warnings,
+                errors,
+                marks,
+                result,
+                elapsed: prepare_elapsed + compute_elapsed + commit_elapsed,
+            }),
+        );
+        pipe.note_committed(index, &key.label);
+        bump(&stats().committed_ahead, 1);
+        self.pipeline_committed(state, pipe, &key);
+        Retry::Done(true)
+    }
+
+    /// Whether a finished entry's commit is a function of its compute and
+    /// its committed dependencies alone (P4): no transition allowlist
+    /// (which loads its package), no workspace status (registered on first
+    /// need, by whichever target comes first), its runfiles support's pure
+    /// part computed by the worker, no repo mapping manifest or build-info
+    /// action to resolve (they read repository mappings and the status),
+    /// and every tool runfiles group and shared input run its actions use
+    /// already expanded (memoized on first use).
+    fn commit_ahead_safe(
+        &self,
+        state: &ActionPlanning,
+        rule: &Rule,
+        analyzed: &analysis::AnalysisResult,
+        outcome: &ComputeOutcome,
+    ) -> bool {
+        rule.custom
+            .as_ref()
+            .is_some_and(|custom| custom.transitions.is_empty())
+            && restricted_to_error(rule).is_ok()
+            && !Self::workspace_status_needed(&analyzed.actions)
+            && !analyzed
+                .files
+                .iter()
+                .any(crate::analysis_runtime::is_workspace_status_file)
+            && match &outcome.runfiles {
+                Some(precomputed) => !precomputed
+                    .mapping
+                    .values()
+                    .flatten()
+                    .any(crate::analysis_runtime::is_workspace_status_file),
+                // Without runfiles support (Engine::plan_runfiles_support
+                // plans nothing), else computed at the commit.
+                None => analyzed
+                    .runfiles
+                    .files_to_run
+                    .as_ref()
+                    .is_none_or(|files_to_run| {
+                        files_to_run.runfiles().is_none()
+                            || files_to_run.executable().is_none()
+                            || files_to_run.repo_mapping_manifest().is_none()
+                    }),
+            }
+            && analyzed.actions.iter().all(|action| {
+                action.repo_mapping.is_none()
+                    && action.build_info.is_none()
+                    && action
+                        .runfiles_trees
+                        .iter()
+                        .all(|tree| state.input_groups.contains_key(&tree.identity()))
+                    && action.input_memo.as_ref().is_none_or(|(_, files)| {
+                        state
+                            .input_memos
+                            .contains_key(&(Arc::as_ptr(files) as usize))
+                    })
+            })
+    }
+
+    /// BAZEL_RS_VERIFY_AHEAD=1 for a commit ahead of its turn: its prepare
+    /// is repeated now, as at its turn (ahead of it: lookups only), and
+    /// compared ([`Self::verify_ahead`]); `false` when that prepare cannot
+    /// run ahead (the entry then commits at its turn, verified there).
+    #[allow(clippy::too_many_arguments)]
+    fn verify_commit_ahead(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        pipe: &mut Pipeline,
+        key: &ConfiguredTargetKey,
+        rule: &Arc<Rule>,
+        index: usize,
+        parts: &PreparedParts,
+        snapshot: &ComputeSnapshot,
+    ) -> bool {
+        self.ahead = true;
+        self.ahead_aborted = false;
+        self.track_defer_start();
+        let isolation = Isolation::enter();
+        let stamp = state.artifact_index.stamp_ahead(index);
+        let again = self.prepare_target(state, key, rule, configured);
+        state.artifact_index.restore_stamp(stamp);
+        let (effects, sentinel) = isolation.finish();
+        drop(self.track_defer_finish());
+        self.ahead = false;
+        let aborted = std::mem::take(&mut self.ahead_aborted) || sentinel;
+        if !effects.console.is_empty() {
+            note_lost(effects.console.len());
+        }
+        pipe.stashed.entry(index).or_default().push(effects);
+        let Ok(again) = again else {
+            return false;
+        };
+        if aborted {
+            return false;
+        }
+        let Some((again_parts, again_snapshot)) = PreparedParts::split(again) else {
+            return false;
+        };
+        verify_prepared(key, parts, snapshot, &again_parts, &again_snapshot);
+        bump(&stats().verified, 1);
+        true
     }
 
     /// Prepare `key` ahead of its turn and dispatch its compute; `None`

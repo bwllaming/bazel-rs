@@ -290,6 +290,19 @@ pub(crate) fn replay_before_held(writes: Vec<Deferred>) {
     HELD.with(|slot| *slot.borrow_mut() = held);
 }
 
+/// The writes the open [`DeferredConsole`] held so far, taken (it goes on
+/// holding): a commit ahead of its turn splits its writes at each lowering
+/// it defers (crate::engine::lowering).
+pub(crate) fn deferred_split() -> Vec<Deferred> {
+    DEFERRED.with(|deferred| {
+        deferred
+            .borrow_mut()
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    })
+}
+
 /// Stop holding; returns what was held.
 pub(crate) fn hold_stop() -> Vec<Deferred> {
     HELD.with(|held| held.take()).unwrap_or_default()

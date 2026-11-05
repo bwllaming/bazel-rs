@@ -78,6 +78,10 @@ pub(super) struct PlannedNodes {
     /// Placing a queued entry: pushes go to the nodes directly (the entry
     /// being placed is the front of the queue).
     placing: bool,
+    /// The nodes of one target committed ahead of its turn (P4): its
+    /// console writes are held by the commit's own deferred console and
+    /// split at each lowering; [`Self::splice`] joins them at its turn.
+    segment: bool,
 }
 
 impl PlannedNodes {
@@ -103,7 +107,63 @@ impl PlannedNodes {
         }
     }
 
+    /// The segment a commit ahead of its turn plans into.
+    pub(super) fn segment() -> Self {
+        Self {
+            deferring: true,
+            segment: true,
+            ..Self::default()
+        }
+    }
+
+    /// Writes held after the segment's last entry (the end of the commit
+    /// ahead of its turn).
+    pub(super) fn segment_close(&mut self, writes: Vec<crate::ui::Deferred>) {
+        debug_assert!(self.segment);
+        if !writes.is_empty() {
+            self.queue.push_back(Queued::Console(writes));
+        }
+    }
+
+    /// Join `segment` (a target committed ahead of its turn, at its turn)
+    /// after everything planned so far, as if it were planned here; its
+    /// lowerings' warning and error marks move from `from` to `to`.
+    pub(super) fn splice(
+        &mut self,
+        segment: PlannedNodes,
+        from: (usize, usize),
+        to: (usize, usize),
+    ) {
+        debug_assert!(segment.segment && !self.segment);
+        for node in segment.nodes {
+            self.push(node);
+        }
+        for item in segment.queue {
+            match item {
+                Queued::Node(node) => self.push(*node),
+                Queued::Console(writes) => crate::ui::replay(writes),
+                Queued::Lowering {
+                    outcome,
+                    warnings,
+                    errors,
+                } => self.enqueue(outcome, warnings - from.0 + to.0, errors - from.1 + to.1),
+            }
+        }
+    }
+
     fn enqueue(&mut self, outcome: mpsc::Receiver<Outcome>, warnings: usize, errors: usize) {
+        if self.segment {
+            let writes = crate::ui::deferred_split();
+            if !writes.is_empty() {
+                self.queue.push_back(Queued::Console(writes));
+            }
+            self.queue.push_back(Queued::Lowering {
+                outcome,
+                warnings,
+                errors,
+            });
+            return;
+        }
         let writes = crate::ui::hold_restart();
         if self.holding && !writes.is_empty() {
             self.queue.push_back(Queued::Console(writes));
@@ -247,7 +307,7 @@ impl Engine {
         let Some(pool) = self
             .lowering_pool
             .as_ref()
-            .filter(|_| nodes.deferring && !self.ahead)
+            .filter(|_| nodes.deferring && (!self.ahead || nodes.segment))
         else {
             return job().map(Some);
         };

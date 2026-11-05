@@ -367,6 +367,166 @@ fn lowering_failures_are_reported_at_their_turn() {
     }
 }
 
+/// Rules of the commit-ahead workspace (P4): writes of a chosen path and
+/// content (shared when equal, a conflict otherwise), a rule applying an
+/// aspect to its dependencies, and genrules beside them.
+const P4_DEFS: &str = r#"
+def _w_impl(ctx):
+    print("w %s" % ctx.label)
+    total = 0
+    for i in range(ctx.attr.work):
+        total += i * i
+    out = ctx.actions.declare_file(ctx.attr.out)
+    ctx.actions.write(out, ctx.attr.content)
+    files = depset([out], transitive = [dep[DefaultInfo].files for dep in ctx.attr.deps])
+    summary = ctx.actions.declare_file(ctx.label.name + ".sum")
+    ctx.actions.run_shell(
+        inputs = files,
+        outputs = [summary],
+        command = "cat $@ > /dev/null; echo %d > %s" % (total % 7, summary.path),
+    )
+    return [DefaultInfo(files = depset([summary], transitive = [files]))]
+
+w = rule(
+    implementation = _w_impl,
+    attrs = {
+        "out": attr.string(),
+        "content": attr.string(default = "x"),
+        "deps": attr.label_list(),
+        "work": attr.int(default = 100),
+    },
+)
+
+def _asp_impl(target, ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".asp")
+    ctx.actions.write(out, str(ctx.label))
+    return [OutputGroupInfo(asp = depset([out]))]
+
+asp = aspect(implementation = _asp_impl, attr_aspects = ["deps"])
+
+def _with_aspect_impl(ctx):
+    print("with_aspect %s" % ctx.label)
+    out = ctx.actions.declare_file(ctx.label.name + ".top")
+    ctx.actions.write(out, "top")
+    return [DefaultInfo(files = depset([out]))]
+
+with_aspect = rule(
+    implementation = _with_aspect_impl,
+    attrs = {"deps": attr.label_list(aspects = [asp])},
+)
+"#;
+
+/// Independent packages with chains of `w` targets, a genrule and a
+/// subpackage each, a pair of equal (shared) actions, aspect
+/// applications in the middle of the plan.
+fn commit_ahead_workspace(ws: &Workspace) {
+    ws.file("rules/BUILD", "");
+    ws.file("rules/p4.bzl", P4_DEFS);
+    for package in 0..4 {
+        let mut build = String::from(
+            "load('//rules:p4.bzl', 'w')\npackage(default_visibility = ['//visibility:public'])\n",
+        );
+        for index in 0..5 {
+            let mut deps = Vec::new();
+            if index > 0 {
+                deps.push(format!("':x{}'", index - 1));
+            }
+            if index == 3 {
+                deps.push("':g'".to_owned());
+            }
+            if package > 0 && index == 2 {
+                deps.push(format!("'//s{}:x4'", package - 1));
+            }
+            let work = 200 + ((package * 5 + index * 3) % 7) * 4000;
+            build.push_str(&format!(
+                "w(name = 'x{index}', out = 'x{index}.txt', deps = [{}], work = {work})\n",
+                deps.join(", ")
+            ));
+        }
+        build.push_str(
+            "genrule(name = 'g', srcs = [':x1'], outs = ['g.out'], cmd = 'cat $(SRCS) > $@')\n",
+        );
+        ws.file(&format!("s{package}/BUILD"), &build);
+        ws.file(
+            &format!("s{package}/sub/BUILD"),
+            &format!(
+                "load('//rules:p4.bzl', 'w')\npackage(default_visibility = ['//visibility:public'])\n\
+                 w(name = 'y', out = 'y.txt', deps = ['//s{package}:x0'], work = 3000)\n"
+            ),
+        );
+    }
+    ws.file(
+        "shared/BUILD",
+        "load('//rules:p4.bzl', 'w')\n\
+         w(name = 'a', out = 'same.txt', content = 'same', deps = ['//s1:x3'], work = 9000)\n\
+         w(name = 'b', out = 'same.txt', content = 'same', deps = ['//s0:x1'])\n\
+         w(name = 'c', out = 'c.txt', deps = [':a', ':b', '//s3:x4'])\n",
+    );
+    ws.file(
+        "asp/BUILD",
+        "load('//rules:p4.bzl', 'w', 'with_aspect')\n\
+         with_aspect(name = 'top', deps = ['//s2:x4', '//s0/sub:y'])\n\
+         w(name = 'after', out = 'after.txt', deps = [':top', '//s3:x2'], work = 5000)\n",
+    );
+}
+
+/// P4: targets whose computes finish ahead of their turn commit there when
+/// their outputs are settled (no uncommitted earlier entry of a related
+/// package or aspect barrier); the action graph, the shared action's owner,
+/// genrules and aspect applications beside them, prints and the dump are
+/// the sequential ones at every thread count and with worker jitter.
+#[test]
+fn commits_ahead_of_the_turn_keep_the_sequential_graph() {
+    let ws = Workspace::new();
+    commit_ahead_workspace(&ws);
+    let reference = assert_like_sequential(
+        &ws,
+        &[("BAZEL_RS_DUMP_ACTIONS", "1")],
+        &["build", "--nobuild", "//..."],
+    );
+    assert!(reference.status.success(), "{}", stderr(&reference));
+    let timed = ws.run_env(
+        &[("BAZEL_RS_TIMING", "1"), ("BAZEL_RS_SNAPSHOT", "off")],
+        &["build", "--loading_phase_threads=8", "--nobuild", "//..."],
+    );
+    let timed = stderr(&timed);
+    let committed: u64 = timed
+        .lines()
+        .filter(|line| line.starts_with("PERF-PARALLEL "))
+        .flat_map(str::split_whitespace)
+        .find_map(|field| field.strip_prefix("committed_ahead="))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| panic!("no committed_ahead: {timed}"));
+    assert!(committed > 0, "{timed}");
+}
+
+/// P4: an action conflict between two targets of one package — the second
+/// commits after the first (ahead of its turn or at it) — is reported at
+/// the second's turn with the sequential message and console, with and
+/// without --keep_going.
+#[test]
+fn conflicts_committed_ahead_are_reported_at_their_turn() {
+    let ws = Workspace::new();
+    commit_ahead_workspace(&ws);
+    ws.file(
+        "conflict/BUILD",
+        "load('//rules:p4.bzl', 'w')\n\
+         w(name = 'a', out = 'clash.txt', content = 'A', deps = ['//s0:x2'], work = 9000)\n\
+         w(name = 'b', out = 'clash.txt', content = 'B', deps = ['//s1:x1'])\n\
+         w(name = 'later', out = 'later.txt', deps = [':b', '//s3:x4'])\n",
+    );
+    let reference = assert_like_sequential(&ws, &[], &["build", "--nobuild", "//..."]);
+    assert!(!reference.status.success());
+    assert!(
+        stderr(&reference).contains("conflicting actions"),
+        "{}",
+        stderr(&reference)
+    );
+    let keep_going =
+        assert_like_sequential(&ws, &[], &["build", "--nobuild", "--keep_going", "//..."]);
+    assert!(!keep_going.status.success());
+}
+
 /// A dependency cycle among Starlark targets: phase 1 reports it, the
 /// same at every thread count.
 #[test]
