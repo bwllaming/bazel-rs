@@ -148,7 +148,16 @@ fn library_workspace(ws: &Workspace) {
 }
 
 /// The runs to compare with the sequential engine: thread counts, jitter.
-const RUNS: [(usize, u64); 5] = [(2, 0), (8, 0), (32, 0), (8, 25), (32, 40)];
+/// The third element: BAZEL_RS_VERIFY_AHEAD=1 (every prepare ahead of its
+/// turn is repeated at the turn and compared).
+const RUNS: [(usize, u64, bool); 6] = [
+    (2, 0, false),
+    (8, 0, false),
+    (32, 0, false),
+    (8, 25, false),
+    (32, 40, false),
+    (8, 10, true),
+];
 
 fn assert_like_sequential(ws: &Workspace, env: &[(&str, &str)], args: &[&str]) -> Output {
     // Every run analyzes (no analysis snapshot serves it).
@@ -167,17 +176,20 @@ fn assert_like_sequential(ws: &Workspace, env: &[(&str, &str)], args: &[&str]) -
     assert_eq!(off.status.code(), reference.status.code());
     assert_eq!(off.stdout, reference.stdout);
     assert_eq!(stderr(&off), stderr(&reference));
-    for (threads, jitter) in RUNS {
+    for (threads, jitter, verify) in RUNS {
         let jitter_text = jitter.to_string();
         let mut run_env = env.to_vec();
         if jitter > 0 {
             run_env.push(("BAZEL_RS_ANALYSIS_JITTER", jitter_text.as_str()));
         }
+        if verify {
+            run_env.push(("BAZEL_RS_VERIFY_AHEAD", "1"));
+        }
         let threads_arg = format!("--loading_phase_threads={threads}");
         let mut run_args = vec![args[0], threads_arg.as_str()];
         run_args.extend(&args[1..]);
         let run = ws.run_env(&run_env, &run_args);
-        let label = format!("threads={threads} jitter={jitter}");
+        let label = format!("threads={threads} jitter={jitter} verify={verify}");
         assert_eq!(
             run.status.code(),
             reference.status.code(),
@@ -223,7 +235,11 @@ fn action_graph_and_prints_are_the_sequential_ones() {
     // The pipeline ran: targets were prepared ahead of their turn and
     // computed on workers.
     let timed = ws.run_env(
-        &[("BAZEL_RS_TIMING", "1"), ("BAZEL_RS_SNAPSHOT", "off")],
+        &[
+            ("BAZEL_RS_TIMING", "1"),
+            ("BAZEL_RS_SNAPSHOT", "off"),
+            ("BAZEL_RS_VERIFY_AHEAD", "1"),
+        ],
         &["build", "--loading_phase_threads=8", "--nobuild", "//..."],
     );
     let timed = stderr(&timed);
@@ -237,6 +253,13 @@ fn action_graph_and_prints_are_the_sequential_ones() {
         .and_then(|value| value.parse().ok())
         .unwrap();
     assert!(ahead > 0, "{line}");
+    // BAZEL_RS_VERIFY_AHEAD prepared each of them again at its turn.
+    let verified: u64 = line
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("verified="))
+        .and_then(|value| value.parse().ok())
+        .unwrap();
+    assert_eq!(verified, ahead, "{line}");
 }
 
 /// Executing the same graph: outputs and the build's console are the
@@ -339,4 +362,96 @@ fn snapshots_recorded_in_parallel_replay_the_sequential_output() {
     assert_eq!(stderr(&outputs[0].0), stderr(&outputs[1].0));
     assert_eq!(stderr(&outputs[0].1), stderr(&outputs[1].1));
     assert_eq!(outputs[0].1.stdout, outputs[1].1.stdout);
+}
+
+/// P3 review item 1: the incremental-analysis index of a build in which a
+/// later target (`//t:j`) is prepared ahead of an earlier one (`//t:i`)
+/// and so builds the shared dependency view of an alias first: the lookups
+/// of the view's miss path count for `//t:i` too (every view-memo hit
+/// records them), so the index is the sequential engine's.
+#[test]
+fn incremental_index_does_not_depend_on_who_built_a_view() {
+    let ws = Workspace::new();
+    ws.file("rules/BUILD", "");
+    ws.file("rules/defs.bzl", DEFS);
+    ws.file(
+        "r/BUILD",
+        "load('//rules:defs.bzl', 'lib')\npackage(default_visibility = ['//visibility:public'])\nlib(name = 'real')\n",
+    );
+    ws.file(
+        "t/BUILD",
+        "load('//rules:defs.bzl', 'lib')\n\
+         alias(name = 'd', actual = '//r:real')\n\
+         lib(name = 'x', work = 300000)\n\
+         lib(name = 'i', deps = [':d', ':x'])\n\
+         lib(name = 'j', deps = [':d'])\n",
+    );
+    let mut indexes = Vec::new();
+    for (run, threads) in ["1", "8", "8"].into_iter().enumerate() {
+        let dump = ws.0.join(format!("index-{run}.txt"));
+        let cache = format!("--cache-dir=cache-{run}");
+        let threads = format!("--loading_phase_threads={threads}");
+        let output = ws.run_env(
+            &[("BAZEL_RS_SNAPSHOT_INDEX_DUMP", dump.to_str().unwrap())],
+            &[&cache, "build", &threads, "//t:i", "//t:j"],
+        );
+        assert!(output.status.success(), "{}", stderr(&output));
+        let index = fs::read_to_string(&dump)
+            .unwrap_or_else(|error| panic!("no index dump: {error}\n{}", stderr(&output)))
+            .replace(&format!("cache-{run}/"), "cache-N/");
+        indexes.push(index);
+    }
+    assert!(indexes[0].contains("label_accesses"), "{}", indexes[0]);
+    assert_eq!(indexes[1], indexes[0], "threads 8: the index differs");
+    assert_eq!(indexes[2], indexes[0], "threads 8 again: the index differs");
+}
+
+/// P3 review item 3: a build that fails at an early turn stops the
+/// workers — computes queued for turns that never come are skipped and a
+/// worker's (long) jitter sleep is interrupted — so it ends promptly, with
+/// the sequential engine's output.
+#[test]
+fn a_failing_build_does_not_wait_for_speculative_computes() {
+    let ws = Workspace::new();
+    library_workspace(&ws);
+    ws.file(
+        "a/BUILD",
+        "load('//rules:defs.bzl', 'bad')\nbad(name = 'first')\n",
+    );
+    let sequential = ws.run_env(
+        &[("BAZEL_RS_SNAPSHOT", "off")],
+        &[
+            "build",
+            "--loading_phase_threads=1",
+            "--nobuild",
+            "//a:first",
+            "//p0:all",
+            "//p1:all",
+            "//p2:all",
+        ],
+    );
+    assert!(!sequential.status.success());
+    let started = std::time::Instant::now();
+    let parallel = ws.run_env(
+        &[
+            ("BAZEL_RS_SNAPSHOT", "off"),
+            ("BAZEL_RS_ANALYSIS_JITTER", "20000"),
+        ],
+        &[
+            "build",
+            "--loading_phase_threads=8",
+            "--nobuild",
+            "//a:first",
+            "//p0:all",
+            "//p1:all",
+            "//p2:all",
+        ],
+    );
+    let elapsed = started.elapsed();
+    assert_eq!(parallel.status.code(), sequential.status.code());
+    assert_eq!(stderr(&parallel), stderr(&sequential));
+    assert!(
+        elapsed < std::time::Duration::from_secs(15),
+        "the failing build waited {elapsed:?} for speculative computes"
+    );
 }

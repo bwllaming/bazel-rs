@@ -51,10 +51,60 @@ pub(super) struct AnalysisPool {
     jobs: Option<mpsc::Sender<Job>>,
     workers: Vec<std::thread::JoinHandle<()>>,
     size: usize,
+    /// Set when the pool stops: queued computes are skipped (their
+    /// results would be for turns that never come).
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+thread_local! {
+    /// The message and location of a panic on this analysis worker (the
+    /// panic hook records it instead of printing: the sequential engine
+    /// may never run that compute; the coordinator panics with it at the
+    /// target's turn).
+    static WORKER_PANIC: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    /// This thread is an analysis worker.
+    static IS_WORKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Install (once) the panic hook that keeps analysis workers' panics
+/// quiet ([`WORKER_PANIC`]); other threads keep the previous hook.
+fn install_worker_panic_hook() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if IS_WORKER.with(std::cell::Cell::get) {
+                let message = info
+                    .payload()
+                    .downcast_ref::<&str>()
+                    .map(|text| (*text).to_owned())
+                    .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "Box<dyn Any>".to_owned());
+                let location = info
+                    .location()
+                    .map(|location| {
+                        format!(
+                            "{}:{}:{}",
+                            location.file(),
+                            location.line(),
+                            location.column()
+                        )
+                    })
+                    .unwrap_or_default();
+                WORKER_PANIC.with(|slot| {
+                    *slot.borrow_mut() =
+                        Some(format!("{message} (at {location}, on an analysis worker)"));
+                });
+            } else {
+                previous(info);
+            }
+        }));
+    });
 }
 
 impl AnalysisPool {
     fn start(size: usize) -> Option<Self> {
+        install_worker_panic_hook();
         let (sender, receiver) = mpsc::channel::<Job>();
         let receiver = Arc::new(std::sync::Mutex::new(receiver));
         let mut workers = Vec::with_capacity(size);
@@ -64,6 +114,7 @@ impl AnalysisPool {
                 .name(format!("analysis-{index}"))
                 .stack_size(LOADING_WORKER_STACK)
                 .spawn(move || {
+                    IS_WORKER.with(|worker| worker.set(true));
                     loop {
                         let job = {
                             let receiver = receiver.lock().unwrap_or_else(|e| e.into_inner());
@@ -87,6 +138,7 @@ impl AnalysisPool {
             jobs: Some(sender),
             size: workers.len(),
             workers,
+            cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -100,6 +152,8 @@ impl AnalysisPool {
 
 impl Drop for AnalysisPool {
     fn drop(&mut self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.jobs = None;
         for worker in self.workers.drain(..) {
             let _ = worker.join();
@@ -138,6 +192,8 @@ struct Isolation {
     reuse: crate::repository_demand::ReuseOnlyGuard,
     no_demand: crate::repository_demand::NoDemandGuard,
     sentinels: u64,
+    /// The caller's order-dependent record, put back by finish.
+    order_dependent: bool,
 }
 
 impl Isolation {
@@ -154,6 +210,7 @@ impl Isolation {
             reuse,
             no_demand,
             sentinels: crate::repository_demand::sentinels_raised(),
+            order_dependent: crate::repository_demand::take_order_dependent(),
         }
     }
 
@@ -165,8 +222,13 @@ impl Isolation {
             reuse,
             no_demand,
             sentinels,
+            order_dependent,
         } = self;
-        let sentinel = crate::repository_demand::sentinels_raised() != sentinels;
+        // An order-dependent link decision is a sentinel too: the work is
+        // redone where the sequential engine decides it.
+        let sentinel = crate::repository_demand::sentinels_raised() != sentinels
+            || crate::repository_demand::take_order_dependent();
+        crate::repository_demand::restore_order_dependent(order_dependent);
         drop(reuse);
         drop(no_demand);
         let observations = scope.finish();
@@ -194,7 +256,8 @@ struct WorkerOutcome {
     elapsed: std::time::Duration,
 }
 
-type Pending = mpsc::Receiver<std::thread::Result<WorkerOutcome>>;
+/// A worker's compute: its outcome, or the text of its panic.
+type Pending = mpsc::Receiver<Result<WorkerOutcome, String>>;
 
 /// Where a turn's compute runs: on a worker (prepared ahead) or here.
 enum Compute {
@@ -331,6 +394,7 @@ struct Stats {
     recomputed: AtomicU64,
     waited_us: AtomicU64,
     lost_notes: AtomicU64,
+    verified: AtomicU64,
 }
 
 use std::sync::atomic::AtomicU64;
@@ -338,6 +402,13 @@ use std::sync::atomic::AtomicU64;
 fn stats() -> &'static Stats {
     static STATS: std::sync::OnceLock<Stats> = std::sync::OnceLock::new();
     STATS.get_or_init(Stats::default)
+}
+
+/// Notes printed by work that is discarded and redone (never replayed:
+/// the redo prints them). None on ~/code; debug builds (the tests) fail.
+fn note_lost(notes: usize) {
+    bump(&stats().lost_notes, notes as u64);
+    debug_assert_eq!(notes, 0, "internal error: discarded work printed notes");
 }
 
 fn bump(counter: &AtomicU64, by: u64) {
@@ -353,7 +424,7 @@ pub(super) fn report(workers: usize) {
     let get = |counter: &AtomicU64| counter.load(std::sync::atomic::Ordering::Relaxed);
     // Diagnostics, outside any stderr capture (crate::snapshot::diag).
     crate::snapshot::diag::line_fmt(format_args!(
-        "PERF-PARALLEL workers={workers} turn={} ahead={} aborted={} invalidated={} never={} failed={} recomputed={} wait={:.3}s lost_notes={}",
+        "PERF-PARALLEL workers={workers} turn={} ahead={} aborted={} invalidated={} never={} failed={} recomputed={} wait={:.3}s lost_notes={} verified={}",
         get(&stats.turn),
         get(&stats.ahead),
         get(&stats.aborted),
@@ -363,7 +434,19 @@ pub(super) fn report(workers: usize) {
         get(&stats.recomputed),
         get(&stats.waited_us) as f64 / 1e6,
         get(&stats.lost_notes),
+        get(&stats.verified),
     ));
+}
+
+/// `BAZEL_RS_VERIFY_AHEAD=1` (hidden, like BAZEL_RS_VERIFY_VIEWS): every
+/// target prepared ahead of its turn is prepared again at it and the two
+/// snapshots compared ([`Engine::verify_ahead`]).
+fn verify_ahead() -> bool {
+    static VERIFY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VERIFY.get_or_init(|| {
+        // snapshot-unrecorded: a diagnostics check of the scheduling; it changes no result (it panics on a difference).
+        std::env::var_os("BAZEL_RS_VERIFY_AHEAD").is_some_and(|value| value == "1")
+    })
 }
 
 /// The `BAZEL_RS_ANALYSIS_JITTER` hidden test hook: each compute on a
@@ -442,6 +525,13 @@ impl Engine {
         state.delegated_keys.clear();
         let result = self.plan_targets_pipelined(state, configured, &mut pipe);
         state.delegated_keys.clear();
+        state.artifact_index.walk_done();
+        if result.is_err() {
+            // The build stops here: the computes still queued for turns
+            // that never come are skipped, the running ones joined.
+            drop(pipe);
+            self.stop_analysis_pool();
+        }
         result
     }
 
@@ -459,6 +549,8 @@ impl Engine {
         {
             let index = state.done;
             state.done += 1;
+            // Registrations made ahead of their turn become visible at it.
+            state.artifact_index.at_turn(index);
             crate::progress::analysis_configured(state.done);
             self.flush_delegations(state);
             self.pipeline_wake(state, pipe);
@@ -619,7 +711,7 @@ impl Engine {
                 // its ctx surface saw deferred. Prepared again here.
                 bump(&stats().invalidated, 1);
                 if !effects.console.is_empty() {
-                    bump(&stats().lost_notes, effects.console.len() as u64);
+                    note_lost(effects.console.len());
                 }
                 effects.apply(self, false);
                 drop(pending);
@@ -649,7 +741,8 @@ impl Engine {
         bump(&stats().waited_us, waited.elapsed().as_micros() as u64);
         let worker = match received {
             Ok(Ok(worker)) => worker,
-            Ok(Err(panic)) => std::panic::resume_unwind(panic),
+            // The panic the sequential engine raises at this compute.
+            Ok(Err(panic)) => panic!("{panic}"),
             Err(_) => return Err("internal error: an analysis worker stopped".to_owned()),
         };
         let WorkerOutcome {
@@ -660,6 +753,9 @@ impl Engine {
             elapsed,
         } = worker;
         *off_turn += elapsed;
+        if verify_ahead() {
+            self.verify_ahead(state, configured, key, rule, &parts, &snapshot);
+        }
         let (snapshot, outcome) = if sentinel
             && !outcome
                 .analyzed
@@ -670,7 +766,7 @@ impl Engine {
             // demand it did not make. Run again here, as sequentially.
             bump(&stats().recomputed, 1);
             if !effects.console.is_empty() {
-                bump(&stats().lost_notes, effects.console.len() as u64);
+                note_lost(effects.console.len());
             }
             effects.apply(self, false);
             let timer = StageTimer::start(PlanStage::CommitRetry, index as u64, class);
@@ -717,6 +813,97 @@ impl Engine {
         Ok(())
     }
 
+    /// BAZEL_RS_VERIFY_AHEAD=1: prepare `key` again at its turn, as the
+    /// sequential engine does, and check that the prepare made ahead of its
+    /// turn built the same snapshot (the compute is a pure function of it):
+    /// the rule with its ctx surface, toolchain contexts and platform, every
+    /// dependency view (BAZEL_RS_VERIFY_VIEWS' comparison), the output
+    /// naming, the transitive repositories and the execution table.
+    fn verify_ahead(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        key: &ConfiguredTargetKey,
+        rule: &Arc<Rule>,
+        parts: &PreparedParts,
+        snapshot: &ComputeSnapshot,
+    ) {
+        let fail = |what: &str, ahead: &dyn std::fmt::Debug, turn: &dyn std::fmt::Debug| -> ! {
+            panic!(
+                "internal error: BAZEL_RS_VERIFY_AHEAD: the prepare of {} ahead of its turn differs in {what}:\nahead: {ahead:#?}\nturn:  {turn:#?}",
+                key.label
+            )
+        };
+        let again = match self.prepare_target(state, key, rule, configured) {
+            Ok(prepared) => prepared,
+            Err(error) => fail("its outcome", &"Ok", &error),
+        };
+        let Some((turn_parts, turn_snapshot)) = PreparedParts::split(again) else {
+            fail("its kind", &"Custom", &"another kind")
+        };
+        let check = |what: &str, ahead: String, turn: String| {
+            if ahead != turn {
+                fail(what, &ahead, &turn);
+            }
+        };
+        check(
+            "the configurations",
+            format!("{:?}", (parts.config, parts.exec_config)),
+            format!("{:?}", (turn_parts.config, turn_parts.exec_config)),
+        );
+        check(
+            "the output naming",
+            format!(
+                "{:?}",
+                (&parts.output_root, &parts.action_owner, &parts.action_env)
+            ),
+            format!(
+                "{:?}",
+                (
+                    &turn_parts.output_root,
+                    &turn_parts.action_owner,
+                    &turn_parts.action_env
+                )
+            ),
+        );
+        check(
+            "the transitive repositories",
+            format!("{:?}", parts.transitive),
+            format!("{:?}", turn_parts.transitive),
+        );
+        check(
+            "the execution table",
+            format!("{:?}", parts.action_execution),
+            format!("{:?}", turn_parts.action_execution),
+        );
+        check(
+            "the rule context",
+            format!("{:?}", snapshot.rule),
+            format!("{:?}", turn_snapshot.rule),
+        );
+        check(
+            "the runfiles options and run_under",
+            format!("{:?}", (&snapshot.runfiles, &snapshot.run_under)),
+            format!("{:?}", (&turn_snapshot.runfiles, &turn_snapshot.run_under)),
+        );
+        check(
+            "the dependency keys",
+            format!(
+                "{:?}",
+                snapshot.dependency_targets.keys().collect::<Vec<_>>()
+            ),
+            format!(
+                "{:?}",
+                turn_snapshot.dependency_targets.keys().collect::<Vec<_>>()
+            ),
+        );
+        for (map_key, view) in &snapshot.dependency_targets {
+            let turn_view = turn_snapshot.dependency_targets[map_key].clone();
+            verify_view(key, view, Ok(turn_view));
+        }
+        bump(&stats().verified, 1);
+    }
+
     /// Prepare the target at its turn (everything before it committed)
     /// and dispatch its compute.
     #[allow(clippy::too_many_arguments)]
@@ -754,11 +941,30 @@ impl Engine {
     ) -> Pending {
         let (sender, receiver) = mpsc::sync_channel(1);
         let jitter = jitter_millis();
+        let cancelled = self
+            .analysis_pool
+            .as_ref()
+            .map(|pool| Arc::clone(&pool.cancelled));
         let job: Job = Box::new(move || {
+            if cancelled
+                .as_ref()
+                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+            {
+                // The pool stopped (a failing build): nobody waits for it.
+                return;
+            }
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if jitter > 0 {
+                    // Interrupted when the pool stops (a failing build).
                     let roll = loading_jitter_roll(index as u64, 0x5033) % (jitter + 1);
-                    std::thread::sleep(std::time::Duration::from_millis(roll));
+                    let until = std::time::Instant::now() + std::time::Duration::from_millis(roll);
+                    while std::time::Instant::now() < until
+                        && !cancelled
+                            .as_ref()
+                            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
                 }
                 let isolation = Isolation::enter();
                 let started = std::time::Instant::now();
@@ -793,6 +999,11 @@ impl Engine {
                     elapsed,
                 }
             }));
+            let result = result.map_err(|_| {
+                WORKER_PANIC
+                    .with(|slot| slot.borrow_mut().take())
+                    .unwrap_or_else(|| "an analysis worker panicked".to_owned())
+            });
             let _ = sender.send(result);
         });
         if let Some(pool) = &self.analysis_pool
@@ -931,7 +1142,7 @@ impl Engine {
             // prepare repeats them (a memo hit then), so what they
             // observed counts there.
             if !effects.console.is_empty() {
-                bump(&stats().lost_notes, effects.console.len() as u64);
+                note_lost(effects.console.len());
             }
             stash.push(effects);
         }
@@ -1025,7 +1236,10 @@ impl Engine {
         let isolation = Isolation::enter();
         let started = std::time::Instant::now();
         let timer = StageTimer::start(PlanStage::Prepare, index as u64, class);
+        // What it registers is visible from its turn on (as sequentially).
+        let stamp = state.artifact_index.stamp_ahead(index);
         let prepared = self.prepare_target(state, key, rule, configured);
+        state.artifact_index.restore_stamp(stamp);
         timer.finish();
         let prepare_elapsed = started.elapsed();
         let (effects, sentinel) = isolation.finish();
@@ -1048,7 +1262,7 @@ impl Engine {
             // it filled are hits there), its notes and tracker events recur.
             bump(&stats().aborted, 1);
             if !effects.console.is_empty() {
-                bump(&stats().lost_notes, effects.console.len() as u64);
+                note_lost(effects.console.len());
             }
             stash.push(effects);
             drop(track);

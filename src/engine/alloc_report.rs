@@ -873,6 +873,12 @@ fields!(crate::starlark_types::FileData {
     short_path,
     owner
 });
+impl Footprint for super::ArtifactIndex {
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        self.entries.heap(walker)
+    }
+}
+
 impl Footprint for File {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
         self.shared_data().heap(walker)

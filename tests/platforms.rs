@@ -1060,20 +1060,7 @@ def _use_impl(ctx):
 use = rule(implementation = _use_impl, toolchains = ["//tc:type"])
 "#;
 
-#[test]
-fn a_platform_tree_analyzed_by_phase_two_is_planned() {
-    // The requested targets are analyzed in label order. `a_has` is planned
-    // by `b_flag_on`'s flush and resolves the default host platform there;
-    // `c_use`'s toolchain registration then reaches the platform's
-    // constraint value through an alias in that configuration. Before the
-    // fix the platform's tree was analyzed into a discarded plan, so the
-    // alias was planned without its actual ("internal analysis order
-    // error: @@platforms//os:linux"; ~/code's
-    // `@zig_config//:exec_os`, docs/AFFECTED_TARGETS.md §8.6).
-    // Genuine Bazel 9.3.1 on this workspace (`--batch
-    // --ignore_all_rc_files`, BCR modules): `Build completed
-    // successfully, 3 total actions`, a_has.txt `has=True`, c_use.txt
-    // `toolchain=impl`.
+fn deferred_platform_workspace() -> Workspace {
     let ws = Workspace::new(
         "module(name = 'main')\nbazel_dep(name = 'platforms', version = '1.0.0')\nlocal_path_override(module_name = 'platforms', path = 'platforms')\nregister_toolchains('//tc:all')\n",
         &[
@@ -1104,6 +1091,24 @@ toolchain(
         ],
     );
     extract_platforms(&ws.path().join("platforms"));
+    ws
+}
+
+#[test]
+fn a_platform_tree_analyzed_by_phase_two_is_planned() {
+    // The requested targets are analyzed in label order. `a_has` is planned
+    // by `b_flag_on`'s flush and resolves the default host platform there;
+    // `c_use`'s toolchain registration then reaches the platform's
+    // constraint value through an alias in that configuration. Before the
+    // fix the platform's tree was analyzed into a discarded plan, so the
+    // alias was planned without its actual ("internal analysis order
+    // error: @@platforms//os:linux"; ~/code's
+    // `@zig_config//:exec_os`, docs/AFFECTED_TARGETS.md §8.6).
+    // Genuine Bazel 9.3.1 on this workspace (`--batch
+    // --ignore_all_rc_files`, BCR modules): `Build completed
+    // successfully, 3 total actions`, a_has.txt `has=True`, c_use.txt
+    // `toolchain=impl`.
+    let ws = deferred_platform_workspace();
     let outputs = built_outputs(&ws, &["//:a_has", "//:b_flag_on", "//:c_use"]);
     let contents = outputs
         .iter()
@@ -1121,6 +1126,77 @@ toolchain(
             ("c_use.txt", "toolchain=impl\n")
         ])
     );
+}
+
+/// P3 review item 1: the incremental-analysis index (which configured
+/// target looked up which package and target) of a build whose phase 2
+/// resolves the deferred default host platform and reaches a constraint
+/// value through an alias is the sequential engine's at every thread count
+/// and under worker jitter: an access recorded while a dependency view is
+/// built is recorded again by every view-memo hit, whoever filled the memo.
+#[test]
+fn incremental_index_is_the_sequential_one_at_every_thread_count() {
+    let ws = deferred_platform_workspace();
+    let registry = format!(
+        "--registry=file://{}/tests/fixtures/builtin_modules/registry",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut indexes = Vec::new();
+    for (run, (threads, jitter)) in [(1, 0), (8, 0), (8, 20), (32, 40)].into_iter().enumerate() {
+        let dump = ws.path().join(format!("index-{run}.txt"));
+        let output = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
+            .args([
+                "--ignore_all_rc_files".to_owned(),
+                format!("--cache-dir=cache-{run}"),
+                "build".to_owned(),
+                "--experimental-builtin-modules".to_owned(),
+                registry.clone(),
+                format!("--loading_phase_threads={threads}"),
+                "//:a_has".to_owned(),
+                "//:b_flag_on".to_owned(),
+                "//:c_use".to_owned(),
+            ])
+            .env("BAZEL_RS_SNAPSHOT_INDEX_DUMP", &dump)
+            .env("BAZEL_RS_ANALYSIS_JITTER", jitter.to_string())
+            .current_dir(ws.path())
+            .explicit_modules()
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "threads={threads}: {}",
+            errors(&output)
+        );
+        // The repository store's paths name each run's own cache.
+        indexes.push(
+            fs::read_to_string(&dump)
+                .map(|text| text.replace(&format!("cache-{run}/"), "cache-N/"))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "threads={threads}: no index dump: {error}\n{}",
+                        errors(&output)
+                    )
+                }),
+        );
+    }
+    assert!(indexes[0].contains("accesses"), "{}", indexes[0]);
+    for (run, index) in indexes.iter().enumerate().skip(1) {
+        if *index != indexes[0] {
+            let first = indexes[0].lines().collect::<Vec<_>>();
+            let now = index.lines().collect::<Vec<_>>();
+            let at = first
+                .iter()
+                .zip(&now)
+                .position(|(a, b)| a != b)
+                .unwrap_or(first.len().min(now.len()));
+            let from = at.saturating_sub(20);
+            panic!(
+                "run {run}: the index differs from threads 1 at line {at}:\n-- threads 1 --\n{}\n-- run {run} --\n{}",
+                first[from..(at + 10).min(first.len())].join("\n"),
+                now[from..(at + 10).min(now.len())].join("\n")
+            );
+        }
+    }
 }
 
 /// tests/fixtures/extra_execution_platforms in a fresh workspace: the

@@ -494,6 +494,11 @@ impl Engine {
 
     /// `Engine::target` looks up `label`.
     pub(super) fn track_access(&mut self, label: &Label) {
+        if let Some(capture) = self.access_capture.last_mut()
+            && self.incremental.is_some()
+        {
+            capture.push(label.clone());
+        }
         if let Some(tracker) = self.incremental.as_mut() {
             if tracker.deferred.is_none() {
                 tracker.access(label);

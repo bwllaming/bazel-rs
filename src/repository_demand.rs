@@ -122,6 +122,14 @@ pub fn take_order_dependent() -> bool {
     ORDER_DEPENDENT.with(|flag| flag.replace(false))
 }
 
+/// Put back a record [`take_order_dependent`] took (a scope that inspected
+/// its own work restores its caller's).
+pub fn restore_order_dependent(recorded: bool) {
+    if recorded {
+        ORDER_DEPENDENT.with(|flag| flag.set(true));
+    }
+}
+
 /// Whether this thread runs in no-demand mode (it must not fetch).
 pub fn no_demand_active() -> bool {
     NO_DEMAND.with(std::cell::Cell::get) > 0

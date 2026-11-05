@@ -565,7 +565,95 @@ fn verify_artifacts() -> bool {
 /// BAZEL_RS_VERIFY_ARTIFACTS.
 /// The build's File -> Artifact resolver (ActionPlanning::artifact_index):
 /// looked up per input, never iterated, so hashed (by the File's path).
-type ArtifactIndex = crate::fast_hash::FxHashMap<File, Artifact>;
+struct ArtifactIndex {
+    entries: crate::fast_hash::FxHashMap<File, (Artifact, u32)>,
+    /// The plan index of the target at its turn while phase 2 walks the
+    /// plan (P3): a registration stamped later — made by a target prepared
+    /// ahead of its turn — is not visible yet, as it would not exist yet
+    /// sequentially. `u32::MAX` (everything visible) outside a walk.
+    turn: u32,
+    /// The stamp of new registrations: the turn, or the plan index of the
+    /// target prepared ahead (Self::stamp_ahead).
+    stamp: u32,
+}
+
+impl Default for ArtifactIndex {
+    fn default() -> Self {
+        Self {
+            entries: Default::default(),
+            turn: u32::MAX,
+            stamp: 0,
+        }
+    }
+}
+
+impl ArtifactIndex {
+    /// The registered artifact of `file` visible at this point.
+    fn get(&self, file: &File) -> Option<&Artifact> {
+        self.entries
+            .get(file)
+            .filter(|(_, stamp)| *stamp <= self.turn)
+            .map(|(artifact, _)| artifact)
+    }
+
+    /// Register `artifact` for `file` (replacing a registration; a
+    /// registration made ahead of its turn becomes visible from now on).
+    fn insert(&mut self, file: File, artifact: Artifact) {
+        let stamp = self.stamp;
+        match self.entries.get_mut(&file) {
+            Some(entry) => {
+                entry.0 = artifact;
+                entry.1 = entry.1.min(stamp);
+            }
+            None => {
+                self.entries.insert(file, (artifact, stamp));
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    #[cfg(test)]
+    fn contains_key(&self, file: &File) -> bool {
+        self.get(file).is_some()
+    }
+
+    /// Phase 2 walks the plan: the target at index `turn` is at its turn.
+    fn at_turn(&mut self, turn: usize) {
+        let turn = u32::try_from(turn).unwrap_or(u32::MAX - 1);
+        self.turn = turn;
+        self.stamp = turn;
+    }
+
+    /// The target at `index` is prepared ahead of its turn: it sees what
+    /// would be registered at its turn (stamps up to `index`), and what it
+    /// registers becomes visible at its turn. Returns what to restore.
+    fn stamp_ahead(&mut self, index: usize) -> (u32, u32) {
+        let index = u32::try_from(index).unwrap_or(u32::MAX - 1);
+        (
+            std::mem::replace(&mut self.turn, index),
+            std::mem::replace(&mut self.stamp, index),
+        )
+    }
+
+    fn restore_stamp(&mut self, (turn, stamp): (u32, u32)) {
+        self.turn = turn;
+        self.stamp = stamp;
+    }
+
+    /// The walk ended: everything is visible.
+    fn walk_done(&mut self) {
+        self.turn = u32::MAX;
+        self.stamp = 0;
+    }
+}
 
 fn register_artifact(index: &mut ArtifactIndex, file: &File, artifact: &Artifact) {
     match index.get(file) {
@@ -2178,6 +2266,13 @@ pub struct Engine {
     /// whose effect the turn order decides — analyzing a target, loading
     /// a package — aborts that work instead (Self::ahead_abort).
     ahead: bool,
+    /// Incremental tracking: the labels a dependency view's miss path
+    /// looked up, by view key, re-issued as accesses on every hit
+    /// (Self::plan_dependency_view), so the accesses a consumer's frame
+    /// records do not depend on who filled the memo (P3 review item 1).
+    view_accesses: HashMap<ConfiguredTargetKey, Arc<[Label]>>,
+    /// The open captures of Engine::target lookups (innermost last).
+    access_capture: Vec<Vec<Label>>,
     /// The work ahead of its turn hit such a step (sticky: a caller may
     /// swallow the error).
     ahead_aborted: bool,
@@ -2372,6 +2467,8 @@ impl Engine {
             action_planning: None,
             planning_plan: None,
             ahead: false,
+            view_accesses: HashMap::new(),
+            access_capture: Vec::new(),
             ahead_aborted: false,
             analysis_pool: None,
             toolchain_implementations: BTreeMap::new(),
@@ -10359,6 +10456,7 @@ impl Engine {
         crate::progress::analysis_report(spec.build, test_count);
         if self.tracking() {
             let index = self.incremental_index(spec.build);
+            debug_dump_index(index.as_ref());
             crate::snapshot::incremental::set_planned_index(index);
         }
         if self.derive_recording {
@@ -11729,9 +11827,21 @@ impl Engine {
                 );
                 verify_view(&key, &view, rebuilt);
             }
+            // The lookups the miss path made count for this frame too.
+            if self.tracking()
+                && let Some(accessed) = self.view_accesses.get(&key).cloned()
+            {
+                for label in accessed.iter() {
+                    self.track_access(label);
+                }
+            }
             return Ok(view);
         }
         crate::plan_timings::note_dependency_view(&(label, edge_config), true);
+        let tracking = self.tracking();
+        if tracking {
+            self.access_capture.push(Vec::new());
+        }
         let view = self.dependency_view(
             configured,
             dry,
@@ -11745,7 +11855,19 @@ impl Engine {
             target_identities,
             label,
             edge_config,
-        )?;
+        );
+        if tracking {
+            let mut accessed = self.access_capture.pop().unwrap_or_default();
+            if let Some(outer) = self.access_capture.last_mut() {
+                outer.extend(accessed.iter().cloned());
+            }
+            if view.is_ok() {
+                let mut seen = HashSet::new();
+                accessed.retain(|label| seen.insert(label.clone()));
+                self.view_accesses.insert(key.clone(), accessed.into());
+            }
+        }
+        let view = view?;
         views.insert(key, view.clone());
         Ok(view)
     }
@@ -15904,6 +16026,7 @@ impl Engine {
         // likewise dropped so its OnceCells (client env) re-read.
         self.workspace_status_once = std::sync::OnceLock::new();
         self.action_planning = None;
+        self.view_accesses.clear();
         self.build_info_actions.clear();
         self.keep_going_state = keep_going::State::default();
         self.keep_going_plan = None;
@@ -17397,6 +17520,23 @@ fn flush_delegations(
         }
         false
     });
+}
+
+/// `BAZEL_RS_SNAPSHOT_INDEX_DUMP=<file>` (hidden, tests): write the
+/// incremental-analysis index of the planned build, its timing-only costs
+/// cleared, so two analyses' indexes can be compared.
+fn debug_dump_index(index: Option<&crate::snapshot::incremental::Index>) {
+    // snapshot-unrecorded: a hidden diagnostics dump of the index being saved; it changes nothing the analysis computes.
+    let Some(path) = std::env::var_os("BAZEL_RS_SNAPSHOT_INDEX_DUMP") else {
+        return;
+    };
+    let Some(index) = index else {
+        return;
+    };
+    let mut index = index.clone();
+    index.costs.clear();
+    // snapshot-unrecorded: writes the diagnostics dump requested above.
+    let _ = std::fs::write(path, format!("{index:#?}\n"));
 }
 
 /// Marks an error that aborts the analysis of a requested target; the
@@ -19446,6 +19586,57 @@ mod tests {
         )
     }
 
+    /// P3 review item 2: a registration made by a target prepared ahead of
+    /// its turn is invisible before that turn — to earlier turns and to
+    /// targets prepared ahead of an earlier turn — and visible from it on;
+    /// a turn registering the same File first makes it visible at once; a
+    /// finished walk sees everything.
+    #[test]
+    fn artifact_registrations_ahead_of_their_turn_are_visible_from_it() {
+        let artifact = generated_out_txt();
+        let file = artifact.file.clone();
+        let mut index = ArtifactIndex::default();
+        index.at_turn(10);
+        // Target 14 prepared ahead registers the File.
+        let saved = index.stamp_ahead(14);
+        register_artifact(&mut index, &file, &artifact);
+        assert!(index.get(&file).is_some(), "the target sees its own");
+        index.restore_stamp(saved);
+        assert!(index.get(&file).is_none(), "turn 10: not yet");
+        // Target 12 prepared ahead: before 14's turn.
+        let saved = index.stamp_ahead(12);
+        assert!(index.get(&file).is_none());
+        index.restore_stamp(saved);
+        // Target 16 prepared ahead: after it.
+        let saved = index.stamp_ahead(16);
+        assert!(index.get(&file).is_some());
+        index.restore_stamp(saved);
+        index.at_turn(13);
+        assert!(index.get(&file).is_none());
+        index.at_turn(14);
+        assert!(index.get(&file).is_some());
+        // A turn registering it before the ahead target's turn.
+        let mut index = ArtifactIndex::default();
+        index.at_turn(3);
+        let saved = index.stamp_ahead(7);
+        register_artifact(&mut index, &file, &artifact);
+        index.restore_stamp(saved);
+        index.at_turn(4);
+        assert!(index.get(&file).is_none());
+        register_artifact(&mut index, &file, &artifact);
+        assert!(index.get(&file).is_some(), "registered at turn 4");
+        index.at_turn(5);
+        assert!(index.get(&file).is_some());
+        // Outside a walk everything is visible.
+        let mut index = ArtifactIndex::default();
+        index.at_turn(1);
+        let saved = index.stamp_ahead(9);
+        register_artifact(&mut index, &file, &artifact);
+        index.restore_stamp(saved);
+        index.walk_done();
+        assert!(index.get(&file).is_some());
+    }
+
     /// W1b registration invariant: a File keeps its first registration; an
     /// equal re-registration is a no-op.
     #[test]
@@ -19455,7 +19646,7 @@ mod tests {
         register_artifact(&mut index, &artifact.file, &artifact);
         register_artifact(&mut index, &artifact.file, &artifact.clone());
         assert_eq!(index.len(), 1);
-        assert!(same_artifact(&index[&artifact.file], &artifact));
+        assert!(same_artifact(index.get(&artifact.file).unwrap(), &artifact));
     }
 
     /// Re-registering a File with a different Artifact is an internal error
@@ -19874,7 +20065,7 @@ mod tests {
                     execute_build.then(|| (id.to_owned(), 0)),
                     "{name}, status label {embed_label:?}"
                 );
-                assert!(same_artifact(&index[&file], artifact));
+                assert!(same_artifact(index.get(&file).unwrap(), artifact));
             }
             assert_eq!(index.len(), 2);
         }
