@@ -254,6 +254,9 @@ type Artifacts = Arc<Vec<Artifact>>;
 type Locations = BTreeMap<String, Vec<PathBuf>>;
 /// Declared generated artifacts by configuration and execution path.
 type Declared = BTreeMap<(ConfigId, PathBuf), Artifact>;
+/// A lookup-only map by configured target key (never iterated where the
+/// order is observed).
+type KeyMap<V> = crate::fast_hash::FxHashMap<ConfiguredTargetKey, V>;
 type ResolvedInputs = (Vec<Artifact>, Locations);
 
 /// The identity key of a configured target's one shared `Target` value
@@ -283,14 +286,13 @@ enum Target {
 /// actions. `done` counts the planned entries of the build's plan.
 #[derive(Default)]
 struct ActionPlanning {
-    dry: BTreeMap<ConfiguredTargetKey, Artifacts>,
-    custom_providers:
-        BTreeMap<ConfiguredTargetKey, BTreeMap<String, starlark::values::OwnedFrozenValue>>,
+    dry: KeyMap<Artifacts>,
+    custom_providers: KeyMap<BTreeMap<String, starlark::values::OwnedFrozenValue>>,
     /// Returned declared-provider names per analyzed rule (Target debugPrint).
-    provider_keys: BTreeMap<ConfiguredTargetKey, Vec<String>>,
+    provider_keys: KeyMap<Vec<String>>,
     /// RunfilesProvider/FilesToRunProvider of analyzed rule targets
     /// (docs/RUNFILES.md); file targets and other native rules have none.
-    runfiles_info: BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
+    runfiles_info: KeyMap<Arc<crate::runfiles::TargetRunfiles>>,
     /// The build's one File -> Artifact resolver (W1b, PLAN-L1 §2.1): the
     /// role of Bazel's Artifact identity (actions/Artifact.java:677-702),
     /// so an action input, a DefaultInfo file or a runfile resolves to its
@@ -366,7 +368,7 @@ struct ActionPlanning {
     /// depends on, itself included (RuleContext.getTransitivePackagesForRunfileRepoMappingManifest,
     /// N23f): per configured target key, since select() can choose
     /// different dependencies in different configurations.
-    repositories: BTreeMap<ConfiguredTargetKey, Arc<BTreeSet<String>>>,
+    repositories: KeyMap<Arc<BTreeSet<String>>>,
     /// The runfiles support nodes of each configured target with runfiles
     /// support (N23f, Engine::plan_runfiles_support).
     runfiles_nodes: BTreeMap<ConfiguredTargetKey, RunfilesNodes>,
@@ -724,11 +726,10 @@ impl KeyTable {
 /// aspect planner can recurse (an aspect application plans its own
 /// dependencies through the shared machinery).
 struct PlanState<'a> {
-    pub dry: &'a mut BTreeMap<ConfiguredTargetKey, Artifacts>,
-    pub custom_providers:
-        &'a mut BTreeMap<ConfiguredTargetKey, BTreeMap<String, starlark::values::OwnedFrozenValue>>,
-    pub provider_keys: &'a mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
-    pub runfiles_info: &'a mut BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
+    pub dry: &'a mut KeyMap<Artifacts>,
+    pub custom_providers: &'a mut KeyMap<BTreeMap<String, starlark::values::OwnedFrozenValue>>,
+    pub provider_keys: &'a mut KeyMap<Vec<String>>,
+    pub runfiles_info: &'a mut KeyMap<Arc<crate::runfiles::TargetRunfiles>>,
     pub artifact_index: &'a mut ArtifactIndex,
     pub declared: &'a mut Declared,
     pub native_output_groups:
@@ -2215,7 +2216,7 @@ pub struct Engine {
     /// The exec configuration of each analyzed target's default exec group
     /// (its parent configuration when the exec transition is a no-op), for
     /// targets with exec-transition dependency edges.
-    exec_configurations: BTreeMap<ConfiguredTargetKey, ConfigId>,
+    exec_configurations: KeyMap<ConfigId>,
     /// Whether a Starlark flag's rule explicitly sets `scope = "target"`
     /// (reset by the exec transition), per flag (computed on first use).
     flag_scopes: BTreeMap<Label, bool>,
@@ -2236,7 +2237,7 @@ pub struct Engine {
     transition_details: BTreeMap<Vec<Label>, Result<TransitionDetails, String>>,
     /// The configuration of each Starlark-transition attribute of each
     /// analyzed target (read by the build loop).
-    edge_configs: BTreeMap<ConfiguredTargetKey, BTreeMap<String, TransitionConfigurations>>,
+    edge_configs: KeyMap<BTreeMap<String, TransitionConfigurations>>,
     /// A target requested with a rule transition that changed its
     /// configuration delegates to the key it was analyzed under
     /// (RuleTransitionApplier, analysis/producers/RuleTransitionApplier.java:69-110,
@@ -2248,11 +2249,11 @@ pub struct Engine {
     requested_trimmed_root: Option<ConfiguredTargetKey>,
     /// The resolved toolchain context of each toolchain-resolving rule of
     /// the build (UnloadedToolchainContext), read by the build loop.
-    toolchain_contexts: BTreeMap<ConfiguredTargetKey, UnloadedToolchainContext>,
+    toolchain_contexts: KeyMap<UnloadedToolchainContext>,
     /// The other exec groups of each toolchain-resolving rule's
     /// ToolchainCollection (docs/EXEC_GROUPS.md; the default `test` group of
     /// a Starlark test rule, docs/TEST_FLAGS.md).
-    exec_group_contexts: BTreeMap<ConfiguredTargetKey, crate::exec_groups::TargetExecGroups>,
+    exec_group_contexts: KeyMap<crate::exec_groups::TargetExecGroups>,
     /// The exec configuration of each named exec group with
     /// `config.exec(exec_group = NAME)` dependency edges.
     group_exec_configurations: BTreeMap<(ConfiguredTargetKey, String), ConfigId>,
@@ -2462,16 +2463,16 @@ impl Engine {
             registered_execution_platforms: BTreeMap::new(),
             computing_execution_platforms: Vec::new(),
             execution_platform_cycle_reports: BTreeMap::new(),
-            exec_configurations: BTreeMap::new(),
+            exec_configurations: KeyMap::default(),
             flag_scopes: BTreeMap::new(),
             exec_transitions: HashMap::new(),
             transition_cache: BTreeMap::new(),
             transition_details: BTreeMap::new(),
-            edge_configs: BTreeMap::new(),
+            edge_configs: KeyMap::default(),
             rule_delegations: BTreeMap::new(),
             requested_trimmed_root: None,
-            toolchain_contexts: BTreeMap::new(),
-            exec_group_contexts: BTreeMap::new(),
+            toolchain_contexts: KeyMap::default(),
+            exec_group_contexts: KeyMap::default(),
             group_exec_configurations: BTreeMap::new(),
             action_executions: BTreeMap::new(),
             action_planning: None,
@@ -6043,10 +6044,7 @@ impl Engine {
         config: ConfigId,
         context: Option<&UnloadedToolchainContext>,
         target_description: &str,
-        custom_providers: &BTreeMap<
-            ConfiguredTargetKey,
-            BTreeMap<String, starlark::values::OwnedFrozenValue>,
-        >,
+        custom_providers: &KeyMap<BTreeMap<String, starlark::values::OwnedFrozenValue>>,
     ) -> Result<crate::toolchain_info::ToolchainContextData, String> {
         let mut toolchains = BTreeMap::new();
         let mut requested = Vec::new();
@@ -6962,10 +6960,7 @@ impl Engine {
         rule: &Rule,
         config: ConfigId,
         configured: &ConfiguredNodes,
-        custom_providers: &BTreeMap<
-            ConfiguredTargetKey,
-            BTreeMap<String, starlark::values::OwnedFrozenValue>,
-        >,
+        custom_providers: &KeyMap<BTreeMap<String, starlark::values::OwnedFrozenValue>>,
     ) -> Result<(), String> {
         let Some(native) = &rule.native else {
             return Ok(());
@@ -10138,7 +10133,7 @@ impl Engine {
         &mut self,
         label: &Label,
         config: ConfigId,
-        built: &BTreeMap<ConfiguredTargetKey, Artifacts>,
+        built: &KeyMap<Artifacts>,
         declared: &Declared,
     ) -> Result<Vec<Artifact>, String> {
         self.shared_artifacts(label, config, built, declared)
@@ -10150,7 +10145,7 @@ impl Engine {
         &mut self,
         label: &Label,
         config: ConfigId,
-        built: &BTreeMap<ConfiguredTargetKey, Artifacts>,
+        built: &KeyMap<Artifacts>,
         declared: &Declared,
     ) -> Result<Artifacts, String> {
         match self.target(label)? {
@@ -10199,7 +10194,7 @@ impl Engine {
         &mut self,
         rule: &Rule,
         config: ConfigId,
-        built: &BTreeMap<ConfiguredTargetKey, Artifacts>,
+        built: &KeyMap<Artifacts>,
         declared: &Declared,
     ) -> Result<Vec<Artifact>, String> {
         let mut inputs = Vec::new();
@@ -10219,7 +10214,7 @@ impl Engine {
         &mut self,
         rule: &Rule,
         config: ConfigId,
-        built: &BTreeMap<ConfiguredTargetKey, Artifacts>,
+        built: &KeyMap<Artifacts>,
         declared: &Declared,
     ) -> Result<ResolvedInputs, String> {
         let mut inputs = Vec::new();
@@ -10962,7 +10957,7 @@ impl Engine {
     /// repository.
     fn dependency_repositories(
         &self,
-        repositories: &BTreeMap<ConfiguredTargetKey, Arc<BTreeSet<String>>>,
+        repositories: &KeyMap<Arc<BTreeSet<String>>>,
         label: Label,
         config: Option<ConfigId>,
     ) -> BTreeSet<String> {
@@ -11019,10 +11014,7 @@ impl Engine {
     /// (RuleConfiguredTargetBuilder.collectTransitiveValidationOutputGroups).
     fn planned_validation(
         &self,
-        custom_providers: &BTreeMap<
-            ConfiguredTargetKey,
-            BTreeMap<String, starlark::values::OwnedFrozenValue>,
-        >,
+        custom_providers: &KeyMap<BTreeMap<String, starlark::values::OwnedFrozenValue>>,
         validation: &BTreeMap<ConfiguredTargetKey, crate::starlark_types::Depset>,
         key: &ConfiguredTargetKey,
     ) -> Option<crate::starlark_types::Depset> {
@@ -11047,10 +11039,7 @@ impl Engine {
     /// the caller.
     fn planned_output_group(
         &self,
-        custom_providers: &BTreeMap<
-            ConfiguredTargetKey,
-            BTreeMap<String, starlark::values::OwnedFrozenValue>,
-        >,
+        custom_providers: &KeyMap<BTreeMap<String, starlark::values::OwnedFrozenValue>>,
         validation: &BTreeMap<ConfiguredTargetKey, crate::starlark_types::Depset>,
         key: &ConfiguredTargetKey,
         group: &str,
@@ -11795,13 +11784,10 @@ impl Engine {
     fn plan_dependency_view(
         &mut self,
         configured: &mut ConfiguredNodes,
-        dry: &mut BTreeMap<ConfiguredTargetKey, Artifacts>,
-        custom_providers: &mut BTreeMap<
-            ConfiguredTargetKey,
-            BTreeMap<String, starlark::values::OwnedFrozenValue>,
-        >,
-        provider_keys: &mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
-        runfiles_info: &mut BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
+        dry: &mut KeyMap<Artifacts>,
+        custom_providers: &mut KeyMap<BTreeMap<String, starlark::values::OwnedFrozenValue>>,
+        provider_keys: &mut KeyMap<Vec<String>>,
+        runfiles_info: &mut KeyMap<Arc<crate::runfiles::TargetRunfiles>>,
         artifact_index: &mut ArtifactIndex,
         declared: &mut Declared,
         native_output_groups: &mut BTreeMap<
@@ -11909,13 +11895,10 @@ impl Engine {
     fn dependency_view(
         &mut self,
         configured: &mut ConfiguredNodes,
-        dry: &mut BTreeMap<ConfiguredTargetKey, Artifacts>,
-        custom_providers: &mut BTreeMap<
-            ConfiguredTargetKey,
-            BTreeMap<String, starlark::values::OwnedFrozenValue>,
-        >,
-        provider_keys: &mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
-        runfiles_info: &mut BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
+        dry: &mut KeyMap<Artifacts>,
+        custom_providers: &mut KeyMap<BTreeMap<String, starlark::values::OwnedFrozenValue>>,
+        provider_keys: &mut KeyMap<Vec<String>>,
+        runfiles_info: &mut KeyMap<Arc<crate::runfiles::TargetRunfiles>>,
         artifact_index: &mut ArtifactIndex,
         declared: &mut Declared,
         native_output_groups: &mut BTreeMap<
@@ -17529,13 +17512,10 @@ fn dependency_runfiles(
 fn flush_delegations(
     delegations: &mut Vec<(ConfiguredTargetKey, ConfiguredTargetKey)>,
     delegated_keys: &mut Vec<ConfiguredTargetKey>,
-    dry: &mut BTreeMap<ConfiguredTargetKey, Artifacts>,
-    custom_providers: &mut BTreeMap<
-        ConfiguredTargetKey,
-        BTreeMap<String, starlark::values::OwnedFrozenValue>,
-    >,
-    provider_keys: &mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
-    runfiles_info: &mut BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
+    dry: &mut KeyMap<Artifacts>,
+    custom_providers: &mut KeyMap<BTreeMap<String, starlark::values::OwnedFrozenValue>>,
+    provider_keys: &mut KeyMap<Vec<String>>,
+    runfiles_info: &mut KeyMap<Arc<crate::runfiles::TargetRunfiles>>,
 ) {
     delegations.retain(|(requested, owner)| {
         let Some(files) = dry.get(owner).cloned() else {
@@ -17854,7 +17834,58 @@ fn check_macro_namespace(rule: &Rule, target: &Label) -> Result<(), String> {
 /// The build's producers of output paths, global across configurations
 /// (Bazel's action graph: MapBasedActionGraph, ArtifactPrefixConflicts):
 /// one shared [`OutputProducer`] per producing action (or native output).
-type Producers = BTreeMap<PathBuf, Arc<OutputProducer>>;
+#[derive(Default)]
+struct Producers {
+    /// Output path -> producer (lookups only, never iterated in an order
+    /// that is observed).
+    paths: crate::fast_hash::FxHashMap<PathBuf, Arc<OutputProducer>>,
+    /// Every proper ancestor of a registered output path: a path in it has
+    /// a registered path below it (the prefix-conflict check), answered
+    /// without an ordered map.
+    ancestors: crate::fast_hash::FxHashSet<PathBuf>,
+}
+
+impl Producers {
+    #[cfg(test)]
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(&self, output: &Path) -> Option<&Arc<OutputProducer>> {
+        self.paths.get(output)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.paths.len()
+    }
+
+    #[cfg(test)]
+    fn values(&self) -> impl Iterator<Item = &Arc<OutputProducer>> {
+        self.paths.values()
+    }
+
+    fn insert(&mut self, output: PathBuf, producer: Arc<OutputProducer>) {
+        for ancestor in output.ancestors().skip(1) {
+            if ancestor.as_os_str().is_empty() || !self.ancestors.insert(ancestor.to_path_buf()) {
+                break;
+            }
+        }
+        self.paths.insert(output, producer);
+    }
+
+    /// The first registered path below `output` in path order (what an
+    /// ordered map's range from `output` finds first), if any.
+    fn first_below(&self, output: &Path) -> Option<(&PathBuf, &Arc<OutputProducer>)> {
+        if !self.ancestors.contains(output) {
+            return None;
+        }
+        self.paths
+            .iter()
+            .filter(|(path, _)| path.as_path() != output && path.starts_with(output))
+            .min_by(|(a, _), (b, _)| a.cmp(b))
+    }
+}
 
 /// The producer of output paths ([`register_output`]).
 #[derive(Debug)]
@@ -17946,9 +17977,7 @@ fn register_output(
             ));
         }
     }
-    if let Some((previous_path, previous)) = producers.range(output.to_path_buf()..).next()
-        && previous_path.starts_with(output)
-    {
+    if let Some((previous_path, previous)) = producers.first_below(output) {
         return Err(crate::shared_actions::prefix_conflict_message(
             (&output.to_string_lossy(), producer.label()),
             (&previous_path.to_string_lossy(), previous.label()),
@@ -20009,7 +20038,7 @@ mod tests {
         engine.set_execute_build(false);
         let mut index = ArtifactIndex::default();
         let mut plan = None;
-        let (mut nodes, mut producers) = (Vec::new(), BTreeMap::new());
+        let (mut nodes, mut producers) = (Vec::new(), Producers::default());
         let (client, status) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
         let mut lookup = |file: &File, index: &mut ArtifactIndex| {
             engine
@@ -20040,7 +20069,7 @@ mod tests {
         assert_eq!(artifact.file, volatile);
         let stable = crate::analysis_runtime::workspace_status_file("stable-status.txt");
         assert!(index.contains_key(&stable) && index.len() == 3);
-        assert!(nodes.is_empty() && producers.is_empty());
+        assert!(nodes.is_empty() && producers.len() == 0);
     }
 
     /// The workspace status artifacts carry the status Files ctx.info_file
@@ -20062,7 +20091,7 @@ mod tests {
                 embed_label: embed_label.to_owned(),
             });
             let mut index = ArtifactIndex::default();
-            let (mut nodes, mut producers) = (Vec::new(), BTreeMap::new());
+            let (mut nodes, mut producers) = (Vec::new(), Producers::default());
             let (client, status) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
             let planned = engine
                 .ensure_workspace_status(
@@ -21878,11 +21907,15 @@ m = macro(implementation=emit)
         );
         // Toolchain contexts and registered toolchains per configuration.
         assert_eq!(
-            engine
-                .toolchain_contexts
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>(),
+            {
+                let mut keys = engine
+                    .toolchain_contexts
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                keys.sort();
+                keys
+            },
             {
                 let mut keys = vec![
                     key("//:leaf", top),

@@ -18,7 +18,7 @@ impl Engine {
         &mut self,
         rule: &Rule,
         config: ConfigId,
-        built: &BTreeMap<ConfiguredTargetKey, Artifacts>,
+        built: &super::KeyMap<Artifacts>,
         declared: &Declared,
     ) -> Result<DocExtractOutput, String> {
         use crate::custom_rule::AttrValue;

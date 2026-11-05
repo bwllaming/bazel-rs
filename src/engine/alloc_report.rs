@@ -899,6 +899,7 @@ impl Footprint for Artifact {
         self.0.heap(walker)
     }
 }
+fields!(super::Producers { paths, ancestors });
 // One producer per producing action, shared by its outputs' entries.
 fields!(OutputProducer {
     owner,
