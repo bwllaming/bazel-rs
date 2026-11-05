@@ -94,7 +94,7 @@ use crate::shared_path::SharedPath;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map};
+use std::collections::{BTreeMap, BTreeSet, HashMap, hash_map};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -3781,16 +3781,17 @@ pub(crate) fn validate_structure_with(action: &Action, shared: &SharedPaths<'_>)
 fn check_runfiles_entries(action: &Action, entries: &RunfilesEntries) -> Result<(), String> {
     // One lookup per entry (a runfiles tree of 30,000 entries is checked in
     // linear time, not against every input).
-    let inputs: HashSet<&Path> = action
+    // `Path` equality, hashed from the bytes (crate::path_key).
+    let inputs: crate::path_key::PathSet<'_> = action
         .inputs
         .iter()
-        .map(|(_, name)| name.as_path())
+        .map(|(_, name)| crate::path_key::PathKey(name.as_path()))
         .collect();
     for (path, destination) in entries.iter() {
         validate_relative(Path::new(&**path))
             .map_err(|e| format!("invalid runfiles path '{path}': {e}"))?;
         if let Some(destination) = destination
-            && !inputs.contains(destination.as_path())
+            && !inputs.contains(&crate::path_key::PathKey(destination.as_path()))
         {
             return Err(format!(
                 "runfiles entry '{path}' links to '{}', which is not an action input",
@@ -8297,6 +8298,7 @@ mod tree_stamps;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::os::unix::fs::symlink;
     use std::process::Command;
     use std::sync::{Arc, Barrier};

@@ -178,8 +178,13 @@ pub fn repo_mapping_manifest<'m>(
         let first = path.split('/').next().unwrap_or_default().to_owned();
         in_runfiles.insert(first);
     }
-    for file in runfiles.artifacts() {
-        if let Some(repository) = owner_repository(&file.owner) {
+    // Each owner is parsed once (a runfiles set has few owners per file).
+    let artifacts = runfiles.artifacts();
+    let mut owners: crate::fast_hash::FxHashSet<&str> = Default::default();
+    for file in &artifacts {
+        if owners.insert(file.owner.as_str())
+            && let Some(repository) = owner_repository(&file.owner)
+        {
             in_runfiles.insert(repository);
         }
     }
