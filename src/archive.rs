@@ -140,6 +140,7 @@ pub fn extract_named(
         strip_prefix,
         destination,
         archive_name,
+        None,
     )
     .map_err(|failure| match failure {
         Failure::PrefixNotFound(_) => {
@@ -166,17 +167,173 @@ pub fn extract_file(
             strip_prefix,
             destination,
             archive_name,
+            None,
         );
     }
-    run(file, archive_type, strip_prefix, destination, archive_name)
+    if let Some(kind) = slow_decoder(archive_type)
+        && file
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() >= DECODED_MIN_SIZE)
+    {
+        return extract_slow_decoded(
+            file,
+            kind,
+            archive_type,
+            strip_prefix,
+            destination,
+            archive_name,
+        );
+    }
+    run(
+        file,
+        archive_type,
+        strip_prefix,
+        destination,
+        archive_name,
+        None,
+    )
 }
 
-fn run<R: Read + Seek>(
+/// Compressed archives at least this large keep their decoded tar stream
+/// for a repeated extraction ([`DECODED`]).
+const DECODED_MIN_SIZE: u64 = if cfg!(test) { 1 } else { 16 << 20 };
+
+/// The decoders slow enough to keep a decoded stream of: xz (single-threaded
+/// at ~120 MB/s), bzip2, zstd (pure Rust).
+fn slow_decoder(archive_type: &str) -> Option<&'static str> {
+    match archive_type {
+        "tar.xz" | "txz" => Some("xz"),
+        "tar.bz2" | "tbz" => Some("bz2"),
+        "tar.zst" | "tzst" => Some("zst"),
+        _ => None,
+    }
+}
+
+/// The decoded tar stream of the last large slow-to-decode archive this
+/// process extracted, keyed by the decoder and the SHA-256 of the
+/// compressed bytes: a repository rule extracting the same archive again
+/// (hermetic_cc_toolchain's `zig_config` calls `download_and_extract` on
+/// the same 45 MB tar.xz twice, as genuine does too; the xz decode is
+/// 2.7 s of each) reads the tar from it instead of decoding again. The
+/// entries, their order and every check are the tar extraction's own; only
+/// decompression is skipped. An unnamed temporary file (the OS frees it at
+/// exit); one entry.
+static DECODED: std::sync::Mutex<Option<Decoded>> = std::sync::Mutex::new(None);
+
+struct Decoded {
+    kind: &'static str,
+    digest: [u8; 32],
+    tar: std::sync::Arc<File>,
+}
+
+/// [`extract_file`] of a large archive with a slow decoder ([`DECODED`]).
+fn extract_slow_decoded(
+    mut file: File,
+    kind: &'static str,
+    archive_type: &str,
+    strip_prefix: &str,
+    destination: &Path,
+    archive_name: &str,
+) -> Result<(), Failure> {
+    use sha2::Digest;
+    let digest: [u8; 32] = {
+        let mut hasher = sha2::Sha256::new();
+        io::copy(&mut file, &mut hasher).map_err(|e| format!("read archive: {e}"))?;
+        file.rewind().map_err(|e| format!("read archive: {e}"))?;
+        hasher.finalize().into()
+    };
+    let cached = DECODED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|decoded| decoded.kind == kind && decoded.digest == digest)
+        .map(|decoded| decoded.tar.clone());
+    if let Some(tar) = cached {
+        return run(
+            PositionalReader {
+                file: tar,
+                position: 0,
+            },
+            "tar",
+            strip_prefix,
+            destination,
+            archive_name,
+            None,
+        );
+    }
+    // snapshot-unrecorded: a private unnamed scratch file of this process.
+    let Ok(tee) = tempfile::tempfile() else {
+        return run(
+            file,
+            archive_type,
+            strip_prefix,
+            destination,
+            archive_name,
+            None,
+        );
+    };
+    let complete = std::sync::atomic::AtomicBool::new(false);
+    let result = run(
+        file,
+        archive_type,
+        strip_prefix,
+        destination,
+        archive_name,
+        Some((&tee, &complete)),
+    );
+    if result.is_ok() && complete.load(std::sync::atomic::Ordering::Acquire) {
+        *DECODED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Decoded {
+            kind,
+            digest,
+            tar: std::sync::Arc::new(tee),
+        });
+    }
+    result
+}
+
+/// Reads a shared file at its own position (positional reads: several
+/// extractions of one [`Decoded`] stream never move each other's offset).
+struct PositionalReader {
+    file: std::sync::Arc<File>,
+    position: u64,
+}
+
+impl Read for PositionalReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use std::os::unix::fs::FileExt;
+        let n = self.file.read_at(buf, self.position)?;
+        self.position += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for PositionalReader {
+    fn seek(&mut self, position: io::SeekFrom) -> io::Result<u64> {
+        let length = self.file.metadata()?.len();
+        let target = match position {
+            io::SeekFrom::Start(offset) => Some(offset),
+            io::SeekFrom::End(offset) => length.checked_add_signed(offset),
+            io::SeekFrom::Current(offset) => self.position.checked_add_signed(offset),
+        };
+        self.position =
+            target.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid seek"))?;
+        Ok(self.position)
+    }
+}
+
+/// Where a decoded stream is also written, and whether it was written whole
+/// (the decoder reached its end cleanly and every write succeeded).
+type Tee<'a> = Option<(&'a File, &'a std::sync::atomic::AtomicBool)>;
+
+fn run<R: Read + Seek + Send>(
     source: R,
     archive_type: &str,
     strip_prefix: &str,
     destination: &Path,
     archive_name: &str,
+    tee: Tee<'_>,
 ) -> Result<(), Failure> {
     if matches!(archive_type, "ar" | "deb") {
         // ArFunction ignores the prefix (ArFunction.java:27-30).
@@ -204,27 +361,29 @@ fn run<R: Read + Seek>(
     match archive_type {
         "tar" => extract_tar(BufReader::with_capacity(BUFFER_SIZE, source), &mut state)?,
         // GzipCompressorInputStream(in, decompressConcatenated = true).
-        "tar.gz" | "tgz" => extract_tar(
+        "tar.gz" | "tgz" => pipelined(
             flate2::read::MultiGzDecoder::new(BufReader::with_capacity(BUFFER_SIZE, source)),
-            &mut state,
+            tee,
+            |reader| extract_tar(reader, &mut state),
         )?,
         // XZInputStream decodes concatenated streams (TarXzFunction.java).
-        "tar.xz" | "txz" => extract_tar(
+        "tar.xz" | "txz" => pipelined(
             lzma_rust2::XzReader::new(BufReader::with_capacity(BUFFER_SIZE, source), true),
-            &mut state,
+            tee,
+            |reader| extract_tar(reader, &mut state),
         )?,
         // ZstdInputStreamNoFinalizer: every frame, skippable frames skipped.
-        "tar.zst" | "tzst" => extract_tar(
+        "tar.zst" | "tzst" => pipelined(
             ZstdFrames::new(BufReader::with_capacity(BUFFER_SIZE, source))?,
-            &mut state,
+            tee,
+            |reader| extract_tar(reader, &mut state),
         )?,
         // BZip2CompressorInputStream(in, decompressConcatenated = true).
-        "tar.bz2" | "tbz" => {
-            extract_tar(
-                bzip2::read::MultiBzDecoder::new(BufReader::with_capacity(BUFFER_SIZE, source)),
-                &mut state,
-            )?;
-        }
+        "tar.bz2" | "tbz" => pipelined(
+            bzip2::read::MultiBzDecoder::new(BufReader::with_capacity(BUFFER_SIZE, source)),
+            tee,
+            |reader| extract_tar(reader, &mut state),
+        )?,
         "zip" => extract_zip(source, &mut state)?,
         other => return Err(format!("unsupported archive type: {other}").into()),
     }
@@ -232,6 +391,136 @@ fn run<R: Read + Seek>(
         return Err(Failure::PrefixNotFound(state.available));
     }
     Ok(state.create_symlinks(archive_type != "zip")?)
+}
+
+/// Decompressed bytes handed from the decoding thread to the extracting one.
+const PIPE_CHUNK: usize = 256 * 1024;
+/// Chunks in flight between them (bounded memory: 4 MiB).
+const PIPE_DEPTH: usize = 16;
+
+/// Run `consume` over `decoder`'s output while another thread decodes:
+/// decompression (single-threaded xz, gzip, zstd, bzip2) overlaps the file
+/// writes of the extraction instead of alternating with them. The bytes and
+/// their order are exactly the decoder's; a decoder error reaches the
+/// consumer at the same stream position. Cancellation (a module-root
+/// warm-up's) is checked on the consuming thread, which stops the decoder
+/// by dropping the pipe.
+fn pipelined<D: Read + Send, T>(
+    decoder: D,
+    tee: Tee<'_>,
+    consume: impl FnOnce(&mut dyn Read) -> Result<T, String>,
+) -> Result<T, String> {
+    std::thread::scope(|scope| {
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<io::Result<Vec<u8>>>(PIPE_DEPTH);
+        let producer = std::thread::Builder::new()
+            .name("bazel-rs-decode".to_owned())
+            .spawn_scoped(scope, move || {
+                let mut decoder = decoder;
+                // Whether the tee still holds every decoded byte.
+                let mut teeing = tee.is_some();
+                loop {
+                    let mut chunk = vec![0u8; PIPE_CHUNK];
+                    let mut filled = 0;
+                    // Fill the chunk (decoders return short reads).
+                    let result = loop {
+                        match decoder.read(&mut chunk[filled..]) {
+                            Ok(0) => break Ok(()),
+                            Ok(n) => {
+                                filled += n;
+                                if filled == chunk.len() {
+                                    break Ok(());
+                                }
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                            Err(error) => break Err(error),
+                        }
+                    };
+                    let end = filled == 0;
+                    if filled > 0 {
+                        chunk.truncate(filled);
+                        if teeing && let Some((mut file, _)) = tee {
+                            teeing = io::Write::write_all(&mut file, &chunk).is_ok();
+                        }
+                        if sender.send(Ok(chunk)).is_err() {
+                            return;
+                        }
+                    }
+                    match result {
+                        Err(error) => {
+                            let _ = sender.send(Err(error));
+                            return;
+                        }
+                        Ok(()) if end => {
+                            if teeing && let Some((_, complete)) = tee {
+                                complete.store(true, std::sync::atomic::Ordering::Release);
+                            }
+                            return;
+                        }
+                        Ok(()) => {}
+                    }
+                }
+            });
+        let Ok(producer) = producer else {
+            return Err("cannot start the decompression thread".to_owned());
+        };
+        let mut pipe = Pipe {
+            receiver,
+            chunk: Vec::new(),
+            position: 0,
+            done: false,
+        };
+        let result = consume(&mut pipe);
+        if result.is_ok() && tee.is_some() {
+            // The tee keeps the whole stream: decode what the extraction
+            // left unread (the tar's trailing blocks).
+            let _ = io::copy(&mut pipe, &mut io::sink());
+        }
+        // Stop the decoder (a consumer error leaves input unread).
+        drop(pipe);
+        let _ = producer.join();
+        result
+    })
+}
+
+/// The consuming end of [`pipelined`].
+struct Pipe {
+    receiver: std::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
+    chunk: Vec<u8>,
+    position: usize,
+    done: bool,
+}
+
+impl Read for Pipe {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        crate::module_root_warm::check().map_err(io::Error::other)?;
+        while self.position == self.chunk.len() {
+            if self.done {
+                return Ok(0);
+            }
+            match self.receiver.recv() {
+                Ok(Ok(chunk)) => {
+                    self.chunk = chunk;
+                    self.position = 0;
+                }
+                Ok(Err(error)) => {
+                    self.done = true;
+                    return Err(error);
+                }
+                // The decoder finished (the sender is dropped at its end).
+                Err(_) => {
+                    self.done = true;
+                    return Ok(0);
+                }
+            }
+        }
+        let n = buf.len().min(self.chunk.len() - self.position);
+        buf[..n].copy_from_slice(&self.chunk[self.position..self.position + n]);
+        self.position += n;
+        Ok(n)
+    }
 }
 
 /// The extraction destination must be an existing, empty, private directory.
@@ -2849,6 +3138,90 @@ mod tests {
                 b"#!/bin/sh\n"
             );
         }
+    }
+
+    /// A repeated extraction of one slow-to-decode archive reads the kept
+    /// decoded stream: the same entries and checks, also under another
+    /// prefix; a truncated archive keeps nothing and fails alike each time.
+    #[test]
+    fn repeated_extractions_reuse_the_decoded_stream_exactly() {
+        let tar = tar_fixture(&[
+            ("top/", b'5', 0o755, b""),
+            ("top/bin/tool", b'0', 0o755, b"#!/bin/sh\n"),
+            ("top/data", b'0', 0o644, &[9u8; 300_000]),
+            ("other/file", b'0', 0o644, b"x"),
+        ]);
+        let source = tempfile::tempdir().unwrap();
+        for (kind, bytes) in [
+            ("tar.xz", xz(&tar)),
+            ("tar.zst", zstd(&tar)),
+            ("tar.bz2", bz2(&tar)),
+        ] {
+            let path = source.path().join(format!("archive.{kind}"));
+            fs::write(&path, &bytes).unwrap();
+            let listing = |root: &Path| {
+                use std::os::unix::fs::PermissionsExt;
+                fn walk(path: &Path, out: &mut Vec<PathBuf>) {
+                    for entry in fs::read_dir(path).unwrap() {
+                        let path = entry.unwrap().path();
+                        out.push(path.clone());
+                        if fs::symlink_metadata(&path).unwrap().is_dir() {
+                            walk(&path, out);
+                        }
+                    }
+                }
+                let mut paths = Vec::new();
+                walk(root, &mut paths);
+                let mut entries = Vec::new();
+                for entry in paths {
+                    let metadata = fs::symlink_metadata(&entry).unwrap();
+                    let content = metadata.is_file().then(|| fs::read(&entry).unwrap());
+                    entries.push((
+                        entry.strip_prefix(root).unwrap().to_path_buf(),
+                        metadata.permissions().mode() & 0o777,
+                        content,
+                    ));
+                }
+                entries.sort();
+                entries
+            };
+            let first = tempfile::tempdir().unwrap();
+            extract_file(&path, kind, "top", first.path(), "archive").unwrap();
+            let second = tempfile::tempdir().unwrap();
+            extract_file(&path, kind, "top", second.path(), "archive").unwrap();
+            assert_eq!(listing(first.path()), listing(second.path()), "{kind}");
+            let other = tempfile::tempdir().unwrap();
+            extract_file(&path, kind, "other", other.path(), "archive").unwrap();
+            assert_eq!(fs::read(other.path().join("file")).unwrap(), b"x");
+            let missing = tempfile::tempdir().unwrap();
+            assert!(matches!(
+                extract_file(&path, kind, "missing", missing.path(), "archive"),
+                Err(Failure::PrefixNotFound(_))
+            ));
+        }
+        let truncated = xz(&tar);
+        let truncated = &truncated[..truncated.len() / 2];
+        let path = source.path().join("truncated.tar.xz");
+        fs::write(&path, truncated).unwrap();
+        let digest: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(truncated).into();
+        let errors: Vec<String> = (0..2)
+            .map(|_| {
+                let destination = tempfile::tempdir().unwrap();
+                match extract_file(&path, "tar.xz", "top", destination.path(), "archive") {
+                    Err(Failure::Io(message) | Failure::Other(message)) => message,
+                    other => panic!("unexpected {other:?}"),
+                }
+            })
+            .collect();
+        assert_eq!(errors[0], errors[1]);
+        assert!(
+            !DECODED
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|decoded| decoded.digest == digest),
+            "a failed decode keeps nothing"
+        );
     }
 
     #[test]

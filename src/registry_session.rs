@@ -815,6 +815,100 @@ impl RegistrySession {
         let _ = publish();
     }
 
+    /// Fetch every registry file the lockfile names with a checksum
+    /// (`registryFileHashes`: MODULE.bazel and source.json files) that the
+    /// content-addressed cache lacks, all at once, into that cache only —
+    /// nothing is memoized or recorded. Module discovery reads a horizon at
+    /// a time (each level of the dependency graph waits for the previous
+    /// one: ~/code's 386 MODULE.bazel files took 5 s on a cold cache); with
+    /// the files the lockfile already names in the cache, its sequential
+    /// reads find them by checksum, exactly as on a warm cache (recorded the
+    /// same way, the same bytes). A file the lockfile names but discovery
+    /// no longer reads costs one unused transfer; a transfer whose bytes do
+    /// not match the checksum is dropped (the sequential read fetches and
+    /// reports it).
+    pub fn warm_known_files(&self, registries: &[Registry]) {
+        if self.proof_store.is_some()
+            || matches!(self.mode, LockfileMode::Off)
+            || self.cas.is_none()
+            // An A/B reference for diagnostics.
+            || std::env::var_os("BAZEL_RS_DEBUG_NO_REGISTRY_WARM").is_some()
+        {
+            return;
+        }
+        let mut items: Vec<(Registry, String, String)> = Vec::new();
+        {
+            let memo = self.memo.lock().expect("registry memo");
+            for (url, hash) in &self.lockfile.registry_file_hashes {
+                let Some(hash) = hash else {
+                    continue;
+                };
+                if !(url.ends_with("/MODULE.bazel") || url.ends_with("/source.json"))
+                    || hash.len() != 64
+                    || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    || memo.contains_key(url)
+                    || self.cas_has(hash)
+                {
+                    continue;
+                }
+                let found = registries.iter().find_map(|registry| {
+                    let Registry::Url(base) = registry else {
+                        return None;
+                    };
+                    let relative = url
+                        .strip_prefix(base.trim_end_matches('/'))?
+                        .strip_prefix('/')?;
+                    (registry.download_location(relative).ok()? == *url)
+                        .then(|| (registry.clone(), relative.to_owned()))
+                });
+                if let Some((registry, relative)) = found {
+                    items.push((registry, relative, hash.clone()));
+                }
+            }
+        }
+        if items.is_empty() {
+            return;
+        }
+        let workers = items.len().min(PARALLEL_FETCHES);
+        let queue = Mutex::new(VecDeque::from(items));
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| {
+                    loop {
+                        let next = queue.lock().expect("warm queue").pop_front();
+                        let Some((registry, relative, hash)) = next else {
+                            break;
+                        };
+                        // Settled like [`Self::peek`]'s: the bytes the
+                        // lockfile's checksum names are what the sequential
+                        // read takes from the cache.
+                        let transfer = crate::observed_fs::HeldTaint::network();
+                        let fetched =
+                            crate::observed_fs::with_registry_sink(transfer.sink(), || {
+                                registry.read(&relative)
+                            });
+                        if let Ok(Some(bytes)) = fetched
+                            && sha256_hex(&bytes) == hash
+                        {
+                            self.cas_put(&hash, &bytes);
+                            transfer.settle();
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    /// Whether the native content-addressed cache holds an entry for `hash`
+    /// (its bytes are verified when read).
+    fn cas_has(&self, hash: &str) -> bool {
+        let Some(directory) = &self.cas else {
+            return false;
+        };
+        // snapshot-unrecorded: a scheduling probe of the content-addressed cache; the read that uses an entry verifies it.
+        std::fs::symlink_metadata(directory.join(hash)).is_ok_and(|metadata| metadata.is_file())
+    }
+
     /// Fetch files concurrently into the memo; results (including errors)
     /// are observed later by sequential reads, so diagnostics stay
     /// deterministic.
@@ -1639,6 +1733,67 @@ mod tests {
             usages: Some(ExtensionUsages::default()),
         });
         assert!(session.updated_lockfile().is_none());
+    }
+
+    /// The registry files MODULE.bazel.lock names with a checksum are
+    /// fetched at once into the content-addressed cache only: nothing is
+    /// recorded or memoized until a sequential read, which then needs no
+    /// transfer; a file whose bytes do not match is not kept.
+    #[test]
+    fn known_registry_files_are_warmed_into_the_cache_only() {
+        let files: BTreeMap<_, _> = (0..20)
+            .map(|i| {
+                (
+                    format!("/modules/m{i}/1/MODULE.bazel"),
+                    format!("module(name = 'm{i}')").into_bytes(),
+                )
+            })
+            .chain([("/modules/m0/1/source.json".to_owned(), b"{}".to_vec())])
+            .collect();
+        let server = serve(files.clone());
+        let registry = Registry::parse(&server.base).unwrap();
+        let url = |path: &str| {
+            registry
+                .download_location(path.trim_start_matches('/'))
+                .unwrap()
+        };
+        let mut hashes: BTreeMap<String, serde_json::Value> = files
+            .iter()
+            .map(|(path, bytes)| (url(path), sha256_hex(bytes).into()))
+            .collect();
+        // A wrong checksum, a recorded absence, an unhashed file type.
+        hashes.insert(url("/modules/m1/1/MODULE.bazel"), "0".repeat(64).into());
+        hashes.insert(url("/modules/gone/1/MODULE.bazel"), "not found".into());
+        let lock = serde_json::json!({"lockFileVersion": 28, "registryFileHashes": hashes});
+        let dir = tempfile::tempdir().unwrap();
+        let session = session(dir.path(), LockfileMode::Update, Some(&lock.to_string()));
+        session.warm_known_files(std::slice::from_ref(&registry));
+        // Every hashed file once (m1 too: its mismatch is found by fetching).
+        assert_eq!(server.total.load(Ordering::SeqCst), 21);
+        assert!(session.recorded.lock().unwrap().is_empty());
+        assert!(session.memo.lock().unwrap().is_empty());
+        for i in [0, 2, 19] {
+            let relative = format!("modules/m{i}/1/MODULE.bazel");
+            assert!(matches!(
+                session.read(&registry, &relative).unwrap(),
+                Fetch::Found(bytes) if *bytes == files[&format!("/{relative}")]
+            ));
+        }
+        assert_eq!(
+            server.total.load(Ordering::SeqCst),
+            21,
+            "reads hit the cache"
+        );
+        // The mismatching file is fetched (and reported) by its read.
+        assert!(
+            session
+                .read(&registry, "modules/m1/1/MODULE.bazel")
+                .is_err()
+        );
+        assert_eq!(server.total.load(Ordering::SeqCst), 22);
+        // A second warm-up finds everything cached or already read.
+        session.warm_known_files(std::slice::from_ref(&registry));
+        assert_eq!(server.total.load(Ordering::SeqCst), 22);
     }
 
     #[test]

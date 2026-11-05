@@ -461,6 +461,9 @@ pub(crate) fn resolve_from_root_snapshot(
     cache: &Path,
 ) -> Result<ResolvedGraph, String> {
     options.validate_registries()?;
+    if let Some(session) = options.registry_session.session() {
+        session.warm_known_files(&options.registries);
+    }
     let root = match &snapshot.module {
         RootModulePresence::Present(module) => module.as_ref(),
         RootModulePresence::Missing(diagnostic) => return Err(diagnostic.clone()),

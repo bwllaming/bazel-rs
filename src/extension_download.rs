@@ -330,10 +330,25 @@ pub(crate) fn validate_url(text: &str) -> IoResult<Url> {
     Ok(url)
 }
 
+/// The process's repository download client: one connection pool for every
+/// repository rule and module extension (Bazel's HttpURLConnection keeps
+/// connections alive per host the same way), so the thousands of small
+/// registry tarballs of a cold fetch reuse their TLS connections instead of
+/// connecting (and loading the root certificates) once per repository.
+/// Built after the command's proxy environment is installed
+/// (crate::download_proxy::install, once per process); a client built
+/// before it is never handed out after it.
 pub(crate) fn client() -> IoResult<Client> {
-    client_builder()
+    static CLIENTS: [std::sync::OnceLock<Client>; 2] =
+        [std::sync::OnceLock::new(), std::sync::OnceLock::new()];
+    let slot = &CLIENTS[usize::from(crate::download_proxy::is_installed())];
+    if let Some(client) = slot.get() {
+        return Ok(client.clone());
+    }
+    let client = client_builder()
         .build()
-        .map_err(|_| TypedIoError::Internal("HTTP client initialization"))
+        .map_err(|_| TypedIoError::Internal("HTTP client initialization"))?;
+    Ok(slot.get_or_init(|| client).clone())
 }
 fn client_builder() -> reqwest::blocking::ClientBuilder {
     // The blocking client applies `timeout` to sending the request and to
@@ -352,8 +367,12 @@ fn client_builder() -> reqwest::blocking::ClientBuilder {
         .no_zstd()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(READ_TIMEOUT)
-        .pool_max_idle_per_host(0)
+        // Idle keep-alive connections are reused for a while, then closed.
+        .pool_idle_timeout(POOL_IDLE_TIMEOUT)
 }
+
+/// How long an idle pooled connection stays open.
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct Encoded {
     response: Response,
@@ -708,49 +727,143 @@ pub(crate) fn checksum_mismatch(actual: &Checksum, expected: &Checksum, sri: boo
     )
 }
 
-/// Concurrent transfers of the downloader (`--http_max_parallel_downloads`,
-/// default 8, CommonCommandOptions.java; the option itself is accepted and
-/// ignored): HttpDownloader's process-wide semaphore (java:60-69), held for
-/// one mirror attempt. Repository fetches and module extensions run
-/// concurrently (crate::repository_speculation, non-blocking downloads);
-/// their transfers share these permits.
+/// Concurrent transfers of the downloader per host
+/// (`--http_max_parallel_downloads`, default 8, CommonCommandOptions.java;
+/// the option itself is accepted and ignored). Genuine's HttpDownloader
+/// holds one process-wide semaphore of 8 (java:60-69) for one mirror
+/// attempt; here the 8 are per host, under a total of
+/// [`MAX_TOTAL_DOWNLOADS`]: a slow host (snapshot.debian.org answering in
+/// 10–40 s) no longer holds every permit while thousands of small registry
+/// tarballs from other hosts wait. Repository fetches and module extensions
+/// run concurrently (crate::repository_speculation, non-blocking downloads);
+/// their transfers share these permits. Scheduling only: what is
+/// downloaded, and every result, is unchanged.
 pub(crate) const MAX_PARALLEL_DOWNLOADS: usize = 8;
 
-static PERMITS: (std::sync::Mutex<usize>, std::sync::Condvar) =
-    (std::sync::Mutex::new(0), std::sync::Condvar::new());
+/// Concurrent transfers of all hosts together.
+pub(crate) const MAX_TOTAL_DOWNLOADS: usize = 16;
 
-/// One of the [`MAX_PARALLEL_DOWNLOADS`] permits, released on drop.
-struct DownloadPermit;
+/// Permits beyond the bounds only demanded transfers may take: what the
+/// coordinator (or a module extension it evaluates, or a speculation it
+/// waits for) needs right now never queues behind the speculative fetches
+/// of repositories the build needs later (on ~/code's cold build the Go SDK
+/// waited 16 s behind 3,000 speculative npm tarballs). Speculative
+/// transfers stay within the bounds, and yield to a waiting demanded one.
+pub(crate) const DEMANDED_RESERVE: usize = 4;
+
+struct Permits {
+    taken: usize,
+    per_host: std::collections::BTreeMap<String, usize>,
+    /// Demanded transfers waiting for a permit: speculative ones yield.
+    demanded_waiting: usize,
+}
+
+impl Permits {
+    fn available(&self, host: &str, demanded: bool) -> bool {
+        let on_host = self.per_host.get(host).copied().unwrap_or(0);
+        if demanded {
+            self.taken < MAX_TOTAL_DOWNLOADS + DEMANDED_RESERVE
+                && on_host < MAX_PARALLEL_DOWNLOADS + DEMANDED_RESERVE
+        } else {
+            self.taken < MAX_TOTAL_DOWNLOADS
+                && on_host < MAX_PARALLEL_DOWNLOADS
+                && self.demanded_waiting == 0
+        }
+    }
+}
+
+static PERMITS: (std::sync::Mutex<Permits>, std::sync::Condvar) = (
+    std::sync::Mutex::new(Permits {
+        taken: 0,
+        per_host: std::collections::BTreeMap::new(),
+        demanded_waiting: 0,
+    }),
+    std::sync::Condvar::new(),
+);
+
+/// One transfer permit of a host, released on drop.
+struct DownloadPermit {
+    host: String,
+}
 
 impl DownloadPermit {
-    /// Wait for a permit; `None` once the speculation this thread works for
-    /// is cancelled while waiting.
-    fn acquire() -> Option<Self> {
-        let (taken, freed) = &PERMITS;
-        let mut count = taken
+    /// Wait for a permit of `url`'s host; `None` once the speculation this
+    /// thread works for is cancelled while waiting.
+    fn acquire(url: &Url) -> Option<Self> {
+        Self::acquire_while(permit_host(url), &|| {
+            !crate::repository_speculation::speculative()
+        })
+    }
+
+    /// [`Self::acquire`] for a demanded (`true`) or speculative transfer.
+    #[cfg(test)]
+    fn acquire_as(host: &str, demanded: bool) -> Option<Self> {
+        Self::acquire_while(host.to_owned(), &|| demanded)
+    }
+
+    /// Wait for a permit, `demanded()` re-checked while waiting (the
+    /// coordinator may begin to wait for a speculation meanwhile).
+    fn acquire_while(host: String, demanded: &dyn Fn() -> bool) -> Option<Self> {
+        let (permits, freed) = &PERMITS;
+        let mut state = permits
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while *count >= MAX_PARALLEL_DOWNLOADS {
-            if crate::repository_speculation::cancelled() {
-                return None;
+        let mut counted = false;
+        let granted = loop {
+            let demanded = demanded();
+            if state.available(&host, demanded) {
+                break true;
             }
-            count = freed
-                .wait_timeout(count, std::time::Duration::from_millis(50))
+            if crate::repository_speculation::cancelled() {
+                break false;
+            }
+            if demanded && !counted {
+                state.demanded_waiting += 1;
+                counted = true;
+            }
+            state = freed
+                .wait_timeout(state, std::time::Duration::from_millis(50))
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
+        };
+        if counted {
+            state.demanded_waiting -= 1;
         }
-        *count += 1;
-        Some(Self)
+        if !granted {
+            return None;
+        }
+        state.taken += 1;
+        *state.per_host.entry(host.clone()).or_insert(0) += 1;
+        Some(Self { host })
     }
+}
+
+/// The host a transfer's permit counts against (scheme and port included:
+/// distinct servers).
+fn permit_host(url: &Url) -> String {
+    format!(
+        "{}://{}:{}",
+        url.scheme(),
+        url.host_str().unwrap_or(""),
+        url.port_or_known_default().unwrap_or(0)
+    )
 }
 
 impl Drop for DownloadPermit {
     fn drop(&mut self) {
-        let (taken, freed) = &PERMITS;
-        *taken
+        let (permits, freed) = &PERMITS;
+        let mut state = permits
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) -= 1;
-        freed.notify_one();
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.taken -= 1;
+        if let Some(count) = state.per_host.get_mut(&self.host) {
+            *count -= 1;
+            if *count == 0 {
+                state.per_host.remove(&self.host);
+            }
+        }
+        drop(state);
+        freed.notify_all();
     }
 }
 
@@ -795,11 +908,13 @@ pub(crate) fn fetch_to_file(
     for url in urls {
         // HttpDownloader.downloadFromUrls (java:184-209): one of
         // `--http_max_parallel_downloads` permits per mirror attempt.
-        let Some(_permit) = DownloadPermit::acquire() else {
+        let Some(_permit) = DownloadPermit::acquire(url) else {
             return Err(TypedIoError::Completion(
                 crate::repository_speculation::CANCELLED.into(),
             ));
         };
+        // The transfer itself, permit held (BAZEL_RS_TIMING_TIMELINE).
+        let _transfer = crate::timeline::span("transfer", || url.as_str().to_owned());
         let path = destination(url);
         let mut opened = false;
         let attempt = (|| -> Result<Fetched, OpenFailure> {
@@ -889,27 +1004,50 @@ pub(crate) mod tests {
     /// at once, process-wide; a waiting one proceeds when one ends.
     #[test]
     fn transfers_share_a_bounded_number_of_permits() {
-        // Other tests transfer concurrently: wait until this one holds all.
-        let held: Vec<DownloadPermit> = (0..MAX_PARALLEL_DOWNLOADS)
-            .map(|_| DownloadPermit::acquire().unwrap())
+        // Other tests transfer concurrently (to 127.0.0.1): this one uses
+        // hosts of its own, and holds every permit it may.
+        let (one, two) = ("test://permits-one:1", "test://permits-two:1");
+        let mut held: Vec<DownloadPermit> = (0..MAX_PARALLEL_DOWNLOADS)
+            .map(|_| DownloadPermit::acquire_as(one, false).unwrap())
             .collect();
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let waiter = std::thread::spawn(move || {
-            let permit = DownloadPermit::acquire();
-            sender.send(()).unwrap();
-            drop(permit);
-        });
+        let waiter = |host: &'static str, demanded: bool| {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let thread = std::thread::spawn(move || {
+                let permit = DownloadPermit::acquire_as(host, demanded);
+                sender.send(()).unwrap();
+                permit
+            });
+            (receiver, thread)
+        };
+        let short = std::time::Duration::from_millis(300);
+        let long = std::time::Duration::from_secs(10);
+        // A host's speculative transfers are bounded; another host's are not
+        // held back by them.
+        let (speculative, speculative_thread) = waiter(one, false);
         assert!(
-            receiver
-                .recv_timeout(std::time::Duration::from_millis(300))
-                .is_err(),
-            "a permit beyond the bound was granted"
+            speculative.recv_timeout(short).is_err(),
+            "a permit beyond the host's bound was granted"
         );
-        drop(held);
-        receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
+        let (other, other_thread) = waiter(two, false);
+        other
+            .recv_timeout(long)
+            .expect("another host's transfer proceeds");
+        drop(other_thread.join().unwrap());
+        // A demanded transfer takes a reserve permit of the busy host.
+        let (demanded, demanded_thread) = waiter(one, true);
+        demanded
+            .recv_timeout(long)
+            .expect("a demanded transfer takes a reserve permit");
+        assert!(
+            speculative.recv_timeout(short).is_err(),
+            "a speculative transfer took a reserve permit"
+        );
+        drop(demanded_thread.join().unwrap());
+        held.pop();
+        speculative
+            .recv_timeout(long)
             .expect("a released permit is granted");
-        waiter.join().unwrap();
+        drop(speculative_thread.join().unwrap());
     }
     use crate::extension_io::tests::{Server, header_values, response};
     use std::cell::RefCell;

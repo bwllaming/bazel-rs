@@ -131,6 +131,43 @@ pub(crate) struct State {
     /// ([`Context::label_path`]): the self-referencing ones among them are
     /// held as a reader around each `execute` (crate::repository_slots).
     resolved: BTreeSet<String>,
+    /// The repositories of each label-list attribute of a repository rule
+    /// (label_list, label-keyed and label-valued dicts), fetched ahead
+    /// together once the rule resolves a label of one of them
+    /// ([`Context::label_path`]); emptied then.
+    label_siblings: Vec<BTreeSet<String>>,
+}
+
+/// The repositories each multi-label attribute of `attrs` names (its
+/// canonical `@@repo//...` labels), for [`State::label_siblings`].
+fn label_siblings(attrs: &BTreeMap<String, AttrValue>) -> Vec<BTreeSet<String>> {
+    let repository = |label: &str| -> Option<String> {
+        let rest = label.strip_prefix("@@")?;
+        let (name, _) = rest.split_once("//")?;
+        (!name.is_empty()).then(|| name.to_owned())
+    };
+    attrs
+        .values()
+        .filter_map(|value| {
+            let labels: Vec<&str> = match value {
+                AttrValue::Labels(labels) => labels.iter().map(String::as_str).collect(),
+                AttrValue::LabelKeyedStringDict(entries) => {
+                    entries.iter().map(|(label, _)| label.as_str()).collect()
+                }
+                AttrValue::StringKeyedLabelDict(entries) => {
+                    entries.iter().map(|(_, label)| label.as_str()).collect()
+                }
+                AttrValue::LabelListDict(entries) => entries
+                    .iter()
+                    .flat_map(|(_, labels)| labels.iter().map(String::as_str))
+                    .collect(),
+                _ => return None,
+            };
+            let repositories: BTreeSet<String> =
+                labels.into_iter().filter_map(repository).collect();
+            (repositories.len() > 1).then_some(repositories)
+        })
+        .collect()
 }
 
 /// Which StarlarkBaseExternalContext this is.
@@ -1673,6 +1710,31 @@ impl Context {
             package: package.to_owned(),
             name: name.to_owned(),
         };
+        if !repository.is_empty() {
+            // A rule resolving one label of a label list resolves them all
+            // (rules_python's whl_library walks `_python_path_entries`):
+            // their repositories are fetched in parallel instead of one
+            // after another at each resolution. Scheduling only
+            // (crate::repository_speculation); the demand below is the one
+            // that counts.
+            let siblings = {
+                let mut state = self.state.borrow_mut();
+                let groups = &mut state.label_siblings;
+                let (wanted, rest): (Vec<_>, Vec<_>) = std::mem::take(groups)
+                    .into_iter()
+                    .partition(|group| group.contains(repository));
+                *groups = rest;
+                wanted
+            };
+            for group in siblings {
+                self.repositories.fetch_ahead(
+                    group
+                        .iter()
+                        .map(String::as_str)
+                        .filter(|name| *name != repository),
+                );
+            }
+        }
         let root = self
             .repositories
             .root(repository)
@@ -4987,6 +5049,7 @@ fn execute_with(
             workspace_observed: Arc::default(),
             mentions,
         };
+        context.state.borrow_mut().label_siblings = label_siblings(attrs);
         let evaluated = Module::with_temp_heap(|module| -> anyhow::Result<()> {
             let heap = module.heap();
             let host = context.repositories.host().map_err(anyhow::Error::msg)?;
@@ -5119,6 +5182,47 @@ mod tests {
     /// concurrent observations of one file hash it once. Each memo instance
     /// counts its own hashes (the process-wide one is shared with
     /// concurrently running tests).
+    /// The repositories of each multi-label attribute, grouped by
+    /// attribute; single-repository and non-label attributes form none.
+    #[test]
+    fn label_siblings_group_the_repositories_of_each_label_list() {
+        let attrs = BTreeMap::from([
+            (
+                "entries".to_owned(),
+                AttrValue::Labels(vec![
+                    "@@a//:BUILD.bazel".to_owned(),
+                    "@@b//pkg:x".to_owned(),
+                    "@@a//other:y".to_owned(),
+                    "//:main".to_owned(),
+                ]),
+            ),
+            (
+                "one".to_owned(),
+                AttrValue::Labels(vec!["@@c//:x".to_owned(), "@@c//:y".to_owned()]),
+            ),
+            (
+                "keyed".to_owned(),
+                AttrValue::LabelKeyedStringDict(vec![
+                    ("@@d//:x".to_owned(), "v".to_owned()),
+                    ("@@e//:x".to_owned(), "w".to_owned()),
+                ]),
+            ),
+            (
+                "label".to_owned(),
+                AttrValue::Label(Some("@@f//:x".to_owned())),
+            ),
+            (
+                "text".to_owned(),
+                AttrValue::Strings(vec!["@@g//:x".to_owned(), "@@h//:x".to_owned()]),
+            ),
+        ]);
+        let set = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
+        assert_eq!(
+            label_siblings(&attrs),
+            vec![set(&["a", "b"]), set(&["d", "e"])]
+        );
+    }
+
     #[test]
     fn recorded_file_digests_are_memoized_only_when_settled() {
         use std::sync::atomic::Ordering::SeqCst;

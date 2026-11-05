@@ -2029,6 +2029,7 @@ impl RepositorySet {
         self.state
             .resolved
             .get_or_init(|| {
+                let _span = crate::timeline::span("resolve", || "module graph".to_owned());
                 self.state.options.validate_registries()?;
                 module_graph::resolve_from_root_snapshot(
                     self.root_module()?,
@@ -2928,6 +2929,26 @@ impl RepositorySet {
         self.state.root_warmer.scope()
     }
 
+    /// Execute the direct or generated (of a prepared group) repositories
+    /// `names` ahead of their demand on the speculation pool, when one
+    /// runs; ones already materialized or of an unprepared group are left
+    /// to their demand. Scheduling only.
+    pub(crate) fn fetch_ahead<'a>(&self, names: impl Iterator<Item = &'a str>) {
+        if self.state.publication_proof || !self.state.speculation.accepting() {
+            return;
+        }
+        let Some(Ok(runtime)) = self.state.direct.get() else {
+            return;
+        };
+        for name in names {
+            if let Some(slot) = runtime.root_slot(name)
+                && slot.ready().is_none()
+            {
+                self.state.speculation.request(name);
+            }
+        }
+    }
+
     /// The files `labels` name are about to be loaded (the `load()`
     /// statements of a file the sequential engine entered): warm their
     /// module roots and, transitively, those of their loads
@@ -3772,6 +3793,7 @@ impl RepositorySet {
             });
             return guarded_root_slot(&roots[repository], repository, || {
                 let cache = self.source_cache_path()?.join("builtins");
+                let _span = crate::timeline::span("builtin", || "bazel_tools".to_owned());
                 if self.state.publication_proof {
                     crate::builtin_tools::probe_existing(&cache)
                 } else {

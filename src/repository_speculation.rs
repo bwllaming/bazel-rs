@@ -72,6 +72,9 @@ thread_local! {
 
 struct Current {
     cancel: Arc<AtomicBool>,
+    /// Set once the coordinator waits for this speculation: its transfers
+    /// are demanded now ([`speculative`]).
+    demanded: Arc<AtomicBool>,
     output: Vec<u8>,
 }
 
@@ -102,6 +105,19 @@ thread_local! {
     /// executing it: a non-blocking download's transfer
     /// (crate::repository_ctx's pending downloads).
     static ADOPTED: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+/// Whether this thread works for a speculation (executes one, or transfers
+/// one's non-blocking download): its downloads were not demanded yet
+/// (crate::extension_download's permits let demanded transfers first).
+pub(crate) fn speculative() -> bool {
+    CURRENT.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .is_some_and(|current| !current.demanded.load(Ordering::Relaxed))
+    }) || ADOPTED.with(|adopted| adopted.borrow().is_some())
+        || crate::module_root_warm::active()
 }
 
 /// The cancellation of the speculation running on this thread, if any.
@@ -229,7 +245,8 @@ enum Entry {
     Queued {
         attempts: u32,
     },
-    Running,
+    /// Its demanded flag ([`Current::demanded`]).
+    Running(Arc<AtomicBool>),
     Done(Box<Outcome>),
     Published,
     Blocked {
@@ -353,7 +370,7 @@ impl Speculations {
     pub(crate) fn hides(&self, canonical: &str) -> bool {
         matches!(
             lock(&self.shared.state).entries.get(canonical),
-            Some(Entry::Running | Entry::Done(_))
+            Some(Entry::Running(_) | Entry::Done(_))
         )
     }
 
@@ -365,7 +382,8 @@ impl Speculations {
         let mut waited = None;
         loop {
             match state.entries.get(canonical) {
-                Some(Entry::Running) => {
+                Some(Entry::Running(demanded)) => {
+                    demanded.store(true, Ordering::Relaxed);
                     if waited.is_none() {
                         waited = Some(std::time::Instant::now());
                         state.counts.waited += 1;
@@ -480,7 +498,7 @@ impl Speculations {
         // what it printed was never shown.
         let mut withdrawn = Vec::new();
         state.entries.retain(|_, entry| match entry {
-            Entry::Queued { .. } | Entry::Running | Entry::Blocked { .. } => false,
+            Entry::Queued { .. } | Entry::Running(_) | Entry::Blocked { .. } => false,
             Entry::Done(outcome) => {
                 withdrawn.extend(outcome.withdraw.take());
                 false
@@ -556,6 +574,7 @@ impl Speculations {
 
 fn worker(shared: &Arc<Shared>, index: u64) {
     loop {
+        let demanded = Arc::new(AtomicBool::new(false));
         let (canonical, attempts, job, cancel, jitter, sequence) = {
             let mut state = lock(&shared.state);
             loop {
@@ -570,7 +589,9 @@ fn worker(shared: &Arc<Shared>, index: u64) {
                     let Some(job) = state.job.clone() else {
                         return;
                     };
-                    state.entries.insert(canonical.clone(), Entry::Running);
+                    state
+                        .entries
+                        .insert(canonical.clone(), Entry::Running(demanded.clone()));
                     state.running += 1;
                     state.counts.started += 1;
                     state.next += 1;
@@ -598,6 +619,7 @@ fn worker(shared: &Arc<Shared>, index: u64) {
         CURRENT.with(|current| {
             *current.borrow_mut() = Some(Current {
                 cancel: cancel.clone(),
+                demanded,
                 output: Vec::new(),
             });
         });

@@ -106,7 +106,11 @@ impl Registry {
                 }
                 read_local(&root.join(relative))
             }
-            Self::Url(base) => read_http(resource_url(base, relative)?),
+            Self::Url(base) => {
+                let url = resource_url(base, relative)?;
+                let _span = crate::timeline::span("registry", || url.to_string());
+                read_http(url)
+            }
         }
     }
 

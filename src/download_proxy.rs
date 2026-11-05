@@ -383,6 +383,11 @@ pub fn install(environment: ProxyEnvironment) -> Result<(), String> {
         .map_err(|_| "the download proxy environment is already installed".to_owned())
 }
 
+/// Whether the command's proxy environment is installed.
+pub(crate) fn is_installed() -> bool {
+    installed().is_some()
+}
+
 fn installed() -> Option<&'static ProxyEnvironment> {
     INSTALLED.get()
 }
