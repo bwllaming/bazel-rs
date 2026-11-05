@@ -798,7 +798,19 @@ fn invoke<'v>(
         ),
         "Label" => bail!("Label() is unsupported in MODULE evaluation; use label strings"),
         "inject_repo" | "override_repo" => {
-            bail!("{name}() is unsupported in MODULE evaluation")
+            // ModuleFileGlobals.overrideRepo/injectRepo (:723-728, :783-788) mark a
+            // non-module call and return early where dev dependencies are ignored:
+            // every non-root module (hermetic_launcher's inject_repo under
+            // rules_rs) and --ignore_dev_dependency. Only the root module's
+            // overrides would reach repoOverrides, which stays unmodelled.
+            if !collector
+                .evaluation_context
+                .effective_ignore_dev_dependencies()
+            {
+                bail!("{name}() is unsupported in MODULE evaluation")
+            }
+            collector.state.borrow_mut().non_module_called = true;
+            return Ok(Value::new_none());
         }
         _ => {}
     }
@@ -2501,6 +2513,35 @@ r(name="second",x=x,y=y,module=module,ys=ys,zs=zs,ws=[str(v) for v in ws],count=
             assert!(error.contains("sep"), "{error}");
             let error = in_context("x = type(print)\nprint(x)\nprint(x.foo)", context).unwrap_err();
             assert!(error.contains("foo"), "{error}");
+        }
+    }
+
+    #[test]
+    fn repo_overrides_are_ignored_where_dev_dependencies_are() {
+        // hermetic_launcher 0.0.8 MODULE.bazel:84-90 (a rules_rs dependency).
+        let source = "bazel_dep(name='bzip2', version='1.0.8.bcr.3')\n\
+            crate=use_extension('//:ext.bzl','crate',dev_dependency=True)\n\
+            crate.annotation(crate='bzip2-sys', deps=['@bzip2//:bz2'])\n\
+            inject_repo(crate, 'bzip2')\n\
+            override_repo(crate, foo='bzip2')\n";
+        for context in contexts() {
+            match in_context(source, context) {
+                Ok(file) => {
+                    assert!(context.effective_ignore_dev_dependencies());
+                    assert!(
+                        file.extension_usages
+                            .iter()
+                            .all(|usage| usage.tags.is_empty())
+                    );
+                }
+                Err(error) => {
+                    assert!(!context.effective_ignore_dev_dependencies(), "{error}");
+                    assert!(
+                        error.contains("inject_repo() is unsupported in MODULE evaluation"),
+                        "{error}"
+                    );
+                }
+            }
         }
     }
 
