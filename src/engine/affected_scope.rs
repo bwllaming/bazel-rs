@@ -46,6 +46,12 @@ struct Spec {
     files: HashSet<String>,
     roots: Vec<String>,
     restrict: bool,
+    /// `only` lines (crate::affected's remote digests): when restricted
+    /// and scoped, keep exactly these selected targets (whether marked or
+    /// not) instead of the marked ones.
+    only: Option<HashSet<String>>,
+    /// `mode only`: no change set; the selected `only` targets are kept.
+    only_mode: bool,
 }
 
 fn read_spec(path: &std::path::Path) -> Result<Spec, String> {
@@ -76,6 +82,16 @@ fn read_spec(path: &std::path::Path) -> Result<Spec, String> {
             Some(("root", value)) => spec.roots.push(value.to_owned()),
             Some(("mode", "restrict")) => spec.restrict = true,
             Some(("mode", "report")) => spec.restrict = false,
+            Some(("mode", "only")) => {
+                spec.restrict = true;
+                spec.only_mode = true;
+                spec.only.get_or_insert_with(HashSet::new);
+            }
+            Some(("only", value)) => {
+                spec.only
+                    .get_or_insert_with(HashSet::new)
+                    .insert(value.to_owned());
+            }
             _ if line.is_empty() => {}
             _ => return Err(format!("{}: bad line {line:?}", path.display())),
         }
@@ -136,11 +152,30 @@ impl Engine {
         let spec = read_spec(std::path::Path::new(&input))?;
         let mut selected: Vec<Label> = phase.build.clone();
         selected.extend(phase.tests.iter().flatten().cloned());
-        let outcome = self.affected_scope(&spec, &selected);
+        let outcome = match &spec.only {
+            Some(only) if spec.only_mode => Outcome::Scoped(
+                selected
+                    .iter()
+                    .filter(|label| only.contains(&label.to_string()))
+                    .cloned()
+                    .collect(),
+            ),
+            _ => self.affected_scope(&spec, &selected),
+        };
         let mut text = String::new();
+        // The targets planned when restricted (the `only` ones, else the
+        // scope's).
+        let keep = |label: &Label, scope: &BTreeSet<Label>| match &spec.only {
+            Some(only) => only.contains(&label.to_string()),
+            None => scope.contains(label),
+        };
         let (kept, total) = (
             match &outcome {
-                Outcome::Scoped(scope) => scope.len(),
+                Outcome::Scoped(scope) => selected
+                    .iter()
+                    .filter(|label| keep(label, scope))
+                    .collect::<HashSet<_>>()
+                    .len(),
                 Outcome::Full(_) => selected.len(),
             },
             selected.len(),
@@ -155,9 +190,9 @@ impl Engine {
                     text.push_str(&format!("{label}\n"));
                 }
                 if spec.restrict {
-                    phase.build.retain(|label| scope.contains(label));
+                    phase.build.retain(|label| keep(label, scope));
                     if let Some(tests) = &mut phase.tests {
-                        tests.retain(|label| scope.contains(label));
+                        tests.retain(|label| keep(label, scope));
                     }
                 }
             }
@@ -166,18 +201,25 @@ impl Engine {
         if let Some(digests) = std::env::var_os(crate::affected::DIGESTS_VAR) {
             let mut path = std::path::PathBuf::from(digests).into_os_string();
             path.push(".scope");
-            std::fs::write(&path, text).map_err(|error| {
-                format!(
-                    "cannot write {}: {error}",
-                    std::path::Path::new(&path).display()
-                )
-            })?;
+            // Whole or not at all: the orchestrator reads it while this
+            // process goes on (crate::affected's remote digests).
+            let mut temporary = path.clone();
+            temporary.push(".tmp");
+            std::fs::write(&temporary, text)
+                .and_then(|()| std::fs::rename(&temporary, &path))
+                .map_err(|error| {
+                    format!(
+                        "cannot write {}: {error}",
+                        std::path::Path::new(&path).display()
+                    )
+                })?;
         }
         eprintln!(
             "bazel-rs affected: scope {} of {total} selected target(s){} in {:.1} s",
             kept,
             match &outcome {
                 Outcome::Full(reason) => format!(" (full: {reason})"),
+                Outcome::Scoped(_) if spec.only.is_some() => " (the targets asked for)".to_owned(),
                 Outcome::Scoped(_) if spec.restrict => String::new(),
                 Outcome::Scoped(_) => " (reported, not restricted)".to_owned(),
             },

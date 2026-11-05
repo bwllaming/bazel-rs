@@ -698,6 +698,14 @@ fn run() -> Result<(), String> {
     // The Build Event Service upload asks the credential helpers too.
     bazel_rs::bep::bes::credentials_ready();
     let remote_enabled = remote_enabled?;
+    // A `bazel-rs affected` remote cache helper (crate::affected::remote):
+    // the remote cache is set up as this command's; perform the request
+    // instead of the command.
+    if let Some(request) = std::env::var_os(bazel_rs::affected::REMOTE_OP_VAR) {
+        let code = bazel_rs::affected::remote_op(Path::new(&request));
+        bazel_rs::progress::finish(code);
+        std::process::exit(code);
+    }
     // RemoteModule registers the `remote` strategy with any remote cache or
     // executor; only an executor makes it usable and the default.
     spawn_options.remote_registered = remote_enabled;

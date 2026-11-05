@@ -2210,6 +2210,60 @@ impl RemoteCache {
             })
     }
 
+    /// An Action Cache entry of the remote cache only (never the disk
+    /// cache), undecoded; a gRPC server is asked to inline the output file
+    /// `inline` (`bazel-rs affected`'s remote digests, crate::affected).
+    pub fn remote_action_result(
+        &self,
+        key: &Digest,
+        inline: &str,
+    ) -> Result<Option<Vec<u8>>, CacheError> {
+        match &self.backend {
+            Backend::None => Ok(None),
+            Backend::Http(http) => http.get(false, &key.hash),
+            Backend::Grpc(grpc) => {
+                grpc.capabilities().map_err(capability_failure)?;
+                Ok(grpc
+                    .get_action_result_inlining(key, &[inline])?
+                    .map(|bytes| bytes.to_vec()))
+            }
+        }
+    }
+
+    /// A blob of the remote cache only, unverified (the caller verifies);
+    /// `Ok(None)` when it lacks it.
+    pub fn remote_blob(
+        &self,
+        digest: &Digest,
+        key: &Digest,
+    ) -> Result<Option<Vec<u8>>, CacheError> {
+        match &self.backend {
+            Backend::None => Ok(None),
+            Backend::Http(http) => http.get(true, &digest.hash),
+            Backend::Grpc(grpc) => Ok(grpc.read_blob(digest, &key.hash)?),
+        }
+    }
+
+    /// Writes `blobs` and then the Action Cache entry `result` under `key`
+    /// to the remote cache only (never the disk cache), whatever
+    /// `--remote_upload_local_results` says (the caller decides).
+    pub fn remote_store(
+        &self,
+        key: &Digest,
+        blobs: &[(Digest, &[u8])],
+        result: &[u8],
+    ) -> Result<(), CacheError> {
+        if let Backend::Grpc(grpc) = &self.backend {
+            grpc.capabilities().map_err(capability_failure)?;
+        }
+        self.upload_blobs(blobs, key)?;
+        match &self.backend {
+            Backend::Http(http) => http.put(false, &key.hash, result),
+            Backend::Grpc(grpc) => Ok(grpc.update_action_result(key, result)?),
+            Backend::None => Ok(()),
+        }
+    }
+
     /// RemoteExecutionCache.ensureInputsPresent: one FindMissingBlobs over
     /// every blob not known present (all of them with `force`, after the
     /// server reported missing inputs), then a ByteStream.Write per missing

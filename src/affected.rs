@@ -24,7 +24,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+mod remote;
 mod value_hash;
+
+pub use remote::{REMOTE_OP_VAR, remote_op};
 
 /// Names the file the planning process writes the target digests to.
 pub const DIGESTS_VAR: &str = "BAZEL_RS_TARGET_DIGESTS";
@@ -821,6 +824,9 @@ struct Options {
     /// The working copy a planning in place runs in: its analysis snapshot
     /// is saved for the commands after `affected` ([`SAVE_VAR`]).
     in_place: Option<PathBuf>,
+    /// `--[no]affected_remote_digests` (default on): share the base's
+    /// digests through the configured remote cache ([`remote`]).
+    remote: bool,
 }
 
 /// Set in a planning process that runs in the working copy (the head
@@ -834,6 +840,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut options = Options {
         command: "test".to_owned(),
         scope: true,
+        remote: true,
         ..Options::default()
     };
     let mut args = args.iter();
@@ -890,6 +897,18 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 }
             }
             "--noconcurrent_revisions" => options.concurrent = Some(false),
+            "--affected_remote_digests" => {
+                options.remote = match arg.split_once('=').map(|(_, value)| value) {
+                    None | Some("true" | "yes" | "1") => true,
+                    Some("false" | "no" | "0") => false,
+                    Some(other) => {
+                        return Err(format!(
+                            "--affected_remote_digests must be true or false, not {other}"
+                        ));
+                    }
+                }
+            }
+            "--noaffected_remote_digests" => options.remote = false,
             "--include_incompatible" => options.include_incompatible = true,
             "--include_manual" => options.include_manual = true,
             "--noinclude_manual" => options.include_manual = false,
@@ -1135,19 +1154,12 @@ impl Running {
             ));
         }
         let scope = if self.scoped {
-            let scope_out = PathBuf::from(format!("{}.scope", self.out.display()));
-            let text = std::fs::read_to_string(&scope_out).map_err(|error| {
+            read_scope_file(&self.out).map_err(|error| {
                 format!(
                     "planning in {} wrote no scope: {error}",
                     self.workspace.display()
                 )
-            })?;
-            let mut lines = text.lines();
-            match lines.next() {
-                Some("scoped") => Scope::Scoped(lines.map(str::to_owned).collect()),
-                Some(line) => Scope::Full(line.strip_prefix("full\t").unwrap_or(line).to_owned()),
-                None => Scope::Full("empty scope file".to_owned()),
-            }
+            })?
         } else {
             Scope::None
         };
@@ -1156,6 +1168,34 @@ impl Running {
             scope,
         })
     }
+}
+
+/// The scope a planning wrote next to its digests file `out`.
+fn read_scope_file(out: &Path) -> Result<Scope, String> {
+    let text = std::fs::read_to_string(format!("{}.scope", out.display()))
+        .map_err(|error| error.to_string())?;
+    let mut lines = text.lines();
+    Ok(match lines.next() {
+        Some("scoped") => Scope::Scoped(lines.map(str::to_owned).collect()),
+        Some(line) => Scope::Full(line.strip_prefix("full\t").unwrap_or(line).to_owned()),
+        None => Scope::Full("empty scope file".to_owned()),
+    })
+}
+
+/// [`read_scope_file`] of a planning still running (the file is renamed
+/// into place whole).
+fn read_scope(out: &Path) -> Option<Scope> {
+    read_scope_file(out).ok()
+}
+
+/// The remote cache's base digests of this run (§8.11).
+struct RemoteBase {
+    /// The base key ([`remote_base_key`]).
+    key: String,
+    /// `--remote_accept_cached`: looked up.
+    accept: bool,
+    /// `--remote_upload_local_results`: written through.
+    upload: bool,
 }
 
 /// Plans `options.patterns` in `workspace` and returns its digests.
@@ -1202,6 +1242,95 @@ fn digests_key_of(binary: &Digest32, startup: &[String], options: &Options) -> S
     {
         frame(&mut hash, arg.as_bytes());
     }
+    hex(&hash.finalize().into())
+}
+
+/// The remote cache's transport and policy options, which change no
+/// digest: left out of [`remote_base_key`] (a reader with
+/// `--noremote_upload_local_results` or another endpoint shares a writer's
+/// entries). The first list takes a value (`--name=V` or `--name V`), the
+/// second is boolean (`--[no]name`, `--name=V`).
+const TRANSPORT_VALUE_OPTIONS: &[&str] = &[
+    "remote_cache",
+    "remote_instance_name",
+    "remote_header",
+    "remote_cache_header",
+    "remote_timeout",
+    "remote_retries",
+    "remote_retry_max_delay",
+    "remote_max_connections",
+    "remote_max_concurrency_per_connection",
+    "credential_helper",
+    "credential_helper_timeout",
+    "credential_helper_cache_duration",
+    "tls_certificate",
+    "tls_client_certificate",
+    "tls_client_key",
+    "tls_authority_override",
+    "disk_cache",
+    "experimental_remote_cache_compression_threshold",
+];
+const TRANSPORT_BOOLEAN_OPTIONS: &[&str] = &[
+    "remote_accept_cached",
+    "remote_upload_local_results",
+    "remote_cache_compression",
+    "remote_verify_downloads",
+];
+
+/// `forwarded` without the remote cache's transport and policy options.
+fn without_transport_options(forwarded: &[String]) -> Vec<String> {
+    let mut kept = Vec::new();
+    let mut args = forwarded.iter();
+    while let Some(arg) = args.next() {
+        let name = arg.strip_prefix("--").unwrap_or(arg);
+        let name = name.split_once('=').map_or(name, |(name, _)| name);
+        if TRANSPORT_VALUE_OPTIONS.contains(&name) {
+            if !arg.contains('=') {
+                args.next();
+            }
+            continue;
+        }
+        if TRANSPORT_BOOLEAN_OPTIONS.contains(&name)
+            || name
+                .strip_prefix("no")
+                .is_some_and(|name| TRANSPORT_BOOLEAN_OPTIONS.contains(&name))
+        {
+            continue;
+        }
+        kept.push(arg.clone());
+    }
+    kept
+}
+
+/// The key of the base's remote entries (docs/AFFECTED_TARGETS.md §8.11):
+/// the base commit's `tree`, the workspace's directory `below` in it, the
+/// digests key of this binary, command, options (without the remote
+/// cache's transport options) and patterns, and the `environment` outside
+/// the tree ([`remote::environment_key`]).
+fn remote_base_key(
+    binary: &Digest32,
+    startup: &[String],
+    options: &Options,
+    tree: &str,
+    below: &Path,
+    environment: &str,
+) -> String {
+    let filtered = Options {
+        command: options.command.clone(),
+        include_manual: options.include_manual,
+        forwarded: without_transport_options(&options.forwarded),
+        patterns: options.patterns.clone(),
+        ..Options::default()
+    };
+    let mut hash = Sha256::new();
+    frame(&mut hash, b"bazel-rs-affected-remote-key-v1");
+    frame(&mut hash, tree.as_bytes());
+    frame(&mut hash, below.as_os_str().as_encoded_bytes());
+    frame(
+        &mut hash,
+        digests_key_of(binary, startup, &filtered).as_bytes(),
+    );
+    frame(&mut hash, environment.as_bytes());
     hex(&hash.finalize().into())
 }
 
@@ -1533,8 +1662,350 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
         let restricted = |scope: Option<&ScopeRequest<'_>>| {
             scope.is_some_and(|scope| scope.spec == spec_path.as_path())
         };
+        // The base's digests in the remote cache (§8.11): when one is
+        // configured (a helper process asks, with this command's options),
+        // the head is planned first, the base's digests of the head's
+        // labels are looked up, and the base is planned for the missing
+        // ones only (not at all when none is missing), whose digests are
+        // then written through.
+        let helper = remote::Helper {
+            binary,
+            startup,
+            command: &options.command,
+            forwarded: &options.forwarded,
+            root: &root,
+            dir: &keep,
+        };
+        let remote_base = if options.remote && !from_file {
+            match helper.run("probe", "probe", "", []) {
+                Ok(probe) if probe.remote && (probe.accept || probe.upload) => {
+                    let tree = git(
+                        &root,
+                        &["rev-parse", "--verify", &format!("{base_commit}^{{tree}}")],
+                    )?;
+                    let binary_digest: Digest32 =
+                        Sha256::digest(std::fs::read(binary).map_err(|error| {
+                            format!("cannot read {}: {error}", binary.display())
+                        })?)
+                        .into();
+                    let environment =
+                        remote::environment_key(binary, startup, &root, &options.forwarded);
+                    Some(RemoteBase {
+                        key: remote_base_key(
+                            &binary_digest,
+                            startup,
+                            &options,
+                            &tree,
+                            &below,
+                            &environment,
+                        ),
+                        accept: probe.accept,
+                        upload: probe.upload,
+                    })
+                }
+                Ok(_) => None,
+                Err(error) => {
+                    eprintln!(
+                        "bazel-rs affected: remote base digests unavailable ({error}): planning the base"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        // Looks up the base digests of `labels`: the hits (a failure is a
+        // miss, reported).
+        let lookup = |remote: &RemoteBase, labels: &[String]| -> BTreeMap<String, String> {
+            if labels.is_empty() {
+                return BTreeMap::new();
+            }
+            match helper.run(
+                "lookup",
+                "lookup",
+                &remote.key,
+                labels.iter().map(|label| format!("label\t{label}")),
+            ) {
+                Ok(response) => {
+                    if response.malformed > 0 {
+                        eprintln!(
+                            "bazel-rs affected: {} malformed remote base digest(s) ignored",
+                            response.malformed
+                        );
+                    }
+                    if let Some(error) = &response.error {
+                        eprintln!(
+                            "bazel-rs affected: remote base digests: {error} (the rest is analysed)"
+                        );
+                    }
+                    response.hits
+                }
+                Err(error) => {
+                    eprintln!("bazel-rs affected: remote base digests unavailable ({error})");
+                    BTreeMap::new()
+                }
+            }
+        };
+        // Writes the base digests of `asked` (a successful planning's;
+        // `absent` for an asked target it does not have).
+        let write_through = |remote: &RemoteBase,
+                             planned: &BTreeMap<String, String>,
+                             asked: &std::collections::BTreeSet<String>,
+                             absent: bool| {
+            if !remote.upload {
+                return;
+            }
+            let puts: Vec<String> = asked
+                .iter()
+                .filter_map(|label| match planned.get(label) {
+                    Some(digest) if digest == FAILED => None,
+                    Some(digest) => Some(format!("put\t{label}\t{digest}")),
+                    None if absent => Some(format!("put\t{label}\t{}", remote::ABSENT)),
+                    None => None,
+                })
+                .collect();
+            if puts.is_empty() {
+                return;
+            }
+            let count = puts.len();
+            match helper.run("upload", "upload", &remote.key, puts) {
+                Ok(response) => {
+                    if let Some(error) = &response.error {
+                        eprintln!("bazel-rs affected: remote base digests: {error}");
+                    }
+                    eprintln!(
+                        "bazel-rs affected: base digests: wrote {} of {count} to the remote cache",
+                        response.stored
+                    );
+                }
+                Err(error) => {
+                    eprintln!("bazel-rs affected: remote base digests not written ({error})")
+                }
+            }
+        };
         let mut base_entire = false;
-        let (mut base_planned, head) = if concurrent {
+        let accepting = remote_base.as_ref().filter(|remote| remote.accept);
+        let (mut base_planned, head) = if let Some(remote) = accepting {
+            let head_scope = if !scoped {
+                None
+            } else if options.write_digests.is_some() {
+                Some(&report)
+            } else {
+                Some(&restrict)
+            };
+            let head_at = if head_in_place {
+                None
+            } else {
+                head_commit.as_deref()
+            };
+            let head_workspace = match head_at {
+                Some(commit) => {
+                    checkout(&top, &head_tree, commit)?;
+                    head_tree.join(&below)
+                }
+                None => root.clone(),
+            };
+            let head_out = keep.join("head.digests");
+            let base_workspace = worktree.join(&below);
+            let base_out = keep.join("base.digests");
+            // The base planned for `asked` only (restricted to the change's
+            // scope too when the change is local: a root reaching it there
+            // still makes everything the scope).
+            let base_spec = keep.join("base-only.spec");
+            let start_base =
+                |asked: &std::collections::BTreeSet<String>| -> Result<Running, String> {
+                    let mut text = if scoped {
+                        std::fs::read_to_string(&spec_path).map_err(|error| error.to_string())?
+                    } else {
+                        format!("{SCOPE_HEADER}\nmode\tonly\n")
+                    };
+                    for label in asked {
+                        text.push_str(&format!("only\t{label}\n"));
+                    }
+                    std::fs::write(&base_spec, text).map_err(|error| {
+                        format!("cannot write {}: {error}", base_spec.display())
+                    })?;
+                    checkout(&top, &worktree, &base_commit)?;
+                    start_plan(
+                        binary,
+                        startup,
+                        &options,
+                        &base_workspace,
+                        &base_out,
+                        Some(&ScopeRequest { spec: &base_spec }),
+                    )
+                };
+            // A base planning of `asked` that failed: once more, then
+            // entirely (its scope reported).
+            let base_after_failure = |error: String| -> Result<(Planned, bool), String> {
+                eprintln!("bazel-rs affected: base: planning failed ({error}): once more");
+                if let Ok(planned) = plan(
+                    binary,
+                    startup,
+                    &options,
+                    &base_workspace,
+                    &base_out,
+                    Some(&ScopeRequest { spec: &base_spec }),
+                ) {
+                    return Ok((planned, false));
+                }
+                eprintln!("bazel-rs affected: base: planning failed again: planning it entirely");
+                plan(
+                    binary,
+                    startup,
+                    &options,
+                    &base_workspace,
+                    &base_out,
+                    scoped.then_some(&report),
+                )
+                .map(|planned| (planned, true))
+            };
+            let mut head_run = start_plan(
+                binary,
+                startup,
+                &options,
+                &head_workspace,
+                &head_out,
+                head_scope,
+            )?;
+            // The head's scope, as soon as its target pattern phase is
+            // over: looked up then, and the base started at once when both
+            // revisions are planned concurrently.
+            let mut hits: BTreeMap<String, String> = BTreeMap::new();
+            let mut looked: std::collections::BTreeSet<String> = Default::default();
+            let mut early: Option<(Running, std::collections::BTreeSet<String>)> = None;
+            if head_scope.is_some() {
+                head_run.wait_for_scope();
+                if let Some(Scope::Scoped(scope)) = read_scope(&head_out) {
+                    let labels: Vec<String> = scope.into_iter().collect();
+                    hits = lookup(remote, &labels);
+                    looked.extend(labels.iter().cloned());
+                    let missing: std::collections::BTreeSet<String> = labels
+                        .into_iter()
+                        .filter(|label| !hits.contains_key(label))
+                        .collect();
+                    if concurrent && !missing.is_empty() {
+                        eprintln!("bazel-rs affected: planning both revisions concurrently");
+                        match start_base(&missing) {
+                            Ok(running) => early = Some((running, missing)),
+                            Err(error) => {
+                                let _ = head_run.child.kill();
+                                let _ = head_run.child.wait();
+                                return Err(error);
+                            }
+                        }
+                    }
+                }
+            }
+            let head = match head_run.finish() {
+                Ok(planned) => Ok(planned),
+                Err(error) if restricted(head_scope) => {
+                    entire_after_retry(&head_workspace, &head_out, "head", error)
+                        .map(|(planned, _)| planned)
+                }
+                Err(error) => Err(error),
+            };
+            let mut head = match head {
+                Ok(head) => head,
+                Err(error) => {
+                    if let Some((mut running, _)) = early {
+                        let _ = running.child.kill();
+                        let _ = running.child.wait();
+                    }
+                    return Err(error);
+                }
+            };
+            // The labels compared: the head's scope, else all of its.
+            let labels: Vec<String> = match &head.scope {
+                Scope::Scoped(scope) => scope.iter().cloned().collect(),
+                Scope::None | Scope::Full(_) => head.digests.keys().cloned().collect(),
+            };
+            let more: Vec<String> = labels
+                .iter()
+                .filter(|label| !looked.contains(*label))
+                .cloned()
+                .collect();
+            hits.extend(lookup(remote, &more));
+            let missing: std::collections::BTreeSet<String> = labels
+                .iter()
+                .filter(|label| !hits.contains_key(*label))
+                .cloned()
+                .collect();
+            eprintln!(
+                "bazel-rs affected: base digests: {} of {} from the remote cache",
+                labels.len() - missing.len(),
+                labels.len()
+            );
+            // The base: planned for the missing labels (the planning started
+            // early, unless it misses some of them), else not at all.
+            let early = match early {
+                Some((running, asked)) if missing.is_subset(&asked) => Some((running, asked)),
+                Some((mut running, _)) => {
+                    let _ = running.child.kill();
+                    let _ = running.child.wait();
+                    None
+                }
+                None => None,
+            };
+            let base = if let Some((running, asked)) = early {
+                Some((
+                    running
+                        .finish()
+                        .map(|planned| (planned, false))
+                        .or_else(base_after_failure),
+                    asked,
+                ))
+            } else if !missing.is_empty() {
+                let result = start_base(&missing)
+                    .and_then(Running::finish)
+                    .map(|planned| (planned, false))
+                    .or_else(base_after_failure);
+                Some((result, missing.clone()))
+            } else {
+                None
+            };
+            let base_planned = match base {
+                None => Some(Planned {
+                    digests: hits
+                        .into_iter()
+                        .filter(|(_, digest)| digest != remote::ABSENT)
+                        .collect(),
+                    scope: Scope::None,
+                }),
+                Some((Err(error), _)) => every(error)?,
+                Some((Ok((planned, entire)), asked)) => {
+                    write_through(remote, &planned.digests, &asked, true);
+                    if let Scope::Full(reason) = &planned.scope {
+                        // A root reaching the change at the base: the base
+                        // planned everything, and so is the head.
+                        eprintln!("bazel-rs affected: base: full analysis: {reason}");
+                        if restricted(head_scope) && matches!(head.scope, Scope::Scoped(_)) {
+                            head = plan_revision(&head_tree, head_at, "head", None)?.0;
+                        }
+                        Some(Planned {
+                            digests: planned.digests,
+                            scope: Scope::None,
+                        })
+                    } else if entire {
+                        Some(Planned {
+                            digests: planned.digests,
+                            scope: Scope::None,
+                        })
+                    } else {
+                        let mut digests: BTreeMap<String, String> = hits
+                            .into_iter()
+                            .filter(|(_, digest)| digest != remote::ABSENT)
+                            .collect();
+                        digests.extend(planned.digests);
+                        Some(Planned {
+                            digests,
+                            scope: Scope::None,
+                        })
+                    }
+                }
+            };
+            (base_planned, head)
+        } else if concurrent {
             // Both at once: the base and the head restricted to the scope;
             // the corrections below run sequentially (rare).
             let head_scope = if !scoped {
@@ -1692,6 +2163,15 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                     Err(error) => every(error)?,
                 };
             }
+        }
+        // `--noremote_accept_cached`: the base was planned as without a
+        // remote cache; its digests are still written through.
+        if let Some(remote) = remote_base.as_ref().filter(|remote| !remote.accept)
+            && let Some(planned) = &base_planned
+            && !from_file
+        {
+            let asked = planned.digests.keys().cloned().collect();
+            write_through(remote, &planned.digests, &asked, false);
         }
         if let (Some(path), Some(commit), Some(key)) = (&options.write_digests, &head_commit, &key)
         {
@@ -1882,6 +2362,62 @@ mod tests {
         let meminfo = "MemTotal:       263751720 kB\nMemFree:        11531464 kB\nMemAvailable:   143691468 kB\n";
         assert_eq!(available_mb(meminfo), Some(140323));
         assert_eq!(available_mb("MemTotal: 1 kB\n"), None);
+    }
+
+    #[test]
+    fn the_remote_key_covers_what_changes_a_digest() {
+        let binary = [7u8; 32];
+        let parsed = |args: &[&str]| {
+            let mut all = vec!["--base=x".to_owned()];
+            all.extend(args.iter().map(|arg| (*arg).to_owned()));
+            parse(&all).unwrap()
+        };
+        let key = |options: &Options, tree: &str, environment: &str| {
+            remote_base_key(&binary, &[], options, tree, Path::new(""), environment)
+        };
+        let plain = parsed(&[]);
+        let base = key(&plain, "t", "e");
+        assert_eq!(base, key(&plain, "t", "e"));
+        assert_ne!(base, key(&plain, "t2", "e"));
+        assert_ne!(base, key(&plain, "t", "e2"));
+        assert_ne!(
+            base,
+            remote_base_key(&[8u8; 32], &[], &plain, "t", Path::new(""), "e")
+        );
+        assert_ne!(
+            base,
+            remote_base_key(&binary, &[], &plain, "t", Path::new("sub"), "e")
+        );
+        for other in [
+            &["--include_manual"][..],
+            &["--define=a=b"],
+            &["--affected_command=build"],
+            &["//a/..."],
+        ] {
+            assert_ne!(base, key(&parsed(other), "t", "e"), "{other:?}");
+        }
+        // The remote cache's transport and policy options change no digest.
+        for same in [
+            &["--remote_cache=http://x"][..],
+            &["--noremote_upload_local_results"],
+            &["--remote_accept_cached=false"],
+            &["--credential_helper=h=/bin/false", "--remote_timeout=5"],
+            &["--noaffected_remote_digests", "--concurrent_revisions"],
+        ] {
+            assert_eq!(base, key(&parsed(same), "t", "e"), "{same:?}");
+        }
+        assert_eq!(
+            without_transport_options(&[
+                "--remote_header".to_owned(),
+                "a=b".to_owned(),
+                "--define=x=y".to_owned(),
+                "--remote_executor=grpc://e".to_owned(),
+            ]),
+            ["--define=x=y", "--remote_executor=grpc://e"]
+        );
+        let off = parsed(&["--noaffected_remote_digests"]);
+        assert!(!off.remote && plain.remote);
+        assert!(!parsed(&["--affected_remote_digests=false"]).remote);
     }
 
     #[test]

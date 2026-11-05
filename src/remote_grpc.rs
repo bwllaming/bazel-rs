@@ -746,9 +746,22 @@ impl GrpcCache {
 
     /// GetActionResult; `Ok(None)` on NOT_FOUND (a miss).
     pub fn get_action_result(&self, key: &Digest) -> Result<Option<bytes::Bytes>, Status> {
+        self.get_action_result_inlining(key, &[])
+    }
+
+    /// GetActionResult asking the server to inline the output files at
+    /// `inline` (`inline_output_files`; a server may not).
+    pub fn get_action_result_inlining(
+        &self,
+        key: &Digest,
+        inline: &[&str],
+    ) -> Result<Option<bytes::Bytes>, Status> {
         let mut request = Vec::new();
         reapi::string(&mut request, 1, &self.options.instance_name);
         digest_message(&mut request, 2, key);
+        for path in inline {
+            reapi::string(&mut request, 5, path);
+        }
         reapi::varint_field(&mut request, 6, SHA256);
         self.refreshing(|| {
             self.retry(

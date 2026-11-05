@@ -343,6 +343,13 @@ Done since the last increment recorded under "History", one line each:
       at once by default when memory allows, the faster commit, and the `build`
       deriving from affected's head (hidden lockfile recorded by the entries
       used, source directories traversed; docs/AFFECTED_TARGETS.md §8.9).
+- [x] Base digests through the remote cache (docs/AFFECTED_TARGETS.md
+      §8.11): per-target Action Cache entries keyed by the base tree, binary,
+      options and outer client state, written through by every `affected`
+      that plans a base; the head is planned first, the base only for the
+      missing targets (not at all on an all hit). PR 13252 warm: CPU 243 →
+      94 s, peak 8.5 → 4.8 GB; cold all hit 493 → 400 s CPU, 9.2 → 4.9 GB;
+      a partial hit (499 of 552) plans 53 base targets; output identical.
 - [ ] Lukewarm `affected`: a requirements bump re-executes every wheel
       repository of the `pip` extension group (~270–500 executions, ~25 s per
       planning) and re-evaluates `pip`, so the head is not saved for the build.

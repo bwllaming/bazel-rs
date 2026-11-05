@@ -53,6 +53,11 @@ docs/COLD_ANALYSIS.md: on the private clone at `80d6724f3a` with warm
 repositories, `affected --base=HEAD^` (802 targets in scope) takes 81 s
 instead of 179 s, with the same output and digests.
 
+Since §8.11 the base's digests also go through the configured remote cache
+(`--remote_cache`, HTTP or gRPC): the second `affected` on a base looks up
+the digests of the head's targets there and plans the base only for the
+missing ones, not at all when none is missing.
+
 Since §8.9 a local change plans both revisions at once by default, the
 planning itself is ~25% faster, and the CI's `build` after `affected`
 derives its plan from it: PR 13252's CI sequence (`affected`, `query`,
@@ -320,7 +325,7 @@ bazel-rs [STARTUP...] affected --base=REV [--head=REV] [--worktree=DIR]
     [--affected_command=test|build] [--keep_digests=DIR] [--explain_affected]
     [--include_incompatible] [--include_manual] [--scope=auto|full]
     [--[no]concurrent_revisions] [--write_digests=FILE] [--base_digests=FILE]
-    [--base_failure=error|all]
+    [--[no]affected_remote_digests] [--base_failure=error|all]
     [BUILD OPTIONS...] [PATTERNS... | -- PATTERNS...]
 ```
 
@@ -531,6 +536,11 @@ CI job, instead of TD's four cqueries plus two more analyses.
 - **Non-hermetic inputs** are not seen, as in TD: host tools, inherited
   `--action_env=NAME` values (only the name is keyed, before `finalize`),
   files outside the plan.
+- **Remote base digests** (§8.11) carry a writer's world to a reader: the
+  key covers the tree, binary, options, outer rc files and inherited
+  variables, not host tools or the rest of the environment. A difference
+  there makes targets reported affected, which is the safe direction,
+  except when a change exactly undoes it (contrived).
 - **Analysis cost.** The full `test --nobuild //...` analysis is about
   the cost of one TD cquery. Its peak is 9.1–9.2 GB; a scoped run peaks at
   4.2 GB, while loading `//...` (§8.5).
@@ -725,7 +735,8 @@ touches a root. Otherwise it would be missed.
   patterns. `--base_digests=FILE` then skips the base when the commit and
   key match, and plans it otherwise. A main-branch job would run
   `affected --base=HEAD^ --write_digests=main.digests` and upload the file
-  as an artifact; a PR job downloads the file of its base. Digests no
+  as an artifact; a PR job downloads the file of its base (§8.11 does the
+  same per target through the remote cache, without a separate job). Digests no
   longer depend on the cache location: the cache prefix of
   repository-store trees and of `<cache>/repositories/external/` is
   dropped with the tree identity.
@@ -1115,3 +1126,144 @@ After `affected` and `query`, main's store had one tree written into — the
 else (no file of any tree changed after its publication, no other extra
 entry, in any tree area); the sealed store had none, and no command printed
 a permission error.
+
+### 8.11 Base digests in the remote cache (affected-remote-digests)
+
+On ~/code's CI every PR plans its base (`HEAD^`, a main commit) again,
+although many PRs share a base, and the base costs as much as the head
+(PR 13252 on 0.4.11: base 228 s — 53 s loading and scope, 175 s analysis of
+525 targets — and head 178 s, 233 s wall concurrently). The CI already has
+a remote cache (`--remote_cache` in `.bazelrc`, uploads on). `affected` now
+writes every base digest it computes there and looks them up before it plans
+a base: write-through, no separate job, no file to pass around.
+
+**Flow** (a remote cache configured, `--remote_accept_cached`, no
+`--base_digests` file that holds the base, not `--noaffected_remote_digests`):
+
+1. The head is planned first (in place or in its worktree, scoped as
+   before).
+2. Once its target pattern phase wrote the scope (`<digests>.scope`, now
+   renamed into place whole), the base digests of the scope's targets are
+   looked up. A head that is not scoped (a global change, a dirty working
+   copy, `--scope=full`) or whose scope came out as everything is looked up
+   once it is planned, for all its targets.
+3. All hit: the base is neither checked out nor planned.
+   `bazel-rs affected: base digests: 525 of 525 from the remote cache`.
+4. Otherwise the base is planned for the missing targets only (`only`
+   lines in its scope input; with a local change the change's scope is
+   still computed there, so a root that reaches the change at the base
+   still makes everything the scope and the head is planned entirely, as
+   before). It starts as soon as the lookup is done when both revisions
+   are planned concurrently (§8.3), after the head otherwise. A failed
+   base planning runs once more, then entirely, as before.
+5. Its digests of the asked targets are written (`absent` for an asked
+   target the base does not select), unless `--noremote_upload_local_results`.
+   With `--noremote_accept_cached` the base is planned as without a remote
+   cache and its digests are still written.
+
+The comparison is the one without the remote cache: the head's scope (or
+all its targets) against the base digests, hits and planned ones merged.
+Two PRs writing the same entries write the same bytes.
+
+**Why the head's scope suffices.** §8.2's argument is per revision: a head
+target outside the head's scope reaches no change, so its loading closure,
+and with it its digest, is identical at the base. The base's own scope check
+adds one thing: a root that reaches the change at the base but not at the
+head. The roots are the same labels at both revisions (MODULE.bazel, rc
+files and extension `.bzl` files are global changes) except the literals of
+a changed `.bzl` file with `transition(`; such a file is a changed `.bzl`,
+so every package loading it — every target whose analysis could use the
+transition — is marked at the head already. A planned base still runs the
+check (step 4); only an all-hit run skips it.
+
+**Keys.** The *base key* is the sha256 of the framed
+`bazel-rs-affected-remote-key-v1`, the base commit's **tree**
+(`git rev-parse BASE^{tree}`: an identical tree reached through another
+commit shares the entries), the workspace's directory in the repository,
+the `--write_digests` key of this binary (its sha256), the command, the
+options and the patterns (with `--include_manual`) — without the remote
+cache's transport and policy options (`--remote_cache`, `--remote_header`,
+`--[no]remote_upload_local_results`, `--[no]remote_accept_cached`,
+`--credential_helper`, `--disk_cache`, TLS, timeouts, retries: they change
+no digest, and a read-only PR job shares a writer's entries) — and the
+client state outside the tree: the rc files outside the workspace that the
+planning reads (system, home, `$BAZELRC`, `--bazelrc` and their imports, by
+path and contents) and the values of the variables an rc or command-line
+`--action_env`, `--host_action_env`, `--test_env` or `--repo_env` names
+without a value (the workspace's location in them normalized). The rest of
+the client environment is not keyed: `PATH` holds per-runner paths on
+~/code's CI (`.envrc`), and the target digests do not key inherited values
+either (§7). `--include_incompatible` only filters the output: not keyed.
+
+**The record format.** Per target, one Action Cache entry whose key is the
+sha256 of the framed `bazel-rs-affected-digest-v1`, base key and label
+(`size_bytes` the length of those bytes). It digests no `Action`, so
+genuine Bazel never asks for it. Its `ActionResult` (exit code 0) has one
+output file `bazel-rs-affected-digest` whose blob — uploaded to the CAS
+first, and inlined in the entry's `contents` — is:
+
+```
+bazel-rs-affected-digest-v1
+entry<TAB><the entry's Action Cache key, hex>
+label<TAB><label>
+value<TAB><the target digest (64 hex digits) | incompatible | absent>
+check<TAB><sha256 of the four lines above, newlines included>
+```
+
+About 500 bytes per target (525 targets: 590 KB in AC and CAS together).
+A lookup (`GetActionResult`; gRPC asks for the file inlined with
+`inline_output_files`, else it reads the blob from the CAS) is used only
+when the output file's digest matches its bytes and the record's header,
+entry key, label, checksum and value form all check out. Anything else is a
+miss (counted: `N malformed remote base digest(s) ignored`), planned and
+written again. A failed request (the cache down) stops the remaining
+requests: they are misses, and the planning answers as without the cache.
+A failed target's digest is never written.
+
+**Processes.** The orchestrator has no remote cache of its own: a *helper*
+— this binary, with `affected`'s startup options, command and options, in
+the working copy, under `BAZEL_RS_AFFECTED_REMOTE_OP` — sets the cache up
+exactly as a planning would (rc files, credential helpers, TLS), then makes
+the requests (16 at a time) instead of running the command. One probes
+before the head starts (no remote cache: the flow of §8.3 unchanged), one
+looks up, one writes.
+
+**Tests** (`tests/affected.rs`): an HTTP cache — miss, all hit (one
+planning), the same tree through another commit, a partial hit
+(sequential), a new target (`absent`), other options (another key),
+read-only, `--noremote_accept_cached`, corrupt entries (another label's
+record, garbage), the cache down, no cache; a gRPC cache with a global
+change — miss, hit, entries without inlined contents (read from the CAS),
+an evicted record (a miss). Every run's output equals the run without the
+remote cache.
+
+**Measured** (private clone at PR 13252's merge `b707657f`, base `5b415ab9`;
+`affected --base=HEAD^` with the CI's rc, a local HTTP cache, `nice -n 10`,
+one run each; warm = the bazel-rs cache of a previous run; PR-B = the same
+base plus another edit of `utils/str/str.go` and one of `utils/periodic`,
+scope 552 targets, 499 of them shared with PR 13252's; CPU = user + sys of
+all processes, peak = the summed RSS of the process tree; seconds):
+
+| run | wall | CPU | peak RSS | base planned |
+|---|---|---|---|---|
+| cold, without (`--noaffected_remote_digests`) | 193 | 493 | 9.2 GB | 525 targets |
+| cold, miss (computed, 525 written) | 184 | 499 | 9.2 GB | 525 |
+| cold, all hit (fresh bazel-rs cache) | 187 | 400 | 4.9 GB | – |
+| warm, without | 52 | 243 | 8.5 GB | 525 |
+| warm, miss | 44 | 185 | 9.0 GB | 525 |
+| warm, all hit | 42 | 94 | 4.8 GB | – |
+| warm PR-B, without | 44 | 158 | 8.0 GB | 552 |
+| warm PR-B, partial hit (499 of 552) | 40 | 124 | 4.8 GB | 53 |
+
+The output is identical in every run (516 of 525 resp. 547 of 552
+affected). Here concurrent plannings make the wall time the head's: a hit
+saves the base's CPU and memory (half of each) more than time; on a cold
+cache the head now fetches what the base fetched before. On the CI, where
+the base took 228 s and the head 178 s (started 53 s later, after the
+base's loading), an all-hit run should take about the head's planning with
+its own loading (~210 s instead of 233 s) on half the CPU and memory, and
+much less on a runner short of memory (§8.3: sequential below 20 GB
+available, where the base's whole planning is saved). The build after
+`affected` still derives from the head (`INFO: Analyzed 3 targets (5
+packages loaded, 0 targets configured)` after an all-hit warm run and after
+a cold miss).

@@ -1367,6 +1367,25 @@ mod grpc_cache_server {
             self.state.lock().unwrap().executed.clone()
         }
 
+        /// An Action Cache entry's bytes.
+        pub fn ac_entry(&self, instance: &str, hash: &str) -> Option<Vec<u8>> {
+            self.state
+                .lock()
+                .unwrap()
+                .ac
+                .get(&format!("{instance}|{hash}"))
+                .cloned()
+        }
+
+        /// Replace an Action Cache entry.
+        pub fn put_ac(&self, instance: &str, hash: &str, bytes: Vec<u8>) {
+            self.state
+                .lock()
+                .unwrap()
+                .ac
+                .insert(format!("{instance}|{hash}"), bytes);
+        }
+
         /// Remove a blob from the CAS (an eviction).
         pub fn evict(&self, instance: &str, hash: &str) -> bool {
             self.state

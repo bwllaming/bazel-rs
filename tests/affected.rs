@@ -886,3 +886,314 @@ ext = module_extension(implementation = _ext)
         );
     }
 }
+
+/// A minimal HTTP/1.1 cache for the remote base digests: GET/PUT of
+/// `/ac/H` and `/cas/H`, entries inspectable and replaceable.
+mod http_cache {
+    use std::collections::BTreeMap;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::{Arc, Mutex};
+
+    pub struct Server {
+        port: u16,
+        pub entries: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    }
+
+    fn handle(mut stream: TcpStream, entries: Arc<Mutex<BTreeMap<String, Vec<u8>>>>) {
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                return;
+            }
+            let mut parts = line.split_whitespace();
+            let method = parts.next().unwrap_or("").to_owned();
+            let path = parts.next().unwrap_or("").to_owned();
+            let mut length = 0;
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                    return;
+                }
+                let header = header.trim_end();
+                if header.is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = header.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            if reader.read_exact(&mut body).is_err() {
+                return;
+            }
+            let (status, payload) = if method == "PUT" {
+                entries.lock().unwrap().insert(path, body);
+                ("200 OK", Vec::new())
+            } else {
+                match entries.lock().unwrap().get(&path) {
+                    Some(bytes) => ("200 OK", bytes.clone()),
+                    None => ("404 Not Found", Vec::new()),
+                }
+            };
+            let head = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n",
+                payload.len()
+            );
+            if stream.write_all(head.as_bytes()).is_err() || stream.write_all(&payload).is_err() {
+                return;
+            }
+        }
+    }
+
+    impl Server {
+        pub fn new() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let entries = Arc::new(Mutex::new(BTreeMap::new()));
+            let accept = entries.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let entries = accept.clone();
+                    std::thread::spawn(move || handle(stream, entries));
+                }
+            });
+            Self { port, entries }
+        }
+
+        pub fn url(&self) -> String {
+            format!("http://127.0.0.1:{}", self.port)
+        }
+
+        /// The Action Cache paths (`/ac/H`).
+        pub fn ac(&self) -> Vec<String> {
+            self.entries
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|path| path.starts_with("/ac/"))
+                .cloned()
+                .collect()
+        }
+    }
+}
+
+/// `count` of the summary line `base digests: N of M from the remote
+/// cache` (`None`: no such line).
+fn remote_hits(stderr: &str) -> Option<(usize, usize)> {
+    let line = stderr
+        .lines()
+        .find(|line| line.contains("from the remote cache"))?;
+    let rest = line.split("base digests: ").nth(1)?;
+    let mut words = rest.split_whitespace();
+    let hits = words.next()?.parse().ok()?;
+    words.next();
+    let total = words.next()?.parse().ok()?;
+    Some((hits, total))
+}
+
+fn plannings(stderr: &str) -> usize {
+    stderr.matches("bazel-rs affected: planning //...").count()
+}
+
+/// docs/AFFECTED_TARGETS.md §8.11: the base's digests go through the
+/// configured remote cache: a miss plans the base and writes them, a hit
+/// skips the base, a partial hit plans only the missing targets; the answer
+/// is always the one without the remote cache.
+#[test]
+fn base_digests_are_shared_through_an_http_remote_cache() {
+    let repo = Repo::new();
+    let server = http_cache::Server::new();
+    let remote = format!("--remote_cache={}", server.url());
+    let build = "--affected_command=build";
+    let first = repo.commit(PACKAGES);
+    let second = repo.commit(&[("a/a.txt", "a2\n")]);
+    let reference = |base: &str, head: &str, extra: &[&str]| {
+        let mut args = vec![build, "--noaffected_remote_digests", remote.as_str()];
+        args.extend(extra);
+        let (labels, stderr) = repo.run(base, head, &args);
+        assert_eq!(remote_hits(&stderr), None, "{stderr}");
+        labels
+    };
+    let want = reference(&first, &second, &[]);
+    assert_eq!(want, ["//a", "//b"]);
+    // A miss: the base is planned and its digests are written.
+    let (labels, stderr) = repo.run(&first, &second, &[build, &remote]);
+    assert_eq!(labels, want);
+    assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
+    assert!(
+        stderr.contains("wrote 2 of 2 to the remote cache"),
+        "{stderr}"
+    );
+    assert_eq!(plannings(&stderr), 2, "{stderr}");
+    assert_eq!(server.ac().len(), 2);
+    // All hit: the base is not planned (nor checked out).
+    let (labels, stderr) = repo.run(&first, &second, &[build, &remote]);
+    assert_eq!(labels, want);
+    assert_eq!(remote_hits(&stderr), Some((2, 2)), "{stderr}");
+    assert_eq!(plannings(&stderr), 1, "{stderr}");
+    assert!(!stderr.contains("wrote"), "{stderr}");
+    // The same tree through another commit: the same entries.
+    let other = repo.git(&["commit-tree", &format!("{first}^{{tree}}"), "-m", "other"]);
+    let (labels, stderr) = repo.run(&other, &second, &[build, &remote]);
+    assert_eq!(labels, want);
+    assert_eq!(remote_hits(&stderr), Some((2, 2)), "{stderr}");
+    // Another head on the same base, its scope overlapping: only the
+    // missing target is planned at the base (sequentially too).
+    let third = repo.commit(&[("c/c.txt", "c2\n")]);
+    let want3 = reference(&first, &third, &[]);
+    assert_eq!(want3, ["//a", "//b", "//c"]);
+    let (labels, stderr) = repo.run(
+        &first,
+        &third,
+        &[build, &remote, "--noconcurrent_revisions"],
+    );
+    assert_eq!(labels, want3);
+    assert_eq!(remote_hits(&stderr), Some((2, 3)), "{stderr}");
+    assert!(
+        stderr.contains("scope 1 of 4 selected target(s) (the targets asked for)"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("wrote 1 of 1"), "{stderr}");
+    // A target new at the head: written as absent at the base, then a hit.
+    let fourth = repo.commit(&[(
+        "c/BUILD.bazel",
+        "genrule(name = 'c', srcs = ['c.txt'], outs = ['c.out'], cmd = 'cat $< > $@')\ngenrule(name = 'd', srcs = ['c.txt'], outs = ['d.out'], cmd = 'cat $< > $@')\n",
+    )]);
+    let want4 = reference(&first, &fourth, &[]);
+    assert!(want4.contains(&"//c:d".to_owned()), "{want4:?}");
+    let (labels, stderr) = repo.run(&first, &fourth, &[build, &remote]);
+    assert_eq!(labels, want4);
+    assert_eq!(remote_hits(&stderr), Some((3, 4)), "{stderr}");
+    let (labels, stderr) = repo.run(&first, &fourth, &[build, &remote]);
+    assert_eq!(labels, want4);
+    assert_eq!(remote_hits(&stderr), Some((4, 4)), "{stderr}");
+    assert_eq!(plannings(&stderr), 1, "{stderr}");
+    // Other options: another key, nothing shared.
+    let define = "--define=k=v";
+    let (labels, stderr) = repo.run(&first, &second, &[build, &remote, define]);
+    assert_eq!(labels, reference(&first, &second, &[define]));
+    assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
+    // Read-only (`--noremote_upload_local_results`): looked up, not
+    // written; the remote transport options are no part of the key.
+    let (_, stderr) = repo.run(
+        &first,
+        &second,
+        &[build, &remote, "--noremote_upload_local_results"],
+    );
+    assert_eq!(remote_hits(&stderr), Some((2, 2)), "{stderr}");
+    let read_only = [
+        build,
+        &remote,
+        "--noremote_upload_local_results",
+        "--define=k=w",
+    ];
+    let (_, stderr) = repo.run(&first, &second, &read_only);
+    assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
+    assert!(!stderr.contains("wrote"), "{stderr}");
+    let (_, stderr) = repo.run(&first, &second, &read_only);
+    assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
+    // `--noremote_accept_cached`: planned as without, written through.
+    let (labels, stderr) = repo.run(
+        &first,
+        &second,
+        &[build, &remote, "--noremote_accept_cached", "--define=k=x"],
+    );
+    assert_eq!(labels, want);
+    assert_eq!(remote_hits(&stderr), None, "{stderr}");
+    assert!(stderr.contains("wrote 2 of 2"), "{stderr}");
+    let (_, stderr) = repo.run(&first, &second, &[build, &remote, "--define=k=x"]);
+    assert_eq!(remote_hits(&stderr), Some((2, 2)), "{stderr}");
+    // Corrupt entries are misses: analysed (and written again).
+    let entries: Vec<String> = server.ac();
+    let mut planted = 0;
+    {
+        let mut map = server.entries.lock().unwrap();
+        let originals: Vec<Vec<u8>> = entries.iter().map(|path| map[path].clone()).collect();
+        for (at, path) in entries.iter().enumerate() {
+            // Every entry: another label's record, or garbage.
+            let replacement = if at % 2 == 0 {
+                originals[(at + 1) % originals.len()].clone()
+            } else {
+                b"garbage".to_vec()
+            };
+            if replacement != originals[at] {
+                map.insert(path.clone(), replacement);
+                planted += 1;
+            }
+        }
+    }
+    assert!(planted > 0);
+    let (labels, stderr) = repo.run(&first, &second, &[build, &remote]);
+    assert_eq!(labels, want);
+    assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
+    assert!(
+        stderr.contains("malformed remote base digest(s) ignored"),
+        "{stderr}"
+    );
+    let (_, stderr) = repo.run(&first, &second, &[build, &remote]);
+    assert_eq!(remote_hits(&stderr), Some((2, 2)), "{stderr}");
+    // The cache down: everything is analysed, the same answer.
+    let down = "--remote_cache=http://127.0.0.1:1";
+    let (labels, stderr) = repo.run(&first, &second, &[build, down]);
+    assert_eq!(labels, want);
+    assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
+    assert!(stderr.contains("remote base digests"), "{stderr}");
+    // No remote cache: as before.
+    let (labels, stderr) = repo.run(&first, &second, &[build]);
+    assert_eq!(labels, want);
+    assert_eq!(remote_hits(&stderr), None, "{stderr}");
+}
+
+include!("support/grpc_cache_server.rs");
+
+/// The same through a gRPC cache, for a global change (both revisions
+/// entirely: the head's every target is looked up once it is planned).
+#[test]
+fn base_digests_are_shared_through_a_grpc_remote_cache() {
+    let repo = Repo::new();
+    let server = grpc_cache_server::Server::new();
+    let remote = format!("--remote_cache={}", server.url());
+    let build = "--affected_command=build";
+    let first = repo.commit(PACKAGES);
+    let second = repo.commit(&[
+        ("MODULE.bazel", "module(name = 'main')\n# x\n"),
+        ("a/a.txt", "a2\n"),
+    ]);
+    let (want, stderr) = repo.run(&first, &second, &[build, "--noaffected_remote_digests"]);
+    assert!(stderr.contains("global change: MODULE.bazel"), "{stderr}");
+    assert_eq!(want, ["//a", "//b"]);
+    let (labels, stderr) = repo.run(&first, &second, &[build, &remote]);
+    assert_eq!(labels, want);
+    assert_eq!(remote_hits(&stderr), Some((0, 4)), "{stderr}");
+    assert!(stderr.contains("wrote 4 of 4"), "{stderr}");
+    assert_eq!(server.ac_keys("").len(), 4);
+    let (labels, stderr) = repo.run(&first, &second, &[build, &remote]);
+    assert_eq!(labels, want);
+    assert_eq!(remote_hits(&stderr), Some((4, 4)), "{stderr}");
+    assert_eq!(plannings(&stderr), 1, "{stderr}");
+    // A server that does not keep inlined contents: the records are read
+    // from the CAS.
+    for key in server.ac_keys("") {
+        let mut result =
+            bazel_rs::reapi::ActionResult::decode(&server.ac_entry("", &key).unwrap()).unwrap();
+        let file = &mut result.output_files[0];
+        assert!(server.cas_blob("", &file.digest.hash).is_some());
+        file.contents.clear();
+        server.put_ac("", &key, result.encode());
+    }
+    let (labels, stderr) = repo.run(&first, &second, &[build, &remote]);
+    assert_eq!(labels, want);
+    assert_eq!(remote_hits(&stderr), Some((4, 4)), "{stderr}");
+    // ... and one evicted from it is a miss.
+    let key = server.ac_keys("").pop().unwrap();
+    let result =
+        bazel_rs::reapi::ActionResult::decode(&server.ac_entry("", &key).unwrap()).unwrap();
+    assert!(server.evict("", &result.output_files[0].digest.hash));
+    let (labels, stderr) = repo.run(&first, &second, &[build, &remote]);
+    assert_eq!(labels, want);
+    assert_eq!(remote_hits(&stderr), Some((3, 4)), "{stderr}");
+}
