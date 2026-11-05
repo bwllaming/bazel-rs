@@ -499,6 +499,7 @@ impl Engine {
 
     /// Stop the analysis workers (the end of a build's planning).
     pub(super) fn stop_analysis_pool(&mut self) {
+        self.stop_lowering_pool();
         if let Some(pool) = self.analysis_pool.take() {
             report(pool.size);
             drop(pool);
@@ -523,7 +524,21 @@ impl Engine {
             ..Pipeline::default()
         };
         state.delegated_keys.clear();
+        // P4: action lowerings run on lowering workers during the walk and
+        // are placed in commit order before it returns
+        // (crate::engine::lowering). Under --keep_going a failure must skip
+        // its dependents at its own turn: lowered at the commit instead.
+        let deferring = state.nodes.deferring;
+        if !self.keep_going {
+            self.ensure_lowering_pool();
+            state.nodes.deferring = self.lowering_pool.is_some();
+        }
         let result = self.plan_targets_pipelined(state, configured, &mut pipe);
+        // A failed lowering queued before the walk's error (or its end) is
+        // the first error.
+        let drained = self.drain_lowerings(state, lowering::Drain::All);
+        state.nodes.deferring = deferring;
+        let result = drained.and(result);
         state.delegated_keys.clear();
         state.artifact_index.walk_done();
         if result.is_err() {
@@ -547,6 +562,9 @@ impl Engine {
             .and_then(|plan| plan.get(state.done))
             .cloned()
         {
+            // Place the lowerings done since (a failed one is the first
+            // error), and keep the queue bounded.
+            self.drain_lowerings(state, lowering::Drain::Bounded)?;
             let index = state.done;
             state.done += 1;
             // Registrations made ahead of their turn become visible at it.

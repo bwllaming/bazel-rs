@@ -115,6 +115,22 @@ def _bad_impl(ctx):
     fail("%s fails" % ctx.label.name)
 
 bad = rule(implementation = _bad_impl, attrs = {"deps": attr.label_list()})
+
+def _bin_impl(ctx):
+    print("bin %s" % ctx.label)
+    exe = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(exe, "exit 0\n", is_executable = True)
+    files = depset(transitive = [dep[Info].files for dep in ctx.attr.deps])
+    return [
+        DefaultInfo(executable = exe, runfiles = ctx.runfiles(transitive_files = files)),
+        Info(files = depset([exe], transitive = [files]), depth = 0, names = [ctx.label.name]),
+    ]
+
+bin = rule(
+    implementation = _bin_impl,
+    executable = True,
+    attrs = {"deps": attr.label_list(providers = [Info])},
+)
 "#;
 
 /// A DAG of `lib` targets over several packages: chains, diamonds and
@@ -303,6 +319,52 @@ fn errors_are_reported_in_the_sequential_order() {
         text.contains("bad1 fails") && text.contains("bad2 fails"),
         "{text}"
     );
+}
+
+/// P4 (deferred action lowering): a lowering that fails — of a Starlark
+/// action or of a runfiles support's manifest/tree action, on a lowering
+/// worker while the walk goes on — is the first error at its target's turn:
+/// the prints before it and none after it, at every thread count and with
+/// worker jitter; under --keep_going (lowered at the commit) the failing
+/// targets are reported and their dependents skipped, as sequentially.
+#[test]
+fn lowering_failures_are_reported_at_their_turn() {
+    let ws = Workspace::new();
+    library_workspace(&ws);
+    ws.file(
+        "z/BUILD",
+        "load('//rules:defs.bzl', 'bin', 'lib')\npackage(default_visibility = ['//visibility:public'])\n\
+         lib(name = 'ok1', deps = ['//p2:t7'], work = 20000)\n\
+         lib(name = 'low1', deps = [':ok1'])\n\
+         bin(name = 'tool', deps = ['//p3:t5'])\n\
+         lib(name = 'ok2', deps = ['//p4:t7', ':tool'])\n\
+         lib(name = 'low2', deps = ['//p5:t3'])\n\
+         lib(name = 'above', deps = [':low1', ':ok2'])\n",
+    );
+    for failing in [
+        "//z:low1#1",
+        "//z:tool#runfiles_tree",
+        "//z:tool#runfiles_manifest,//z:low2#0",
+        "//p0:t3#1,//z:low2#1",
+    ] {
+        let env = [("BAZEL_RS_LOWERING_FAIL", failing)];
+        let reference = assert_like_sequential(&ws, &env, &["build", "--nobuild", "//..."]);
+        assert!(!reference.status.success(), "{failing}");
+        let text = stderr(&reference);
+        let first = failing.split(',').next().unwrap();
+        assert!(
+            text.contains(&format!("lowering of {first} failed")),
+            "{failing}: {text}"
+        );
+        let keep_going =
+            assert_like_sequential(&ws, &env, &["build", "--nobuild", "--keep_going", "//..."]);
+        assert!(!keep_going.status.success(), "{failing}");
+        let text = stderr(&keep_going);
+        assert!(
+            text.contains(&format!("lowering of {first} failed")),
+            "{failing}: {text}"
+        );
+    }
 }
 
 /// A dependency cycle among Starlark targets: phase 1 reports it, the

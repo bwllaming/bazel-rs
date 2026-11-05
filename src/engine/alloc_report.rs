@@ -213,7 +213,7 @@ fn report_nodes(state: &ActionPlanning) {
             overhead: 0,
             part: None,
         };
-        for planned in &state.nodes {
+        for planned in state.nodes.iter() {
             let action = &planned.action;
             let row = rows.entry(action.extra.mnemonic.as_str()).or_default();
             row.count += 1;
@@ -281,7 +281,7 @@ fn groups<'a>(
         ("action_planning.artifact_index", &state.artifact_index),
         ("action_planning.declared", &state.declared),
         ("action_planning.producers", &state.producers),
-        ("action_planning.nodes", &state.nodes),
+        ("action_planning.nodes", &*state.nodes),
         ("action_planning.source_inputs", &state.source_inputs),
         ("action_planning.input_groups", &state.input_groups),
         ("action_planning.delegations", &state.delegations),

@@ -38,6 +38,7 @@ mod cquery_presentation;
 mod genquery;
 mod incremental;
 mod keep_going;
+mod lowering;
 mod parallel;
 pub mod query;
 mod query_attrs;
@@ -253,7 +254,10 @@ impl Artifact {
 type Artifacts = Arc<Vec<Artifact>>;
 type Locations = BTreeMap<String, Vec<PathBuf>>;
 /// Declared generated artifacts by configuration and execution path.
-type Declared = BTreeMap<(ConfigId, PathBuf), Artifact>;
+/// The client environment inherited action variables resolve against
+/// (read once per build on first need, crate::action_env).
+type ClientEnvironment = std::cell::OnceCell<Arc<BTreeMap<String, std::ffi::OsString>>>;
+type Declared = crate::fast_hash::FxHashMap<(ConfigId, PathBuf), Artifact>;
 /// A lookup-only map by configured target key (never iterated where the
 /// order is observed).
 type KeyMap<V> = crate::fast_hash::FxHashMap<ConfiguredTargetKey, V>;
@@ -315,7 +319,7 @@ struct ActionPlanning {
     /// action-lookup key and, for a Starlark action, the action's id and
     /// owner-independent key (crate::shared_actions).
     producers: Producers,
-    nodes: Vec<PlannedAction>,
+    nodes: lowering::PlannedNodes,
     /// Every source input of every action, before execroot planting drops
     /// main-repository inputs under ignored top-level entries.
     source_inputs: BTreeMap<String, SourceInputs>,
@@ -359,11 +363,11 @@ struct ActionPlanning {
     done: usize,
     /// The client environment inherited action variables resolve against,
     /// read once per build on first need (crate::action_env).
-    client_environment: std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    client_environment: ClientEnvironment,
     /// The client environment this build's workspace status computed
     /// against (N63 follow-up 2): captured by ensure_workspace_status so
     /// a test can inject a per-build environment deterministically.
-    status_client_environment: std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    status_client_environment: ClientEnvironment,
     /// The repositories of the packages each configured target transitively
     /// depends on, itself included (RuleContext.getTransitivePackagesForRunfileRepoMappingManifest,
     /// N23f): per configured target key, since select() can choose
@@ -742,12 +746,11 @@ struct PlanState<'a> {
         BTreeMap<String, starlark::values::OwnedFrozenValue>,
     >,
     pub aspect_target_identities: &'a mut AspectTargetIdentities,
-    pub nodes: &'a mut Vec<PlannedAction>,
+    pub nodes: &'a mut lowering::PlannedNodes,
     pub producers: &'a mut Producers,
     pub source_inputs: &'a mut BTreeMap<String, SourceInputs>,
-    pub client_environment: &'a mut std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
-    pub status_client_environment:
-        &'a mut std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    pub client_environment: &'a mut ClientEnvironment,
+    pub status_client_environment: &'a mut ClientEnvironment,
     pub workspace_status: &'a mut Option<WorkspaceStatusPlan>,
     pub views: &'a mut DependencyViews,
     pub input_groups: &'a mut HashMap<u64, ExpandedTree>,
@@ -2290,6 +2293,9 @@ pub struct Engine {
     /// The analysis workers running rule implementations (P3), started by
     /// the first pipelined plan_targets of a build.
     analysis_pool: Option<parallel::AnalysisPool>,
+    /// The lowering workers of deferred action lowering (P4,
+    /// crate::engine::lowering), started with the analysis workers.
+    lowering_pool: Option<lowering::LoweringPool>,
     /// Targets analyzed as toolchain implementations, with their parent's
     /// execution platform (the PlatformInfo label), which their own
     /// resolution forces (ToolchainContextUtil.java:136-141; docs/TOOLCHAINS.md).
@@ -2483,6 +2489,7 @@ impl Engine {
             view_artifacts: HashMap::new(),
             ahead_aborted: false,
             analysis_pool: None,
+            lowering_pool: None,
             toolchain_implementations: BTreeMap::new(),
             deferred_duplicates: BTreeMap::new(),
             source_directories: BTreeMap::new(),
@@ -14324,7 +14331,7 @@ impl Engine {
                 &mut commit,
                 shared_inputs
                     .as_ref()
-                    .map(|(start, shared)| (*start, &**shared)),
+                    .map(|(start, shared)| (*start, shared)),
             )?;
         }
         let defaults = analyzed
@@ -14360,14 +14367,14 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     fn commit_action(
         &self,
-        mut action: Action,
+        action: Action,
         own: Vec<Artifact>,
         runfiles_trees: &[Arc<crate::analysis_runtime::ToolRunfilesTree>],
         deferred: Option<scheduler::Deferred>,
         owner: &str,
-        main_ignored: &IgnoredSubdirectories,
+        main_ignored: &Arc<IgnoredSubdirectories>,
         commit: &mut ActionCommit<'_>,
-        shared: Option<(usize, &SharedInputs)>,
+        shared: Option<(usize, &Arc<SharedInputs>)>,
     ) -> Result<(), String> {
         if self.semantic_only() {
             return Ok(());
@@ -14411,76 +14418,53 @@ impl Engine {
                 groups.push(group);
             }
         }
-        // The groups stay shared when listing them could change nothing
-        // but the list (crate::scheduler::groups_apart): no entry would
-        // be dropped as a duplicate and the listed action validates
-        // exactly when its own part does. Otherwise they are listed in
-        // the action, as without sharing.
-        let shared_groups = !groups.is_empty()
-            && {
-                list_artifacts(&mut action, &own);
-                match shared {
-                    // The shared inputs are checked once (SharedInputs): the
-                    // action's own listing here, theirs from the memo. The
-                    // planning below clears the listing.
-                    Some((start, shared)) => {
-                        let end = start + shared.artifacts.len();
-                        let listed = std::mem::take(&mut action.inputs);
-                        action.inputs = listed[..start]
-                            .iter()
-                            .chain(&listed[end..])
-                            .cloned()
-                            .collect();
-                        let apart =
-                            scheduler::groups_apart(&action, &groups) && shared.apart_from(&groups);
-                        let valid = apart && shared.validate(&action);
-                        action.inputs = listed;
-                        debug_assert!(
-                            !apart || scheduler::groups_apart(&action, &groups),
-                            "internal error: the shared-input group check of {} differs from the full one",
-                            action.id
-                        );
-                        if valid {
-                            debug_assert!(
-                                action::validate_structure(&action).is_ok(),
-                                "internal error: the shared-input validation of {} differs from the full one",
-                                action.id
-                            );
-                            true
-                        } else {
-                            apart && action::validate_structure(&action).is_ok()
-                        }
-                    }
-                    None => {
-                        scheduler::groups_apart(&action, &groups)
-                            && action::validate_structure(&action).is_ok()
-                    }
-                }
-            };
-        if shared_groups {
-            let id = action.id.clone();
-            let (mut planned, sources) = plan_action_sources(
-                action,
-                &own,
-                main_ignored,
-                commit.client_environment,
-                true,
-                groups.clone(),
-                shared,
-            )?;
-            commit.source_inputs.insert(id, sources);
-            planned.groups = groups;
-            planned.deferred = deferred;
-            commit.nodes.push(planned);
-            return Ok(());
+        // The rest is a function of what the job holds (P4: deferred to a
+        // lowering worker in a pipelined walk, placed in commit order).
+        let environment = (!action.extra.inherited_environment.is_empty()).then(|| {
+            Arc::clone(
+                commit
+                    .client_environment
+                    .get_or_init(|| Arc::new(crate::action_env::client_environment())),
+            )
+        });
+        let listing = lowering::Listing {
+            action,
+            own,
+            runfiles_trees: runfiles_trees.to_vec(),
+            deferred,
+            owner: owner.to_owned(),
+            main_ignored: Arc::clone(main_ignored),
+            shared: shared.map(|(start, shared)| (start, Arc::clone(shared))),
+        };
+        match self.lower(commit.nodes, move || {
+            lower_action(listing, groups, environment)
+        })? {
+            Some(lowered) => self.place(commit, lowered),
+            None => Ok(()),
         }
-        if !groups.is_empty() {
-            *commit.listed_tree_actions += 1;
-        }
+    }
+
+    /// The listed path of [`Self::commit_action`]: the tool runfiles groups
+    /// could not stay shared, so their entries are listed in the action.
+    fn commit_listed_action(
+        &self,
+        listing: lowering::Listing,
+        commit: &mut ActionCommit<'_>,
+    ) -> Result<(), String> {
+        let lowering::Listing {
+            mut action,
+            own,
+            runfiles_trees,
+            deferred,
+            owner,
+            main_ignored,
+            shared,
+        } = listing;
+        *commit.listed_tree_actions += 1;
         let mut inputs = own;
-        for tree in runfiles_trees {
+        for tree in &runfiles_trees {
             let (artifacts, empty_files) =
-                runfiles_tree_entries(tree, owner, &mut |file| commit.artifact(self, file))?;
+                runfiles_tree_entries(tree, &owner, &mut |file| commit.artifact(self, file))?;
             inputs.extend(artifacts);
             for destination in empty_files {
                 if !action
@@ -14509,11 +14493,11 @@ impl Engine {
         let (mut planned, sources) = plan_action_sources(
             action,
             &inputs,
-            main_ignored,
+            &main_ignored,
             commit.client_environment,
             false,
             Vec::new(),
-            shared,
+            shared.as_ref().map(|(start, shared)| (*start, &**shared)),
         )?;
         commit.source_inputs.insert(id, sources);
         // A deferred command line recomputes the parameter files;
@@ -16984,7 +16968,7 @@ impl Engine {
             let mut platforms: HashMap<Label, String> = HashMap::new();
             let mut stamped: HashMap<(String, String), crate::shared_path::SharedPath> =
                 HashMap::new();
-            for node in &mut nodes {
+            for node in nodes.iter_mut() {
                 if node.action.extra.owner.is_some() {
                     continue;
                 }
@@ -17304,7 +17288,7 @@ impl Engine {
                 || directory_lookup.contains(&crate::path_key::PathKey(real))
         };
         let none_may_fail = missing_lookup.is_empty() && directory_lookup.is_empty();
-        for node in &nodes {
+        for node in nodes.iter() {
             if none_may_fail
                 || source_inputs
                     .get(&node.action.id)
@@ -17365,7 +17349,7 @@ impl Engine {
             let mut failed: HashSet<String> = missing_nodes.into_iter().collect();
             loop {
                 let before = failed.len();
-                for node in &nodes {
+                for node in nodes.iter() {
                     if !failed.contains(&node.action.id)
                         && node
                             .all_dependencies()
@@ -17440,7 +17424,7 @@ impl Engine {
             });
         }
         self.bep_groups = bep_groups;
-        let built = (nodes, requested, aspect_reports, results);
+        let built = (nodes.into_vec(), requested, aspect_reports, results);
         if self.skip_teardown && !self.execute_build {
             // W7: the process exits right after this --nobuild command
             // (`set_skip_teardown`); the analysis and planning maps are
@@ -18392,11 +18376,11 @@ fn runfiles_input_group(
 struct ActionCommit<'a> {
     artifact_index: &'a mut ArtifactIndex,
     workspace_status: &'a mut Option<WorkspaceStatusPlan>,
-    nodes: &'a mut Vec<PlannedAction>,
+    nodes: &'a mut lowering::PlannedNodes,
     producers: &'a mut Producers,
     source_inputs: &'a mut BTreeMap<String, SourceInputs>,
-    client_environment: &'a std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
-    status_client_environment: &'a std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    client_environment: &'a ClientEnvironment,
+    status_client_environment: &'a ClientEnvironment,
     input_groups: &'a mut HashMap<u64, ExpandedTree>,
     listed_tree_actions: &'a mut usize,
 }
@@ -18423,14 +18407,25 @@ struct RunfilesPlanning<'a> {
     artifact_index: &'a mut ArtifactIndex,
     declared: &'a mut Declared,
     producers: &'a mut Producers,
-    nodes: &'a mut Vec<PlannedAction>,
+    nodes: &'a mut lowering::PlannedNodes,
     source_inputs: &'a mut BTreeMap<String, SourceInputs>,
     workspace_status: &'a mut Option<WorkspaceStatusPlan>,
-    client_environment: &'a std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
-    status_client_environment: &'a std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    client_environment: &'a ClientEnvironment,
+    status_client_environment: &'a ClientEnvironment,
 }
 
 impl RunfilesPlanning<'_> {
+    /// Place a native runfiles node lowered here (`None`: queued, placed in
+    /// commit order, crate::engine::lowering).
+    fn place(&mut self, lowered: Option<lowering::Lowered>) {
+        if let Some(lowering::Lowered::Node { planned, sources }) = lowered {
+            if let Some((id, sources)) = sources {
+                self.source_inputs.insert(id, sources);
+            }
+            self.nodes.push(*planned);
+        }
+    }
+
     /// The Artifact `file` resolves to ([`Engine::indexed_artifact`]).
     fn artifact(&mut self, engine: &Engine, file: &File) -> Result<Option<Artifact>, String> {
         engine.indexed_artifact(
@@ -18501,7 +18496,7 @@ impl Engine {
         precomputed: Option<RunfilesPrecomputed>,
         transitive: &BTreeSet<String>,
         action_owner: &str,
-        main_ignored: &IgnoredSubdirectories,
+        main_ignored: &Arc<IgnoredSubdirectories>,
         mut planning: RunfilesPlanning<'_>,
     ) -> Result<Option<RunfilesNodes>, String> {
         let Some(files_to_run) = &target.files_to_run else {
@@ -18584,6 +18579,7 @@ impl Engine {
             }
         }
         let entries: crate::action::RunfilesEntries = entries.into();
+        let inputs = Arc::new(inputs);
         let action = |id: &str, outputs: Vec<PathBuf>, transform| Action {
             id: id.to_owned(),
             command: String::new(),
@@ -18600,29 +18596,22 @@ impl Engine {
             },
             ..Action::default()
         };
-        // Native transforms inherit no client environment (crate::action_env).
-        let no_client_environment = std::cell::OnceCell::new();
         // SourceManifestAction: the input manifest.
         let input_manifest = suffixed_file(executable, ".runfiles_manifest");
         let manifest_artifact = if options.build_runfile_manifests {
             let id = format!("{action_owner}#runfiles_manifest");
-            let (planned, sources) = plan_action_sources(
-                action(
-                    &id,
-                    vec![PathBuf::from(&input_manifest.path)],
-                    crate::action::Transform::RunfilesManifest {
-                        entries: entries.clone(),
-                    },
-                ),
-                &inputs,
-                main_ignored,
-                &no_client_environment,
-                false,
-                Vec::new(),
-                None,
-            )?;
-            planning.source_inputs.insert(id.clone(), sources);
-            planning.nodes.push(planned);
+            let manifest = action(
+                &id,
+                vec![PathBuf::from(&input_manifest.path)],
+                crate::action::Transform::RunfilesManifest {
+                    entries: entries.clone(),
+                },
+            );
+            let (inputs, ignored) = (Arc::clone(&inputs), Arc::clone(main_ignored));
+            let lowered = self.lower(planning.nodes, move || {
+                lower_native_action(manifest, &inputs, &ignored)
+            })?;
+            planning.place(lowered);
             Some(planning.output(key, &id, &input_manifest)?)
         } else {
             None
@@ -18634,29 +18623,25 @@ impl Engine {
         let tree_id = format!("{action_owner}#runfiles_tree");
         let tree = match &manifest_artifact {
             Some(manifest) => {
-                let mut tree_inputs = inputs.clone();
+                let mut tree_inputs = Vec::with_capacity(inputs.len() + 2);
+                tree_inputs.extend(inputs.iter().cloned());
                 tree_inputs.push(manifest.clone());
                 tree_inputs.push(executable_artifact.clone());
-                let (planned, sources) = plan_action_sources(
-                    action(
-                        &tree_id,
-                        vec![PathBuf::from(&tree_file.path)],
-                        crate::action::Transform::RunfilesTree {
-                            entries,
-                            manifest: manifest.exec.to_path_buf(),
-                            executable: Some(executable_artifact.exec.to_path_buf()),
-                            create: options.enable_runfiles,
-                        },
-                    ),
-                    &tree_inputs,
-                    main_ignored,
-                    &no_client_environment,
-                    false,
-                    Vec::new(),
-                    None,
-                )?;
-                planning.source_inputs.insert(tree_id.clone(), sources);
-                planning.nodes.push(planned);
+                let tree = action(
+                    &tree_id,
+                    vec![PathBuf::from(&tree_file.path)],
+                    crate::action::Transform::RunfilesTree {
+                        entries,
+                        manifest: manifest.exec.to_path_buf(),
+                        executable: Some(executable_artifact.exec.to_path_buf()),
+                        create: options.enable_runfiles,
+                    },
+                );
+                let ignored = Arc::clone(main_ignored);
+                let lowered = self.lower(planning.nodes, move || {
+                    lower_native_action(tree, &tree_inputs, &ignored)
+                })?;
+                planning.place(lowered);
                 Some(planning.output(key, &tree_id, &tree_file)?)
             }
             None => None,
@@ -18718,12 +18703,10 @@ impl Engine {
     fn ensure_workspace_status(
         &self,
         plan: &mut Option<WorkspaceStatusPlan>,
-        nodes: &mut Vec<PlannedAction>,
+        nodes: &mut lowering::PlannedNodes,
         producers: &mut Producers,
-        #[allow(unused_variables)] client_environment: &std::cell::OnceCell<
-            BTreeMap<String, std::ffi::OsString>,
-        >,
-        status_client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+        #[allow(unused_variables)] client_environment: &ClientEnvironment,
+        status_client_environment: &ClientEnvironment,
         artifact_index: &mut ArtifactIndex,
     ) -> Result<[Artifact; 2], String> {
         if self.semantic_only() {
@@ -18741,8 +18724,8 @@ impl Engine {
             // of the status files still resolve their artifacts below
             // (ctx.info_file is an analysis-time File value).
             if plan.is_none() {
-                let client_env =
-                    status_client_environment.get_or_init(crate::action_env::client_environment);
+                let client_env = status_client_environment
+                    .get_or_init(|| Arc::new(crate::action_env::client_environment()));
                 let computed = self.workspace_status_computed(client_env).clone_status();
                 *plan = Some(WorkspaceStatusPlan {
                     computed,
@@ -18751,8 +18734,8 @@ impl Engine {
                 });
             }
         } else if plan.is_none() {
-            let client_env =
-                status_client_environment.get_or_init(crate::action_env::client_environment);
+            let client_env = status_client_environment
+                .get_or_init(|| Arc::new(crate::action_env::client_environment()));
             // The status is computed here, during planning, as before the
             // plan/execute split: the status command's stderr is the
             // build's stderr at this point, and build-info callbacks read
@@ -18845,10 +18828,10 @@ impl Engine {
         file: &File,
         artifact_index: &mut ArtifactIndex,
         workspace_status: &mut Option<WorkspaceStatusPlan>,
-        nodes: &mut Vec<PlannedAction>,
+        nodes: &mut lowering::PlannedNodes,
         producers: &mut Producers,
-        client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
-        status_client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+        client_environment: &ClientEnvironment,
+        status_client_environment: &ClientEnvironment,
     ) -> Result<Option<Artifact>, String> {
         if let Some(artifact) = artifact_index.get(file) {
             return Ok(Some(artifact.clone()));
@@ -19051,7 +19034,7 @@ fn plan_action(
     action: Action,
     inputs: Vec<Artifact>,
     main_ignored: &IgnoredSubdirectories,
-    client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    client_environment: &ClientEnvironment,
 ) -> Result<PlannedAction, String> {
     plan_listed_action(
         action,
@@ -19073,11 +19056,151 @@ fn plan_action(
 /// `inputs` ([`list_artifacts`]) and passed [`action::validate_structure`]
 /// so (the shared-group check of [`Engine::commit_action`]); resolving the
 /// inherited environment then changes nothing that check covers.
+/// The pure part of [`Engine::commit_action`] (P4, crate::engine::lowering):
+/// whether the action's tool runfiles groups stay shared — listing them
+/// could change nothing but the list (crate::scheduler::groups_apart): no
+/// entry would be dropped as a duplicate and the listed action validates
+/// exactly when its own part does — and the planned node. Groups that
+/// cannot stay shared are listed in the action where it is placed
+/// ([`Engine::commit_listed_action`]), as without sharing.
+fn lower_action(
+    listing: lowering::Listing,
+    groups: Vec<Arc<scheduler::InputGroup>>,
+    environment: Option<Arc<BTreeMap<String, std::ffi::OsString>>>,
+) -> Result<lowering::Lowered, String> {
+    lowering::test_failure(&listing.action.id)?;
+    let lowering::Listing {
+        mut action,
+        own,
+        runfiles_trees,
+        deferred,
+        owner,
+        main_ignored,
+        shared,
+    } = listing;
+    let client_environment = ClientEnvironment::new();
+    if let Some(environment) = environment {
+        let _ = client_environment.set(environment);
+    }
+    let shared_inputs = shared.as_ref().map(|(start, shared)| (*start, &**shared));
+    let shared_groups = !groups.is_empty()
+        && {
+            list_artifacts(&mut action, &own);
+            match shared_inputs {
+                // The shared inputs are checked once (SharedInputs): the
+                // action's own listing here, theirs from the memo. The
+                // planning below clears the listing.
+                Some((start, shared)) => {
+                    let end = start + shared.artifacts.len();
+                    let listed = std::mem::take(&mut action.inputs);
+                    action.inputs = listed[..start]
+                        .iter()
+                        .chain(&listed[end..])
+                        .cloned()
+                        .collect();
+                    let apart =
+                        scheduler::groups_apart(&action, &groups) && shared.apart_from(&groups);
+                    let valid = apart && shared.validate(&action);
+                    action.inputs = listed;
+                    debug_assert!(
+                        !apart || scheduler::groups_apart(&action, &groups),
+                        "internal error: the shared-input group check of {} differs from the full one",
+                        action.id
+                    );
+                    if valid {
+                        debug_assert!(
+                            action::validate_structure(&action).is_ok(),
+                            "internal error: the shared-input validation of {} differs from the full one",
+                            action.id
+                        );
+                        true
+                    } else {
+                        apart && action::validate_structure(&action).is_ok()
+                    }
+                }
+                None => {
+                    scheduler::groups_apart(&action, &groups)
+                        && action::validate_structure(&action).is_ok()
+                }
+            }
+        };
+    if shared_groups {
+        let id = action.id.clone();
+        let (mut planned, sources) = plan_action_sources(
+            action,
+            &own,
+            &main_ignored,
+            &client_environment,
+            true,
+            groups.clone(),
+            shared_inputs,
+        )?;
+        planned.groups = groups;
+        planned.deferred = deferred;
+        return Ok(lowering::Lowered::Node {
+            planned: Box::new(planned),
+            sources: Some((id, sources)),
+        });
+    }
+    if !groups.is_empty() {
+        // Listed where it is placed: its trees' entries resolve there.
+        return Ok(lowering::Lowered::Listing(Box::new(lowering::Listing {
+            action,
+            own,
+            runfiles_trees,
+            deferred,
+            owner,
+            main_ignored,
+            shared,
+        })));
+    }
+    let id = action.id.clone();
+    let (mut planned, sources) = plan_action_sources(
+        action,
+        &own,
+        &main_ignored,
+        &client_environment,
+        false,
+        Vec::new(),
+        shared_inputs,
+    )?;
+    planned.deferred = deferred;
+    Ok(lowering::Lowered::Node {
+        planned: Box::new(planned),
+        sources: Some((id, sources)),
+    })
+}
+
+/// The planned node of a native runfiles action (P4: lowered like a
+/// Starlark action's, crate::engine::lowering). Native transforms inherit
+/// no client environment (crate::action_env).
+fn lower_native_action(
+    action: Action,
+    inputs: &[Artifact],
+    main_ignored: &IgnoredSubdirectories,
+) -> Result<lowering::Lowered, String> {
+    lowering::test_failure(&action.id)?;
+    let id = action.id.clone();
+    let (planned, sources) = plan_action_sources(
+        action,
+        inputs,
+        main_ignored,
+        &ClientEnvironment::new(),
+        false,
+        Vec::new(),
+        None,
+    )?;
+    Ok(lowering::Lowered::Node {
+        planned: Box::new(planned),
+        sources: Some((id, sources)),
+    })
+}
+
 fn plan_action_sources(
     action: Action,
     inputs: &[Artifact],
     main_ignored: &IgnoredSubdirectories,
-    client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    client_environment: &ClientEnvironment,
     listed: bool,
     groups: Vec<Arc<scheduler::InputGroup>>,
     shared: Option<(usize, &SharedInputs)>,
@@ -19354,7 +19477,7 @@ fn plan_listed_action(
     mut action: Action,
     inputs: &[Artifact],
     main_ignored: &IgnoredSubdirectories,
-    client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    client_environment: &ClientEnvironment,
     listed: bool,
     shared: Option<(usize, &SharedInputs)>,
 ) -> Result<(PlannedAction, bool), String> {
@@ -19363,7 +19486,7 @@ fn plan_listed_action(
     if !action.extra.inherited_environment.is_empty() {
         action.extra.client_environment = crate::action_env::ActionEnvironment::resolve_inherited(
             &action.extra.inherited_environment,
-            client_environment.get_or_init(crate::action_env::client_environment),
+            client_environment.get_or_init(|| Arc::new(crate::action_env::client_environment())),
         );
     }
     if !listed {
@@ -19936,7 +20059,7 @@ mod tests {
             ("//p:b", "//p:b"),
             &mut producers,
             &mut ArtifactIndex::default(),
-            &mut Declared::new(),
+            &mut Declared::default(),
             crate::configuration::Configuration::default().id,
             |_| false,
         )
@@ -20038,7 +20161,7 @@ mod tests {
         engine.set_execute_build(false);
         let mut index = ArtifactIndex::default();
         let mut plan = None;
-        let (mut nodes, mut producers) = (Vec::new(), Producers::default());
+        let (mut nodes, mut producers) = (lowering::PlannedNodes::default(), Producers::default());
         let (client, status) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
         let mut lookup = |file: &File, index: &mut ArtifactIndex| {
             engine
@@ -20091,7 +20214,8 @@ mod tests {
                 embed_label: embed_label.to_owned(),
             });
             let mut index = ArtifactIndex::default();
-            let (mut nodes, mut producers) = (Vec::new(), Producers::default());
+            let (mut nodes, mut producers) =
+                (lowering::PlannedNodes::default(), Producers::default());
             let (client, status) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
             let planned = engine
                 .ensure_workspace_status(

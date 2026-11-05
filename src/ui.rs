@@ -246,15 +246,53 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// Hold `write` in this thread's deferred console, if one is open.
+thread_local! {
+    /// The writes held behind deferred action lowerings (P4,
+    /// crate::engine::lowering): below every [`DeferredConsole`] (an open
+    /// one holds its scope's writes itself; what it replays lands here).
+    static HELD: std::cell::RefCell<Option<Vec<Deferred>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Hold `write` in this thread's deferred console, if one is open, else
+/// behind the deferred lowerings, if any.
 fn defer(write: impl FnOnce() -> Deferred) -> bool {
-    DEFERRED.with(|deferred| match deferred.borrow_mut().as_mut() {
+    let mut write = Some(write);
+    let deferred = DEFERRED.with(|deferred| match deferred.borrow_mut().as_mut() {
         Some(held) => {
-            held.push(write());
+            held.push((write.take().expect("one write"))());
             true
         }
         None => false,
-    })
+    });
+    deferred
+        || HELD.with(|held| match held.borrow_mut().as_mut() {
+            Some(held) => {
+                held.push((write.take().expect("one write"))());
+                true
+            }
+            None => false,
+        })
+}
+
+/// Start holding this thread's writes behind deferred lowerings (outside
+/// every [`DeferredConsole`]); returns what was held since the last start.
+pub(crate) fn hold_restart() -> Vec<Deferred> {
+    HELD.with(|held| held.replace(Some(Vec::new())))
+        .unwrap_or_default()
+}
+
+/// Write `writes` held before what is held now (a queued block behind
+/// deferred lowerings): around the current hold, not into it.
+pub(crate) fn replay_before_held(writes: Vec<Deferred>) {
+    let held = HELD.with(|held| held.take());
+    replay(writes);
+    HELD.with(|slot| *slot.borrow_mut() = held);
+}
+
+/// Stop holding; returns what was held.
+pub(crate) fn hold_stop() -> Vec<Deferred> {
+    HELD.with(|held| held.take()).unwrap_or_default()
 }
 
 /// While alive, this thread's [`note`]s and [`emit`]s are held instead of
