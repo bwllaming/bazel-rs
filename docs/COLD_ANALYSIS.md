@@ -108,6 +108,58 @@ against the full one.
 shared_artifacts=…` (`//src/...`: 162 walks of 112,421 files, 32 shared
 input runs of 59,698 artifacts).
 
+## Rule implementations on analysis workers (P3)
+
+Design and determinism: docs/PARALLEL_ANALYSIS.md, "P3". In short: the
+coordinator still analyzes (phase 1), prepares and commits every target in
+plan order; a Starlark rule whose dependencies are committed is prepared
+ahead of its turn and its implementation — with the pure part of its
+runfiles support — runs on one of 8 workers; everything order-observable it
+would have written is applied at its turn. Beside it, the build's
+File → Artifact index (looked up per input, never iterated) is an
+`FxHashMap` instead of a `BTreeMap`.
+
+Same setup as above (private clone at `80d6724f3a`, repositories warm,
+`BAZEL_RS_SNAPSHOT=off`, `nice -n 10`, shared 64-core host; two runs each
+for `build`). Before: main `c92f6c08`; after: this branch.
+
+| command | before | after |
+|---|---|---|
+| `build --nobuild //src/...` wall | 82.0 / 79.7 s | **72.1 / 69.9 s** |
+| — CPU user + sys | 82.4 + 28.2 / 83.2 + 33.7 s | 90.4 + 32.9 / 87.0 + 31.5 s |
+| — peak RSS | 8,478 / 8,489 MB | 8,813 / 8,825 MB (+4%) |
+| — `plan.phase1_analysis_done` | 60.6 s | 55.3 s |
+| `test --nobuild //src/...` wall | 80.5 s | **70.9 s** |
+| — CPU user + sys, peak RSS | 83.4 + 35.4 s, 8,513 MB | 88.4 + 31.8 s, 8,778 MB |
+| CI `affected --base=HEAD^` wall | 82.2 s | **76.9 s** |
+| — CPU user + sys, peak RSS | 149.3 + 124.5 s, 7,246 MB | 158.7 + 120.9 s, 7,309 MB |
+
+`PERF-PARALLEL` (`build`): 22,715 of 38,757 implementations computed ahead
+on workers, 16,042 at their turn on the coordinator, 0 aborted or
+invalidated prepares, 0.7 s waiting for workers. The extra peak RSS is the
+workers' heaps and the up to 16 prepared snapshots in flight (jemalloc
+arenas per thread).
+
+Outputs: the `BAZEL_RS_DUMP_ACTIONS` dump of `build --nobuild` and `test
+--nobuild //src/...` (6,483,434 lines) and the rest of stderr are identical
+to main's — also at `--loading_phase_threads=1` and with 32 workers and
+5 ms worker jitter; `aquery` (text and `--output=summary`) of
+`//src/beyondwork.ai/tools/oauth2token/...`; `affected`'s output and every
+`--keep_digests` file.
+
+**Why only ~12%.** The coordinator stays busy for the whole run: a sampled
+profile of this revision's coordinator (66 s) is commits 27 s, the
+implementations computed at their turn 14 s, phase-1 analysis 11 s,
+prepares 10 s. An implementation can start only when its dependencies are
+committed, and in phase 1's post-order the last dependency of most targets
+commits right before them (a `py_library` after its deps' subtrees): 16,042
+of them find nothing to overlap with. Computing those on a worker instead
+only adds the hand-off latency (measured: 91 s, the coordinator waited
+29 s). With commits in plan order on one thread, the floor is the
+coordinator's own work (~55 s); genuine's 10.7 s comes from Skyframe
+running whole configured-target functions — prepare, implementation and
+action registration — concurrently, ordering nothing but their results.
+
 ## What remains
 
 Profile of this revision, phase 1 (~59 s on the coordinator): Starlark rule
@@ -116,12 +168,20 @@ analysis (`analyze`, toolchain resolution, `config_conditions`), with ~12 s
 of `BTreeMap` lookups (labels, package ids, files, configured-target keys,
 output paths) spread over all of them.
 
-- **Parallel rule implementations (P3).** `compute_target` is already a pure
-  function of a `Send` snapshot (docs/PARALLEL_ANALYSIS.md, P1); computing the
-  ready targets of a flush on workers while the coordinator commits in plan
-  order would take most of the ~20 s of compute off the critical path.
+- **Per-target commits off the coordinator.** P3 (above) moved the
+  implementations whose dependencies commit early; what bounds the wall
+  time now is one thread committing every target in plan order. Next: make
+  a target's commit a function of its own result and its dependencies'
+  committed results (its actions, artifact registrations, runfiles nodes —
+  conflicts and shared actions decided by owner order at the merge), run
+  prepare + implementation + commit per target on workers in dependency
+  order, and merge the per-target results in plan order (the action order,
+  first registration, errors and prints all follow from that merge).
 - **Shared input vectors.** Every PyCompile node still lists the runtime's
   1,657 inputs in its own vector (26 KB per action); a shared input run held
   by reference, like the runfiles groups (PA-1) but in the middle of the
   input order, would shrink the plan and the commit further.
-- Hash indexes beside the hot `BTreeMap`s whose order is never observed.
+- Hash indexes beside the hot `BTreeMap`s whose order is never observed
+  (done for the File → Artifact index; the `ConfiguredTargetKey`-keyed
+  planning maps cost ~3 s of lookups, but some are iterated through
+  parameters under other names and need an audit first).

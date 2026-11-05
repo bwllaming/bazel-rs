@@ -326,10 +326,18 @@ Done since the last increment recorded under "History", one line each:
       `affected --base=HEAD^` 179 → 81 s; memoized depset walks and the
       PyCompile runtime inputs' checks done once per build, action dumps and
       affected digests byte-identical.
-- [ ] Analysis on a snapshot miss, remaining: one coordinator thread (genuine
-      spreads 279 s of CPU over 64 cores); parallel rule implementations (P3),
-      shared input vectors for PyCompile-style actions, hash indexes beside
-      the hot `BTreeMap`s (docs/COLD_ANALYSIS.md, "What remains").
+- [x] Rule implementations on analysis workers (P3, docs/PARALLEL_ANALYSIS.md):
+      commits stay in plan order on the coordinator, implementations whose
+      dependencies are committed run ahead on 8 workers; `build --nobuild
+      //src/...` 81 → 71 s, `test --nobuild` 80.5 → 70.9 s, CI `affected`
+      82 → 77 s, peak RSS +4%; action dumps, aquery, affected digests
+      identical (docs/COLD_ANALYSIS.md, "Rule implementations on analysis
+      workers").
+- [ ] Analysis on a snapshot miss, remaining: the coordinator commits every
+      target in plan order (~55 s of its own work; genuine 10.7 s): per-target
+      commits on workers merged in plan order, shared input vectors for
+      PyCompile-style actions, hash indexes beside the other hot `BTreeMap`s
+      (docs/COLD_ANALYSIS.md, "What remains").
 - [x] CI `affected` (PR 13252 sequence affected/query/build, private clone):
       cold 690 → 501 s, lukewarm 467 → 287 s, warm 379 → 151 s: both revisions
       at once by default when memory allows, the faster commit, and the `build`

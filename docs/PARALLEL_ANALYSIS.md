@@ -607,6 +607,91 @@ and one pre-existing thread-dependent lockfile line (present at base
 too), exit 0; stage counts identical, values run-dependent as expected.
 
 
+## P3 — rule implementations on analysis workers (`src/engine/parallel.rs`)
+
+Phase 2 (and every phase-1 `plan_pending` flush) walks the plan in its
+order and **commits every target in that order on the coordinator**, as the
+sequential engine does: every planning-state mutation and every console
+write of a planned target happens at its turn, so the action graph, the
+first error, `--keep_going`'s errors and `print()` lines are the
+sequential ones by construction. What moves is *when and where* a Starlark
+rule's implementation runs: `Engine::compute_target` is a pure function of
+an owned `Send` snapshot (P1), and frozen Starlark values are `Sync`
+(starlark-rust's `HeapSyncable` bound), so a worker evaluates the
+implementation in its own heap/`Module`/`Evaluator` against the
+dependencies' frozen providers.
+
+- **Ahead of its turn.** A plan entry is *classified* once when it enters
+  the horizon (4,096 entries past the turn): a compatible `RuleKind::Custom`
+  rule without attribute aspects, whose every dependency prepare views
+  (`Engine::custom_dependencies` — the code prepare itself runs, factored
+  out — plus the resolved toolchain implementations; an output file maps to
+  its generating rule) is waited for until it is committed (`dry` holds the
+  key: its entries are final; delegations wake their requested keys). A
+  ready entry is prepared on the coordinator (dependency views, toolchain
+  contexts, ctx surface) and its compute dispatched; at most 2 × workers are
+  in flight. Its turn then replays what it held and commits.
+- **At its turn.** An entry not prepared ahead is prepared at its turn and
+  computed inline on the coordinator (handing it to a worker only adds
+  latency: the following entries mostly depend on it), while the workers
+  compute the entries prepared ahead.
+- **What is held** (applied at the turn, in the sequential order): console
+  notes (`ui::DeferredConsole`), what the work observed for the analysis
+  snapshot (`observed_fs::unit_scope` → `commit`), the repository roots it
+  obtained (`UnitRoots` → `note_committed_roots`), and the incremental
+  tracker's events (`Engine::track_defer_start`; replayed under the target's
+  planning frame with the scope context — shared/pattern/suite depth — each
+  was recorded in).
+- **What work off its turn never does.** It runs in no-demand + reuse-only
+  mode (an unfetched repository raises the sentinel; a per-thread counter
+  catches one a caller swallowed), and analyzing a configured target,
+  analyzing a source or loading a package aborts it (`Engine::ahead_abort`,
+  sticky). An aborted prepare is done again at the turn (what it observed is
+  applied there: a memo it filled is a hit then); a compute that raised a
+  sentinel runs again inline at the commit (P1's retry). A prepare whose
+  configuration's target platform a commit resolved after it (its ctx
+  surface saw it deferred) is redone at the turn. The worker also computes
+  the pure part of the target's runfiles support (repo mapping manifest
+  content, runfiles tree mapping; `RunfilesPrecomputed`), unless that raised
+  a sentinel.
+- **Pool.** Up to 8 workers (16 MiB stacks; `BAZEL_RS_ANALYSIS_WORKERS`
+  overrides, at most `--loading_phase_threads`), started by the first compute dispatched to them (a build where nothing is ready ahead starts none),
+  stopped at the end of phase 2.
+  `--loading_phase_threads=1` and `BAZEL_RS_DEBUG_NO_PARALLEL_ANALYSIS` are
+  the sequential engine; `BAZEL_RS_ANALYSIS_JITTER=<ms>` (test hook) delays
+  each worker compute reproducibly. `BAZEL_RS_TIMING=1` prints
+  `PERF-PARALLEL workers= turn= ahead= aborted= invalidated= never= failed=
+  recomputed= wait= lost_notes=`.
+
+**Error order** is the commit order (plan order), as before: a prepare
+ahead that fails keeps its error for its turn; a failing compute's error is
+reported by its commit; with `--keep_going` an entry whose dependency
+failed is skipped at its turn and what was held for it is dropped.
+
+**Residuals.** Work ahead registers its dependencies' artifacts in the
+artifact index (and builds dependency views) before the commits between it
+and its turn; an earlier target whose action names a source File it never
+reached would then resolve it instead of failing with `input has no
+declared artifact` (an internal-consistency error never seen on ~/code).
+Notes printed by discarded work are not replayed (`lost_notes`, 0 on
+~/code). Peak RSS grows with the workers' heaps and in-flight snapshots
+(docs/COLD_ANALYSIS.md).
+
+**Determinism evidence.** `tests/parallel_rule_implementations.rs`: a DAG
+of 48 Starlark targets over six packages (chains, diamonds, cross-package
+edges; implementations that print, burn varying CPU, write files and run
+actions over their dependencies' depsets) — `build --nobuild` with the full
+`BAZEL_RS_DUMP_ACTIONS` dump, an executing build, two independent failing
+implementations with and without `--keep_going`, a dependency cycle — at
+threads 2/8/32 and 8/32 with 25/40 ms worker jitter, and threads 8 with the
+pipeline off: exit code, stdout and stderr byte-identical to threads 1; the
+analysis snapshot a pipelined run records replays the sequential run's
+output. On ~/code (`//src/...`, `BAZEL_RS_SNAPSHOT=off`): the action dump of
+`build --nobuild` and `test --nobuild` (6,483,434 lines) and the rest of
+stderr identical to main's, also at threads 1 and with 32 workers and 5 ms jitter; `aquery`
+(text and summary) identical; the CI `affected` output and both digest
+files identical.
+
 ## Phase-1 prefetch (W6, `src/prefetch.rs`)
 
 P2 parallelized only the packages a target pattern names. On a warm
