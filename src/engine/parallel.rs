@@ -351,7 +351,8 @@ pub(super) fn report(workers: usize) {
     }
     let stats = stats();
     let get = |counter: &AtomicU64| counter.load(std::sync::atomic::Ordering::Relaxed);
-    eprintln!(
+    // Diagnostics, outside any stderr capture (crate::snapshot::diag).
+    crate::snapshot::diag::line_fmt(format_args!(
         "PERF-PARALLEL workers={workers} turn={} ahead={} aborted={} invalidated={} never={} failed={} recomputed={} wait={:.3}s lost_notes={}",
         get(&stats.turn),
         get(&stats.ahead),
@@ -362,7 +363,7 @@ pub(super) fn report(workers: usize) {
         get(&stats.recomputed),
         get(&stats.waited_us) as f64 / 1e6,
         get(&stats.lost_notes),
-    );
+    ));
 }
 
 /// The `BAZEL_RS_ANALYSIS_JITTER` hidden test hook: each compute on a
@@ -370,6 +371,7 @@ pub(super) fn report(workers: usize) {
 fn jitter_millis() -> u64 {
     static JITTER: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *JITTER.get_or_init(|| {
+        // snapshot-unrecorded: a hidden test hook delaying worker computes; no analysis result depends on it.
         std::env::var("BAZEL_RS_ANALYSIS_JITTER")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -386,23 +388,30 @@ impl Engine {
     }
 
     /// Whether phase 2 runs rule implementations on workers.
-    fn pipelining(&mut self) -> bool {
-        if self.loading_phase_threads <= 1
-            || std::env::var_os("BAZEL_RS_DEBUG_NO_PARALLEL_ANALYSIS").is_some()
-        {
-            return false;
-        }
+    fn pipelining(&self) -> bool {
+        self.loading_phase_threads > 1
+            // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
+            && std::env::var_os("BAZEL_RS_DEBUG_NO_PARALLEL_ANALYSIS").is_none()
+    }
+
+    /// The number of analysis workers: the coordinator prepares and
+    /// commits, a few workers keep it busy (computes are about a third of
+    /// phase 2 on ~/code).
+    fn analysis_workers(&self) -> usize {
+        // snapshot-unrecorded: a diagnostics override of the scheduling only; the output is the same either way.
+        std::env::var("BAZEL_RS_ANALYSIS_WORKERS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(8)
+            .clamp(1, self.loading_phase_threads.max(1))
+    }
+
+    /// Start the workers on the first compute dispatched to them (a small
+    /// build, where nothing is ever ready ahead, starts none).
+    fn ensure_analysis_pool(&mut self) {
         if self.analysis_pool.is_none() {
-            // The coordinator prepares and commits: a few workers keep it
-            // busy (computes are ~1/3 of phase 2 on ~/code).
-            let size = std::env::var("BAZEL_RS_ANALYSIS_WORKERS")
-                .ok()
-                .and_then(|value| value.parse::<usize>().ok())
-                .unwrap_or(8)
-                .clamp(1, self.loading_phase_threads.max(1));
-            self.analysis_pool = AnalysisPool::start(size);
+            self.analysis_pool = AnalysisPool::start(self.analysis_workers());
         }
-        self.analysis_pool.is_some()
     }
 
     /// Stop the analysis workers (the end of a build's planning).
@@ -424,11 +433,7 @@ impl Engine {
         if !self.pipelining() {
             return self.plan_targets_timed(state, configured);
         }
-        let capacity = self
-            .analysis_pool
-            .as_ref()
-            .map_or(1, |pool| pool.size * 2)
-            .max(2);
+        let capacity = (self.analysis_workers() * 2).max(2);
         let mut pipe = Pipeline {
             scanned: state.done,
             capacity,
@@ -1061,6 +1066,7 @@ impl Engine {
             Ok(prepared) => match PreparedParts::split(prepared) {
                 Some((parts, snapshot)) => {
                     bump(&stats().ahead, 1);
+                    self.ensure_analysis_pool();
                     let pending = self.dispatch(snapshot, parts.transitive.clone(), index, class);
                     Some(Ahead::Computing {
                         parts: Box::new(parts),

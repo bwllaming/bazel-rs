@@ -7245,7 +7245,9 @@ impl Engine {
         }
         errors.extend(analysis::empty_attribute_errors(rule, custom));
         // Recorded by the target's first analysis pass (Self::analyze).
-        errors.extend(self.deferred_duplicates.remove(key).ok_or_else(|| {
+        // Read, not taken: a prepare ahead of its turn that is redone at
+        // the turn (P3) checks again.
+        errors.extend(self.deferred_duplicates.get(key).cloned().ok_or_else(|| {
             format!("internal error: {shown} has no recorded duplicate-label check")
         })?);
         let mut seen = BTreeSet::new();
