@@ -1030,13 +1030,17 @@ crash-safe; `execute()` children run in their own process group, as on the
 sequential path).
 
 **Downloads.** Like HttpDownloader's semaphore (java:60-69, 184-209), every
-mirror attempt of the downloader holds one of 8 process-wide permits
+mirror attempt of the downloader holds a permit, so the fetch workers'
+transfers — and module extensions' non-blocking downloads
+(docs/MODULE_EXTENSIONS.md) — are bounded, while their extraction and
+`execute()` calls (a wheel's installer) run beside them. Genuine's 8
 (`--http_max_parallel_downloads`' default; the option is accepted and
-ignored), so the fetch workers' transfers — and module extensions'
-non-blocking downloads (docs/MODULE_EXTENSIONS.md) — never exceed it, while
-their extraction and `execute()` calls (a wheel's installer) run beside them.
-Measured (cold `build --nobuild //src/python:bworker_env`, shared host): the
-284 wheel repositories took ~22 s with 8 workers, ~16 s with 32.
+ignored) are 8 per host here, under a total of 16, and a transfer someone
+waits for — the coordinator's, a module extension's it evaluates, a
+speculation's the coordinator waits for — has 4 reserve permits and goes
+first (docs/COLD_FETCH.md). Measured (cold `build --nobuild
+//src/python:bworker_env`, shared host): the 284 wheel repositories took
+~22 s with 8 workers, ~16 s with 32.
 
 **Intended differences.** Repositories the build needed but did not reach
 because of an earlier failure may be published (as genuine Bazel's

@@ -106,6 +106,14 @@ checksum" and recorded like `RegistryFileDownloadEvent` (`:157-163`).
   requests and follows registry fallback order (`ModuleFileFunction.java:820-855`).
   Results, including errors, are consumed in the original sequential order, so
   diagnostics stay deterministic.
+- Before discovery, every `MODULE.bazel` and `source.json` the lockfile names
+  with a checksum that neither cache holds is fetched at once (32 at a time)
+  into the content-addressed cache only: nothing is memoized or recorded, a
+  transfer whose bytes do not match the checksum is dropped, and the
+  sequential reads then find the files by checksum as on a warm cache
+  (`RegistrySession::warm_known_files`; docs/COLD_FETCH.md). Discovery itself
+  still reads a horizon at a time; a lockfile entry discovery no longer reads
+  costs one unused transfer. `BAZEL_RS_DEBUG_NO_REGISTRY_WARM` switches it off.
 
 ## Module extensions and facts (N52)
 

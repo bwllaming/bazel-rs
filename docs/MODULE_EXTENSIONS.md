@@ -156,7 +156,10 @@ repository fetch's cancellation reaches its transfers.
 <thread> <kind> <name>` line per module extension evaluation (`extension`,
 by group), repository materialization (`executed`, `reused`), `execute()`
 subprocess and download (`download`, `download-nonblocking`: the call, not
-the transfer), on the diagnostics stream, relative to the process start (`main.start`).
+the transfer; `transfer`: one mirror attempt with its permit held), registry
+file request (`registry`), module resolution (`resolve`) and the embedded
+`@bazel_tools` tree (`builtin`), on the diagnostics stream, relative to the
+process start (`main.start`).
 On ~/code's cold bworker_env build it showed the pattern-loading span
 (module extensions) to be rules_python's `pip` (24 of 30 s: 13 s sequential
 Simple-API round trips, 3 s interpreter download, the rest Starlark), and

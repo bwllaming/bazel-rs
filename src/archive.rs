@@ -37,7 +37,7 @@
 //! modes are the member's mode with the owner-read bit (`mode | 0400`) and
 //! atime/mtime are the member's timestamp.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, Cursor, Read, Seek};
@@ -209,16 +209,30 @@ fn slow_decoder(archive_type: &str) -> Option<&'static str> {
     }
 }
 
-/// The decoded tar stream of the last large slow-to-decode archive this
-/// process extracted, keyed by the decoder and the SHA-256 of the
+/// The decoded tar stream of the last large slow-to-decode archive each
+/// thread extracted (until [`release_decoded`] at the end of the repository
+/// rule executing there), keyed by the decoder and the SHA-256 of the
 /// compressed bytes: a repository rule extracting the same archive again
 /// (hermetic_cc_toolchain's `zig_config` calls `download_and_extract` on
 /// the same 45 MB tar.xz twice, as genuine does too; the xz decode is
 /// 2.7 s of each) reads the tar from it instead of decoding again. The
 /// entries, their order and every check are the tar extraction's own; only
 /// decompression is skipped. An unnamed temporary file (the OS frees it at
-/// exit); one entry.
-static DECODED: std::sync::Mutex<Option<Decoded>> = std::sync::Mutex::new(None);
+/// exit); one entry per thread, so concurrent fetch workers never evict
+/// each other's.
+static DECODED: std::sync::Mutex<Option<HashMap<std::thread::ThreadId, Decoded>>> =
+    std::sync::Mutex::new(None);
+
+/// Drop this thread's kept decoded stream ([`DECODED`]): its repository
+/// rule finished.
+pub(crate) fn release_decoded() {
+    let taken = DECODED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_mut()
+        .and_then(|kept| kept.remove(&std::thread::current().id()));
+    drop(taken);
+}
 
 struct Decoded {
     kind: &'static str,
@@ -242,10 +256,12 @@ fn extract_slow_decoded(
         file.rewind().map_err(|e| format!("read archive: {e}"))?;
         hasher.finalize().into()
     };
+    let thread = std::thread::current().id();
     let cached = DECODED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
+        .and_then(|kept| kept.get(&thread))
         .filter(|decoded| decoded.kind == kind && decoded.digest == digest)
         .map(|decoded| decoded.tar.clone());
     if let Some(tar) = cached {
@@ -282,13 +298,18 @@ fn extract_slow_decoded(
         Some((&tee, &complete)),
     );
     if result.is_ok() && complete.load(std::sync::atomic::Ordering::Acquire) {
-        *DECODED
+        DECODED
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Decoded {
-            kind,
-            digest,
-            tar: std::sync::Arc::new(tee),
-        });
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(HashMap::new)
+            .insert(
+                thread,
+                Decoded {
+                    kind,
+                    digest,
+                    tar: std::sync::Arc::new(tee),
+                },
+            );
     }
     result
 }
@@ -3219,9 +3240,11 @@ mod tests {
                 .lock()
                 .unwrap()
                 .as_ref()
+                .and_then(|kept| kept.get(&std::thread::current().id()))
                 .is_some_and(|decoded| decoded.digest == digest),
             "a failed decode keeps nothing"
         );
+        release_decoded();
     }
 
     #[test]

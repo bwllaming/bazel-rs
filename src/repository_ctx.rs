@@ -5017,6 +5017,15 @@ fn execute_with(
     // What the rule watches are this repository's recorded inputs
     // (crate::snapshot::incremental).
     let _owner = crate::observed_fs::repository_owner(Some(canonical_name));
+    // The decoded tar stream a repeated extraction reuses lives as long as
+    // the rule (crate::archive's DECODED).
+    struct ReleaseDecoded;
+    impl Drop for ReleaseDecoded {
+        fn drop(&mut self) {
+            crate::archive::release_decoded();
+        }
+    }
+    let _decoded = ReleaseDecoded;
     let run = || -> anyhow::Result<ExecutedRepository> {
         ensure!(
             canonical_name.is_ascii() && original_name.is_ascii(),
