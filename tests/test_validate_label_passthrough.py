@@ -189,7 +189,7 @@ def synthetic_report(reference_only=False, config_prefix='unit-cpu-fastbuild'):
             row['stdout'] = suite.blob(((suite.OFFICIAL_COMMIT if engine == 'official' else 'b' * 40) + '\n').encode() if verb == 'head' else b'')
             row['result'] = suite.auxiliary_result(row, step, pins)
         elif case == 'version':
-            row['stdout'] = suite.blob(b'Build label: 9.3.0\n' if engine == 'reference' else b'bazel-rs 0.4.11 (experimental; compatibility target Bazel 9.3.1)\n')
+            row['stdout'] = suite.blob(b'Build label: 9.3.0\n' if engine == 'reference' else b'bazel-rs 0.4.12 (experimental; compatibility target Bazel 9.3.1)\n')
             row['result'] = suite.auxiliary_result(row, step, pins)
         else:
             row['inputs_before'] = row['inputs_after'] = suite.inputs(case)
