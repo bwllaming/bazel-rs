@@ -352,7 +352,9 @@ Done since the last increment recorded under "History", one line each:
       a partial hit (499 of 552) plans 53 base targets; output identical.
       Modes `off|read|readwrite` (PR jobs `read`), head digests from a clean
       worktree, a key epoch, OS/arch/LFS in the key, no writes after a failed
-      submodule update.
+      submodule update. After 0.4.12: location-independent keys (0.4.12 keyed
+      per-runner `PATH` through `test:replay --test_env=PATH`, so each CI
+      runner missed), `BAZEL_RS_AFFECTED_KEY_DEBUG=1`.
 - [ ] Lukewarm `affected`: a requirements bump re-executes every wheel
       repository of the `pip` extension group (~270–500 executions, ~25 s per
       planning) and re-evaluates `pip`, so the head is not saved for the build.

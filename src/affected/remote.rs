@@ -8,9 +8,9 @@
 //! [`super::remote_base_key`]) covers its commit's tree, the
 //! workspace's directory in it, this binary, the command, options and
 //! patterns, the client state outside the tree that the planning reads
-//! (OS and architecture, LFS smudging, rc files outside the workspace, the
-//! variables an rc or command-line option names for inheritance) and the
-//! epoch. An entry's Action Cache key is the
+//! (OS and architecture, LFS smudging, the options of rc files outside the
+//! workspace) and the epoch — none of it by location (§8.11, "Location
+//! independence"). An entry's Action Cache key is the
 //! sha256 of the framed bytes `bazel-rs-affected-digest-v1`, the base key
 //! and the label — no digest of any `Action`, so genuine Bazel never looks
 //! it up. Its ActionResult has one output file, [`RECORD_PATH`], whose
@@ -493,32 +493,138 @@ impl HostState {
     }
 }
 
-/// The client state outside the tree that a planning reads: the rc files
-/// outside the workspace `root` (system, home, `$BAZELRC`, `--bazelrc` and
-/// their imports, by path and contents), and the values of the client
-/// variables that an rc or command-line `--action_env`, `--host_action_env`,
-/// `--test_env` or `--repo_env` names without a value (inherited), the
-/// workspace's location in them normalized. (The target digests key an
-/// inherited variable by name only; the remote entries are shared between
-/// machines, so its value is keyed here. The rest of the client
-/// environment is not: `PATH` holds per-runner paths on ~/code's CI.)
+/// rc options that change no target digest, left out of
+/// [`environment_key`] (an outer rc file names per-runner caches): the
+/// caches' locations and policies, console and progress output, resource
+/// limits, report files and the remote cache's transport. Names without
+/// the leading `--` (and `no` for booleans).
+const UNKEYED_RC_OPTIONS: &[&str] = &[
+    "repository_cache",
+    "repo_contents_cache",
+    "experimental_repository_cache_hardlinks",
+    "disk_cache",
+    "experimental_disk_cache_gc_idle_delay",
+    "experimental_disk_cache_gc_max_age",
+    "experimental_disk_cache_gc_max_size",
+    "announce_rc",
+    "color",
+    "curses",
+    "show_progress",
+    "show_progress_rate_limit",
+    "progress_report_interval",
+    "terminal_columns",
+    "ui_event_filters",
+    "ui_actions_shown",
+    "show_timestamps",
+    "verbose_failures",
+    "jobs",
+    "loading_phase_threads",
+    "local_resources",
+    "local_cpu_resources",
+    "local_ram_resources",
+    "keep_going",
+    "build_event_json_file",
+    "build_event_text_file",
+    "build_event_binary_file",
+    "bes_backend",
+    "bes_results_url",
+    "bes_header",
+    "bes_timeout",
+    "profile",
+    "memory_profile",
+    "execution_log_json_file",
+    "execution_log_binary_file",
+    "execution_log_compact_file",
+    "remote_download_outputs",
+    "remote_download_minimal",
+    "remote_download_toplevel",
+    "remote_download_all",
+    "remote_download_regex",
+];
+
+/// Whether an rc option (`--name[=value]`, `--noname`) is
+/// [`UNKEYED_RC_OPTIONS`] or one of the remote cache's transport options.
+fn unkeyed_rc_option(option: &str) -> bool {
+    let Some(name) = option.strip_prefix("--") else {
+        return false;
+    };
+    let name = name.split_once('=').map_or(name, |(name, _)| name);
+    let known = |name: &str| {
+        UNKEYED_RC_OPTIONS.contains(&name)
+            || super::TRANSPORT_VALUE_OPTIONS.contains(&name)
+            || super::TRANSPORT_BOOLEAN_OPTIONS.contains(&name)
+    };
+    known(name) || name.strip_prefix("no").is_some_and(known)
+}
+
+/// [`environment_key`] and what it covered (`BAZEL_RS_AFFECTED_KEY_DEBUG`).
+pub(super) struct EnvironmentKey {
+    pub key: String,
+    /// One line per component: what, and its digest (never a value: rc
+    /// options and variables may hold secrets).
+    pub parts: Vec<String>,
+}
+
+fn short(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes).into())[..16].to_owned()
+}
+
+/// The client state outside the tree that a planning reads, independent of
+/// where the checkout, the cache and the rc files lie:
+///
+/// * the host: OS, architecture, LFS smudging ([`HostState`]; the filter
+///   configuration with the workspace's location normalized);
+/// * the options of the rc files outside the workspace `root` (system,
+///   home, `$BAZELRC`, `--bazelrc` and their imports), by command and
+///   option text with the workspace's location normalized — not by path,
+///   and without the options that change no digest ([`UNKEYED_RC_OPTIONS`],
+///   the transport options: a runner's `~/.bazelrc` names its own
+///   `--repository_cache`). The workspace's own rc files are the tree's;
+///
+/// Client variables are not keyed: the target digests key an inherited
+/// variable (`--action_env=NAME`, `--test_env=NAME`) by name only, so a
+/// reader computes the same head digests whatever its values, and ~/code's
+/// CI holds per-runner paths in them (`PATH`, `KUBECONFIG` under
+/// `test:replay --test_env=...`, exported by direnv). A variable a
+/// repository rule reads (`--repo_env=NAME`) reaches the digests through
+/// the repository's contents.
 pub(super) fn environment_key(
     binary: &Path,
     startup: &[String],
     root: &Path,
-    forwarded: &[String],
     host: &HostState,
-) -> String {
+) -> EnvironmentKey {
+    let root_bytes = root.as_os_str().as_encoded_bytes();
+    let inside = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let inside_bytes = inside.as_os_str().as_encoded_bytes().to_vec();
+    // The workspace's location, as given and canonical, is no input.
+    let relative = |bytes: &[u8]| -> Vec<u8> {
+        super::normalized(&super::normalized(bytes, root_bytes), &inside_bytes)
+    };
     let mut hash = Sha256::new();
-    frame(&mut hash, b"environment-v2");
-    frame(&mut hash, host.os.as_bytes());
-    frame(&mut hash, host.arch.as_bytes());
-    match &host.lfs_skip_smudge {
-        Some(value) => frame(&mut hash, format!("lfs-skip-smudge={value}").as_bytes()),
-        None => frame(&mut hash, b"lfs-skip-smudge unset"),
+    let mut parts = Vec::new();
+    frame(&mut hash, b"environment-v4");
+    let lfs = match &host.lfs_skip_smudge {
+        Some(value) => format!("GIT_LFS_SKIP_SMUDGE={value}"),
+        None => "GIT_LFS_SKIP_SMUDGE unset".to_owned(),
+    };
+    for value in [&host.os, &host.arch, &lfs] {
+        frame(&mut hash, value.as_bytes());
     }
     frame(&mut hash, &[u8::from(host.lfs_installed)]);
-    frame(&mut hash, host.filters.as_bytes());
+    let filters = relative(host.filters.as_bytes());
+    frame(&mut hash, &filters);
+    parts.push(format!(
+        "host {} {} {lfs} git-lfs={} filters={}",
+        host.os,
+        host.arch,
+        if host.lfs_installed {
+            "installed"
+        } else {
+            "absent"
+        },
+        short(&filters)
+    ));
     let var = |name: &str| std::env::var(name).unwrap_or_default();
     let env = crate::bazelrc::ClientEnv {
         cwd: root.to_string_lossy().into_owned(),
@@ -535,79 +641,52 @@ pub(super) fn environment_key(
         startup_args: startup.to_vec(),
         ..Default::default()
     };
-    let mut options: Vec<String> = Vec::new();
     if !crate::bazelrc::search_nullary(startup, "ignore_all_rc_files", false) {
         match crate::bazelrc::read_rc_files(&line, &env, &mut Vec::new()) {
             Ok(files) => {
-                let inside = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-                let mut paths: Vec<&String> = files
-                    .iter()
-                    .flat_map(|file| &file.canonical_source_paths)
-                    .filter(|path| !Path::new(path).starts_with(&inside))
-                    .collect();
-                paths.sort();
-                paths.dedup();
-                for path in paths {
-                    frame(&mut hash, path.as_bytes());
-                    match std::fs::read(path) {
-                        Ok(bytes) => frame(&mut hash, &bytes),
-                        Err(error) => frame(&mut hash, error.to_string().as_bytes()),
+                let mut kept = 0usize;
+                let mut dropped = 0usize;
+                for option in files.iter().flat_map(|file| &file.options) {
+                    if Path::new(&option.source).starts_with(&inside) {
+                        continue;
                     }
+                    if unkeyed_rc_option(&option.option) {
+                        dropped += 1;
+                        continue;
+                    }
+                    kept += 1;
+                    let text = relative(option.option.as_bytes());
+                    frame(&mut hash, b"rc");
+                    frame(&mut hash, option.command.as_bytes());
+                    frame(&mut hash, &text);
+                    let name = option
+                        .option
+                        .split_once('=')
+                        .map_or(option.option.as_str(), |(name, _)| name);
+                    parts.push(format!(
+                        "rc {}:{} {} {name} {}",
+                        option.source,
+                        option.line,
+                        option.command,
+                        short(&text)
+                    ));
                 }
-                options.extend(
-                    files
-                        .iter()
-                        .flat_map(|file| &file.options)
-                        .map(|option| option.option.clone()),
-                );
+                parts.push(format!(
+                    "rc outside the workspace: {kept} option(s) keyed, {dropped} unkeyed"
+                ));
             }
-            Err(error) => frame(&mut hash, error.as_bytes()),
-        }
-    }
-    options.extend(forwarded.iter().cloned());
-    let mut names: Vec<String> = Vec::new();
-    let mut at = 0;
-    while at < options.len() {
-        let option = &options[at];
-        at += 1;
-        for name in ["action_env", "host_action_env", "test_env", "repo_env"] {
-            let flag = format!("--{name}");
-            let value = if *option == flag {
-                options.get(at).cloned()
-            } else {
-                option
-                    .strip_prefix(&flag)
-                    .and_then(|rest| rest.strip_prefix('='))
-                    .map(str::to_owned)
-            };
-            if let Some(value) = value
-                && !value.contains('=')
-            {
-                names.push(value);
+            Err(error) => {
+                let text = relative(error.as_bytes());
+                frame(&mut hash, b"rc error");
+                frame(&mut hash, &text);
+                parts.push(format!("rc error {}", short(&text)));
             }
         }
     }
-    names.sort();
-    names.dedup();
-    for name in names {
-        frame(&mut hash, name.as_bytes());
-        match std::env::var_os(&name) {
-            Some(value) => {
-                frame(&mut hash, b"=");
-                // The workspace's location is no input (the digests
-                // normalize it too).
-                frame(
-                    &mut hash,
-                    &super::normalized(
-                        value.as_encoded_bytes(),
-                        root.as_os_str().as_encoded_bytes(),
-                    ),
-                );
-            }
-            None => frame(&mut hash, b"unset"),
-        }
+    EnvironmentKey {
+        key: hex(&hash.finalize().into()),
+        parts,
     }
-    hex(&hash.finalize().into())
 }
 
 #[cfg(test)]
@@ -660,46 +739,58 @@ mod tests {
     }
 
     #[test]
-    fn the_environment_key_covers_inherited_variables_and_outer_rc_files() {
+    fn the_environment_key_covers_outer_rc_options_wherever_they_lie() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("ws");
-        std::fs::create_dir_all(&root).unwrap();
         let binary = Path::new("/bin/true");
-        let ignore = ["--ignore_all_rc_files".to_owned()];
-        let key = |startup: &[String], forwarded: &[&str]| {
-            let forwarded: Vec<String> = forwarded.iter().map(|arg| (*arg).to_owned()).collect();
-            environment_key(binary, startup, &root, &forwarded, &HostState::default())
+        // Two checkouts, two homes (runners with per-runner data dirs).
+        let key = |runner: &str, rc_text: &str| {
+            let base = dir.path().join(runner);
+            let root = base.join("work/code");
+            std::fs::create_dir_all(&root).unwrap();
+            let rc = base.join("home.bazelrc");
+            std::fs::write(&rc, rc_text.replace("@ROOT@", &root.display().to_string())).unwrap();
+            let startup = vec![
+                "--nohome_rc".to_owned(),
+                "--nosystem_rc".to_owned(),
+                format!("--bazelrc={}", rc.display()),
+            ];
+            environment_key(binary, &startup, &root, &HostState::default()).key
         };
-        let plain = key(&ignore, &[]);
-        assert_eq!(plain, key(&ignore, &["--define=a=b"]));
-        // An inherited variable (unset here) is keyed; a value given is not
-        // (the options are in the digests key).
-        assert_ne!(
-            plain,
-            key(&ignore, &["--repo_env=BAZEL_RS_TEST_UNSET_VARIABLE"])
+        let text = "build --define=x=1\n";
+        // By options, not by the rc file's path.
+        assert_eq!(key("data01", text), key("data02", text));
+        assert_ne!(key("data01", text), key("data01", "build --define=x=2\n"));
+        // The command a line is for counts.
+        assert_ne!(key("data01", text), key("data01", "test --define=x=1\n"));
+        // Per-runner caches and console options change no digest.
+        let caches = |runner: &str| {
+            format!(
+                "{text}build --repository_cache=/runner/{runner}/cache/repos\nbuild --disk_cache=/runner/{runner}/disk\ncommon --color=yes\nbuild --remote_cache=grpc://{runner}\nbuild --noremote_upload_local_results\n"
+            )
+        };
+        assert_eq!(
+            key("data01", &caches("data01")),
+            key("data02", &caches("data02"))
         );
-        assert_eq!(plain, key(&ignore, &["--action_env=A=1"]));
-        // An rc file outside the workspace, by contents.
-        let rc = dir.path().join("outer.rc");
-        std::fs::write(&rc, "build --define=x=1\n").unwrap();
-        let with_rc = vec![
-            "--nohome_rc".to_owned(),
-            "--nosystem_rc".to_owned(),
-            format!("--bazelrc={}", rc.display()),
-        ];
-        let first = key(&with_rc, &[]);
-        std::fs::write(&rc, "build --define=x=2\n").unwrap();
-        assert_ne!(first, key(&with_rc, &[]));
-        // ... and the variables it names for inheritance.
-        std::fs::write(&rc, "build --test_env=BAZEL_RS_TEST_UNSET_VARIABLE\n").unwrap();
-        let named = key(&with_rc, &[]);
-        std::fs::write(&rc, "build --test_env=BAZEL_RS_TEST_UNSET_VARIABLE\n").unwrap();
-        assert_eq!(named, key(&with_rc, &[]));
+        assert_eq!(key("data01", &caches("data01")), key("data01", text));
+        // The workspace's location in an option is normalized.
+        let local = "build --define=tool=@ROOT@/tools/x\n";
+        assert_eq!(key("data01", local), key("data02", local));
+        // An inheriting option is keyed by its text, never by the
+        // variable's value (the digests key the name only).
+        assert_ne!(
+            key("data01", text),
+            key("data01", &format!("{text}test:replay --test_env=PATH\n"))
+        );
         // The workspace's own rc file is the tree's (keyed by the tree).
+        let root = dir.path().join("data01/work/code");
         let inside = vec!["--nohome_rc".to_owned(), "--nosystem_rc".to_owned()];
-        let before = key(&inside, &[]);
+        let before = environment_key(binary, &inside, &root, &HostState::default()).key;
         std::fs::write(root.join(".bazelrc"), "build --define=y=1\n").unwrap();
-        assert_eq!(before, key(&inside, &[]));
+        assert_eq!(
+            before,
+            environment_key(binary, &inside, &root, &HostState::default()).key
+        );
     }
 
     #[test]
@@ -707,7 +798,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let startup = ["--ignore_all_rc_files".to_owned()];
         let key = |host: &HostState| {
-            environment_key(Path::new("/bin/true"), &startup, dir.path(), &[], host)
+            environment_key(Path::new("/bin/true"), &startup, dir.path(), host).key
         };
         let base = HostState {
             os: "linux".into(),

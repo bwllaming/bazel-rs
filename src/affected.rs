@@ -850,6 +850,10 @@ enum RemoteMode {
 /// given: changing it retires every entry written before.
 pub const EPOCH_VAR: &str = "BAZEL_RS_AFFECTED_DIGESTS_EPOCH";
 
+/// `=1`: print the remote key's components (digests and option names, no
+/// option values) to stderr, to tell why two runs' keys differ.
+pub const KEY_DEBUG_VAR: &str = "BAZEL_RS_AFFECTED_KEY_DEBUG";
+
 /// Set once a `git submodule update` of a checkout failed in this run: the
 /// run still plans and compares, but writes nothing to the remote cache.
 static SUBMODULES_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -1341,39 +1345,113 @@ fn without_transport_options(forwarded: &[String]) -> Vec<String> {
     kept
 }
 
-/// The key of the base's remote entries (docs/AFFECTED_TARGETS.md §8.11):
-/// the base commit's `tree`, the workspace's directory `below` in it, the
+/// The key of a revision's remote entries (docs/AFFECTED_TARGETS.md §8.11):
+/// the commit's `tree`, the workspace's directory `below` in it, the
 /// digests key of this binary, command, options (without the remote
-/// cache's transport options) and patterns, and the `environment` outside
-/// the tree ([`remote::environment_key`]).
+/// cache's transport options) and patterns, the `environment` outside the
+/// tree ([`remote::environment_key`]) and the `epoch`. Startup options and
+/// options are keyed with the workspace's location (`root`) normalized: a
+/// checkout's path is no input (the digests normalize it too).
+#[allow(clippy::too_many_arguments)]
 fn remote_base_key(
     binary: &Digest32,
     startup: &[String],
     options: &Options,
+    root: &Path,
     tree: &str,
     below: &Path,
     environment: &str,
     epoch: &str,
 ) -> String {
+    remote_key_parts(
+        binary,
+        startup,
+        options,
+        root,
+        tree,
+        below,
+        environment,
+        epoch,
+    )
+    .0
+}
+
+/// [`remote_base_key`] and its components (`BAZEL_RS_AFFECTED_KEY_DEBUG`:
+/// values only where they hold no option value).
+#[allow(clippy::too_many_arguments)]
+fn remote_key_parts(
+    binary: &Digest32,
+    startup: &[String],
+    options: &Options,
+    root: &Path,
+    tree: &str,
+    below: &Path,
+    environment: &str,
+    epoch: &str,
+) -> (String, Vec<String>) {
+    let root_bytes = root.as_os_str().as_encoded_bytes().to_vec();
+    let canonical = root
+        .canonicalize()
+        .unwrap_or_else(|_| root.to_path_buf())
+        .into_os_string()
+        .into_encoded_bytes();
+    let relative = |arg: &String| -> String {
+        String::from_utf8_lossy(&normalized(
+            &normalized(arg.as_bytes(), &root_bytes),
+            &canonical,
+        ))
+        .into_owned()
+    };
+    let startup: Vec<String> = startup.iter().map(relative).collect();
     let filtered = Options {
         command: options.command.clone(),
         include_manual: options.include_manual,
-        forwarded: without_transport_options(&options.forwarded),
+        forwarded: without_transport_options(&options.forwarded)
+            .iter()
+            .map(relative)
+            .collect(),
         patterns: options.patterns.clone(),
         ..Options::default()
     };
+    let digests = digests_key_of(binary, &startup, &filtered);
     let mut hash = Sha256::new();
-    frame(&mut hash, b"bazel-rs-affected-remote-key-v1");
+    frame(&mut hash, b"bazel-rs-affected-remote-key-v2");
     frame(&mut hash, tree.as_bytes());
     frame(&mut hash, below.as_os_str().as_encoded_bytes());
-    frame(
-        &mut hash,
-        digests_key_of(binary, startup, &filtered).as_bytes(),
-    );
+    frame(&mut hash, digests.as_bytes());
     frame(&mut hash, environment.as_bytes());
     frame(&mut hash, b"epoch");
     frame(&mut hash, epoch.as_bytes());
-    hex(&hash.finalize().into())
+    let key = hex(&hash.finalize().into());
+    let names = |args: &[String]| -> String {
+        args.iter()
+            .filter(|arg| !arg.starts_with("--cache-dir="))
+            .map(|arg| arg.split_once('=').map_or(arg.as_str(), |(name, _)| name))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let parts = vec![
+        format!("tree {tree}"),
+        format!("below {:?}", below.display().to_string()),
+        format!("binary {}", hex(binary)),
+        format!(
+            "options {} (command {}; startup [{}]; options [{}]; {} pattern(s){})",
+            &digests[..16],
+            filtered.command,
+            names(&startup),
+            names(&filtered.forwarded),
+            filtered.patterns.len(),
+            if filtered.include_manual {
+                "; --include_manual"
+            } else {
+                ""
+            }
+        ),
+        format!("environment {}", &environment[..environment.len().min(16)]),
+        format!("epoch {epoch:?}"),
+        format!("key {key}"),
+    ];
+    (key, parts)
 }
 
 /// Writes the head's digests for a later `--base_digests`.
@@ -1734,24 +1812,37 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                         binary,
                         startup,
                         &root,
-                        &options.forwarded,
                         &remote::HostState::of(&top),
                     );
+                    let debug = std::env::var_os(KEY_DEBUG_VAR).is_some_and(|value| value == "1");
+                    if debug {
+                        for part in &environment.parts {
+                            eprintln!("bazel-rs affected: key: environment: {part}");
+                        }
+                    }
+                    let environment = environment.key;
                     let epoch = options
                         .epoch
                         .clone()
                         .or_else(|| std::env::var(EPOCH_VAR).ok())
                         .unwrap_or_default();
+                    let (key, parts) = remote_key_parts(
+                        &binary_digest,
+                        startup,
+                        &options,
+                        &root,
+                        &tree,
+                        &below,
+                        &environment,
+                        &epoch,
+                    );
+                    if debug {
+                        for part in parts {
+                            eprintln!("bazel-rs affected: key: base: {part}");
+                        }
+                    }
                     Some(RemoteBase {
-                        key: remote_base_key(
-                            &binary_digest,
-                            startup,
-                            &options,
-                            &tree,
-                            &below,
-                            &environment,
-                            &epoch,
-                        ),
+                        key,
                         write: options.remote == RemoteMode::ReadWrite,
                         binary: binary_digest,
                         environment,
@@ -2240,11 +2331,15 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 &remote.binary,
                 startup,
                 &options,
+                &root,
                 &tree,
                 &below,
                 &remote.environment,
                 &remote.epoch,
             );
+            if std::env::var_os(KEY_DEBUG_VAR).is_some_and(|value| value == "1") {
+                eprintln!("bazel-rs affected: key: head: tree {tree} key {key}");
+            }
             let asked = match &head.scope {
                 Scope::Scoped(scope) => scope
                     .iter()
@@ -2455,7 +2550,16 @@ mod tests {
             parse(&all).unwrap()
         };
         let key = |options: &Options, tree: &str, environment: &str| {
-            remote_base_key(&binary, &[], options, tree, Path::new(""), environment, "")
+            remote_base_key(
+                &binary,
+                &[],
+                options,
+                Path::new("/ws"),
+                tree,
+                Path::new(""),
+                environment,
+                "",
+            )
         };
         let plain = parsed(&[]);
         let base = key(&plain, "t", "e");
@@ -2464,11 +2568,29 @@ mod tests {
         assert_ne!(base, key(&plain, "t", "e2"));
         assert_ne!(
             base,
-            remote_base_key(&[8u8; 32], &[], &plain, "t", Path::new(""), "e", "")
+            remote_base_key(
+                &[8u8; 32],
+                &[],
+                &plain,
+                Path::new("/ws"),
+                "t",
+                Path::new(""),
+                "e",
+                ""
+            )
         );
         assert_ne!(
             base,
-            remote_base_key(&binary, &[], &plain, "t", Path::new("sub"), "e", "")
+            remote_base_key(
+                &binary,
+                &[],
+                &plain,
+                Path::new("/ws"),
+                "t",
+                Path::new("sub"),
+                "e",
+                ""
+            )
         );
         for other in [
             &["--include_manual"][..],
@@ -2497,10 +2619,38 @@ mod tests {
             ]),
             ["--define=x=y", "--remote_executor=grpc://e"]
         );
+        // The checkout's location is no input: a startup option or option
+        // naming a path inside it keys alike from another clone.
+        let at = |root: &str| {
+            let options = parsed(&[&format!("--define=f={root}/x")]);
+            remote_base_key(
+                &binary,
+                &[format!("--bazelrc={root}/tools/ci.rc")],
+                &options,
+                Path::new(root),
+                "t",
+                Path::new(""),
+                "e",
+                "",
+            )
+        };
+        assert_eq!(
+            at("/runner/data01/work/code"),
+            at("/runner/data02/work/code")
+        );
         // The epoch retires entries.
         assert_ne!(
             base,
-            remote_base_key(&binary, &[], &plain, "t", Path::new(""), "e", "2")
+            remote_base_key(
+                &binary,
+                &[],
+                &plain,
+                Path::new("/ws"),
+                "t",
+                Path::new(""),
+                "e",
+                "2"
+            )
         );
         assert_eq!(
             base,

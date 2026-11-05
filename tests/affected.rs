@@ -1305,3 +1305,104 @@ fn base_digests_are_shared_through_a_grpc_remote_cache() {
     assert_eq!(labels, want);
     assert_eq!(remote_hits(&stderr), Some((3, 4)), "{stderr}");
 }
+
+/// ~/code's CI (0.4.12): runners with per-runner checkouts
+/// (`/runner/dataNN/work/...`), worktrees, caches and a `~/.bazelrc` naming
+/// their own repository cache, a workspace rc with `--test_env=PATH` lines
+/// and a per-runner `PATH`. The second runner hits every entry the first
+/// wrote.
+#[test]
+fn remote_keys_do_not_depend_on_the_checkout_location() {
+    let repo = Repo::new();
+    let server = http_cache::Server::new();
+    let mut files: Vec<(&str, &str)> = PACKAGES.to_vec();
+    // The tree's rc (PACKAGES has one) plus an inheriting config line.
+    files.retain(|(path, _)| *path != ".bazelrc");
+    files.push((
+        ".bazelrc",
+        "build --run_under=//tools:runner\ntest:replay --test_env=PATH --test_env=KUBECONFIG\n",
+    ));
+    let first = repo.commit(&files);
+    let second = repo.commit(&[("a/a.txt", "a2\n")]);
+    let runner = |name: &str, path_len: usize| -> (Vec<String>, String) {
+        // A clone at another absolute path (of another length), its own
+        // home, cache and `~/.bazelrc`.
+        let base = repo
+            .base()
+            .join(format!("runner-{name}-{}", "x".repeat(path_len)));
+        let home = base.join("home");
+        let checkout = base.join("work/code");
+        fs::create_dir_all(&home).unwrap();
+        if !checkout.exists() {
+            let status = Command::new("git")
+                .args(["clone", "-q"])
+                .arg(repo.main())
+                .arg(&checkout)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", &home)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        fs::write(
+            home.join(".bazelrc"),
+            format!(
+                "build --repository_cache={}/repos\nbuild --disk_cache={}/disk\n",
+                base.display(),
+                base.display()
+            ),
+        )
+        .unwrap();
+        let output = Command::new("timeout")
+            .args(["--kill-after=5s", "240s"])
+            .arg(env!("CARGO_BIN_EXE_bazel-rs"))
+            .arg("--nosystem_rc")
+            .arg(format!(
+                "--cache-dir={}/.cache/bazel-rs/ci-cache",
+                home.display()
+            ))
+            .arg("affected")
+            .arg(EXPLICIT_MODULES)
+            .arg("--base=HEAD^")
+            .arg("--affected_command=build")
+            .arg(format!("--remote_cache={}", server.url()))
+            .current_dir(&checkout)
+            .env_clear()
+            .envs(verifier_environment())
+            .env("PATH", format!("{}/bin:/usr/bin:/bin", base.display()))
+            .env("KUBECONFIG", checkout.join(".kube/config"))
+            .env("HOME", &home)
+            .env("TMPDIR", &home)
+            .env("LC_ALL", "C")
+            .env("BAZEL_RS_AFFECTED_KEY_DEBUG", "1")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "{stderr}");
+        let labels = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        (labels, stderr)
+    };
+    let _ = (first, second);
+    let (labels, stderr) = runner("01", 3);
+    assert_eq!(labels, ["//a", "//b"], "{stderr}");
+    assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
+    assert!(stderr.contains("base digests: wrote 2 of 2"), "{stderr}");
+    let key = |stderr: &str| {
+        stderr
+            .lines()
+            .find(|line| line.contains("key: base: key "))
+            .map(str::to_owned)
+    };
+    let first_key = key(&stderr);
+    assert!(first_key.is_some(), "{stderr}");
+    let (labels, stderr) = runner("02", 11);
+    assert_eq!(labels, ["//a", "//b"], "{stderr}");
+    assert_eq!(key(&stderr), first_key, "{stderr}");
+    assert_eq!(remote_hits(&stderr), Some((2, 2)), "{stderr}");
+    assert_eq!(plannings(&stderr), 1, "{stderr}");
+}

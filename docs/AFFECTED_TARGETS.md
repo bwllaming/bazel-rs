@@ -539,7 +539,9 @@ CI job, instead of TD's four cqueries plus two more analyses.
   files outside the plan.
 - **Remote digests** (§8.11) carry a writer's world to a reader. A gap in
   the key (host tools, the environment beyond what is keyed) only
-  over-reports, except when a change exactly undoes it (§8.11, "Trust").
+  over-reports, except when a change exactly undoes it (§8.11, "Trust");
+  the key is independent of the checkout's, the cache's and the rc files'
+  locations and of client variables (§8.11, "Location independence").
   The real risk is trust: one entry decides "not affected" for every PR on
   its base, so only trusted jobs should write (`readwrite`), PR jobs
   `read`, and a cache that untrusted jobs can write to needs server-side
@@ -1213,26 +1215,54 @@ transition — is marked at the head already. A planned base still runs the
 check (step 4); only an all-hit run skips it.
 
 **Keys.** The key of a revision's entries is the sha256 of the framed
-`bazel-rs-affected-remote-key-v1`, the commit's **tree**
+`bazel-rs-affected-remote-key-v2`, the commit's **tree**
 (`git rev-parse REV^{tree}`: an identical tree reached through another
 commit shares the entries), the workspace's directory in the repository,
 the `--write_digests` key of this binary (its sha256), the command, the
-options and the patterns (with `--include_manual`) — without the remote
-cache's transport and policy options (`--remote_cache`, `--remote_header`,
+startup options, options and patterns (with `--include_manual`) — without
+the cache location (`--cache-dir`) and the remote cache's transport and
+policy options (`--remote_cache`, `--remote_header`,
 `--[no]remote_upload_local_results`, `--[no]remote_accept_cached`,
 `--credential_helper`, `--disk_cache`, TLS, timeouts, retries: they change
-no digest, and a read-only PR job shares a writer's entries) — and the
-client state outside the tree, and the epoch. The client state: the OS and architecture
-(`std::env::consts`), the LFS smudging (`GIT_LFS_SKIP_SMUDGE`, whether a
-`git-lfs` is on `PATH`, the repository's `filter.*` git configuration: a
-checkout without smudging holds pointer files), the rc files outside the
-workspace that the planning reads (system, home, `$BAZELRC`, `--bazelrc` and their imports, by
-path and contents) and the values of the variables an rc or command-line
-`--action_env`, `--host_action_env`, `--test_env` or `--repo_env` names
-without a value (the workspace's location in them normalized). The rest of
-the client environment is not keyed: `PATH` holds per-runner paths on
-~/code's CI (`.envrc`), and the target digests do not key inherited values
-either (§7). `--include_incompatible` only filters the output: not keyed.
+no digest, and a read-only PR job shares a writer's entries) — the client
+state outside the tree, and the epoch. The client state: the OS and
+architecture (`std::env::consts`), the LFS smudging (`GIT_LFS_SKIP_SMUDGE`,
+whether a `git-lfs` is on `PATH`, the repository's `filter.*` git
+configuration: a checkout without smudging holds pointer files), and the
+options of the rc files outside the workspace that the planning reads
+(system, home, `$BAZELRC`, `--bazelrc` and their imports), by command and
+option text — not by the files' paths — without the options that change
+no digest (the repository and disk caches' locations and policies,
+console and progress output, resource limits, report files, remote
+download modes, the transport options). The workspace's own rc files are
+the tree's.
+
+**Location independence.** Nothing in the key depends on where the
+checkout, its worktrees, the cache or the rc files lie: the workspace's
+location (as given and canonical) is normalized to a token in every
+startup option, option, outer rc option and the filter configuration (the
+digests normalize it too), the cache location and the worktree paths never
+enter, and an outer rc file is keyed by its options. **Client variables are
+not keyed**: the target digests key an inherited variable
+(`--action_env=NAME`, `--test_env=NAME`) by name only, so a reader computes
+the same head digests whatever their values; a variable a repository rule
+reads (`--repo_env=NAME`) reaches the digests through the repository's
+contents. 0.4.12 keyed the values of every variable any rc line named for
+inheritance, whatever its config: ~/code's `test:replay --test_env=PATH
+--test_env=KUBECONFIG ...` (a config the command does not use) put direnv's
+per-runner `PATH` into the key, so every runner had its own entries (PR
+13252: `0 of 530` on runner ci02 after ci02-01 wrote 530). `--include_incompatible`
+only filters the output: not keyed.
+
+**Diagnosis.** `BAZEL_RS_AFFECTED_KEY_DEBUG=1` prints the key's components
+to stderr: `bazel-rs affected: key: base: tree|below|binary|options|environment|epoch|key ...`
+(the options line names the startup options and options keyed, not their
+values), `key: environment: host ...` (OS, architecture, LFS state, a
+digest of the filter configuration), one `key: environment: rc
+<file>:<line> <command> <option name> <digest>` per keyed outer rc option
+and the count of unkeyed ones, and `key: head: tree ... key ...` for head
+digests written. Two runs whose `key: base: key` lines differ show which
+component did. No option or variable value is printed.
 
 **Trust: why a key gap only over-reports, and what remains.** A reader
 compares its head's digest with an entry a writer computed for the base. A
@@ -1300,7 +1330,10 @@ key each), `read` (never writes), `readwrite` with
 `--noremote_upload_local_results --noremote_accept_cached` (still reads and
 writes), corrupt entries (another label's record, garbage), the cache
 down, no cache; a failed submodule update (planned and compared, nothing
-written); a gRPC cache with a global
+written); two runners (clones at different absolute paths, their own
+homes, caches, worktrees and `~/.bazelrc` naming their own caches, a
+per-runner `PATH` under a `test:replay --test_env=PATH` line): the second
+hits everything the first wrote, with the same `key: base: key`; a gRPC cache with a global
 change — miss, hit, entries without inlined contents (read from the CAS),
 an evicted record (a miss). Every run's output equals the run without the
 remote cache.
