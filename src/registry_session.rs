@@ -25,6 +25,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// in parallel through Skyframe, Discovery.java:113-137).
 const PARALLEL_FETCHES: usize = 32;
 
+/// The fewest registry files [`RegistrySession::warm_known_files`] fetches
+/// ahead.
+const WARM_MIN_FILES: usize = if cfg!(test) { 1 } else { 16 };
+
 /// The result of one registry file request.
 #[derive(Clone, Debug)]
 pub enum Fetch {
@@ -866,7 +870,8 @@ impl RegistrySession {
                 }
             }
         }
-        if items.is_empty() {
+        // A handful of files gains nothing over discovery's own horizons.
+        if items.len() < WARM_MIN_FILES {
             return;
         }
         let workers = items.len().min(PARALLEL_FETCHES);
@@ -879,9 +884,11 @@ impl RegistrySession {
                         let Some((registry, relative, hash)) = next else {
                             break;
                         };
-                        // Settled like [`Self::peek`]'s: the bytes the
-                        // lockfile's checksum names are what the sequential
-                        // read takes from the cache.
+                        // Settled either way: the bytes the lockfile's
+                        // checksum names are what the sequential read takes
+                        // from the cache, and a failed transfer leaves
+                        // nothing behind (the sequential read fetches, and
+                        // taints, itself).
                         let transfer = crate::observed_fs::HeldTaint::network();
                         let fetched =
                             crate::observed_fs::with_registry_sink(transfer.sink(), || {
@@ -891,8 +898,8 @@ impl RegistrySession {
                             && sha256_hex(&bytes) == hash
                         {
                             self.cas_put(&hash, &bytes);
-                            transfer.settle();
                         }
+                        transfer.settle();
                     }
                 });
             }
