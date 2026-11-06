@@ -580,6 +580,11 @@ struct Pipeline {
     /// Entries whose compute finished, not committed yet (retried as the
     /// entries before them commit).
     finished: OrderedSet<usize>,
+    /// S2: the native rules classified to commit ahead of their turn (once
+    /// their dependencies are committed, [`Engine::commit_native_ahead`]),
+    /// and those whose dependencies are.
+    natives: std::collections::HashSet<usize>,
+    native_ready: OrderedSet<usize>,
     /// S2 diagnostics (`BAZEL_RS_TIMING`): what woke each ready entry
     /// (`PERF-PARALLEL diag ready_late_by_<cause>`): `classify` (empty),
     /// a commit ahead, a delegation, or the commit at its turn of a native
@@ -983,6 +988,24 @@ pub(super) fn report(workers: usize) {
             us as f64 / 1e6
         ));
     }
+    // S2: the coordinator thread's CPU time so far (user, system; stable
+    // under host load, unlike the wall time).
+    if let Ok(stat) = std::fs::read_to_string("/proc/thread-self/stat")
+        && let Some(fields) = stat.rsplit_once(')').map(|(_, rest)| {
+            rest.split_whitespace()
+                .filter_map(|field| field.parse::<i64>().ok())
+                .collect::<Vec<_>>()
+        })
+        && fields.len() > 12
+    {
+        // utime and stime: fields 14 and 15 of stat(5), after the state
+        // field (not numeric) — the 11th and 12th numeric ones here.
+        crate::snapshot::diag::line_fmt(format_args!(
+            "PERF-PARALLEL coordinator_cpu user={:.2}s sys={:.2}s",
+            fields[10] as f64 / 100.0,
+            fields[11] as f64 / 100.0
+        ));
+    }
 }
 
 /// BAZEL_RS_VERIFY_AHEAD's comparison ([`Engine::verify_ahead`]): the
@@ -1221,6 +1244,32 @@ fn commit_ahead_enabled() -> bool {
     })
 }
 
+/// `BAZEL_RS_NO_NATIVE_AHEAD` (hidden): native rules commit at their turn
+/// (S2; the output is the same either way).
+fn native_ahead_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
+        std::env::var_os("BAZEL_RS_NO_NATIVE_AHEAD").is_none()
+    })
+}
+
+/// S2: whether the native rule `rule` may commit ahead of its turn once its
+/// dependencies are committed: it registers no output
+/// ([`registers_no_output`]) and needs nothing registered on first need
+/// (a filegroup's `output_group` files may name the workspace status).
+fn native_ahead_eligible(rule: &Rule) -> bool {
+    if !registers_no_output(rule) {
+        return false;
+    }
+    match (&rule.kind, &rule.native) {
+        (RuleKind::Filegroup, Some(native)) => native
+            .string("output_group")
+            .is_none_or(|group| group.is_empty()),
+        _ => true,
+    }
+}
+
 /// `BAZEL_RS_NO_WORKER_DELTAS` (hidden): every Starlark commit's delta is
 /// built on the coordinator (S1; the output is the same either way).
 fn worker_deltas() -> bool {
@@ -1405,6 +1454,7 @@ impl Engine {
                 );
             }
             pipe.ready.remove(&index);
+            pipe.native_ready.remove(&index);
             pipe.finished.remove(&index);
             for effects in pipe.stashed.remove(&index).unwrap_or_default() {
                 effects.apply(self, false);
@@ -1461,6 +1511,9 @@ impl Engine {
         state: &ActionPlanning,
     ) -> &'static str {
         let reason = match ahead {
+            Some(Ahead::Committed(_)) if !matches!(rule.kind, RuleKind::Custom) => {
+                "native_committed_ahead"
+            }
             Some(Ahead::Committed(_)) => "committed_ahead",
             Some(Ahead::Failed { .. }) => "prepare_failed",
             Some(Ahead::Computing { .. }) if !self.commits_ahead(state) => "commit_ahead_off",
@@ -1468,7 +1521,8 @@ impl Engine {
                 Some(reason) => reason,
                 None => {
                     diag(&format!(
-                        "late_by_{}",
+                        "late_{}_by_{}",
+                        rule.rule_class_name(),
                         pipe.woken_by
                             .get(&index)
                             .map_or("?", |cause| if cause.is_empty() {
@@ -1494,9 +1548,17 @@ impl Engine {
                 }
             }
             None if pipe.prepare_aborted.contains(&index) => "prepare_aborted",
+            None if pipe.natives.contains(&index) => {
+                if was_ready || pipe.native_ready.contains(&index) {
+                    "native_ready_late"
+                } else {
+                    "native_dependency_late"
+                }
+            }
             None if was_ready => {
                 diag(&format!(
-                    "ready_late_by_{}",
+                    "ready_late_{}_by_{}",
+                    rule.rule_class_name(),
                     pipe.woken_by
                         .get(&index)
                         .map_or("?", |cause| if cause.is_empty() {
@@ -1556,7 +1618,11 @@ impl Engine {
         if crate::plan_timings::enabled() {
             pipe.woken_by.insert(index, pipe.waking.clone());
         }
-        pipe.ready.insert(index);
+        if pipe.natives.contains(&index) {
+            pipe.native_ready.insert(index);
+        } else {
+            pipe.ready.insert(index);
+        }
     }
 
     /// One plan entry at its turn.
@@ -2103,6 +2169,26 @@ impl Engine {
         pipe: &mut Pipeline,
         turn: usize,
     ) {
+        // S2: the native rules whose dependencies are committed commit ahead
+        // of their turn first (waking their dependents), then the Starlark
+        // rules are prepared, until no native is ready.
+        loop {
+            self.commit_natives_ahead(state, configured, pipe, turn);
+            self.fill_lookahead_once(state, configured, pipe, turn);
+            if pipe.native_ready.range(turn + 1..).next().is_none() {
+                break;
+            }
+        }
+    }
+
+    /// [`Self::fill_lookahead`]'s classification and Starlark prepares.
+    fn fill_lookahead_once(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        pipe: &mut Pipeline,
+        turn: usize,
+    ) {
         let plan_len = self.planning_plan.as_ref().map_or(0, Vec::len);
         let horizon = plan_len.min(turn + 1 + HORIZON);
         if pipe.scanned < turn + 1 {
@@ -2130,15 +2216,18 @@ impl Engine {
                 let barrier = matches!(classified, Classified::Never)
                     && matches!(rule.kind, RuleKind::Custom);
                 pipe.note_pending(index, &key.label, barrier, registers_no_output(&rule));
+                if !matches!(classified, Classified::Never)
+                    && !matches!(rule.kind, RuleKind::Custom)
+                {
+                    pipe.natives.insert(index);
+                }
                 match classified {
                     Classified::Never => {
                         bump(&stats().never, 1);
                         pipe.classified_never.insert(index);
                     }
                     Classified::Waiting(keys) => Self::wait_or_ready(state, pipe, index, keys),
-                    Classified::Ready => {
-                        pipe.ready.insert(index);
-                    }
+                    Classified::Ready => Self::wait_or_ready(state, pipe, index, Vec::new()),
                 }
                 continue;
             }
@@ -2188,12 +2277,21 @@ impl Engine {
             fallback(reason);
             Classified::Never
         };
+        if !matches!(rule.kind, RuleKind::Custom) {
+            if self.commits_ahead(state)
+                && native_ahead_enabled()
+                && native_ahead_eligible(rule)
+                && configured
+                    .get(key)
+                    .is_some_and(|node| node.incompatible.is_none())
+            {
+                return self.classify_native(state, key, rule, stash);
+            }
+            return never("native");
+        }
         let Some(custom) = rule.custom.as_ref() else {
             return never("native");
         };
-        if !matches!(rule.kind, RuleKind::Custom) {
-            return never("native");
-        }
         if configured
             .get(key)
             .is_none_or(|node| node.incompatible.is_some())
@@ -2248,6 +2346,207 @@ impl Engine {
             }
             _ => never("requirements"),
         }
+    }
+
+    /// S2: classify the native rule `key` to commit ahead of its turn once
+    /// the keys its prepare and commit read are committed
+    /// ([`Self::native_requirements`], lookups only, as [`Self::classify`]).
+    fn classify_native(
+        &mut self,
+        state: &ActionPlanning,
+        key: &ConfiguredTargetKey,
+        rule: &Rule,
+        stash: &mut Vec<Effects>,
+    ) -> Classified {
+        self.ahead = true;
+        self.ahead_aborted = false;
+        self.track_defer_start();
+        let isolation = Isolation::enter();
+        let keys = self.native_requirements(key, rule);
+        let (effects, sentinel) = isolation.finish();
+        drop(self.track_defer_finish());
+        self.ahead = false;
+        let aborted = std::mem::take(&mut self.ahead_aborted);
+        let quiet = effects.console.is_empty()
+            && effects.observations.is_empty()
+            && effects.roots.is_empty();
+        if !quiet {
+            if !effects.console.is_empty() {
+                note_lost(effects.console.len());
+            }
+            note_effects("classify", &effects);
+            stash.push(effects);
+        }
+        match keys {
+            Some(keys) if !aborted && !sentinel && quiet => {
+                let missing: Vec<ConfiguredTargetKey> = keys
+                    .into_iter()
+                    .filter(|key| !state.dry.contains_key(key))
+                    .collect();
+                if missing.is_empty() {
+                    Classified::Ready
+                } else {
+                    Classified::Waiting(missing)
+                }
+            }
+            _ => {
+                fallback("native");
+                Classified::Never
+            }
+        }
+    }
+
+    /// The committed keys whose planning state a native rule's prepare and
+    /// commit read (Engine::commit_native_target): its every dependency
+    /// edge (an output file's generating rule) in the edge's configuration,
+    /// and its resolved toolchains.
+    fn native_requirements(
+        &mut self,
+        key: &ConfiguredTargetKey,
+        rule: &Rule,
+    ) -> Option<Vec<ConfiguredTargetKey>> {
+        let edges = self.rule_edges(rule, key.config);
+        let exec_config = self
+            .exec_configurations
+            .get(key)
+            .copied()
+            .unwrap_or(key.config);
+        let mut labels = Vec::with_capacity(edges.len());
+        for edge in &edges {
+            let label = self.resolve_rule_src(rule, &edge.label).ok()?;
+            let config = match &edge.cfg {
+                EdgeCfg::Target => key.config,
+                EdgeCfg::Exec(None) => exec_config,
+                EdgeCfg::Exec(Some(group)) => self
+                    .group_exec_configurations
+                    .get(&(key.clone(), group.clone()))
+                    .copied()
+                    .unwrap_or(key.config),
+                EdgeCfg::NoConfig => self.configurations.intern_no_config(),
+                EdgeCfg::Starlark(_) => return None,
+            };
+            labels.push((label, config));
+        }
+        if let Some(context) = self.toolchain_contexts.get(key) {
+            for implementation in context.resolved_labels() {
+                labels.push((implementation, key.config));
+            }
+        }
+        let mut keys = Vec::with_capacity(labels.len());
+        for (label, config) in labels {
+            match self.target(&label).ok()? {
+                Target::Source(_) => {}
+                Target::Output(generating, _) => {
+                    keys.push(ConfiguredTargetKey::new(generating.label.clone(), config));
+                }
+                Target::Rule(_) => keys.push(ConfiguredTargetKey::new(label, config)),
+            }
+        }
+        // Waited for in reverse (Self::wait_or_ready pops).
+        keys.reverse();
+        Some(keys)
+    }
+
+    /// S2: commit the native rules whose dependencies are committed ahead of
+    /// their turn ([`Self::commit_native_ahead`]).
+    fn commit_natives_ahead(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        pipe: &mut Pipeline,
+        turn: usize,
+    ) {
+        while let Some(index) = pipe.native_ready.pop_first() {
+            if index <= turn {
+                continue;
+            }
+            self.commit_native_ahead(state, configured, pipe, index);
+        }
+    }
+
+    /// S2: prepare and commit the native rule at plan index `index` ahead of
+    /// its turn, as a Starlark commit ahead ([`Self::commit_ahead`]): it
+    /// registers no output (its outputs are settled), every key it reads is
+    /// committed; its console, observations, obtained roots, tracker events,
+    /// warnings and errors are held for its turn, its registrations stamped
+    /// with its index. A prepare or commit that needed a fetch, an analysis
+    /// or a package is the internal error naming the workaround at its turn
+    /// (as a Starlark commit ahead).
+    fn commit_native_ahead(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        pipe: &mut Pipeline,
+        index: usize,
+    ) {
+        let Some((key, rule)) = self
+            .planning_plan
+            .as_ref()
+            .and_then(|plan| plan.get(index))
+            .cloned()
+        else {
+            return;
+        };
+        let marks = (self.warnings.len(), self.errors.len());
+        let main_nodes = std::mem::replace(&mut state.nodes, lowering::PlannedNodes::segment());
+        self.ahead = true;
+        self.ahead_aborted = false;
+        self.track_defer_start();
+        let isolation = Isolation::enter();
+        let stamp = state.artifact_index.stamp_ahead(index);
+        let producer_stamp = state.producers.set_stamp(Some(index));
+        let started = std::time::Instant::now();
+        let result = self.plan_one_target_body(state, &key, &rule, configured, index as u64);
+        let elapsed = started.elapsed();
+        state.artifact_index.restore_stamp(stamp);
+        state.producers.restore_stamp(producer_stamp);
+        let (mut commit_effects, sentinel) = isolation.finish();
+        note_effects("native_ahead", &commit_effects);
+        let commit_track = self.track_defer_finish();
+        self.ahead = false;
+        let aborted = std::mem::take(&mut self.ahead_aborted);
+        let mut segment = std::mem::replace(&mut state.nodes, main_nodes);
+        segment.segment_close(std::mem::take(&mut commit_effects.console));
+        pipe.committed_entries += segment.entries();
+        let injected = test_abort_ahead();
+        let result = if sentinel || aborted || injected {
+            debug_assert!(
+                injected,
+                "internal error: the commit of {} ahead of its turn needed a fetch, an analysis or a package",
+                key.label
+            );
+            Err(format!(
+                "internal error: the commit of {} ahead of its turn needed a fetch, an analysis or a package (BAZEL_RS_NO_COMMIT_AHEAD=1 commits every target at its turn)",
+                key.label
+            ))
+        } else {
+            result
+        };
+        let warnings = self.warnings.split_off(marks.0);
+        let errors = self.errors.split_off(marks.1);
+        pipe.committed.insert(
+            index,
+            Box::new(CommittedAhead {
+                prepare_effects: Effects::default(),
+                prepare_track: incremental::TrackLog::default(),
+                compute_effects: Effects::default(),
+                commit_effects,
+                commit_track,
+                segment,
+                warnings,
+                errors,
+                marks,
+                result,
+                elapsed,
+                // A native rule's commit reads no target platform.
+                platform_known: true,
+                verified: None,
+            }),
+        );
+        pipe.note_committed(index, &key.label);
+        pipe.set_waking("native_ahead");
+        self.pipeline_committed(state, pipe, &key);
+        pipe.waking.clear();
     }
 
     /// The committed keys whose planning state `key`'s prepare reads.

@@ -1856,3 +1856,69 @@ fn transition_allowlists_settled_commit_ahead() {
     );
     assert!(!keep_going.status.success());
 }
+
+/// S2: native rules without outputs (filegroups with `srcs` and `data`,
+/// aliases, a test_suite, a config_setting read through a select) commit
+/// ahead of their turn once their dependencies are committed, so the
+/// Starlark rules above them are computed on workers; a filegroup with an
+/// `output_group` commits at its turn. The dump and prints are the
+/// sequential ones.
+#[test]
+fn native_rules_commit_ahead_of_their_turn() {
+    let ws = Workspace::new();
+    library_workspace(&ws);
+    ws.file("n/src.txt", "source\n");
+    ws.file(
+        "n/BUILD",
+        "load('//rules:defs.bzl', 'bin', 'lib')\npackage(default_visibility = ['//visibility:public'])\n\
+         config_setting(name = 'opt', values = {'compilation_mode': 'opt'})\n\
+         filegroup(name = 'fg', srcs = ['//p1:t3', 'src.txt'], data = ['//p2:t1'])\n\
+         alias(name = 'al', actual = '//p3:t6')\n\
+         alias(name = 'al2', actual = ':al')\n\
+         filegroup(name = 'og', srcs = ['//p4:t2'], output_group = 'default')\n\
+         lib(name = 'top', deps = [':al2', '//p5:t7'], work = select({':opt': 10, '//conditions:default': 9000}))\n\
+         lib(name = 'top2', deps = [':top', ':al'])\n\
+         bin(name = 'b', deps = [':top2'])\n\
+         filegroup(name = 'fg2', srcs = [':fg', ':top2', ':og'])\n\
+         alias(name = 'last', actual = ':fg2')\n\
+         test_suite(name = 'suite', tests = [])\n",
+    );
+    let reference = assert_like_sequential(
+        &ws,
+        &[("BAZEL_RS_DUMP_ACTIONS", "1")],
+        &["build", "--nobuild", "//..."],
+    );
+    assert!(reference.status.success(), "{}", stderr(&reference));
+    let timed = ws.run_env(
+        &[
+            ("BAZEL_RS_TIMING", "1"),
+            ("BAZEL_RS_SNAPSHOT", "off"),
+            ("BAZEL_RS_VERIFY_AHEAD", "1"),
+        ],
+        &["build", "--loading_phase_threads=8", "--nobuild", "//..."],
+    );
+    let text = stderr(&timed);
+    assert!(timed.status.success(), "{text}");
+    let fallback = text
+        .lines()
+        .find(|line| line.starts_with("PERF-PARALLEL fallback"))
+        .unwrap_or_else(|| panic!("no fallback line: {text}"));
+    let count = |name: &str| -> u64 {
+        fallback
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix(name))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0)
+    };
+    assert!(count("native_committed_ahead=") > 0, "{fallback}");
+    // Off: every native rule at its turn, the same output.
+    let off = ws.run_env(
+        &[
+            ("BAZEL_RS_DUMP_ACTIONS", "1"),
+            ("BAZEL_RS_SNAPSHOT", "off"),
+            ("BAZEL_RS_NO_NATIVE_AHEAD", "1"),
+        ],
+        &["build", "--loading_phase_threads=8", "--nobuild", "//..."],
+    );
+    assert_eq!(stderr(&off), stderr(&reference));
+}
