@@ -1701,7 +1701,12 @@ impl Engine {
                     }
                 }
                 // Plan B: the commit's check of the declared outputs too
-                // (validate_declared_outputs), unless it would demand.
+                // (validate_declared_outputs), unless it would demand. Its
+                // lookups are the commit's (Engine::ignored is this
+                // RepositorySet's ignored_subdirectories: the first fill
+                // captures its observations and every hit replays them and
+                // notes the root obtained), recorded in this isolation and
+                // applied at the target's turn.
                 if let Ok(analyzed) = &outcome.analyzed {
                     let sentinels = crate::repository_demand::sentinels_raised();
                     let label = &snapshot.rule.label;

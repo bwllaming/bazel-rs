@@ -1309,3 +1309,34 @@ fn a_target_requested_twice_lists_its_runfiles_once() {
     assert!(once.status.success(), "{}", stderr(&once));
     assert_eq!(stderr(&once), stderr(&twice));
 }
+
+/// Plan B review item 6: what the declared outputs' check observes on an
+/// analysis worker (the source-tree probes, the ignored subdirectories'
+/// first fill or its replay) reaches the analysis snapshot: a snapshot a
+/// pipelined build records verifies, and a subpackage created later on an
+/// output's way invalidates it (the next build reports the boundary).
+#[test]
+fn outputs_checked_on_workers_are_observed_by_the_snapshot() {
+    let ws = Workspace::new();
+    library_workspace(&ws);
+    ws.file("rules/known.bzl", KNOWN_DEFS);
+    ws.file(
+        "q/BUILD",
+        "load('//rules:known.bzl', 's')\n\
+         s(name = 'n', out = 'nested/n.txt', deps = ['//p2:t7'], work = 3000)\n\
+         s(name = 'm', out = 'nested/deeper/m.txt', deps = ['//p4:t3'])\n",
+    );
+    let threads = ["build", "--loading_phase_threads=8", "--nobuild", "//..."];
+    let recorded = ws.run_env(&[("BAZEL_RS_ANALYSIS_JITTER", "10")], &threads);
+    assert!(recorded.status.success(), "{}", stderr(&recorded));
+    let verified = ws.run_env(
+        &[("BAZEL_RS_SNAPSHOT", "verify")],
+        &["build", "--loading_phase_threads=1", "--nobuild", "//..."],
+    );
+    assert!(verified.status.success(), "{}", stderr(&verified));
+    ws.file("q/nested/BUILD", "");
+    let changed = ws.run_env(&[], &threads);
+    let text = stderr(&changed);
+    assert!(!changed.status.success(), "{text}");
+    assert!(text.contains("crosses a package boundary"), "{text}");
+}
