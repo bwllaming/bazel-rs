@@ -1652,26 +1652,52 @@ impl Engine {
                 );
             }
         };
-        let waited = std::time::Instant::now();
-        let received = loop {
-            match pending.try_recv() {
-                Ok(received) => break Ok(received),
-                Err(mpsc::TryRecvError::Disconnected) => break Err(mpsc::RecvError),
-                Err(mpsc::TryRecvError::Empty) => {
-                    // P4: commit the finished entries ahead of their turn
-                    // (and prepare what they unblock) while this one runs.
-                    if !self.commit_finished_ahead(state, configured, pipe, index, true) {
-                        break pending.recv();
+        let mut pending = pending;
+        let worker = loop {
+            let waited = std::time::Instant::now();
+            let received = loop {
+                match pending.try_recv() {
+                    Ok(received) => break Ok(received),
+                    Err(mpsc::TryRecvError::Disconnected) => break Err(mpsc::RecvError),
+                    Err(mpsc::TryRecvError::Empty) => {
+                        // P4: commit the finished entries ahead of their turn
+                        // (and prepare what they unblock) while this one runs.
+                        if !self.commit_finished_ahead(state, configured, pipe, index, true) {
+                            break pending.recv();
+                        }
                     }
                 }
+            };
+            bump(&stats().waited_us, waited.elapsed().as_micros() as u64);
+            let worker = match received {
+                Ok(Ok(worker)) => worker,
+                // The panic the sequential engine raises at this compute.
+                Ok(Err(panic)) => panic!("{panic}"),
+                Err(_) => return Err("internal error: an analysis worker stopped".to_owned()),
+            };
+            // S1: a delta meeting a producer registered since it was built
+            // (an earlier sibling's shared action) is computed again on a
+            // worker, which keeps the analysis result for the build here,
+            // while this turn commits others ahead.
+            match worker.outcome.delta.as_ref().map(|worker| &worker.built) {
+                Some(delta::Built::Delta(built))
+                    if Self::delta_meets_producers(state, built)
+                        && self.analysis_pool.is_some() =>
+                {
+                    let WorkerOutcome {
+                        snapshot, effects, ..
+                    } = worker;
+                    if !effects.console.is_empty() {
+                        note_lost(effects.console.len());
+                    }
+                    effects.apply(self, false);
+                    let delta = self.delta_inputs(state, rule, &parts, class);
+                    pending =
+                        self.dispatch(snapshot, parts.transitive.clone(), index, class, delta);
+                    note_delta("recomputed_on_worker", std::time::Duration::ZERO);
+                }
+                _ => break worker,
             }
-        };
-        bump(&stats().waited_us, waited.elapsed().as_micros() as u64);
-        let worker = match received {
-            Ok(Ok(worker)) => worker,
-            // The panic the sequential engine raises at this compute.
-            Ok(Err(panic)) => panic!("{panic}"),
-            Err(_) => return Err("internal error: an analysis worker stopped".to_owned()),
         };
         let WorkerOutcome {
             snapshot,
