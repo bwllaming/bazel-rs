@@ -383,6 +383,12 @@ struct CommittedAhead {
     result: Result<(), String>,
     /// Its prepare, compute and commit (the tracker's costs).
     elapsed: std::time::Duration,
+    /// Its prepare saw its target platform resolved (always: a deferred
+    /// one commits at its turn; checked again there).
+    platform_known: bool,
+    /// BAZEL_RS_VERIFY_AHEAD: the prepare repeated right before the commit
+    /// ahead (equal to the one it committed), compared again at its turn.
+    verified: Option<Box<(PreparedParts, ComputeSnapshot)>>,
 }
 
 /// Why an entry cannot be prepared ahead yet.
@@ -421,6 +427,8 @@ struct Pipeline {
     barriers: OrderedSet<usize>,
     /// Entries committed ahead of their turn.
     committed: HashMap<usize, Box<CommittedAhead>>,
+    /// The nodes and lowerings their segments hold ([`committed_limit`]).
+    committed_entries: usize,
     /// Entries whose compute finished, not committed yet (retried as the
     /// entries before them commit).
     finished: OrderedSet<usize>,
@@ -513,6 +521,15 @@ struct Stats {
     ahead_barrier: AtomicU64,
     ahead_package: AtomicU64,
     ahead_ineligible: AtomicU64,
+    /// Tries left for later: the segments waiting for their turn are full.
+    ahead_budget: AtomicU64,
+    /// Committed ahead, its target platform resolved before its turn
+    /// although its prepare saw it deferred (never: such entries commit at
+    /// their turn).
+    committed_platform_late: AtomicU64,
+    /// BAZEL_RS_VERIFY_AHEAD comparisons at the turn of entries committed
+    /// ahead.
+    verified_turn: AtomicU64,
     unsettled: [AtomicU64; 3],
     /// Implementations computed at their turn, by rule class (µs, count).
     turn_classes: std::sync::Mutex<BTreeMap<String, (u64, u64)>>,
@@ -580,10 +597,13 @@ pub(super) fn report(workers: usize) {
         buckets.join(" ")
     ));
     crate::snapshot::diag::line_fmt(format_args!(
-        "PERF-PARALLEL unsettled package={} enclosing={} enclosed={}",
+        "PERF-PARALLEL unsettled package={} enclosing={} enclosed={} budget={} platform_late={} verified_turn={}",
         get(&stats.unsettled[0]),
         get(&stats.unsettled[1]),
-        get(&stats.unsettled[2])
+        get(&stats.unsettled[2]),
+        get(&stats.ahead_budget),
+        get(&stats.committed_platform_late),
+        get(&stats.verified_turn)
     ));
     let mut classes: Vec<(String, (u64, u64))> = stats
         .turn_classes
@@ -738,6 +758,31 @@ fn verify_prepared(
         let turn_view = turn_snapshot.dependency_targets[map_key].clone();
         verify_view(key, view, Ok(turn_view));
     }
+}
+
+/// The most nodes and lowerings the segments of entries committed ahead of
+/// their turn hold at once (P4; like lowering's queue bound);
+/// `BAZEL_RS_COMMITTED_LIMIT` (hidden test hook) overrides it.
+fn committed_limit() -> usize {
+    static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        // snapshot-unrecorded: a hidden test hook bounding what waits for its turn; the output is the same either way.
+        std::env::var("BAZEL_RS_COMMITTED_LIMIT")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(16_384)
+    })
+}
+
+/// `BAZEL_RS_TEST_ABORT_AHEAD=1` (hidden test hook): every commit ahead of
+/// its turn ends as if it had needed a fetch, an analysis or a package
+/// (the internal error its turn then reports).
+fn test_abort_ahead() -> bool {
+    static ABORT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ABORT.get_or_init(|| {
+        // snapshot-unrecorded: a hidden test hook failing commits ahead of their turn; never set outside the tests.
+        std::env::var_os("BAZEL_RS_TEST_ABORT_AHEAD").is_some_and(|value| value == "1")
+    })
 }
 
 /// Whether [`Engine::commit_ahead`] tried an entry for good or later.
@@ -1077,7 +1122,27 @@ impl Engine {
                     marks,
                     result,
                     elapsed,
+                    platform_known,
+                    verified,
                 } = *committed;
+                pipe.committed_entries -= segment.entries();
+                if !platform_known && self.platform_resolved(key) {
+                    // Never committed ahead (Self::commit_ahead); the turn
+                    // would have prepared it again.
+                    bump(&stats().committed_platform_late, 1);
+                    debug_assert!(
+                        false,
+                        "internal error: {} was committed ahead with a deferred target platform resolved before its turn",
+                        key.label
+                    );
+                }
+                if let Some(verified) = verified {
+                    // BAZEL_RS_VERIFY_AHEAD: the prepare its turn repeats is
+                    // the one it committed ahead.
+                    let (parts, snapshot) = *verified;
+                    self.verify_ahead(state, configured, key, rule, &parts, &snapshot);
+                    bump(&stats().verified_turn, 1);
+                }
                 self.track_replay(prepare_track);
                 prepare_effects.apply(self, true);
                 compute_effects.apply(self, true);
@@ -1706,8 +1771,10 @@ impl Engine {
         };
         match pipe.ahead.get(&index) {
             Some(Ahead::Computing { platform_known, .. }) => {
-                // Prepared again at its turn (Self::pipelined_turn_body).
-                if !platform_known && self.platform_resolved(&key) {
+                // A prepare that saw its target platform deferred is
+                // prepared again at its turn if a commit resolves it before
+                // (Self::pipelined_turn_body): it commits at its turn.
+                if !platform_known {
                     return Retry::Done(false);
                 }
             }
@@ -1715,6 +1782,12 @@ impl Engine {
         }
         if pipe.barriers.first().is_some_and(|first| *first < index) {
             bump(&stats().ahead_barrier, 1);
+            return Retry::Later;
+        }
+        // What waits for its turn is bounded (nodes and lowerings of the
+        // entries committed ahead), like the lowering queue.
+        if pipe.committed_entries >= committed_limit() {
+            bump(&stats().ahead_budget, 1);
             return Retry::Later;
         }
         if let Some(reason) = pipe.unsettled(index, &key.label) {
@@ -1773,24 +1846,27 @@ impl Engine {
         };
         let eligible = !worker.sentinel
             && worker.outcome.analyzed.as_ref().is_ok_and(|analyzed| {
-                self.commit_ahead_safe(state, &rule, analyzed, &worker.outcome)
+                self.commit_ahead_safe(state, &rule, &parts, analyzed, &worker.outcome)
             });
         if !eligible {
             bump(&stats().ahead_ineligible, 1);
         }
-        if !eligible
-            || (verify_ahead()
-                && !self.verify_commit_ahead(
-                    state,
-                    configured,
-                    pipe,
-                    &key,
-                    &rule,
-                    index,
-                    &parts,
-                    &worker.snapshot,
-                ))
-        {
+        let verified = if eligible && verify_ahead() {
+            self.verify_commit_ahead(
+                state,
+                configured,
+                pipe,
+                &key,
+                &rule,
+                index,
+                &parts,
+                &worker.snapshot,
+            )
+            .map(|(parts, snapshot)| Box::new((parts, snapshot)))
+        } else {
+            None
+        };
+        if !eligible || (verify_ahead() && verified.is_none()) {
             put_back(
                 pipe,
                 parts,
@@ -1834,16 +1910,18 @@ impl Engine {
         let aborted = std::mem::take(&mut self.ahead_aborted);
         let mut segment = std::mem::replace(&mut state.nodes, main_nodes);
         segment.segment_close(std::mem::take(&mut commit_effects.console));
-        let result = if sentinel || aborted {
+        pipe.committed_entries += segment.entries();
+        let injected = test_abort_ahead();
+        let result = if sentinel || aborted || injected {
             // Excluded by commit_ahead_safe: its commit fetches, analyzes
             // and loads nothing.
             debug_assert!(
-                false,
+                injected,
                 "internal error: the commit of {} ahead of its turn needed a fetch, an analysis or a package",
                 key.label
             );
             Err(format!(
-                "internal error: the commit of {} ahead of its turn needed a fetch, an analysis or a package",
+                "internal error: the commit of {} ahead of its turn needed a fetch, an analysis or a package (BAZEL_RS_NO_COMMIT_AHEAD=1 commits every target at its turn)",
                 key.label
             ))
         } else {
@@ -1865,12 +1943,86 @@ impl Engine {
                 marks,
                 result,
                 elapsed: prepare_elapsed + compute_elapsed + commit_elapsed,
+                platform_known,
+                verified,
             }),
         );
         pipe.note_committed(index, &key.label);
         bump(&stats().committed_ahead, 1);
         self.pipeline_committed(state, pipe, &key);
         Retry::Done(true)
+    }
+
+    /// Whether every output the commit registers lies below the target's
+    /// package output directory (`<output root>/<package exec path>/`):
+    /// the "settled" rule keys on packages, so an output elsewhere — a
+    /// shareable output named from another package's path (a C++ library's
+    /// `_solib_<cpu>/` symlink, analysis_runtime::declare_shareable), or a
+    /// main-repository root package output under `external/` (the output
+    /// tree of `@r//p`) — commits at its turn, where the first owner in plan
+    /// order registers it.
+    fn outputs_in_package(
+        &self,
+        rule: &Rule,
+        parts: &PreparedParts,
+        analyzed: &analysis::AnalysisResult,
+    ) -> bool {
+        let package = Path::new(&parts.output_root).join(rule.label.package_exec_path());
+        let main_root = rule.label.repository.is_empty() && rule.label.package.is_empty();
+        let external = Path::new(&parts.output_root).join("external");
+        let inside = |path: &str| {
+            let path = Path::new(path);
+            path != package
+                && path.starts_with(&package)
+                && !(main_root && path.starts_with(&external))
+        };
+        let actions = analyzed
+            .actions
+            .iter()
+            .flat_map(|action| &action.outputs)
+            .all(|file| inside(&file.path));
+        let runfiles = analyzed
+            .runfiles
+            .files_to_run
+            .as_ref()
+            .is_none_or(|files_to_run| {
+                files_to_run
+                    .executable()
+                    .into_iter()
+                    .chain(files_to_run.repo_mapping_manifest())
+                    .chain(files_to_run.runfiles_manifest())
+                    .all(|file| inside(&file.path))
+            });
+        actions && runfiles
+    }
+
+    /// Whether the remote platform of every spawn the commit plans is
+    /// decided without a memo filled on first need: its execution platform
+    /// is the default host platform, carries its resolved properties, or is
+    /// already in `Engine::platforms` (Engine::remote_platform; a platform
+    /// analyzed between this commit and its turn would decide otherwise).
+    fn remote_platforms_known(
+        &self,
+        parts: &PreparedParts,
+        analyzed: &analysis::AnalysisResult,
+    ) -> bool {
+        let host = &self.configurations.get(parts.config).native.host_platform;
+        analyzed.actions.iter().all(|registered| {
+            let action = &registered.action;
+            if action.write.is_some() || action.extra.transform.is_some() {
+                return true;
+            }
+            let execution = parts
+                .action_execution
+                .iter()
+                .find(|execution| execution.exec_group == registered.exec_group);
+            let label = execution.map_or(host, |execution| &execution.platform);
+            *label == crate::configuration::default_host_platform()
+                || execution.is_some_and(|execution| execution.platform_properties.is_some())
+                || self
+                    .platforms
+                    .contains_key(&ConfiguredTargetKey::new(label.clone(), parts.config))
+        })
     }
 
     /// Whether a finished entry's commit is a function of its compute and
@@ -1885,12 +2037,16 @@ impl Engine {
         &self,
         state: &ActionPlanning,
         rule: &Rule,
+        parts: &PreparedParts,
         analyzed: &analysis::AnalysisResult,
         outcome: &ComputeOutcome,
     ) -> bool {
-        rule.custom
-            .as_ref()
-            .is_some_and(|custom| custom.transitions.is_empty())
+        self.outputs_in_package(rule, parts, analyzed)
+            && self.remote_platforms_known(parts, analyzed)
+            && rule
+                .custom
+                .as_ref()
+                .is_some_and(|custom| custom.transitions.is_empty())
             && restricted_to_error(rule).is_ok()
             && !Self::workspace_status_needed(&analyzed.actions)
             && !analyzed
@@ -1945,7 +2101,7 @@ impl Engine {
         index: usize,
         parts: &PreparedParts,
         snapshot: &ComputeSnapshot,
-    ) -> bool {
+    ) -> Option<(PreparedParts, ComputeSnapshot)> {
         self.ahead = true;
         self.ahead_aborted = false;
         self.track_defer_start();
@@ -1962,17 +2118,16 @@ impl Engine {
         }
         pipe.stashed.entry(index).or_default().push(effects);
         let Ok(again) = again else {
-            return false;
+            return None;
         };
         if aborted {
-            return false;
+            return None;
         }
-        let Some((again_parts, again_snapshot)) = PreparedParts::split(again) else {
-            return false;
-        };
+        let (again_parts, again_snapshot) = PreparedParts::split(again)?;
         verify_prepared(key, parts, snapshot, &again_parts, &again_snapshot);
-        bump(&stats().verified, 1);
-        true
+        // Compared again with the prepare its turn repeats (counted there,
+        // Self::verify_ahead).
+        Some((again_parts, again_snapshot))
     }
 
     /// Prepare `key` ahead of its turn and dispatch its compute; `None`

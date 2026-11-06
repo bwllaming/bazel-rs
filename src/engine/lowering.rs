@@ -107,6 +107,11 @@ impl PlannedNodes {
         }
     }
 
+    /// The nodes and queued entries it holds.
+    pub(super) fn entries(&self) -> usize {
+        self.nodes.len() + self.queue.len()
+    }
+
     /// The segment a commit ahead of its turn plans into.
     pub(super) fn segment() -> Self {
         Self {
@@ -214,10 +219,6 @@ pub(super) struct LoweringPool {
 
 impl LoweringPool {
     pub(super) fn start(size: usize) -> Option<Self> {
-        // The workers allocate in the coordinator's jemalloc arena: what
-        // they free is reusable by it (as when it lowered every action
-        // itself), not held in arenas of their own until it decays.
-        let coordinator_arena = arena::current();
         let (sender, receiver) = mpsc::channel::<Job>();
         let receiver = Arc::new(std::sync::Mutex::new(receiver));
         let mut workers = Vec::with_capacity(size);
@@ -227,9 +228,6 @@ impl LoweringPool {
                 .name(format!("lowering-{index}"))
                 .stack_size(LOADING_WORKER_STACK)
                 .spawn(move || {
-                    if let Some(arena) = coordinator_arena {
-                        arena::bind(arena);
-                    }
                     loop {
                         let job = {
                             let receiver = receiver.lock().unwrap_or_else(|e| e.into_inner());
@@ -262,72 +260,6 @@ impl Drop for LoweringPool {
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
-    }
-}
-
-/// The calling thread's jemalloc arena (`thread.arena`), with the
-/// (default) jemalloc allocator; nothing without it. The only unsafe code
-/// is jemalloc's documented `mallctl` call (its arena binding is not part
-/// of tikv-jemallocator's API).
-#[allow(unsafe_code)]
-mod arena {
-    #[cfg(feature = "jemalloc")]
-    use tikv_jemallocator as _;
-
-    #[cfg(feature = "jemalloc")]
-    unsafe extern "C" {
-        #[cfg_attr(not(target_env = "musl"), link_name = "_rjem_mallctl")]
-        fn mallctl(
-            name: *const std::ffi::c_char,
-            oldp: *mut std::ffi::c_void,
-            oldlenp: *mut usize,
-            newp: *mut std::ffi::c_void,
-            newlen: usize,
-        ) -> std::ffi::c_int;
-    }
-
-    /// The arena this thread allocates in.
-    pub(super) fn current() -> Option<u32> {
-        #[cfg(feature = "jemalloc")]
-        {
-            let mut arena: u32 = 0;
-            let mut length = std::mem::size_of::<u32>();
-            // SAFETY: `thread.arena` reads an unsigned into `arena`, whose
-            // size `length` gives.
-            let status = unsafe {
-                mallctl(
-                    c"thread.arena".as_ptr(),
-                    (&raw mut arena).cast(),
-                    &raw mut length,
-                    std::ptr::null_mut(),
-                    0,
-                )
-            };
-            (status == 0).then_some(arena)
-        }
-        #[cfg(not(feature = "jemalloc"))]
-        None
-    }
-
-    /// Allocate in `arena` from now on.
-    pub(super) fn bind(arena: u32) {
-        #[cfg(feature = "jemalloc")]
-        {
-            let mut arena = arena;
-            // SAFETY: `thread.arena` writes an unsigned arena index read
-            // from `thread.arena` (an existing arena).
-            unsafe {
-                mallctl(
-                    c"thread.arena".as_ptr(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    (&raw mut arena).cast(),
-                    std::mem::size_of::<u32>(),
-                );
-            }
-        }
-        #[cfg(not(feature = "jemalloc"))]
-        let _ = arena;
     }
 }
 

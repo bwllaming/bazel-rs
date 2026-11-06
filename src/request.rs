@@ -1360,9 +1360,11 @@ fn destination(dependency: &Dependency) -> String {
 /// parallel phases compares this dump byte for byte between thread
 /// counts; it contains no pointer identity.
 pub fn dump_action_graph(nodes: &[PlannedAction]) {
-    if std::env::var_os("BAZEL_RS_DUMP_ACTIONS").is_none() {
+    let Some(mode) = std::env::var_os("BAZEL_RS_DUMP_ACTIONS") else {
         return;
-    }
+    };
+    // `=remote`: also each spawn's remote platform (or why it has none).
+    let remote = mode == "remote";
     for node in nodes {
         let action: &Action = &node.action;
         eprintln!("ACTION {}", action.id);
@@ -1417,6 +1419,12 @@ pub fn dump_action_graph(nodes: &[PlannedAction]) {
         }
         for (key, value) in &action.environment {
             eprintln!("  env {key}={value}");
+        }
+        if remote {
+            match &action.remote_unsupported {
+                Some(reason) => eprintln!("  remote-unsupported {reason}"),
+                None => eprintln!("  remote-platform {:?}", action.remote_platform),
+            }
         }
         if !action.execution_info.is_empty() {
             eprintln!(

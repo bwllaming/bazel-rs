@@ -414,7 +414,22 @@ with_aspect = rule(
     implementation = _with_aspect_impl,
     attrs = {"deps": attr.label_list(aspects = [asp])},
 )
+
+def _early_impl(ctx):
+    on = ctx.target_platform_has_constraint(ctx.attr.value[platform_common.ConstraintValueInfo])
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, str(on))
+    return [DefaultInfo(files = depset([out]))]
+
+# Asks for the target platform: its commit resolves the deferred default
+# one, so the targets prepared after it see it resolved (a prepare that saw
+# it deferred commits at its turn).
+early = rule(implementation = _early_impl, attrs = {"value": attr.label()})
 "#;
+
+/// The host (and so the default target) platform of the commit-ahead
+/// workspace: `//_early:early` resolves it at its commit, early in the plan.
+const P4_HOST: &str = "--host_platform=//_early:host";
 
 /// Independent packages with chains of `w` targets, a genrule and a
 /// subpackage each, a pair of equal (shared) actions, aspect
@@ -422,6 +437,14 @@ with_aspect = rule(
 fn commit_ahead_workspace(ws: &Workspace) {
     ws.file("rules/BUILD", "");
     ws.file("rules/p4.bzl", P4_DEFS);
+    ws.file(
+        "_early/BUILD",
+        "load('//rules:p4.bzl', 'early')\n\
+         constraint_setting(name = 'setting')\n\
+         constraint_value(name = 'value', constraint_setting = ':setting')\n\
+         platform(name = 'host', constraint_values = [':value'])\n\
+         early(name = 'early', value = ':value')\n",
+    );
     for package in 0..4 {
         let mut build = String::from(
             "load('//rules:p4.bzl', 'w')\npackage(default_visibility = ['//visibility:public'])\n",
@@ -482,12 +505,18 @@ fn commits_ahead_of_the_turn_keep_the_sequential_graph() {
     let reference = assert_like_sequential(
         &ws,
         &[("BAZEL_RS_DUMP_ACTIONS", "1")],
-        &["build", "--nobuild", "//..."],
+        &["build", "--nobuild", P4_HOST, "//..."],
     );
     assert!(reference.status.success(), "{}", stderr(&reference));
     let timed = ws.run_env(
         &[("BAZEL_RS_TIMING", "1"), ("BAZEL_RS_SNAPSHOT", "off")],
-        &["build", "--loading_phase_threads=8", "--nobuild", "//..."],
+        &[
+            "build",
+            "--loading_phase_threads=8",
+            "--nobuild",
+            P4_HOST,
+            "//...",
+        ],
     );
     let timed = stderr(&timed);
     let committed: u64 = timed
@@ -515,16 +544,257 @@ fn conflicts_committed_ahead_are_reported_at_their_turn() {
          w(name = 'b', out = 'clash.txt', content = 'B', deps = ['//s1:x1'])\n\
          w(name = 'later', out = 'later.txt', deps = [':b', '//s3:x4'])\n",
     );
-    let reference = assert_like_sequential(&ws, &[], &["build", "--nobuild", "//..."]);
+    let reference = assert_like_sequential(&ws, &[], &["build", "--nobuild", P4_HOST, "//..."]);
     assert!(!reference.status.success());
     assert!(
         stderr(&reference).contains("conflicting actions"),
         "{}",
         stderr(&reference)
     );
-    let keep_going =
-        assert_like_sequential(&ws, &[], &["build", "--nobuild", "--keep_going", "//..."]);
+    let keep_going = assert_like_sequential(
+        &ws,
+        &[],
+        &["build", "--nobuild", "--keep_going", P4_HOST, "//..."],
+    );
     assert!(!keep_going.status.success());
+}
+
+/// A rule of the allowlisted package `test` declaring a shareable
+/// artifact named from another package's path, as a C++ link's
+/// `_solib_<cpu>/` symlink is (BuiltinRestriction's `test` entry).
+const SHARE_DEFS: &str = r#"
+def _link_impl(ctx):
+    print("link %s" % ctx.label)
+    total = 0
+    for i in range(ctx.attr.work):
+        total += i * i
+    so = ctx.actions.declare_shareable_artifact("_solib_k8/libb_Slibfoo.so")
+    ctx.actions.write(so, ctx.attr.content)
+    out = ctx.actions.declare_file(ctx.label.name + ".bin")
+    ctx.actions.run_shell(
+        inputs = [so] + [f for dep in ctx.attr.deps for f in dep[DefaultInfo].files.to_list()],
+        outputs = [out],
+        command = "cat %s > %s; echo %d >> %s" % (so.path, out.path, total % 5, out.path),
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+link = rule(
+    implementation = _link_impl,
+    attrs = {
+        "content": attr.string(default = "so"),
+        "deps": attr.label_list(),
+        "work": attr.int(default = 100),
+    },
+)
+"#;
+
+/// `//sa:x` (slow, earlier in plan order) and `//sb:y` (fast, later) both
+/// declare the same shareable `_solib_k8/...` output, outside both
+/// packages; `content` equal: one shared action, else a conflict.
+fn shareable_workspace(ws: &Workspace, other_content: &str) {
+    commit_ahead_workspace(ws);
+    ws.file("test/BUILD", "");
+    ws.file("test/share.bzl", SHARE_DEFS);
+    ws.file(
+        "sa/BUILD",
+        "load('//test:share.bzl', 'link')\n\
+         link(name = 'x', deps = ['//s3:x4'], work = 40000)\n",
+    );
+    ws.file(
+        "sb/BUILD",
+        &format!(
+            "load('//test:share.bzl', 'link')\n\
+             link(name = 'y', content = '{other_content}')\n"
+        ),
+    );
+}
+
+/// P4 review item 1: an output outside the target's package (a shareable
+/// artifact such as a solib symlink) is not settled by the package rule:
+/// such a target commits at its turn, so the first owner in plan order
+/// owns the shared action, and a conflict names the same owners, at every
+/// thread count and with jitter.
+#[test]
+fn shareable_outputs_outside_the_package_commit_at_their_turn() {
+    for other_content in ["so", "other"] {
+        let ws = Workspace::new();
+        shareable_workspace(&ws, other_content);
+        let reference = assert_like_sequential(
+            &ws,
+            &[("BAZEL_RS_DUMP_ACTIONS", "1")],
+            &["build", "--nobuild", P4_HOST, "//..."],
+        );
+        let text = stderr(&reference);
+        if other_content == "so" {
+            assert!(reference.status.success(), "{text}");
+            // One action produces it: the first owner's in plan order.
+            assert_eq!(
+                text.lines()
+                    .filter(|line| line.starts_with("  output ")
+                        && line.ends_with("_solib_k8/libb_Slibfoo.so"))
+                    .count(),
+                1,
+                "{text}"
+            );
+            assert!(text.contains("ACTION //sa:x#0"), "{text}");
+        } else {
+            assert!(!reference.status.success(), "{text}");
+            assert!(text.contains("conflicting actions"), "{text}");
+        }
+    }
+}
+
+/// P4 review item 2 (a guard): a spawn's remote platform reads
+/// Engine::platforms, filled on first need; a target whose spawns' execution
+/// platform is not resolved yet commits at its turn, and one whose prepare
+/// saw its target platform deferred commits at its turn too. With a
+/// non-default host platform carrying exec properties and a rule resolving
+/// the target platform at its commit, the remote platforms in the dump
+/// (`BAZEL_RS_DUMP_ACTIONS=remote`) are the sequential ones at every thread
+/// count. (Here the explicit host platform is resolved before phase 2, so
+/// the run also pins that no spawn changes platform.)
+#[test]
+fn remote_platforms_resolved_late_commit_at_their_turn() {
+    let ws = Workspace::new();
+    library_workspace(&ws);
+    ws.file(
+        "plat/BUILD",
+        "package(default_visibility = ['//visibility:public'])\n\
+         constraint_setting(name = 'os')\n\
+         constraint_value(name = 'linux', constraint_setting = ':os')\n\
+         platform(name = 'p', constraint_values = [':linux'], exec_properties = {'pool': 'big'})\n",
+    );
+    ws.file(
+        "rules/probe.bzl",
+        "def _probe_impl(ctx):\n\
+         \x20   linux = ctx.target_platform_has_constraint(ctx.attr._linux[platform_common.ConstraintValueInfo])\n\
+         \x20   out = ctx.actions.declare_file(ctx.label.name + '.txt')\n\
+         \x20   ctx.actions.run_shell(outputs = [out], command = 'echo %s > %s' % (linux, out.path))\n\
+         \x20   return [DefaultInfo(files = depset([out]))]\n\
+         probe = rule(implementation = _probe_impl, attrs = {'deps': attr.label_list(), '_linux': attr.label(default = '//plat:linux')})\n",
+    );
+    ws.file(
+        "q/BUILD",
+        "load('//rules:probe.bzl', 'probe')\nprobe(name = 'probe', deps = ['//p5:t7'])\n",
+    );
+    let mut z = String::from("load('//rules:defs.bzl', 'lib')\n");
+    for index in 0..8 {
+        z.push_str(&format!("lib(name = 'z{index}', work = 200)\n"));
+    }
+    ws.file("z/BUILD", &z);
+    let reference = assert_like_sequential(
+        &ws,
+        &[("BAZEL_RS_DUMP_ACTIONS", "remote")],
+        &["build", "--nobuild", "--host_platform=//plat:p", "//..."],
+    );
+    let text = stderr(&reference);
+    assert!(reference.status.success(), "{text}");
+    assert!(text.contains("  remote-"), "{text}");
+}
+
+/// P4 review item 3: BAZEL_RS_VERIFY_AHEAD repeats the prepare of every
+/// entry committed ahead at its turn (and compares it), besides right
+/// before its commit; no entry committed ahead had its target platform
+/// resolved before its turn.
+#[test]
+fn verify_ahead_checks_commits_ahead_at_their_turn() {
+    let ws = Workspace::new();
+    commit_ahead_workspace(&ws);
+    let timed = ws.run_env(
+        &[
+            ("BAZEL_RS_TIMING", "1"),
+            ("BAZEL_RS_SNAPSHOT", "off"),
+            ("BAZEL_RS_VERIFY_AHEAD", "1"),
+        ],
+        &[
+            "build",
+            "--loading_phase_threads=8",
+            "--nobuild",
+            P4_HOST,
+            "//...",
+        ],
+    );
+    assert!(timed.status.success(), "{}", stderr(&timed));
+    let timed = stderr(&timed);
+    let field = |name: &str| -> u64 {
+        timed
+            .lines()
+            .filter(|line| line.starts_with("PERF-PARALLEL "))
+            .flat_map(str::split_whitespace)
+            .find_map(|field| field.strip_prefix(name))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("no {name}: {timed}"))
+    };
+    let committed = field("committed_ahead=");
+    assert_eq!(field("verified_turn="), committed, "{timed}");
+    assert_eq!(field("platform_late="), 0, "{timed}");
+}
+
+/// P4 review item 4: a commit ahead of its turn that needed a fetch, an
+/// analysis or a package (BAZEL_RS_TEST_ABORT_AHEAD forces it) is an
+/// internal error at its turn naming the workaround, which builds.
+#[test]
+fn an_aborted_commit_ahead_names_the_workaround() {
+    let ws = Workspace::new();
+    commit_ahead_workspace(&ws);
+    let failed = ws.run_env(
+        &[
+            ("BAZEL_RS_SNAPSHOT", "off"),
+            ("BAZEL_RS_TEST_ABORT_AHEAD", "1"),
+            ("BAZEL_RS_TIMING", "1"),
+        ],
+        &[
+            "build",
+            "--loading_phase_threads=8",
+            "--nobuild",
+            P4_HOST,
+            "//...",
+        ],
+    );
+    let text = stderr(&failed);
+    if text.contains("committed_ahead=0 ") {
+        return; // Nothing finished ahead of its turn on this run.
+    }
+    assert!(!failed.status.success(), "{text}");
+    assert!(
+        text.contains(
+            "ahead of its turn needed a fetch, an analysis or a package (BAZEL_RS_NO_COMMIT_AHEAD=1"
+        ),
+        "{text}"
+    );
+    let workaround = ws.run_env(
+        &[
+            ("BAZEL_RS_SNAPSHOT", "off"),
+            ("BAZEL_RS_TEST_ABORT_AHEAD", "1"),
+            ("BAZEL_RS_NO_COMMIT_AHEAD", "1"),
+        ],
+        &[
+            "build",
+            "--loading_phase_threads=8",
+            "--nobuild",
+            P4_HOST,
+            "//...",
+        ],
+    );
+    assert!(workaround.status.success(), "{}", stderr(&workaround));
+}
+
+/// P4 review item 5: with the segments of entries committed ahead bounded
+/// to one node (BAZEL_RS_COMMITTED_LIMIT), commits ahead wait for turns to
+/// consume them; the result is the sequential one.
+#[test]
+fn committed_segments_are_bounded() {
+    let ws = Workspace::new();
+    commit_ahead_workspace(&ws);
+    let reference = assert_like_sequential(
+        &ws,
+        &[
+            ("BAZEL_RS_DUMP_ACTIONS", "1"),
+            ("BAZEL_RS_COMMITTED_LIMIT", "1"),
+        ],
+        &["build", "--nobuild", P4_HOST, "//..."],
+    );
+    assert!(reference.status.success(), "{}", stderr(&reference));
 }
 
 /// A dependency cycle among Starlark targets: phase 1 reports it, the
