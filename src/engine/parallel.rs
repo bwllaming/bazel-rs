@@ -1015,6 +1015,28 @@ fn registers_no_output(rule: &Rule) -> bool {
     }
 }
 
+/// BAZEL_RS_VERIFY_AHEAD: run the commit of a rule its classification
+/// counted as registering no output ([`registers_no_output`]: its outputs
+/// known, empty), checking that it registers none.
+/// `key`: the committing target's, when BAZEL_RS_VERIFY_AHEAD is on.
+pub(super) fn verify_no_outputs<T>(
+    key: Option<&ConfiguredTargetKey>,
+    rule: &Rule,
+    commit: impl FnOnce() -> T,
+) -> T {
+    match key {
+        Some(key) if registers_no_output(rule) => {
+            verify_registered(key, Some(OutputSummary::default()), commit)
+        }
+        _ => commit(),
+    }
+}
+
+/// Whether BAZEL_RS_VERIFY_AHEAD=1 is on.
+pub(super) fn verifying_ahead() -> bool {
+    verify_ahead()
+}
+
 /// BAZEL_RS_VERIFY_AHEAD: the output summary to check a commit of
 /// `outcome` against.
 fn summary_to_verify(outcome: &ComputeOutcome) -> Option<OutputSummary> {

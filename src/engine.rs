@@ -15871,7 +15871,10 @@ impl Engine {
                 kind,
             };
             let timer = StageTimer::start(PlanStage::Commit, index, class);
-            let committed = self.commit_target(state, configured, rule, prepared, computed);
+            let verified_key = parallel::verifying_ahead().then(|| prepared.key.clone());
+            let committed = parallel::verify_no_outputs(verified_key.as_ref(), rule, || {
+                self.commit_target(state, configured, rule, prepared, computed)
+            });
             timer.finish();
             committed?;
         }

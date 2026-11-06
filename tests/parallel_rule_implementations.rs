@@ -1234,3 +1234,41 @@ fn verify_ahead_accepts_a_stamped_executing_build() {
     let reference = assert_like_sequential(&ws, &[], &["build", "//q:all"]);
     assert!(reference.status.success(), "{}", stderr(&reference));
 }
+
+/// Plan B review item 3: native rules classified as registering no output
+/// (known outputs, empty) are checked by BAZEL_RS_VERIFY_AHEAD too: their
+/// commits register none (`verified_outputs=` counts them).
+#[test]
+fn verify_ahead_checks_native_rules_register_no_outputs() {
+    let ws = Workspace::new();
+    library_workspace(&ws);
+    ws.file(
+        "n/BUILD",
+        "filegroup(name = 'fg', srcs = ['//p0:t3', 'f.txt'])\n\
+         alias(name = 'al', actual = ':fg')\n\
+         filegroup(name = 'fg2', srcs = [':al'])\n",
+    );
+    ws.file("n/f.txt", "f\n");
+    let reference = assert_like_sequential(&ws, &[], &["build", "--nobuild", "//..."]);
+    assert!(reference.status.success(), "{}", stderr(&reference));
+    let timed = ws.run_env(
+        &[
+            ("BAZEL_RS_TIMING", "1"),
+            ("BAZEL_RS_SNAPSHOT", "off"),
+            ("BAZEL_RS_VERIFY_AHEAD", "1"),
+        ],
+        &["build", "--loading_phase_threads=8", "--nobuild", "//..."],
+    );
+    let timed = stderr(&timed);
+    let field = |name: &str| -> u64 {
+        timed
+            .lines()
+            .filter(|line| line.starts_with("PERF-PARALLEL "))
+            .flat_map(str::split_whitespace)
+            .find_map(|field| field.strip_prefix(name))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("no {name}: {timed}"))
+    };
+    // The 48 Starlark targets and the three native ones.
+    assert!(field("verified_outputs=") >= 51, "{timed}");
+}
