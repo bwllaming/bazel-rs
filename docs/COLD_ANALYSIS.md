@@ -160,28 +160,99 @@ coordinator's own work (~55 s); genuine's 10.7 s comes from Skyframe
 running whole configured-target functions — prepare, implementation and
 action registration — concurrently, ordering nothing but their results.
 
+## Deferred lowering and commits ahead of the turn (P4)
+
+Design and determinism: docs/PARALLEL_ANALYSIS.md, "P4". In short:
+
+- **Hash indexes.** The output producers (exact path lookups plus a set of
+  every registered path's ancestors for the prefix check, which an ordered
+  map answered by comparing paths component by component), `declared` and
+  the configured-target-keyed planning maps that are only looked up (`dry`,
+  providers, provider keys, runfiles, transitive repositories, edge
+  configurations, toolchain and exec-group contexts, exec configurations)
+  are `FxHashMap`s; the planning tail's reachability walk is hashed too.
+- **Lowering on workers.** The pure tail of every action's commit (listing,
+  structure and namespace checks, the source split, runfiles manifest and
+  tree nodes) runs on 4 lowering workers and is placed in commit order; the
+  shared input run of a PyCompile action (the Python runtime's 1,657 files)
+  joins its inputs there, not as a per-action copy on the coordinator.
+- **Commits ahead of the turn.** A target whose compute finished on a worker
+  commits as soon as its outputs are settled, so its dependents are
+  prepared and computed ahead too: implementations computed at their turn
+  on the coordinator 16,042 → ~6,700, commits ahead ~22,000.
+- The analysis worker also resolves the repo mapping manifests of
+  `create_repo_mapping_manifest` actions; `display_form` no longer copies
+  the main repository mapping per call.
+
+Same setup as above (private clone at `80d6724f3a`, repositories warm,
+`BAZEL_RS_SNAPSHOT=off` unless noted, `nice -n 10`, the shared 64-core host,
+loaded by other work — run-to-run noise is several seconds). Before: main
+`985c6423` (0.4.13); after: this branch.
+
+| command | before | after | genuine 9.3.1 |
+|---|---|---|---|
+| `build --nobuild //src/...` wall | 72.1 / 69.4 s | **55.3 / 55.5 s** | 10.7 s |
+| — CPU user + sys | 90.6 + 43.7 / 90.2 + 42.2 s | 96.6 + 42.9 / 97.3 + 42.7 s | 278.8 + 21.9 s |
+| — peak RSS | 8,805 / 8,811 MB | 8,908 / 8,875 MB (+1%) | 8,365 MB |
+| — `plan.phase1_analysis_done` | 54.7 s | 43.5 s | – |
+| — stage totals: commit / prepare | 22.8 / 9.8 s | 9.3 / 8.1 s | – |
+| `test --nobuild //src/...` wall | 70.1 s | **56.3 s** | 10.2 s |
+| — CPU user + sys, peak RSS | 91.4 + 42.2 s, 8,785 MB | 98.7 + 42.8 s, 8,859 MB | 279.5 + 15.5 s, 7,818 MB |
+| `build --nobuild` recording the snapshot (default mode) | 87.4 s, 9,620 MB | 72.4 s, 9,751 MB | – |
+| CI `affected --base=HEAD^` wall | 78.9 s | **67.0 s** | – |
+| — CPU user + sys, peak RSS | 159.4 + 152.7 s, 7,415 MB | 169.1 + 153.6 s, 7,428 MB | – |
+| `affected` P2 pair (lockfile change, both revisions in full, warm) | 204.3 s, 9,673 MB | 182.1 s, 9,749 MB | – |
+
+The coordinator is still CPU-bound for the whole run. Sampled (pprof,
+phase 1 + phase 2 + tail, ~52 s): commits 14.9 s (ahead of their turn
+included), implementations computed at their turn 10.4 s (the
+`py_library` and `go_library` chains whose dependencies settle late: 738
+`py_library` take 3.9 s), phase-1 analysis 9.1 s, prepares 7.4 s, the
+planning tail 5.4 s, classification 1.4 s, package loading 1.4 s. Without
+the lowering workers' arena binding the concurrent `affected` peaked 7%
+higher (freed temporaries held in their own arenas until decay).
+
 ## What remains
 
-Profile of this revision, phase 1 (~59 s on the coordinator): Starlark rule
-implementations ~16 s, commits ~17 s, `prepare` ~9 s, the rest configured
-analysis (`analyze`, toolchain resolution, `config_conditions`), with ~12 s
-of `BTreeMap` lookups (labels, package ids, files, configured-target keys,
-output paths) spread over all of them.
+The target of this work was ≤ 25 s; 55 s is where the coordinator's own
+work leaves it. The rest of the per-target-delta design (the independent
+review's plan B), in order:
 
-- **Per-target commits off the coordinator.** P3 (above) moved the
-  implementations whose dependencies commit early; what bounds the wall
-  time now is one thread committing every target in plan order. Next: make
-  a target's commit a function of its own result and its dependencies'
-  committed results (its actions, artifact registrations, runfiles nodes —
-  conflicts and shared actions decided by owner order at the merge), run
-  prepare + implementation + commit per target on workers in dependency
-  order, and merge the per-target results in plan order (the action order,
-  first registration, errors and prints all follow from that merge).
-- **Shared input vectors.** Every PyCompile node still lists the runtime's
-  1,657 inputs in its own vector (26 KB per action); a shared input run held
-  by reference, like the runfiles groups (PA-1) but in the middle of the
-  input order, would shrink the plan and the commit further.
-- Hash indexes beside the hot `BTreeMap`s whose order is never observed
-  (done for the File → Artifact index; the `ConfiguredTargetKey`-keyed
-  planning maps cost ~3 s of lookups, but some are iterated through
-  parameters under other names and need an audit first).
+- **The commit on workers.** What stays on the coordinator in a commit:
+  output registration, input resolution through the artifact index, the
+  runfiles support's lookups and registrations, `validate_output_directory`
+  (filesystem probes), the providers' inserts (~9 s, plus the commits of
+  native rules, ~3 s). Make it a per-target delta computed on the worker
+  that ran the implementation: the artifact index as a sharded, stamped
+  concurrent map (reads with the target's visibility, as
+  `ArtifactIndex::stamp_ahead` already defines it), the producers stamped
+  with the registering plan index, and the dependency-visible results (dry
+  files, providers, runfiles, transitive repositories) published when the
+  delta is made. The coordinator then only merges deltas in plan order:
+  nodes and lowerings (already a queue), console, observations, tracker
+  events and warnings (already held per target).
+- **Conflicts decided at the merge, not avoided by waiting.** Commits ahead
+  now wait for every earlier uncommitted entry of the same, an enclosing or
+  an enclosed package (`PERF-PARALLEL unsettled`: the same package is 94%
+  of the waits). A prefix conflict can be decided at the merge (an earlier
+  registration ignores later-stamped paths; the later target fails at its
+  turn with the sequential message). An exact path is a shared action or a
+  conflict, and a shared action changes the artifacts dependents see:
+  there, compare the target's known outputs with those of the earlier
+  entries that already finished (their computes are known) and wait only
+  for the unknown ones.
+- **Aspect barriers.** A Starlark rule never prepared ahead (attribute
+  aspects) blocks every later commit ahead until its turn; aspect
+  applications as deltas of their own, keyed like their `AspectKey`.
+- **The prepare on workers.** Dependency views, toolchain contexts and the
+  ctx surface read engine state behind `&mut self` memos (~8 s); they need
+  shared (read-mostly) memos first.
+- **Phase 1** (~9 s) analyzes in a depth-first walk whose `config_setting`
+  flushes (2,357 on `//src/...`) commit everything pending: the walk order
+  is the plan order, so phase 1 stays one thread until analysis itself is
+  keyed like Skyframe's configured-target functions.
+- **Shared input vectors by reference.** The coordinator no longer copies a
+  shared run, but each planned PyCompile node still lists the runtime's
+  1,657 inputs (26 KB per action, ~14 MB on `//src/...`); holding the run
+  by reference needs the scheduler, the action keys and the snapshot codec
+  to accept an input group in the middle of the order.

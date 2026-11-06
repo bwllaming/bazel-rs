@@ -733,6 +733,112 @@ stderr identical to main's, also at threads 1 and with 32 workers and 5 ms jitte
 (text and summary) identical; the CI `affected` output and both digest
 files identical.
 
+## P4 — deferred action lowering and commits ahead of the turn
+
+P3 left one thread committing every target in plan order. P4 takes the
+first two slices of the per-target-delta design of the review ("each
+target's prepare + implementation + commit run on workers in dependency
+order, merged in plan order"): the pure tail of every commit runs on
+workers, and a finished target whose commit cannot depend on the turn
+order commits as soon as its compute finishes, its order-observable
+effects held for its turn. Code: `src/engine/lowering.rs`,
+`src/engine/parallel.rs` (`commit_ahead`), `src/ui.rs` (`HELD`).
+
+**Deferred lowering.** An action's commit splits in two. The coordinator
+keeps everything the turn order decides: output registration (producers,
+the artifact index, `declared`), input resolution through the index, the
+tool runfiles groups' first expansion, the shared input runs' memo, the
+exec group table, the workspace status. The rest — listing the resolved
+inputs, the structural and namespace checks (`validate_structure`, the
+shared-group check), the source/generated split (`plan_action_sources`),
+the runfiles support's manifest and tree nodes, joining a shared input run
+(the Python runtime of every PyCompile) into the inputs — is a function of
+what the coordinator hands over and runs on a lowering worker (4 by default,
+`BAZEL_RS_LOWERING_WORKERS`, 0: on the coordinator; they allocate in the
+coordinator's jemalloc arena, so what they free is reusable by it).
+
+- *Order.* `ActionPlanning::nodes` is a queue (`PlannedNodes`): a node the
+  coordinator plans is pushed behind everything queued, a lowering in
+  flight holds its slot, and entries are placed strictly in queue order
+  (each walk turn places what is done; at most 2,048 entries wait).
+- *Console.* While a lowering is in flight the coordinator's console
+  writes are held below every `DeferredConsole` (`ui::HELD`) and cut at each
+  dispatched lowering, so each block is written once everything queued
+  before it is placed.
+- *First error.* A failed lowering is the first error of the walk: the
+  entries queued after it, the console writes held after it and the
+  warnings/errors recorded since are dropped — the sequential engine never
+  made them. An error a turn raises first places everything queued before
+  it (a failed earlier lowering wins). Every walk drains its queue before it
+  returns: nothing is in flight outside a walk.
+- *Scope.* Only a pipelined walk without `--keep_going` defers (a
+  keep-going failure must skip its dependents at its own turn); work ahead
+  of its turn lowers inline; `--loading_phase_threads=1` and
+  `BAZEL_RS_DEBUG_NO_PARALLEL_ANALYSIS` are the sequential engine.
+- *Test hook.* `BAZEL_RS_LOWERING_FAIL=<action id>,…` fails chosen
+  lowerings wherever they run (registration checks most of what lowering
+  checks, so a lowering failure is otherwise hard to provoke).
+
+**Commits ahead of the turn.** A worker reports each finished compute
+(`AnalysisPool::finished`); at every turn, and while the turn waits for its
+own compute, the coordinator commits finished entries ahead of their turn
+(`Engine::commit_ahead`) when their commit cannot depend on the order:
+
+- *Outputs settled* (`Pipeline::unsettled`): no classified, uncommitted
+  earlier entry of the same package (exact output paths: shared actions and
+  conflicts), of an enclosing or an enclosed package (prefix conflicts), and
+  no earlier uncommitted Starlark rule that is never prepared ahead (an
+  aspect barrier: aspect applications register outputs in other packages).
+- *Safe commit* (`commit_ahead_safe`): the compute succeeded without a
+  sentinel; no transition allowlist (it loads its package), no workspace
+  status needed (registered on first need), the runfiles support's pure part
+  computed by the worker, no repo mapping manifest or build-info action left
+  to resolve (the worker now resolves `create_repo_mapping_manifest`'s
+  content too), every tool runfiles group and shared input run its actions
+  use already memoized.
+- *Held.* It commits like a prepare ahead: `self.ahead` (an analysis or
+  package load would abort — an internal error, as would a repository
+  demand under the no-demand guard), its registrations stamped with its plan
+  index (`ArtifactIndex::stamp_ahead`), its console, observations and
+  obtained roots in an `Isolation`, its tracker events deferred, the
+  warnings/errors it records split off, its nodes and lowerings in a segment
+  (`PlannedNodes::segment`) with its console cut at each lowering. Its turn
+  replays the prepare's, compute's and commit's held effects in that order
+  and splices the segment into the queue (`PlannedNodes::splice`); a commit
+  that failed ahead returns its error there.
+- *Dependents.* What dependents read (dry files, providers, runfiles,
+  transitive repositories, artifacts) is final when it commits, so they are
+  classified ready and prepared ahead earlier; an earlier turn never reads
+  it (plan order is post-order; registrations are stamped).
+- `BAZEL_RS_NO_COMMIT_AHEAD` turns it off; `BAZEL_RS_VERIFY_AHEAD=1`
+  repeats the prepare right before the commit ahead and compares
+  (`verify_prepared`, P3's comparison); `BAZEL_RS_TIMING=1` adds
+  `PERF-PARALLEL committed_ahead= later_barrier= later_package= ineligible=
+  turn_compute= walks(...)`, the reasons outputs were unsettled and the rule
+  classes computed at their turn.
+
+**Determinism evidence.** `tests/parallel_rule_implementations.rs` gains
+`lowering_failures_are_reported_at_their_turn` (Starlark and runfiles
+manifest/tree lowerings failing at worker speed, with and without
+`--keep_going`), `commits_ahead_of_the_turn_keep_the_sequential_graph`
+(independent packages with subpackages, genrules beside Starlark rules, a
+shared action pair, an aspect-applying rule in the middle; the full action
+dump) and `conflicts_committed_ahead_are_reported_at_their_turn`, all at
+threads 2/8/32, with 25/40 ms jitter and VERIFY_AHEAD, against threads 1.
+On ~/code (`80d6724f3a`, `BAZEL_RS_SNAPSHOT=off`): the action dump of
+`build --nobuild` and `test --nobuild //src/...` (6,483,434 lines) and the
+rest of stderr identical to main's, also at threads 1 and at 32 threads with
+5 ms jitter; `BAZEL_RS_VERIFY_AHEAD=1` clean (32,281 verified); `aquery`
+text and summary identical; the CI `affected` output and digests identical,
+and on the P1 (`470886f0 → 7ab6d35d`), P2 (`e7b42879 → 9e6b547e`) and
+`2c7b638 → 3f5b7908` pairs; a snapshot the pipelined run records verifies
+(`BAZEL_RS_SNAPSHOT=verify`) against the full analysis at threads 1 and 8.
+
+**Not yet** (docs/COLD_ANALYSIS.md, "What remains"): the commit itself and
+the prepare still run on the coordinator; an exact-path conflict or shared
+action with an uncommitted earlier entry is avoided by waiting, not decided
+at the merge.
+
 ## Phase-1 prefetch (W6, `src/prefetch.rs`)
 
 P2 parallelized only the packages a target pattern names. On a warm
