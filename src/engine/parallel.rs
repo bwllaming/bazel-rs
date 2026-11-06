@@ -125,6 +125,15 @@ thread_local! {
 /// Note an output path a commit registers (BAZEL_RS_VERIFY_AHEAD records
 /// them to check the commit's [`OutputSummary`]).
 pub(super) fn record_registered_output(output: &Path) {
+    // The workspace status files belong to no target: whichever commit
+    // needs them first registers them (Engine::ensure_workspace_status), and
+    // a commit that needs them never commits ahead of its turn.
+    if matches!(
+        output.to_str(),
+        Some("bazel-out/stable-status.txt" | "bazel-out/volatile-status.txt")
+    ) {
+        return;
+    }
     REGISTERED.with(|registered| {
         if let Some(registered) = registered.borrow_mut().as_mut() {
             registered.push(path_hash(output));
@@ -1156,6 +1165,7 @@ impl Engine {
         let result = drained.and(result);
         state.delegated_keys.clear();
         state.artifact_index.walk_done();
+        state.producers.set_stamp(None);
         if result.is_err() {
             // The build stops here: the computes still queued for turns
             // that never come are skipped, the running ones joined.
@@ -1184,6 +1194,7 @@ impl Engine {
             state.done += 1;
             // Registrations made ahead of their turn become visible at it.
             state.artifact_index.at_turn(index);
+            state.producers.set_stamp(Some(index));
             crate::progress::analysis_configured(state.done);
             self.flush_delegations(state);
             self.pipeline_wake(state, pipe);
@@ -2171,6 +2182,7 @@ impl Engine {
         let isolation = Isolation::enter();
         // What it registers is visible from its turn on (as sequentially).
         let stamp = state.artifact_index.stamp_ahead(index);
+        let producer_stamp = state.producers.set_stamp(Some(index));
         let started = std::time::Instant::now();
         let timer = StageTimer::start(PlanStage::Commit, index as u64, class);
         let result = verify_registered(&key, summary_to_verify(&outcome), || {
@@ -2185,6 +2197,7 @@ impl Engine {
         timer.finish();
         let commit_elapsed = started.elapsed();
         state.artifact_index.restore_stamp(stamp);
+        state.producers.restore_stamp(producer_stamp);
         let (mut commit_effects, sentinel) = isolation.finish();
         let commit_track = self.track_defer_finish();
         self.ahead = false;

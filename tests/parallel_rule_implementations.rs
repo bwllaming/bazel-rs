@@ -1132,3 +1132,105 @@ fn declared_outputs_checked_on_workers_fail_at_their_turn() {
     assert!(!reference.status.success(), "{text}");
     assert!(text.contains("crosses a package boundary"), "{text}");
 }
+
+/// A rule of the allowlisted package `test` declaring a shareable artifact
+/// at a chosen path below the output root (any package's directory).
+const SHARE_AT_DEFS: &str = r#"
+def _share_at_impl(ctx):
+    print("share_at %s" % ctx.label)
+    total = 0
+    for i in range(ctx.attr.work):
+        total += i * i
+    out = ctx.actions.declare_shareable_artifact(ctx.attr.path)
+    ctx.actions.write(out, "%d" % (total % 3))
+    return [DefaultInfo(files = depset([out]))]
+
+share_at = rule(
+    implementation = _share_at_impl,
+    attrs = {"path": attr.string(), "work": attr.int(default = 100)},
+)
+"#;
+
+/// Plan B review item 1: an earlier entry whose outputs are still unknown
+/// declares a shareable artifact in another package (`//a:a` writes
+/// `b/x`), where a later entry with known outputs (`//b:b`, output `x`)
+/// may commit ahead of its turn and register the path first. The commit at
+/// the earlier turn then stops the build with the internal error naming
+/// BAZEL_RS_NO_COMMIT_AHEAD=1 (the backstop) — never the owners in reverse
+/// or the shared action given to the later target — and the workaround is
+/// the sequential build.
+#[test]
+fn a_shareable_output_met_ahead_of_its_turn_stops_with_the_workaround() {
+    let ws = Workspace::new();
+    ws.file("rules/BUILD", "");
+    ws.file("rules/known.bzl", KNOWN_DEFS);
+    ws.file("rules/p4.bzl", P4_DEFS);
+    ws.file("test/BUILD", "");
+    ws.file("test/share_at.bzl", SHARE_AT_DEFS);
+    ws.file(
+        "_early/BUILD",
+        "load('//rules:p4.bzl', 'early')\n\
+         constraint_setting(name = 'setting')\n\
+         constraint_value(name = 'value', constraint_setting = ':setting')\n\
+         platform(name = 'host', constraint_values = [':value'])\n\
+         early(name = 'early', value = ':value')\n",
+    );
+    ws.file(
+        "a/BUILD",
+        "load('//test:share_at.bzl', 'share_at')\n\
+         share_at(name = 'a', path = 'b/x', work = 400000)\n",
+    );
+    ws.file(
+        "b/BUILD",
+        "load('//rules:known.bzl', 's')\n\
+         s(name = 'b', out = 'x', work = 100)\n",
+    );
+    let args = ["build", "--nobuild", P4_HOST, "//..."];
+    let off = [("BAZEL_RS_SNAPSHOT", "off")];
+    let mut sequential_args = vec!["build", "--loading_phase_threads=1"];
+    sequential_args.extend(&args[1..]);
+    let sequential = ws.run_env(&off, &sequential_args);
+    assert!(!sequential.status.success(), "{}", stderr(&sequential));
+    let mut parallel_args = vec!["build", "--loading_phase_threads=8"];
+    parallel_args.extend(&args[1..]);
+    let parallel = ws.run_env(&off, &parallel_args);
+    let text = stderr(&parallel);
+    if text.contains("internal error: output") {
+        assert!(
+            text.contains("ahead of its turn") && text.contains("BAZEL_RS_NO_COMMIT_AHEAD=1"),
+            "{text}"
+        );
+    } else {
+        assert_eq!(text, stderr(&sequential));
+    }
+    let workaround = ws.run_env(
+        &[
+            ("BAZEL_RS_SNAPSHOT", "off"),
+            ("BAZEL_RS_NO_COMMIT_AHEAD", "1"),
+        ],
+        &parallel_args,
+    );
+    assert_eq!(workaround.status.code(), sequential.status.code());
+    assert_eq!(stderr(&workaround), stderr(&sequential));
+}
+
+/// Plan B review item 2: a stamped target registers the workspace status
+/// files inside its commit (first need); BAZEL_RS_VERIFY_AHEAD's check of
+/// the commit's outputs leaves them out (they are no target's), so a
+/// stamped executing build verifies.
+#[test]
+fn verify_ahead_accepts_a_stamped_executing_build() {
+    let ws = Workspace::new();
+    library_workspace(&ws);
+    ws.file("rules/known.bzl", KNOWN_DEFS);
+    ws.file(
+        "q/BUILD",
+        "load('//rules:known.bzl', 's')\n\
+         s(name = 'a', out = 'a.txt', stamp = True, deps = ['//p1:t2'])\n\
+         s(name = 'b', out = 'b.txt', stamp = True)\n",
+    );
+    let warm = ws.run_env(&[], &["build", "--loading_phase_threads=1", "//q:all"]);
+    assert!(warm.status.success(), "{}", stderr(&warm));
+    let reference = assert_like_sequential(&ws, &[], &["build", "//q:all"]);
+    assert!(reference.status.success(), "{}", stderr(&reference));
+}

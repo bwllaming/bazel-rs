@@ -18140,25 +18140,73 @@ fn check_macro_namespace(rule: &Rule, target: &Label) -> Result<(), String> {
 /// The build's producers of output paths, global across configurations
 /// (Bazel's action graph: MapBasedActionGraph, ArtifactPrefixConflicts):
 /// one shared [`OutputProducer`] per producing action (or native output).
-#[derive(Default)]
 struct Producers {
     /// Output path -> producer (lookups only, never iterated in an order
-    /// that is observed).
-    paths: crate::fast_hash::FxHashMap<PathBuf, Arc<OutputProducer>>,
+    /// that is observed), with the plan index that registered it.
+    paths: crate::fast_hash::FxHashMap<PathBuf, (Arc<OutputProducer>, u32)>,
     /// Every proper ancestor of a registered output path: a path in it has
     /// a registered path below it (the prefix-conflict check), answered
     /// without an ordered map.
     ancestors: crate::fast_hash::FxHashSet<PathBuf>,
+    /// The plan index of the target registering now while a pipelined walk
+    /// commits (its turn, or its index when it commits ahead of its turn);
+    /// `u32::MAX` (unordered) outside one.
+    stamp: u32,
+}
+
+impl Default for Producers {
+    fn default() -> Self {
+        Self {
+            paths: Default::default(),
+            ancestors: Default::default(),
+            stamp: u32::MAX,
+        }
+    }
 }
 
 impl Producers {
+    /// The registrations from now on are the target's at plan `index`
+    /// (`None`: unordered); returns the previous stamp.
+    fn set_stamp(&mut self, index: Option<usize>) -> u32 {
+        let stamp = index.map_or(u32::MAX, |index| {
+            u32::try_from(index).unwrap_or(u32::MAX - 1)
+        });
+        std::mem::replace(&mut self.stamp, stamp)
+    }
+
+    fn restore_stamp(&mut self, stamp: u32) {
+        self.stamp = stamp;
+    }
+
+    /// Backstop of commits ahead of their turn (plan B review): a path an
+    /// earlier target in plan order meets that a later target registered
+    /// ahead of its turn. The sequential engine would name them the other
+    /// way round (or give the shared action to the earlier one), so the
+    /// build stops with the workaround named.
+    fn out_of_order(
+        &self,
+        output: &Path,
+        registered: u32,
+        previous: &OutputProducer,
+    ) -> Option<String> {
+        (self.stamp != u32::MAX && registered != u32::MAX && registered > self.stamp).then(|| {
+            format!(
+                "internal error: output {} was registered by {} ahead of its turn, before a target earlier in plan order met it (BAZEL_RS_NO_COMMIT_AHEAD=1 commits every target at its turn)",
+                output.display(),
+                previous.label()
+            )
+        })
+    }
+
     #[cfg(test)]
     fn new() -> Self {
         Self::default()
     }
 
-    fn get(&self, output: &Path) -> Option<&Arc<OutputProducer>> {
-        self.paths.get(output)
+    fn get_indexed(&self, output: &Path) -> Option<(&Arc<OutputProducer>, u32)> {
+        self.paths
+            .get(output)
+            .map(|(producer, index)| (producer, *index))
     }
 
     #[cfg(test)]
@@ -18168,7 +18216,7 @@ impl Producers {
 
     #[cfg(test)]
     fn values(&self) -> impl Iterator<Item = &Arc<OutputProducer>> {
-        self.paths.values()
+        self.paths.values().map(|(producer, _)| producer)
     }
 
     fn insert(&mut self, output: PathBuf, producer: Arc<OutputProducer>) {
@@ -18177,12 +18225,12 @@ impl Producers {
                 break;
             }
         }
-        self.paths.insert(output, producer);
+        self.paths.insert(output, (producer, self.stamp));
     }
 
     /// The first registered path below `output` in path order (what an
     /// ordered map's range from `output` finds first), if any.
-    fn first_below(&self, output: &Path) -> Option<(&PathBuf, &Arc<OutputProducer>)> {
+    fn first_below(&self, output: &Path) -> Option<(&PathBuf, &Arc<OutputProducer>, u32)> {
         if !self.ancestors.contains(output) {
             return None;
         }
@@ -18190,6 +18238,7 @@ impl Producers {
             .iter()
             .filter(|(path, _)| path.as_path() != output && path.starts_with(output))
             .min_by(|(a, _), (b, _)| a.cmp(b))
+            .map(|(path, (producer, index))| (path, producer, *index))
     }
 }
 
@@ -18258,7 +18307,10 @@ fn register_output(
     producer: &Arc<OutputProducer>,
 ) -> Result<Option<String>, String> {
     parallel::record_registered_output(output);
-    if let Some(previous) = producers.get(output) {
+    if let Some((previous, registered)) = producers.get_indexed(output) {
+        if let Some(error) = producers.out_of_order(output, registered, previous) {
+            return Err(error);
+        }
         let path = output.to_string_lossy();
         let (attempted, first) = (producer.label(), previous.label());
         return match (&producer.action, &previous.action) {
@@ -18277,14 +18329,20 @@ fn register_output(
         };
     }
     for ancestor in output.ancestors().skip(1) {
-        if let Some(previous) = producers.get(ancestor) {
+        if let Some((previous, registered)) = producers.get_indexed(ancestor) {
+            if let Some(error) = producers.out_of_order(ancestor, registered, previous) {
+                return Err(error);
+            }
             return Err(crate::shared_actions::prefix_conflict_message(
                 (&ancestor.to_string_lossy(), previous.label()),
                 (&output.to_string_lossy(), producer.label()),
             ));
         }
     }
-    if let Some((previous_path, previous)) = producers.first_below(output) {
+    if let Some((previous_path, previous, registered)) = producers.first_below(output) {
+        if let Some(error) = producers.out_of_order(previous_path, registered, previous) {
+            return Err(error);
+        }
         return Err(crate::shared_actions::prefix_conflict_message(
             (&output.to_string_lossy(), producer.label()),
             (&previous_path.to_string_lossy(), previous.label()),
