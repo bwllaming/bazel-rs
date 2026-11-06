@@ -476,7 +476,10 @@ fn rule_properties(builder: &mut MethodsBuilder) {
         };
         match &ctx.platform {
             TargetPlatform::Absent => Ok(false),
-            TargetPlatform::Deferred => bail!("{NEEDS_TARGET_PLATFORM}"),
+            TargetPlatform::Deferred => {
+                crate::platforms::note_deferred_read();
+                bail!("{NEEDS_TARGET_PLATFORM}")
+            }
             TargetPlatform::Resolved(platform) => Ok(platform
                 .constraints
                 .get(&value.setting)
@@ -810,7 +813,10 @@ fn aspect_properties(builder: &mut MethodsBuilder) {
         };
         match &ctx.platform {
             TargetPlatform::Absent => Ok(false),
-            TargetPlatform::Deferred => bail!("{NEEDS_TARGET_PLATFORM}"),
+            TargetPlatform::Deferred => {
+                crate::platforms::note_deferred_read();
+                bail!("{NEEDS_TARGET_PLATFORM}")
+            }
             TargetPlatform::Resolved(platform) => Ok(platform
                 .constraints
                 .get(&value.setting)

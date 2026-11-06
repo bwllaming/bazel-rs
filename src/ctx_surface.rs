@@ -1765,7 +1765,10 @@ fn global_make_environment(surface: &CtxSurface) -> anyhow::Result<Vec<(String, 
         String::new()
     } else {
         match &surface.target_platform {
-            TargetPlatform::Deferred => bail!("{}", crate::platforms::NEEDS_TARGET_PLATFORM),
+            TargetPlatform::Deferred => {
+                crate::platforms::note_deferred_read();
+                bail!("{}", crate::platforms::NEEDS_TARGET_PLATFORM)
+            }
             TargetPlatform::Absent => String::new(),
             TargetPlatform::Resolved(platform) => cpu_value(&platform.constraints)
                 .map(|value| value.label.name)

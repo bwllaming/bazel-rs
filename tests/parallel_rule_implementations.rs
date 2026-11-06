@@ -1789,9 +1789,10 @@ fn transition_workspace(ws: &Workspace, denied: bool) {
 /// Starlark rules with a transition commit ahead of their turn when their
 /// allowlist check needs no package load (`ineligible_transition` lifted),
 /// beside a commit that resolves the deferred default target platform in
-/// the middle of the plan (targets prepared before it commit at their
-/// turn). The dump, prints and the non-allowlisted error are the
-/// sequential ones.
+/// the middle of the plan: a target prepared with it deferred commits ahead
+/// only when no earlier one may still resolve it (else at its turn, where
+/// it is prepared again once resolved). The dump, prints and the
+/// non-allowlisted error are the sequential ones.
 #[test]
 fn transition_allowlists_settled_commit_ahead() {
     let ws = Workspace::new();
@@ -1840,6 +1841,14 @@ fn transition_allowlists_settled_commit_ahead() {
     // The allowlist's package is loaded by the first check: later ones
     // commit ahead.
     assert!(count("ineligible_transition=") < 12, "{fallback}");
+    // Targets prepared while the default target platform was deferred
+    // commit ahead when nothing before them can resolve it any more.
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("PERF-PARALLEL diag")
+                && line.contains("committed_ahead_platform_deferred=")),
+        "{text}"
+    );
     let denied = Workspace::new();
     transition_workspace(&denied, true);
     let reference = assert_like_sequential(&denied, &[], &["build", "--nobuild", T_HOST, "//..."]);

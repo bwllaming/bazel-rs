@@ -490,6 +490,26 @@ pub enum TargetPlatform {
 /// platform (crate::analysis_ctx).
 pub const NEEDS_TARGET_PLATFORM: &str = "\u{0}rule implementation needs the target platform";
 
+thread_local! {
+    /// This thread's rule implementation asked for a deferred target
+    /// platform ([`note_deferred_read`]), whether or not its caller kept
+    /// the error.
+    static DEFERRED_READ: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Note that the running implementation asked for its deferred target
+/// platform (the [`NEEDS_TARGET_PLATFORM`] sites): its commit resolves it
+/// (crate::engine::parallel keeps the targets prepared with it deferred
+/// from committing ahead of that turn).
+pub fn note_deferred_read() {
+    DEFERRED_READ.with(|read| read.set(true));
+}
+
+/// Whether [`note_deferred_read`] was called since the last take.
+pub fn take_deferred_read() -> bool {
+    DEFERRED_READ.with(|read| read.replace(false))
+}
+
 /// InvalidPlatformException's default text
 /// (skyframe/toolchains/PlatformLookupUtil.java:175-205).
 pub fn not_a_platform(label: &Label) -> String {

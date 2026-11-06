@@ -2158,6 +2158,9 @@ struct ComputeOutcome {
     /// S1: the commit delta the analysis worker built after the
     /// implementation (`None`: built at the commit, on the coordinator).
     delta: Option<Box<delta::WorkerDelta>>,
+    /// The implementation asked for a deferred target platform
+    /// (crate::platforms::note_deferred_read): its commit resolves it.
+    platform_read: bool,
 }
 
 /// What plan_runfiles_support computes from the target's own runfiles and
@@ -13530,12 +13533,14 @@ impl Engine {
             loaded_functions: Some(&snapshot.loaded_functions),
             run_under: snapshot.run_under.clone(),
         };
+        crate::platforms::take_deferred_read();
         let (analyzed, printed) = analysis::analyze_buffered(
             &snapshot.rule,
             &snapshot.dependency_targets,
             snapshot.repositories.clone(),
             &outputs,
         );
+        let platform_read = crate::platforms::take_deferred_read();
         (
             snapshot,
             ComputeOutcome {
@@ -13544,6 +13549,7 @@ impl Engine {
                 runfiles: None,
                 outputs_checked: None,
                 delta: None,
+                platform_read,
             },
         )
     }
@@ -14380,6 +14386,7 @@ impl Engine {
             runfiles: precomputed,
             outputs_checked,
             delta: worker,
+            platform_read: _,
         } = outcome;
         // The prefix, on the coordinator before the delta is built (its
         // first-need registrations follow it, as sequentially).

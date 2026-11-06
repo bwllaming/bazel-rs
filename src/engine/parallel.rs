@@ -45,9 +45,10 @@ const HORIZON: usize = 4096;
 
 type Job = Box<dyn FnOnce() + Send>;
 
-/// A finished compute: its plan index and the outputs its commit registers
-/// (`None`: not known, e.g. it raised a sentinel and runs again inline).
-type Finished = (usize, Option<Arc<OutputSummary>>);
+/// A finished compute: its plan index, the outputs its commit registers
+/// (`None`: not known, e.g. it raised a sentinel and runs again inline)
+/// and whether its implementation asked for a deferred target platform.
+type Finished = (usize, Option<Arc<OutputSummary>>, bool);
 
 /// The output paths the commit of a finished compute registers, hashed
 /// ([`path_hash`]), and their proper ancestors: what decides whether two
@@ -580,6 +581,14 @@ struct Pipeline {
     /// Entries whose compute finished, not committed yet (retried as the
     /// entries before them commit).
     finished: OrderedSet<usize>,
+    /// S2: the classified entries not committed yet that may resolve the
+    /// deferred target platform of their configuration at their turn (a
+    /// Starlark rule whose compute has not finished without asking for it;
+    /// a genrule, `$(TARGET_CPU)`), by configuration: a target prepared with
+    /// that platform deferred commits ahead of its turn only when none is
+    /// before it (its prepare is then the one its turn would make).
+    platform_pending: HashMap<ConfigId, OrderedSet<usize>>,
+    platform_config: HashMap<usize, ConfigId>,
     /// S2: the native rules classified to commit ahead of their turn (once
     /// their dependencies are committed, [`Engine::commit_native_ahead`]),
     /// and those whose dependencies are.
@@ -653,8 +662,40 @@ impl Pipeline {
         }
     }
 
+    /// `index` (in `config`) may resolve its configuration's deferred
+    /// target platform at its turn.
+    fn note_platform_pending(&mut self, index: usize, config: ConfigId) {
+        self.platform_pending
+            .entry(config)
+            .or_default()
+            .insert(index);
+        self.platform_config.insert(index, config);
+    }
+
+    /// `index` resolves no target platform (any more).
+    fn platform_settled(&mut self, index: usize) {
+        if let Some(config) = self.platform_config.remove(&index)
+            && let Some(pending) = self.platform_pending.get_mut(&config)
+        {
+            pending.remove(&index);
+            if pending.is_empty() {
+                self.platform_pending.remove(&config);
+            }
+        }
+    }
+
+    /// Whether an entry before `index` may still resolve the deferred
+    /// target platform of `config`.
+    fn platform_resolver_before(&self, index: usize, config: ConfigId) -> bool {
+        self.platform_pending
+            .get(&config)
+            .and_then(|pending| pending.first())
+            .is_some_and(|first| *first < index)
+    }
+
     /// `index` (of `label`) is committed.
     fn note_committed(&mut self, index: usize, label: &Label) {
+        self.platform_settled(index);
         self.remove_unknown(index, label);
         if let Some(summary) = self.known.remove(&index) {
             let unindex = |map: &mut crate::fast_hash::FxHashMap<u64, OrderedSet<usize>>,
@@ -2132,9 +2173,12 @@ impl Engine {
             if result.is_err() {
                 summary = None;
             }
+            let platform_read = result.as_ref().map_or(true, |worker| {
+                worker.sentinel || worker.outcome.platform_read
+            });
             let _ = sender.send(result);
             if let Some(finished) = finished {
-                let _ = finished.send((index, summary));
+                let _ = finished.send((index, summary, platform_read));
             }
         });
         if let Some(pool) = &self.analysis_pool
@@ -2216,6 +2260,13 @@ impl Engine {
                 let barrier = matches!(classified, Classified::Never)
                     && matches!(rule.kind, RuleKind::Custom);
                 pipe.note_pending(index, &key.label, barrier, registers_no_output(&rule));
+                if matches!(rule.kind, RuleKind::Custom | RuleKind::Genrule)
+                    && configured
+                        .get(&key)
+                        .is_some_and(|node| node.incompatible.is_none())
+                {
+                    pipe.note_platform_pending(index, key.config);
+                }
                 if !matches!(classified, Classified::Never)
                     && !matches!(rule.kind, RuleKind::Custom)
                 {
@@ -2638,17 +2689,22 @@ impl Engine {
         while let Ok(finished) = pool.finished.1.try_recv() {
             received.push(finished);
         }
-        for (index, summary) in received {
+        for (index, summary, platform_read) in received {
             if index <= turn {
                 continue;
             }
             pipe.finished.insert(index);
+            if !platform_read {
+                pipe.platform_settled(index);
+            }
             // Its outputs are known when its turn commits this compute: no
             // sentinel, and a prepare that saw its target platform resolved
-            // (else its turn may prepare it again).
+            // or an implementation that did not ask for it (its turn may
+            // prepare it again with the platform resolved: the same
+            // declared outputs).
             if let (Some(summary), Some(Ahead::Computing { platform_known, .. })) =
                 (summary, pipe.ahead.get(&index))
-                && *platform_known
+                && (*platform_known || !platform_read)
                 && let Some((key, _)) = self.planning_plan.as_ref().and_then(|plan| plan.get(index))
             {
                 pipe.note_known(index, &key.label, summary);
@@ -2701,17 +2757,8 @@ impl Engine {
         else {
             return Retry::Done(false);
         };
-        match pipe.ahead.get(&index) {
-            Some(Ahead::Computing { platform_known, .. }) => {
-                // A prepare that saw its target platform deferred is
-                // prepared again at its turn if a commit resolves it before
-                // (Self::pipelined_turn_body): it commits at its turn.
-                if !platform_known {
-                    pipe.last_try.insert(index, "platform_unknown");
-                    return Retry::Done(false);
-                }
-            }
-            _ => return Retry::Done(false),
+        if !matches!(pipe.ahead.get(&index), Some(Ahead::Computing { .. })) {
+            return Retry::Done(false);
         }
         if pipe.barriers.first().is_some_and(|first| *first < index) {
             bump(&stats().ahead_barrier, 1);
@@ -2793,6 +2840,33 @@ impl Engine {
                 return Retry::Done(false);
             }
         };
+        // A prepare that saw its target platform deferred is prepared again
+        // at its turn if a commit resolves it before
+        // (Self::pipelined_turn_body): it commits ahead only when nothing
+        // before it can resolve it any more (and its own implementation
+        // did not ask for it), else at its turn.
+        if !platform_known {
+            let retry = if worker.outcome.platform_read || self.platform_resolved(&key) {
+                Retry::Done(false)
+            } else if pipe.platform_resolver_before(index, key.config) {
+                Retry::Later
+            } else {
+                Retry::Done(true)
+            };
+            if matches!(retry, Retry::Done(true)) {
+                diag("committed_ahead_platform_deferred");
+            } else {
+                put_back(
+                    pipe,
+                    parts,
+                    prepare_effects,
+                    prepare_track,
+                    refilled(Ok(worker)),
+                );
+                pipe.last_try.insert(index, "platform_unknown");
+                return retry;
+            }
+        }
         // S1: a delta meeting a producer registered since it was built is
         // left to the coordinator: computed again on a worker, which then
         // keeps the analysis result for it (no compute here at the merge).
