@@ -50,6 +50,9 @@ pub(super) struct Listing {
 
 type Outcome = std::thread::Result<Result<Lowered, String>>;
 
+/// A lowering in flight: its product, when its worker is done.
+pub(super) type Pending = mpsc::Receiver<Outcome>;
+
 /// One entry of the queue, in commit order.
 enum Queued {
     Node(Box<PlannedAction>),
@@ -156,7 +159,10 @@ impl PlannedNodes {
         }
     }
 
-    fn enqueue(&mut self, outcome: mpsc::Receiver<Outcome>, warnings: usize, errors: usize) {
+    /// Queue a lowering in flight behind everything queued; `warnings` and
+    /// `errors`: the engine's lists' lengths now (kept up to there when it
+    /// fails).
+    pub(super) fn enqueue(&mut self, outcome: Pending, warnings: usize, errors: usize) {
         if self.segment {
             let writes = crate::ui::deferred_split();
             if !writes.is_empty() {
@@ -262,6 +268,35 @@ impl LoweringPool {
     }
 }
 
+impl LoweringPool {
+    /// Run `job` on a lowering worker (`Err`: the pool stopped, the job
+    /// is handed back).
+    pub(super) fn submit(
+        &self,
+        job: impl FnOnce() -> Result<Lowered, String> + Send + 'static,
+    ) -> Result<Pending, Box<dyn FnOnce() -> Result<Lowered, String> + Send>> {
+        let (sender, receiver) = mpsc::channel();
+        let slot = Arc::new(std::sync::Mutex::new(Some(
+            Box::new(job) as Box<dyn FnOnce() -> Result<Lowered, String> + Send>
+        )));
+        let taken = Arc::clone(&slot);
+        let wrapped: Job = Box::new(move || {
+            let job = taken.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(job) = job {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                let _ = sender.send(outcome);
+            }
+        });
+        match self.jobs.as_ref().map(|jobs| jobs.send(wrapped)) {
+            Some(Ok(())) => Ok(receiver),
+            _ => {
+                let job = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+                Err(job.expect("an unsent lowering keeps its job"))
+            }
+        }
+    }
+}
+
 impl Drop for LoweringPool {
     fn drop(&mut self) {
         self.jobs = None;
@@ -307,62 +342,13 @@ pub(super) fn test_failure(id: &str) -> Result<(), String> {
 }
 
 impl Engine {
-    /// Lower `job` on a lowering worker when the walk defers (its product
-    /// is placed in commit order later: `None`), else here (`Some`: the
-    /// caller places it).
-    pub(super) fn lower(
-        &self,
-        nodes: &mut PlannedNodes,
-        job: impl FnOnce() -> Result<Lowered, String> + Send + 'static,
-    ) -> Result<Option<Lowered>, String> {
-        // Work ahead of its turn (P3) runs in its own console scope: lowered
-        // here, so the queue's console hold never interleaves with it.
-        let Some(pool) = self
-            .lowering_pool
+    /// Where a coordinator commit's lowerings run: on the lowering workers
+    /// when the walk defers them (work ahead of its turn lowers into its own
+    /// segment, P3), else in the commit (`None`).
+    pub(super) fn lowering_for(&self, nodes: &PlannedNodes) -> Option<&LoweringPool> {
+        self.lowering_pool
             .as_ref()
             .filter(|_| nodes.deferring && (!self.ahead || nodes.segment))
-        else {
-            return job().map(Some);
-        };
-        let (sender, receiver) = mpsc::channel();
-        let job: Job = Box::new(move || {
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
-            let _ = sender.send(outcome);
-        });
-        match pool.jobs.as_ref().map(|jobs| jobs.send(job)) {
-            Some(Ok(())) => {
-                nodes.enqueue(receiver, self.warnings.len(), self.errors.len());
-                Ok(None)
-            }
-            Some(Err(error)) => {
-                (error.0)();
-                match receiver.recv() {
-                    Ok(Ok(lowered)) => lowered.map(Some),
-                    Ok(Err(panic)) => std::panic::resume_unwind(panic),
-                    Err(_) => Err("internal error: a lowering worker stopped".to_owned()),
-                }
-            }
-            None => Err("internal error: the lowering workers stopped".to_owned()),
-        }
-    }
-
-    /// Place a lowering's product at its position (the end of the planned
-    /// nodes).
-    pub(super) fn place(
-        &self,
-        commit: &mut ActionCommit<'_>,
-        lowered: Lowered,
-    ) -> Result<(), String> {
-        match lowered {
-            Lowered::Node { planned, sources } => {
-                if let Some((id, sources)) = sources {
-                    commit.source_inputs.insert(id, sources);
-                }
-                commit.nodes.push(*planned);
-                Ok(())
-            }
-            Lowered::Listing(listing) => self.commit_listed_action(*listing, commit),
-        }
     }
 
     /// Start the lowering workers for a pipelined walk (none without
@@ -459,31 +445,8 @@ impl Engine {
                 std::panic::resume_unwind(panic)
             }
         };
-        let ActionPlanning {
-            artifact_index,
-            workspace_status,
-            nodes,
-            producers,
-            source_inputs,
-            client_environment,
-            status_client_environment,
-            input_groups,
-            listed_tree_actions,
-            ..
-        } = state;
-        nodes.placing = true;
-        let mut commit = ActionCommit {
-            artifact_index,
-            workspace_status,
-            nodes,
-            producers,
-            source_inputs,
-            client_environment,
-            status_client_environment,
-            input_groups,
-            listed_tree_actions,
-        };
-        let placed = self.place(&mut commit, lowered);
+        state.nodes.placing = true;
+        let placed = self.commit_now(state, |builder| builder.place(lowered));
         state.nodes.placing = false;
         if placed.is_err() {
             self.abandon_lowerings(state, warnings, errors);

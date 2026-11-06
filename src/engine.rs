@@ -823,6 +823,7 @@ struct PlanState<'a> {
     pub workspace_status: &'a mut Option<WorkspaceStatusPlan>,
     pub views: &'a mut DependencyViews,
     pub input_groups: &'a delta::InputGroups,
+    pub input_memos: &'a delta::InputMemos,
     pub listed_tree_actions: &'a mut usize,
 }
 
@@ -849,6 +850,7 @@ impl ActionPlanning {
             workspace_status,
             views,
             input_groups,
+            input_memos,
             listed_tree_actions,
             ..
         } = self;
@@ -872,6 +874,7 @@ impl ActionPlanning {
             workspace_status,
             views,
             input_groups,
+            input_memos,
             listed_tree_actions,
         }
     }
@@ -13197,6 +13200,7 @@ impl Engine {
             status_client_environment,
             workspace_status,
             input_groups,
+            input_memos,
             listed_tree_actions,
             ..
         } = state;
@@ -13221,17 +13225,6 @@ impl Engine {
             base_key.config,
             |_| false,
         )?;
-        let mut commit = ActionCommit {
-            artifact_index,
-            workspace_status,
-            nodes,
-            producers,
-            source_inputs,
-            client_environment,
-            status_client_environment,
-            input_groups,
-            listed_tree_actions,
-        };
         let owner = format!("aspect {}", aspect.identity);
         for (mut registered, shared) in analyzed.actions.into_iter().zip(shared) {
             // Another owner's equal action produces its outputs.
@@ -13249,12 +13242,12 @@ impl Engine {
             if registered.build_info.is_some() {
                 self.build_info_actions.insert(registered.action.id.clone());
             }
-            self.resolve_build_info(commit.workspace_status, &mut registered)?;
+            self.resolve_build_info(workspace_status, &mut registered)?;
             let own = registered
                 .inputs
                 .iter()
                 .map(|file| {
-                    commit.artifact_index.get(file).ok_or_else(|| {
+                    artifact_index.get(file).ok_or_else(|| {
                         format!("{owner}: input has no declared artifact: {}", file.path)
                     })
                 })
@@ -13293,15 +13286,30 @@ impl Engine {
             // Like a rule's action (PA-1 follow-up B6): its tools' runfiles
             // trees (shared input groups) and its deferred completion,
             // which the aspect commit used to drop.
-            self.commit_action(
-                action,
-                own,
-                &registered.runfiles_trees,
-                registered.deferred,
-                &owner,
-                &main_ignored,
-                &mut commit,
-                None,
+            self.commit_with(
+                delta::CommitParts {
+                    artifact_index,
+                    workspace_status,
+                    producers,
+                    nodes,
+                    source_inputs,
+                    listed_tree_actions,
+                    client_environment,
+                    status_client_environment,
+                    input_groups,
+                    input_memos,
+                },
+                |builder| {
+                    builder.commit_action(
+                        action,
+                        own,
+                        &registered.runfiles_trees,
+                        registered.deferred,
+                        &owner,
+                        &main_ignored,
+                        None,
+                    )
+                },
             )?;
         }
         Ok(analyzed.providers)
@@ -13706,6 +13714,7 @@ impl Engine {
             workspace_status,
             views,
             input_groups,
+            input_memos,
             listed_tree_actions,
             ..
         } = state;
@@ -13845,6 +13854,7 @@ impl Engine {
                         workspace_status: &mut *workspace_status,
                         views: &mut *views,
                         input_groups: &*input_groups,
+                        input_memos: &*input_memos,
                         listed_tree_actions: &mut *listed_tree_actions,
                     };
                     self.plan_aspect_dependency(
@@ -14292,25 +14302,6 @@ impl Engine {
         action_execution: Vec<crate::exec_groups::ActionExecution>,
         computed: ComputeOutcome,
     ) -> Result<(), String> {
-        let ActionPlanning {
-            dry,
-            custom_providers,
-            provider_keys,
-            runfiles_info,
-            artifact_index,
-            declared,
-            producers,
-            nodes,
-            source_inputs,
-            client_environment,
-            status_client_environment,
-            runfiles_nodes,
-            workspace_status,
-            input_groups,
-            listed_tree_actions,
-            input_memos,
-            ..
-        } = state;
         let mut snapshot = snapshot;
         let mut outcome = computed;
         if outcome
@@ -14373,435 +14364,34 @@ impl Engine {
             runfiles: precomputed,
             outputs_checked,
         } = outcome;
+        // The prefix, on the coordinator before the delta is built (its
+        // first-need registrations follow it, as sequentially).
         for line in printed {
             self.note_analysis_print(&line);
         }
-        let mut analyzed = analyzed?;
+        let analyzed = analyzed?;
         restricted_to_error(rule)?;
         self.check_transition_allowlist(rule, &key, configured)?;
-        // Moved, not copied: the analysis result is consumed here (MEM2).
-        custom_providers.insert(key.clone(), std::mem::take(&mut analyzed.providers));
-        provider_keys.insert(key.clone(), std::mem::take(&mut analyzed.provider_keys));
-        let check_here = || {
-            validate_declared_outputs(&rule.label, &output_root, &analyzed.declared, &|| {
-                let repository = &rule.label.repository;
-                Ok((
-                    self.repositories.root(repository)?.to_path_buf(),
-                    self.ignored(repository)?,
-                ))
-            })
-        };
-        match outputs_checked {
-            Some(checked) => {
-                // Debug builds (the tests): the worker's check is this one.
-                debug_assert_eq!(
-                    checked,
-                    check_here(),
-                    "internal error: the outputs of {} checked on a worker differ",
-                    rule.label
-                );
-                checked?
-            }
-            None => check_here()?,
-        }
-        // Semantic commit is distinct from execution-plan lowering. Cquery
-        // needs providers, file identities and runfiles, but never action keys,
-        // status commands, input digests, runfiles manifests or scheduler nodes.
-        if self.semantic_only() {
-            let package_output = PathBuf::from(&output_root).join(rule.label.package_exec_path());
-            cquery::register_outputs(
-                analyzed.actions.iter().flat_map(|action| &action.outputs),
-                config,
-                artifact_index,
-                declared,
-                |file| {
-                    Path::new(&file.path)
-                        .strip_prefix(&package_output)
-                        .is_ok_and(|name| rule.outs.iter().any(|out| Path::new(out) == name))
-                },
-            );
-            // FilesToRunProvider exposes these semantic Files even though no
-            // manifest/tree/mapping action is lowered or executed by cquery.
-            // Their actual Option values already honor the runfiles options.
-            if let Some(support) = &analyzed.runfiles.files_to_run {
-                cquery::register_outputs(
-                    support
-                        .runfiles_manifest()
-                        .into_iter()
-                        .chain(support.repo_mapping_manifest()),
-                    config,
-                    artifact_index,
-                    declared,
-                    |_| false,
-                );
-            }
-            for file in &analyzed.files {
-                if crate::analysis_runtime::is_workspace_status_file(file) {
-                    self.indexed_artifact(
-                        file,
-                        artifact_index,
-                        workspace_status,
-                        nodes,
-                        producers,
-                        client_environment,
-                        status_client_environment,
-                    )?;
-                }
-            }
-            let defaults = analyzed
-                .files
-                .iter()
-                .map(|file| {
-                    artifact_index.get(file).ok_or_else(|| {
-                        format!(
-                            "{}: DefaultInfo file has no artifact: {}",
-                            rule.label, file.path
-                        )
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            dry.insert(key.clone(), Arc::new(defaults));
-            runfiles_info.insert(key, Arc::new(analyzed.runfiles));
-            return Ok(());
-        }
-        // N63: plan the workspace status system nodes before indexing this
-        // target's outputs, so actions consuming bazel-out/{stable,volatile}
-        // -status.txt (or a transform_{version,info}_file registration)
-        // resolve their artifacts, and so does a status file among the
-        // target's files to build (W1b: whichever target registered the
-        // status files first, PLAN-L1 §2.1).
-        if Self::workspace_status_needed(&analyzed.actions)
-            || analyzed
-                .files
-                .iter()
-                .any(crate::analysis_runtime::is_workspace_status_file)
-        {
-            self.ensure_workspace_status(
-                workspace_status,
-                nodes,
-                producers,
-                client_environment,
-                status_client_environment,
-                artifact_index,
-            )?;
-        }
-        // First index EVERY action's outputs, so registration order is not
-        // an execution order and forward generated dependencies are legal.
-        let label = key.label.to_string();
-        let package_output = PathBuf::from(&output_root).join(rule.label.package_exec_path());
-        let shared = register_action_outputs(
-            &analyzed.actions,
-            (&label, &label),
-            producers,
-            artifact_index,
-            declared,
-            config,
-            // A predeclared output is the rule's output-file target.
-            |exec| {
-                exec.strip_prefix(&package_output)
-                    .is_ok_and(|name| rule.outs.iter().any(|out| Path::new(out) == name))
+        let platforms = self.remote_platforms(rule, config, &action_execution);
+        let runfiles_options = self.configured_runfiles_options(config);
+        let delta = self.build_delta(
+            state,
+            delta::CustomCommit {
+                key: &key,
+                rule,
+                output_root: &output_root,
+                action_owner: &action_owner,
+                main_ignored: &main_ignored,
+                transitive: &transitive,
+                action_execution: &action_execution,
+                platforms: &platforms,
+                runfiles_options: &runfiles_options,
+                analyzed,
+                precomputed,
+                outputs_checked,
             },
-        )?;
-        let runfiles = Arc::new(std::mem::take(&mut analyzed.runfiles));
-        runfiles_info.insert(key.clone(), runfiles.clone());
-        if let Some(nodes_of_target) = self.plan_runfiles_support(
-            &key,
-            rule,
-            &runfiles,
-            precomputed,
-            &transitive,
-            &action_owner,
-            &main_ignored,
-            RunfilesPlanning {
-                artifact_index,
-                declared,
-                producers,
-                nodes,
-                source_inputs,
-                workspace_status,
-                client_environment,
-                status_client_environment,
-            },
-        )? {
-            runfiles_nodes.insert(key.clone(), nodes_of_target);
-        }
-        let mut commit = ActionCommit {
-            artifact_index,
-            workspace_status,
-            nodes,
-            producers,
-            source_inputs,
-            client_environment,
-            status_client_environment,
-            input_groups,
-            listed_tree_actions,
-        };
-        let owner = rule.label.to_string();
-        // What the actions no longer need is dropped elsewhere.
-        let mut spent_inputs = Vec::new();
-        for (mut registered, shared) in analyzed.actions.into_iter().zip(shared) {
-            // Another owner's equal action produces its outputs: no node,
-            // no source inputs, no execution of its own.
-            if shared {
-                continue;
-            }
-            // py_internal.create_repo_mapping_manifest: the
-            // RepoMappingManifestAction's content over the target's
-            // transitive repositories (like its runfiles support's).
-            self.resolve_repo_mapping(&transitive, &mut registered)?;
-            // N63: resolve an actions.transform_{version,info}_file
-            // registration into its template expansion.
-            if registered.build_info.is_some() {
-                self.build_info_actions.insert(registered.action.id.clone());
-            }
-            self.resolve_build_info(commit.workspace_status, &mut registered)?;
-            // Inputs beginning with a memoized depset walk (the Python
-            // runtime's files of every PyCompile action) reuse its
-            // artifacts, resolved once per build (SharedInputs).
-            let shared_inputs = registered.input_memo.as_ref().and_then(|(start, files)| {
-                SharedInputs::resolve(input_memos, commit.artifact_index, files)
-                    .map(|shared| (*start, shared))
-            });
-            let resolve = |file: &File| {
-                commit.artifact_index.get(file).ok_or_else(|| {
-                    format!(
-                        "{}: input has no declared artifact: {}",
-                        rule.label, file.path
-                    )
-                })
-            };
-            let own = match &shared_inputs {
-                Some((start, shared)) => {
-                    let end = start + shared.artifacts.len();
-                    // The action's own inputs only: the shared run joins
-                    // them at `start` where the action is lowered
-                    // (lower_action), not here.
-                    let mut own =
-                        Vec::with_capacity(registered.inputs.len() - shared.artifacts.len());
-                    for file in &registered.inputs[..*start] {
-                        own.push(resolve(file)?);
-                    }
-                    for file in &registered.inputs[end..] {
-                        own.push(resolve(file)?);
-                    }
-                    debug_assert!(
-                        with_shared_inputs(&own, Some((*start, shared)))
-                            .iter()
-                            .zip(&registered.inputs)
-                            .all(|(artifact, file)| commit
-                                .artifact_index
-                                .get(file)
-                                .is_some_and(|indexed| Arc::ptr_eq(&indexed.0, &artifact.0))),
-                        "internal error: the shared inputs of {} resolve differently",
-                        registered.action.id
-                    );
-                    own
-                }
-                None => registered
-                    .inputs
-                    .iter()
-                    .map(resolve)
-                    .collect::<Result<Vec<_>, _>>()?,
-            };
-            // The action's exec group decides its execution platform and
-            // exec properties (RuleContext.getActionOwner(execGroup)).
-            let execution = action_execution
-                .iter()
-                .find(|execution| execution.exec_group == registered.exec_group);
-            if let Some(execution) = execution {
-                self.action_executions
-                    .insert(registered.action.id.clone(), execution.clone());
-            }
-            spent_inputs.push(std::mem::take(&mut registered.inputs));
-            let mut action = registered.action;
-            // The spawn's propagated tags are set at registration
-            // (crate::analysis_runtime::Context::register_action, keyed).
-            if action.write.is_none() && action.extra.transform.is_none() {
-                self.set_remote_platform(&mut action, rule, config, execution, true);
-            }
-            self.commit_action(
-                action,
-                own,
-                &registered.runfiles_trees,
-                registered.deferred,
-                &owner,
-                &main_ignored,
-                &mut commit,
-                shared_inputs
-                    .as_ref()
-                    .map(|(start, shared)| (*start, shared)),
-            )?;
-        }
-        let defaults = analyzed
-            .files
-            .iter()
-            .map(|file| {
-                artifact_index.get(file).ok_or_else(|| {
-                    format!(
-                        "{}: DefaultInfo file has no artifact: {}",
-                        rule.label, file.path
-                    )
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        dry.insert(key.clone(), Arc::new(defaults));
-        drop_elsewhere(spent_inputs);
-        Ok(())
-    }
-
-    /// Plan the node of one registered Starlark action — a rule's
-    /// (commit_custom_target) or an aspect application's
-    /// (plan_aspect_application) alike: `action` with its own inputs `own`
-    /// (the registration's, resolved; with `shared`, the shared run joins
-    /// them at its start where the action is lowered), its tools' runfiles trees and its
-    /// execution-time completion `deferred`. `owner` names the registering
-    /// target or aspect in the error of a tree entry without an artifact.
-    ///
-    /// N23f: the tools' runfiles trees are staged at their tree paths
-    /// (SpawnInputExpander.addSingleRunfilesTreeToInputs,
-    /// exec/SpawnInputExpander.java:87-135); empty files are empty
-    /// parameter-file-like inputs (VirtualActionInput.EMPTY_MARKER). PA-1:
-    /// each tree is expanded once per build into a shared input group that
-    /// every action using the tool holds, like the one runfiles tree
-    /// artifact Bazel's spawns hold; a tree listed twice is one group.
-    #[allow(clippy::too_many_arguments)]
-    fn commit_action(
-        &self,
-        action: Action,
-        own: Vec<Artifact>,
-        runfiles_trees: &[Arc<crate::analysis_runtime::ToolRunfilesTree>],
-        deferred: Option<scheduler::Deferred>,
-        owner: &str,
-        main_ignored: &Arc<IgnoredSubdirectories>,
-        commit: &mut ActionCommit<'_>,
-        shared: Option<(usize, &Arc<SharedInputs>)>,
-    ) -> Result<(), String> {
-        if self.semantic_only() {
-            return Ok(());
-        }
-        let mut groups: Vec<Arc<scheduler::InputGroup>> = Vec::new();
-        for tree in runfiles_trees {
-            let memo: &delta::InputGroups = commit.input_groups;
-            let expanded = memo
-                .get_or_fill(&tree.identity(), || {
-                    let (artifacts, empty_files) =
-                        runfiles_tree_entries(tree, owner, &mut |file| {
-                            commit.artifact(self, file)
-                        })?;
-                    Ok::<_, String>(Some(ExpandedTree {
-                        tree: Arc::clone(tree),
-                        group: Arc::new(runfiles_input_group(
-                            Path::new(tree.directory()),
-                            artifacts,
-                            empty_files,
-                            main_ignored,
-                        )),
-                    }))
-                })?
-                .expect("a runfiles group fill returns one");
-            // One identity is one content
-            // (crate::analysis_runtime::ToolRunfilesTree).
-            debug_assert!(
-                Arc::ptr_eq(&expanded.tree, tree) || expanded.tree.same_content(tree),
-                "internal error: runfiles tree {} of identity {} differs from the one expanded",
-                tree.directory(),
-                tree.identity()
-            );
-            let group = Arc::clone(&expanded.group);
-            if !groups.iter().any(|known| Arc::ptr_eq(known, &group)) {
-                groups.push(group);
-            }
-        }
-        // The rest is a function of what the job holds (P4: deferred to a
-        // lowering worker in a pipelined walk, placed in commit order).
-        let environment = (!action.extra.inherited_environment.is_empty()).then(|| {
-            Arc::clone(
-                commit
-                    .client_environment
-                    .get_or_init(|| Arc::new(crate::action_env::client_environment())),
-            )
-        });
-        let listing = lowering::Listing {
-            action,
-            own,
-            runfiles_trees: runfiles_trees.to_vec(),
-            deferred,
-            owner: owner.to_owned(),
-            main_ignored: Arc::clone(main_ignored),
-            shared: shared.map(|(start, shared)| (start, Arc::clone(shared))),
-        };
-        match self.lower(commit.nodes, move || {
-            lower_action(listing, groups, environment)
-        })? {
-            Some(lowered) => self.place(commit, lowered),
-            None => Ok(()),
-        }
-    }
-
-    /// The listed path of [`Self::commit_action`]: the tool runfiles groups
-    /// could not stay shared, so their entries are listed in the action.
-    fn commit_listed_action(
-        &self,
-        listing: lowering::Listing,
-        commit: &mut ActionCommit<'_>,
-    ) -> Result<(), String> {
-        let lowering::Listing {
-            mut action,
-            own,
-            runfiles_trees,
-            deferred,
-            owner,
-            main_ignored,
-            shared,
-        } = listing;
-        *commit.listed_tree_actions += 1;
-        let mut inputs = own;
-        for tree in &runfiles_trees {
-            let (artifacts, empty_files) =
-                runfiles_tree_entries(tree, &owner, &mut |file| commit.artifact(self, file))?;
-            inputs.extend(artifacts);
-            for destination in empty_files {
-                if !action
-                    .extra
-                    .param_files
-                    .iter()
-                    .any(|(existing, _)| *existing == destination)
-                {
-                    action.extra.param_files.push((destination, Vec::new()));
-                }
-            }
-        }
-        let id = action.id.clone();
-        let empties: Vec<(PathBuf, Vec<u8>)> = action
-            .extra
-            .param_files
-            .iter()
-            .filter(|(path, content)| {
-                content.is_empty()
-                    && runfiles_trees
-                        .iter()
-                        .any(|tree| path.starts_with(tree.directory()))
-            })
-            .cloned()
-            .collect();
-        let (mut planned, sources) = plan_action_sources(
-            action,
-            &inputs,
-            &main_ignored,
-            commit.client_environment,
-            false,
-            Vec::new(),
-            shared.as_ref().map(|(start, shared)| (*start, &**shared)),
-        )?;
-        commit.source_inputs.insert(id, sources);
-        // A deferred command line recomputes the parameter files;
-        // the runfiles empty files are kept.
-        planned.deferred = match (deferred, empties.is_empty()) {
-            (Some(deferred), false) => Some(deferred.with_extra_param_files(empties)),
-            (deferred, _) => deferred,
-        };
-        commit.nodes.push(planned);
-        Ok(())
+        );
+        self.merge_delta(state, &key, delta)
     }
 
     /// The commit of one native target (genrule, filegroup, platform
@@ -14853,6 +14443,7 @@ impl Engine {
             target_identities,
             views,
             input_groups,
+            input_memos,
             listed_tree_actions,
             ..
         } = state;
@@ -15288,26 +14879,30 @@ impl Engine {
                 // The tools' runfiles trees are shared input groups, as a
                 // Starlark action's tools' (GenRuleAction's spawn expands the
                 // runfiles tree artifacts CommandHelper resolved).
-                let mut commit = ActionCommit {
-                    artifact_index,
-                    workspace_status,
-                    nodes,
-                    producers,
-                    source_inputs,
-                    client_environment,
-                    status_client_environment,
-                    input_groups,
-                    listed_tree_actions,
-                };
-                self.commit_action(
-                    action,
-                    action_inputs,
-                    &tool_trees,
-                    None,
-                    &key.label.to_string(),
-                    &main_ignored,
-                    &mut commit,
-                    None,
+                self.commit_with(
+                    delta::CommitParts {
+                        artifact_index,
+                        workspace_status: &mut *workspace_status,
+                        producers: &mut *producers,
+                        nodes: &mut *nodes,
+                        source_inputs: &mut *source_inputs,
+                        listed_tree_actions: &mut *listed_tree_actions,
+                        client_environment,
+                        status_client_environment,
+                        input_groups,
+                        input_memos,
+                    },
+                    |builder| {
+                        builder.commit_action(
+                            action,
+                            action_inputs,
+                            &tool_trees,
+                            None,
+                            &key.label.to_string(),
+                            &main_ignored,
+                            None,
+                        )
+                    },
                 )?;
             }
             let artifacts = outputs
@@ -15372,26 +14967,30 @@ impl Engine {
                         },
                         ..Action::default()
                     };
-                    let mut commit = ActionCommit {
-                        artifact_index,
-                        workspace_status,
-                        nodes,
-                        producers,
-                        source_inputs,
-                        client_environment,
-                        status_client_environment,
-                        input_groups,
-                        listed_tree_actions,
-                    };
-                    self.commit_action(
-                        action,
-                        Vec::new(),
-                        &[],
-                        None,
-                        &key.label.to_string(),
-                        &main_ignored,
-                        &mut commit,
-                        None,
+                    self.commit_with(
+                        delta::CommitParts {
+                            artifact_index,
+                            workspace_status: &mut *workspace_status,
+                            producers: &mut *producers,
+                            nodes: &mut *nodes,
+                            source_inputs: &mut *source_inputs,
+                            listed_tree_actions: &mut *listed_tree_actions,
+                            client_environment,
+                            status_client_environment,
+                            input_groups,
+                            input_memos,
+                        },
+                        |builder| {
+                            builder.commit_action(
+                                action,
+                                Vec::new(),
+                                &[],
+                                None,
+                                &key.label.to_string(),
+                                &main_ignored,
+                                None,
+                            )
+                        },
                     )?;
                 }
                 let artifact = Artifact::new(
@@ -15435,26 +15034,30 @@ impl Engine {
                     },
                     ..Action::default()
                 };
-                let mut commit = ActionCommit {
-                    artifact_index,
-                    workspace_status,
-                    nodes,
-                    producers,
-                    source_inputs,
-                    client_environment,
-                    status_client_environment,
-                    input_groups,
-                    listed_tree_actions,
-                };
-                self.commit_action(
-                    action,
-                    Vec::new(),
-                    &[],
-                    None,
-                    &key.label.to_string(),
-                    &main_ignored,
-                    &mut commit,
-                    None,
+                self.commit_with(
+                    delta::CommitParts {
+                        artifact_index,
+                        workspace_status: &mut *workspace_status,
+                        producers: &mut *producers,
+                        nodes: &mut *nodes,
+                        source_inputs: &mut *source_inputs,
+                        listed_tree_actions: &mut *listed_tree_actions,
+                        client_environment,
+                        status_client_environment,
+                        input_groups,
+                        input_memos,
+                    },
+                    |builder| {
+                        builder.commit_action(
+                            action,
+                            Vec::new(),
+                            &[],
+                            None,
+                            &key.label.to_string(),
+                            &main_ignored,
+                            None,
+                        )
+                    },
                 )?;
             }
             let artifact = Artifact::new(
@@ -18255,26 +17858,6 @@ impl Producers {
         self.stamp = stamp;
     }
 
-    /// Backstop of commits ahead of their turn (plan B review): a path an
-    /// earlier target in plan order meets that a later target registered
-    /// ahead of its turn. The sequential engine would name them the other
-    /// way round (or give the shared action to the earlier one), so the
-    /// build stops with the workaround named.
-    fn out_of_order(
-        &self,
-        output: &Path,
-        registered: u32,
-        previous: &OutputProducer,
-    ) -> Option<String> {
-        (self.stamp != u32::MAX && registered != u32::MAX && registered > self.stamp).then(|| {
-            format!(
-                "internal error: output {} was registered by {} ahead of its turn, before a target earlier in plan order met it (BAZEL_RS_NO_COMMIT_AHEAD=1 commits every target at its turn)",
-                output.display(),
-                previous.label()
-            )
-        })
-    }
-
     #[cfg(test)]
     fn new() -> Self {
         Self::default()
@@ -18367,6 +17950,128 @@ impl OutputProducer {
     }
 }
 
+/// Backstop of commits ahead of their turn (plan B review): a path an
+/// earlier target in plan order (registering as `stamp`) meets that a later
+/// target registered ahead of its turn. The sequential engine would name
+/// them the other way round (or give the shared action to the earlier
+/// one), so the build stops with the workaround named.
+fn out_of_order(
+    stamp: u32,
+    output: &Path,
+    registered: u32,
+    previous: &OutputProducer,
+) -> Option<String> {
+    (stamp != u32::MAX && registered != u32::MAX && registered > stamp).then(|| {
+        format!(
+            "internal error: output {} was registered by {} ahead of its turn, before a target earlier in plan order met it (BAZEL_RS_NO_COMMIT_AHEAD=1 commits every target at its turn)",
+            output.display(),
+            previous.label()
+        )
+    })
+}
+
+/// The producers an output registration is checked against
+/// ([`check_output`]): the build's ([`Producers`]), or a commit delta's own
+/// over them (crate::engine::delta).
+trait ProducerLookup {
+    /// The producer registered for exactly `output`, with its plan index.
+    fn indexed(&self, output: &Path) -> Option<(&Arc<OutputProducer>, u32)>;
+    /// The first registered path below `output` in path order.
+    fn below(&self, output: &Path) -> Option<(&PathBuf, &Arc<OutputProducer>, u32)>;
+    /// The plan index of the target registering now (`u32::MAX`: unordered).
+    fn registering(&self) -> u32;
+}
+
+impl ProducerLookup for Producers {
+    fn indexed(&self, output: &Path) -> Option<(&Arc<OutputProducer>, u32)> {
+        self.get_indexed(output)
+    }
+
+    fn below(&self, output: &Path) -> Option<(&PathBuf, &Arc<OutputProducer>, u32)> {
+        self.first_below(output)
+    }
+
+    fn registering(&self) -> u32 {
+        self.stamp
+    }
+}
+
+/// What registering an output decides ([`check_output`]).
+enum OutputRegistration {
+    /// A new producer of the path.
+    New,
+    /// The equal action with this id, registered at this plan index,
+    /// produces it (a shared action).
+    Shared(String, u32),
+}
+
+/// What registering `producer` for `output` in `producers` decides
+/// ([`register_output`]), without registering it.
+fn check_output(
+    producers: &impl ProducerLookup,
+    output: &Path,
+    producer: &Arc<OutputProducer>,
+) -> Result<OutputRegistration, String> {
+    let stamp = producers.registering();
+    if let Some((previous, registered)) = producers.indexed(output) {
+        if let Some(error) = out_of_order(stamp, output, registered, previous) {
+            return Err(error);
+        }
+        let path = output.to_string_lossy();
+        let (attempted, first) = (producer.label(), previous.label());
+        return match (&producer.action, &previous.action) {
+            (Some((_, key)), Some((id, earlier))) => match key.sharing_between_owners(earlier) {
+                crate::shared_actions::Sharing::Shared => {
+                    Ok(OutputRegistration::Shared(id.clone(), registered))
+                }
+                crate::shared_actions::Sharing::Conflict => Err(
+                    crate::shared_actions::conflict_message(&path, attempted, first),
+                ),
+                crate::shared_actions::Sharing::Unmodelled(reason) => Err(
+                    crate::shared_actions::unmodelled_message(&path, attempted, first, reason),
+                ),
+            },
+            _ => Err(crate::shared_actions::conflict_message(
+                &path, attempted, first,
+            )),
+        };
+    }
+    for ancestor in output.ancestors().skip(1) {
+        if let Some((previous, registered)) = producers.indexed(ancestor) {
+            if let Some(error) = out_of_order(stamp, ancestor, registered, previous) {
+                return Err(error);
+            }
+            return Err(crate::shared_actions::prefix_conflict_message(
+                (&ancestor.to_string_lossy(), previous.label()),
+                (&output.to_string_lossy(), producer.label()),
+            ));
+        }
+    }
+    if let Some((previous_path, previous, registered)) = producers.below(output) {
+        if let Some(error) = out_of_order(stamp, previous_path, registered, previous) {
+            return Err(error);
+        }
+        return Err(crate::shared_actions::prefix_conflict_message(
+            (&output.to_string_lossy(), producer.label()),
+            (&previous_path.to_string_lossy(), previous.label()),
+        ));
+    }
+    Ok(OutputRegistration::New)
+}
+
+/// Whether registering `output` would meet a producer in `producers`: the
+/// path itself, an ancestor or a path below it is registered (S1: a delta
+/// built without them is built again on the coordinator then).
+#[allow(dead_code)]
+fn meets_producer(producers: &Producers, output: &Path) -> bool {
+    producers.get_indexed(output).is_some()
+        || producers.ancestors.contains(output)
+        || output
+            .ancestors()
+            .skip(1)
+            .any(|ancestor| producers.get_indexed(ancestor).is_some())
+}
+
 /// Register `producer` for `output`. Output paths are global across
 /// configurations. An exact path another producer already registered is
 /// that producer's action when the two can be shared (Actions.canBeShared
@@ -18384,52 +18089,16 @@ fn register_output(
     producer: &Arc<OutputProducer>,
 ) -> Result<Option<String>, String> {
     parallel::record_registered_output(output);
-    if let Some((previous, registered)) = producers.get_indexed(output) {
-        if let Some(error) = producers.out_of_order(output, registered, previous) {
-            return Err(error);
+    match check_output(producers, output, producer)? {
+        OutputRegistration::New => {
+            producers.insert(output.to_path_buf(), Arc::clone(producer));
+            Ok(None)
         }
-        let path = output.to_string_lossy();
-        let (attempted, first) = (producer.label(), previous.label());
-        return match (&producer.action, &previous.action) {
-            (Some((_, key)), Some((id, earlier))) => match key.sharing_between_owners(earlier) {
-                crate::shared_actions::Sharing::Shared => {
-                    parallel::note_shared(producers.stamp, registered, producers.turn);
-                    Ok(Some(id.clone()))
-                }
-                crate::shared_actions::Sharing::Conflict => Err(
-                    crate::shared_actions::conflict_message(&path, attempted, first),
-                ),
-                crate::shared_actions::Sharing::Unmodelled(reason) => Err(
-                    crate::shared_actions::unmodelled_message(&path, attempted, first, reason),
-                ),
-            },
-            _ => Err(crate::shared_actions::conflict_message(
-                &path, attempted, first,
-            )),
-        };
-    }
-    for ancestor in output.ancestors().skip(1) {
-        if let Some((previous, registered)) = producers.get_indexed(ancestor) {
-            if let Some(error) = producers.out_of_order(ancestor, registered, previous) {
-                return Err(error);
-            }
-            return Err(crate::shared_actions::prefix_conflict_message(
-                (&ancestor.to_string_lossy(), previous.label()),
-                (&output.to_string_lossy(), producer.label()),
-            ));
+        OutputRegistration::Shared(id, registered) => {
+            parallel::note_shared(producers.stamp, registered, producers.turn);
+            Ok(Some(id))
         }
     }
-    if let Some((previous_path, previous, registered)) = producers.first_below(output) {
-        if let Some(error) = producers.out_of_order(previous_path, registered, previous) {
-            return Err(error);
-        }
-        return Err(crate::shared_actions::prefix_conflict_message(
-            (&output.to_string_lossy(), producer.label()),
-            (&previous_path.to_string_lossy(), previous.label()),
-        ));
-    }
-    producers.insert(output.to_path_buf(), Arc::clone(producer));
-    Ok(None)
 }
 
 /// The first commit loop of a target's (or aspect application's) Starlark
@@ -18463,37 +18132,12 @@ fn register_action_outputs(
             // the action and leave its other outputs without a producing
             // action, so it is an internal error in every build.
             if index > 0 && sharing != first {
-                let shown = |shared: &Option<String>| {
-                    shared
-                        .as_ref()
-                        .map_or_else(|| "its own".to_owned(), |id| format!("{id}'s"))
-                };
-                return Err(format!(
-                    "internal error: action {} of {label}: output {} would be {} and its first output {} (a shared action shares every output; docs/SHAREABLE_ARTIFACTS.md)",
-                    registered.action.id,
-                    file.path,
-                    shown(&sharing),
-                    shown(&first)
+                return Err(partial_share_error(
+                    registered, label, file, &sharing, &first,
                 ));
             }
             first = first.or(sharing);
-            let artifact = Artifact::new(
-                exec.clone(),
-                exec.clone(),
-                Some((
-                    first
-                        .clone()
-                        .unwrap_or_else(|| registered.action.id.clone()),
-                    index,
-                )),
-                file.owner.clone(),
-                file.is_directory,
-                registered
-                    .build_info
-                    .as_ref()
-                    .is_some_and(|build_info| build_info.volatile),
-            )
-            .with_symlink(file.is_symlink);
+            let artifact = output_artifact(registered, file, &exec, &first, index);
             verify_declared_file(file, &artifact);
             register_artifact(artifact_index, file, &artifact);
             if first.is_none() || predeclared(&exec) {
@@ -18505,6 +18149,57 @@ fn register_action_outputs(
         shared.push(first.is_some());
     }
     Ok(shared)
+}
+
+/// The internal error of an action sharing some of its outputs only
+/// ([`register_action_outputs`]).
+fn partial_share_error(
+    registered: &crate::analysis_runtime::RegisteredAction,
+    label: &str,
+    file: &File,
+    sharing: &Option<String>,
+    first: &Option<String>,
+) -> String {
+    let shown = |shared: &Option<String>| {
+        shared
+            .as_ref()
+            .map_or_else(|| "its own".to_owned(), |id| format!("{id}'s"))
+    };
+    format!(
+        "internal error: action {} of {label}: output {} would be {} and its first output {} (a shared action shares every output; docs/SHAREABLE_ARTIFACTS.md)",
+        registered.action.id,
+        file.path,
+        shown(sharing),
+        shown(first)
+    )
+}
+
+/// The Artifact of output `index` (`file`, at `exec`) of a registered
+/// action, produced by the action itself or by the equal action `first`.
+fn output_artifact(
+    registered: &crate::analysis_runtime::RegisteredAction,
+    file: &File,
+    exec: &Path,
+    first: &Option<String>,
+    index: usize,
+) -> Artifact {
+    Artifact::new(
+        exec.to_path_buf(),
+        exec.to_path_buf(),
+        Some((
+            first
+                .clone()
+                .unwrap_or_else(|| registered.action.id.clone()),
+            index,
+        )),
+        file.owner.clone(),
+        file.is_directory,
+        registered
+            .build_info
+            .as_ref()
+            .is_some_and(|build_info| build_info.volatile),
+    )
+    .with_symlink(file.is_symlink)
 }
 
 /// Whether Bazel plants the execroot entry for a source input. The execroot
@@ -18828,102 +18523,6 @@ fn runfiles_input_group(
     }
 }
 
-/// The planning state one registered Starlark action's node is committed
-/// into ([`Engine::commit_action`]): a rule commit's and an aspect
-/// application's.
-struct ActionCommit<'a> {
-    artifact_index: &'a mut ArtifactIndex,
-    workspace_status: &'a mut Option<WorkspaceStatusPlan>,
-    nodes: &'a mut lowering::PlannedNodes,
-    producers: &'a mut Producers,
-    source_inputs: &'a mut BTreeMap<String, SourceInputs>,
-    client_environment: &'a ClientEnvironment,
-    status_client_environment: &'a ClientEnvironment,
-    input_groups: &'a delta::InputGroups,
-    listed_tree_actions: &'a mut usize,
-}
-
-impl ActionCommit<'_> {
-    /// The Artifact `file` resolves to ([`Engine::indexed_artifact`]).
-    fn artifact(&mut self, engine: &Engine, file: &File) -> Result<Option<Artifact>, String> {
-        engine.indexed_artifact(
-            file,
-            self.artifact_index,
-            self.workspace_status,
-            self.nodes,
-            self.producers,
-            self.client_environment,
-            self.status_client_environment,
-        )
-    }
-}
-
-/// The planning state a runfiles support's nodes are registered in, and
-/// what registering the workspace status files on first need takes
-/// ([`Engine::ensure_workspace_status`]).
-struct RunfilesPlanning<'a> {
-    artifact_index: &'a mut ArtifactIndex,
-    declared: &'a mut Declared,
-    producers: &'a mut Producers,
-    nodes: &'a mut lowering::PlannedNodes,
-    source_inputs: &'a mut BTreeMap<String, SourceInputs>,
-    workspace_status: &'a mut Option<WorkspaceStatusPlan>,
-    client_environment: &'a ClientEnvironment,
-    status_client_environment: &'a ClientEnvironment,
-}
-
-impl RunfilesPlanning<'_> {
-    /// Place a native runfiles node lowered here (`None`: queued, placed in
-    /// commit order, crate::engine::lowering).
-    fn place(&mut self, lowered: Option<lowering::Lowered>) {
-        if let Some(lowering::Lowered::Node { planned, sources }) = lowered {
-            if let Some((id, sources)) = sources {
-                self.source_inputs.insert(id, sources);
-            }
-            self.nodes.push(*planned);
-        }
-    }
-
-    /// The Artifact `file` resolves to ([`Engine::indexed_artifact`]).
-    fn artifact(&mut self, engine: &Engine, file: &File) -> Result<Option<Artifact>, String> {
-        engine.indexed_artifact(
-            file,
-            self.artifact_index,
-            self.workspace_status,
-            self.nodes,
-            self.producers,
-            self.client_environment,
-            self.status_client_environment,
-        )
-    }
-
-    /// Register the only output of a native runfiles node.
-    fn output(
-        &mut self,
-        key: &ConfiguredTargetKey,
-        id: &str,
-        file: &File,
-    ) -> Result<Artifact, String> {
-        let exec = PathBuf::from(&file.path);
-        register_output(
-            self.producers,
-            &exec,
-            &OutputProducer::native(&key.label.to_string()),
-        )?;
-        let artifact = Artifact::new(
-            exec.clone(),
-            exec.clone(),
-            Some((id.to_owned(), 0)),
-            file.owner.clone(),
-            false,
-            false,
-        );
-        register_artifact(self.artifact_index, file, &artifact);
-        self.declared.insert((key.config, exec), artifact.clone());
-        Ok(artifact)
-    }
-}
-
 /// `file` with `suffix` appended to its paths (RunfilesSupport's derived
 /// artifacts next to the executable).
 fn suffixed_file(file: &File, suffix: &str) -> File {
@@ -18938,184 +18537,6 @@ fn suffixed_file(file: &File, suffix: &str) -> File {
 }
 
 impl Engine {
-    /// RunfilesSupport.create (analysis/RunfilesSupport.java:280-347) for a
-    /// target with runfiles support: RepoMappingManifestAction (a native
-    /// write), SourceManifestAction (Transform::RunfilesManifest, with
-    /// --build_runfile_manifests) and SymlinkTreeAction/RunfilesTreeAction
-    /// (Transform::RunfilesTree). The tree node is always planned (`run`
-    /// creates the tree without --build_runfile_links, RunCommand.java:996-1040);
-    /// only reachable nodes execute.
-    #[allow(clippy::too_many_arguments)]
-    fn plan_runfiles_support(
-        &self,
-        key: &ConfiguredTargetKey,
-        rule: &Rule,
-        target: &crate::runfiles::TargetRunfiles,
-        precomputed: Option<RunfilesPrecomputed>,
-        transitive: &BTreeSet<String>,
-        action_owner: &str,
-        main_ignored: &Arc<IgnoredSubdirectories>,
-        mut planning: RunfilesPlanning<'_>,
-    ) -> Result<Option<RunfilesNodes>, String> {
-        let Some(files_to_run) = &target.files_to_run else {
-            return Ok(None);
-        };
-        let (Some(runfiles), Some(executable), Some(repo_mapping)) = (
-            files_to_run.runfiles(),
-            files_to_run.executable(),
-            files_to_run.repo_mapping_manifest(),
-        ) else {
-            return Ok(None);
-        };
-        let options = self.configured_runfiles_options(key.config);
-        let lookup =
-            |planning: &mut RunfilesPlanning<'_>, file: &File| -> Result<Artifact, String> {
-                planning.artifact(self, file)?.ok_or_else(|| {
-                    format!(
-                        "{}: runfiles file has no declared artifact identity: {}",
-                        rule.label, file.path
-                    )
-                })
-            };
-        let executable_artifact = lookup(&mut planning, executable)?;
-        // The pure part: precomputed by the analysis worker, else here.
-        let precomputed = match precomputed {
-            Some(precomputed) => precomputed,
-            None => RunfilesPrecomputed::compute(target, transitive, &self.repositories, &options)
-                .ok_or_else(|| "internal error: runfiles support without runfiles".to_owned())?,
-        };
-        // RepoMappingManifestAction.
-        let content = precomputed.content?;
-        let id = format!("{action_owner}#repo_mapping");
-        planning.nodes.push(PlannedAction {
-            action: Action {
-                id: id.clone(),
-                command: String::new(),
-                inputs: Vec::new(),
-                outputs: vec![PathBuf::from(&repo_mapping.path)],
-                write: Some(crate::action::WriteAction {
-                    content,
-                    executable: false,
-                }),
-                program: None,
-                arguments: Vec::new(),
-                environment: BTreeMap::new(),
-                shell_strict: false,
-                extra: crate::action::ActionExtra::default(),
-                ..Action::default()
-            },
-            dependencies: Vec::new(),
-            deferred: None,
-            groups: Vec::new(),
-        });
-        let repo_mapping_artifact = planning.output(key, &id, repo_mapping)?;
-        // The tree mapping; conflicts are reported by the manifest action.
-        let conflicts = precomputed.conflicts;
-        let mapping = precomputed.mapping;
-        let mut inputs: Vec<Artifact> = Vec::new();
-        // One copy of each runfiles path, shared by the manifest and tree
-        // actions' entries and the target's runfiles entries (MEM4).
-        let mut entries: Vec<(Arc<str>, Option<SharedPath>)> = Vec::new();
-        let mut mapped: Vec<(Arc<str>, Option<Artifact>)> = Vec::new();
-        for (path, file) in mapping {
-            let path: Arc<str> = path.into();
-            match file {
-                Some(file) => {
-                    let artifact = if file == *repo_mapping {
-                        repo_mapping_artifact.clone()
-                    } else {
-                        lookup(&mut planning, &file)?
-                    };
-                    entries.push((path.clone(), Some(artifact.exec.clone())));
-                    mapped.push((path, Some(artifact.clone())));
-                    inputs.push(artifact);
-                }
-                None => {
-                    entries.push((path.clone(), None));
-                    mapped.push((path, None));
-                }
-            }
-        }
-        let entries: crate::action::RunfilesEntries = entries.into();
-        let inputs = Arc::new(inputs);
-        let action = |id: &str, outputs: Vec<PathBuf>, transform| Action {
-            id: id.to_owned(),
-            command: String::new(),
-            inputs: Vec::new(),
-            outputs,
-            write: None,
-            program: None,
-            arguments: Vec::new(),
-            environment: BTreeMap::new(),
-            shell_strict: false,
-            extra: crate::action::ActionExtra {
-                transform: Some(transform),
-                ..crate::action::ActionExtra::default()
-            },
-            ..Action::default()
-        };
-        // SourceManifestAction: the input manifest.
-        let input_manifest = suffixed_file(executable, ".runfiles_manifest");
-        let manifest_artifact = if options.build_runfile_manifests {
-            let id = format!("{action_owner}#runfiles_manifest");
-            let manifest = action(
-                &id,
-                vec![PathBuf::from(&input_manifest.path)],
-                crate::action::Transform::RunfilesManifest {
-                    entries: entries.clone(),
-                },
-            );
-            let (inputs, ignored) = (Arc::clone(&inputs), Arc::clone(main_ignored));
-            let lowered = self.lower(planning.nodes, move || {
-                lower_native_action(manifest, &inputs, &ignored)
-            })?;
-            planning.place(lowered);
-            Some(planning.output(key, &id, &input_manifest)?)
-        } else {
-            None
-        };
-        // SymlinkTreeAction + RunfilesTreeAction. Without manifests (`run`
-        // then fails, RunCommand.java:503-513) the input manifest is still
-        // needed by the tree node, so the tree is only planned with them.
-        let tree_file = suffixed_file(executable, ".runfiles/MANIFEST");
-        let tree_id = format!("{action_owner}#runfiles_tree");
-        let tree = match &manifest_artifact {
-            Some(manifest) => {
-                let mut tree_inputs = Vec::with_capacity(inputs.len() + 2);
-                tree_inputs.extend(inputs.iter().cloned());
-                tree_inputs.push(manifest.clone());
-                tree_inputs.push(executable_artifact.clone());
-                let tree = action(
-                    &tree_id,
-                    vec![PathBuf::from(&tree_file.path)],
-                    crate::action::Transform::RunfilesTree {
-                        entries,
-                        manifest: manifest.exec.to_path_buf(),
-                        executable: Some(executable_artifact.exec.to_path_buf()),
-                        create: options.enable_runfiles,
-                    },
-                );
-                let ignored = Arc::clone(main_ignored);
-                let lowered = self.lower(planning.nodes, move || {
-                    lower_native_action(tree, &tree_inputs, &ignored)
-                })?;
-                planning.place(lowered);
-                Some(planning.output(key, &tree_id, &tree_file)?)
-            }
-            None => None,
-        };
-        Ok(Some(RunfilesNodes {
-            tree,
-            manifest: manifest_artifact,
-            repo_mapping: repo_mapping_artifact,
-            executable: executable_artifact,
-            entries: mapped,
-            conflicts,
-            conflict_error: runfiles.conflict_error(),
-            location: rule.location.clone(),
-        }))
-    }
-
     /// Whether any registered action of a target needs the workspace status
     /// artifacts registered: an action input of a status file
     /// (ctx.info_file/ctx.version_file) or an
@@ -19165,7 +18586,26 @@ impl Engine {
         producers: &mut Producers,
         #[allow(unused_variables)] client_environment: &ClientEnvironment,
         status_client_environment: &ClientEnvironment,
-        artifact_index: &mut ArtifactIndex,
+        artifact_index: &ArtifactIndex,
+    ) -> Result<[Artifact; 2], String> {
+        self.ensure_workspace_status_with(
+            plan,
+            &mut |node| nodes.push(node),
+            producers,
+            status_client_environment,
+            artifact_index,
+        )
+    }
+
+    /// [`Self::ensure_workspace_status`] placing its nodes with `push` (a
+    /// commit delta's, crate::engine::delta).
+    fn ensure_workspace_status_with(
+        &self,
+        plan: &mut Option<WorkspaceStatusPlan>,
+        push: &mut dyn FnMut(PlannedAction),
+        producers: &mut Producers,
+        status_client_environment: &ClientEnvironment,
+        artifact_index: &ArtifactIndex,
     ) -> Result<[Artifact; 2], String> {
         if self.semantic_only() {
             let artifacts = [
@@ -19229,12 +18669,12 @@ impl Engine {
                     groups: Vec::new(),
                 }
             };
-            nodes.push(placeholder(
+            push(placeholder(
                 crate::request::STABLE_STATUS_ID,
                 stable_path,
                 false,
             ));
-            nodes.push(placeholder(
+            push(placeholder(
                 crate::request::VOLATILE_STATUS_ID,
                 volatile_path,
                 true,
@@ -19306,37 +18746,6 @@ impl Engine {
             artifact_index,
         )?;
         Ok(artifact_index.get(file))
-    }
-
-    /// The content of a `py_internal.create_repo_mapping_manifest` write
-    /// (RepoMappingManifestAction.newDeterministicWriter): the mappings of
-    /// the target's transitive repositories relevant to the runfiles, like
-    /// the runfiles support's `_repo_mapping` (crate::runfiles_tree).
-    fn resolve_repo_mapping(
-        &self,
-        transitive: &BTreeSet<String>,
-        registered: &mut crate::analysis_runtime::RegisteredAction,
-    ) -> Result<(), String> {
-        let Some(runfiles) = registered.repo_mapping.take() else {
-            return Ok(());
-        };
-        let repositories = &self.repositories;
-        let content = crate::runfiles_tree::repo_mapping_manifest(
-            &runfiles,
-            transitive,
-            &|repository: &str| repositories.mapping(repository),
-            self.compact_repo_mapping,
-        )?;
-        match registered.action.write.as_mut() {
-            Some(write) => write.content = content,
-            None => {
-                return Err(format!(
-                    "internal error: the repo mapping manifest {:?} is no write",
-                    registered.action.outputs
-                ));
-            }
-        }
-        Ok(())
     }
 
     /// Resolve one actions.transform_{version,info}_file registration
@@ -19811,6 +19220,7 @@ impl SharedInputs {
     /// The shared inputs of `files` in `memo` (by the walk's address),
     /// resolved through `artifact_index` on first use; `None` when one of
     /// them has no artifact (the action's own resolution reports it).
+    #[cfg(test)]
     fn resolve(
         memo: &delta::InputMemos,
         artifact_index: &ArtifactIndex,
@@ -19818,22 +19228,22 @@ impl SharedInputs {
     ) -> Option<Arc<SharedInputs>> {
         let address = Arc::as_ptr(files) as usize;
         memo.get_or_fill(&address, || {
-            Ok::<_, std::convert::Infallible>(Self::of(artifact_index, files))
+            Ok::<_, std::convert::Infallible>(Self::of(&|file| artifact_index.get(file), files))
         })
         .unwrap_or_else(|never| match never {})
     }
 
-    /// The shared inputs of `files`, resolved through `artifact_index`;
-    /// `None` when one of them has no artifact.
+    /// The shared inputs of `files`, resolved through `lookup`; `None` when
+    /// one of them has no artifact.
     fn of(
-        artifact_index: &ArtifactIndex,
+        lookup: &dyn Fn(&File) -> Option<Artifact>,
         files: &Arc<crate::starlark_types::FlatFiles>,
     ) -> Option<SharedInputs> {
         use std::os::unix::ffi::OsStrExt;
         let artifacts = files
             .files()
             .iter()
-            .map(|file| artifact_index.get(file))
+            .map(lookup)
             .collect::<Option<Vec<_>>>()?;
         let namespace = action::InputNamespace::of(artifacts.len(), &|index| {
             artifacts[index].exec.as_os_str().as_bytes()
@@ -20702,7 +20112,7 @@ mod tests {
                 command: String::new(),
                 embed_label: embed_label.to_owned(),
             });
-            let mut index = ArtifactIndex::default();
+            let index = ArtifactIndex::default();
             let (mut nodes, mut producers) =
                 (lowering::PlannedNodes::default(), Producers::default());
             let (client, status) = (std::sync::OnceLock::new(), std::sync::OnceLock::new());
@@ -20713,7 +20123,7 @@ mod tests {
                     &mut producers,
                     &client,
                     &status,
-                    &mut index,
+                    &index,
                 )
                 .unwrap();
             // No status node under --nobuild; when executing, the two
