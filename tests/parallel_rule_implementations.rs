@@ -273,7 +273,7 @@ fn action_graph_and_prints_are_the_sequential_ones() {
         delta
             .split_whitespace()
             .find_map(|field| field.strip_prefix(name))
-            .and_then(|value| value.parse().ok())
+            .and_then(|value| value.split(':').next()?.parse().ok())
             .unwrap_or(0)
     };
     assert!(field("worker=") > 0, "{delta}");
@@ -1290,7 +1290,7 @@ fn verify_ahead_checks_native_rules_register_no_outputs() {
         delta
             .split_whitespace()
             .find_map(|field| field.strip_prefix(name))
-            .and_then(|value| value.parse().ok())
+            .and_then(|value| value.split(':').next()?.parse().ok())
             .unwrap_or(0)
     };
     assert!(field("worker=") > 0, "{delta}");

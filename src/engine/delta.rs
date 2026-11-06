@@ -419,8 +419,10 @@ pub(super) struct DeltaBuilder<'a> {
     view: EngineView<'a>,
     hooks: Hooks<'a>,
     ops: Vec<DeltaOp>,
-    /// What the build registered, visible to its own later lookups.
+    /// What the build registered, visible to its own later lookups, and
+    /// those Files' quick keys (most lookups are of other Files).
     index: crate::fast_hash::FxHashMap<File, Artifact>,
+    keys: crate::fast_hash::FxHashSet<u64>,
     producers: Producers,
     uses: Vec<MemoUse>,
     fallback: Option<&'static str>,
@@ -435,6 +437,7 @@ impl<'a> DeltaBuilder<'a> {
             hooks,
             ops: Vec::new(),
             index: Default::default(),
+            keys: Default::default(),
             producers: Producers::local(stamp),
             uses: Vec::new(),
             fallback: None,
@@ -476,10 +479,13 @@ impl<'a> DeltaBuilder<'a> {
 
     /// The artifact of `file` visible to this build.
     fn lookup(&self, file: &File) -> Option<Artifact> {
-        self.index
-            .get(file)
-            .cloned()
-            .or_else(|| self.view.artifacts.get(file, self.view.reader))
+        if !self.keys.is_empty()
+            && self.keys.contains(&quick_key(file))
+            && let Some(artifact) = self.index.get(file)
+        {
+            return Some(artifact.clone());
+        }
+        self.view.artifacts.get(file, self.view.reader)
     }
 
     /// [`Engine::indexed_artifact`]: the artifact of `file`, a workspace
@@ -509,6 +515,7 @@ impl<'a> DeltaBuilder<'a> {
                 }
             }
             None => {
+                self.keys.insert(quick_key(file));
                 self.index.insert(file.clone(), artifact.clone());
                 self.ops
                     .push(DeltaOp::Artifact(file.clone(), artifact.clone()));

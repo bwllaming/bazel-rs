@@ -759,7 +759,7 @@ struct Stats {
     effects: std::sync::Mutex<BTreeMap<String, u64>>,
     /// S1: where each Starlark commit's delta was built (`worker`,
     /// `coordinator`) or why a worker's was not used (`PERF-PARALLEL delta`).
-    deltas: std::sync::Mutex<BTreeMap<&'static str, u64>>,
+    deltas: std::sync::Mutex<BTreeMap<&'static str, (u64, u64)>>,
     /// BAZEL_RS_VERIFY_DELTA comparisons.
     verified_deltas: AtomicU64,
     /// Implementations computed at their turn, by rule class (µs, count).
@@ -783,11 +783,11 @@ fn fallback(reason: &'static str) {
 
 /// S1: count one Starlark commit's delta by where it was built or why the
 /// worker's was not used (`PERF-PARALLEL delta`).
-pub(super) fn note_delta(reason: &'static str) {
-    if crate::plan_timings::enabled()
-        && let Ok(mut counts) = stats().deltas.lock()
-    {
-        *counts.entry(reason).or_default() += 1;
+pub(super) fn note_delta(reason: &'static str, elapsed: std::time::Duration) {
+    if let Ok(mut counts) = stats().deltas.lock() {
+        let entry = counts.entry(reason).or_default();
+        entry.0 += 1;
+        entry.1 += elapsed.as_micros() as u64;
     }
 }
 
@@ -924,13 +924,13 @@ pub(super) fn report(workers: usize) {
         .map(|counts| {
             counts
                 .iter()
-                .map(|(reason, count)| ((*reason).to_owned(), *count))
-                .collect()
+                .map(|(reason, (count, us))| format!("{reason}={count}:{:.3}s", *us as f64 / 1e6))
+                .collect::<Vec<_>>()
+                .join(" ")
         })
         .unwrap_or_default();
     crate::snapshot::diag::line_fmt(format_args!(
-        "PERF-PARALLEL delta {} verified={}",
-        line(deltas),
+        "PERF-PARALLEL delta (count:commit) {deltas} verified={}",
         get(&stats.verified_deltas)
     ));
     crate::snapshot::diag::line_fmt(format_args!(
@@ -2386,6 +2386,28 @@ impl Engine {
                 return Retry::Done(false);
             }
         };
+        // S1: a delta meeting a producer registered since it was built is
+        // left to the coordinator: computed again on a worker, which then
+        // keeps the analysis result for it (no compute here at the merge).
+        if let Some(delta::Built::Delta(built)) =
+            worker.outcome.delta.as_ref().map(|worker| &worker.built)
+            && Self::delta_meets_producers(state, built)
+        {
+            let WorkerOutcome {
+                snapshot, effects, ..
+            } = worker;
+            if !effects.console.is_empty() {
+                note_lost(effects.console.len());
+            }
+            pipe.stashed.entry(index).or_default().push(effects);
+            let class = crate::plan_timings::class_id(rule.rule_class_name());
+            let delta = self.delta_inputs(state, &rule, &parts, class);
+            let pending = self.dispatch(snapshot, parts.transitive.clone(), index, class, delta);
+            put_back(pipe, parts, prepare_effects, prepare_track, pending);
+            pipe.last_try.insert(index, "delta_meets_producer");
+            note_delta("recomputed_on_worker", std::time::Duration::ZERO);
+            return Retry::Done(false);
+        }
         let unsafe_reason = if worker.sentinel {
             Some("sentinel")
         } else if let Some(built) = worker.outcome.delta.as_ref() {

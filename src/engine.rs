@@ -596,10 +596,9 @@ impl Default for ConcurrentArtifactIndex {
 
 impl ConcurrentArtifactIndex {
     fn shard(&self, file: &File) -> &std::sync::RwLock<IndexShard> {
-        use std::hash::BuildHasher;
-        let hash = crate::fast_hash::FxBuildHasher::default().hash_one(file);
-        // The high bits: the map itself uses the low ones.
-        &self.shards[(hash >> 58) as usize & (ARTIFACT_SHARDS - 1)]
+        // A cheap key (equal Files have equal paths): the map hashes the
+        // whole File again.
+        &self.shards[(quick_key(file) >> 58) as usize & (ARTIFACT_SHARDS - 1)]
     }
 
     /// The registered artifact of `file` visible to the reader at plan
@@ -641,6 +640,20 @@ impl ConcurrentArtifactIndex {
             each(&shard.read().unwrap_or_else(|e| e.into_inner()));
         }
     }
+}
+
+/// A cheap 64-bit key of a File for sharding and filtering (equal Files
+/// have equal keys): its path's length and last 16 bytes, mixed.
+fn quick_key(file: &File) -> u64 {
+    let path = file.path.as_bytes();
+    let mut tail = [0u8; 16];
+    let start = path.len().saturating_sub(16);
+    tail[..path.len() - start].copy_from_slice(&path[start..]);
+    let low = u64::from_le_bytes(tail[..8].try_into().unwrap_or_default());
+    let high = u64::from_le_bytes(tail[8..].try_into().unwrap_or_default());
+    let mixed = (low ^ high.rotate_left(29) ^ (path.len() as u64).rotate_left(47))
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    mixed ^ (mixed >> 31)
 }
 
 /// The coordinator's cursor over the build's [`ConcurrentArtifactIndex`]
@@ -14381,8 +14394,8 @@ impl Engine {
         // paths meets a producer another target registered since (or it
         // fell back); the compute is then run again here (a pure function
         // of the snapshot) for the coordinator's build.
-        let recompute = |reason: &'static str, snapshot: &mut Option<ComputeSnapshot>| {
-            parallel::note_delta(reason);
+        let started = crate::plan_timings::enabled().then(std::time::Instant::now);
+        let recompute = |snapshot: &mut Option<ComputeSnapshot>| {
             let taken = snapshot
                 .take()
                 .expect("the snapshot is kept for the commit");
@@ -14391,32 +14404,25 @@ impl Engine {
             again
         };
         let mut snapshot = Some(snapshot);
-        let worker_delta = match worker.map(|worker| worker.built) {
+        let (worker_delta, reason) = match worker.map(|worker| worker.built) {
             Some(delta::Built::Delta(built)) if !Self::delta_meets_producers(state, &built) => {
-                parallel::note_delta("worker");
-                Some(built)
+                (Some(built), "worker")
             }
             Some(delta::Built::Delta(built)) => {
                 drop(built);
-                let again = recompute("meets_producer", &mut snapshot);
+                let again = recompute(&mut snapshot);
                 analyzed = again.analyzed?;
                 (precomputed, outputs_checked) = (None, None);
-                None
+                (None, "meets_producer")
             }
             Some(delta::Built::Consumed(reason)) => {
-                let again = recompute(reason, &mut snapshot);
+                let again = recompute(&mut snapshot);
                 analyzed = again.analyzed?;
                 (precomputed, outputs_checked) = (None, None);
-                None
+                (None, reason)
             }
-            Some(delta::Built::Fallback(reason)) => {
-                parallel::note_delta(reason);
-                None
-            }
-            None => {
-                parallel::note_delta("coordinator");
-                None
-            }
+            Some(delta::Built::Fallback(reason)) => (None, reason),
+            None => (None, "coordinator"),
         };
         // The rest of the commit's inputs, for a delta built here.
         let platforms = if worker_delta.is_none() || delta::verify_delta() {
@@ -14444,7 +14450,7 @@ impl Engine {
                 if delta::verify_delta() {
                     // BAZEL_RS_VERIFY_DELTA: the delta built here, now, is
                     // the worker's.
-                    let again = recompute("verify", &mut snapshot);
+                    let again = recompute(&mut snapshot);
                     if let Ok(analyzed) = again.analyzed {
                         let here = self.verify_build(state, commit(analyzed, None, None));
                         delta::compare_deltas(&key, &built, &here);
@@ -14457,7 +14463,11 @@ impl Engine {
         if let Some(snapshot) = snapshot {
             drop_elsewhere(snapshot);
         }
-        self.merge_delta(state, &key, delta)
+        let merged = self.merge_delta(state, &key, delta);
+        if let Some(started) = started {
+            parallel::note_delta(reason, started.elapsed());
+        }
+        merged
     }
 
     /// The commit of one native target (genrule, filegroup, platform
