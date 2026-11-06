@@ -1272,3 +1272,21 @@ fn verify_ahead_checks_native_rules_register_no_outputs() {
     // The 48 Starlark targets and the three native ones.
     assert!(field("verified_outputs=") >= 51, "{timed}");
 }
+
+/// Plan B review item 4: BAZEL_RS_NO_ARENA_BINDING=1 keeps the workers in
+/// their own jemalloc arenas (to measure arena-lock contention); the build
+/// is the sequential one.
+#[test]
+fn workers_without_the_arena_binding_build_the_same_graph() {
+    let ws = Workspace::new();
+    library_workspace(&ws);
+    let reference = assert_like_sequential(
+        &ws,
+        &[
+            ("BAZEL_RS_DUMP_ACTIONS", "1"),
+            ("BAZEL_RS_NO_ARENA_BINDING", "1"),
+        ],
+        &["build", "--nobuild", "//..."],
+    );
+    assert!(reference.status.success(), "{}", stderr(&reference));
+}
