@@ -821,6 +821,7 @@ impl Engine {
         if self.analysis_pool.is_none() {
             self.analysis_pool = AnalysisPool::start(self.analysis_workers());
         }
+        self.ensure_lowering_pool();
     }
 
     /// Stop the analysis workers (the end of a build's planning).
@@ -854,11 +855,10 @@ impl Engine {
         // are placed in commit order before it returns
         // (crate::engine::lowering). Under --keep_going a failure must skip
         // its dependents at its own turn: lowered at the commit instead.
+        // The lowering workers start with the analysis workers (a small
+        // build that computes nothing ahead starts neither).
         let deferring = state.nodes.deferring;
-        if !self.keep_going {
-            self.ensure_lowering_pool();
-            state.nodes.deferring = self.lowering_pool.is_some();
-        }
+        state.nodes.deferring = !self.keep_going;
         let (walk_start, turn_before) = (
             state.done,
             stats()
