@@ -885,7 +885,13 @@ known yet:
   again at its turn). A native rule other than genrule, genquery and
   starlark_doc_extract registers no output: known from its classification.
 - `Pipeline::unsettled` then holds an entry behind an aspect barrier, an
-  earlier entry of a related package whose outputs are unknown (as before),
+  earlier entry of a related package whose outputs are unknown (as before;
+  an unknown earlier entry writing outside its package — a shareable
+  artifact, a main root package output under `external/` — is caught by a
+  backstop instead: producers carry the registering plan index, and an
+  earlier target meeting a path a later one registered ahead of its turn
+  stops the build with the internal error naming
+  `BAZEL_RS_NO_COMMIT_AHEAD=1`),
   or an earlier uncommitted entry with known outputs that meet its own (an
   exact path, an ancestor of one or a path below one): `PERF-PARALLEL
   unsettled ... outputs=`. The conflicting or sharing pair still commits in
@@ -893,7 +899,10 @@ known yet:
   sequential ones.
 - `BAZEL_RS_VERIFY_AHEAD=1` records the paths every Starlark commit (ahead
   or at its turn) registers (`register_output`) and fails when one is not in
-  the summary of its compute (`verified_outputs=`).
+  the summary of its compute (`verified_outputs=`); the workspace status
+  files (no target's, registered by the first commit needing them) are left
+  out; a native rule classified without outputs is checked to register
+  none.
 - The worker also checks the declared outputs' source-tree parents
   (`validate_declared_outputs`, the commit's first check after the
   providers) inside its isolation; the commit uses that result (debug

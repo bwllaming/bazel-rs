@@ -263,8 +263,16 @@ What changed:
   executable, manifests and tree); a native rule without outputs is known
   from the start. An earlier uncommitted entry with known outputs holds a
   later one only when their outputs meet (an exact path: shared action or
-  conflict; a prefix); only earlier entries with unknown outputs of a
-  related package still hold it. `BAZEL_RS_VERIFY_AHEAD=1` checks every
+  conflict; a prefix); earlier entries with unknown outputs of a related
+  package still hold it. That package rule does not cover an earlier
+  entry, outputs still unknown, writing outside its package (a shareable
+  artifact, which any rule calling an allowlisted helper may declare; a
+  main-repository root package output under `external/`): the producers
+  carry the registering plan index and such a meeting stops the build with
+  the internal error naming `BAZEL_RS_NO_COMMIT_AHEAD=1` (a backstop, review
+  item 1; making the later entry wait would hold every external-repository
+  entry behind the root package's many `//:node_modules` targets).
+  `BAZEL_RS_VERIFY_AHEAD=1` checks every
   Starlark commit's registered outputs against its compute's summary
   (`PERF-PARALLEL verified_outputs=`, 38,757 on `//src/...`). Commits ahead
   22,118 → 24,185 (27,648 under VERIFY_AHEAD's slower pace).
@@ -323,6 +331,41 @@ commit is coordinator work in plan order, and the at-turn entries are the
 links the coordinator reaches before the worker could have computed them.
 Shaving the coordinator's per-target work only moves this a little; the
 whole per-target unit has to leave it.
+
+### Plan B S0 baseline (counters for the per-target pipeline)
+
+`BAZEL_RS_TIMING=1` prints, after the review fixes (HEAD of this branch,
+`build --nobuild //src/...`, 133,156 entries, each counted once):
+
+- `PERF-PARALLEL fallback` — why an entry ran or committed where it did:
+
+| reason | `SNAPSHOT=off` | recording |
+|---|---|---|
+| `native` (classified: a native rule, committed at its turn) | 92,041 | 92,041 |
+| `native_unclassified` (reached at its turn before classification) | 2,358 | 2,358 |
+| `committed_ahead` | 25,121 | 25,429 |
+| `ready_late` (dependencies committed, not prepared before its turn: woken by the previous turns) | 6,661 | 6,540 |
+| `ineligible_transition_or_restricted` | 2,166 | 2,209 |
+| `late` (computed ahead, finished at its turn) | 1,982 | 1,797 |
+| `platform_unknown` (prepared with the target platform deferred) | 1,349 | 1,349 |
+| `unsettled_package` / `enclosing` / `enclosed` / `outputs` (last try) | 883 / 47 / 154 / 11 | 809 / 49 / 146 / 15 |
+| `dependency_late` (classified, still waiting at its turn) | 261 | 280 |
+| `attribute_aspects` | 48 | 48 |
+| `ineligible_outputs_elsewhere` / `workspace_status` / `first_fill` | 47 / 12 / 0 | 48 / 12 / 1 |
+| `unsettled_barrier` / `requirements` | 15 / 0 | 15 / 10 |
+
+- `PERF-PARALLEL shared total=47,761 unmerged_owner=4,263` (recording:
+  4,692): shared actions, and how many met an owner off its turn (the
+  first owner committed ahead, or the registering target ahead of its own
+  turn) — the merges a delta pipeline must order.
+- `PERF-PARALLEL effects` (recording only; nothing is observed with
+  `SNAPSHOT=off`): off-turn work whose held effects reached the turn —
+  `prepare_observations=31,879 compute_observations=13,651
+  classify_observations=10`; no roots or console.
+
+`BAZEL_RS_NO_ARENA_BINDING=1` keeps the workers in their own jemalloc arenas
+(to measure arena-lock contention once prepares and commits run on many
+workers).
 
 ## What remains
 

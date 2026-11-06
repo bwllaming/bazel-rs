@@ -1381,7 +1381,7 @@ impl Engine {
                 }
             }
             None if pipe.prepare_aborted.contains(&index) => "prepare_aborted",
-            None if was_ready => "ready_no_slot",
+            None if was_ready => "ready_late",
             None => "dependency_late",
         };
         fallback(reason);
