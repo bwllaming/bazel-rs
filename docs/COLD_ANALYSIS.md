@@ -367,6 +367,38 @@ whole per-target unit has to leave it.
 (to measure arena-lock contention once prepares and commits run on many
 workers).
 
+### S1: commit deltas on the workers (branch `analysis-s1`)
+
+Design: docs/PARALLEL_ANALYSIS.md, "S1". Same setup (private clone at
+`80d6724f3a`, repositories warm, `BAZEL_RS_SNAPSHOT=off`, storagebox
+overrides, `nice -n 10`, the shared host, load ~7), runs interleaved:
+
+| command | main 75ef424a | this branch | genuine 9.3.1 |
+|---|---|---|---|
+| `build --nobuild //src/...` wall | 53.4 / 52.7 s | 52.8 / 53.4 s | 10.9 / 10.7 s |
+| — CPU user + sys | 99.5 + 45.4 / 99.9 + 45.4 s | 101.9 + 37.7 / 101.7 + 41.0 s | 315.1 + 15.9 / 311.4 + 15.3 s |
+| — peak RSS | 8,700 / 8,712 MB | 8,726 / 8,731 MB | 5,669 / 7,122 MB |
+| — stage totals: commit / prepare | 8.8 / 8.4 s | 8.5 / 8.3 s (+ 1.3 s delta builds on workers) | – |
+| `test --nobuild //src/...` wall, CPU, RSS | 53.8 s, 101.1 + 40.9 s, 8,826 MB | 53.9 s, 102.5 + 43.5 s, 8,720 MB | 10.2 s, 285.0 + 15.1 s, 5,629 MB |
+| CI `affected --base=HEAD^` wall, RSS | 68.4 s, 7,367 MB | 65.9 s, 7,404 MB | – |
+| `affected` P2 pair (warm) RSS | – | 175.8 s, 9,669 MB | – |
+
+`PERF-PARALLEL delta (count:commit)` of `build`: `worker=31,141:0.42s
+coordinator=7,273:4.35s delta_meets_producer=331:0.76s
+delta_workspace_status=12 recomputed_on_worker=8`; the fallback line is
+otherwise main's (committed ahead 23,711, ready_late 6,937, late 2,773).
+
+Why the gate (coordinator `commit` ≤3 s, wall −5 s) is not met: before S1
+the commits ahead of their turn cost the coordinator ~2 s
+(`BAZEL_RS_NO_WORKER_DELTAS=1`: 6.6 s for every Starlark commit, of which
+4.4 s at the turn); S1 moves those to the workers (0.4 s of merges), but the
+`commit` stage is now the entries computed at their turn (4.3 s: their
+runfiles support, declared-output checks and input resolution, built where
+they are computed) and the native rules (~3 s, `filegroup` 2.1 s). The
+walk's tail is latency-bound (the turn waits for chain links), so the
+coordinator time saved does not show in the wall. Moving the at-turn links
+off the coordinator needs their prepare there (S2).
+
 ## What remains
 
 The goal (cold analysis faster than genuine 9.3.1: 10 s wall on this host)

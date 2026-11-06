@@ -908,6 +908,95 @@ known yet:
   providers) inside its isolation; the commit uses that result (debug
   builds compare it with the commit's own check).
 
+## S1 — commit deltas built on the analysis workers (`src/engine/delta.rs`)
+
+The per-target pipeline's first stage (/tmp plan "S1"): a Starlark target's
+commit is split into a pure build of its effects as data and a merge that
+applies them, and the sequential engine is the two run back to back.
+
+- **Build** (`DeltaBuilder::custom_target`, `Engine::build_delta`): the
+  commit's code after its prefix (prints, the implementation's error,
+  restricted_to, the transition allowlist — on the coordinator) writes an
+  ordered list of operations (`DeltaOp`: providers, output registrations,
+  artifact-index registrations, `declared` entries, runfiles provider and
+  support nodes, planned nodes or lowerings in flight, execution tables,
+  build-info actions, files to build) instead of the planning state. It
+  reads an `EngineView` (`Sync`: the repositories, the shared artifact
+  index at the reader's plan index, the memos, the client environment, the
+  lowering workers' handle) and its own registrations (an overlay of
+  artifacts and producers). Output registrations are decided by
+  `check_output` against the delta's own producers over the build's
+  (`ProducerLookup`): on the coordinator exactly as before; on a worker
+  against its own only (`TargetDelta::unchecked`).
+- **Merge** (`Engine::merge_delta`): the operations in order, the error
+  last (with `--keep_going` the planning state after a failure is the
+  sequential one: everything before the error is applied). Output
+  registrations are the only producer writes; the S0 shared counter is
+  counted there.
+- **On the worker**: after the compute, its runfiles support's pure part
+  and its declared-outputs check, the worker builds the delta inside the
+  compute's isolation (`DeltaInputs`, the remote platforms of its spawns
+  decided at the prepare: `RemotePlatforms`), lowering into the lowering
+  workers when the walk defers lowerings. It does not (the analysis result
+  is kept for the coordinator's build): for cquery's semantic commits and
+  aquery captures; when the commit needs the workspace status, a build-info
+  action or a repo mapping manifest resolved there, or a spawn's execution
+  platform is not analyzed yet (`PERF-PARALLEL delta delta_<reason>`); and
+  when its output paths meet a registered producer (`PathHashes`: hashes of
+  every registered path and ancestor, written by `Producers::insert`) or an
+  earlier finished compute's outputs (siblings sharing an action, like the
+  `.pyc` of a test wrapper every `py_test` of a package compiles). A worker
+  falling back after it started (a status file first met in a tool's
+  runfiles tree) leaves the compute to be run again (`Built::Consumed`).
+- **At the merge** a worker's delta whose output path meets a producer
+  registered since (`delta_meets_producers`, a race) is discarded: ahead of
+  its turn the compute is dispatched again (its delta then left to the
+  coordinator), at its turn too while the turn commits others ahead
+  (`recomputed_on_worker`), else it is computed again on the coordinator.
+- **Shared index and memos.** The artifact index is sharded
+  (`ConcurrentArtifactIndex`, 64 `RwLock` shards keyed by a cheap File key);
+  a lookup names the reader's plan index (no global turn; the coordinator's
+  cursor `ArtifactIndex` keeps its own). The tool runfiles groups and shared
+  input runs are single-flight memos (`SingleFlight`): whoever fills an
+  entry first fills the one value every later use shares, so they no longer
+  keep a commit at its turn (`ineligible_first_fill` is gone). A fill only
+  looks artifacts up (a status file makes a worker fall back), so there are
+  no fill effects to replay; each delta lists the memos it used in order
+  (`MemoUse`). Entries are Final only: publication is still at the merge
+  (S3 adds provisional entries).
+- `BAZEL_RS_VERIFY_DELTA=1` runs the compute again where a worker's delta
+  merges, builds the delta there on the coordinator (read-only) and compares
+  every operation (providers by id and type, the rest by content), the error
+  and the tool runfiles groups used (`PERF-PARALLEL delta ... verified=`).
+  `BAZEL_RS_NO_WORKER_DELTAS=1` builds every delta on the coordinator.
+  `BAZEL_RS_TIMING=1` adds `PERF-PARALLEL delta (count:commit)`: each
+  Starlark commit by where its delta was built (`worker`, `coordinator`) or
+  why a worker's was not used, with the coordinator time of its commit, and
+  `PERF-STAGE total delta` (the workers' builds).
+
+**Measured** (docs/COLD_ANALYSIS.md, "S1"): the merges of the ~31,000
+worker-built deltas take 0.4 s on the coordinator, but the coordinator's
+`commit` stage only drops 8.8 → 8.5 s and the wall is unchanged: the commits
+ahead of their turn cost ~2 s before S1, and what remains is the commits of
+the ~7,200 entries computed at their turn (4.3 s, built where they are
+computed) and the native rules' (~3 s). The S1 gate (commit ≤3 s, wall
+−5 s) is not met; S2 (prepare on the workers, so the chain links stop being
+computed at their turn) is where those move.
+
+**Determinism evidence.** `tests/parallel_rule_implementations.rs`: every
+comparison against the sequential engine runs one configuration with
+`BAZEL_RS_VERIFY_DELTA=1`; `action_graph_and_prints_are_the_sequential_ones`
+checks every worker delta was verified;
+`sibling_shared_actions_merge_in_plan_order` (ten siblings sharing an action
+consumed by another, with and without a conflicting one and `--keep_going`,
+under jitter; every Starlark commit counted once). On ~/code (`80d6724f3a`):
+the action dumps of `build`/`test --nobuild //src/...` at the default threads,
+1 and 32 with 5 ms jitter, the remote dump, the rest of stderr, `aquery`
+samples and the CI / P1 / P2 `affected` outputs and digests identical to
+main's; `BAZEL_RS_VERIFY_DELTA=1` clean on `build` and `test --nobuild
+//src/...` (31,170 / 31,174 deltas), also together with
+`BAZEL_RS_VERIFY_AHEAD=1`; a recorded snapshot verifies at threads 1 and 8.
+
 ## Phase-1 prefetch (W6, `src/prefetch.rs`)
 
 P2 parallelized only the packages a target pattern names. On a warm
