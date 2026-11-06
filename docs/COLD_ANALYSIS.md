@@ -200,17 +200,28 @@ loaded by other work — run-to-run noise is several seconds). Before: main
 | — CPU user + sys, peak RSS | 91.4 + 42.2 s, 8,785 MB | 98.7 + 42.8 s, 8,859 MB | 279.5 + 15.5 s, 7,818 MB |
 | `build --nobuild` recording the snapshot (default mode) | 87.4 s, 9,620 MB | 72.4 s, 9,751 MB | – |
 | CI `affected --base=HEAD^` wall | 78.9 s | **67.0 s** | – |
-| — CPU user + sys, peak RSS | 159.4 + 152.7 s, 7,415 MB | 169.1 + 153.6 s, 7,428 MB | – |
-| `affected` P2 pair (lockfile change, both revisions in full, warm) | 204.3 s, 9,673 MB | 182.1 s, 9,749 MB | – |
+| — CPU user + sys, peak RSS (with the arena binding since removed; below) | 159.4 + 152.7 s, 7,415 MB | 169.1 + 153.6 s, 7,428 MB | – |
+| `affected` P2 pair (lockfile change, both revisions in full, warm; idem) | 204.3 s, 9,673 MB | 182.1 s, 9,749 MB | – |
 
 The coordinator is still CPU-bound for the whole run. Sampled (pprof,
 phase 1 + phase 2 + tail, ~52 s): commits 14.9 s (ahead of their turn
 included), implementations computed at their turn 10.4 s (the
 `py_library` and `go_library` chains whose dependencies settle late: 738
 `py_library` take 3.9 s), phase-1 analysis 9.1 s, prepares 7.4 s, the
-planning tail 5.4 s, classification 1.4 s, package loading 1.4 s. Without
-the lowering workers' arena binding the concurrent `affected` peaked 7%
-higher (freed temporaries held in their own arenas until decay).
+planning tail 5.4 s, classification 1.4 s, package loading 1.4 s.
+
+The concurrent `affected` peaks ~8% higher (7,372 → 7,944 MB on the CI
+step): the lowering workers' freed temporaries stay in their own jemalloc
+arenas until they decay. Binding the workers to the coordinator's arena
+removed it, but needs handwritten unsafe (`mallctl`; tikv-jemallocator has
+no safe API for it), so it was dropped in review.
+
+After the review fixes (main `d4b1d573` → this branch, fresh repository
+fetch, so the dump's md5 differs from the table's run but is identical
+between them): `build --nobuild //src/...` 70.8 / 70.7 → 55.9 / 55.4 s
+(8,799 / 8,779 → 8,864 / 8,858 MB), `test --nobuild` 71.4 → 57.4 s, CI
+`affected` 80.6 → 67.2 s (7,372 → 7,944 MB); 25,201 entries committed
+ahead, each verified at its turn under `BAZEL_RS_VERIFY_AHEAD=1`.
 
 ## What remains
 

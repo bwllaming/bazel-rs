@@ -754,8 +754,7 @@ shared-group check), the source/generated split (`plan_action_sources`),
 the runfiles support's manifest and tree nodes, joining a shared input run
 (the Python runtime of every PyCompile) into the inputs — is a function of
 what the coordinator hands over and runs on a lowering worker (4 by default,
-`BAZEL_RS_LOWERING_WORKERS`, 0: on the coordinator; they allocate in the
-coordinator's jemalloc arena, so what they free is reusable by it).
+`BAZEL_RS_LOWERING_WORKERS`, 0: on the coordinator).
 
 - *Order.* `ActionPlanning::nodes` is a queue (`PlannedNodes`): a node the
   coordinator plans is pushed behind everything queued, a lowering in
@@ -789,6 +788,23 @@ own compute, the coordinator commits finished entries ahead of their turn
   conflicts), of an enclosing or an enclosed package (prefix conflicts), and
   no earlier uncommitted Starlark rule that is never prepared ahead (an
   aspect barrier: aspect applications register outputs in other packages).
+- *Outputs in the package* (`outputs_in_package`, review item 1): every
+  output the commit registers (its actions', its executable and runfiles
+  manifests) lies below `<output root>/<package exec path>/`. A shareable
+  output named from another package's path (a C++ link's `_solib_<cpu>/`
+  symlink, `declare_shareable_artifact`) or a main-repository root package
+  output under `external/` (the output tree of `@r//p`) is outside the
+  package rule's reach: such a target commits at its turn, where the first
+  owner in plan order registers it.
+- *Platforms known* (review item 2): its prepare saw its target platform
+  resolved (one that saw it deferred is prepared again at its turn when a
+  commit resolves it in between, so it commits at its turn), and each
+  spawn's execution platform is the default host platform, carries its
+  resolved properties or is already in `Engine::platforms`
+  (`remote_platforms_known`; `Engine::remote_platform` reads that memo).
+- *Bounded*: the segments waiting for their turn hold at most 16,384 nodes
+  and lowerings (`BAZEL_RS_COMMITTED_LIMIT`), besides the 4,096-entry
+  horizon.
 - *Safe commit* (`commit_ahead_safe`): the compute succeeded without a
   sentinel; no transition allowlist (it loads its package), no workspace
   status needed (registered on first need), the runfiles support's pure part
@@ -799,7 +815,8 @@ own compute, the coordinator commits finished entries ahead of their turn
 - *Held.* It commits like a prepare ahead: `self.ahead` (an analysis or
   package load would abort — an internal error, as would a repository
   demand under the no-demand guard), its registrations stamped with its plan
-  index (`ArtifactIndex::stamp_ahead`), its console, observations and
+  index (`ArtifactIndex::stamp_ahead`; the internal error names
+  `BAZEL_RS_NO_COMMIT_AHEAD=1` as the workaround), its console, observations and
   obtained roots in an `Isolation`, its tracker events deferred, the
   warnings/errors it records split off, its nodes and lowerings in a segment
   (`PlannedNodes::segment`) with its console cut at each lowering. Its turn
@@ -811,8 +828,13 @@ own compute, the coordinator commits finished entries ahead of their turn
   classified ready and prepared ahead earlier; an earlier turn never reads
   it (plan order is post-order; registrations are stamped).
 - `BAZEL_RS_NO_COMMIT_AHEAD` turns it off; `BAZEL_RS_VERIFY_AHEAD=1`
-  repeats the prepare right before the commit ahead and compares
-  (`verify_prepared`, P3's comparison); `BAZEL_RS_TIMING=1` adds
+  repeats the prepare right before the commit ahead and again at its turn,
+  comparing both with the one committed (`verify_prepared`, P3's
+  comparison; `PERF-PARALLEL verified_turn=`, and `platform_late=` counts
+  entries committed ahead whose target platform got resolved before their
+  turn — never); `BAZEL_RS_DUMP_ACTIONS=remote` adds each spawn's remote
+  platform to the dump; `BAZEL_RS_TEST_ABORT_AHEAD=1` (tests) makes every
+  commit ahead end in that internal error; `BAZEL_RS_TIMING=1` adds
   `PERF-PARALLEL committed_ahead= later_barrier= later_package= ineligible=
   turn_compute= walks(...)`, the reasons outputs were unsettled and the rule
   classes computed at their turn.
@@ -823,7 +845,14 @@ manifest/tree lowerings failing at worker speed, with and without
 `--keep_going`), `commits_ahead_of_the_turn_keep_the_sequential_graph`
 (independent packages with subpackages, genrules beside Starlark rules, a
 shared action pair, an aspect-applying rule in the middle; the full action
-dump) and `conflicts_committed_ahead_are_reported_at_their_turn`, all at
+dump) and `conflicts_committed_ahead_are_reported_at_their_turn`; after
+the review `shareable_outputs_outside_the_package_commit_at_their_turn`
+(two packages declaring one `_solib_k8/` artifact, shared and
+conflicting: fails without the fix), `remote_platforms_resolved_late_commit_at_their_turn`
+(a guard: the explicit host platform there is resolved before phase 2),
+`verify_ahead_checks_commits_ahead_at_their_turn`,
+`an_aborted_commit_ahead_names_the_workaround` and
+`committed_segments_are_bounded`; all at
 threads 2/8/32, with 25/40 ms jitter and VERIFY_AHEAD, against threads 1.
 On ~/code (`80d6724f3a`, `BAZEL_RS_SNAPSHOT=off`): the action dump of
 `build --nobuild` and `test --nobuild //src/...` (6,483,434 lines) and the
