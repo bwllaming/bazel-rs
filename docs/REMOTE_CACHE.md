@@ -105,7 +105,7 @@ and `mod`:
 | `--remote_header`, `--remote_cache_header` (`NAME=VALUE`) | sent with every request |
 | `--remote_instance_name` | gRPC requests and resource names; HTTP caches ignore it, like Bazel |
 | `--remote_retries` (old `--experimental_remote_retry_max_attempts`, default 5), `--remote_retry_max_delay` (5s) | retries of transient failures, gRPC and HTTP (below) |
-| `--remote_max_connections` (100; 0 unlimited), `--remote_max_concurrency_per_connection` (100) | gRPC connection pool |
+| `--remote_max_connections` (100; 0 unlimited), `--remote_max_concurrency_per_connection` (100) | gRPC connection pool; concurrent HTTP cache requests |
 | `--remote_download_outputs=all\|minimal\|toplevel` (default `toplevel`), `--remote_download_{all,minimal,toplevel}`, `--remote_download_regex`, `--experimental_remote_cache_ttl` (3h), `--experimental_remote_cache_eviction_retries` (5) | Build without the Bytes (below) |
 | `--[no]remote_cache_compression`, `--experimental_remote_cache_compression_threshold` (100) | gRPC zstd ByteStream (below); HTTP caches ignore it, like Bazel |
 | `--tls_certificate`, `--tls_client_certificate`, `--tls_client_key`, `--tls_authority_override` | grpcs:// (and the root/client certificate for https://) |
@@ -405,12 +405,40 @@ action runs locally, as for HTTP.
 HTTP requests (GET and PUT, AC and CAS) use the same retrier with
 `RemoteModule.HTTP_RESULT_CLASSIFIER`: 408, 429, 500, 502, 503 and 504
 answers, timeouts and broken connections (reset, closed before the
-answer) are transient; 404 is a miss; a connection that cannot be
-established at all (refused, DNS, TLS) and every other status are not
-retried, like Bazel's `ConnectException`. A 401 still refreshes the
-helper cache and retries once on its own (`authTokenExpired`).
+answer, also a pooled keep-alive connection the server closed meanwhile)
+are transient; 404 is a miss; a connection that cannot be established at
+all (refused, DNS, TLS) and every other status are not retried, like
+Bazel's `ConnectException` — until the cache has answered once in the
+process: a cache known to be up that then refuses or fails a connection
+(a burst of new connections, a full accept queue, an exhausted port
+range, a failed name lookup) is overloaded, not down, and that is
+retried too (a native addition; a certificate failure never is). A retry
+always opens a new connection (a second client without idle
+connections), so it never meets another stale pooled one. The error text
+names the cause reqwest's own text omits (`HTTP cache connection failed:
+error sending request (Connection refused (os error 111))`). A 401 still
+refreshes the helper cache and retries once on its own
+(`authTokenExpired`). Idle pooled connections are closed after 30 s
+(below common server keep-alive timeouts).
+
+`--remote_max_connections` (default 100, 0: unlimited) caps the HTTP
+cache's concurrent requests like HttpCacheClient's FixedChannelPool (one
+request per connection): lookups, uploads, on-demand input fetches and
+the tree fetchers (up to 512 threads) wait for a free connection; at most
+that many idle connections are kept. Before, every concurrent request
+could open its own connection, and a cache refusing such a burst
+(`HTTP cache connection failed: error sending request` on 4 on-demand
+fetches of a Build without the Bytes CI build) failed the build.
 `tests/remote_cache.rs::http_cache_requests_are_retried` (503s and dropped
-connections on reads and writes, `--remote_retries=0`).
+connections on reads and writes, `--remote_retries=0`);
+`http_cache_survives_closed_reset_and_refused_connections` (a cache that
+closes idle keep-alive connections, resets connections after the request
+and refuses bursts of connections: 24 hits and 24 on-demand fetches
+succeed without a warning; `--remote_max_connections=4` holds; a cache
+that is down is not retried). A blob still unavailable after the retries
+fails its consumer (`Failed to fetch remote input …`), like Bazel, whose
+prefetcher reports only a missing blob (CacheNotFoundException) as a lost
+input to rewind; a 404 is a lost input (below).
 
 **Credentials.** The helper is asked for grpc-java's per-service URI
 `https://AUTHORITY/SERVICE` (`:443` omitted), e.g.

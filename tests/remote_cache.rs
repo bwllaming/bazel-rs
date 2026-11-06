@@ -45,6 +45,21 @@ struct State {
     /// next `dropped` ones close the connection without an answer.
     unavailable: usize,
     dropped: usize,
+    /// Connection faults (docs/REMOTE_CACHE.md "Retries"): an idle
+    /// keep-alive connection is closed after this long; every
+    /// `reset_every`-th connection is reset after its request; every
+    /// `refuse_every`-th connection (once 4 answers were sent) closes the
+    /// listener for 150 ms, so connections meanwhile are refused.
+    close_idle: Option<std::time::Duration>,
+    reset_every: usize,
+    refuse_every: usize,
+    /// Each answer waits this long (requests overlap).
+    delay: std::time::Duration,
+    active: usize,
+    max_active: usize,
+    answered: usize,
+    resets: usize,
+    refusals: usize,
 }
 
 /// A minimal HTTP/1.1 cache: GET/PUT `/ac/H` and `/cas/H`, other GETs from
@@ -55,13 +70,27 @@ struct Server {
     fail: Arc<AtomicBool>,
 }
 
-fn handle(mut stream: TcpStream, state: Arc<Mutex<State>>, fail: Arc<AtomicBool>) {
+fn handle(mut stream: TcpStream, shared: Arc<Mutex<State>>, fail: Arc<AtomicBool>, index: usize) {
+    let reset_every = shared.lock().unwrap().reset_every;
+    if reset_every > 0 && index.is_multiple_of(reset_every) {
+        // Closing a socket with unread data sends a RST: the request
+        // arrives and the connection is reset before any answer byte.
+        let _ = stream.peek(&mut [0; 1]);
+        shared.lock().unwrap().resets += 1;
+        return;
+    }
     let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut first = true;
     loop {
+        let idle = shared.lock().unwrap().close_idle;
+        if !first && idle.is_some() {
+            stream.set_read_timeout(idle).unwrap();
+        }
         let mut line = String::new();
         if reader.read_line(&mut line).unwrap_or(0) == 0 {
             return;
         }
+        stream.set_read_timeout(None).unwrap();
         let mut parts = line.split_whitespace();
         let (method, path) = (
             parts.next().unwrap_or("").to_owned(),
@@ -84,7 +113,7 @@ fn handle(mut stream: TcpStream, state: Arc<Mutex<State>>, fail: Arc<AtomicBool>
             .map_or(0, |(_, value)| value.parse::<usize>().unwrap());
         let mut body = vec![0; length];
         reader.read_exact(&mut body).unwrap();
-        let mut state = state.lock().unwrap();
+        let mut state = shared.lock().unwrap();
         state.log.push(Request {
             method: method.clone(),
             path: path.clone(),
@@ -94,6 +123,14 @@ fn handle(mut stream: TcpStream, state: Arc<Mutex<State>>, fail: Arc<AtomicBool>
             state.dropped -= 1;
             return;
         }
+        first = false;
+        state.active += 1;
+        state.max_active = state.max_active.max(state.active);
+        let delay = state.delay;
+        drop(state);
+        std::thread::sleep(delay);
+        let mut state = shared.lock().unwrap();
+        state.active -= 1;
         let (status, payload) = if fail.load(Ordering::SeqCst) {
             ("500 Internal Server Error", b"broken".to_vec())
         } else if state.unavailable > 0 {
@@ -116,6 +153,7 @@ fn handle(mut stream: TcpStream, state: Arc<Mutex<State>>, fail: Arc<AtomicBool>
         if stream.write_all(head.as_bytes()).is_err() || stream.write_all(&payload).is_err() {
             return;
         }
+        shared.lock().unwrap().answered += 1;
     }
 }
 
@@ -127,9 +165,34 @@ impl Server {
         let fail = Arc::new(AtomicBool::new(false));
         let (accept_state, accept_fail) = (state.clone(), fail.clone());
         std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
+            let mut listener = Some(listener);
+            let mut index: usize = 0;
+            loop {
+                let Ok((stream, _)) = listener.as_ref().unwrap().accept() else {
+                    continue;
+                };
+                index += 1;
+                let refuse = {
+                    let mut state = accept_state.lock().unwrap();
+                    let refuse = state.refuse_every > 0
+                        && state.answered >= 4
+                        && index.is_multiple_of(state.refuse_every);
+                    state.refusals += usize::from(refuse);
+                    refuse
+                };
                 let (state, fail) = (accept_state.clone(), accept_fail.clone());
-                std::thread::spawn(move || handle(stream, state, fail));
+                std::thread::spawn(move || handle(stream, state, fail, index));
+                if refuse {
+                    // Let the client see the earlier answers, then refuse
+                    // connections for a while.
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    listener = None;
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    while listener.is_none() {
+                        listener = TcpListener::bind(("127.0.0.1", port)).ok();
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                }
             }
         });
         Self { port, state, fail }
@@ -151,6 +214,9 @@ impl Server {
         let mut state = self.state.lock().unwrap();
         state.unavailable = unavailable;
         state.dropped = dropped;
+    }
+    fn with_state<T>(&self, change: impl FnOnce(&mut State) -> T) -> T {
+        change(&mut self.state.lock().unwrap())
     }
     fn take_log(&self) -> Vec<Request> {
         std::mem::take(&mut self.state.lock().unwrap().log)
@@ -1622,6 +1688,88 @@ fn http_cache_requests_are_retried() {
         stderr(&once)
     );
     assert_eq!(outputs(&once)["//pkg:gen"], "hello\ndone\n");
+}
+
+const FLAKY_BUILD: &str = r#"[genrule(name = "p%d" % i, outs = ["p%d.txt" % i], cmd = "echo part%d > $@" % i) for i in range(24)]
+genrule(name = "sink", srcs = [":p%d" % i for i in range(24)], outs = ["sink.txt"], cmd = "cat $(SRCS) > $@", tags = ["no-remote"])
+"#;
+
+/// Connection faults of a real cache under load (docs/REMOTE_CACHE.md
+/// "Retries"): idle keep-alive connections the server closes, connections
+/// reset after the request, and bursts of refused connections once the
+/// cache has answered. Every lookup and every on-demand fetch of the
+/// local consumer's 24 remote-only inputs is retried on a fresh
+/// connection and the build succeeds without a warning;
+/// `--remote_max_connections` caps the concurrent requests.
+#[test]
+fn http_cache_survives_closed_reset_and_refused_connections() {
+    let ws = Workspace::new();
+    ws.file("flaky/BUILD.bazel", FLAKY_BUILD);
+    let server = Server::new();
+    let cache = format!("--remote_cache={}", server.url());
+    let populated = ws.run("p", &["build", &cache, "//flaky:sink"]);
+    assert!(populated.status.success(), "{}", stderr(&populated));
+    let expected: String = (0..24).map(|i| format!("part{i}\n")).collect();
+    let ms = std::time::Duration::from_millis;
+    for (cache_dir, reset_every, refuse_every, limit) in [
+        ("r1", 3, 0, None),
+        ("r2", 0, 4, Some(4)),
+        ("r3", 5, 6, None),
+    ] {
+        server.with_state(|state| {
+            state.close_idle = Some(ms(15));
+            state.reset_every = reset_every;
+            state.refuse_every = refuse_every;
+            state.delay = ms(10);
+            state.max_active = 0;
+            state.answered = 0;
+            state.resets = 0;
+            state.refusals = 0;
+        });
+        let mut args = vec!["build".to_owned(), cache.clone(), "--jobs=16".to_owned()];
+        if let Some(limit) = limit {
+            args.push(format!("--remote_max_connections={limit}"));
+        }
+        args.push("//flaky:sink".to_owned());
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let built = ws.run_with(cache_dir, &args, false);
+        let text = stderr(&built);
+        assert!(built.status.success(), "{cache_dir}: {text}");
+        assert!(!text.contains("Remote Cache"), "{cache_dir}: {text}");
+        assert!(text.contains("24 remote cache hits"), "{cache_dir}: {text}");
+        assert_eq!(
+            bin_file(&ws, cache_dir, "flaky/sink.txt").as_deref(),
+            Some(expected.as_str()),
+            "{cache_dir}"
+        );
+        let (resets, refusals, max_active) =
+            server.with_state(|state| (state.resets, state.refusals, state.max_active));
+        assert_eq!(resets > 0, reset_every > 0, "{cache_dir}: {resets} resets");
+        assert_eq!(
+            refusals > 0,
+            refuse_every > 0,
+            "{cache_dir}: {refusals} refusals"
+        );
+        if let Some(limit) = limit {
+            assert!(max_active <= limit, "{cache_dir}: {max_active} at once");
+        }
+    }
+    // A cache that never answered and refuses connections is down: like
+    // Bazel's ConnectException, no retries; a warning (with the cause)
+    // and local execution.
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+    let down = format!(
+        "--remote_cache=http://127.0.0.1:{}",
+        closed.local_addr().unwrap().port()
+    );
+    drop(closed);
+    let local = ws.run_with("r4", &["build", &down, "//flaky:p0"], false);
+    let text = stderr(&local);
+    assert!(local.status.success(), "{text}");
+    assert!(
+        text.contains("WARNING: Remote Cache: HTTP cache connection failed: error sending request (Connection refused"),
+        "{text}"
+    );
 }
 
 // --- Test actions through the remote spawn cache (genuine receipt:

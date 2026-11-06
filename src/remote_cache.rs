@@ -21,7 +21,7 @@ use crate::reapi::{self, Digest};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -545,11 +545,66 @@ struct HttpCache {
     uri: CacheUri,
     credential_uri: String,
     client: reqwest::blocking::Client,
+    /// The same client without idle connections (retries), built on the
+    /// first retry from `options`.
+    fresh_client: OnceLock<Option<reqwest::blocking::Client>>,
+    options: Box<RemoteOptions>,
     headers: Vec<(String, String)>,
     /// `--remote_retries` and `--remote_retry_max_delay` (RemoteRetrier
     /// with RemoteModule.HTTP_RESULT_CLASSIFIER).
     retries: u32,
     retry_max_delay: Duration,
+    /// `--remote_max_connections` (HttpCacheClient's FixedChannelPool):
+    /// at most this many requests at once (0: unlimited).
+    connections: ConnectionLimit,
+    /// Some answer came from the cache in this process: the cache exists,
+    /// so a connection it refuses later is a momentary overload (retried),
+    /// not a cache that is down.
+    answered: AtomicBool,
+}
+
+/// How long an idle pooled connection is kept: below common server
+/// keep-alive timeouts, so a reused connection is rarely one the server
+/// is closing.
+const HTTP_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A counting semaphore over the cache's concurrent requests.
+struct ConnectionLimit {
+    max: usize,
+    used: Mutex<usize>,
+    freed: std::sync::Condvar,
+}
+
+struct ConnectionPermit<'a>(&'a ConnectionLimit);
+
+impl ConnectionLimit {
+    fn new(max: usize) -> Self {
+        Self {
+            max,
+            used: Mutex::new(0),
+            freed: std::sync::Condvar::new(),
+        }
+    }
+
+    fn acquire(&self) -> Option<ConnectionPermit<'_>> {
+        if self.max == 0 {
+            return None;
+        }
+        let mut used = self.used.lock().unwrap_or_else(|e| e.into_inner());
+        while *used >= self.max {
+            used = self.freed.wait(used).unwrap_or_else(|e| e.into_inner());
+        }
+        *used += 1;
+        Some(ConnectionPermit(self))
+    }
+}
+
+impl Drop for ConnectionPermit<'_> {
+    fn drop(&mut self) {
+        let mut used = self.0.used.lock().unwrap_or_else(|e| e.into_inner());
+        *used -= 1;
+        self.0.freed.notify_one();
+    }
 }
 
 /// One HTTP attempt's failure and whether HTTP_RESULT_CLASSIFIER calls it
@@ -569,7 +624,7 @@ impl HttpFailure {
 }
 
 enum Backend {
-    Http(HttpCache),
+    Http(Box<HttpCache>),
     Grpc(Arc<crate::remote_grpc::GrpcCache>),
     /// Only a `--disk_cache`.
     None,
@@ -1022,13 +1077,67 @@ fn setup_remote(
             netrc.display()
         )));
     }
+    let max_connections = options.max_connections.max(0) as usize;
+    let client = http_client(options, true).map_err(fail)?;
+
+    // CombinedCacheClientFactory.effectiveHeaders (:144-150).
+    let headers = options
+        .headers
+        .iter()
+        .chain(&options.cache_headers)
+        .cloned()
+        .collect();
+    Ok(Some(RemoteCache {
+        disk: None,
+        backend: Backend::Http(Box::new(HttpCache {
+            uri,
+            credential_uri,
+            client,
+            fresh_client: OnceLock::new(),
+            options: Box::new(options.clone()),
+            headers,
+            retries: options.retries.max(0) as u32,
+            retry_max_delay: options.retry_max_delay,
+            connections: ConnectionLimit::new(max_connections),
+            answered: AtomicBool::new(false),
+        })),
+        executor: None,
+        accept_cached: options.accept_cached,
+        upload_local_results,
+        local_fallback: options.local_fallback,
+        default_exec_properties: options.default_exec_properties.clone(),
+        print_execution_messages: options.print_execution_messages,
+        uploaded: Mutex::new(HashSet::new()),
+        uploading: Mutex::new(HashMap::new()),
+        downloading: Mutex::new(HashMap::new()),
+        present: Mutex::new(HashSet::new()),
+        hits: AtomicUsize::new(0),
+        executions: AtomicUsize::new(0),
+    }))
+}
+
+/// The HTTP cache's client: pooled (idle connections kept up to
+/// `--remote_max_connections`), or without idle connections, for retries:
+/// a retry never reuses a pooled keep-alive connection the server may be
+/// closing.
+fn http_client(options: &RemoteOptions, pooled: bool) -> Result<reqwest::blocking::Client, String> {
+    let fail = |error: String| error;
+    let max_connections = options.max_connections.max(0) as usize;
     let mut builder = reqwest::blocking::Client::builder()
         .use_rustls_tls()
         .no_proxy()
         .http1_only()
         .referer(false)
         .redirect(reqwest::redirect::Policy::none())
+        .pool_idle_timeout(HTTP_POOL_IDLE_TIMEOUT)
         .user_agent(concat!("bazel-rs/", env!("CARGO_PKG_VERSION")));
+    builder = if !pooled {
+        builder.pool_max_idle_per_host(0)
+    } else if max_connections > 0 {
+        builder.pool_max_idle_per_host(max_connections)
+    } else {
+        builder
+    };
     if !options.timeout.is_zero() {
         builder = builder
             .timeout(options.timeout)
@@ -1069,39 +1178,9 @@ fn setup_remote(
             reqwest::Identity::from_pem(&pem).map_err(|error| failed(error.to_string()))?,
         );
     }
-    let client = builder
+    builder
         .build()
-        .map_err(|_| fail("cannot initialize the remote cache HTTP client".into()))?;
-    // CombinedCacheClientFactory.effectiveHeaders (:144-150).
-    let headers = options
-        .headers
-        .iter()
-        .chain(&options.cache_headers)
-        .cloned()
-        .collect();
-    Ok(Some(RemoteCache {
-        disk: None,
-        backend: Backend::Http(HttpCache {
-            uri,
-            credential_uri,
-            client,
-            headers,
-            retries: options.retries.max(0) as u32,
-            retry_max_delay: options.retry_max_delay,
-        }),
-        executor: None,
-        accept_cached: options.accept_cached,
-        upload_local_results,
-        local_fallback: options.local_fallback,
-        default_exec_properties: options.default_exec_properties.clone(),
-        print_execution_messages: options.print_execution_messages,
-        uploaded: Mutex::new(HashSet::new()),
-        uploading: Mutex::new(HashMap::new()),
-        downloading: Mutex::new(HashMap::new()),
-        present: Mutex::new(HashSet::new()),
-        hits: AtomicUsize::new(0),
-        executions: AtomicUsize::new(0),
-    }))
+        .map_err(|_| fail("cannot initialize the remote cache HTTP client".into()))
 }
 
 static ACTIVE: OnceLock<RemoteCache> = OnceLock::new();
@@ -1412,10 +1491,15 @@ impl HttpCache {
     }
 
     /// A transport failure. Transient (HTTP_RESULT_CLASSIFIER: a closed
-    /// channel, a reset connection, a timeout) unless the connection could
-    /// not be established at all (refused, DNS, TLS: Bazel's
-    /// `ConnectException` is permanent).
-    fn transport(error: reqwest::Error) -> HttpFailure {
+    /// channel, a reset connection, a timeout — also a pooled keep-alive
+    /// connection the server closed meanwhile: the retry opens a fresh
+    /// one) unless the connection could not be established at all
+    /// (refused, DNS, TLS: Bazel's `ConnectException` is permanent). Once
+    /// the cache has answered in this process, a failed connection is a
+    /// momentary refusal (a burst, a full accept queue, an exhausted port
+    /// range, a transient name lookup) and is retried too; a certificate
+    /// failure never is.
+    fn transport(&self, error: reqwest::Error) -> HttpFailure {
         // Never echo URLs (they may carry user info).
         let kind = if error.is_timeout() {
             "timed out"
@@ -1424,13 +1508,17 @@ impl HttpCache {
         } else {
             "request failed"
         };
-        let transient = error.is_timeout() || !error.is_connect() || {
-            // A connection reset while connecting is retried too.
-            let text = format!("{error:?}").to_ascii_lowercase();
-            text.contains("connection reset") || text.contains("connectionreset")
-        };
+        let transient = error.is_timeout()
+            || !error.is_connect()
+            || (!certificate_failure(&error)
+                && (self.answered.load(Ordering::Relaxed) || connection_reset(&error)));
+        let cause = root_cause(&error);
+        let mut message = format!("HTTP cache {kind}: {}", error.without_url());
+        if let Some(cause) = cause {
+            message.push_str(&format!(" ({cause})"));
+        }
         HttpFailure {
-            error: CacheError::Other(format!("HTTP cache {kind}: {}", error.without_url())),
+            error: CacheError::Other(message),
             transient,
         }
     }
@@ -1441,14 +1529,22 @@ impl HttpCache {
     /// times.
     fn retrying<T>(
         &self,
-        mut attempt: impl FnMut() -> Result<T, HttpFailure>,
+        mut attempt: impl FnMut(&reqwest::blocking::Client) -> Result<T, HttpFailure>,
     ) -> Result<T, CacheError> {
         let mut backoff = crate::remote_grpc::Backoff::with(self.retries, self.retry_max_delay);
+        let mut client = &self.client;
         loop {
-            match attempt() {
+            match attempt(client) {
                 Ok(value) => return Ok(value),
                 Err(failure) if failure.transient => match backoff.next_delay() {
-                    Some(delay) => std::thread::sleep(delay),
+                    Some(delay) => {
+                        std::thread::sleep(delay);
+                        client = self
+                            .fresh_client
+                            .get_or_init(|| http_client(&self.options, false).ok())
+                            .as_ref()
+                            .unwrap_or(&self.client);
+                    }
                     None => return Err(failure.error),
                 },
                 Err(failure) => return Err(failure.error),
@@ -1458,19 +1554,26 @@ impl HttpCache {
 
     /// GET `/ac/HASH` or `/cas/HASH`; `Ok(None)` for 404/204 (cacheMiss).
     pub fn get(&self, cas: bool, hash: &str) -> Result<Option<Vec<u8>>, CacheError> {
-        self.retrying(|| self.get_once(cas, hash))
+        self.retrying(|client| self.get_once(client, cas, hash))
     }
 
-    fn get_once(&self, cas: bool, hash: &str) -> Result<Option<Vec<u8>>, HttpFailure> {
+    fn get_once(
+        &self,
+        client: &reqwest::blocking::Client,
+        cas: bool,
+        hash: &str,
+    ) -> Result<Option<Vec<u8>>, HttpFailure> {
         for attempt in 0..2 {
             let request = self
                 .request(
-                    self.client
+                    client
                         .get(self.url(cas, hash))
                         .header(reqwest::header::ACCEPT_ENCODING, "gzip,deflate"),
                 )
                 .map_err(HttpFailure::permanent)?;
-            let response = request.send().map_err(Self::transport)?;
+            let _permit = self.connections.acquire();
+            let response = request.send().map_err(|error| self.transport(error))?;
+            self.answered.store(true, Ordering::Relaxed);
             let status = response.status().as_u16();
             if status == 200 {
                 let encoding = response
@@ -1478,7 +1581,10 @@ impl HttpCache {
                     .get(reqwest::header::CONTENT_ENCODING)
                     .and_then(|value| value.to_str().ok())
                     .map(str::to_owned);
-                let body = response.bytes().map_err(Self::transport)?.to_vec();
+                let body = response
+                    .bytes()
+                    .map_err(|error| self.transport(error))?
+                    .to_vec();
                 return decode_body(encoding.as_deref(), body)
                     .map(Some)
                     .map_err(|error| HttpFailure::permanent(CacheError::Other(error)));
@@ -1499,19 +1605,27 @@ impl HttpCache {
 
     /// PUT `/ac/HASH` or `/cas/HASH`; 200/201/202/204 succeed.
     pub fn put(&self, cas: bool, hash: &str, body: &[u8]) -> Result<(), CacheError> {
-        self.retrying(|| self.put_once(cas, hash, body))
+        self.retrying(|client| self.put_once(client, cas, hash, body))
     }
 
-    fn put_once(&self, cas: bool, hash: &str, body: &[u8]) -> Result<(), HttpFailure> {
+    fn put_once(
+        &self,
+        client: &reqwest::blocking::Client,
+        cas: bool,
+        hash: &str,
+        body: &[u8],
+    ) -> Result<(), HttpFailure> {
         for attempt in 0..2 {
             let request = self
-                .request(self.client.put(self.url(cas, hash)))
+                .request(client.put(self.url(cas, hash)))
                 .map_err(HttpFailure::permanent)?;
+            let _permit = self.connections.acquire();
             let response = request
                 .header(reqwest::header::CONTENT_LENGTH, body.len())
                 .body(body.to_vec())
                 .send()
-                .map_err(Self::transport)?;
+                .map_err(|error| self.transport(error))?;
+            self.answered.store(true, Ordering::Relaxed);
             if matches!(response.status().as_u16(), 200 | 201 | 202 | 204) {
                 return Ok(());
             }
@@ -1525,6 +1639,48 @@ impl HttpCache {
         }
         unreachable!("the loop returns on its second attempt")
     }
+}
+
+/// The innermost cause of a request error (`Connection refused (os
+/// error 111)`, `dns error: …`), which reqwest's own text omits.
+fn root_cause(error: &reqwest::Error) -> Option<String> {
+    let mut source = std::error::Error::source(error);
+    let mut last = None;
+    while let Some(current) = source {
+        last = Some(current.to_string());
+        source = current.source();
+    }
+    last.filter(|text| !text.is_empty())
+}
+
+fn error_chain(error: &reqwest::Error) -> impl Iterator<Item = &(dyn std::error::Error + 'static)> {
+    std::iter::successors(std::error::Error::source(error), |current| current.source())
+}
+
+/// A server certificate the client rejects (permanent, like Bazel's
+/// SSLHandshakeException with a certificate cause).
+fn certificate_failure(error: &reqwest::Error) -> bool {
+    error_chain(error).any(|current| {
+        let text = current.to_string().to_ascii_lowercase();
+        text.contains("certificate") || text.contains("certpathvalidator")
+    })
+}
+
+/// A connection the server reset or closed while it was being set up
+/// (also during the TLS handshake).
+fn connection_reset(error: &reqwest::Error) -> bool {
+    use std::io::ErrorKind::*;
+    error_chain(error).any(|current| {
+        current.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(
+                io.kind(),
+                ConnectionReset | ConnectionAborted | BrokenPipe | UnexpectedEof
+            )
+        }) || {
+            let text = current.to_string().to_ascii_lowercase();
+            text.contains("connection reset") || text.contains("connectionreset")
+        }
+    })
 }
 
 /// A failed capability check fails the spawn that needed it with exit
@@ -2712,6 +2868,26 @@ mod tests {
             Some(Ok(false))
         );
         assert_eq!(options.cache_ttl, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn connection_limit_caps_concurrent_requests() {
+        let limit = ConnectionLimit::new(2);
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    let _permit = limit.acquire();
+                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(5));
+                    active.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+        assert!(peak.load(Ordering::SeqCst) <= 2);
+        assert!(ConnectionLimit::new(0).acquire().is_none());
     }
 
     #[test]
