@@ -98,10 +98,20 @@ impl<K: std::hash::Hash + Eq + Clone, V> SingleFlight<K, V> {
 /// ancestor or a path below it is registered) leaves its delta to the
 /// coordinator, where the registration is checked against the producers
 /// themselves. A hash collision only does that needlessly.
+///
+/// The workers also note the outputs of every compute they finish, with
+/// its plan index ([`Self::meet_earlier`]): a compute whose outputs meet an
+/// earlier one's (a shared action of two siblings computed side by side)
+/// leaves its delta to the coordinator too, as the earlier one registers
+/// first.
 #[derive(Default)]
 pub(super) struct PathHashes {
     paths: std::sync::Mutex<crate::fast_hash::FxHashSet<u64>>,
     ancestors: std::sync::Mutex<crate::fast_hash::FxHashSet<u64>>,
+    /// The output paths of finished computes and their ancestors, with
+    /// the lowest plan index that computed each.
+    computed: std::sync::Mutex<crate::fast_hash::FxHashMap<u64, u32>>,
+    computed_ancestors: std::sync::Mutex<crate::fast_hash::FxHashMap<u64, u32>>,
 }
 
 impl PathHashes {
@@ -133,6 +143,31 @@ impl PathHashes {
         }
         let ancestors = self.ancestors.lock().unwrap_or_else(|e| e.into_inner());
         summary.paths.iter().any(|hash| ancestors.contains(hash))
+    }
+
+    /// Note the outputs of the compute at plan index `index`, and whether
+    /// they meet those of an earlier compute.
+    pub(super) fn meet_earlier(&self, index: u32, summary: &parallel::OutputSummary) -> bool {
+        let note = |map: &std::sync::Mutex<crate::fast_hash::FxHashMap<u64, u32>>,
+                    hashes: &[u64]| {
+            let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
+            for hash in hashes {
+                let lowest = map.entry(*hash).or_insert(index);
+                *lowest = (*lowest).min(index);
+            }
+        };
+        note(&self.computed, &summary.paths);
+        note(&self.computed_ancestors, &summary.ancestors);
+        let earlier = |map: &std::sync::Mutex<crate::fast_hash::FxHashMap<u64, u32>>,
+                       hashes: &[&[u64]]| {
+            let map = map.lock().unwrap_or_else(|e| e.into_inner());
+            hashes
+                .iter()
+                .flat_map(|hashes| hashes.iter())
+                .any(|hash| map.get(hash).is_some_and(|lowest| *lowest < index))
+        };
+        earlier(&self.computed, &[&summary.paths, &summary.ancestors])
+            || earlier(&self.computed_ancestors, &[&summary.paths])
     }
 }
 
@@ -1675,11 +1710,12 @@ impl DeltaInputs {
                 .all_final(&self.action_execution, &analyzed.actions),
         );
         let summary = verify_summary.then(|| parallel::OutputSummary::of(analyzed));
-        let meets = self
-            .view
-            .registered
-            .as_ref()
-            .is_some_and(|registered| registered.meet(registers));
+        let reader = u32::try_from(index).unwrap_or(u32::MAX - 1);
+        let meets = self.view.registered.as_ref().is_some_and(|registered| {
+            // Both noted: the earlier computes first.
+            let earlier = registered.meet_earlier(reader, registers);
+            registered.meet(registers) || earlier
+        });
         if let Some(reason) = self
             .unsafe_reason(analyzed, outcome.runfiles.as_ref())
             .or(meets.then_some("delta_meets_producer"))
@@ -1692,7 +1728,6 @@ impl DeltaInputs {
         }
         let analyzed = std::mem::replace(&mut outcome.analyzed, Ok(spent_analysis()))
             .unwrap_or_else(|_| unreachable!());
-        let reader = u32::try_from(index).unwrap_or(u32::MAX - 1);
         let timer = crate::plan_timings::StageTimer::start(
             crate::plan_timings::PlanStage::Delta,
             index as u64,
