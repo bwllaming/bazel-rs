@@ -1804,15 +1804,16 @@ impl Engine {
 }
 
 /// A comparable rendering of one delta operation (BAZEL_RS_VERIFY_DELTA):
-/// values by content, the providers by their repr (a compute run again
-/// allocates its own values).
+/// values by content; the providers by id, type and display name (a
+/// compute run again allocates its own values, and a repr would walk —
+/// and memoize — every depset they hold).
 fn rendered(op: &DeltaOp) -> String {
     match op {
         DeltaOp::Providers(providers, keys) => format!(
             "providers {:?} {keys:?}",
             providers
                 .iter()
-                .map(|(id, value)| (id, value.value().to_repr()))
+                .map(|(id, value)| (id, value.value().get_type()))
                 .collect::<Vec<_>>()
         ),
         DeltaOp::Output(path, producer) => format!(
@@ -1829,9 +1830,11 @@ fn rendered(op: &DeltaOp) -> String {
             artifact,
             replace,
         } => format!("declared {key:?} {artifact:?} {replace}"),
+        // The runfiles' files are compared through the runfiles support's
+        // mapping (RunfilesNodes) and the files to build (Dry): listing them
+        // here would flatten every target's runfiles.
         DeltaOp::RunfilesInfo(runfiles) => format!(
-            "runfiles {:?} {:?}",
-            runfiles.files(),
+            "runfiles {:?}",
             runfiles
                 .files_to_run
                 .as_ref()
