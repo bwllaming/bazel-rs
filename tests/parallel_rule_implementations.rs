@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 include!("support/explicit_modules.rs");
 include!("support/console.rs");
 include!("support/sealed_trees.rs");
+include!("support/module_archives.rs");
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -1672,4 +1673,186 @@ fn a_failed_registration_meeting_an_earlier_target_reports_the_sequential_confli
         assert!(!reference.status.success(), "{text}");
         assert!(text.contains("p/d/a"), "{text}");
     }
+}
+/// Rules with an incoming Starlark transition (their commit checks the
+/// function transition allowlist) and a late target that asks for the
+/// deferred default target platform (resolving it at its commit).
+const TRANSITION_DEFS: &str = r#"
+load("//rules:defs.bzl", "Info", "lib")
+
+def _flag_impl(ctx):
+    return []
+
+color = rule(implementation = _flag_impl, build_setting = config.string(flag = True))
+
+def _red_impl(settings, attr):
+    return {"//rules:color": "red"}
+
+red = transition(implementation = _red_impl, inputs = [], outputs = ["//rules:color"])
+
+def _tlib_impl(ctx):
+    depth = 0
+    for dep in ctx.attr.deps:
+        depth = max(depth, dep[Info].depth + 1)
+    total = 0
+    for i in range(ctx.attr.work):
+        total += i * i
+    print("tlib %s depth=%d" % (ctx.label, depth))
+    out = ctx.actions.declare_file(ctx.label.name + ".t")
+    ctx.actions.write(out, str(total))
+    files = depset([out], transitive = [dep[Info].files for dep in ctx.attr.deps])
+    return [DefaultInfo(files = files), Info(files = files, depth = depth, names = [ctx.label.name])]
+
+tlib = rule(
+    implementation = _tlib_impl,
+    cfg = red,
+    attrs = {
+        "deps": attr.label_list(providers = [Info]),
+        "work": attr.int(default = 100),
+        "_allowlist_function_transition": attr.label(default = "//tools/allowlists/function_transition_allowlist"),
+    },
+)
+
+def _asks_impl(ctx):
+    on = ctx.target_platform_has_constraint(ctx.attr.value[platform_common.ConstraintValueInfo])
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, str(on))
+    return [DefaultInfo(files = depset([out])), Info(files = depset([out]), depth = 0, names = [])]
+
+asks = rule(implementation = _asks_impl, attrs = {"value": attr.label()})
+"#;
+
+/// The host (and default target) platform of the transition workspace:
+/// deferred until `//mid:asks` resolves it at its commit.
+const T_HOST: &str = "--host_platform=//mid:host";
+
+/// Chains of `lib` and transitioned `tlib` targets over several packages,
+/// a target in the middle of the plan that resolves the deferred default
+/// target platform, more chains after it; `denied`: one transitioned
+/// target outside the allowlist.
+fn transition_workspace(ws: &Workspace, denied: bool) {
+    library_workspace(ws);
+    ws.file("rules/transitions.bzl", TRANSITION_DEFS);
+    ws.file(
+        "rules/BUILD",
+        "load(':transitions.bzl', 'color')\ncolor(name = 'color', build_setting_default = 'blue')\n",
+    );
+    let packages = if denied {
+        "['//t0', '//t1', '//t2', '//t3']"
+    } else {
+        "['//...']"
+    };
+    ws.file(
+        "tools/allowlists/function_transition_allowlist/BUILD",
+        &format!("package_group(name = 'function_transition_allowlist', packages = {packages})\n"),
+    );
+    ws.file(
+        "mid/BUILD",
+        "load('//rules:transitions.bzl', 'asks')\npackage(default_visibility = ['//visibility:public'])\n\
+         constraint_setting(name = 'setting')\n\
+         constraint_value(name = 'value', constraint_setting = ':setting')\n\
+         platform(name = 'host', constraint_values = [':value'])\n\
+         asks(name = 'asks', value = ':value')\n",
+    );
+    for package in 0..4 {
+        let mut build = String::from(
+            "load('//rules:defs.bzl', 'lib')\nload('//rules:transitions.bzl', 'tlib')\npackage(default_visibility = ['//visibility:public'])\n",
+        );
+        for index in 0..6 {
+            let mut deps = Vec::new();
+            if index > 0 {
+                deps.push(format!("':u{}'", index - 1));
+            }
+            if index == 3 {
+                deps.push(format!("'//p{package}:t7'"));
+            }
+            if package >= 2 && index == 1 {
+                deps.push("'//mid:asks'".to_owned());
+            }
+            let kind = if index % 2 == 0 { "tlib" } else { "lib" };
+            let work = 300 + ((package * 5 + index * 7) % 9) * 2500;
+            build.push_str(&format!(
+                "{kind}(name = 'u{index}', deps = [{}], work = {work})\n",
+                deps.join(", ")
+            ));
+        }
+        ws.file(&format!("t{package}/BUILD"), &build);
+    }
+    if denied {
+        ws.file(
+            "zdenied/BUILD",
+            "load('//rules:transitions.bzl', 'tlib')\ntlib(name = 'no', deps = ['//t1:u5'])\n",
+        );
+    }
+}
+
+/// Starlark rules with a transition commit ahead of their turn when their
+/// allowlist check needs no package load (`ineligible_transition` lifted),
+/// beside a commit that resolves the deferred default target platform in
+/// the middle of the plan (targets prepared before it commit at their
+/// turn). The dump, prints and the non-allowlisted error are the
+/// sequential ones.
+#[test]
+fn transition_allowlists_settled_commit_ahead() {
+    let ws = Workspace::new();
+    transition_workspace(&ws, false);
+    // The built-in module profile: the default host platform, deferred
+    // until `//mid:asks` resolves it (offline: the platforms module comes
+    // from the seeded repository download cache).
+    seed_module_archives(&ws.0.join("cache"), &["platforms@1.0.0"]);
+    let registry = builtin_registry_flag();
+    let builtin = ["--experimental-builtin-modules", registry.as_str()];
+    let reference = assert_like_sequential(
+        &ws,
+        &[("BAZEL_RS_DUMP_ACTIONS", "1")],
+        &["build", builtin[0], builtin[1], "--nobuild", "//..."],
+    );
+    assert!(reference.status.success(), "{}", stderr(&reference));
+    let timed = ws.run_env(
+        &[
+            ("BAZEL_RS_TIMING", "1"),
+            ("BAZEL_RS_SNAPSHOT", "off"),
+            ("BAZEL_RS_VERIFY_AHEAD", "1"),
+        ],
+        &[
+            "build",
+            builtin[0],
+            builtin[1],
+            "--loading_phase_threads=8",
+            "--nobuild",
+            "//...",
+        ],
+    );
+    let text = stderr(&timed);
+    assert!(timed.status.success(), "{text}");
+    let fallback = text
+        .lines()
+        .find(|line| line.starts_with("PERF-PARALLEL fallback"))
+        .unwrap_or_else(|| panic!("no fallback line: {text}"));
+    let count = |name: &str| -> u64 {
+        fallback
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix(name))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0)
+    };
+    assert!(count("committed_ahead=") > 0, "{fallback}");
+    // The allowlist's package is loaded by the first check: later ones
+    // commit ahead.
+    assert!(count("ineligible_transition=") < 12, "{fallback}");
+    let denied = Workspace::new();
+    transition_workspace(&denied, true);
+    let reference = assert_like_sequential(&denied, &[], &["build", "--nobuild", T_HOST, "//..."]);
+    let text = stderr(&reference);
+    assert!(!reference.status.success(), "{text}");
+    assert!(
+        text.contains("Non-allowlisted use of Starlark transition"),
+        "{text}"
+    );
+    let keep_going = assert_like_sequential(
+        &denied,
+        &[],
+        &["build", "--nobuild", "--keep_going", T_HOST, "//..."],
+    );
+    assert!(!keep_going.status.success());
 }

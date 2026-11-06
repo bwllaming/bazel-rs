@@ -580,9 +580,25 @@ struct Pipeline {
     /// Entries whose compute finished, not committed yet (retried as the
     /// entries before them commit).
     finished: OrderedSet<usize>,
+    /// S2 diagnostics (`BAZEL_RS_TIMING`): what woke each ready entry
+    /// (`PERF-PARALLEL diag ready_late_by_<cause>`): `classify` (empty),
+    /// a commit ahead, a delegation, or the commit at its turn of a native
+    /// rule class or of a Starlark rule (with its fallback reason).
+    woken_by: HashMap<usize, String>,
+    waking: String,
+    /// The fallback reason of the entry at its turn.
+    turn_reason: &'static str,
 }
 
 impl Pipeline {
+    /// S2 diagnostics: what wakes the entries readied next (`BAZEL_RS_TIMING`).
+    fn set_waking(&mut self, cause: &str) {
+        if crate::plan_timings::enabled() {
+            self.waking.clear();
+            self.waking.push_str(cause);
+        }
+    }
+
     /// `index` (of `label`) is classified and not committed; `known`: its
     /// commit registers no output (a native rule without outputs).
     fn note_pending(&mut self, index: usize, label: &Label, barrier: bool, known: bool) {
@@ -768,6 +784,8 @@ struct Stats {
     /// and their implementations computed at their turn (µs).
     walk_entries: [AtomicU64; 4],
     walk_turn_us: [AtomicU64; 4],
+    /// S2 diagnostics (`PERF-PARALLEL diag`).
+    diag: std::sync::Mutex<BTreeMap<String, u64>>,
 }
 
 use std::sync::atomic::AtomicU64;
@@ -778,6 +796,15 @@ fn fallback(reason: &'static str) {
         && let Ok(mut counts) = stats().fallback.lock()
     {
         *counts.entry(reason).or_default() += 1;
+    }
+}
+
+/// S2 diagnostics: count one event (`PERF-PARALLEL diag`).
+fn diag(what: &str) {
+    if crate::plan_timings::enabled()
+        && let Ok(mut counts) = stats().diag.lock()
+    {
+        *counts.entry(what.to_owned()).or_default() += 1;
     }
 }
 
@@ -918,6 +945,12 @@ pub(super) fn report(workers: usize) {
         .map(|counts| counts.clone().into_iter().collect())
         .unwrap_or_default();
     crate::snapshot::diag::line_fmt(format_args!("PERF-PARALLEL effects {}", line(effects)));
+    let diags = stats
+        .diag
+        .lock()
+        .map(|counts| counts.clone().into_iter().collect())
+        .unwrap_or_default();
+    crate::snapshot::diag::line_fmt(format_args!("PERF-PARALLEL diag {}", line(diags)));
     let deltas = stats
         .deltas
         .lock()
@@ -1367,7 +1400,7 @@ impl Engine {
                 .or_else(|| pipe.committed.remove(&index).map(Ahead::Committed));
             let was_ready = pipe.ready.contains(&index);
             if crate::plan_timings::enabled() {
-                self.note_turn_fallback(
+                pipe.turn_reason = self.note_turn_fallback(
                     pipe, index, &key, &rule, classified, was_ready, &ahead, configured, state,
                 );
             }
@@ -1393,7 +1426,21 @@ impl Engine {
                     Err(error) => self.keep_going_state.fail_own(&key, error),
                 }
             }
+            if crate::plan_timings::enabled() {
+                pipe.waking = match &rule.kind {
+                    RuleKind::Custom => format!(
+                        "turn_starlark_{}_{}",
+                        pipe.turn_reason,
+                        rule.rule_class_name()
+                    ),
+                    RuleKind::Native(name) => (*name).to_owned(),
+                    RuleKind::Filegroup => "filegroup".to_owned(),
+                    RuleKind::Genrule => "genrule".to_owned(),
+                    RuleKind::PackageGroup(_) => "package_group".to_owned(),
+                };
+            }
             self.pipeline_committed(state, pipe, &key);
+            pipe.waking.clear();
         }
         self.flush_delegations(state);
         Ok(())
@@ -1412,13 +1459,28 @@ impl Engine {
         ahead: &Option<Ahead>,
         configured: &ConfiguredNodes,
         state: &ActionPlanning,
-    ) {
+    ) -> &'static str {
         let reason = match ahead {
             Some(Ahead::Committed(_)) => "committed_ahead",
             Some(Ahead::Failed { .. }) => "prepare_failed",
             Some(Ahead::Computing { .. }) if !self.commits_ahead(state) => "commit_ahead_off",
-            Some(Ahead::Computing { .. }) => pipe.last_try.get(&index).copied().unwrap_or("late"),
-            None if pipe.classified_never.contains(&index) => return,
+            Some(Ahead::Computing { .. }) => match pipe.last_try.get(&index).copied() {
+                Some(reason) => reason,
+                None => {
+                    diag(&format!(
+                        "late_by_{}",
+                        pipe.woken_by
+                            .get(&index)
+                            .map_or("?", |cause| if cause.is_empty() {
+                                "classify"
+                            } else {
+                                cause
+                            })
+                    ));
+                    "late"
+                }
+            },
+            None if pipe.classified_never.contains(&index) => return "never",
             None if !classified => {
                 if !matches!(rule.kind, RuleKind::Custom) {
                     "native_unclassified"
@@ -1432,17 +1494,32 @@ impl Engine {
                 }
             }
             None if pipe.prepare_aborted.contains(&index) => "prepare_aborted",
-            None if was_ready => "ready_late",
+            None if was_ready => {
+                diag(&format!(
+                    "ready_late_by_{}",
+                    pipe.woken_by
+                        .get(&index)
+                        .map_or("?", |cause| if cause.is_empty() {
+                            "classify"
+                        } else {
+                            cause
+                        })
+                ));
+                "ready_late"
+            }
             None => "dependency_late",
         };
         fallback(reason);
+        reason
     }
 
     /// Wake the entries waiting for the delegations flushed since.
     fn pipeline_wake(&mut self, state: &mut ActionPlanning, pipe: &mut Pipeline) {
+        pipe.set_waking("delegation");
         for key in std::mem::take(&mut state.delegated_keys) {
             self.pipeline_committed(state, pipe, &key);
         }
+        pipe.waking.clear();
     }
 
     /// `key` is committed: recheck the entries waiting for it.
@@ -1475,6 +1552,9 @@ impl Engine {
                 pipe.waiting.entry(key).or_default().push((index, keys));
                 return;
             }
+        }
+        if crate::plan_timings::enabled() {
+            pipe.woken_by.insert(index, pipe.waking.clone());
         }
         pipe.ready.insert(index);
     }
@@ -2456,6 +2536,16 @@ impl Engine {
                 Err(_) => Some("compute_failed"),
             }
         };
+        // The transition allowlist check (the commit's prefix) commits ahead
+        // when it needs no package load or analysis now.
+        let unsafe_reason = match unsafe_reason {
+            Some(INELIGIBLE_TRANSITION)
+                if self.transition_allowlist_settled(pipe, index, &rule, &key, configured) =>
+            {
+                None
+            }
+            reason => reason,
+        };
         let eligible = unsafe_reason.is_none();
         if let Some(reason) = unsafe_reason {
             bump(&stats().ahead_ineligible, 1);
@@ -2566,8 +2656,48 @@ impl Engine {
         );
         pipe.note_committed(index, &key.label);
         bump(&stats().committed_ahead, 1);
+        pipe.set_waking("ahead");
         self.pipeline_committed(state, pipe, &key);
+        pipe.waking.clear();
         Retry::Done(true)
+    }
+
+    /// Whether `rule`'s transition allowlist check (the prefix of its commit,
+    /// Engine::check_transition_allowlist) runs ahead of its turn on
+    /// lookups alone: no package to load, nothing to analyze, nothing
+    /// observed or obtained (what it did is stashed for its turn otherwise,
+    /// where the check runs again).
+    fn transition_allowlist_settled(
+        &mut self,
+        pipe: &mut Pipeline,
+        index: usize,
+        rule: &Rule,
+        key: &ConfiguredTargetKey,
+        configured: &ConfiguredNodes,
+    ) -> bool {
+        self.ahead = true;
+        self.ahead_aborted = false;
+        self.track_defer_start();
+        let isolation = Isolation::enter();
+        let checked = self.check_transition_allowlist(rule, key, configured);
+        let (effects, sentinel) = isolation.finish();
+        drop(self.track_defer_finish());
+        self.ahead = false;
+        let aborted = std::mem::take(&mut self.ahead_aborted)
+            || checked
+                .as_ref()
+                .is_err_and(|error| crate::repository_demand::is_inline_rerun_sentinel(error));
+        let quiet = effects.console.is_empty()
+            && effects.observations.is_empty()
+            && effects.roots.is_empty();
+        if !quiet {
+            if !effects.console.is_empty() {
+                note_lost(effects.console.len());
+            }
+            note_effects("transition_allowlist", &effects);
+            pipe.stashed.entry(index).or_default().push(effects);
+        }
+        !aborted && !sentinel && quiet
     }
 
     /// Whether the remote platform of every spawn the commit plans is
@@ -2843,13 +2973,8 @@ pub(super) fn ahead_unsafe(
     if !platforms_known {
         return Some("ineligible_remote_platform");
     }
-    if !rule
-        .custom
-        .as_ref()
-        .is_some_and(|custom| custom.transitions.is_empty())
-        || restricted_to_error(rule).is_err()
-    {
-        return Some("ineligible_transition_or_restricted");
+    if rule.custom.is_none() || restricted_to_error(rule).is_err() {
+        return Some("ineligible_restricted");
     }
     if Engine::workspace_status_needed(&analyzed.actions)
         || analyzed
@@ -2892,5 +3017,19 @@ pub(super) fn ahead_unsafe(
     {
         return Some("ineligible_repo_mapping_or_build_info");
     }
+    // Last: the coordinator lifts it when the allowlist check needs no
+    // package or analysis (Engine::transition_allowlist_settled).
+    if rule
+        .custom
+        .as_ref()
+        .is_some_and(|custom| !custom.transitions.is_empty())
+    {
+        return Some(INELIGIBLE_TRANSITION);
+    }
     None
 }
+
+/// [`ahead_unsafe`]'s reason for a rule with a Starlark transition: its
+/// commit checks the transition allowlist (a package group's package, loaded
+/// on first need).
+const INELIGIBLE_TRANSITION: &str = "ineligible_transition";
