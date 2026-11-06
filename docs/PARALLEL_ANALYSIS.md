@@ -868,6 +868,37 @@ the prepare still run on the coordinator; an exact-path conflict or shared
 action with an uncommitted earlier entry is avoided by waiting, not decided
 at the merge.
 
+## Plan B — commits ahead decided by known outputs
+
+P4's settled rule held a finished entry behind every earlier uncommitted
+entry of a related package. Plan B's first part (docs/COLD_ANALYSIS.md,
+"Plan B, first stages") narrows it to the entries whose outputs are not
+known yet:
+
+- A worker's finished compute reports, with its plan index, the output
+  paths its commit registers (`OutputSummary`: the actions' outputs and the
+  runfiles support's executable, repo mapping and runfiles manifests and
+  tree, hashed with their proper ancestors — a superset; a hash collision
+  only makes two entries look related). It is not reported when the compute
+  raised a sentinel (it runs again inline) or panicked; it counts only for
+  an entry prepared with its target platform resolved (never prepared
+  again at its turn). A native rule other than genrule, genquery and
+  starlark_doc_extract registers no output: known from its classification.
+- `Pipeline::unsettled` then holds an entry behind an aspect barrier, an
+  earlier entry of a related package whose outputs are unknown (as before),
+  or an earlier uncommitted entry with known outputs that meet its own (an
+  exact path, an ancestor of one or a path below one): `PERF-PARALLEL
+  unsettled ... outputs=`. The conflicting or sharing pair still commits in
+  plan order, so the shared action's owner and the conflict message are the
+  sequential ones.
+- `BAZEL_RS_VERIFY_AHEAD=1` records the paths every Starlark commit (ahead
+  or at its turn) registers (`register_output`) and fails when one is not in
+  the summary of its compute (`verified_outputs=`).
+- The worker also checks the declared outputs' source-tree parents
+  (`validate_declared_outputs`, the commit's first check after the
+  providers) inside its isolation; the commit uses that result (debug
+  builds compare it with the commit's own check).
+
 ## Phase-1 prefetch (W6, `src/prefetch.rs`)
 
 P2 parallelized only the packages a target pattern names. On a warm

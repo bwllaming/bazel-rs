@@ -233,47 +233,140 @@ between them): `build --nobuild //src/...` 70.8 / 70.7 → 55.9 / 55.4 s
 `affected` 80.6 → 67.2 s (7,372 → 7,944 MB); 25,201 entries committed
 ahead, each verified at its turn under `BAZEL_RS_VERIFY_AHEAD=1`.
 
+## Plan B, first stages (branch `analysis-planb`)
+
+Same setup (private clone at `80d6724f3a`, repositories warm,
+`BAZEL_RS_SNAPSHOT=off`, storagebox overrides, `nice -n 10`), the shared
+64-core host under load from other work (load average 15–21): run-to-run
+noise is ±2 s, larger than most single changes below. Genuine 9.3.1
+re-measured on the same host (`--batch`, its own output base, repositories
+fetched by earlier runs).
+
+| command | main 0.4.14 | this branch | genuine 9.3.1 |
+|---|---|---|---|
+| `build --nobuild //src/...` wall | 57.1 / 55.3 / 57.6 s | 56.9 / 54.3 s | 10.1 / 10.1 / 9.9 s |
+| — CPU user + sys | 89–97 + 27–38 s | 90.9 + 34.8 / 93.6 + 31.1 s | 238–261 + 14–18 s |
+| — peak RSS | 8,892 / 8,923 / 8,873 MB | **8,705 / 8,719 MB** | 5,894–8,065 MB |
+| — planning tail (`phase2_actions_done` → `plan.end`) | 4.7 s | **1.4 s** | – |
+| `test --nobuild //src/...` wall, CPU, RSS | 58.6 s, 90.6 + 29.6 s, 8,871 MB | 54.6 s, 93.9 + 31.5 s, 8,715 MB | 10.1 s, 272.6 + 13.4 s, 6,025 MB |
+| CI `affected --base=HEAD^` wall | 69.1 / 67.3 / 66.7 / 70.9 s | 64.8 / 71.8 s | – |
+| — peak RSS | 7,926 / 7,939 / 7,908 / 7,931 MB | **7,385 / 7,318 MB** | – |
+| `affected` P2 pair (`e7b42879 → 9e6b547e`, warm) | 184.1 s, 10,424 / 10,461 MB | 175.9 s, **9,696 MB** | – |
+
+What changed:
+
+- **Arena binding** (step 0, above): −7.8% concurrent `affected` peak; the
+  P2 pair, over 10 GB on main, stays below it.
+- **Commits ahead decided by known outputs** (B1, first part): a finished
+  compute reports the output paths its commit registers (hashed, with their
+  ancestors; a superset: actions' outputs, the runfiles support's
+  executable, manifests and tree); a native rule without outputs is known
+  from the start. An earlier uncommitted entry with known outputs holds a
+  later one only when their outputs meet (an exact path: shared action or
+  conflict; a prefix); only earlier entries with unknown outputs of a
+  related package still hold it. `BAZEL_RS_VERIFY_AHEAD=1` checks every
+  Starlark commit's registered outputs against its compute's summary
+  (`PERF-PARALLEL verified_outputs=`, 38,757 on `//src/...`). Commits ahead
+  22,118 → 24,185 (27,648 under VERIFY_AHEAD's slower pace).
+- **The declared outputs' check on the worker**: the commit's
+  source-tree probes of every declared output (`validate_declared_outputs`:
+  no subpackage or symlink on its way) run on the analysis worker after the
+  implementation, inside its isolation (observations and obtained roots
+  applied at the turn); debug builds compare it with the commit's own.
+- **Planning tail on workers** (B4): the requested targets' runfiles
+  artifacts (the hidden top-level group: Runfiles.getAllArtifacts resolved
+  and deduplicated per target), and the scans for source directories and
+  missing sources (only candidate nodes are visited in order, so the
+  filesystem probes and their order are the sequential ones); unreachable
+  nodes, spent action inputs and compute snapshots are dropped on a dropper
+  thread.
+
+Outputs: the `BAZEL_RS_DUMP_ACTIONS` dump of `build --nobuild` and `test
+--nobuild //src/...` (6,483,434 lines, md5 `bc225d8e…`) and the rest of
+stderr (but the elapsed time) identical to main's at the default threads,
+`--loading_phase_threads=1` and 32 workers with 5 ms jitter;
+`BAZEL_RS_DUMP_ACTIONS=remote` identical; `BAZEL_RS_VERIFY_AHEAD=1` clean
+(32,605 prepares, 27,648 commits ahead and 38,757 output summaries
+verified); `aquery` text and summary of `//src/python/bworker/...` and
+`//src/beyondwork.ai/tools/oauth2token/...` identical
+(`//src/python/github_backup/...` could not fetch its arm64 debs from
+snapshot.debian.org, on main too); the CI `affected` output and every
+`--keep_digests` file identical, also on the P1 (`470886f0 → 7ab6d35d`) and
+P2 pairs; a snapshot this branch records verifies at threads 1 and 8.
+Tests: `known_outputs_decide_commits_ahead_within_a_package` (siblings commit
+ahead of a known, uncommitted one; exact and prefix conflicts with it are the
+sequential errors; fails if known outputs are ignored),
+`declared_outputs_checked_on_workers_fail_at_their_turn`.
+
+### Why the coordinator is still the bottleneck
+
+Sampled after these changes (pprof of the coordinator, ~49 s): phase-1
+analysis 8.3 s, implementations computed at their turn 8.0 s, commits 9.8 s,
+prepares 6.6 s, aspect applications 2.3 s, the tail 2.9 s (profiling build),
+package loading 1.1 s; the profile is flat (the largest leaf, `Engine::target`
+lookups, is 1.7 s). Three experiments rule out cheaper fixes for the
+implementations computed at their turn (~7,000 entries, `turn_compute`
+11–12 s):
+
+- Computing them on a worker while the coordinator commits others ahead:
+  the coordinator then waits 19.8 s (wall 60.6 s). They are chain links
+  whose predecessor committed just before their turn: nothing else is ready.
+- 16 or 32 analysis workers (twice as many in flight): `turn_compute`
+  unchanged (11.0 s).
+- Skipping the 2,030 of 2,357 `config_setting` flushes whose Starlark flag
+  keys were already planned (longer walks; output order not preserved, an
+  experiment only): `turn_compute` unchanged (12.6 s). Walk length is not
+  the cause.
+
+So the chains advance at the coordinator's pace: every link's prepare and
+commit is coordinator work in plan order, and the at-turn entries are the
+links the coordinator reaches before the worker could have computed them.
+Shaving the coordinator's per-target work only moves this a little; the
+whole per-target unit has to leave it.
+
 ## What remains
 
-The target of this work was ≤ 25 s; 55 s is where the coordinator's own
-work leaves it. The rest of the per-target-delta design (the independent
-review's plan B), in order:
+The goal (cold analysis faster than genuine 9.3.1: 10 s wall on this host)
+needs the coordinator to stop doing per-target work. In order:
 
-- **The commit on workers.** What stays on the coordinator in a commit:
-  output registration, input resolution through the artifact index, the
-  runfiles support's lookups and registrations, `validate_output_directory`
-  (filesystem probes), the providers' inserts (~9 s, plus the commits of
-  native rules, ~3 s). Make it a per-target delta computed on the worker
-  that ran the implementation: the artifact index as a sharded, stamped
-  concurrent map (reads with the target's visibility, as
-  `ArtifactIndex::stamp_ahead` already defines it), the producers stamped
-  with the registering plan index, and the dependency-visible results (dry
-  files, providers, runfiles, transitive repositories) published when the
-  delta is made. The coordinator then only merges deltas in plan order:
-  nodes and lowerings (already a queue), console, observations, tracker
-  events and warnings (already held per target).
-- **Conflicts decided at the merge, not avoided by waiting.** Commits ahead
-  now wait for every earlier uncommitted entry of the same, an enclosing or
-  an enclosed package (`PERF-PARALLEL unsettled`: the same package is 94%
-  of the waits). A prefix conflict can be decided at the merge (an earlier
-  registration ignores later-stamped paths; the later target fails at its
-  turn with the sequential message). An exact path is a shared action or a
-  conflict, and a shared action changes the artifacts dependents see:
-  there, compare the target's known outputs with those of the earlier
-  entries that already finished (their computes are known) and wait only
-  for the unknown ones.
-- **Aspect barriers.** A Starlark rule never prepared ahead (attribute
-  aspects) blocks every later commit ahead until its turn; aspect
-  applications as deltas of their own, keyed like their `AspectKey`.
-- **The prepare on workers.** Dependency views, toolchain contexts and the
-  ctx surface read engine state behind `&mut self` memos (~8 s); they need
-  shared (read-mostly) memos first.
-- **Phase 1** (~9 s) analyzes in a depth-first walk whose `config_setting`
-  flushes (2,357 on `//src/...`) commit everything pending: the walk order
-  is the plan order, so phase 1 stays one thread until analysis itself is
-  keyed like Skyframe's configured-target functions.
-- **Shared input vectors by reference.** The coordinator no longer copies a
-  shared run, but each planned PyCompile node still lists the runtime's
-  1,657 inputs (26 KB per action, ~14 MB on `//src/...`); holding the run
-  by reference needs the scheduler, the action keys and the snapshot codec
-  to accept an input group in the middle of the order.
+- **B1+B2 together: the per-target unit on workers.** A worker prepares the
+  target (dependency views, toolchain and exec-group contexts, ctx surface),
+  runs its implementation and computes its commit as a delta (output
+  registrations with their artifacts, declared entries, providers, dry
+  files, runfiles and their support nodes, lowered nodes, source inputs,
+  action executions, notes, observations, tracker events); the coordinator
+  merges deltas strictly in plan order. Preconditions, each its own commit:
+  - the artifact index as a sharded concurrent map read with the target's
+    stamp (`ArtifactIndex::stamp_ahead` defines the visibility) and the
+    producers stamped by plan index, so a worker resolves inputs and a
+    merge decides registrations;
+  - the prepare's memos made shareable: the views memo (and its
+    `view_accesses`), `target` lookups (rule/source memos), input groups and
+    input memos (keyed by identity: sharded maps or per-target then merged),
+    toolchain/exec-group contexts and execution tables (read-only after
+    phase 1 analyzed the key), the repositories' mapping lookups;
+  - `Engine` split so that a worker holds a `Sync` read view (configurations,
+    platforms memo, rule declarations, ignored subdirectories, repository
+    set) and never `&mut Engine`.
+- **Conflicts at the merge.** With known outputs (this branch) a later entry
+  waits only behind earlier entries whose outputs are not known yet
+  (`PERF-PARALLEL unsettled package=` ~330,000 retries remain). Removing
+  that wait needs optimistic merges: a registration that meets a
+  later-stamped producer wins (first owner in plan order); the later
+  target's merge is redone at its turn. For a conflict that turn fails and
+  the build stops, so nothing after it matters; for a shared action the
+  later target's artifacts change producer, so its dependents' deltas (and
+  the views memo entries built from it) are discarded and redone.
+- **Aspect applications as deltas** keyed like their `AspectKey` (2.3 s on
+  the coordinator, and the barrier they impose on commits ahead).
+- **Phase 1 in parallel (B3)**: analysis keyed like Skyframe's configured
+  target functions; the `config_setting` flushes reduced to the flag keys'
+  own closure (merged ahead), with the coordinator's console writes held
+  until the walk passes the flush point, so the sequential output order and
+  first error stay as they are.
+- **Smaller serial costs** (B4): `Engine::target` and label hashing (SipHash
+  maps keyed by labels and configured target keys, ~1 s), label re-parsing
+  in hot paths (`parse_canonical` ~1 s), depset walk dedup sets (~1 s);
+  PyCompile nodes holding the shared runtime run by reference (the
+  scheduler, action keys and snapshot codec accepting an input group in the
+  middle of the order).
