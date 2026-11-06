@@ -11,6 +11,7 @@ pub mod action_console;
 pub mod action_env;
 pub mod affected;
 pub mod affected_changes;
+pub mod alloc_arena;
 pub mod analysis;
 mod analysis_ctx;
 mod analysis_ctx_surface;

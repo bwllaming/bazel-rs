@@ -108,6 +108,10 @@ fn install_worker_panic_hook() {
 impl AnalysisPool {
     fn start(size: usize) -> Option<Self> {
         install_worker_panic_hook();
+        // The workers allocate in the coordinator's jemalloc arena: the
+        // snapshots, providers and actions they make are kept and freed by
+        // the coordinator (src/alloc_arena.rs).
+        let coordinator_arena = crate::alloc_arena::current();
         let (sender, receiver) = mpsc::channel::<Job>();
         let receiver = Arc::new(std::sync::Mutex::new(receiver));
         let mut workers = Vec::with_capacity(size);
@@ -118,6 +122,9 @@ impl AnalysisPool {
                 .stack_size(LOADING_WORKER_STACK)
                 .spawn(move || {
                     IS_WORKER.with(|worker| worker.set(true));
+                    if let Some(arena) = coordinator_arena {
+                        crate::alloc_arena::bind(arena);
+                    }
                     loop {
                         let job = {
                             let receiver = receiver.lock().unwrap_or_else(|e| e.into_inner());

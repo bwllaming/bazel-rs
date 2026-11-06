@@ -219,6 +219,11 @@ pub(super) struct LoweringPool {
 
 impl LoweringPool {
     pub(super) fn start(size: usize) -> Option<Self> {
+        // The workers allocate in the coordinator's jemalloc arena: what
+        // they allocate is placed and freed by the coordinator, which then
+        // reuses it at once instead of it waiting in their own arenas until
+        // it decays.
+        let coordinator_arena = crate::alloc_arena::current();
         let (sender, receiver) = mpsc::channel::<Job>();
         let receiver = Arc::new(std::sync::Mutex::new(receiver));
         let mut workers = Vec::with_capacity(size);
@@ -228,6 +233,9 @@ impl LoweringPool {
                 .name(format!("lowering-{index}"))
                 .stack_size(LOADING_WORKER_STACK)
                 .spawn(move || {
+                    if let Some(arena) = coordinator_arena {
+                        crate::alloc_arena::bind(arena);
+                    }
                     loop {
                         let job = {
                             let receiver = receiver.lock().unwrap_or_else(|e| e.into_inner());

@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 // The process-wide Rust allocator: jemalloc (feature "jemalloc", on by
 // default; README "Global allocator"). No `unsafe` here: the GlobalAlloc impl
-// lives in tikv-jemallocator, so unsafe_code stays "deny".
+// lives in tikv-jemallocator, so unsafe_code stays "deny" (its one exception
+// is the arena binding, src/alloc_arena.rs).
 #[cfg(feature = "jemalloc")]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;

@@ -216,6 +216,16 @@ arenas until they decay. Binding the workers to the coordinator's arena
 removed it, but needs handwritten unsafe (`mallctl`; tikv-jemallocator has
 no safe API for it), so it was dropped in review.
 
+Restored (plan B, step 0, approved): `src/alloc_arena.rs` reads and binds
+`thread.arena` through `tikv_jemalloc_sys::mallctl` (the crate
+tikv-jemallocator already links; it picks the prefixed or unprefixed symbol),
+checking jemalloc's status; the lowering and the analysis workers bind to the
+coordinator's arena. Private clone at `80d6724f3a`, warm, same host, one run
+each: CI `affected --base=HEAD^` 7,926 / 7,939 MB (main) → 7,458 MB
+(lowering workers bound) → **7,320 MB** (both pools bound, −7.8%), wall
+69.1 / 67.3 → 65.2 / 65.1 s; `build --nobuild //src/...` 8,892 → 8,709 MB,
+57.1 → 56.0 s. Outputs and digest files identical.
+
 After the review fixes (main `d4b1d573` → this branch, fresh repository
 fetch, so the dump's md5 differs from the table's run but is identical
 between them): `build --nobuild //src/...` 70.8 / 70.7 → 55.9 / 55.4 s

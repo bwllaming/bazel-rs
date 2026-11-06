@@ -80,6 +80,9 @@ zip = { version = "=9.0.2", default-features = false, features = ["deflate-flate
 tokio = { version = "=1.53.2", default-features = false, features = ["rt-multi-thread", "net", "time", "io-util", "sync"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12"] }
 tikv-jemallocator = { version = "=0.7.0", optional = true }
+# Its `mallctl`, for binding worker threads to an arena (src/alloc_arena.rs);
+# the version tikv-jemallocator already links.
+tikv-jemalloc-sys = { version = "=0.7.1", optional = true }
 
 [build-dependencies]
 # build.rs compiles src/musl_string.c for musl targets only; the version
@@ -96,7 +99,7 @@ tikv-jemallocator = { version = "=0.7.0", optional = true, features = ["unprefix
 default = ["jemalloc"]
 # `--no-default-features` builds with the system allocator (glibc malloc),
 # e.g. for heaptrack/valgrind or a host without make.
-jemalloc = ["dep:tikv-jemallocator"]
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys"]
 
 [dev-dependencies]
 lzma-rust2 = { version = "=0.22.0", default-features = false, features = ["std", "optimization", "xz", "encoder"] }

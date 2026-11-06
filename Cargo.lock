@@ -170,6 +170,7 @@ dependencies = [
  "starlark",
  "tar",
  "tempfile",
+ "tikv-jemalloc-sys",
  "tikv-jemallocator",
  "tokio",
  "tokio-rustls",
