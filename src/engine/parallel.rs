@@ -2439,11 +2439,20 @@ impl Engine {
         let unsafe_reason = if worker.sentinel {
             Some("sentinel")
         } else if let Some(built) = worker.outcome.delta.as_ref() {
-            // S1: decided on the worker, before its delta took the result.
-            built.ahead_unsafe
+            match built.built {
+                // Fell back during its build (a first-need registration
+                // such as a status file met filling a tool's runfiles
+                // group): its commit is built at its turn.
+                delta::Built::Consumed(_) => Some("delta_consumed"),
+                // S1: decided on the worker, before its delta took the
+                // result.
+                _ => built.ahead_unsafe,
+            }
         } else {
             match worker.outcome.analyzed.as_ref() {
-                Ok(analyzed) => self.commit_ahead_unsafe(&rule, &parts, analyzed, &worker.outcome),
+                Ok(analyzed) => {
+                    self.commit_ahead_unsafe(state, &rule, &parts, analyzed, &worker.outcome)
+                }
                 Err(_) => Some("compute_failed"),
             }
         };
@@ -2594,6 +2603,7 @@ impl Engine {
     /// ([`ahead_unsafe`] with its remote platforms decided now).
     fn commit_ahead_unsafe(
         &self,
+        state: &ActionPlanning,
         rule: &Rule,
         parts: &PreparedParts,
         analyzed: &analysis::AnalysisResult,
@@ -2605,6 +2615,7 @@ impl Engine {
             analyzed,
             outcome.runfiles.as_ref(),
             self.remote_platforms_known(parts, analyzed),
+            delta::first_fill_meets_status(&state.input_groups, analyzed),
         )
     }
 
@@ -2815,13 +2826,16 @@ fn outputs_in_package(rule: &Rule, output_root: &str, analyzed: &analysis::Analy
 /// `platforms_known`): the first condition that fails, `None` when its
 /// commit is a function of its compute and its committed dependencies
 /// alone. (The tool runfiles groups and shared input runs are memoized
-/// single-flight since S1: whoever fills them first fills the same value.)
+/// single-flight since S1: whoever fills them first fills the same value;
+/// only a group whose fill would register the workspace status keeps the
+/// commit at its turn, `first_fill_status`.)
 pub(super) fn ahead_unsafe(
     rule: &Rule,
     output_root: &str,
     analyzed: &analysis::AnalysisResult,
     precomputed: Option<&RunfilesPrecomputed>,
     platforms_known: bool,
+    first_fill_status: bool,
 ) -> Option<&'static str> {
     if !outputs_in_package(rule, output_root, analyzed) {
         return Some("ineligible_outputs_elsewhere");
@@ -2865,6 +2879,11 @@ pub(super) fn ahead_unsafe(
     };
     if !runfiles_ready {
         return Some("ineligible_runfiles");
+    }
+    // A tool runfiles group filled by this commit would register the
+    // workspace status on first need.
+    if first_fill_status {
+        return Some("ineligible_first_fill");
     }
     if analyzed
         .actions

@@ -58,6 +58,18 @@ impl<K: std::hash::Hash + Eq + Clone, V> SingleFlight<K, V> {
         Arc::clone(shard.entry(key.clone()).or_default())
     }
 
+    /// Whether `key` is filled (no wait for a fill in progress: `false`).
+    pub(super) fn is_filled(&self, key: &K) -> bool {
+        let slot = {
+            let shard = self.shard(key).lock().unwrap_or_else(|e| e.into_inner());
+            match shard.get(key) {
+                Some(slot) => Arc::clone(slot),
+                None => return false,
+            }
+        };
+        slot.try_lock().is_ok_and(|value| value.is_some())
+    }
+
     /// The value of `key`, filled by `fill` unless it is already (`None`
     /// when `fill` returns none: the entry stays empty).
     pub(super) fn get_or_fill<E>(
@@ -200,7 +212,7 @@ pub(super) enum DeltaOp {
     Output(PathBuf, Arc<OutputProducer>),
     /// An output shared with the equal action that registered it first
     /// (stamped `registered`; plan B S0's shared counter).
-    Shared(u32),
+    Shared(PathBuf, u32),
     /// A File's artifact registered in the build's index.
     Artifact(File, Artifact),
     /// An output-file entry of `declared` (`replace`: inserted, else kept
@@ -234,6 +246,10 @@ pub(super) struct TargetDelta {
     pub(super) unchecked: bool,
     /// The memos it used, in order (FirstUse).
     pub(super) uses: Vec<MemoUse>,
+    /// The output path whose registration failed (its error, decided on a
+    /// worker against the delta's own registrations only, is checked at
+    /// the merge like its registered paths).
+    pub(super) failed_output: Option<PathBuf>,
 }
 
 /// What a delta build reads of the engine and the planning state: shared
@@ -472,6 +488,8 @@ pub(super) struct DeltaBuilder<'a> {
     uses: Vec<MemoUse>,
     fallback: Option<&'static str>,
     spent: Vec<Vec<File>>,
+    /// The output path whose registration failed, if any.
+    failed_output: Option<PathBuf>,
 }
 
 impl<'a> DeltaBuilder<'a> {
@@ -487,6 +505,7 @@ impl<'a> DeltaBuilder<'a> {
             uses: Vec::new(),
             fallback: None,
             spent: Vec::new(),
+            failed_output: None,
         }
     }
 
@@ -502,6 +521,7 @@ impl<'a> DeltaBuilder<'a> {
             ops: self.ops,
             error: result.err(),
             uses: self.uses,
+            failed_output: self.failed_output,
         })
     }
 
@@ -583,7 +603,13 @@ impl<'a> DeltaBuilder<'a> {
             local: &self.producers,
             stamp: self.producers.stamp,
         };
-        match check_output(&combined, output, producer)? {
+        let checked = check_output(&combined, output, producer).inspect_err(|_| {
+            // Its error names what it met: on a worker the build's own
+            // registrations only, so the merge checks it against the rest.
+            self.failed_output
+                .get_or_insert_with(|| output.to_path_buf());
+        });
+        match checked? {
             OutputRegistration::New => {
                 self.producers
                     .insert(output.to_path_buf(), Arc::clone(producer));
@@ -592,7 +618,8 @@ impl<'a> DeltaBuilder<'a> {
                 Ok(None)
             }
             OutputRegistration::Shared(id, registered) => {
-                self.ops.push(DeltaOp::Shared(registered));
+                self.ops
+                    .push(DeltaOp::Shared(output.to_path_buf(), registered));
                 Ok(Some(id))
             }
         }
@@ -1520,10 +1547,13 @@ impl Engine {
     /// meets one another target registered (S1: it is built again).
     pub(super) fn delta_meets_producers(state: &ActionPlanning, delta: &TargetDelta) -> bool {
         delta.unchecked
-            && delta.ops.iter().any(|op| match op {
+            && (delta.ops.iter().any(|op| match op {
                 DeltaOp::Output(path, _) => meets_producer(&state.producers, path),
                 _ => false,
-            })
+            }) || delta
+                .failed_output
+                .as_ref()
+                .is_some_and(|path| meets_producer(&state.producers, path)))
     }
 
     /// Apply `delta` (the commit of `key`) to the planning state, in its
@@ -1544,7 +1574,8 @@ impl Engine {
                     parallel::record_registered_output(&path);
                     state.producers.insert(path, producer);
                 }
-                DeltaOp::Shared(registered) => {
+                DeltaOp::Shared(path, registered) => {
+                    parallel::record_registered_output(&path);
                     parallel::note_shared(state.producers.stamp, registered, state.producers.turn)
                 }
                 DeltaOp::Artifact(file, artifact) => {
@@ -1589,6 +1620,10 @@ impl Engine {
                 }
                 DeltaOp::ListedTreeAction => state.listed_tree_actions += 1,
             }
+        }
+        if let Some(path) = &delta.failed_output {
+            // As register_output records the path it fails on.
+            parallel::record_registered_output(path);
         }
         match delta.error {
             Some(error) => Err(error),
@@ -1708,6 +1743,7 @@ impl DeltaInputs {
             outcome.runfiles.as_ref(),
             self.platforms
                 .all_final(&self.action_execution, &analyzed.actions),
+            first_fill_meets_status(&self.view.input_groups, analyzed),
         );
         let summary = verify_summary.then(|| parallel::OutputSummary::of(analyzed));
         let reader = u32::try_from(index).unwrap_or(u32::MAX - 1);
@@ -1759,6 +1795,28 @@ impl DeltaInputs {
             summary,
         }
     }
+}
+
+/// Whether filling a tool runfiles group the actions of `analyzed` use (one
+/// not filled yet) would meet a workspace status file, which registers the
+/// status on first need: such a commit stays at its turn (review of S1,
+/// item A; main's `ineligible_first_fill`).
+pub(super) fn first_fill_meets_status(
+    groups: &InputGroups,
+    analyzed: &analysis::AnalysisResult,
+) -> bool {
+    analyzed
+        .actions
+        .iter()
+        .flat_map(|action| &action.runfiles_trees)
+        .any(|tree| {
+            !groups.is_filled(&tree.identity())
+                && tree
+                    .mapping()
+                    .values()
+                    .flatten()
+                    .any(crate::analysis_runtime::is_workspace_status_file)
+        })
 }
 
 /// `BAZEL_RS_VERIFY_DELTA=1` (hidden, like BAZEL_RS_VERIFY_AHEAD): every
@@ -1823,7 +1881,7 @@ fn rendered(op: &DeltaOp) -> String {
             producer.label,
             producer.action.as_ref().map(|(id, _)| id)
         ),
-        DeltaOp::Shared(registered) => format!("shared {registered}"),
+        DeltaOp::Shared(path, registered) => format!("shared {} {registered}", path.display()),
         DeltaOp::Artifact(file, artifact) => format!("artifact {file:?} {artifact:?}"),
         DeltaOp::Declared {
             key,

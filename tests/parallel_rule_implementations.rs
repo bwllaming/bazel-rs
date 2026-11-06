@@ -1537,3 +1537,139 @@ fn sibling_shared_actions_merge_in_plan_order() {
         assert_eq!(count("verified="), count("worker="), "{line}");
     }
 }
+
+/// Review of S1, item A: a status file first met while a target's commit
+/// fills a tool's runfiles group. `//a:j` (early in plan order, behind slow
+/// computes) reads ctx.version_file; `//b:t` (later, fast) runs a tool
+/// whose runfiles hold volatile-status.txt. Sequentially `//a:j` plans the
+/// workspace status (its nodes and the status command's stderr first); a
+/// commit of `//b:t` ahead of `//a:j`'s turn must not plan it first.
+const STATUS_TOOL_DEFS: &str = r##"
+def _j_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.run_shell(
+        inputs = [ctx.version_file] + ctx.files.deps,
+        outputs = [out],
+        command = "cat %s > %s" % (ctx.version_file.path, out.path),
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+j = rule(implementation = _j_impl, attrs = {"deps": attr.label_list(allow_files = True)})
+
+def _tool_impl(ctx):
+    exe = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(exe, "#!/bin/sh\nexit 0\n", is_executable = True)
+    return [DefaultInfo(executable = exe, runfiles = ctx.runfiles(files = [ctx.version_file]))]
+
+tool = rule(implementation = _tool_impl)
+
+def _t_impl(ctx):
+    print("t %s" % ctx.label)
+    out = ctx.actions.declare_file(ctx.label.name + ".out")
+    ctx.actions.run(
+        executable = ctx.attr.tool[DefaultInfo].files_to_run,
+        outputs = [out],
+        arguments = [out.path],
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+t = rule(implementation = _t_impl, attrs = {"tool": attr.label()})
+"##;
+
+#[test]
+fn a_status_file_in_a_tools_runfiles_is_planned_at_its_sequential_place() {
+    let ws = Workspace::new();
+    commit_ahead_workspace(&ws);
+    ws.file("rules/status.bzl", STATUS_TOOL_DEFS);
+    ws.file(
+        "status.sh",
+        "#!/bin/sh\necho 'status command runs' >&2\necho STABLE_X 1\n",
+    );
+    std::fs::set_permissions(
+        ws.0.join("status.sh"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    // Slow independent computes are before //a:j in plan order.
+    ws.file(
+        "slow/BUILD",
+        "load('//rules:p4.bzl', 'w')\npackage(default_visibility = ['//visibility:public'])\n\
+         w(name = 's0', out = 's0', work = 300000)\nw(name = 's1', out = 's1', work = 300000)\n\
+         w(name = 's2', out = 's2', work = 300000)\nw(name = 's3', out = 's3', work = 300000)\n",
+    );
+    ws.file(
+        "a/BUILD",
+        "load('//rules:status.bzl', 'j')\n\
+         j(name = 'j', deps = ['//slow:s0', '//slow:s1', '//slow:s2', '//slow:s3'])\n",
+    );
+    ws.file(
+        "b/BUILD",
+        "load('//rules:status.bzl', 'tool', 't')\n\
+         tool(name = 'tool')\n\
+         t(name = 't', tool = ':tool')\n",
+    );
+    let status = format!(
+        "--workspace_status_command={}",
+        ws.0.join("status.sh").display()
+    );
+    for args in [
+        vec!["build", "--nobuild", P4_HOST, status.as_str(), "//..."],
+        vec![
+            "build",
+            "--nobuild",
+            P4_HOST,
+            status.as_str(),
+            "//b:t",
+            "//a:j",
+            "//...",
+        ],
+    ] {
+        let reference = assert_like_sequential(&ws, &[("BAZEL_RS_DUMP_ACTIONS", "1")], &args);
+        assert!(reference.status.success(), "{}", stderr(&reference));
+    }
+}
+
+/// Review of S1, item B: a worker's delta whose own registration failed (a
+/// prefix conflict of the target with itself, `d/b` then `d`) while an
+/// earlier target of the package registers a path the failure meets
+/// (`d/a`): sequentially the conflict names the earlier target's `d/a`,
+/// the first path below `d`; the merge must not report the worker's text.
+const PREFIX_DEFS: &str = r#"
+def _outs_impl(ctx):
+    total = 0
+    for i in range(ctx.attr.work):
+        total += i * i
+    for name in ctx.attr.outs_list:
+        out = ctx.actions.declare_file(name)
+        ctx.actions.write(out, str(total % 3))
+    return []
+
+outs = rule(
+    implementation = _outs_impl,
+    attrs = {"outs_list": attr.string_list(), "work": attr.int(default = 10)},
+)
+"#;
+
+#[test]
+fn a_failed_registration_meeting_an_earlier_target_reports_the_sequential_conflict() {
+    let ws = Workspace::new();
+    commit_ahead_workspace(&ws);
+    ws.file("rules/prefix.bzl", PREFIX_DEFS);
+    ws.file(
+        "p/BUILD",
+        "load('//rules:prefix.bzl', 'outs')\n\
+         outs(name = 's', outs_list = ['d/a'], work = 300000)\n\
+         outs(name = 't', outs_list = ['d/b', 'd'])\n",
+    );
+    for keep_going in [false, true] {
+        let mut args = vec!["build", "--nobuild", P4_HOST];
+        if keep_going {
+            args.push("--keep_going");
+        }
+        args.push("//...");
+        let reference = assert_like_sequential(&ws, &[], &args);
+        let text = stderr(&reference);
+        assert!(!reference.status.success(), "{text}");
+        assert!(text.contains("p/d/a"), "{text}");
+    }
+}
