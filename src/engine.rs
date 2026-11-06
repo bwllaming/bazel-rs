@@ -1476,6 +1476,96 @@ fn derive_note(ids: &mut BTreeSet<String>, artifact: &Artifact) {
     }
 }
 
+/// One requested target's runfiles artifacts in the hidden top-level group
+/// (plan B4, [`top_level_runfiles`]): the ones not listed yet for it, in
+/// order, and the Files of all of them.
+struct TopRunfiles {
+    artifacts: Vec<Artifact>,
+    taken: crate::fast_hash::FxHashSet<File>,
+}
+
+/// The runfiles artifacts each requested target (`actual_keys`, in label
+/// order: the requested key and the key answering for it) adds to the
+/// hidden top-level group, listed and resolved on `threads` workers:
+/// Runfiles.getAllArtifacts resolved through the artifact index (read only)
+/// and deduplicated against what the target already holds (its requested
+/// and hidden artifacts). `None` for a target without runfiles or with a
+/// File the index does not hold (the caller resolves those in order: a
+/// workspace status file registers on first lookup).
+fn top_level_runfiles(
+    actual_keys: &[(ConfiguredTargetKey, ConfiguredTargetKey)],
+    runfiles_info: &KeyMap<Arc<crate::runfiles::TargetRunfiles>>,
+    index: &ArtifactIndex,
+    requested: &[(ConfiguredTargetKey, Artifact)],
+    hidden: &[(usize, Artifact)],
+    owners: &KeyTable,
+    threads: usize,
+) -> Vec<Option<TopRunfiles>> {
+    let mut held: crate::fast_hash::FxHashMap<
+        &ConfiguredTargetKey,
+        crate::fast_hash::FxHashSet<File>,
+    > = Default::default();
+    for (key, artifact) in requested {
+        held.entry(key).or_default().insert(artifact.file());
+    }
+    for (owner, artifact) in hidden {
+        held.entry(&owners.keys[*owner])
+            .or_default()
+            .insert(artifact.file());
+    }
+    let list = |position: usize| -> Option<TopRunfiles> {
+        let (key, actual_key) = &actual_keys[position];
+        let runfiles = runfiles_info.get(actual_key)?;
+        let held = held.get(key);
+        let mut listed = TopRunfiles {
+            artifacts: Vec::new(),
+            taken: Default::default(),
+        };
+        for file in runfiles.default_runfiles().all_artifacts() {
+            let artifact = index.get(&file)?;
+            let file = artifact.file();
+            if held.is_some_and(|held| held.contains(&file)) || !listed.taken.insert(file) {
+                continue;
+            }
+            listed.artifacts.push(artifact.clone());
+        }
+        Some(listed)
+    };
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = threads.clamp(1, 16).min(actual_keys.len().max(1));
+    let mut results: Vec<Option<TopRunfiles>> = Vec::new();
+    results.resize_with(actual_keys.len(), || None);
+    let parts: Vec<Vec<(usize, Option<TopRunfiles>)>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let position = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if position >= actual_keys.len() {
+                            break;
+                        }
+                        done.push((position, list(position)));
+                    }
+                    done
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    });
+    for (position, listed) in parts.into_iter().flatten() {
+        results[position] = listed;
+    }
+    results
+}
+
 fn test_rule_properties(rule: &Rule) -> Option<crate::test_command::TestRuleInfo> {
     use crate::custom_rule::AttrValue;
     use crate::test_command::{TestRuleInfo, TestSize, TestTimeout};
@@ -16607,27 +16697,89 @@ impl Engine {
         let initial_hidden = hidden.len();
         let mut derive_build: HashMap<Label, BTreeSet<String>> = HashMap::new();
         let mut derive_side: BTreeMap<Label, (RunPlan, BTreeSet<String>)> = BTreeMap::new();
-        for label in labels {
+        // The requested targets' runfiles artifacts (the hidden top-level
+        // group), listed, resolved and deduplicated per target on workers
+        // (plan B4); the loop below takes them in label order.
+        let mut top_runfiles = if runfiles_requested {
+            let mut actual_keys = Vec::with_capacity(labels.len());
+            for label in labels {
+                let key = self.configurations.top_key(label.clone());
+                let actual = forwarded.get(&key).unwrap_or(label);
+                // An error stops here; the loop reports it at its label.
+                match self.output_group_key(actual, top) {
+                    Ok(actual_key) => actual_keys.push((key, actual_key)),
+                    Err(_) => break,
+                }
+            }
+            top_level_runfiles(
+                &actual_keys,
+                &runfiles_info,
+                &artifact_index,
+                &requested,
+                &hidden,
+                &owners,
+                self.loading_phase_threads,
+            )
+        } else {
+            Vec::new()
+        };
+        let mut resolve = |engine: &Engine, file: &File| {
+            engine.indexed_artifact(
+                file,
+                &mut artifact_index,
+                &mut workspace_status,
+                &mut nodes,
+                &mut producers,
+                &client_environment,
+                &status_client_environment,
+            )
+        };
+        for (position, label) in labels.iter().enumerate() {
             let key = self.configurations.top_key(label.clone());
             let actual = forwarded.get(&key).unwrap_or(label);
             let owner = owners.index(key.clone());
             let actual_key = self.output_group_key(actual, top)?;
+            // This target's runfiles artifacts taken (`seen` holds the rest).
+            let mut taken = crate::fast_hash::FxHashSet::default();
             if runfiles_requested && let Some(runfiles) = runfiles_info.get(&actual_key) {
-                for file in runfiles.default_runfiles().all_artifacts() {
-                    let artifact = resolve(self, &file)?.ok_or_else(|| {
-                        format!(
-                            "{label}: runfiles file has no declared artifact identity: {}",
-                            file.path
-                        )
-                    })?;
-                    if derive_recording {
-                        derive_note(derive_build.entry(label.clone()).or_default(), &artifact);
+                match top_runfiles.get_mut(position).and_then(Option::take) {
+                    Some(listed) => {
+                        // Every one resolved and new (the ones `seen` holds
+                        // are in the requested or hidden lists noted below).
+                        taken = listed.taken;
+                        for artifact in listed.artifacts {
+                            if derive_recording {
+                                derive_note(
+                                    derive_build.entry(label.clone()).or_default(),
+                                    &artifact,
+                                );
+                            }
+                            hidden.push((owner, artifact));
+                        }
                     }
-                    if seen.insert((owner, artifact.file())) {
-                        hidden.push((owner, artifact));
+                    None => {
+                        for file in runfiles.default_runfiles().all_artifacts() {
+                            let artifact = resolve(self, &file)?.ok_or_else(|| {
+                                format!(
+                                    "{label}: runfiles file has no declared artifact identity: {}",
+                                    file.path
+                                )
+                            })?;
+                            if derive_recording {
+                                derive_note(
+                                    derive_build.entry(label.clone()).or_default(),
+                                    &artifact,
+                                );
+                            }
+                            if seen.insert((owner, artifact.file())) {
+                                hidden.push((owner, artifact));
+                            }
+                        }
                     }
                 }
             }
+            let mut seen_insert =
+                |pair: (usize, File)| !taken.contains(&pair.1) && seen.insert(pair);
             // N23f: the runfiles tree artifact of an executable
             // (RuleConfiguredTargetBuilder.java:144-158): RunfilesTreeAction
             // needs the MANIFEST (SymlinkTreeAction, --build_runfile_links),
@@ -16653,7 +16805,7 @@ impl Engine {
                             file.path
                         )
                     })?;
-                    if seen.insert((owner, artifact.file())) {
+                    if seen_insert((owner, artifact.file())) {
                         hidden.push((owner, artifact.clone()));
                     }
                     if !top_baselines.iter().any(|(path, _)| *path == file.path) {
@@ -16672,7 +16824,7 @@ impl Engine {
                     artifacts.extend(support.tree.clone());
                 }
                 for artifact in artifacts {
-                    if seen.insert((owner, artifact.file())) {
+                    if seen_insert((owner, artifact.file())) {
                         hidden.push((owner, artifact));
                     }
                 }
@@ -16702,7 +16854,7 @@ impl Engine {
                     },
                 };
                 if let Some(executable) = &executable
-                    && seen.insert((owner, executable.file()))
+                    && seen_insert((owner, executable.file()))
                 {
                     hidden.push((owner, executable.clone()));
                 }
@@ -16717,7 +16869,7 @@ impl Engine {
                     .flat_map(|support| &support.entries)
                     .filter_map(|(_, artifact)| artifact.as_ref())
                 {
-                    if seen.insert((owner, artifact.file())) {
+                    if seen_insert((owner, artifact.file())) {
                         hidden.push((owner, artifact.clone()));
                     }
                 }
@@ -16761,7 +16913,7 @@ impl Engine {
                                 file.path
                             )
                         })?;
-                        if seen.insert((owner, artifact.file())) {
+                        if seen_insert((owner, artifact.file())) {
                             hidden.push((owner, artifact.clone()));
                         }
                         inputs.push((file.path.clone(), artifact));
