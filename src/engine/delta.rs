@@ -1880,8 +1880,20 @@ pub(super) fn compare_deltas(key: &ConfiguredTargetKey, worker: &TargetDelta, he
     if worker.error != here.error {
         fail("its error", &worker.error, &here.error);
     }
-    if worker.uses != here.uses {
-        fail("the memos it used", &worker.uses, &here.uses);
+    // The tool runfiles groups it used, in order. (Whether an action lists
+    // a shared input run depends on the depset walks memoized so far in
+    // the process — a compute run again may find one the first did not —
+    // so those uses are not compared; the nodes are.)
+    let groups = |delta: &TargetDelta| {
+        delta
+            .uses
+            .iter()
+            .filter(|used| matches!(used, MemoUse::Group(_)))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    if groups(worker) != groups(here) {
+        fail("the tool runfiles groups it used", &worker.uses, &here.uses);
     }
     parallel::note_verified_delta();
 }

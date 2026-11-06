@@ -1435,3 +1435,105 @@ fn plan_b_counters_account_for_every_entry() {
     );
     let _ = line("PERF-PARALLEL effects");
 }
+
+/// S1: siblings of one package each register an equal action with the
+/// same output (like the `.pyc` of a test wrapper every `py_test` of a
+/// package compiles) and an action consuming it. Their commit deltas are
+/// built on the workers side by side; a delta whose output meets an
+/// earlier sibling's is left to the coordinator (or computed again), so the
+/// first sibling in plan order owns the shared action and every consumer
+/// depends on it — the dump, prints and errors are the sequential ones,
+/// also with one sibling conflicting, with and without --keep_going, and
+/// BAZEL_RS_VERIFY_DELTA compares every worker's delta at its merge.
+#[test]
+fn sibling_shared_actions_merge_in_plan_order() {
+    for conflicting in [false, true] {
+        let ws = Workspace::new();
+        commit_ahead_workspace(&ws);
+        let mut build = String::from("load('//rules:p4.bzl', 'w')\n");
+        for index in 0..10 {
+            let content = if conflicting && index == 6 {
+                "other"
+            } else {
+                "same"
+            };
+            let dep = format!("//s{}:x{}", index % 4, index % 5);
+            let work = 200 + (index * 7919) % 9000;
+            build.push_str(&format!(
+                "w(name = 't{index}', out = 'wrapper.txt', content = '{content}', deps = ['{dep}'], work = {work})\n"
+            ));
+        }
+        ws.file("sib/BUILD", &build);
+        let reference = assert_like_sequential(
+            &ws,
+            &[("BAZEL_RS_DUMP_ACTIONS", "1")],
+            &["build", "--nobuild", P4_HOST, "//..."],
+        );
+        let text = stderr(&reference);
+        if conflicting {
+            assert!(!reference.status.success(), "{text}");
+            assert!(text.contains("conflicting actions"), "{text}");
+            let keep_going = assert_like_sequential(
+                &ws,
+                &[],
+                &["build", "--nobuild", "--keep_going", P4_HOST, "//..."],
+            );
+            assert!(!keep_going.status.success());
+            continue;
+        }
+        assert!(reference.status.success(), "{text}");
+        assert_eq!(
+            text.lines()
+                .filter(|line| line.starts_with("  output ") && line.ends_with("sib/wrapper.txt"))
+                .count(),
+            1,
+            "one action produces the shared output: {text}"
+        );
+        // Every Starlark commit's delta is counted once, by where it was
+        // built (BAZEL_RS_VERIFY_DELTA compared the workers' at the merge).
+        let timed = ws.run_env(
+            &[
+                ("BAZEL_RS_TIMING", "1"),
+                ("BAZEL_RS_SNAPSHOT", "off"),
+                ("BAZEL_RS_VERIFY_DELTA", "1"),
+                ("BAZEL_RS_ANALYSIS_JITTER", "20"),
+            ],
+            &[
+                "build",
+                "--loading_phase_threads=8",
+                "--nobuild",
+                P4_HOST,
+                "//...",
+            ],
+        );
+        assert!(timed.status.success(), "{}", stderr(&timed));
+        let timed = stderr(&timed);
+        let line = timed
+            .lines()
+            .find(|line| line.starts_with("PERF-PARALLEL delta "))
+            .unwrap_or_else(|| panic!("no PERF-PARALLEL delta line: {timed}"));
+        let count = |name: &str| -> u64 {
+            line.split_whitespace()
+                .find_map(|field| field.strip_prefix(name))
+                .and_then(|value| value.split(':').next()?.parse().ok())
+                .unwrap_or(0)
+        };
+        let commits: u64 = line
+            .split_whitespace()
+            .filter(|field| field.contains('=') && field.contains(':'))
+            .filter(|field| !field.starts_with("recomputed_on_worker="))
+            .filter_map(|field| {
+                field
+                    .split_once('=')?
+                    .1
+                    .split(':')
+                    .next()?
+                    .parse::<u64>()
+                    .ok()
+            })
+            .sum();
+        let starlark = 4 * 5 + 4 + 1 + 3 + 2 + 10;
+        assert_eq!(commits, starlark, "{line}");
+        assert_eq!(count("verified="), count("worker="), "{line}");
+    }
+}
