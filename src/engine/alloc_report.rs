@@ -849,6 +849,12 @@ impl<K: Footprint, V: Footprint, S> Footprint for HashMap<K, V, S> {
     }
 }
 
+impl<K: std::hash::Hash + Eq + Clone, V: Footprint> Footprint for super::delta::SingleFlight<K, V> {
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        self.values().iter().map(|value| value.heap(walker)).sum()
+    }
+}
+
 impl<K: Footprint, S> Footprint for HashSet<K, S> {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
         walker.alloc(hash_table_bytes::<K>(self.capacity()))
@@ -875,7 +881,10 @@ fields!(crate::starlark_types::FileData {
 });
 impl Footprint for super::ArtifactIndex {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
-        self.entries.heap(walker)
+        let mut heap = 0;
+        self.shared
+            .for_each_shard(|shard| heap += shard.heap(walker));
+        heap
     }
 }
 

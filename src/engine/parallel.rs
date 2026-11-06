@@ -2592,11 +2592,12 @@ impl Engine {
             action
                 .runfiles_trees
                 .iter()
-                .all(|tree| state.input_groups.contains_key(&tree.identity()))
+                .all(|tree| state.input_groups.get(&tree.identity()).is_some())
                 && action.input_memo.as_ref().is_none_or(|(_, files)| {
                     state
                         .input_memos
-                        .contains_key(&(Arc::as_ptr(files) as usize))
+                        .get(&(Arc::as_ptr(files) as usize))
+                        .is_some()
                 })
         });
         (!memoized).then_some("ineligible_first_fill")

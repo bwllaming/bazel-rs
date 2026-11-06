@@ -35,6 +35,7 @@ mod aquery_test;
 mod compatibility;
 pub mod cquery;
 mod cquery_presentation;
+mod delta;
 mod genquery;
 mod incremental;
 mod keep_going;
@@ -256,7 +257,7 @@ type Locations = BTreeMap<String, Vec<PathBuf>>;
 /// Declared generated artifacts by configuration and execution path.
 /// The client environment inherited action variables resolve against
 /// (read once per build on first need, crate::action_env).
-type ClientEnvironment = std::cell::OnceCell<Arc<BTreeMap<String, std::ffi::OsString>>>;
+type ClientEnvironment = std::sync::OnceLock<Arc<BTreeMap<String, std::ffi::OsString>>>;
 type Declared = crate::fast_hash::FxHashMap<(ConfigId, PathBuf), Artifact>;
 /// A lookup-only map by configured target key (never iterated where the
 /// order is observed).
@@ -330,11 +331,13 @@ struct ActionPlanning {
     /// the tool. Holding the tree keeps it the one the analysis memo hands
     /// out for the rest of planning (computed once per build) and lets a
     /// hit check, in debug builds, that the identity's content is the one
-    /// expanded. In-process only: identities are never persisted.
-    input_groups: HashMap<u64, ExpandedTree>,
+    /// expanded. In-process only: identities are never persisted. Filled
+    /// once by whoever needs it first, the coordinator or a worker building
+    /// a commit delta (S1, [`delta::SingleFlight`]).
+    input_groups: Arc<delta::InputGroups>,
     /// The shared inputs of the build's memoized depset walks, by the
     /// walk's address ([`SharedInputs`]; each entry holds its walk).
-    input_memos: HashMap<usize, Arc<SharedInputs>>,
+    input_memos: Arc<delta::InputMemos>,
     /// Actions whose tool runfiles trees are listed in the action instead
     /// (the groups could not stay shared, crate::scheduler::groups_apart):
     /// reported by PERF-GROUPS.
@@ -362,8 +365,9 @@ struct ActionPlanning {
     validation: BTreeMap<ConfiguredTargetKey, crate::starlark_types::Depset>,
     done: usize,
     /// The client environment inherited action variables resolve against,
-    /// read once per build on first need (crate::action_env).
-    client_environment: ClientEnvironment,
+    /// read once per build on first need (crate::action_env); shared with
+    /// the analysis workers building commit deltas (S1).
+    client_environment: Arc<ClientEnvironment>,
     /// The client environment this build's workspace status computed
     /// against (N63 follow-up 2): captured by ensure_workspace_status so
     /// a test can inject a per-build environment deterministically.
@@ -563,30 +567,101 @@ fn verify_artifacts() -> bool {
     *VERIFY
 }
 
-/// Register `artifact` as the Artifact of `file` in the build's one
-/// resolver (W1b registration invariant, PLAN-L1 §2.1). A File is
-/// registered once: a second registration keeps the first entry, which the
-/// invariant makes the same Artifact — re-registering it with a different
-/// one is an internal error, checked in debug builds and under
-/// BAZEL_RS_VERIFY_ARTIFACTS.
-/// The build's File -> Artifact resolver (ActionPlanning::artifact_index):
-/// looked up per input, never iterated, so hashed (by the File's path).
+/// The build's File -> Artifact resolver shared with the analysis workers
+/// (S1, docs/PARALLEL_ANALYSIS.md "S1"): looked up per input, never
+/// iterated, hashed by the File and sharded so that workers building a
+/// target's commit delta read it while the coordinator registers. Every
+/// entry carries the plan index from which it is visible (its stamp); a
+/// reader names its own plan index on every lookup ([`Self::get`]): a
+/// registration stamped later — made by a target ahead of its turn — is
+/// invisible to it, as it would not exist yet sequentially. There is no
+/// global turn: only the coordinator's cursor ([`ArtifactIndex`]) has one.
+struct ConcurrentArtifactIndex {
+    shards: Box<[std::sync::RwLock<IndexShard>]>,
+}
+
+/// One shard of [`ConcurrentArtifactIndex`]: File -> (artifact, stamp).
+type IndexShard = crate::fast_hash::FxHashMap<File, (Artifact, u32)>;
+
+/// The shards of [`ConcurrentArtifactIndex`] (a power of two).
+const ARTIFACT_SHARDS: usize = 64;
+
+impl Default for ConcurrentArtifactIndex {
+    fn default() -> Self {
+        Self {
+            shards: (0..ARTIFACT_SHARDS).map(|_| Default::default()).collect(),
+        }
+    }
+}
+
+impl ConcurrentArtifactIndex {
+    fn shard(&self, file: &File) -> &std::sync::RwLock<IndexShard> {
+        use std::hash::BuildHasher;
+        let hash = crate::fast_hash::FxBuildHasher::default().hash_one(file);
+        // The high bits: the map itself uses the low ones.
+        &self.shards[(hash >> 58) as usize & (ARTIFACT_SHARDS - 1)]
+    }
+
+    /// The registered artifact of `file` visible to the reader at plan
+    /// index `reader` (`u32::MAX`: everything).
+    fn get(&self, file: &File, reader: u32) -> Option<Artifact> {
+        let shard = self.shard(file).read().unwrap_or_else(|e| e.into_inner());
+        shard
+            .get(file)
+            .filter(|(_, stamp)| *stamp <= reader)
+            .map(|(artifact, _)| artifact.clone())
+    }
+
+    /// Register `artifact` for `file`, visible from plan index `stamp`
+    /// (replacing a registration; one made ahead of its turn becomes
+    /// visible from the earlier stamp).
+    fn insert(&self, file: File, artifact: Artifact, stamp: u32) {
+        let mut shard = self.shard(&file).write().unwrap_or_else(|e| e.into_inner());
+        match shard.get_mut(&file) {
+            Some(entry) => {
+                entry.0 = artifact;
+                entry.1 = entry.1.min(stamp);
+            }
+            None => {
+                shard.insert(file, (artifact, stamp));
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.shards
+            .iter()
+            .map(|shard| shard.read().unwrap_or_else(|e| e.into_inner()).len())
+            .sum()
+    }
+
+    /// The footprint report's walk over every entry.
+    fn for_each_shard(&self, mut each: impl FnMut(&IndexShard)) {
+        for shard in self.shards.iter() {
+            each(&shard.read().unwrap_or_else(|e| e.into_inner()));
+        }
+    }
+}
+
+/// The coordinator's cursor over the build's [`ConcurrentArtifactIndex`]
+/// (ActionPlanning::artifact_index): the plan index it reads at and the
+/// stamp of what it registers. Workers read the shared index with their
+/// own plan index instead.
 struct ArtifactIndex {
-    entries: crate::fast_hash::FxHashMap<File, (Artifact, u32)>,
+    shared: Arc<ConcurrentArtifactIndex>,
     /// The plan index of the target at its turn while phase 2 walks the
-    /// plan (P3): a registration stamped later — made by a target prepared
-    /// ahead of its turn — is not visible yet, as it would not exist yet
-    /// sequentially. `u32::MAX` (everything visible) outside a walk.
+    /// plan (P3): a registration stamped later is not visible yet.
+    /// `u32::MAX` (everything visible) outside a walk.
     turn: u32,
     /// The stamp of new registrations: the turn, or the plan index of the
-    /// target prepared ahead (Self::stamp_ahead).
+    /// target prepared or committed ahead (Self::stamp_ahead).
     stamp: u32,
 }
 
 impl Default for ArtifactIndex {
     fn default() -> Self {
         Self {
-            entries: Default::default(),
+            shared: Default::default(),
             turn: u32::MAX,
             stamp: 0,
         }
@@ -595,30 +670,18 @@ impl Default for ArtifactIndex {
 
 impl ArtifactIndex {
     /// The registered artifact of `file` visible at this point.
-    fn get(&self, file: &File) -> Option<&Artifact> {
-        self.entries
-            .get(file)
-            .filter(|(_, stamp)| *stamp <= self.turn)
-            .map(|(artifact, _)| artifact)
+    fn get(&self, file: &File) -> Option<Artifact> {
+        self.shared.get(file, self.turn)
     }
 
     /// Register `artifact` for `file` (replacing a registration; a
     /// registration made ahead of its turn becomes visible from now on).
-    fn insert(&mut self, file: File, artifact: Artifact) {
-        let stamp = self.stamp;
-        match self.entries.get_mut(&file) {
-            Some(entry) => {
-                entry.0 = artifact;
-                entry.1 = entry.1.min(stamp);
-            }
-            None => {
-                self.entries.insert(file, (artifact, stamp));
-            }
-        }
+    fn insert(&self, file: File, artifact: Artifact) {
+        self.shared.insert(file, artifact, self.stamp);
     }
 
     fn len(&self) -> usize {
-        self.entries.len()
+        self.shared.len()
     }
 
     /// Phase 2 walks the plan with targets prepared ahead (stamps matter).
@@ -628,7 +691,7 @@ impl ArtifactIndex {
 
     #[cfg(test)]
     fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.len() == 0
     }
 
     #[cfg(test)]
@@ -666,11 +729,17 @@ impl ArtifactIndex {
     }
 }
 
-fn register_artifact(index: &mut ArtifactIndex, file: &File, artifact: &Artifact) {
+/// Register `artifact` as the Artifact of `file` in the build's one
+/// resolver (W1b registration invariant, PLAN-L1 §2.1). A File is
+/// registered once: a second registration keeps the first entry, which the
+/// invariant makes the same Artifact — re-registering it with a different
+/// one is an internal error, checked in debug builds and under
+/// BAZEL_RS_VERIFY_ARTIFACTS.
+fn register_artifact(index: &ArtifactIndex, file: &File, artifact: &Artifact) {
     match index.get(file) {
         Some(registered) => {
             if (cfg!(debug_assertions) || verify_artifacts())
-                && !same_artifact(registered, artifact)
+                && !same_artifact(&registered, artifact)
             {
                 panic!(
                     "internal error: File {} re-registered with a different artifact: registered {registered:?}, now {artifact:?}",
@@ -749,11 +818,11 @@ struct PlanState<'a> {
     pub nodes: &'a mut lowering::PlannedNodes,
     pub producers: &'a mut Producers,
     pub source_inputs: &'a mut BTreeMap<String, SourceInputs>,
-    pub client_environment: &'a mut ClientEnvironment,
-    pub status_client_environment: &'a mut ClientEnvironment,
+    pub client_environment: &'a ClientEnvironment,
+    pub status_client_environment: &'a ClientEnvironment,
     pub workspace_status: &'a mut Option<WorkspaceStatusPlan>,
     pub views: &'a mut DependencyViews,
-    pub input_groups: &'a mut HashMap<u64, ExpandedTree>,
+    pub input_groups: &'a delta::InputGroups,
     pub listed_tree_actions: &'a mut usize,
 }
 
@@ -13185,7 +13254,7 @@ impl Engine {
                 .inputs
                 .iter()
                 .map(|file| {
-                    commit.artifact_index.get(file).cloned().ok_or_else(|| {
+                    commit.artifact_index.get(file).ok_or_else(|| {
                         format!("{owner}: input has no declared artifact: {}", file.path)
                     })
                 })
@@ -13775,7 +13844,7 @@ impl Engine {
                         status_client_environment: &mut *status_client_environment,
                         workspace_status: &mut *workspace_status,
                         views: &mut *views,
-                        input_groups: &mut *input_groups,
+                        input_groups: &*input_groups,
                         listed_tree_actions: &mut *listed_tree_actions,
                     };
                     self.plan_aspect_dependency(
@@ -14383,7 +14452,7 @@ impl Engine {
                 .files
                 .iter()
                 .map(|file| {
-                    artifact_index.get(file).cloned().ok_or_else(|| {
+                    artifact_index.get(file).ok_or_else(|| {
                         format!(
                             "{}: DefaultInfo file has no artifact: {}",
                             rule.label, file.path
@@ -14494,7 +14563,7 @@ impl Engine {
                     .map(|shared| (*start, shared))
             });
             let resolve = |file: &File| {
-                commit.artifact_index.get(file).cloned().ok_or_else(|| {
+                commit.artifact_index.get(file).ok_or_else(|| {
                     format!(
                         "{}: input has no declared artifact: {}",
                         rule.label, file.path
@@ -14567,7 +14636,7 @@ impl Engine {
             .files
             .iter()
             .map(|file| {
-                artifact_index.get(file).cloned().ok_or_else(|| {
+                artifact_index.get(file).ok_or_else(|| {
                     format!(
                         "{}: DefaultInfo file has no artifact: {}",
                         rule.label, file.path
@@ -14612,39 +14681,33 @@ impl Engine {
         }
         let mut groups: Vec<Arc<scheduler::InputGroup>> = Vec::new();
         for tree in runfiles_trees {
-            let group = match commit.input_groups.get(&tree.identity()) {
-                Some(expanded) => {
-                    // One identity is one content
-                    // (crate::analysis_runtime::ToolRunfilesTree).
-                    debug_assert!(
-                        Arc::ptr_eq(&expanded.tree, tree) || expanded.tree.same_content(tree),
-                        "internal error: runfiles tree {} of identity {} differs from the one expanded",
-                        tree.directory(),
-                        tree.identity()
-                    );
-                    Arc::clone(&expanded.group)
-                }
-                None => {
+            let memo: &delta::InputGroups = commit.input_groups;
+            let expanded = memo
+                .get_or_fill(&tree.identity(), || {
                     let (artifacts, empty_files) =
                         runfiles_tree_entries(tree, owner, &mut |file| {
                             commit.artifact(self, file)
                         })?;
-                    let group = Arc::new(runfiles_input_group(
-                        Path::new(tree.directory()),
-                        artifacts,
-                        empty_files,
-                        main_ignored,
-                    ));
-                    commit.input_groups.insert(
-                        tree.identity(),
-                        ExpandedTree {
-                            tree: Arc::clone(tree),
-                            group: Arc::clone(&group),
-                        },
-                    );
-                    group
-                }
-            };
+                    Ok::<_, String>(Some(ExpandedTree {
+                        tree: Arc::clone(tree),
+                        group: Arc::new(runfiles_input_group(
+                            Path::new(tree.directory()),
+                            artifacts,
+                            empty_files,
+                            main_ignored,
+                        )),
+                    }))
+                })?
+                .expect("a runfiles group fill returns one");
+            // One identity is one content
+            // (crate::analysis_runtime::ToolRunfilesTree).
+            debug_assert!(
+                Arc::ptr_eq(&expanded.tree, tree) || expanded.tree.same_content(tree),
+                "internal error: runfiles tree {} of identity {} differs from the one expanded",
+                tree.directory(),
+                tree.identity()
+            );
+            let group = Arc::clone(&expanded.group);
             if !groups.iter().any(|known| Arc::ptr_eq(known, &group)) {
                 groups.push(group);
             }
@@ -14922,13 +14985,12 @@ impl Engine {
                     if let Some(executable) = files_to_run.executable()
                         && !files.contains(executable)
                     {
-                        let artifact =
-                            artifact_index.get(executable).cloned().ok_or_else(|| {
-                                format!(
-                                    "{}: tool executable has no declared artifact: {}",
-                                    rule.label, executable.path
-                                )
-                            })?;
+                        let artifact = artifact_index.get(executable).ok_or_else(|| {
+                            format!(
+                                "{}: tool executable has no declared artifact: {}",
+                                rule.label, executable.path
+                            )
+                        })?;
                         artifacts.push(artifact);
                     }
                     tool_trees.push(tree);
@@ -16258,7 +16320,7 @@ impl Engine {
         // each invocation runs the status script afresh (Bazel runs the
         // workspace status action on every build, WorkspaceStatusAction
         // executeUnconditionally). The per-build ActionPlanning state is
-        // likewise dropped so its OnceCells (client env) re-read.
+        // likewise dropped so its OnceLocks (client env) re-read.
         self.workspace_status_once = std::sync::OnceLock::new();
         self.action_planning = None;
         self.view_accesses.clear();
@@ -16504,14 +16566,11 @@ impl Engine {
             // The memoized depset walks (process-wide) and the shared
             // inputs this build resolved from them.
             let (walks, files) = crate::starlark_types::flat_memo_stats();
-            let shared: usize = state
-                .input_memos
-                .values()
-                .map(|shared| shared.artifacts.len())
-                .sum();
+            let memos = state.input_memos.values();
+            let shared: usize = memos.iter().map(|shared| shared.artifacts.len()).sum();
             crate::snapshot::diag::line_fmt(format_args!(
                 "PERF-MEMO walks={walks} walk_files={files} shared_inputs={} shared_artifacts={shared}",
-                state.input_memos.len()
+                memos.len()
             ));
         }
         self.stop_analysis_pool();
@@ -18780,7 +18839,7 @@ struct ActionCommit<'a> {
     source_inputs: &'a mut BTreeMap<String, SourceInputs>,
     client_environment: &'a ClientEnvironment,
     status_client_environment: &'a ClientEnvironment,
-    input_groups: &'a mut HashMap<u64, ExpandedTree>,
+    input_groups: &'a delta::InputGroups,
     listed_tree_actions: &'a mut usize,
 }
 
@@ -19246,7 +19305,7 @@ impl Engine {
             status_client_environment,
             artifact_index,
         )?;
-        Ok(artifact_index.get(file).cloned())
+        Ok(artifact_index.get(file))
     }
 
     /// The content of a `py_internal.create_repo_mapping_manifest` write
@@ -19753,19 +19812,28 @@ impl SharedInputs {
     /// resolved through `artifact_index` on first use; `None` when one of
     /// them has no artifact (the action's own resolution reports it).
     fn resolve(
-        memo: &mut HashMap<usize, Arc<SharedInputs>>,
+        memo: &delta::InputMemos,
         artifact_index: &ArtifactIndex,
         files: &Arc<crate::starlark_types::FlatFiles>,
     ) -> Option<Arc<SharedInputs>> {
-        use std::os::unix::ffi::OsStrExt;
         let address = Arc::as_ptr(files) as usize;
-        if let Some(shared) = memo.get(&address) {
-            return Some(Arc::clone(shared));
-        }
+        memo.get_or_fill(&address, || {
+            Ok::<_, std::convert::Infallible>(Self::of(artifact_index, files))
+        })
+        .unwrap_or_else(|never| match never {})
+    }
+
+    /// The shared inputs of `files`, resolved through `artifact_index`;
+    /// `None` when one of them has no artifact.
+    fn of(
+        artifact_index: &ArtifactIndex,
+        files: &Arc<crate::starlark_types::FlatFiles>,
+    ) -> Option<SharedInputs> {
+        use std::os::unix::ffi::OsStrExt;
         let artifacts = files
             .files()
             .iter()
-            .map(|file| artifact_index.get(file).cloned())
+            .map(|file| artifact_index.get(file))
             .collect::<Option<Vec<_>>>()?;
         let namespace = action::InputNamespace::of(artifacts.len(), &|index| {
             artifacts[index].exec.as_os_str().as_bytes()
@@ -19782,16 +19850,14 @@ impl SharedInputs {
                 occurrences = None;
             }
         }
-        let shared = Arc::new(SharedInputs {
+        Some(SharedInputs {
             _files: Arc::clone(files),
             artifacts,
             namespace,
             occurrences,
             first,
             apart: Default::default(),
-        });
-        memo.insert(address, Arc::clone(&shared));
-        Some(shared)
+        })
     }
 
     /// The index of the run's first input at execution path `exec`.
@@ -20206,7 +20272,7 @@ mod tests {
         index.at_turn(10);
         // Target 14 prepared ahead registers the File.
         let saved = index.stamp_ahead(14);
-        register_artifact(&mut index, &file, &artifact);
+        register_artifact(&index, &file, &artifact);
         assert!(index.get(&file).is_some(), "the target sees its own");
         index.restore_stamp(saved);
         assert!(index.get(&file).is_none(), "turn 10: not yet");
@@ -20226,11 +20292,11 @@ mod tests {
         let mut index = ArtifactIndex::default();
         index.at_turn(3);
         let saved = index.stamp_ahead(7);
-        register_artifact(&mut index, &file, &artifact);
+        register_artifact(&index, &file, &artifact);
         index.restore_stamp(saved);
         index.at_turn(4);
         assert!(index.get(&file).is_none());
-        register_artifact(&mut index, &file, &artifact);
+        register_artifact(&index, &file, &artifact);
         assert!(index.get(&file).is_some(), "registered at turn 4");
         index.at_turn(5);
         assert!(index.get(&file).is_some());
@@ -20238,7 +20304,7 @@ mod tests {
         let mut index = ArtifactIndex::default();
         index.at_turn(1);
         let saved = index.stamp_ahead(9);
-        register_artifact(&mut index, &file, &artifact);
+        register_artifact(&index, &file, &artifact);
         index.restore_stamp(saved);
         index.walk_done();
         assert!(index.get(&file).is_some());
@@ -20249,11 +20315,14 @@ mod tests {
     #[test]
     fn register_artifact_keeps_one_artifact_per_file() {
         let artifact = generated_out_txt();
-        let mut index = ArtifactIndex::default();
-        register_artifact(&mut index, &artifact.file, &artifact);
-        register_artifact(&mut index, &artifact.file, &artifact.clone());
+        let index = ArtifactIndex::default();
+        register_artifact(&index, &artifact.file, &artifact);
+        register_artifact(&index, &artifact.file, &artifact.clone());
         assert_eq!(index.len(), 1);
-        assert!(same_artifact(index.get(&artifact.file).unwrap(), &artifact));
+        assert!(same_artifact(
+            &index.get(&artifact.file).unwrap(),
+            &artifact
+        ));
     }
 
     /// Re-registering a File with a different Artifact is an internal error
@@ -20262,11 +20331,11 @@ mod tests {
     #[should_panic(expected = "re-registered with a different artifact")]
     fn register_artifact_rejects_a_second_artifact_for_a_file() {
         let artifact = generated_out_txt();
-        let mut index = ArtifactIndex::default();
-        register_artifact(&mut index, &artifact.file, &artifact);
+        let index = ArtifactIndex::default();
+        register_artifact(&index, &artifact.file, &artifact);
         let mut other = artifact.clone();
         other.make_mut().producer = Some(("//pkg:other#0".into(), 0));
-        register_artifact(&mut index, &artifact.file, &other);
+        register_artifact(&index, &artifact.file, &other);
     }
 
     /// A producer of `outputs` whose action (id `id`) writes `content`,
@@ -20582,7 +20651,7 @@ mod tests {
         let mut index = ArtifactIndex::default();
         let mut plan = None;
         let (mut nodes, mut producers) = (lowering::PlannedNodes::default(), Producers::default());
-        let (client, status) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
+        let (client, status) = (std::sync::OnceLock::new(), std::sync::OnceLock::new());
         let mut lookup = |file: &File, index: &mut ArtifactIndex| {
             engine
                 .indexed_artifact(
@@ -20599,7 +20668,7 @@ mod tests {
         let generated = generated_out_txt();
         assert!(lookup(&generated.file(), &mut index).is_none());
         assert!(index.is_empty());
-        register_artifact(&mut index, &generated.file, &generated);
+        register_artifact(&index, &generated.file, &generated);
         assert!(same_artifact(
             &lookup(&generated.file(), &mut index).unwrap(),
             &generated
@@ -20636,7 +20705,7 @@ mod tests {
             let mut index = ArtifactIndex::default();
             let (mut nodes, mut producers) =
                 (lowering::PlannedNodes::default(), Producers::default());
-            let (client, status) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
+            let (client, status) = (std::sync::OnceLock::new(), std::sync::OnceLock::new());
             let planned = engine
                 .ensure_workspace_status(
                     &mut None,
@@ -20673,7 +20742,7 @@ mod tests {
                     execute_build.then(|| (id.to_owned(), 0)),
                     "{name}, status label {embed_label:?}"
                 );
-                assert!(same_artifact(index.get(&file).unwrap(), artifact));
+                assert!(same_artifact(&index.get(&file).unwrap(), artifact));
             }
             assert_eq!(index.len(), 2);
         }
@@ -21737,7 +21806,7 @@ m = macro(implementation=emit)
                 ..Action::default()
             };
             let planned =
-                plan_action(action, inputs, ignored, &std::cell::OnceCell::new()).unwrap();
+                plan_action(action, inputs, ignored, &std::sync::OnceLock::new()).unwrap();
             (
                 SourceInputs::planned(sources.clone(), &planned, Vec::new()),
                 planned,
@@ -21798,13 +21867,13 @@ m = macro(implementation=emit)
             py("lib/re.py"),
         ];
         let files: Vec<File> = run.iter().map(|artifact| artifact.file.clone()).collect();
-        let mut index = ArtifactIndex::default();
+        let index = ArtifactIndex::default();
         for artifact in &run {
-            register_artifact(&mut index, &artifact.file, artifact);
+            register_artifact(&index, &artifact.file, artifact);
         }
-        let mut memo = HashMap::new();
+        let memo = delta::InputMemos::default();
         let flat = crate::starlark_types::FlatFiles::of_files(files);
-        let shared = SharedInputs::resolve(&mut memo, &index, &flat).unwrap();
+        let shared = SharedInputs::resolve(&memo, &index, &flat).unwrap();
         let own = artifact("/ws/p/x.py", "p/x.py", "//p:x");
         let cases: Vec<(Vec<Artifact>, usize)> = vec![
             // The interpreter before its runtime, the source after.
@@ -21853,7 +21922,7 @@ m = macro(implementation=emit)
         // One resolution per walk.
         assert!(Arc::ptr_eq(
             &shared,
-            &SharedInputs::resolve(&mut memo, &index, &flat).unwrap()
+            &SharedInputs::resolve(&memo, &index, &flat).unwrap()
         ));
     }
 
@@ -21883,7 +21952,7 @@ m = macro(implementation=emit)
                 action,
                 &inputs,
                 &IgnoredSubdirectories::default(),
-                &std::cell::OnceCell::new(),
+                &std::sync::OnceLock::new(),
                 false,
                 None,
             )
