@@ -92,6 +92,50 @@ impl<K: std::hash::Hash + Eq + Clone, V> SingleFlight<K, V> {
     }
 }
 
+/// The hashes of every registered output path and of its proper ancestors
+/// (Producers::insert), which the analysis workers read: a worker whose
+/// commit would register a path that meets one (the path itself, an
+/// ancestor or a path below it is registered) leaves its delta to the
+/// coordinator, where the registration is checked against the producers
+/// themselves. A hash collision only does that needlessly.
+#[derive(Default)]
+pub(super) struct PathHashes {
+    paths: std::sync::Mutex<crate::fast_hash::FxHashSet<u64>>,
+    ancestors: std::sync::Mutex<crate::fast_hash::FxHashSet<u64>>,
+}
+
+impl PathHashes {
+    pub(super) fn insert(&self, output: &Path) {
+        self.paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(parallel::path_hash(output));
+        let mut ancestors = self.ancestors.lock().unwrap_or_else(|e| e.into_inner());
+        for ancestor in output.ancestors().skip(1) {
+            if ancestor.as_os_str().is_empty() || !ancestors.insert(parallel::path_hash(ancestor)) {
+                break;
+            }
+        }
+    }
+
+    /// Whether registering `summary`'s paths would meet a registered path.
+    pub(super) fn meet(&self, summary: &parallel::OutputSummary) -> bool {
+        {
+            let paths = self.paths.lock().unwrap_or_else(|e| e.into_inner());
+            if summary
+                .paths
+                .iter()
+                .chain(&summary.ancestors)
+                .any(|hash| paths.contains(hash))
+            {
+                return true;
+            }
+        }
+        let ancestors = self.ancestors.lock().unwrap_or_else(|e| e.into_inner());
+        summary.paths.iter().any(|hash| ancestors.contains(hash))
+    }
+}
+
 /// The memoized tool runfiles groups of a build, by tree identity (PA-1,
 /// ActionPlanning::input_groups).
 pub(super) type InputGroups = SingleFlight<u64, ExpandedTree>;
@@ -190,6 +234,7 @@ pub(super) struct SharedView {
     input_groups: Arc<InputGroups>,
     input_memos: Arc<InputMemos>,
     client_environment: Arc<ClientEnvironment>,
+    registered: Option<Arc<PathHashes>>,
 }
 
 impl SharedView {
@@ -202,6 +247,7 @@ impl SharedView {
             input_groups: Arc::clone(&state.input_groups),
             input_memos: Arc::clone(&state.input_memos),
             client_environment: Arc::clone(&state.client_environment),
+            registered: state.producers.hashes.clone(),
         }
     }
 
@@ -282,6 +328,15 @@ impl Engine {
 }
 
 impl RemotePlatforms {
+    /// No spawn's platform decided (a worker's delta is merged as built).
+    pub(super) fn undecided() -> Self {
+        let unknown = || (Err(String::new()), false);
+        Self {
+            entries: Vec::new(),
+            host: unknown(),
+        }
+    }
+
     /// Whether every spawn of `actions` has its platform decided.
     pub(super) fn all_final(
         &self,
@@ -380,10 +435,7 @@ impl<'a> DeltaBuilder<'a> {
             hooks,
             ops: Vec::new(),
             index: Default::default(),
-            producers: Producers {
-                stamp,
-                ..Producers::default()
-            },
+            producers: Producers::local(stamp),
             uses: Vec::new(),
             fallback: None,
             spent: Vec::new(),
@@ -1591,6 +1643,7 @@ impl DeltaInputs {
         outcome: &mut ComputeOutcome,
         index: usize,
         verify_summary: bool,
+        registers: &parallel::OutputSummary,
     ) -> WorkerDelta {
         let Ok(analyzed) = outcome.analyzed.as_ref() else {
             unreachable!("internal error: a delta of a failed compute");
@@ -1605,7 +1658,15 @@ impl DeltaInputs {
                 .all_final(&self.action_execution, &analyzed.actions),
         );
         let summary = verify_summary.then(|| parallel::OutputSummary::of(analyzed));
-        if let Some(reason) = self.unsafe_reason(analyzed, outcome.runfiles.as_ref()) {
+        let meets = self
+            .view
+            .registered
+            .as_ref()
+            .is_some_and(|registered| registered.meet(registers));
+        if let Some(reason) = self
+            .unsafe_reason(analyzed, outcome.runfiles.as_ref())
+            .or(meets.then_some("delta_meets_producer"))
+        {
             return WorkerDelta {
                 built: Built::Fallback(reason),
                 ahead_unsafe,

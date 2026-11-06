@@ -14418,7 +14418,12 @@ impl Engine {
                 None
             }
         };
-        let platforms = self.remote_platforms(rule, config, &action_execution);
+        // The rest of the commit's inputs, for a delta built here.
+        let platforms = if worker_delta.is_none() || delta::verify_delta() {
+            self.remote_platforms(rule, config, &action_execution)
+        } else {
+            delta::RemotePlatforms::undecided()
+        };
         let runfiles_options = self.configured_runfiles_options(config);
         let commit = |analyzed, precomputed, outputs_checked| delta::CustomCommit {
             key: &key,
@@ -17892,6 +17897,10 @@ struct Producers {
     /// The plan index of the target at its turn (`u32::MAX` outside a
     /// pipelined walk): plan B S0's shared-action counter.
     turn: u32,
+    /// The hashes of the registered paths and their ancestors, shared with
+    /// the analysis workers (S1: a worker whose outputs meet one leaves
+    /// the delta to the coordinator); `None` in a delta's own producers.
+    hashes: Option<Arc<delta::PathHashes>>,
 }
 
 impl Default for Producers {
@@ -17901,6 +17910,7 @@ impl Default for Producers {
             ancestors: Default::default(),
             stamp: u32::MAX,
             turn: u32::MAX,
+            hashes: Some(Default::default()),
         }
     }
 }
@@ -17940,7 +17950,20 @@ impl Producers {
         self.paths.values().map(|(producer, _)| producer)
     }
 
+    /// A delta's own producers ([`delta::DeltaBuilder`]), registering as
+    /// plan index `stamp`.
+    fn local(stamp: u32) -> Self {
+        Self {
+            stamp,
+            hashes: None,
+            ..Self::default()
+        }
+    }
+
     fn insert(&mut self, output: PathBuf, producer: Arc<OutputProducer>) {
+        if let Some(hashes) = &self.hashes {
+            hashes.insert(&output);
+        }
         for ancestor in output.ancestors().skip(1) {
             if ancestor.as_os_str().is_empty() || !self.ancestors.insert(ancestor.to_path_buf()) {
                 break;

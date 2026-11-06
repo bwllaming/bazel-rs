@@ -57,11 +57,11 @@ type Finished = (usize, Option<Arc<OutputSummary>>);
 /// one then waits), never unrelated.
 #[derive(Default, Debug)]
 pub(super) struct OutputSummary {
-    paths: Vec<u64>,
-    ancestors: Vec<u64>,
+    pub(super) paths: Vec<u64>,
+    pub(super) ancestors: Vec<u64>,
 }
 
-fn path_hash(path: &Path) -> u64 {
+pub(super) fn path_hash(path: &Path) -> u64 {
     use std::hash::BuildHasher;
     crate::path_key::FastState::default().hash_one(crate::path_key::PathKey(path))
 }
@@ -1935,7 +1935,8 @@ impl Engine {
                 if let Some(inputs) = delta
                     && outcome.analyzed.is_ok()
                 {
-                    let built = inputs.build(&snapshot, &mut outcome, index, verify_summary);
+                    let built =
+                        inputs.build(&snapshot, &mut outcome, index, verify_summary, &registers);
                     outcome.delta = Some(Box::new(built));
                 }
                 let elapsed = started.elapsed();
