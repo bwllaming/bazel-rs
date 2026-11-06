@@ -2142,6 +2142,9 @@ struct ComputeOutcome {
     /// (validate_declared_outputs), made by the analysis worker after the
     /// implementation (plan B): `None` checks them at the commit.
     outputs_checked: Option<Result<(), String>>,
+    /// S1: the commit delta the analysis worker built after the
+    /// implementation (`None`: built at the commit, on the coordinator).
+    delta: Option<Box<delta::WorkerDelta>>,
 }
 
 /// What plan_runfiles_support computes from the target's own runfiles and
@@ -13527,6 +13530,7 @@ impl Engine {
                 printed,
                 runfiles: None,
                 outputs_checked: None,
+                delta: None,
             },
         )
     }
@@ -14336,7 +14340,7 @@ impl Engine {
             snapshot = retry.0;
             outcome = retry.1;
         }
-        let outcome = if outcome
+        let (outcome, snapshot) = if outcome
             .analyzed
             .as_ref()
             .is_err_and(|error| crate::repository_demand::is_needs_repository(error))
@@ -14351,46 +14355,103 @@ impl Engine {
                 u64::MAX,
                 0,
             );
-            let retried = Engine::compute_target(snapshot).1;
+            let retried = Engine::compute_target(snapshot);
             timer.finish();
-            retried
+            (retried.1, retried.0)
         } else {
-            drop_elsewhere(snapshot);
-            outcome
+            (outcome, snapshot)
         };
         let ComputeOutcome {
             analyzed,
             printed,
             runfiles: precomputed,
             outputs_checked,
+            delta: worker,
         } = outcome;
         // The prefix, on the coordinator before the delta is built (its
         // first-need registrations follow it, as sequentially).
         for line in printed {
             self.note_analysis_print(&line);
         }
-        let analyzed = analyzed?;
+        let mut analyzed = analyzed?;
         restricted_to_error(rule)?;
         self.check_transition_allowlist(rule, &key, configured)?;
+        let (mut precomputed, mut outputs_checked) = (precomputed, outputs_checked);
+        // S1: the delta its analysis worker built, unless one of its output
+        // paths meets a producer another target registered since (or it
+        // fell back); the compute is then run again here (a pure function
+        // of the snapshot) for the coordinator's build.
+        let recompute = |reason: &'static str, snapshot: &mut Option<ComputeSnapshot>| {
+            parallel::note_delta(reason);
+            let taken = snapshot
+                .take()
+                .expect("the snapshot is kept for the commit");
+            let (kept, again) = Engine::compute_target(taken);
+            *snapshot = Some(kept);
+            again
+        };
+        let mut snapshot = Some(snapshot);
+        let worker_delta = match worker.map(|worker| worker.built) {
+            Some(delta::Built::Delta(built)) if !Self::delta_meets_producers(state, &built) => {
+                parallel::note_delta("worker");
+                Some(built)
+            }
+            Some(delta::Built::Delta(built)) => {
+                drop(built);
+                let again = recompute("meets_producer", &mut snapshot);
+                analyzed = again.analyzed?;
+                (precomputed, outputs_checked) = (None, None);
+                None
+            }
+            Some(delta::Built::Consumed(reason)) => {
+                let again = recompute(reason, &mut snapshot);
+                analyzed = again.analyzed?;
+                (precomputed, outputs_checked) = (None, None);
+                None
+            }
+            Some(delta::Built::Fallback(reason)) => {
+                parallel::note_delta(reason);
+                None
+            }
+            None => {
+                parallel::note_delta("coordinator");
+                None
+            }
+        };
         let platforms = self.remote_platforms(rule, config, &action_execution);
         let runfiles_options = self.configured_runfiles_options(config);
-        let delta = self.build_delta(
-            state,
-            delta::CustomCommit {
-                key: &key,
-                rule,
-                output_root: &output_root,
-                action_owner: &action_owner,
-                main_ignored: &main_ignored,
-                transitive: &transitive,
-                action_execution: &action_execution,
-                platforms: &platforms,
-                runfiles_options: &runfiles_options,
-                analyzed,
-                precomputed,
-                outputs_checked,
-            },
-        );
+        let commit = |analyzed, precomputed, outputs_checked| delta::CustomCommit {
+            key: &key,
+            rule,
+            output_root: &output_root,
+            action_owner: &action_owner,
+            main_ignored: &main_ignored,
+            transitive: &transitive,
+            action_execution: &action_execution,
+            platforms: &platforms,
+            runfiles_options: &runfiles_options,
+            analyzed,
+            precomputed,
+            outputs_checked,
+        };
+        let delta = match worker_delta {
+            Some(built) => {
+                if delta::verify_delta() {
+                    // BAZEL_RS_VERIFY_DELTA: the delta built here, now, is
+                    // the worker's.
+                    let again = recompute("verify", &mut snapshot);
+                    if let Ok(analyzed) = again.analyzed {
+                        let here = self.verify_build(state, commit(analyzed, None, None));
+                        delta::compare_deltas(&key, &built, &here);
+                    }
+                }
+                built
+            }
+            None => self.build_delta(state, commit(analyzed, precomputed, outputs_checked)),
+        };
+        if let Some(snapshot) = snapshot {
+            drop_elsewhere(snapshot);
+        }
         self.merge_delta(state, &key, delta)
     }
 
@@ -18062,7 +18123,6 @@ fn check_output(
 /// Whether registering `output` would meet a producer in `producers`: the
 /// path itself, an ancestor or a path below it is registered (S1: a delta
 /// built without them is built again on the coordinator then).
-#[allow(dead_code)]
 fn meets_producer(producers: &Producers, output: &Path) -> bool {
     producers.get_indexed(output).is_some()
         || producers.ancestors.contains(output)

@@ -12,8 +12,6 @@
 //! of output paths stay coordinator-only and are written only by the
 //! merge.
 
-#![allow(dead_code)] // the worker side follows in the next commit
-
 use super::*;
 
 /// The shards of a [`SingleFlight`] memo (a power of two).
@@ -58,16 +56,6 @@ impl<K: std::hash::Hash + Eq + Clone, V> SingleFlight<K, V> {
     fn slot(&self, key: &K) -> Slot<V> {
         let mut shard = self.shard(key).lock().unwrap_or_else(|e| e.into_inner());
         Arc::clone(shard.entry(key.clone()).or_default())
-    }
-
-    /// The filled value of `key`, if any.
-    pub(super) fn get(&self, key: &K) -> Option<Arc<V>> {
-        let slot = {
-            let shard = self.shard(key).lock().unwrap_or_else(|e| e.into_inner());
-            Arc::clone(shard.get(key)?)
-        };
-        let value = slot.lock().unwrap_or_else(|e| e.into_inner());
-        value.clone()
     }
 
     /// The value of `key`, filled by `fill` unless it is already (`None`
@@ -1503,4 +1491,284 @@ impl Engine {
             None => Ok(()),
         }
     }
+}
+
+/// What the analysis worker made of a compute's commit (S1).
+pub(super) struct WorkerDelta {
+    pub(super) built: Built,
+    /// Why its commit may not merge ahead of its turn (the part of
+    /// Engine::commit_ahead_unsafe decided by the analysis result), if any.
+    pub(super) ahead_unsafe: Option<&'static str>,
+    /// BAZEL_RS_VERIFY_AHEAD: the outputs its commit may register.
+    pub(super) summary: Option<parallel::OutputSummary>,
+}
+
+/// The worker's delta, or why it has none.
+pub(super) enum Built {
+    Delta(TargetDelta),
+    /// Not built (this reason): the analysis result is kept for the
+    /// coordinator's build.
+    Fallback(&'static str),
+    /// Fell back during the build (this reason), which consumed the
+    /// analysis result: the coordinator computes it again.
+    Consumed(&'static str),
+}
+
+/// What a worker needs to build a target's delta after its compute.
+pub(super) struct DeltaInputs {
+    pub(super) view: SharedView,
+    pub(super) key: ConfiguredTargetKey,
+    pub(super) output_root: String,
+    pub(super) action_owner: String,
+    pub(super) main_ignored: Arc<IgnoredSubdirectories>,
+    pub(super) transitive: BTreeSet<String>,
+    pub(super) action_execution: Vec<crate::exec_groups::ActionExecution>,
+    pub(super) platforms: RemotePlatforms,
+    pub(super) class: u32,
+}
+
+/// An analysis result whose parts a delta took.
+fn spent_analysis() -> analysis::AnalysisResult {
+    analysis::AnalysisResult {
+        files: Vec::new(),
+        declared: Vec::new(),
+        actions: Vec::new(),
+        providers: BTreeMap::new(),
+        provider_keys: Vec::new(),
+        runfiles: Default::default(),
+    }
+}
+
+impl DeltaInputs {
+    /// Why a worker does not build the delta of `analyzed`: something its
+    /// commit registers on first need (the workspace status, a build-info
+    /// action resolved against it), a repo mapping manifest left to
+    /// resolve, a spawn whose execution platform is not analyzed yet.
+    fn unsafe_reason(
+        &self,
+        analyzed: &analysis::AnalysisResult,
+        precomputed: Option<&RunfilesPrecomputed>,
+    ) -> Option<&'static str> {
+        if self.view.semantic_only {
+            return Some("delta_semantic");
+        }
+        if Engine::workspace_status_needed(&analyzed.actions)
+            || analyzed
+                .files
+                .iter()
+                .any(crate::analysis_runtime::is_workspace_status_file)
+            || precomputed.is_some_and(|precomputed| {
+                precomputed
+                    .mapping
+                    .values()
+                    .flatten()
+                    .any(crate::analysis_runtime::is_workspace_status_file)
+            })
+        {
+            return Some("delta_workspace_status");
+        }
+        if analyzed
+            .actions
+            .iter()
+            .any(|action| action.repo_mapping.is_some() || action.build_info.is_some())
+        {
+            return Some("delta_repo_mapping_or_build_info");
+        }
+        if !self
+            .platforms
+            .all_final(&self.action_execution, &analyzed.actions)
+        {
+            return Some("delta_remote_platform");
+        }
+        None
+    }
+
+    /// Build the delta of `outcome` (a successful compute of the target at
+    /// plan index `index` from `snapshot`) on this worker.
+    pub(super) fn build(
+        self,
+        snapshot: &ComputeSnapshot,
+        outcome: &mut ComputeOutcome,
+        index: usize,
+        verify_summary: bool,
+    ) -> WorkerDelta {
+        let Ok(analyzed) = outcome.analyzed.as_ref() else {
+            unreachable!("internal error: a delta of a failed compute");
+        };
+        let rule = &snapshot.rule;
+        let ahead_unsafe = parallel::ahead_unsafe(
+            rule,
+            &self.output_root,
+            analyzed,
+            outcome.runfiles.as_ref(),
+            self.platforms
+                .all_final(&self.action_execution, &analyzed.actions),
+        );
+        let summary = verify_summary.then(|| parallel::OutputSummary::of(analyzed));
+        if let Some(reason) = self.unsafe_reason(analyzed, outcome.runfiles.as_ref()) {
+            return WorkerDelta {
+                built: Built::Fallback(reason),
+                ahead_unsafe,
+                summary,
+            };
+        }
+        let analyzed = std::mem::replace(&mut outcome.analyzed, Ok(spent_analysis()))
+            .unwrap_or_else(|_| unreachable!());
+        let reader = u32::try_from(index).unwrap_or(u32::MAX - 1);
+        let timer = crate::plan_timings::StageTimer::start(
+            crate::plan_timings::PlanStage::Delta,
+            index as u64,
+            self.class,
+        );
+        let mut builder = DeltaBuilder::new(self.view.view(reader), Hooks::Worker, reader);
+        let result = builder.custom_target(CustomCommit {
+            key: &self.key,
+            rule,
+            output_root: &self.output_root,
+            action_owner: &self.action_owner,
+            main_ignored: &self.main_ignored,
+            transitive: &self.transitive,
+            action_execution: &self.action_execution,
+            platforms: &self.platforms,
+            runfiles_options: &snapshot.runfiles,
+            analyzed,
+            precomputed: outcome.runfiles.take(),
+            outputs_checked: outcome.outputs_checked.take(),
+        });
+        let built = match builder.finish(result) {
+            Ok(delta) => Built::Delta(delta),
+            Err(reason) => Built::Consumed(reason),
+        };
+        timer.finish();
+        WorkerDelta {
+            built,
+            ahead_unsafe,
+            summary,
+        }
+    }
+}
+
+/// `BAZEL_RS_VERIFY_DELTA=1` (hidden, like BAZEL_RS_VERIFY_AHEAD): every
+/// delta a worker built is built again where it merges, on the
+/// coordinator, and the two compared ([`compare_deltas`]).
+pub(super) fn verify_delta() -> bool {
+    static VERIFY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VERIFY.get_or_init(|| {
+        // snapshot-unrecorded: a diagnostics check of the scheduling; it changes no result (it panics on a difference).
+        std::env::var_os("BAZEL_RS_VERIFY_DELTA").is_some_and(|value| value == "1")
+    })
+}
+
+impl Engine {
+    /// BAZEL_RS_VERIFY_DELTA: build `commit`'s delta here and now, as a
+    /// worker builds it (nothing registered on first need, lowered in the
+    /// build), without merging it.
+    pub(super) fn verify_build(
+        &self,
+        state: &ActionPlanning,
+        commit: CustomCommit<'_>,
+    ) -> TargetDelta {
+        let view = EngineView {
+            semantic_only: self.semantic_only(),
+            compact_repo_mapping: self.compact_repo_mapping,
+            repositories: &self.repositories,
+            artifacts: &state.artifact_index.shared,
+            reader: state.artifact_index.turn,
+            input_groups: &state.input_groups,
+            input_memos: &state.input_memos,
+            client_environment: &state.client_environment,
+            lowering: None,
+        };
+        let mut builder = DeltaBuilder::new(view, Hooks::Worker, state.producers.stamp);
+        let result = builder.custom_target(commit);
+        match builder.finish(result) {
+            Ok(delta) => delta,
+            Err(reason) => panic!(
+                "internal error: BAZEL_RS_VERIFY_DELTA: the delta built at the merge fell back ({reason})"
+            ),
+        }
+    }
+}
+
+/// A comparable rendering of one delta operation (BAZEL_RS_VERIFY_DELTA):
+/// values by content, the providers by their repr (a compute run again
+/// allocates its own values).
+fn rendered(op: &DeltaOp) -> String {
+    match op {
+        DeltaOp::Providers(providers, keys) => format!(
+            "providers {:?} {keys:?}",
+            providers
+                .iter()
+                .map(|(id, value)| (id, value.value().to_repr()))
+                .collect::<Vec<_>>()
+        ),
+        DeltaOp::Output(path, producer) => format!(
+            "output {} {} {:?} {:?}",
+            path.display(),
+            producer.owner,
+            producer.label,
+            producer.action.as_ref().map(|(id, _)| id)
+        ),
+        DeltaOp::Shared(registered) => format!("shared {registered}"),
+        DeltaOp::Artifact(file, artifact) => format!("artifact {file:?} {artifact:?}"),
+        DeltaOp::Declared {
+            key,
+            artifact,
+            replace,
+        } => format!("declared {key:?} {artifact:?} {replace}"),
+        DeltaOp::RunfilesInfo(runfiles) => format!(
+            "runfiles {:?} {:?}",
+            runfiles.files(),
+            runfiles
+                .files_to_run
+                .as_ref()
+                .map(|files_to_run| files_to_run.executable().cloned())
+        ),
+        DeltaOp::RunfilesNodes(nodes) => format!("runfiles nodes {nodes:?}"),
+        DeltaOp::Node(planned, sources) => format!(
+            "node {planned:?} {:?}",
+            sources.as_ref().map(|(id, sources)| (
+                id,
+                &sources.own,
+                sources.groups.iter().map(Arc::as_ptr).collect::<Vec<_>>()
+            ))
+        ),
+        DeltaOp::Lowering(_) => "lowering".to_owned(),
+        DeltaOp::ActionExecution(id, execution) => format!("execution {id} {execution:?}"),
+        DeltaOp::BuildInfoAction(id) => format!("build info {id}"),
+        DeltaOp::Dry(defaults) => format!("dry {defaults:?}"),
+        DeltaOp::ListedTreeAction => "listed".to_owned(),
+    }
+}
+
+/// BAZEL_RS_VERIFY_DELTA's comparison: the delta a worker built for `key`
+/// against the one built where it merges — every operation in order, the
+/// error and the memos used.
+pub(super) fn compare_deltas(key: &ConfiguredTargetKey, worker: &TargetDelta, here: &TargetDelta) {
+    let fail = |what: &str, worker: &dyn std::fmt::Debug, here: &dyn std::fmt::Debug| -> ! {
+        panic!(
+            "internal error: BAZEL_RS_VERIFY_DELTA: the delta of {} built on a worker differs in {what}:\nworker: {worker:#?}\nmerge:  {here:#?}",
+            key.label
+        )
+    };
+    if worker.ops.len() != here.ops.len() {
+        fail(
+            "its operations",
+            &worker.ops.iter().map(rendered).collect::<Vec<_>>(),
+            &here.ops.iter().map(rendered).collect::<Vec<_>>(),
+        );
+    }
+    for (position, (a, b)) in worker.ops.iter().zip(&here.ops).enumerate() {
+        let (a, b) = (rendered(a), rendered(b));
+        if a != b {
+            fail(&format!("operation {position}"), &a, &b);
+        }
+    }
+    if worker.error != here.error {
+        fail("its error", &worker.error, &here.error);
+    }
+    if worker.uses != here.uses {
+        fail("the memos it used", &worker.uses, &here.uses);
+    }
+    parallel::note_verified_delta();
 }

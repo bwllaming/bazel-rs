@@ -70,7 +70,7 @@ impl OutputSummary {
     /// Every output path the commit of `analyzed` may register (a superset:
     /// its actions' outputs, the runfiles support's executable, manifests
     /// and tree; Engine::plan_runfiles_support).
-    fn of(analyzed: &analysis::AnalysisResult) -> Self {
+    pub(super) fn of(analyzed: &analysis::AnalysisResult) -> Self {
         let mut paths: Vec<PathBuf> = analyzed
             .actions
             .iter()
@@ -757,6 +757,11 @@ struct Stats {
     /// stage and kind (`PERF-PARALLEL effects`: what a memo's first fill
     /// observed, obtained or printed off its turn).
     effects: std::sync::Mutex<BTreeMap<String, u64>>,
+    /// S1: where each Starlark commit's delta was built (`worker`,
+    /// `coordinator`) or why a worker's was not used (`PERF-PARALLEL delta`).
+    deltas: std::sync::Mutex<BTreeMap<&'static str, u64>>,
+    /// BAZEL_RS_VERIFY_DELTA comparisons.
+    verified_deltas: AtomicU64,
     /// Implementations computed at their turn, by rule class (µs, count).
     turn_classes: std::sync::Mutex<BTreeMap<String, (u64, u64)>>,
     /// Per walk size (≤16, ≤256, ≤4096, more entries): the walks' entries
@@ -774,6 +779,21 @@ fn fallback(reason: &'static str) {
     {
         *counts.entry(reason).or_default() += 1;
     }
+}
+
+/// S1: count one Starlark commit's delta by where it was built or why the
+/// worker's was not used (`PERF-PARALLEL delta`).
+pub(super) fn note_delta(reason: &'static str) {
+    if crate::plan_timings::enabled()
+        && let Ok(mut counts) = stats().deltas.lock()
+    {
+        *counts.entry(reason).or_default() += 1;
+    }
+}
+
+/// S1: one BAZEL_RS_VERIFY_DELTA comparison.
+pub(super) fn note_verified_delta() {
+    bump(&stats().verified_deltas, 1);
 }
 
 /// Plan B S0: count what `effects` held off the turn of a `stage`.
@@ -898,6 +918,21 @@ pub(super) fn report(workers: usize) {
         .map(|counts| counts.clone().into_iter().collect())
         .unwrap_or_default();
     crate::snapshot::diag::line_fmt(format_args!("PERF-PARALLEL effects {}", line(effects)));
+    let deltas = stats
+        .deltas
+        .lock()
+        .map(|counts| {
+            counts
+                .iter()
+                .map(|(reason, count)| ((*reason).to_owned(), *count))
+                .collect()
+        })
+        .unwrap_or_default();
+    crate::snapshot::diag::line_fmt(format_args!(
+        "PERF-PARALLEL delta {} verified={}",
+        line(deltas),
+        get(&stats.verified_deltas)
+    ));
     crate::snapshot::diag::line_fmt(format_args!(
         "PERF-PARALLEL shared total={} unmerged_owner={}",
         get(&stats.shared_total),
@@ -1125,9 +1160,13 @@ pub(super) fn verifying_ahead() -> bool {
 
 /// BAZEL_RS_VERIFY_AHEAD: the output summary to check a commit of
 /// `outcome` against.
-fn summary_to_verify(outcome: &ComputeOutcome) -> Option<OutputSummary> {
+fn summary_to_verify(outcome: &mut ComputeOutcome) -> Option<OutputSummary> {
     if !verify_ahead() {
         return None;
+    }
+    // S1: a worker that built the delta kept the summary.
+    if let Some(worker) = outcome.delta.as_mut() {
+        return worker.summary.take();
     }
     outcome.analyzed.as_ref().ok().map(OutputSummary::of)
 }
@@ -1146,6 +1185,16 @@ fn commit_ahead_enabled() -> bool {
     *ENABLED.get_or_init(|| {
         // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
         std::env::var_os("BAZEL_RS_NO_COMMIT_AHEAD").is_none()
+    })
+}
+
+/// `BAZEL_RS_NO_WORKER_DELTAS` (hidden): every Starlark commit's delta is
+/// built on the coordinator (S1; the output is the same either way).
+fn worker_deltas() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        // snapshot-unrecorded: a diagnostics switch choosing where deltas are built; the output is the same either way.
+        std::env::var_os("BAZEL_RS_NO_WORKER_DELTAS").is_none()
     })
 }
 
@@ -1679,7 +1728,8 @@ impl Engine {
         use crate::plan_timings::{PlanStage, StageTimer};
         let prepared = parts.join(snapshot);
         let timer = StageTimer::start(PlanStage::Commit, index as u64, class);
-        let committed = verify_registered(key, summary_to_verify(&outcome), || {
+        let mut outcome = outcome;
+        let committed = verify_registered(key, summary_to_verify(&mut outcome), || {
             self.commit_target(state, configured, rule, prepared, Some(outcome))
         });
         timer.finish();
@@ -1761,6 +1811,7 @@ impl Engine {
         transitive: BTreeSet<String>,
         index: usize,
         class: u32,
+        delta: Option<Box<delta::DeltaInputs>>,
     ) -> Pending {
         let (sender, receiver) = mpsc::sync_channel(1);
         let jitter = jitter_millis();
@@ -1773,6 +1824,7 @@ impl Engine {
             .as_ref()
             .map(|pool| pool.finished.0.clone());
         let compact_repo_mapping = self.compact_repo_mapping;
+        let verify_summary = verify_ahead();
         let job: Job = Box::new(move || {
             if cancelled
                 .as_ref()
@@ -1873,16 +1925,22 @@ impl Engine {
                         outcome.runfiles = precomputed;
                     }
                 }
+                // What its commit registers (unless it runs again inline).
+                let registers = match &outcome.analyzed {
+                    Ok(analyzed) => OutputSummary::of(analyzed),
+                    // Its commit reports the error and registers nothing.
+                    Err(_) => OutputSummary::default(),
+                };
+                // S1: its commit, as a delta merged by the coordinator.
+                if let Some(inputs) = delta
+                    && outcome.analyzed.is_ok()
+                {
+                    let built = inputs.build(&snapshot, &mut outcome, index, verify_summary);
+                    outcome.delta = Some(Box::new(built));
+                }
                 let elapsed = started.elapsed();
                 let (effects, sentinel) = isolation.finish();
-                // What its commit registers (unless it runs again inline).
-                *summary = (!sentinel).then(|| {
-                    Arc::new(match &outcome.analyzed {
-                        Ok(analyzed) => OutputSummary::of(analyzed),
-                        // Its commit reports the error and registers nothing.
-                        Err(_) => OutputSummary::default(),
-                    })
-                });
+                *summary = (!sentinel).then(|| Arc::new(registers));
                 WorkerOutcome {
                     snapshot,
                     outcome,
@@ -2329,11 +2387,12 @@ impl Engine {
         };
         let unsafe_reason = if worker.sentinel {
             Some("sentinel")
+        } else if let Some(built) = worker.outcome.delta.as_ref() {
+            // S1: decided on the worker, before its delta took the result.
+            built.ahead_unsafe
         } else {
             match worker.outcome.analyzed.as_ref() {
-                Ok(analyzed) => {
-                    self.commit_ahead_unsafe(state, &rule, &parts, analyzed, &worker.outcome)
-                }
+                Ok(analyzed) => self.commit_ahead_unsafe(&rule, &parts, analyzed, &worker.outcome),
                 Err(_) => Some("compute_failed"),
             }
         };
@@ -2386,7 +2445,8 @@ impl Engine {
         let producer_stamp = state.producers.set_stamp(Some(index));
         let started = std::time::Instant::now();
         let timer = StageTimer::start(PlanStage::Commit, index as u64, class);
-        let result = verify_registered(&key, summary_to_verify(&outcome), || {
+        let mut outcome = outcome;
+        let result = verify_registered(&key, summary_to_verify(&mut outcome), || {
             self.commit_target(
                 state,
                 configured,
@@ -2450,49 +2510,6 @@ impl Engine {
         Retry::Done(true)
     }
 
-    /// Whether every output the commit registers lies below the target's
-    /// package output directory (`<output root>/<package exec path>/`):
-    /// the "settled" rule keys on packages, so an output elsewhere — a
-    /// shareable output named from another package's path (a C++ library's
-    /// `_solib_<cpu>/` symlink, analysis_runtime::declare_shareable), or a
-    /// main-repository root package output under `external/` (the output
-    /// tree of `@r//p`) — commits at its turn, where the first owner in plan
-    /// order registers it.
-    fn outputs_in_package(
-        &self,
-        rule: &Rule,
-        parts: &PreparedParts,
-        analyzed: &analysis::AnalysisResult,
-    ) -> bool {
-        let package = Path::new(&parts.output_root).join(rule.label.package_exec_path());
-        let main_root = rule.label.repository.is_empty() && rule.label.package.is_empty();
-        let external = Path::new(&parts.output_root).join("external");
-        let inside = |path: &str| {
-            let path = Path::new(path);
-            path != package
-                && path.starts_with(&package)
-                && !(main_root && path.starts_with(&external))
-        };
-        let actions = analyzed
-            .actions
-            .iter()
-            .flat_map(|action| &action.outputs)
-            .all(|file| inside(&file.path));
-        let runfiles = analyzed
-            .runfiles
-            .files_to_run
-            .as_ref()
-            .is_none_or(|files_to_run| {
-                files_to_run
-                    .executable()
-                    .into_iter()
-                    .chain(files_to_run.repo_mapping_manifest())
-                    .chain(files_to_run.runfiles_manifest())
-                    .all(|file| inside(&file.path))
-            });
-        actions && runfiles
-    }
-
     /// Whether the remote platform of every spawn the commit plans is
     /// decided without a memo filled on first need: its execution platform
     /// is the default host platform, carries its resolved properties, or is
@@ -2522,85 +2539,22 @@ impl Engine {
         })
     }
 
-    /// Why a finished entry's commit may depend on the order (P4: no
-    /// transition allowlist, which loads its package; no workspace status,
-    /// registered on first need by whichever target comes first; its
-    /// runfiles support's pure part computed by the worker; no repo mapping
-    /// manifest or build-info action to resolve; every tool runfiles group
-    /// and shared input run its actions use already expanded): the first
-    /// condition that fails, `None` when its commit is a function of its
-    /// compute and its committed dependencies alone.
+    /// Why a finished entry's commit may depend on the order
+    /// ([`ahead_unsafe`] with its remote platforms decided now).
     fn commit_ahead_unsafe(
         &self,
-        state: &ActionPlanning,
         rule: &Rule,
         parts: &PreparedParts,
         analyzed: &analysis::AnalysisResult,
         outcome: &ComputeOutcome,
     ) -> Option<&'static str> {
-        if !self.outputs_in_package(rule, parts, analyzed) {
-            return Some("ineligible_outputs_elsewhere");
-        }
-        if !self.remote_platforms_known(parts, analyzed) {
-            return Some("ineligible_remote_platform");
-        }
-        if !rule
-            .custom
-            .as_ref()
-            .is_some_and(|custom| custom.transitions.is_empty())
-            || restricted_to_error(rule).is_err()
-        {
-            return Some("ineligible_transition_or_restricted");
-        }
-        if Self::workspace_status_needed(&analyzed.actions)
-            || analyzed
-                .files
-                .iter()
-                .any(crate::analysis_runtime::is_workspace_status_file)
-        {
-            return Some("ineligible_workspace_status");
-        }
-        let runfiles_ready = match &outcome.runfiles {
-            Some(precomputed) => !precomputed
-                .mapping
-                .values()
-                .flatten()
-                .any(crate::analysis_runtime::is_workspace_status_file),
-            // Without runfiles support (Engine::plan_runfiles_support
-            // plans nothing), else computed at the commit.
-            None => analyzed
-                .runfiles
-                .files_to_run
-                .as_ref()
-                .is_none_or(|files_to_run| {
-                    files_to_run.runfiles().is_none()
-                        || files_to_run.executable().is_none()
-                        || files_to_run.repo_mapping_manifest().is_none()
-                }),
-        };
-        if !runfiles_ready {
-            return Some("ineligible_runfiles");
-        }
-        if analyzed
-            .actions
-            .iter()
-            .any(|action| action.repo_mapping.is_some() || action.build_info.is_some())
-        {
-            return Some("ineligible_repo_mapping_or_build_info");
-        }
-        let memoized = analyzed.actions.iter().all(|action| {
-            action
-                .runfiles_trees
-                .iter()
-                .all(|tree| state.input_groups.get(&tree.identity()).is_some())
-                && action.input_memo.as_ref().is_none_or(|(_, files)| {
-                    state
-                        .input_memos
-                        .get(&(Arc::as_ptr(files) as usize))
-                        .is_some()
-                })
-        });
-        (!memoized).then_some("ineligible_first_fill")
+        ahead_unsafe(
+            rule,
+            &parts.output_root,
+            analyzed,
+            outcome.runfiles.as_ref(),
+            self.remote_platforms_known(parts, analyzed),
+        )
     }
 
     /// BAZEL_RS_VERIFY_AHEAD=1 for a commit ahead of its turn: its prepare
@@ -2645,6 +2599,32 @@ impl Engine {
         // Compared again with the prepare its turn repeats (counted there,
         // Self::verify_ahead).
         Some((again_parts, again_snapshot))
+    }
+
+    /// S1: what the analysis worker needs to build the delta of the target
+    /// prepared as `parts` (none for cquery's semantic commits and under an
+    /// aquery capture, whose commits stay on the coordinator).
+    fn delta_inputs(
+        &self,
+        state: &ActionPlanning,
+        rule: &Rule,
+        parts: &PreparedParts,
+        class: u32,
+    ) -> Option<Box<delta::DeltaInputs>> {
+        if self.semantic_only() || self.aquery_capture.is_some() || !worker_deltas() {
+            return None;
+        }
+        Some(Box::new(delta::DeltaInputs {
+            view: delta::SharedView::new(self, state),
+            key: parts.key.clone(),
+            output_root: parts.output_root.clone(),
+            action_owner: parts.action_owner.clone(),
+            main_ignored: Arc::clone(&parts.main_ignored),
+            transitive: parts.transitive.clone(),
+            action_execution: parts.action_execution.clone(),
+            platforms: self.remote_platforms(rule, parts.config, &parts.action_execution),
+            class,
+        }))
     }
 
     /// Prepare `key` ahead of its turn and dispatch its compute; `None`
@@ -2716,7 +2696,9 @@ impl Engine {
                     bump(&stats().ahead, 1);
                     note_effects("prepare", &effects);
                     self.ensure_analysis_pool();
-                    let pending = self.dispatch(snapshot, parts.transitive.clone(), index, class);
+                    let delta = self.delta_inputs(state, rule, &parts, class);
+                    let pending =
+                        self.dispatch(snapshot, parts.transitive.clone(), index, class, delta);
                     Some(Ahead::Computing {
                         parts: Box::new(parts),
                         effects,
@@ -2736,4 +2718,109 @@ impl Engine {
             },
         }
     }
+}
+
+/// Whether every output the commit registers lies below the target's
+/// package output directory (`<output root>/<package exec path>/`): the
+/// "settled" rule keys on packages, so an output elsewhere — a shareable
+/// output named from another package's path (a C++ library's
+/// `_solib_<cpu>/` symlink, analysis_runtime::declare_shareable), or a
+/// main-repository root package output under `external/` (the output tree
+/// of `@r//p`) — commits at its turn, where the first owner in plan order
+/// registers it.
+fn outputs_in_package(rule: &Rule, output_root: &str, analyzed: &analysis::AnalysisResult) -> bool {
+    let package = Path::new(output_root).join(rule.label.package_exec_path());
+    let main_root = rule.label.repository.is_empty() && rule.label.package.is_empty();
+    let external = Path::new(output_root).join("external");
+    let inside = |path: &str| {
+        let path = Path::new(path);
+        path != package && path.starts_with(&package) && !(main_root && path.starts_with(&external))
+    };
+    let actions = analyzed
+        .actions
+        .iter()
+        .flat_map(|action| &action.outputs)
+        .all(|file| inside(&file.path));
+    let runfiles = analyzed
+        .runfiles
+        .files_to_run
+        .as_ref()
+        .is_none_or(|files_to_run| {
+            files_to_run
+                .executable()
+                .into_iter()
+                .chain(files_to_run.repo_mapping_manifest())
+                .chain(files_to_run.runfiles_manifest())
+                .all(|file| inside(&file.path))
+        });
+    actions && runfiles
+}
+
+/// Why a finished entry's commit may depend on the order (P4: no
+/// transition allowlist, which loads its package; no workspace status,
+/// registered on first need by whichever target comes first; its runfiles
+/// support's pure part computed by the worker; no repo mapping manifest or
+/// build-info action to resolve; every remote platform decided,
+/// `platforms_known`): the first condition that fails, `None` when its
+/// commit is a function of its compute and its committed dependencies
+/// alone. (The tool runfiles groups and shared input runs are memoized
+/// single-flight since S1: whoever fills them first fills the same value.)
+pub(super) fn ahead_unsafe(
+    rule: &Rule,
+    output_root: &str,
+    analyzed: &analysis::AnalysisResult,
+    precomputed: Option<&RunfilesPrecomputed>,
+    platforms_known: bool,
+) -> Option<&'static str> {
+    if !outputs_in_package(rule, output_root, analyzed) {
+        return Some("ineligible_outputs_elsewhere");
+    }
+    if !platforms_known {
+        return Some("ineligible_remote_platform");
+    }
+    if !rule
+        .custom
+        .as_ref()
+        .is_some_and(|custom| custom.transitions.is_empty())
+        || restricted_to_error(rule).is_err()
+    {
+        return Some("ineligible_transition_or_restricted");
+    }
+    if Engine::workspace_status_needed(&analyzed.actions)
+        || analyzed
+            .files
+            .iter()
+            .any(crate::analysis_runtime::is_workspace_status_file)
+    {
+        return Some("ineligible_workspace_status");
+    }
+    let runfiles_ready = match precomputed {
+        Some(precomputed) => !precomputed
+            .mapping
+            .values()
+            .flatten()
+            .any(crate::analysis_runtime::is_workspace_status_file),
+        // Without runfiles support (Engine::plan_runfiles_support plans
+        // nothing), else computed at the commit.
+        None => analyzed
+            .runfiles
+            .files_to_run
+            .as_ref()
+            .is_none_or(|files_to_run| {
+                files_to_run.runfiles().is_none()
+                    || files_to_run.executable().is_none()
+                    || files_to_run.repo_mapping_manifest().is_none()
+            }),
+    };
+    if !runfiles_ready {
+        return Some("ineligible_runfiles");
+    }
+    if analyzed
+        .actions
+        .iter()
+        .any(|action| action.repo_mapping.is_some() || action.build_info.is_some())
+    {
+        return Some("ineligible_repo_mapping_or_build_info");
+    }
+    None
 }

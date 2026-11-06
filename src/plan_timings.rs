@@ -55,6 +55,10 @@ pub enum PlanStage {
     /// One `config_conditions` call (select() key analysis) driven from
     /// phase 1; inside an Analyze step, likewise report-only.
     ConfigConditions,
+    /// S1: a Starlark target's commit delta built on the analysis worker
+    /// that computed it (off the coordinator; report-only, its merge is
+    /// the target's `commit`).
+    Delta,
 }
 
 impl PlanStage {
@@ -67,6 +71,7 @@ impl PlanStage {
             PlanStage::Analyze => "analyze",
             PlanStage::PendingFlush => "pending_flush",
             PlanStage::ConfigConditions => "config_conditions",
+            PlanStage::Delta => "delta",
         }
     }
 }
@@ -454,6 +459,7 @@ pub fn report(labels: &[String], edges: &HashMap<u64, Vec<u64>>) {
         PlanStage::Analyze,
         PlanStage::PendingFlush,
         PlanStage::ConfigConditions,
+        PlanStage::Delta,
     ] {
         let (us, count) = stage_totals.get(&stage).copied().unwrap_or((0, 0));
         crate::snapshot::diag::line_fmt(format_args!(

@@ -165,7 +165,9 @@ fn library_workspace(ws: &Workspace) {
 
 /// The runs to compare with the sequential engine: thread counts, jitter.
 /// The third element: BAZEL_RS_VERIFY_AHEAD=1 (every prepare ahead of its
-/// turn is repeated at the turn and compared).
+/// turn is repeated at the turn and compared) and BAZEL_RS_VERIFY_DELTA=1
+/// (every commit delta a worker built is built again where it merges and
+/// compared).
 const RUNS: [(usize, u64, bool); 6] = [
     (2, 0, false),
     (8, 0, false),
@@ -200,6 +202,7 @@ fn assert_like_sequential(ws: &Workspace, env: &[(&str, &str)], args: &[&str]) -
         }
         if verify {
             run_env.push(("BAZEL_RS_VERIFY_AHEAD", "1"));
+            run_env.push(("BAZEL_RS_VERIFY_DELTA", "1"));
         }
         let threads_arg = format!("--loading_phase_threads={threads}");
         let mut run_args = vec![args[0], threads_arg.as_str()];
@@ -255,10 +258,26 @@ fn action_graph_and_prints_are_the_sequential_ones() {
             ("BAZEL_RS_TIMING", "1"),
             ("BAZEL_RS_SNAPSHOT", "off"),
             ("BAZEL_RS_VERIFY_AHEAD", "1"),
+            ("BAZEL_RS_VERIFY_DELTA", "1"),
         ],
         &["build", "--loading_phase_threads=8", "--nobuild", "//..."],
     );
     let timed = stderr(&timed);
+    // S1: workers built commit deltas, each built again where it merged
+    // and compared (BAZEL_RS_VERIFY_DELTA).
+    let delta = timed
+        .lines()
+        .find(|line| line.starts_with("PERF-PARALLEL delta "))
+        .unwrap_or_else(|| panic!("no PERF-PARALLEL delta line: {timed}"));
+    let field = |name: &str| -> u64 {
+        delta
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix(name))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0)
+    };
+    assert!(field("worker=") > 0, "{delta}");
+    assert_eq!(field("verified="), field("worker="), "{delta}");
     let line = timed
         .lines()
         .find(|line| line.starts_with("PERF-PARALLEL "))
@@ -1256,10 +1275,26 @@ fn verify_ahead_checks_native_rules_register_no_outputs() {
             ("BAZEL_RS_TIMING", "1"),
             ("BAZEL_RS_SNAPSHOT", "off"),
             ("BAZEL_RS_VERIFY_AHEAD", "1"),
+            ("BAZEL_RS_VERIFY_DELTA", "1"),
         ],
         &["build", "--loading_phase_threads=8", "--nobuild", "//..."],
     );
     let timed = stderr(&timed);
+    // S1: workers built commit deltas, each built again where it merged
+    // and compared (BAZEL_RS_VERIFY_DELTA).
+    let delta = timed
+        .lines()
+        .find(|line| line.starts_with("PERF-PARALLEL delta "))
+        .unwrap_or_else(|| panic!("no PERF-PARALLEL delta line: {timed}"));
+    let field = |name: &str| -> u64 {
+        delta
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix(name))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0)
+    };
+    assert!(field("worker=") > 0, "{delta}");
+    assert_eq!(field("verified="), field("worker="), "{delta}");
     let field = |name: &str| -> u64 {
         timed
             .lines()
