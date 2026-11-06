@@ -805,7 +805,7 @@ own compute, the coordinator commits finished entries ahead of their turn
 - *Bounded*: the segments waiting for their turn hold at most 16,384 nodes
   and lowerings (`BAZEL_RS_COMMITTED_LIMIT`), besides the 4,096-entry
   horizon.
-- *Safe commit* (`commit_ahead_safe`): the compute succeeded without a
+- *Safe commit* (`commit_ahead_unsafe` finds nothing): the compute succeeded without a
   sentinel; no transition allowlist (it loads its package), no workspace
   status needed (registered on first need), the runfiles support's pure part
   computed by the worker, no repo mapping manifest or build-info action left

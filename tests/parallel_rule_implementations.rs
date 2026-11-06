@@ -1340,3 +1340,63 @@ fn outputs_checked_on_workers_are_observed_by_the_snapshot() {
     assert!(!changed.status.success(), "{text}");
     assert!(text.contains("crosses a package boundary"), "{text}");
 }
+
+/// Plan B S0 counters (`BAZEL_RS_TIMING=1`): every planned entry is counted
+/// once under the reason it ran or committed where it did (`PERF-PARALLEL
+/// fallback`), held off-turn effects by stage and kind (`effects`), and
+/// shared actions with the owners off their turn (`shared`).
+#[test]
+fn plan_b_counters_account_for_every_entry() {
+    let ws = Workspace::new();
+    commit_ahead_workspace(&ws);
+    let timed = ws.run_env(
+        &[("BAZEL_RS_TIMING", "1"), ("BAZEL_RS_SNAPSHOT", "off")],
+        &[
+            "build",
+            "--loading_phase_threads=8",
+            "--nobuild",
+            P4_HOST,
+            "//...",
+        ],
+    );
+    let text = stderr(&timed);
+    assert!(timed.status.success(), "{text}");
+    let line = |prefix: &str| {
+        text.lines()
+            .find(|line| line.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no {prefix}: {text}"))
+            .to_owned()
+    };
+    let counts = |line: &str| -> Vec<(String, u64)> {
+        line.split_whitespace()
+            .skip(2)
+            .filter_map(|field| field.split_once('='))
+            .map(|(name, value)| (name.to_owned(), value.parse().unwrap()))
+            .collect()
+    };
+    let fallbacks = counts(&line("PERF-PARALLEL fallback"));
+    let total: u64 = fallbacks.iter().map(|(_, count)| count).sum();
+    let configured: u64 = text
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("INFO: Analyzed ")?
+                .split(", ")
+                .find_map(|part| part.strip_suffix(" targets configured"))
+                .or_else(|| {
+                    line.split(", ")
+                        .find_map(|part| part.split(" targets configured").next())
+                        .and_then(|part| part.rsplit(' ').next())
+                })
+                .and_then(|value| value.trim_end_matches(')').parse().ok())
+        })
+        .unwrap_or_else(|| panic!("no configured count: {text}"));
+    assert_eq!(total, configured, "{fallbacks:?}\n{text}");
+    let shared = counts(&line("PERF-PARALLEL shared"));
+    assert!(
+        shared
+            .iter()
+            .any(|(name, count)| name == "total" && *count >= 1),
+        "the shared pair: {shared:?}"
+    );
+    let _ = line("PERF-PARALLEL effects");
+}

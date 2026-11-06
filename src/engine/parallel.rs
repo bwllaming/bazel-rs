@@ -536,6 +536,13 @@ enum Classified {
 /// The pipeline state of one plan_targets walk.
 #[derive(Default)]
 struct Pipeline {
+    /// Plan B S0: why the last try to commit an entry ahead of its turn
+    /// failed ([`fallback`] at its turn).
+    last_try: HashMap<usize, &'static str>,
+    /// Entries classified never ahead (counted at their classification).
+    classified_never: std::collections::HashSet<usize>,
+    /// Entries whose prepare ahead aborted.
+    prepare_aborted: std::collections::HashSet<usize>,
     ahead: HashMap<usize, Ahead>,
     /// Entries before this index were classified.
     scanned: usize,
@@ -741,6 +748,15 @@ struct Stats {
     /// BAZEL_RS_VERIFY_AHEAD: commits whose registered outputs were checked
     /// against their compute's output summary.
     verified_outputs: AtomicU64,
+    /// Plan B S0: the entries run on the coordinator (or committed at their
+    /// turn), by the reason (`PERF-PARALLEL fallback`).
+    fallback: std::sync::Mutex<BTreeMap<&'static str, u64>>,
+    shared_total: AtomicU64,
+    shared_unmerged: AtomicU64,
+    /// Plan B S0: off-turn work whose held effects reached the turn, by the
+    /// stage and kind (`PERF-PARALLEL effects`: what a memo's first fill
+    /// observed, obtained or printed off its turn).
+    effects: std::sync::Mutex<BTreeMap<String, u64>>,
     /// Implementations computed at their turn, by rule class (µs, count).
     turn_classes: std::sync::Mutex<BTreeMap<String, (u64, u64)>>,
     /// Per walk size (≤16, ≤256, ≤4096, more entries): the walks' entries
@@ -750,6 +766,47 @@ struct Stats {
 }
 
 use std::sync::atomic::AtomicU64;
+
+/// Plan B S0: count one entry for a fallback `reason`.
+fn fallback(reason: &'static str) {
+    if crate::plan_timings::enabled()
+        && let Ok(mut counts) = stats().fallback.lock()
+    {
+        *counts.entry(reason).or_default() += 1;
+    }
+}
+
+/// Plan B S0: count what `effects` held off the turn of a `stage`.
+fn note_effects(stage: &str, effects: &Effects) {
+    if !crate::plan_timings::enabled() {
+        return;
+    }
+    let Ok(mut counts) = stats().effects.lock() else {
+        return;
+    };
+    for (kind, held) in [
+        ("observations", !effects.observations.is_empty()),
+        ("roots", !effects.roots.is_empty()),
+        ("console", !effects.console.is_empty()),
+    ] {
+        if held {
+            *counts.entry(format!("{stage}_{kind}")).or_default() += 1;
+        }
+    }
+}
+
+/// Plan B S0: a shared action whose first owner (or the registering
+/// target) is off its turn: committed ahead of it, not merged in plan order
+/// yet (`PERF-PARALLEL shared`).
+pub(super) fn note_shared(registering: u32, owner: u32, turn: u32) {
+    if !crate::plan_timings::enabled() {
+        return;
+    }
+    bump(&stats().shared_total, 1);
+    if turn != u32::MAX && (registering > turn || owner > turn) {
+        bump(&stats().shared_unmerged, 1);
+    }
+}
 
 fn stats() -> &'static Stats {
     static STATS: std::sync::OnceLock<Stats> = std::sync::OnceLock::new();
@@ -816,6 +873,35 @@ pub(super) fn report(workers: usize) {
         get(&stats.committed_platform_late),
         get(&stats.verified_turn),
         get(&stats.verified_outputs)
+    ));
+    let line = |counts: Vec<(String, u64)>| {
+        counts
+            .into_iter()
+            .map(|(reason, count)| format!("{reason}={count}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let fallbacks = stats
+        .fallback
+        .lock()
+        .map(|counts| {
+            counts
+                .iter()
+                .map(|(reason, count)| ((*reason).to_owned(), *count))
+                .collect()
+        })
+        .unwrap_or_default();
+    crate::snapshot::diag::line_fmt(format_args!("PERF-PARALLEL fallback {}", line(fallbacks)));
+    let effects = stats
+        .effects
+        .lock()
+        .map(|counts| counts.clone().into_iter().collect())
+        .unwrap_or_default();
+    crate::snapshot::diag::line_fmt(format_args!("PERF-PARALLEL effects {}", line(effects)));
+    crate::snapshot::diag::line_fmt(format_args!(
+        "PERF-PARALLEL shared total={} unmerged_owner={}",
+        get(&stats.shared_total),
+        get(&stats.shared_unmerged)
     ));
     let mut classes: Vec<(String, (u64, u64))> = stats
         .turn_classes
@@ -1188,6 +1274,7 @@ impl Engine {
         state.delegated_keys.clear();
         state.artifact_index.walk_done();
         state.producers.set_stamp(None);
+        state.producers.turn = u32::MAX;
         if result.is_err() {
             // The build stops here: the computes still queued for turns
             // that never come are skipped, the running ones joined.
@@ -1217,14 +1304,22 @@ impl Engine {
             // Registrations made ahead of their turn become visible at it.
             state.artifact_index.at_turn(index);
             state.producers.set_stamp(Some(index));
+            state.producers.turn = state.producers.stamp;
             crate::progress::analysis_configured(state.done);
             self.flush_delegations(state);
             self.pipeline_wake(state, pipe);
             self.commit_finished_ahead(state, configured, pipe, index, false);
+            let classified = index < pipe.scanned;
             let ahead = pipe
                 .ahead
                 .remove(&index)
                 .or_else(|| pipe.committed.remove(&index).map(Ahead::Committed));
+            let was_ready = pipe.ready.contains(&index);
+            if crate::plan_timings::enabled() {
+                self.note_turn_fallback(
+                    pipe, index, &key, &rule, classified, was_ready, &ahead, configured, state,
+                );
+            }
             pipe.ready.remove(&index);
             pipe.finished.remove(&index);
             for effects in pipe.stashed.remove(&index).unwrap_or_default() {
@@ -1251,6 +1346,45 @@ impl Engine {
         }
         self.flush_delegations(state);
         Ok(())
+    }
+
+    /// Plan B S0: why entry `index` runs (or commits) at its turn.
+    #[allow(clippy::too_many_arguments)]
+    fn note_turn_fallback(
+        &self,
+        pipe: &Pipeline,
+        index: usize,
+        key: &ConfiguredTargetKey,
+        rule: &Rule,
+        classified: bool,
+        was_ready: bool,
+        ahead: &Option<Ahead>,
+        configured: &ConfiguredNodes,
+        state: &ActionPlanning,
+    ) {
+        let reason = match ahead {
+            Some(Ahead::Committed(_)) => "committed_ahead",
+            Some(Ahead::Failed { .. }) => "prepare_failed",
+            Some(Ahead::Computing { .. }) if !self.commits_ahead(state) => "commit_ahead_off",
+            Some(Ahead::Computing { .. }) => pipe.last_try.get(&index).copied().unwrap_or("late"),
+            None if pipe.classified_never.contains(&index) => return,
+            None if !classified => {
+                if !matches!(rule.kind, RuleKind::Custom) {
+                    "native_unclassified"
+                } else if configured
+                    .get(key)
+                    .is_some_and(|node| node.incompatible.is_some())
+                {
+                    "incompatible_unclassified"
+                } else {
+                    "unclassified"
+                }
+            }
+            None if pipe.prepare_aborted.contains(&index) => "prepare_aborted",
+            None if was_ready => "ready_no_slot",
+            None => "dependency_late",
+        };
+        fallback(reason);
     }
 
     /// Wake the entries waiting for the delegations flushed since.
@@ -1519,6 +1653,7 @@ impl Engine {
             timer.finish();
             recomputed
         } else {
+            note_effects("compute", &effects);
             effects.apply(self, true);
             (snapshot, outcome)
         };
@@ -1829,7 +1964,10 @@ impl Engine {
                     && matches!(rule.kind, RuleKind::Custom);
                 pipe.note_pending(index, &key.label, barrier, registers_no_output(&rule));
                 match classified {
-                    Classified::Never => bump(&stats().never, 1),
+                    Classified::Never => {
+                        bump(&stats().never, 1);
+                        pipe.classified_never.insert(index);
+                    }
                     Classified::Waiting(keys) => Self::wait_or_ready(state, pipe, index, keys),
                     Classified::Ready => {
                         pipe.ready.insert(index);
@@ -1852,10 +1990,13 @@ impl Engine {
                 continue;
             };
             let mut stash = Vec::new();
-            if let Some(ahead) =
-                self.prepare_ahead(state, configured, &key, &rule, index, &mut stash)
-            {
-                pipe.ahead.insert(index, ahead);
+            match self.prepare_ahead(state, configured, &key, &rule, index, &mut stash) {
+                Some(ahead) => {
+                    pipe.ahead.insert(index, ahead);
+                }
+                None => {
+                    pipe.prepare_aborted.insert(index);
+                }
             }
             if !stash.is_empty() {
                 pipe.stashed.entry(index).or_default().extend(stash);
@@ -1876,20 +2017,31 @@ impl Engine {
         rule: &Arc<Rule>,
         stash: &mut Vec<Effects>,
     ) -> Classified {
-        let Some(custom) = rule.custom.as_ref() else {
-            return Classified::Never;
+        let never = |reason: &'static str| {
+            fallback(reason);
+            Classified::Never
         };
-        if !matches!(rule.kind, RuleKind::Custom)
-            || configured
-                .get(key)
-                .is_none_or(|node| node.incompatible.is_some())
-            || custom
-                .schema
-                .values()
-                .any(|spec| !spec.declaration.aspects.is_empty())
-            || (self.keep_going && self.keep_going_state.dependency_failed(key))
+        let Some(custom) = rule.custom.as_ref() else {
+            return never("native");
+        };
+        if !matches!(rule.kind, RuleKind::Custom) {
+            return never("native");
+        }
+        if configured
+            .get(key)
+            .is_none_or(|node| node.incompatible.is_some())
         {
-            return Classified::Never;
+            return never("incompatible");
+        }
+        if custom
+            .schema
+            .values()
+            .any(|spec| !spec.declaration.aspects.is_empty())
+        {
+            return never("attribute_aspects");
+        }
+        if self.keep_going && self.keep_going_state.dependency_failed(key) {
+            return never("keep_going");
         }
         // Lookups only (every dependency is analyzed): their tracker events
         // are the prepare's own and recur there; nothing else is written.
@@ -1912,6 +2064,7 @@ impl Engine {
             if !effects.console.is_empty() {
                 note_lost(effects.console.len());
             }
+            note_effects("classify", &effects);
             stash.push(effects);
         }
         match keys {
@@ -1926,7 +2079,7 @@ impl Engine {
                     Classified::Waiting(missing)
                 }
             }
-            _ => Classified::Never,
+            _ => never("requirements"),
         }
     }
 
@@ -2088,6 +2241,7 @@ impl Engine {
                 // prepared again at its turn if a commit resolves it before
                 // (Self::pipelined_turn_body): it commits at its turn.
                 if !platform_known {
+                    pipe.last_try.insert(index, "platform_unknown");
                     return Retry::Done(false);
                 }
             }
@@ -2095,21 +2249,33 @@ impl Engine {
         }
         if pipe.barriers.first().is_some_and(|first| *first < index) {
             bump(&stats().ahead_barrier, 1);
+            pipe.last_try.insert(index, "unsettled_barrier");
             return Retry::Later;
         }
         // What waits for its turn is bounded (nodes and lowerings of the
         // entries committed ahead), like the lowering queue.
         if pipe.committed_entries >= committed_limit() {
             bump(&stats().ahead_budget, 1);
+            pipe.last_try.insert(index, "budget");
             return Retry::Later;
         }
         let Some(summary) = pipe.known.get(&index).cloned() else {
             // Its outputs are not known (a sentinel): at its turn.
+            pipe.last_try.insert(index, "outputs_unknown");
             return Retry::Done(false);
         };
         if let Some(reason) = pipe.unsettled(index, &key.label, &summary) {
             bump(&stats().ahead_package, 1);
             bump(&stats().unsettled[reason.min(3)], 1);
+            pipe.last_try.insert(
+                index,
+                [
+                    "unsettled_package",
+                    "unsettled_enclosing",
+                    "unsettled_enclosed",
+                    "unsettled_outputs",
+                ][reason.min(3)],
+            );
             return Retry::Later;
         }
         let Some(Ahead::Computing {
@@ -2161,12 +2327,20 @@ impl Engine {
                 return Retry::Done(false);
             }
         };
-        let eligible = !worker.sentinel
-            && worker.outcome.analyzed.as_ref().is_ok_and(|analyzed| {
-                self.commit_ahead_safe(state, &rule, &parts, analyzed, &worker.outcome)
-            });
-        if !eligible {
+        let unsafe_reason = if worker.sentinel {
+            Some("sentinel")
+        } else {
+            match worker.outcome.analyzed.as_ref() {
+                Ok(analyzed) => {
+                    self.commit_ahead_unsafe(state, &rule, &parts, analyzed, &worker.outcome)
+                }
+                Err(_) => Some("compute_failed"),
+            }
+        };
+        let eligible = unsafe_reason.is_none();
+        if let Some(reason) = unsafe_reason {
             bump(&stats().ahead_ineligible, 1);
+            pipe.last_try.insert(index, reason);
         }
         let verified = if eligible && verify_ahead() {
             self.verify_commit_ahead(
@@ -2226,6 +2400,8 @@ impl Engine {
         state.artifact_index.restore_stamp(stamp);
         state.producers.restore_stamp(producer_stamp);
         let (mut commit_effects, sentinel) = isolation.finish();
+        note_effects("compute", &compute_effects);
+        note_effects("commit_ahead", &commit_effects);
         let commit_track = self.track_defer_finish();
         self.ahead = false;
         let aborted = std::mem::take(&mut self.ahead_aborted);
@@ -2234,7 +2410,7 @@ impl Engine {
         pipe.committed_entries += segment.entries();
         let injected = test_abort_ahead();
         let result = if sentinel || aborted || injected {
-            // Excluded by commit_ahead_safe: its commit fetches, analyzes
+            // Excluded by commit_ahead_unsafe: its commit fetches, analyzes
             // and loads nothing.
             debug_assert!(
                 injected,
@@ -2346,65 +2522,84 @@ impl Engine {
         })
     }
 
-    /// Whether a finished entry's commit is a function of its compute and
-    /// its committed dependencies alone (P4): no transition allowlist
-    /// (which loads its package), no workspace status (registered on first
-    /// need, by whichever target comes first), its runfiles support's pure
-    /// part computed by the worker, no repo mapping manifest or build-info
-    /// action to resolve (they read repository mappings and the status),
-    /// and every tool runfiles group and shared input run its actions use
-    /// already expanded (memoized on first use).
-    fn commit_ahead_safe(
+    /// Why a finished entry's commit may depend on the order (P4: no
+    /// transition allowlist, which loads its package; no workspace status,
+    /// registered on first need by whichever target comes first; its
+    /// runfiles support's pure part computed by the worker; no repo mapping
+    /// manifest or build-info action to resolve; every tool runfiles group
+    /// and shared input run its actions use already expanded): the first
+    /// condition that fails, `None` when its commit is a function of its
+    /// compute and its committed dependencies alone.
+    fn commit_ahead_unsafe(
         &self,
         state: &ActionPlanning,
         rule: &Rule,
         parts: &PreparedParts,
         analyzed: &analysis::AnalysisResult,
         outcome: &ComputeOutcome,
-    ) -> bool {
-        self.outputs_in_package(rule, parts, analyzed)
-            && self.remote_platforms_known(parts, analyzed)
-            && rule
-                .custom
-                .as_ref()
-                .is_some_and(|custom| custom.transitions.is_empty())
-            && restricted_to_error(rule).is_ok()
-            && !Self::workspace_status_needed(&analyzed.actions)
-            && !analyzed
+    ) -> Option<&'static str> {
+        if !self.outputs_in_package(rule, parts, analyzed) {
+            return Some("ineligible_outputs_elsewhere");
+        }
+        if !self.remote_platforms_known(parts, analyzed) {
+            return Some("ineligible_remote_platform");
+        }
+        if !rule
+            .custom
+            .as_ref()
+            .is_some_and(|custom| custom.transitions.is_empty())
+            || restricted_to_error(rule).is_err()
+        {
+            return Some("ineligible_transition_or_restricted");
+        }
+        if Self::workspace_status_needed(&analyzed.actions)
+            || analyzed
                 .files
                 .iter()
                 .any(crate::analysis_runtime::is_workspace_status_file)
-            && match &outcome.runfiles {
-                Some(precomputed) => !precomputed
-                    .mapping
-                    .values()
-                    .flatten()
-                    .any(crate::analysis_runtime::is_workspace_status_file),
-                // Without runfiles support (Engine::plan_runfiles_support
-                // plans nothing), else computed at the commit.
-                None => analyzed
-                    .runfiles
-                    .files_to_run
-                    .as_ref()
-                    .is_none_or(|files_to_run| {
-                        files_to_run.runfiles().is_none()
-                            || files_to_run.executable().is_none()
-                            || files_to_run.repo_mapping_manifest().is_none()
-                    }),
-            }
-            && analyzed.actions.iter().all(|action| {
-                action.repo_mapping.is_none()
-                    && action.build_info.is_none()
-                    && action
-                        .runfiles_trees
-                        .iter()
-                        .all(|tree| state.input_groups.contains_key(&tree.identity()))
-                    && action.input_memo.as_ref().is_none_or(|(_, files)| {
-                        state
-                            .input_memos
-                            .contains_key(&(Arc::as_ptr(files) as usize))
-                    })
-            })
+        {
+            return Some("ineligible_workspace_status");
+        }
+        let runfiles_ready = match &outcome.runfiles {
+            Some(precomputed) => !precomputed
+                .mapping
+                .values()
+                .flatten()
+                .any(crate::analysis_runtime::is_workspace_status_file),
+            // Without runfiles support (Engine::plan_runfiles_support
+            // plans nothing), else computed at the commit.
+            None => analyzed
+                .runfiles
+                .files_to_run
+                .as_ref()
+                .is_none_or(|files_to_run| {
+                    files_to_run.runfiles().is_none()
+                        || files_to_run.executable().is_none()
+                        || files_to_run.repo_mapping_manifest().is_none()
+                }),
+        };
+        if !runfiles_ready {
+            return Some("ineligible_runfiles");
+        }
+        if analyzed
+            .actions
+            .iter()
+            .any(|action| action.repo_mapping.is_some() || action.build_info.is_some())
+        {
+            return Some("ineligible_repo_mapping_or_build_info");
+        }
+        let memoized = analyzed.actions.iter().all(|action| {
+            action
+                .runfiles_trees
+                .iter()
+                .all(|tree| state.input_groups.contains_key(&tree.identity()))
+                && action.input_memo.as_ref().is_none_or(|(_, files)| {
+                    state
+                        .input_memos
+                        .contains_key(&(Arc::as_ptr(files) as usize))
+                })
+        });
+        (!memoized).then_some("ineligible_first_fill")
     }
 
     /// BAZEL_RS_VERIFY_AHEAD=1 for a commit ahead of its turn: its prepare
@@ -2498,6 +2693,7 @@ impl Engine {
             // Done again at the turn; what it observed counts (memo misses
             // it filled are hits there), its notes and tracker events recur.
             bump(&stats().aborted, 1);
+            note_effects("prepare_aborted", &effects);
             if !effects.console.is_empty() {
                 note_lost(effects.console.len());
             }
@@ -2517,6 +2713,7 @@ impl Engine {
             Ok(prepared) => match PreparedParts::split(prepared) {
                 Some((parts, snapshot)) => {
                     bump(&stats().ahead, 1);
+                    note_effects("prepare", &effects);
                     self.ensure_analysis_pool();
                     let pending = self.dispatch(snapshot, parts.transitive.clone(), index, class);
                     Some(Ahead::Computing {

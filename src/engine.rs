@@ -18166,6 +18166,9 @@ struct Producers {
     /// commits (its turn, or its index when it commits ahead of its turn);
     /// `u32::MAX` (unordered) outside one.
     stamp: u32,
+    /// The plan index of the target at its turn (`u32::MAX` outside a
+    /// pipelined walk): plan B S0's shared-action counter.
+    turn: u32,
 }
 
 impl Default for Producers {
@@ -18174,6 +18177,7 @@ impl Default for Producers {
             paths: Default::default(),
             ancestors: Default::default(),
             stamp: u32::MAX,
+            turn: u32::MAX,
         }
     }
 }
@@ -18329,7 +18333,10 @@ fn register_output(
         let (attempted, first) = (producer.label(), previous.label());
         return match (&producer.action, &previous.action) {
             (Some((_, key)), Some((id, earlier))) => match key.sharing_between_owners(earlier) {
-                crate::shared_actions::Sharing::Shared => Ok(Some(id.clone())),
+                crate::shared_actions::Sharing::Shared => {
+                    parallel::note_shared(producers.stamp, registered, producers.turn);
+                    Ok(Some(id.clone()))
+                }
                 crate::shared_actions::Sharing::Conflict => Err(
                     crate::shared_actions::conflict_message(&path, attempted, first),
                 ),
