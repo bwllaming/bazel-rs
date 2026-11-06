@@ -910,7 +910,7 @@ known yet:
 
 ## S1 — commit deltas built on the analysis workers (`src/engine/delta.rs`)
 
-The per-target pipeline's first stage (/tmp plan "S1"): a Starlark target's
+The per-target pipeline plan's first stage (S1): a Starlark target's
 commit is split into a pure build of its effects as data and a merge that
 applies them, and the sequential engine is the two run back to back.
 
