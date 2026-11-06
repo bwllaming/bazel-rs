@@ -947,7 +947,11 @@ applies them, and the sequential engine is the two run back to back.
   earlier finished compute's outputs (siblings sharing an action, like the
   `.pyc` of a test wrapper every `py_test` of a package compiles). A worker
   falling back after it started (a status file first met in a tool's
-  runfiles tree) leaves the compute to be run again (`Built::Consumed`).
+  runfiles tree) leaves the compute to be run again (`Built::Consumed`)
+  and never commits ahead of its turn (`delta_consumed`). A registration
+  that failed on a worker (decided against the delta's own) is recorded
+  (`TargetDelta::failed_output`) and checked at the merge like the
+  registered paths.
 - **At the merge** a worker's delta whose output path meets a producer
   registered since (`delta_meets_producers`, a race) is discarded: ahead of
   its turn the compute is dispatched again (its delta then left to the
@@ -959,7 +963,8 @@ applies them, and the sequential engine is the two run back to back.
   cursor `ArtifactIndex` keeps its own). The tool runfiles groups and shared
   input runs are single-flight memos (`SingleFlight`): whoever fills an
   entry first fills the one value every later use shares, so they no longer
-  keep a commit at its turn (`ineligible_first_fill` is gone). A fill only
+  keep a commit at its turn, unless the fill would meet a workspace status
+file (`ineligible_first_fill`, which registers the status on first need). A fill only
   looks artifacts up (a status file makes a worker fall back), so there are
   no fill effects to replay; each delta lists the memos it used in order
   (`MemoUse`). Entries are Final only: publication is still at the merge
