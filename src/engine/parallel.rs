@@ -1260,11 +1260,13 @@ impl Engine {
 
     /// Stop the analysis workers (the end of a build's planning).
     pub(super) fn stop_analysis_pool(&mut self) {
-        self.stop_lowering_pool();
+        // The analysis workers first: their delta builds hold the lowering
+        // workers' handle (S1).
         if let Some(pool) = self.analysis_pool.take() {
             report(pool.size);
             drop(pool);
         }
+        self.stop_lowering_pool();
     }
 
     /// Phase 2 of every planned target not planned yet, in plan order,

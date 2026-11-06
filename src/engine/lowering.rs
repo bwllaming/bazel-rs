@@ -219,8 +219,16 @@ type Job = Box<dyn FnOnce() + Send>;
 
 /// The lowering workers.
 pub(super) struct LoweringPool {
-    jobs: Option<mpsc::Sender<Job>>,
+    jobs: Option<LoweringHandle>,
     workers: Vec<std::thread::JoinHandle<()>>,
+}
+
+/// What submits lowerings to the lowering workers: held by the pool, and
+/// cloned into the analysis workers' delta builds (S1), which end before
+/// the pool stops (Engine::stop_analysis_pool).
+#[derive(Clone)]
+pub(super) struct LoweringHandle {
+    jobs: mpsc::Sender<Job>,
 }
 
 impl LoweringPool {
@@ -262,13 +270,17 @@ impl LoweringPool {
             return None;
         }
         Some(Self {
-            jobs: Some(sender),
+            jobs: Some(LoweringHandle { jobs: sender }),
             workers,
         })
     }
+
+    pub(super) fn handle(&self) -> Option<&LoweringHandle> {
+        self.jobs.as_ref()
+    }
 }
 
-impl LoweringPool {
+impl LoweringHandle {
     /// Run `job` on a lowering worker (`Err`: the pool stopped, the job
     /// is handed back).
     pub(super) fn submit(
@@ -287,9 +299,9 @@ impl LoweringPool {
                 let _ = sender.send(outcome);
             }
         });
-        match self.jobs.as_ref().map(|jobs| jobs.send(wrapped)) {
-            Some(Ok(())) => Ok(receiver),
-            _ => {
+        match self.jobs.send(wrapped) {
+            Ok(()) => Ok(receiver),
+            Err(_) => {
                 let job = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
                 Err(job.expect("an unsent lowering keeps its job"))
             }
@@ -345,10 +357,11 @@ impl Engine {
     /// Where a coordinator commit's lowerings run: on the lowering workers
     /// when the walk defers them (work ahead of its turn lowers into its own
     /// segment, P3), else in the commit (`None`).
-    pub(super) fn lowering_for(&self, nodes: &PlannedNodes) -> Option<&LoweringPool> {
+    pub(super) fn lowering_for(&self, nodes: &PlannedNodes) -> Option<&LoweringHandle> {
         self.lowering_pool
             .as_ref()
             .filter(|_| nodes.deferring && (!self.ahead || nodes.segment))
+            .and_then(LoweringPool::handle)
     }
 
     /// Start the lowering workers for a pipelined walk (none without

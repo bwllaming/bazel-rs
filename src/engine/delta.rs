@@ -216,7 +216,7 @@ pub(super) struct EngineView<'a> {
     pub(super) client_environment: &'a ClientEnvironment,
     /// Lowerings go to the lowering workers (a coordinator build in a walk
     /// that defers them), else run in the build.
-    pub(super) lowering: Option<&'a lowering::LoweringPool>,
+    pub(super) lowering: Option<&'a lowering::LoweringHandle>,
 }
 
 /// An [`EngineView`] is shared with the analysis workers.
@@ -235,6 +235,9 @@ pub(super) struct SharedView {
     input_memos: Arc<InputMemos>,
     client_environment: Arc<ClientEnvironment>,
     registered: Option<Arc<PathHashes>>,
+    /// The lowering workers, when the walk defers lowerings (a worker's
+    /// delta then holds its lowerings in flight, placed where it merges).
+    lowering: Option<lowering::LoweringHandle>,
 }
 
 impl SharedView {
@@ -248,6 +251,13 @@ impl SharedView {
             input_memos: Arc::clone(&state.input_memos),
             client_environment: Arc::clone(&state.client_environment),
             registered: state.producers.hashes.clone(),
+            lowering: engine
+                .lowering_pool
+                .as_ref()
+                // BAZEL_RS_VERIFY_DELTA compares the nodes themselves.
+                .filter(|_| state.nodes.deferring && !verify_delta())
+                .and_then(lowering::LoweringPool::handle)
+                .cloned(),
         }
     }
 
@@ -262,7 +272,7 @@ impl SharedView {
             input_groups: &self.input_groups,
             input_memos: &self.input_memos,
             client_environment: &self.client_environment,
-            lowering: None,
+            lowering: self.lowering.as_ref(),
         }
     }
 }
