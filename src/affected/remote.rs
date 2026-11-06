@@ -8,7 +8,7 @@
 //! [`super::remote_base_key`]) covers its commit's tree, the
 //! workspace's directory in it, this binary, the command, options and
 //! patterns, the client state outside the tree that the planning reads
-//! (OS and architecture, LFS smudging, the options of rc files outside the
+//! (OS and architecture, what the checkout's filters do, the options of rc files outside the
 //! workspace) and the epoch — none of it by location (§8.11, "Location
 //! independence"). An entry's Action Cache key is the
 //! sha256 of the framed bytes `bazel-rs-affected-digest-v1`, the base key
@@ -455,41 +455,209 @@ impl Helper<'_> {
 }
 
 /// The host's state a checkout and its planning depend on beyond the
-/// tree: runners of other platforms, or with other LFS smudging, must not
-/// share (and overwrite) each other's entries.
+/// tree: runners of other platforms, or whose checkouts smudge other
+/// content, must not share (and overwrite) each other's entries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct HostState {
     pub os: String,
     pub arch: String,
-    /// `GIT_LFS_SKIP_SMUDGE`.
-    pub lfs_skip_smudge: Option<String>,
-    /// A `git-lfs` executable on `PATH`.
-    pub lfs_installed: bool,
-    /// `git config --get-regexp '^filter\.'` of the repository (the LFS
-    /// filter's configuration, and any other smudge filter).
-    pub filters: String,
+    /// What the checkout's filters do to the commit's content
+    /// ([`checkout_filters`]): normalized, printed by the key debug.
+    pub checkout: String,
 }
 
 impl HostState {
-    pub fn of(top: &Path) -> Self {
-        let lfs_installed = std::env::var_os("PATH").is_some_and(|path| {
-            std::env::split_paths(&path).any(|dir| dir.join("git-lfs").is_file())
-        });
-        let filters =
-            crate::spawn_lock::output(std::process::Command::new("git").arg("-C").arg(top).args([
-                "config",
-                "--get-regexp",
-                "^filter\\.",
-            ]))
+    /// The state for a checkout of `commit` of the repository at `top`.
+    pub fn of(top: &Path, commit: &str) -> Self {
+        let git = |args: &[&str]| -> Option<String> {
+            crate::spawn_lock::output(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(top)
+                    .args(args),
+            )
+            .ok()
+            .filter(|output| output.status.success())
             .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-            .unwrap_or_else(|error| format!("unknown: {error}"));
+        };
+        let config = git(&["config", "--get-regexp", "^filter\\."]).unwrap_or_default();
+        // The filter drivers the checkout's attributes name: the commit's
+        // `.gitattributes` files, `$GIT_DIR/info/attributes` and
+        // `core.attributesFile`.
+        let mut attributes = git(&[
+            "grep",
+            "-h",
+            "-I",
+            "-E",
+            "-o",
+            "filter=[^[:space:]]+",
+            commit,
+            "--",
+            ":(glob)**/.gitattributes",
+        ])
+        .unwrap_or_default();
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let file = |path: &str| -> Option<std::path::PathBuf> {
+            let path = path.trim();
+            if path.is_empty() {
+                return None;
+            }
+            Some(match (path.strip_prefix("~/"), &home) {
+                (Some(rest), Some(home)) => home.join(rest),
+                _ if Path::new(path).is_absolute() => std::path::PathBuf::from(path),
+                _ => top.join(path),
+            })
+        };
+        for path in [
+            git(&["rev-parse", "--git-path", "info/attributes"]),
+            git(&["config", "core.attributesFile"]),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(path) = file(&path)
+                && let Ok(text) = std::fs::read_to_string(path)
+            {
+                attributes.push('\n');
+                attributes.push_str(&text);
+            }
+        }
+        let on_path = |name: &str| {
+            std::env::var_os("PATH").is_some_and(|path| {
+                std::env::split_paths(&path).any(|dir| dir.join(name).is_file())
+            })
+        };
         Self {
             os: std::env::consts::OS.to_owned(),
             arch: std::env::consts::ARCH.to_owned(),
-            lfs_skip_smudge: std::env::var("GIT_LFS_SKIP_SMUDGE").ok(),
-            lfs_installed,
-            filters,
+            checkout: checkout_filters(
+                &config,
+                &attribute_filters(&attributes),
+                std::env::var("GIT_LFS_SKIP_SMUDGE").ok().as_deref(),
+                &on_path,
+            ),
         }
+    }
+}
+
+/// The filter drivers attribute lines name (`filter=NAME`).
+fn attribute_filters(text: &str) -> std::collections::BTreeSet<String> {
+    text.split_whitespace()
+        .filter_map(|token| token.strip_prefix("filter="))
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// git-lfs's boolean of `GIT_LFS_SKIP_SMUDGE`.
+fn truthy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "t" | "true" | "yes" | "on" | "y"
+    )
+}
+
+/// A filter command without its executable's directory (`/usr/bin/git-lfs
+/// smudge -- %f` is `git-lfs smudge -- %f`).
+fn command_text(command: &str) -> String {
+    let mut words = command.split_whitespace();
+    let program = words.next().unwrap_or_default();
+    let program = program.rsplit('/').next().unwrap_or(program);
+    std::iter::once(program)
+        .chain(words)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Whether a filter command can run: an absolute executable that exists,
+/// else one on `PATH` (`git lfs ...` needs `git-lfs`).
+fn command_runs(command: &str, on_path: &dyn Fn(&str) -> bool) -> bool {
+    let mut words = command.split_whitespace();
+    let Some(program) = words.next() else {
+        return false;
+    };
+    if program.contains('/') {
+        return Path::new(program).is_file();
+    }
+    if program == "git"
+        && let Some(sub) = words.next()
+    {
+        return on_path(&format!("git-{sub}"));
+    }
+    on_path(program)
+}
+
+/// What the checkout's filters do to the content of a tree whose
+/// attributes name the drivers `used`, from `git config --get-regexp
+/// '^filter\.'` (`config`): only what can change the checked-out bytes.
+/// LFS is one fact — smudged or not (a driver configured, by
+/// `process` or `smudge`, not skipped by `GIT_LFS_SKIP_SMUDGE`, and its
+/// command available) — whatever the configuration's spelling
+/// (`git-lfs filter-process` or a `smudge`/`clean` pair, the executable's
+/// path, `required`). Another driver is its `smudge` and `process`
+/// commands (without the executable's directory), or `unconfigured`.
+/// `clean` and `required` change no checkout; a driver no attribute names
+/// does nothing.
+fn checkout_filters(
+    config: &str,
+    used: &std::collections::BTreeSet<String>,
+    skip: Option<&str>,
+    on_path: &dyn Fn(&str) -> bool,
+) -> String {
+    let mut drivers: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    for line in config.lines() {
+        let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+        let Some(rest) = key.strip_prefix("filter.") else {
+            continue;
+        };
+        let Some((name, variable)) = rest.rsplit_once('.') else {
+            continue;
+        };
+        drivers
+            .entry(name.to_owned())
+            .or_default()
+            .insert(variable.to_ascii_lowercase(), value.trim().to_owned());
+    }
+    let mut parts = Vec::new();
+    for name in used {
+        let driver = drivers.get(name);
+        let get = |variable: &str| {
+            driver
+                .and_then(|driver| driver.get(variable))
+                .filter(|value| !value.is_empty())
+        };
+        if name == "lfs" {
+            let runs = get("process")
+                .or_else(|| get("smudge"))
+                .is_some_and(|command| command_runs(command, on_path));
+            let skipped = skip.is_some_and(truthy);
+            parts.push(
+                if runs && !skipped {
+                    "lfs smudged"
+                } else {
+                    "lfs not smudged"
+                }
+                .to_owned(),
+            );
+            continue;
+        }
+        match (get("smudge"), get("process")) {
+            (None, None) => parts.push(format!("filter {name} unconfigured")),
+            (smudge, process) => parts.push(format!(
+                "filter {name} smudge={} process={}",
+                smudge
+                    .map(|command| command_text(command))
+                    .unwrap_or_default(),
+                process
+                    .map(|command| command_text(command))
+                    .unwrap_or_default()
+            )),
+        }
+    }
+    if parts.is_empty() {
+        "no filters".to_owned()
+    } else {
+        parts.join("; ")
     }
 }
 
@@ -572,8 +740,9 @@ fn short(bytes: &[u8]) -> String {
 /// The client state outside the tree that a planning reads, independent of
 /// where the checkout, the cache and the rc files lie:
 ///
-/// * the host: OS, architecture, LFS smudging ([`HostState`]; the filter
-///   configuration with the workspace's location normalized);
+/// * the host: OS, architecture and what the checkout's filters do
+///   ([`HostState`], [`checkout_filters`]; the workspace's location
+///   normalized);
 /// * the options of the rc files outside the workspace `root` (system,
 ///   home, `$BAZELRC`, `--bazelrc` and their imports), by command and
 ///   option text with the workspace's location normalized — not by path,
@@ -603,27 +772,16 @@ pub(super) fn environment_key(
     };
     let mut hash = Sha256::new();
     let mut parts = Vec::new();
-    frame(&mut hash, b"environment-v4");
-    let lfs = match &host.lfs_skip_smudge {
-        Some(value) => format!("GIT_LFS_SKIP_SMUDGE={value}"),
-        None => "GIT_LFS_SKIP_SMUDGE unset".to_owned(),
-    };
-    for value in [&host.os, &host.arch, &lfs] {
-        frame(&mut hash, value.as_bytes());
-    }
-    frame(&mut hash, &[u8::from(host.lfs_installed)]);
-    let filters = relative(host.filters.as_bytes());
-    frame(&mut hash, &filters);
+    frame(&mut hash, b"environment-v5");
+    frame(&mut hash, host.os.as_bytes());
+    frame(&mut hash, host.arch.as_bytes());
+    let checkout = relative(host.checkout.as_bytes());
+    frame(&mut hash, &checkout);
     parts.push(format!(
-        "host {} {} {lfs} git-lfs={} filters={}",
+        "host {} {} checkout: {}",
         host.os,
         host.arch,
-        if host.lfs_installed {
-            "installed"
-        } else {
-            "absent"
-        },
-        short(&filters)
+        String::from_utf8_lossy(&checkout)
     ));
     let var = |name: &str| std::env::var(name).unwrap_or_default();
     let env = crate::bazelrc::ClientEnv {
@@ -803,7 +961,7 @@ mod tests {
         let base = HostState {
             os: "linux".into(),
             arch: "x86_64".into(),
-            ..HostState::default()
+            checkout: "lfs smudged".into(),
         };
         let plain = key(&base);
         assert_eq!(plain, key(&base.clone()));
@@ -817,28 +975,184 @@ mod tests {
                 ..base.clone()
             },
             HostState {
-                lfs_skip_smudge: Some("1".into()),
-                ..base.clone()
-            },
-            HostState {
-                lfs_skip_smudge: Some(String::new()),
-                ..base.clone()
-            },
-            HostState {
-                lfs_installed: true,
-                ..base.clone()
-            },
-            HostState {
-                filters: "filter.lfs.smudge git-lfs smudge -- %f\n".into(),
+                checkout: "lfs not smudged".into(),
                 ..base.clone()
             },
         ] {
             assert_ne!(plain, key(&other), "{other:?}");
         }
         // The host's own state is read.
-        let host = HostState::of(dir.path());
+        let host = HostState::of(dir.path(), "HEAD");
         assert_eq!(host.os, std::env::consts::OS);
         assert_eq!(host.arch, std::env::consts::ARCH);
+    }
+
+    #[test]
+    fn checkout_filters_key_what_changes_the_checkout() {
+        let used = |names: &[&str]| -> std::collections::BTreeSet<String> {
+            names.iter().map(|name| (*name).to_owned()).collect()
+        };
+        let lfs = used(&["lfs"]);
+        let everywhere = |name: &str| name == "git-lfs" || name == "crypt-tool";
+        let nowhere = |_: &str| false;
+        // Cosmetic variants of an active LFS filter: one fact.
+        let variants = [
+            "filter.lfs.process git-lfs filter-process\nfilter.lfs.required true\nfilter.lfs.clean git-lfs clean -- %f\nfilter.lfs.smudge git-lfs smudge -- %f\n",
+            "filter.lfs.smudge git-lfs smudge -- %f\nfilter.lfs.clean git-lfs clean -- %f\n",
+            "filter.lfs.process git lfs filter-process\n",
+            "filter.lfs.process /bin/sh filter-process\nfilter.lfs.required false\n",
+        ];
+        for config in variants {
+            assert_eq!(
+                checkout_filters(config, &lfs, None, &everywhere),
+                "lfs smudged",
+                "{config}"
+            );
+        }
+        // Skipped, unavailable or unconfigured: not smudged.
+        let config = variants[0];
+        for skip in ["1", "true", "YES", "on"] {
+            assert_eq!(
+                checkout_filters(config, &lfs, Some(skip), &everywhere),
+                "lfs not smudged"
+            );
+        }
+        for skip in ["0", "false", ""] {
+            assert_eq!(
+                checkout_filters(config, &lfs, Some(skip), &everywhere),
+                "lfs smudged"
+            );
+        }
+        assert_eq!(
+            checkout_filters(config, &lfs, None, &nowhere),
+            "lfs not smudged"
+        );
+        assert_eq!(
+            checkout_filters(
+                "filter.lfs.process /nonexistent/git-lfs filter-process\n",
+                &lfs,
+                None,
+                &everywhere
+            ),
+            "lfs not smudged"
+        );
+        assert_eq!(
+            checkout_filters("", &lfs, None, &everywhere),
+            "lfs not smudged"
+        );
+        // A tree naming no driver: nothing, whatever is configured.
+        assert_eq!(
+            checkout_filters(config, &used(&[]), None, &everywhere),
+            "no filters"
+        );
+        // Another driver: its smudge and process commands, without the
+        // executable's directory; `clean` and `required` change nothing.
+        let crypt = used(&["crypt"]);
+        let a = checkout_filters(
+            "filter.crypt.smudge /opt/bin/crypt-tool smudge %f\nfilter.crypt.clean crypt-tool clean %f\nfilter.crypt.required true\n",
+            &crypt,
+            None,
+            &everywhere,
+        );
+        let b = checkout_filters(
+            "filter.crypt.smudge crypt-tool smudge %f\n",
+            &crypt,
+            None,
+            &everywhere,
+        );
+        assert_eq!(a, b);
+        assert_eq!(a, "filter crypt smudge=crypt-tool smudge %f process=");
+        assert_ne!(
+            a,
+            checkout_filters(
+                "filter.crypt.smudge crypt-tool smudge --other %f\n",
+                &crypt,
+                None,
+                &everywhere
+            )
+        );
+        assert_eq!(
+            checkout_filters("", &crypt, None, &everywhere),
+            "filter crypt unconfigured"
+        );
+        assert_eq!(
+            attribute_filters(
+                "*.bin filter=lfs diff=lfs merge=lfs -text\n*.x filter=crypt\n*.y -filter\n"
+            ),
+            used(&["crypt", "lfs"])
+        );
+    }
+
+    /// Two repositories whose filter configuration differs only cosmetically
+    /// key alike; LFS skipped or not does not.
+    #[test]
+    fn cosmetic_filter_configuration_differences_key_alike() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |repo: &Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("HOME", dir.path())
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        };
+        let repo = |name: &str, config: &[(&str, &str)]| {
+            let repo = dir.path().join(name);
+            std::fs::create_dir_all(&repo).unwrap();
+            git(&repo, &["init", "-q"]);
+            std::fs::write(
+                repo.join(".gitattributes"),
+                "*.bin filter=lfs diff=lfs merge=lfs -text\n",
+            )
+            .unwrap();
+            std::fs::create_dir_all(repo.join("sub")).unwrap();
+            std::fs::write(repo.join("sub/.gitattributes"), "*.x filter=crypt\n").unwrap();
+            git(&repo, &["add", "-A"]);
+            git(&repo, &["commit", "-q", "-m", "x"]);
+            for (key, value) in config {
+                git(&repo, &["config", key, value]);
+            }
+            repo
+        };
+        let one = repo(
+            "one",
+            &[
+                ("filter.lfs.process", "git-lfs filter-process"),
+                ("filter.lfs.required", "true"),
+                ("filter.crypt.smudge", "/opt/bin/crypt-tool smudge %f"),
+            ],
+        );
+        let two = repo(
+            "two",
+            &[
+                ("filter.lfs.smudge", "git-lfs smudge -- %f"),
+                ("filter.lfs.clean", "git-lfs clean -- %f"),
+                ("filter.crypt.smudge", "crypt-tool smudge %f"),
+                ("filter.unused.smudge", "anything"),
+            ],
+        );
+        let state = |repo: &Path| HostState::of(repo, "HEAD");
+        let (a, b) = (state(&one), state(&two));
+        assert_eq!(a, b);
+        assert!(
+            a.checkout
+                .contains("filter crypt smudge=crypt-tool smudge %f"),
+            "{a:?}"
+        );
+        assert!(a.checkout.contains("; lfs "), "{a:?}");
+        // Whether LFS smudges here depends on a git-lfs on PATH; either
+        // way, skipping it is another key when it would smudge.
+        let config = "filter.lfs.process git-lfs filter-process\n";
+        let lfs: std::collections::BTreeSet<String> = ["lfs".to_owned()].into();
+        let available = |name: &str| name == "git-lfs";
+        assert_ne!(
+            checkout_filters(config, &lfs, None, &available),
+            checkout_filters(config, &lfs, Some("1"), &available)
+        );
     }
 
     #[test]

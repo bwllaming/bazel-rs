@@ -1237,7 +1237,6 @@ struct RemoteBase {
     write: bool,
     /// What a key needs besides the tree.
     binary: Digest32,
-    environment: String,
     epoch: String,
 }
 
@@ -1812,7 +1811,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                         binary,
                         startup,
                         &root,
-                        &remote::HostState::of(&top),
+                        &remote::HostState::of(&top, &base_commit),
                     );
                     let debug = std::env::var_os(KEY_DEBUG_VAR).is_some_and(|value| value == "1");
                     if debug {
@@ -1845,7 +1844,6 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                         key,
                         write: options.remote == RemoteMode::ReadWrite,
                         binary: binary_digest,
-                        environment,
                         epoch,
                     })
                 }
@@ -2327,6 +2325,14 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 &root,
                 &["rev-parse", "--verify", &format!("{commit}^{{tree}}")],
             )?;
+            // The head's own checkout state (its attributes may name other
+            // filters).
+            let environment = remote::environment_key(
+                binary,
+                startup,
+                &root,
+                &remote::HostState::of(&top, commit),
+            );
             let key = remote_base_key(
                 &remote.binary,
                 startup,
@@ -2334,10 +2340,13 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 &root,
                 &tree,
                 &below,
-                &remote.environment,
+                &environment.key,
                 &remote.epoch,
             );
             if std::env::var_os(KEY_DEBUG_VAR).is_some_and(|value| value == "1") {
+                if let Some(host) = environment.parts.first() {
+                    eprintln!("bazel-rs affected: key: head: {host}");
+                }
                 eprintln!("bazel-rs affected: key: head: tree {tree} key {key}");
             }
             let asked = match &head.scope {

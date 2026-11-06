@@ -1226,9 +1226,8 @@ policy options (`--remote_cache`, `--remote_header`,
 `--credential_helper`, `--disk_cache`, TLS, timeouts, retries: they change
 no digest, and a read-only PR job shares a writer's entries) — the client
 state outside the tree, and the epoch. The client state: the OS and
-architecture (`std::env::consts`), the LFS smudging (`GIT_LFS_SKIP_SMUDGE`,
-whether a `git-lfs` is on `PATH`, the repository's `filter.*` git
-configuration: a checkout without smudging holds pointer files), and the
+architecture (`std::env::consts`), what the checkout's filters do to the
+commit's content, and the
 options of the rc files outside the workspace that the planning reads
 (system, home, `$BAZELRC`, `--bazelrc` and their imports), by command and
 option text — not by the files' paths — without the options that change
@@ -1236,6 +1235,24 @@ no digest (the repository and disk caches' locations and policies,
 console and progress output, resource limits, report files, remote
 download modes, the transport options). The workspace's own rc files are
 the tree's.
+
+**Checkout filters.** Only what can change the checked-out bytes of the
+revision's tree is keyed, as a normalized description (printed by the key
+debug): for each filter driver the commit's `.gitattributes` files,
+`$GIT_DIR/info/attributes` or `core.attributesFile` name (`filter=NAME`),
+LFS as one fact — `lfs smudged` (a `filter.lfs.process` or `.smudge`
+configured, not skipped by a true `GIT_LFS_SKIP_SMUDGE`, its command
+available: an absolute executable that exists, else on `PATH`; `git lfs …`
+needs `git-lfs`) or `lfs not smudged` — whatever the configuration's
+spelling (`git-lfs filter-process` or a `smudge`/`clean` pair, the
+executable's path, `required`); another driver by its `smudge` and
+`process` commands without the executable's directory, or `unconfigured`;
+`no filters` when the tree names none. `clean` and `required` change no
+checkout, and a driver no attribute names does nothing. 0.4.13 keyed the
+raw `git config --get-regexp '^filter\.'` output, which differs per runner
+(system, global and `actions/checkout`'s local configuration): PR 13252's
+runners ci02-02 and ci03-02 agreed on every other component and still
+missed (`0 of 530`).
 
 **Location independence.** Nothing in the key depends on where the
 checkout, its worktrees, the cache or the rc files lie: the workspace's
@@ -1257,8 +1274,8 @@ only filters the output: not keyed.
 **Diagnosis.** `BAZEL_RS_AFFECTED_KEY_DEBUG=1` prints the key's components
 to stderr: `bazel-rs affected: key: base: tree|below|binary|options|environment|epoch|key ...`
 (the options line names the startup options and options keyed, not their
-values), `key: environment: host ...` (OS, architecture, LFS state, a
-digest of the filter configuration), one `key: environment: rc
+values), `key: environment: host <os> <arch> checkout: <the checkout
+filters' description>` (and `key: head: host ...` for the head's), one `key: environment: rc
 <file>:<line> <command> <option name> <digest>` per keyed outer rc option
 and the count of unkeyed ones, and `key: head: tree ... key ...` for head
 digests written. Two runs whose `key: base: key` lines differ show which

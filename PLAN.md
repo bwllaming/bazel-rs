@@ -354,7 +354,9 @@ Done since the last increment recorded under "History", one line each:
       worktree, a key epoch, OS/arch/LFS in the key, no writes after a failed
       submodule update. After 0.4.12: location-independent keys (0.4.12 keyed
       per-runner `PATH` through `test:replay --test_env=PATH`, so each CI
-      runner missed), `BAZEL_RS_AFFECTED_KEY_DEBUG=1`.
+      runner missed), `BAZEL_RS_AFFECTED_KEY_DEBUG=1`. After 0.4.13: the
+      checkout filters keyed by what they do (LFS smudged or not, other
+      used drivers' commands), not by the raw per-runner git config.
 - [ ] Lukewarm `affected`: a requirements bump re-executes every wheel
       repository of the `pip` extension group (~270–500 executions, ~25 s per
       planning) and re-evaluates `pip`, so the head is not saved for the build.

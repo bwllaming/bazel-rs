@@ -1138,7 +1138,9 @@ fn base_digests_are_shared_through_an_http_remote_cache() {
         &[("BAZEL_RS_AFFECTED_DIGESTS_EPOCH", "e2")],
     );
     assert_eq!(remote_hits(&stderr), Some((2, 2)), "{stderr}");
-    // Another LFS smudging: another key.
+    // LFS skipped for a tree no attribute of which names LFS: the same
+    // checkout, the same key (checkout_filters' unit tests cover a tree
+    // that does).
     let (labels, stderr) = repo.run_with(
         &first,
         &second,
@@ -1146,7 +1148,7 @@ fn base_digests_are_shared_through_an_http_remote_cache() {
         &[("GIT_LFS_SKIP_SMUDGE", "1")],
     );
     assert_eq!(labels, want);
-    assert_eq!(remote_hits(&stderr), Some((0, 2)), "{stderr}");
+    assert_eq!(remote_hits(&stderr), Some((2, 2)), "{stderr}");
     // `read`: looked up, never written.
     let read = [
         build,
@@ -1322,6 +1324,12 @@ fn remote_keys_do_not_depend_on_the_checkout_location() {
         ".bazelrc",
         "build --run_under=//tools:runner\ntest:replay --test_env=PATH --test_env=KUBECONFIG\n",
     ));
+    // Attributes naming LFS (no file they match): the runners' filter
+    // configurations below differ only cosmetically (0.4.13 keyed them raw).
+    files.push((
+        ".gitattributes",
+        "*.bin filter=lfs diff=lfs merge=lfs -text\n",
+    ));
     let first = repo.commit(&files);
     let second = repo.commit(&[("a/a.txt", "a2\n")]);
     let runner = |name: &str, path_len: usize| -> (Vec<String>, String) {
@@ -1345,6 +1353,30 @@ fn remote_keys_do_not_depend_on_the_checkout_location() {
                 .status()
                 .unwrap();
             assert!(status.success());
+            let config: &[(&str, &str)] = if name == "01" {
+                &[
+                    ("filter.lfs.process", "/usr/bin/git-lfs filter-process"),
+                    ("filter.lfs.required", "true"),
+                ]
+            } else {
+                &[
+                    ("filter.lfs.smudge", "git-lfs smudge -- %f"),
+                    ("filter.lfs.clean", "git-lfs clean -- %f"),
+                ]
+            };
+            for (key, value) in config {
+                let status = Command::new("git")
+                    .arg("-C")
+                    .arg(&checkout)
+                    .args(["config", key, value])
+                    .env_clear()
+                    .env("PATH", "/usr/bin:/bin")
+                    .env("HOME", &home)
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .status()
+                    .unwrap();
+                assert!(status.success());
+            }
         }
         fs::write(
             home.join(".bazelrc"),
@@ -1400,6 +1432,8 @@ fn remote_keys_do_not_depend_on_the_checkout_location() {
     };
     let first_key = key(&stderr);
     assert!(first_key.is_some(), "{stderr}");
+    // The normalized checkout state is printed.
+    assert!(stderr.contains("checkout: lfs "), "{stderr}");
     let (labels, stderr) = runner("02", 11);
     assert_eq!(labels, ["//a", "//b"], "{stderr}");
     assert_eq!(key(&stderr), first_key, "{stderr}");
