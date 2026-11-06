@@ -1632,6 +1632,92 @@ fn top_level_runfiles(
     results
 }
 
+/// The commit's check of a Starlark target's declared outputs (each below
+/// its package's output directory, named like a target, without a source
+/// subpackage or symlink on its way: validate_output_directory_in), the
+/// first failure in declaration order. `context` gives the repository root
+/// and ignored subdirectories, asked for once a declared file needs them.
+fn validate_declared_outputs(
+    label: &Label,
+    output_root: &str,
+    declared: &[File],
+    context: &dyn Fn() -> Result<(PathBuf, Arc<IgnoredSubdirectories>), String>,
+) -> Result<(), String> {
+    let mut resolved: Option<(PathBuf, Arc<IgnoredSubdirectories>)> = None;
+    for file in declared {
+        let package_output = PathBuf::from(output_root).join(label.package_exec_path());
+        let short_name = Path::new(&file.path)
+            .strip_prefix(&package_output)
+            .map_err(|_| format!("output outside declaring package: {}", file.path))?;
+        label.with_name(&short_name.to_string_lossy())?;
+        let (root, ignored) = match &resolved {
+            Some(resolved) => resolved,
+            None => resolved.insert(context()?),
+        };
+        validate_output_directory_in(
+            root,
+            &label.package_id(),
+            &short_name.to_string_lossy(),
+            ignored,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_output_directory_in(
+    root: &Path,
+    package: &PackageId,
+    out: &str,
+    ignored: &IgnoredSubdirectories,
+) -> Result<(), String> {
+    let mut directory = root.join(&package.package);
+    let mut relative = package.package.clone();
+    let components = out.split('/').collect::<Vec<_>>();
+    for component in components.iter().take(components.len().saturating_sub(1)) {
+        directory.push(component);
+        if !relative.is_empty() {
+            relative.push('/');
+        }
+        relative.push_str(component);
+        match crate::observed_fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "output {out} has an unsupported symlink source-tree parent {}",
+                    directory.display()
+                ));
+            }
+            // Generated outputs inhabit another tree. A regular source file
+            // or missing path cannot contain a source subpackage boundary.
+            Ok(metadata) if !metadata.is_dir() => break,
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect output package boundary {}: {error}",
+                    directory.display()
+                ));
+            }
+        }
+        // An ignored directory is a deleted package, never a subpackage
+        // (ContainingPackageLookupFunction).
+        // So is an invalid package name (PackageLookupFunction.java:91-96).
+        let subpackage = ignored.matching_entry(&relative).is_none()
+            && !crate::ignored::is_deleted_directory(&directory)
+            && crate::label::is_valid_package_name(&relative)
+            && (crate::observed_fs::is_file(directory.join("BUILD.bazel"))
+                || crate::observed_fs::is_file(directory.join("BUILD")));
+        // No nested repositories in Bazel 9.3
+        // (LocalRepositoryLookupFunction.java:27-35).
+        if subpackage {
+            return Err(format!(
+                "output {out} crosses a package boundary at {}",
+                directory.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn test_rule_properties(rule: &Rule) -> Option<crate::test_command::TestRuleInfo> {
     use crate::custom_rule::AttrValue;
     use crate::test_command::{TestRuleInfo, TestSize, TestTimeout};
@@ -1969,6 +2055,10 @@ struct ComputeOutcome {
     /// analysis worker after the implementation (P3): `None` computes it
     /// at the commit, as sequentially.
     runfiles: Option<RunfilesPrecomputed>,
+    /// The commit's check of the declared outputs' source-tree parents
+    /// (validate_declared_outputs), made by the analysis worker after the
+    /// implementation (plan B): `None` checks them at the commit.
+    outputs_checked: Option<Result<(), String>>,
 }
 
 /// What plan_runfiles_support computes from the target's own runfiles and
@@ -3568,55 +3658,8 @@ impl Engine {
         out: &str,
         ignored: &IgnoredSubdirectories,
     ) -> Result<(), String> {
-        let mut directory = self
-            .repositories
-            .root(&package.repository)?
-            .join(&package.package);
-        let mut relative = package.package.clone();
-        let components = out.split('/').collect::<Vec<_>>();
-        for component in components.iter().take(components.len().saturating_sub(1)) {
-            directory.push(component);
-            if !relative.is_empty() {
-                relative.push('/');
-            }
-            relative.push_str(component);
-            match crate::observed_fs::symlink_metadata(&directory) {
-                Ok(metadata) if metadata.file_type().is_symlink() => {
-                    return Err(format!(
-                        "output {out} has an unsupported symlink source-tree parent {}",
-                        directory.display()
-                    ));
-                }
-                // Generated outputs inhabit another tree. A regular source file
-                // or missing path cannot contain a source subpackage boundary.
-                Ok(metadata) if !metadata.is_dir() => break,
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-                Err(error) => {
-                    return Err(format!(
-                        "cannot inspect output package boundary {}: {error}",
-                        directory.display()
-                    ));
-                }
-            }
-            // An ignored directory is a deleted package, never a subpackage
-            // (ContainingPackageLookupFunction).
-            // So is an invalid package name (PackageLookupFunction.java:91-96).
-            let subpackage = ignored.matching_entry(&relative).is_none()
-                && !crate::ignored::is_deleted_directory(&directory)
-                && crate::label::is_valid_package_name(&relative)
-                && (crate::observed_fs::is_file(directory.join("BUILD.bazel"))
-                    || crate::observed_fs::is_file(directory.join("BUILD")));
-            // No nested repositories in Bazel 9.3
-            // (LocalRepositoryLookupFunction.java:27-35).
-            if subpackage {
-                return Err(format!(
-                    "output {out} crosses a package boundary at {}",
-                    directory.display()
-                ));
-            }
-        }
-        Ok(())
+        let root = self.repositories.root(&package.repository)?;
+        validate_output_directory_in(root, package, out, ignored)
     }
 
     /// The labels a package's rules name as inputs (the assumed input files
@@ -13395,6 +13438,7 @@ impl Engine {
                 analyzed,
                 printed,
                 runfiles: None,
+                outputs_checked: None,
             },
         )
     }
@@ -14247,6 +14291,7 @@ impl Engine {
             analyzed,
             printed,
             runfiles: precomputed,
+            outputs_checked,
         } = outcome;
         for line in printed {
             self.note_analysis_print(&line);
@@ -14257,18 +14302,27 @@ impl Engine {
         // Moved, not copied: the analysis result is consumed here (MEM2).
         custom_providers.insert(key.clone(), std::mem::take(&mut analyzed.providers));
         provider_keys.insert(key.clone(), std::mem::take(&mut analyzed.provider_keys));
-        for file in &analyzed.declared {
-            let package_output = PathBuf::from(&output_root).join(rule.label.package_exec_path());
-            let short_name = Path::new(&file.path)
-                .strip_prefix(&package_output)
-                .map_err(|_| format!("output outside declaring package: {}", file.path))?;
-            rule.label.with_name(&short_name.to_string_lossy())?;
-            let ignored = self.ignored(&rule.label.repository)?;
-            self.validate_output_directory(
-                &rule.label.package_id(),
-                &short_name.to_string_lossy(),
-                &ignored,
-            )?;
+        let check_here = || {
+            validate_declared_outputs(&rule.label, &output_root, &analyzed.declared, &|| {
+                let repository = &rule.label.repository;
+                Ok((
+                    self.repositories.root(repository)?.to_path_buf(),
+                    self.ignored(repository)?,
+                ))
+            })
+        };
+        match outputs_checked {
+            Some(checked) => {
+                // Debug builds (the tests): the worker's check is this one.
+                debug_assert_eq!(
+                    checked,
+                    check_here(),
+                    "internal error: the outputs of {} checked on a worker differ",
+                    rule.label
+                );
+                checked?
+            }
+            None => check_here()?,
         }
         // Semantic commit is distinct from execution-plan lowering. Cquery
         // needs providers, file identities and runfiles, but never action keys,

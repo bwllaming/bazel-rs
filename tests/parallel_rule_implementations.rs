@@ -1110,3 +1110,25 @@ fn known_outputs_decide_commits_ahead_within_a_package() {
         }
     }
 }
+
+/// Plan B: the declared outputs' check (no subpackage or source symlink on
+/// an output's way) runs on the analysis worker after the implementation;
+/// a failing one is the sequential error at the target's turn.
+#[test]
+fn declared_outputs_checked_on_workers_fail_at_their_turn() {
+    let ws = Workspace::new();
+    library_workspace(&ws);
+    ws.file("rules/known.bzl", KNOWN_DEFS);
+    ws.file("q/sub/BUILD", "");
+    ws.file(
+        "q/BUILD",
+        "load('//rules:known.bzl', 's')\n\
+         s(name = 'ok', out = 'nested/ok.txt', deps = ['//p2:t7'], work = 3000)\n\
+         s(name = 'cross', out = 'sub/f.txt', deps = ['//p3:t5'], work = 2000)\n\
+         s(name = 'above', out = 'above.txt', deps = [':ok', ':cross'])\n",
+    );
+    let reference = assert_like_sequential(&ws, &[], &["build", "--nobuild", "//..."]);
+    let text = stderr(&reference);
+    assert!(!reference.status.success(), "{text}");
+    assert!(text.contains("crosses a package boundary"), "{text}");
+}

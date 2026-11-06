@@ -1667,6 +1667,27 @@ impl Engine {
                         }
                     }
                 }
+                // Plan B: the commit's check of the declared outputs too
+                // (validate_declared_outputs), unless it would demand.
+                if let Ok(analyzed) = &outcome.analyzed {
+                    let sentinels = crate::repository_demand::sentinels_raised();
+                    let label = &snapshot.rule.label;
+                    let repositories = &snapshot.repositories;
+                    let checked = validate_declared_outputs(
+                        label,
+                        &snapshot.output_root,
+                        &analyzed.declared,
+                        &|| {
+                            Ok((
+                                repositories.root(&label.repository)?.to_path_buf(),
+                                repositories.ignored_subdirectories(&label.repository)?,
+                            ))
+                        },
+                    );
+                    if crate::repository_demand::sentinels_raised() == sentinels {
+                        outcome.outputs_checked = Some(checked);
+                    }
+                }
                 if let Ok(analyzed) = &outcome.analyzed {
                     let sentinels = crate::repository_demand::sentinels_raised();
                     let precomputed = RunfilesPrecomputed::compute(
