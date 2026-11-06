@@ -1476,6 +1476,72 @@ fn derive_note(ids: &mut BTreeSet<String>, artifact: &Artifact) {
     }
 }
 
+/// The positions of the `items` matching `pred`, in order, found on up to
+/// `threads` workers (plan B4: the planning tail's read-only scans).
+fn positions_where<T: Sync>(
+    items: &[T],
+    threads: usize,
+    pred: impl Fn(&T) -> bool + Sync,
+) -> Vec<usize> {
+    let workers = threads.clamp(1, 16);
+    if workers == 1 || items.len() < 1024 {
+        return (0..items.len())
+            .filter(|position| pred(&items[*position]))
+            .collect();
+    }
+    let chunk = items.len().div_ceil(workers);
+    std::thread::scope(|scope| {
+        let pred = &pred;
+        let handles: Vec<_> = items
+            .chunks(chunk)
+            .enumerate()
+            .map(|(part, slice)| {
+                scope.spawn(move || {
+                    slice
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, item)| pred(item))
+                        .map(|(position, _)| part * chunk + position)
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    })
+}
+
+/// Drop `value` on the planning dropper thread (large planning structures
+/// the coordinator no longer needs, plan B4); here when it cannot start.
+/// Dropping frees memory and has no other effect on these values.
+fn drop_elsewhere<T: Send + 'static>(value: T) {
+    type Dropped = Box<dyn Send>;
+    static DROPPER: std::sync::OnceLock<Option<std::sync::mpsc::Sender<Dropped>>> =
+        std::sync::OnceLock::new();
+    let sender = DROPPER.get_or_init(|| {
+        let (sender, receiver) = std::sync::mpsc::channel::<Dropped>();
+        std::thread::Builder::new()
+            .name("planning-drop".to_owned())
+            .spawn(move || {
+                for dropped in receiver {
+                    drop(dropped);
+                }
+            })
+            .ok()
+            .map(|_| sender)
+    });
+    if let Some(sender) = sender {
+        // Sent back (and so dropped here) when the thread is gone.
+        drop(sender.send(Box::new(value)));
+    }
+}
+
 /// One requested target's runfiles artifacts in the hidden top-level group
 /// (plan B4, [`top_level_runfiles`]): the ones not listed yet for it, in
 /// order, and the Files of all of them.
@@ -14174,7 +14240,7 @@ impl Engine {
             timer.finish();
             retried
         } else {
-            drop(snapshot);
+            drop_elsewhere(snapshot);
             outcome
         };
         let ComputeOutcome {
@@ -14337,6 +14403,8 @@ impl Engine {
             listed_tree_actions,
         };
         let owner = rule.label.to_string();
+        // What the actions no longer need is dropped elsewhere.
+        let mut spent_inputs = Vec::new();
         for (mut registered, shared) in analyzed.actions.into_iter().zip(shared) {
             // Another owner's equal action produces its outputs: no node,
             // no source inputs, no execution of its own.
@@ -14410,6 +14478,7 @@ impl Engine {
                 self.action_executions
                     .insert(registered.action.id.clone(), execution.clone());
             }
+            spent_inputs.push(std::mem::take(&mut registered.inputs));
             let mut action = registered.action;
             // The spawn's propagated tags are set at registration
             // (crate::analysis_runtime::Context::register_action, keyed).
@@ -14442,6 +14511,7 @@ impl Engine {
             })
             .collect::<Result<Vec<_>, _>>()?;
         dry.insert(key.clone(), Arc::new(defaults));
+        drop_elsewhere(spent_inputs);
         Ok(())
     }
 
@@ -17117,7 +17187,13 @@ impl Engine {
                 );
             }
         }
-        nodes.retain(|node| required.contains(&node.action.id));
+        // The unreachable nodes are dropped on a thread of their own.
+        let (kept, unreachable): (Vec<PlannedAction>, Vec<PlannedAction>) =
+            std::mem::take(&mut *nodes)
+                .into_iter()
+                .partition(|node| required.contains(&node.action.id));
+        *nodes = kept;
+        drop_elsewhere(unreachable);
         // The console identity of each action's owner (ActionOwner,
         // crate::action_console): the configured target's or aspect
         // application's, shared by all its actions.
@@ -17234,8 +17310,33 @@ impl Engine {
         // directory is listed in the node (exactly what planning lists
         // without sharing), so its destination is marked like an own input.
         let mut directory_groups: HashMap<*const scheduler::InputGroup, bool> = HashMap::new();
-        // Without source directories nothing is marked.
-        for node in nodes.iter_mut().filter(|_| !directory_lookup.is_empty()) {
+        // Without source directories nothing is marked; a node none of whose
+        // paths names one (found on workers, plan B4) marks nothing either.
+        let candidates =
+            if directory_lookup.is_empty() {
+                Vec::new()
+            } else {
+                let mut group_hits: crate::fast_hash::FxHashMap<usize, bool> = Default::default();
+                for group in nodes.iter().flat_map(|node| &node.groups) {
+                    group_hits
+                        .entry(Arc::as_ptr(group) as usize)
+                        .or_insert_with(|| {
+                            group.sources.iter().any(|real| {
+                                directory_lookup.contains(&crate::path_key::PathKey(real))
+                            })
+                        });
+                }
+                positions_where(&nodes, self.loading_phase_threads, |node| {
+                    node.groups
+                        .iter()
+                        .any(|group| group_hits[&(Arc::as_ptr(group) as usize)])
+                        || node.action.inputs.iter().any(|(real, _)| {
+                            directory_lookup.contains(&crate::path_key::PathKey(real))
+                        })
+                })
+            };
+        for position in candidates {
+            let node = &mut nodes[position];
             let holds_directory = node.groups.iter().any(|group| {
                 *directory_groups
                     .entry(Arc::as_ptr(group))
@@ -17447,14 +17548,22 @@ impl Engine {
                 || directory_lookup.contains(&crate::path_key::PathKey(real))
         };
         let none_may_fail = missing_lookup.is_empty() && directory_lookup.is_empty();
-        for node in nodes.iter() {
-            if none_may_fail
-                || source_inputs
+        // The nodes that may fail, found on workers (plan B4).
+        let candidates = if none_may_fail {
+            Vec::new()
+        } else {
+            let flagged: crate::fast_hash::FxHashSet<usize> =
+                flagged_groups.iter().map(|group| *group as usize).collect();
+            positions_where(&nodes, self.loading_phase_threads, |node| {
+                let flagged = |group: &Arc<scheduler::InputGroup>| {
+                    flagged.contains(&(Arc::as_ptr(group) as usize))
+                };
+                source_inputs
                     .get(&node.action.id)
-                    .is_none_or(|sources| !sources.any_listed(node, &flagged_groups, &may_fail))
-            {
-                continue;
-            }
+                    .is_some_and(|sources| sources.any_listed(node, &flagged, &may_fail))
+            })
+        };
+        for node in candidates.into_iter().map(|position| &nodes[position]) {
             // SourceManifestAction has no inputs (SourceManifestAction.java:
             // 168): its source directories are never traversed.
             let paths_only = matches!(
@@ -18378,17 +18487,14 @@ impl SourceInputs {
     fn any_listed(
         &self,
         planned: &PlannedAction,
-        flagged: &HashSet<*const scheduler::InputGroup>,
+        flagged: &dyn Fn(&Arc<scheduler::InputGroup>) -> bool,
         test: &dyn Fn(&Path) -> bool,
     ) -> bool {
         let own = match &self.own {
             Some(own) => own.iter().any(|path| test(path)),
             None => planned.action.inputs.iter().any(|(real, _)| test(real)),
         };
-        own || (self
-            .groups
-            .iter()
-            .any(|group| flagged.contains(&Arc::as_ptr(group)))
+        own || (self.groups.iter().any(flagged)
             && self
                 .groups
                 .iter()
