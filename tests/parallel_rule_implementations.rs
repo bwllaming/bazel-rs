@@ -1290,3 +1290,22 @@ fn workers_without_the_arena_binding_build_the_same_graph() {
     );
     assert!(reference.status.success(), "{}", stderr(&reference));
 }
+
+/// Plan B review item 5: the hidden top-level runfiles of a requested
+/// executable are listed once per requested target; a label requested
+/// twice is one target (the same graph as requesting it once).
+#[test]
+fn a_target_requested_twice_lists_its_runfiles_once() {
+    let ws = Workspace::new();
+    library_workspace(&ws);
+    ws.file(
+        "z/BUILD",
+        "load('//rules:defs.bzl', 'bin')\n\
+         bin(name = 'tool', deps = ['//p3:t5', '//p1:t2'])\n",
+    );
+    let env = [("BAZEL_RS_DUMP_ACTIONS", "1")];
+    let once = assert_like_sequential(&ws, &env, &["build", "--nobuild", "//z:tool"]);
+    let twice = assert_like_sequential(&ws, &env, &["build", "--nobuild", "//z:tool", "//z:tool"]);
+    assert!(once.status.success(), "{}", stderr(&once));
+    assert_eq!(stderr(&once), stderr(&twice));
+}

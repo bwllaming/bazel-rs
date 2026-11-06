@@ -1579,7 +1579,18 @@ fn top_level_runfiles(
             .or_default()
             .insert(artifact.file());
     }
+    // Requested labels are distinct (pattern expansion deduplicates them),
+    // so is each one's key; a repeated key would have to see what the
+    // earlier one added (`seen`): it is left to the caller's in-order path.
+    let mut first = crate::fast_hash::FxHashSet::default();
+    let repeated: Vec<bool> = actual_keys
+        .iter()
+        .map(|(key, _)| !first.insert(key))
+        .collect();
     let list = |position: usize| -> Option<TopRunfiles> {
+        if repeated[position] {
+            return None;
+        }
         let (key, actual_key) = &actual_keys[position];
         let runfiles = runfiles_info.get(actual_key)?;
         let held = held.get(key);
