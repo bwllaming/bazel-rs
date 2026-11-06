@@ -17942,6 +17942,7 @@ fn register_output(
     output: &Path,
     producer: &Arc<OutputProducer>,
 ) -> Result<Option<String>, String> {
+    parallel::record_registered_output(output);
     if let Some(previous) = producers.get(output) {
         let path = output.to_string_lossy();
         let (attempted, first) = (producer.label(), previous.label());

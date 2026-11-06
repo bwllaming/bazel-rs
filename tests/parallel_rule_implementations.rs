@@ -994,3 +994,119 @@ use_src = rule(
     );
     assert!(reference.status.success(), "{}", stderr(&reference));
 }
+
+/// Plan B rules: a stamped rule (its commit needs the workspace status, so
+/// it commits at its turn: its outputs are known, its commit is not ahead).
+const KNOWN_DEFS: &str = r#"
+def _s_impl(ctx):
+    print("s %s" % ctx.label)
+    total = 0
+    for i in range(ctx.attr.work):
+        total += i * i
+    out = ctx.actions.declare_file(ctx.attr.out)
+    inputs = [ctx.version_file] if ctx.attr.stamp else []
+    ctx.actions.run_shell(
+        inputs = inputs,
+        outputs = [out],
+        command = "echo %d > %s" % (total % 7, out.path),
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+s = rule(
+    implementation = _s_impl,
+    attrs = {
+        "out": attr.string(),
+        "stamp": attr.bool(),
+        "work": attr.int(default = 100),
+        "deps": attr.label_list(),
+    },
+)
+"#;
+
+/// Plan B: entries of one package commit ahead of an earlier uncommitted
+/// sibling whose outputs are known and do not meet theirs; one whose
+/// outputs meet them (an exact path: a shared action or a conflict; a path
+/// below another's output: a prefix conflict) commits after it, and the
+/// conflict is the sequential one — at every thread count, with jitter and
+/// BAZEL_RS_VERIFY_AHEAD (each commit's registered outputs are checked
+/// against its compute's).
+#[test]
+fn known_outputs_decide_commits_ahead_within_a_package() {
+    for (b_out, conflicts) in [("e/f", false), ("d/f", true), ("d", true)] {
+        let ws = Workspace::new();
+        ws.file("rules/BUILD", "");
+        ws.file("rules/known.bzl", KNOWN_DEFS);
+        ws.file("rules/p4.bzl", P4_DEFS);
+        // Resolves the target platform early (P4_HOST): prepares see it.
+        ws.file(
+            "_early/BUILD",
+            "load('//rules:p4.bzl', 'early')\n\
+             constraint_setting(name = 'setting')\n\
+             constraint_value(name = 'value', constraint_setting = ':setting')\n\
+             platform(name = 'host', constraint_values = [':value'])\n\
+             early(name = 'early', value = ':value')\n",
+        );
+        // Earlier in plan order: a slow implementation computed on a
+        // worker holds the turn while `//q` finishes.
+        ws.file(
+            "a_slow/BUILD",
+            "load('//rules:known.bzl', 's')\n\
+             s(name = 'x0', out = 'x0.txt')\n\
+             s(name = 'z', out = 'z.txt', work = 400000)\n",
+        );
+        ws.file(
+            "q/BUILD",
+            &format!(
+                "load('//rules:known.bzl', 's')\n\
+                 s(name = 'a', out = 'd', stamp = True, work = 2000)\n\
+                 s(name = 'b', out = '{b_out}', work = 3000)\n\
+                 s(name = 'c', out = 'c.txt', work = 1000)\n\
+                 s(name = 'top', out = 'top.txt', deps = [':b', ':c'])\n"
+            ),
+        );
+        let reference = assert_like_sequential(
+            &ws,
+            &[("BAZEL_RS_DUMP_ACTIONS", "1")],
+            &["build", "--nobuild", P4_HOST, "//..."],
+        );
+        let text = stderr(&reference);
+        assert_eq!(reference.status.success(), !conflicts, "{b_out}: {text}");
+        if conflicts {
+            assert!(
+                text.contains("conflicting actions") || text.contains("is a prefix of the other"),
+                "{b_out}: {text}"
+            );
+        }
+        // While `//a_slow:z` holds the turn, `//q:b` and `//q:c` commit
+        // ahead of the stamped `//q:a` (known outputs, committed at its
+        // turn), unless b's outputs meet a's.
+        let timed = ws.run_env(
+            &[("BAZEL_RS_TIMING", "1"), ("BAZEL_RS_SNAPSHOT", "off")],
+            &[
+                "build",
+                "--loading_phase_threads=8",
+                "--nobuild",
+                P4_HOST,
+                "//...",
+            ],
+        );
+        let timed = stderr(&timed);
+        let field = |name: &str| -> f64 {
+            timed
+                .lines()
+                .filter(|line| line.starts_with("PERF-PARALLEL "))
+                .flat_map(str::split_whitespace)
+                .find_map(|field| field.strip_prefix(name))
+                .and_then(|value| value.trim_end_matches('s').parse().ok())
+                .unwrap_or_else(|| panic!("no {name}: {timed}"))
+        };
+        // Only meaningful when z held the turn long enough (a loaded host).
+        if field("wait=") > 1.0 {
+            if conflicts {
+                assert!(field("outputs=") > 0.0, "{b_out}: {timed}");
+            } else {
+                assert!(field("committed_ahead=") >= 2.0, "{b_out}: {timed}");
+            }
+        }
+    }
+}

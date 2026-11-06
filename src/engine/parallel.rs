@@ -45,12 +45,129 @@ const HORIZON: usize = 4096;
 
 type Job = Box<dyn FnOnce() + Send>;
 
+/// A finished compute: its plan index and the outputs its commit registers
+/// (`None`: not known, e.g. it raised a sentinel and runs again inline).
+type Finished = (usize, Option<Arc<OutputSummary>>);
+
+/// The output paths the commit of a finished compute registers, hashed
+/// ([`path_hash`]), and their proper ancestors: what decides whether two
+/// uncommitted entries' commits may meet in the producers (an exact path:
+/// a shared action or a conflict; a path above or below another: a prefix
+/// conflict). Hash collisions only make two entries look related (the later
+/// one then waits), never unrelated.
+#[derive(Default, Debug)]
+pub(super) struct OutputSummary {
+    paths: Vec<u64>,
+    ancestors: Vec<u64>,
+}
+
+fn path_hash(path: &Path) -> u64 {
+    use std::hash::BuildHasher;
+    crate::path_key::FastState::default().hash_one(crate::path_key::PathKey(path))
+}
+
+impl OutputSummary {
+    /// Every output path the commit of `analyzed` may register (a superset:
+    /// its actions' outputs, the runfiles support's executable, manifests
+    /// and tree; Engine::plan_runfiles_support).
+    fn of(analyzed: &analysis::AnalysisResult) -> Self {
+        let mut paths: Vec<PathBuf> = analyzed
+            .actions
+            .iter()
+            .flat_map(|action| &action.outputs)
+            .map(|file| PathBuf::from(&file.path))
+            .collect();
+        if let Some(files_to_run) = analyzed.runfiles.files_to_run.as_ref() {
+            for file in files_to_run
+                .executable()
+                .into_iter()
+                .chain(files_to_run.repo_mapping_manifest())
+                .chain(files_to_run.runfiles_manifest())
+            {
+                paths.push(PathBuf::from(&file.path));
+            }
+            if let Some(executable) = files_to_run.executable() {
+                paths.push(PathBuf::from(format!(
+                    "{}.runfiles_manifest",
+                    executable.path
+                )));
+                paths.push(PathBuf::from(format!(
+                    "{}.runfiles/MANIFEST",
+                    executable.path
+                )));
+                paths.push(PathBuf::from(format!("{}.repo_mapping", executable.path)));
+            }
+        }
+        let mut hashes: Vec<u64> = paths.iter().map(|path| path_hash(path)).collect();
+        let mut ancestors: Vec<u64> = paths
+            .iter()
+            .flat_map(|path| path.ancestors().skip(1))
+            .filter(|ancestor| !ancestor.as_os_str().is_empty())
+            .map(path_hash)
+            .collect();
+        hashes.sort_unstable();
+        hashes.dedup();
+        ancestors.sort_unstable();
+        ancestors.dedup();
+        Self {
+            paths: hashes,
+            ancestors,
+        }
+    }
+}
+
+thread_local! {
+    /// BAZEL_RS_VERIFY_AHEAD: the output paths the commit being verified
+    /// registered (crate::engine::register_output).
+    static REGISTERED: std::cell::RefCell<Option<Vec<u64>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Note an output path a commit registers (BAZEL_RS_VERIFY_AHEAD records
+/// them to check the commit's [`OutputSummary`]).
+pub(super) fn record_registered_output(output: &Path) {
+    REGISTERED.with(|registered| {
+        if let Some(registered) = registered.borrow_mut().as_mut() {
+            registered.push(path_hash(output));
+        }
+    });
+}
+
+/// BAZEL_RS_VERIFY_AHEAD: run `commit`, checking that every output path it
+/// registers is in the summary its compute's outputs give (which decided
+/// whether later entries committed ahead of its turn).
+fn verify_registered<T>(
+    key: &ConfiguredTargetKey,
+    summary: Option<OutputSummary>,
+    commit: impl FnOnce() -> T,
+) -> T {
+    let Some(summary) = summary else {
+        return commit();
+    };
+    let outer = REGISTERED.with(|registered| registered.borrow_mut().replace(Vec::new()));
+    let result = commit();
+    let registered = REGISTERED
+        .with(|registered| std::mem::replace(&mut *registered.borrow_mut(), outer))
+        .unwrap_or_default();
+    if let Some(missing) = registered
+        .iter()
+        .find(|hash| summary.paths.binary_search(hash).is_err())
+    {
+        panic!(
+            "internal error: BAZEL_RS_VERIFY_AHEAD: the commit of {} registered an output (hash {missing:x}) outside the outputs of its compute",
+            key.label
+        );
+    }
+    bump(&stats().verified_outputs, 1);
+    result
+}
+
 /// The analysis workers (16 MiB stacks: Starlark evaluation and depset
 /// walks recurse; P2's loading workers use the same).
 pub(super) struct AnalysisPool {
     /// The plan index of each finished compute (P4: the coordinator commits
-    /// finished entries ahead of their turn).
-    finished: (mpsc::Sender<usize>, mpsc::Receiver<usize>),
+    /// finished entries ahead of their turn), with the outputs its commit
+    /// registers when they are known (plan B: no sentinel).
+    finished: (mpsc::Sender<Finished>, mpsc::Receiver<Finished>),
     jobs: Option<mpsc::Sender<Job>>,
     workers: Vec<std::thread::JoinHandle<()>>,
     size: usize,
@@ -422,12 +539,20 @@ struct Pipeline {
     /// applied at its turn (where the sequential engine's lookups that
     /// filled the memos it hit happen).
     stashed: HashMap<usize, Vec<Effects>>,
-    /// P4: the classified entries not committed yet, by package
-    /// (repository, package): an entry commits ahead of its turn only when
-    /// no earlier one of its package, an enclosing or an enclosed package
-    /// is uncommitted (they are the only ones that may register its
-    /// output paths or paths above or below them).
+    /// P4: the classified entries not committed yet whose outputs are not
+    /// known, by package (repository, package): an entry commits ahead of
+    /// its turn only when no earlier one of its package, an enclosing or an
+    /// enclosed package is among them (they are the only ones that may
+    /// register its output paths or paths above or below them).
     pending_packages: BTreeMap<(String, String), OrderedSet<usize>>,
+    /// Plan B: the classified entries not committed yet whose outputs are
+    /// known (a finished compute without sentinel, prepared with its target
+    /// platform resolved; a native rule without outputs), with their output
+    /// paths and their ancestors indexed: a later entry commits ahead of
+    /// them unless its outputs meet theirs (an exact path or a prefix).
+    known: HashMap<usize, Arc<OutputSummary>>,
+    known_paths: crate::fast_hash::FxHashMap<u64, OrderedSet<usize>>,
+    known_ancestors: crate::fast_hash::FxHashMap<u64, OrderedSet<usize>>,
     /// The classified entries not committed yet that may register outputs
     /// in other packages (aspect applications in their prepare): no entry
     /// after one commits ahead of its turn.
@@ -442,35 +567,101 @@ struct Pipeline {
 }
 
 impl Pipeline {
-    /// `index` (of `label`) is classified and not committed.
-    fn note_pending(&mut self, index: usize, label: &Label, barrier: bool) {
-        self.pending_packages
-            .entry((label.repository.clone(), label.package.clone()))
-            .or_default()
-            .insert(index);
+    /// `index` (of `label`) is classified and not committed; `known`: its
+    /// commit registers no output (a native rule without outputs).
+    fn note_pending(&mut self, index: usize, label: &Label, barrier: bool, known: bool) {
+        if known {
+            self.add_known(index, Arc::new(OutputSummary::default()));
+        } else {
+            self.pending_packages
+                .entry((label.repository.clone(), label.package.clone()))
+                .or_default()
+                .insert(index);
+        }
         if barrier {
             self.barriers.insert(index);
         }
     }
 
+    fn remove_unknown(&mut self, index: usize, label: &Label) -> bool {
+        let package = (label.repository.clone(), label.package.clone());
+        let Some(pending) = self.pending_packages.get_mut(&package) else {
+            return false;
+        };
+        let removed = pending.remove(&index);
+        if pending.is_empty() {
+            self.pending_packages.remove(&package);
+        }
+        removed
+    }
+
+    fn add_known(&mut self, index: usize, summary: Arc<OutputSummary>) {
+        for path in &summary.paths {
+            self.known_paths.entry(*path).or_default().insert(index);
+        }
+        for ancestor in &summary.ancestors {
+            self.known_ancestors
+                .entry(*ancestor)
+                .or_default()
+                .insert(index);
+        }
+        self.known.insert(index, summary);
+    }
+
+    /// The uncommitted `index` (of `label`) finished its compute: what its
+    /// commit registers is known from now on.
+    fn note_known(&mut self, index: usize, label: &Label, summary: Arc<OutputSummary>) {
+        if self.remove_unknown(index, label) {
+            self.add_known(index, summary);
+        }
+    }
+
     /// `index` (of `label`) is committed.
     fn note_committed(&mut self, index: usize, label: &Label) {
-        let package = (label.repository.clone(), label.package.clone());
-        if let Some(pending) = self.pending_packages.get_mut(&package) {
-            pending.remove(&index);
-            if pending.is_empty() {
-                self.pending_packages.remove(&package);
-            }
+        self.remove_unknown(index, label);
+        if let Some(summary) = self.known.remove(&index) {
+            let unindex = |map: &mut crate::fast_hash::FxHashMap<u64, OrderedSet<usize>>,
+                           hashes: &[u64]| {
+                for hash in hashes {
+                    if let Some(indexes) = map.get_mut(hash) {
+                        indexes.remove(&index);
+                        if indexes.is_empty() {
+                            map.remove(hash);
+                        }
+                    }
+                }
+            };
+            unindex(&mut self.known_paths, &summary.paths);
+            unindex(&mut self.known_ancestors, &summary.ancestors);
         }
         self.barriers.remove(&index);
     }
 
+    /// Whether an uncommitted entry before `index` with known outputs
+    /// registers one of `summary`'s paths, an ancestor of one, or a path
+    /// below one.
+    fn meets_known(&self, index: usize, summary: &OutputSummary) -> bool {
+        let earlier = |indexes: Option<&OrderedSet<usize>>| {
+            indexes.is_some_and(|indexes| indexes.first().is_some_and(|first| *first < index))
+        };
+        summary.paths.iter().any(|path| {
+            earlier(self.known_paths.get(path)) || earlier(self.known_ancestors.get(path))
+        }) || summary
+            .ancestors
+            .iter()
+            .any(|ancestor| earlier(self.known_paths.get(ancestor)))
+    }
+
     /// Whether an uncommitted entry before `index` may register `label`'s
-    /// output paths, or paths above or below them, and why: 0 one of its
-    /// package, 1 of an enclosing one, 2 of an enclosed one, 3 an aspect
-    /// barrier (`None`: its outputs are settled).
-    fn unsettled(&self, index: usize, label: &Label) -> Option<usize> {
+    /// output paths (`summary`), or paths above or below them, and why: 0
+    /// one of its package, 1 of an enclosing one, 2 of an enclosed one
+    /// (outputs not known yet), 3 an entry whose known outputs meet these,
+    /// 4 an aspect barrier (`None`: its outputs are settled).
+    fn unsettled(&self, index: usize, label: &Label, summary: &OutputSummary) -> Option<usize> {
         if self.barriers.first().is_some_and(|first| *first < index) {
+            return Some(4);
+        }
+        if self.meets_known(index, summary) {
             return Some(3);
         }
         let earlier =
@@ -537,7 +728,10 @@ struct Stats {
     /// BAZEL_RS_VERIFY_AHEAD comparisons at the turn of entries committed
     /// ahead.
     verified_turn: AtomicU64,
-    unsettled: [AtomicU64; 3],
+    unsettled: [AtomicU64; 4],
+    /// BAZEL_RS_VERIFY_AHEAD: commits whose registered outputs were checked
+    /// against their compute's output summary.
+    verified_outputs: AtomicU64,
     /// Implementations computed at their turn, by rule class (µs, count).
     turn_classes: std::sync::Mutex<BTreeMap<String, (u64, u64)>>,
     /// Per walk size (≤16, ≤256, ≤4096, more entries): the walks' entries
@@ -604,13 +798,15 @@ pub(super) fn report(workers: usize) {
         buckets.join(" ")
     ));
     crate::snapshot::diag::line_fmt(format_args!(
-        "PERF-PARALLEL unsettled package={} enclosing={} enclosed={} budget={} platform_late={} verified_turn={}",
+        "PERF-PARALLEL unsettled package={} enclosing={} enclosed={} outputs={} budget={} platform_late={} verified_turn={} verified_outputs={}",
         get(&stats.unsettled[0]),
         get(&stats.unsettled[1]),
         get(&stats.unsettled[2]),
+        get(&stats.unsettled[3]),
         get(&stats.ahead_budget),
         get(&stats.committed_platform_late),
-        get(&stats.verified_turn)
+        get(&stats.verified_turn),
+        get(&stats.verified_outputs)
     ));
     let mut classes: Vec<(String, (u64, u64))> = stats
         .turn_classes
@@ -797,6 +993,26 @@ enum Retry {
     Later,
     /// Committed ahead (`true`) or left for its turn.
     Done(bool),
+}
+
+/// Whether `rule`'s commit registers no output path: every native rule but
+/// genrule, genquery and starlark_doc_extract (Engine::commit_native_target;
+/// the runfiles support is planned for Starlark rules only).
+fn registers_no_output(rule: &Rule) -> bool {
+    match &rule.kind {
+        RuleKind::Filegroup | RuleKind::PackageGroup(_) => true,
+        RuleKind::Native(name) => !matches!(*name, "genquery" | "starlark_doc_extract"),
+        RuleKind::Genrule | RuleKind::Custom => false,
+    }
+}
+
+/// BAZEL_RS_VERIFY_AHEAD: the output summary to check a commit of
+/// `outcome` against.
+fn summary_to_verify(outcome: &ComputeOutcome) -> Option<OutputSummary> {
+    if !verify_ahead() {
+        return None;
+    }
+    outcome.analyzed.as_ref().ok().map(OutputSummary::of)
 }
 
 /// A compute's result put back in a channel of its own.
@@ -1295,7 +1511,9 @@ impl Engine {
         use crate::plan_timings::{PlanStage, StageTimer};
         let prepared = parts.join(snapshot);
         let timer = StageTimer::start(PlanStage::Commit, index as u64, class);
-        let committed = self.commit_target(state, configured, rule, prepared, Some(outcome));
+        let committed = verify_registered(key, summary_to_verify(&outcome), || {
+            self.commit_target(state, configured, rule, prepared, Some(outcome))
+        });
         timer.finish();
         committed?;
         if let Some(started) = profiled {
@@ -1395,7 +1613,10 @@ impl Engine {
                 // The pool stopped (a failing build): nobody waits for it.
                 return;
             }
+            let mut summary = None;
+            let summary_slot = &mut summary;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let summary = summary_slot;
                 if jitter > 0 {
                     // Interrupted when the pool stops (a failing build).
                     let roll = loading_jitter_roll(index as u64, 0x5033) % (jitter + 1);
@@ -1460,6 +1681,14 @@ impl Engine {
                 }
                 let elapsed = started.elapsed();
                 let (effects, sentinel) = isolation.finish();
+                // What its commit registers (unless it runs again inline).
+                *summary = (!sentinel).then(|| {
+                    Arc::new(match &outcome.analyzed {
+                        Ok(analyzed) => OutputSummary::of(analyzed),
+                        // Its commit reports the error and registers nothing.
+                        Err(_) => OutputSummary::default(),
+                    })
+                });
                 WorkerOutcome {
                     snapshot,
                     outcome,
@@ -1473,9 +1702,12 @@ impl Engine {
                     .with(|slot| slot.borrow_mut().take())
                     .unwrap_or_else(|| "an analysis worker panicked".to_owned())
             });
+            if result.is_err() {
+                summary = None;
+            }
             let _ = sender.send(result);
             if let Some(finished) = finished {
-                let _ = finished.send(index);
+                let _ = finished.send((index, summary));
             }
         });
         if let Some(pool) = &self.analysis_pool
@@ -1536,7 +1768,7 @@ impl Engine {
                 // (outputs in other packages) at its turn.
                 let barrier = matches!(classified, Classified::Never)
                     && matches!(rule.kind, RuleKind::Custom);
-                pipe.note_pending(index, &key.label, barrier);
+                pipe.note_pending(index, &key.label, barrier, registers_no_output(&rule));
                 match classified {
                     Classified::Never => bump(&stats().never, 1),
                     Classified::Waiting(keys) => Self::wait_or_ready(state, pipe, index, keys),
@@ -1718,16 +1950,31 @@ impl Engine {
         let Some(pool) = self.analysis_pool.as_ref() else {
             return false;
         };
+        let mut received = Vec::new();
         if block {
             match pool.finished.1.recv() {
-                Ok(index) => {
-                    pipe.finished.insert(index);
-                }
+                Ok(finished) => received.push(finished),
                 Err(_) => return false,
             }
         }
-        while let Ok(index) = pool.finished.1.try_recv() {
+        while let Ok(finished) = pool.finished.1.try_recv() {
+            received.push(finished);
+        }
+        for (index, summary) in received {
+            if index <= turn {
+                continue;
+            }
             pipe.finished.insert(index);
+            // Its outputs are known when its turn commits this compute: no
+            // sentinel, and a prepare that saw its target platform resolved
+            // (else its turn may prepare it again).
+            if let (Some(summary), Some(Ahead::Computing { platform_known, .. })) =
+                (summary, pipe.ahead.get(&index))
+                && *platform_known
+                && let Some((key, _)) = self.planning_plan.as_ref().and_then(|plan| plan.get(index))
+            {
+                pipe.note_known(index, &key.label, summary);
+            }
         }
         if !self.commits_ahead(state) {
             pipe.finished.clear();
@@ -1797,9 +2044,13 @@ impl Engine {
             bump(&stats().ahead_budget, 1);
             return Retry::Later;
         }
-        if let Some(reason) = pipe.unsettled(index, &key.label) {
+        let Some(summary) = pipe.known.get(&index).cloned() else {
+            // Its outputs are not known (a sentinel): at its turn.
+            return Retry::Done(false);
+        };
+        if let Some(reason) = pipe.unsettled(index, &key.label, &summary) {
             bump(&stats().ahead_package, 1);
-            bump(&stats().unsettled[reason.min(2)], 1);
+            bump(&stats().unsettled[reason.min(3)], 1);
             return Retry::Later;
         }
         let Some(Ahead::Computing {
@@ -1901,13 +2152,15 @@ impl Engine {
         let stamp = state.artifact_index.stamp_ahead(index);
         let started = std::time::Instant::now();
         let timer = StageTimer::start(PlanStage::Commit, index as u64, class);
-        let result = self.commit_target(
-            state,
-            configured,
-            &rule,
-            parts.join(snapshot),
-            Some(outcome),
-        );
+        let result = verify_registered(&key, summary_to_verify(&outcome), || {
+            self.commit_target(
+                state,
+                configured,
+                &rule,
+                parts.join(snapshot),
+                Some(outcome),
+            )
+        });
         timer.finish();
         let commit_elapsed = started.elapsed();
         state.artifact_index.restore_stamp(stamp);
