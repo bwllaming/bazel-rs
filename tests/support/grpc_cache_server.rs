@@ -979,7 +979,18 @@ mod grpc_cache_server {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        let mut child = process.spawn().unwrap();
+        // ETXTBSY: a file this multi-threaded server just wrote can still be
+        // open in a child another thread is forking; retry briefly.
+        let mut attempts = 0;
+        let mut child = loop {
+            match process.spawn() {
+                Err(error) if error.raw_os_error() == Some(26) && attempts < 50 => {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                other => break other.unwrap(),
+            }
+        };
         let started = std::time::Instant::now();
         let mut timed_out = false;
         loop {
