@@ -22,14 +22,17 @@ use crate::label::Label;
 use super::super::super::{
     ConfiguredNodes, ConfiguredTargetKey, Engine, Plan, RuleKind, Target, forwards,
 };
+use std::sync::Arc;
+
+use super::super::cycles::DfsCycles;
+use super::super::graph::Graph;
 use super::super::key::{NodeId, NodeKey};
+use super::super::scheduler::{EvalConfig, Evaluator, NoRepositories};
 use super::super::shared::EvalShared;
 use super::super::transcript::Event;
 use super::super::value::NodeValue;
-use super::eval_host::EvalHost;
-use super::eval_host::Phase1Cx;
-use super::host::Host;
-use super::inline::Inline;
+use super::bodies::Phase1Bodies;
+use super::eval_host::edge_ct_key;
 
 /// Whether `BAZEL_RS_EVAL_VERIFY_PHASE1=1` asks for the comparison.
 pub(crate) fn enabled() -> bool {
@@ -38,15 +41,15 @@ pub(crate) fn enabled() -> bool {
 }
 
 /// The plan order and the empty-configuration rules of a DFS replay of
-/// the transcripts from the requests' events (pass 1's order).
-struct Replay<'d, 'a> {
-    driver: &'d Inline<'a>,
+/// the transcripts from the requests' reaches (pass 1's order).
+struct Replay<'g> {
+    graph: &'g Graph,
     visited: FxHashSet<NodeId>,
     plan: Vec<ConfiguredTargetKey>,
     empty: BTreeSet<ConfiguredTargetKey>,
 }
 
-impl Replay<'_, '_> {
+impl Replay<'_> {
     fn events(&mut self, events: &[Event]) {
         for event in events {
             match event {
@@ -61,25 +64,19 @@ impl Replay<'_, '_> {
         if !self.visited.insert(id) {
             return;
         }
-        let key = self.driver.interner.key(id).clone();
-        if let NodeKey::Ct1(ct) = &key
-            && let Some(value) = self.driver.value(id)
+        let graph = self.graph;
+        if let NodeKey::Ct1(ct) = graph.key(id)
+            && let Some(value) = graph.value(id)
             && let NodeValue::Ct1(value) = value.as_ref()
-        {
-            if value
+            && value
                 .outcome
                 .as_ref()
                 .is_ok_and(|ok| ok.empty_configuration)
-            {
-                self.empty.insert(ct.key.clone());
-            }
-            let events = value.transcript.events.clone();
-            self.events(&events);
-            return;
+        {
+            self.empty.insert(ct.key.clone());
         }
-        if let Some(transcript) = self.driver.transcript(id) {
-            let events = transcript.events.clone();
-            self.events(&events);
+        if let Some(transcript) = graph.entry(id).transcript() {
+            self.events(&transcript.events);
         }
     }
 }
@@ -161,7 +158,18 @@ impl Engine {
         let warnings = self.warnings.len();
         let incremental = self.incremental.take();
         let shared = EvalShared::from_engine(self);
-        let result = verify_with(self, &shared, labels, top, configured, plan, walk_error);
+        // The inline driver recurses as deep as the graph: a big stack.
+        let result = std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name("eval-verify".to_owned())
+                .stack_size(1 << 30)
+                .spawn_scoped(scope, || {
+                    verify_with(self, &shared, labels, top, configured, plan, walk_error)
+                })
+                .map_err(|error| error.to_string())?
+                .join()
+                .map_err(|_| "BAZEL_RS_EVAL_VERIFY_PHASE1: the evaluation panicked".to_owned())?
+        });
         shared.restore(self);
         self.incremental = incremental;
         self.warnings.truncate(warnings);
@@ -209,7 +217,30 @@ fn verify_with(
     walk_error: Option<&str>,
 ) -> Result<(usize, Diffs), String> {
     let mut diffs = Diffs::default();
-    let mut driver = Inline::new(engine, shared);
+    let bodies = Phase1Bodies::new(shared, engine, false);
+    let evaluator = Evaluator::new(
+        &bodies,
+        EvalConfig {
+            threads: 1,
+            keep_going: false,
+            jitter_micros: 0,
+        },
+    );
+    let evaluate = |key: &NodeKey| -> Arc<NodeValue> {
+        evaluator.evaluate(
+            std::slice::from_ref(key),
+            &mut NoRepositories,
+            &mut DfsCycles::default(),
+        );
+        evaluator.value(key).cloned().unwrap_or_else(|| {
+            Arc::new(NodeValue::Src(Err(format!(
+                "internal error: {key:?} did not finish"
+            ))))
+        })
+    };
+    let computed =
+        |evaluator: &Evaluator<'_, Phase1Bodies<'_, '_>>| evaluator.stats().done as usize;
+    let mut roots = Vec::new();
     // Engine::plan_build: a non-default target platform first.
     let top_configuration = shared
         .configurations
@@ -221,31 +252,63 @@ fn verify_with(
     if target != crate::configuration::default_host_platform()
         && target != top_configuration.native.host_platform
     {
-        let mut host = EvalHost::new(shared, &mut driver, None, false);
-        if let Err(error) = host.platform_info(&target, top) {
-            let error = error.target_text();
+        let key = NodeKey::Platform(ConfiguredTargetKey::new(target.clone(), top));
+        roots.push(evaluator.graph().intern(&key));
+        if let NodeValue::Platform(Err(error)) = evaluate(&key).as_ref() {
+            let error = error.clone().target_text();
             if walk_error != Some(error.as_str()) {
                 diffs.push(format!(
                     "the target platform: walk {walk_error:?} / eval {error:?}"
                 ));
             }
-            return Ok((driver.computed, diffs));
+            return Ok((computed(&evaluator), diffs));
         }
     }
     for label in labels {
-        // Engine::analyze_requested.
-        let trimmed = match driver.engine_mut_target(label) {
+        // Engine::analyze_requested, then the root edge of Phase1::analyze.
+        let looked_up = bodies.coord().engine.target(label);
+        let trimmed = match &looked_up {
             Ok(Target::Rule(rule))
-                if !forwards(&rule) && !matches!(rule.kind, RuleKind::PackageGroup(_)) =>
+                if !forwards(rule) && !matches!(rule.kind, RuleKind::PackageGroup(_)) =>
             {
                 Some(ConfiguredTargetKey::new(rule.label.clone(), top))
             }
             _ => None,
         };
-        driver.first.requested_trimmed_root = trimmed;
-        let mut host = EvalHost::new(shared, &mut driver, None, false);
-        let analyzed = host.analyze(label, top);
-        driver.first.requested_trimmed_root = None;
+        let root = match looked_up {
+            Err(error) => Err(error),
+            Ok(Target::Source(_)) => Ok(NodeKey::Src(label.clone())),
+            Ok(Target::Rule(rule) | Target::Output(rule, _)) => {
+                super::super::super::check_macro_namespace(&rule, label).map(|()| {
+                    let no_config = shared
+                        .configurations
+                        .lock()
+                        .unwrap()
+                        .get(top)
+                        .native
+                        .no_config;
+                    let key = ConfiguredTargetKey::new(rule.label.clone(), top);
+                    NodeKey::Ct1(edge_ct_key(
+                        &mut bodies.coord().first,
+                        no_config,
+                        &rule,
+                        key,
+                        false,
+                    ))
+                })
+            }
+        };
+        bodies.coord().first.requested_trimmed_root = trimmed;
+        let analyzed = root.and_then(|root| {
+            roots.push(evaluator.graph().intern(&root));
+            let value = evaluate(&root);
+            match value.as_ref() {
+                NodeValue::Src(result) => result.clone(),
+                NodeValue::Ct1(value) => value.outcome.as_ref().map(|_| ()).map_err(Clone::clone),
+                _ => Err("internal error: a root with another value".to_owned()),
+            }
+        });
+        bodies.coord().first.requested_trimmed_root = None;
         // Engine::analyze_requested's report of an aborted analysis.
         let analyzed = analyzed.map_err(|error| {
             match error.split_once(super::super::super::ANALYSIS_ABORTED) {
@@ -261,14 +324,15 @@ fn verify_with(
             (Ok(()), Some(walk)) => {
                 // The walk's failure may be the requested target's own
                 // compatibility (after its analysis).
-                let compatible = driver
-                    .engine()
+                let compatible = bodies
+                    .coord()
+                    .engine
                     .check_requested_compatibility(configured, label, top);
                 if let Err(error) = compatible {
                     if error != walk {
                         diffs.push(format!("{label}: walk {walk:?} / compatibility {error:?}"));
                     }
-                    return Ok((driver.computed, diffs));
+                    return Ok((computed(&evaluator), diffs));
                 }
             }
             (Err(error), walk) => {
@@ -276,31 +340,33 @@ fn verify_with(
                 // planned implementations (the walk's flush runs phase 2;
                 // the CsMatch node with CT2 dependencies is S2): an error
                 // of that phase 2 is not comparable here.
-                if walk != Some(error.as_str()) && !driver.saw_flush {
+                if walk != Some(error.as_str()) && !bodies.coord().saw_flush {
                     diffs.push(format!("{label}: walk {walk:?} / eval {error:?}"));
                 }
-                return Ok((driver.computed, diffs));
+                return Ok((computed(&evaluator), diffs));
             }
         }
     }
     if let Some(walk) = walk_error {
         diffs.push(format!("the walk failed, the nodes did not: {walk:?}"));
-        return Ok((driver.computed, diffs));
+        return Ok((computed(&evaluator), diffs));
     }
     crate::perf_mark("plan.verify_phase1_evaluated");
+    let graph = evaluator.graph();
     let mut replay = Replay {
-        driver: &driver,
+        graph,
         visited: FxHashSet::default(),
         plan: Vec::new(),
         empty: BTreeSet::new(),
     };
-    let roots = driver.root_events.clone();
+    let roots = roots.into_iter().map(Event::Reach).collect::<Vec<_>>();
     replay.events(&roots);
     let (eval_plan, eval_empty) = (replay.plan, replay.empty);
     // The plan, keys and order.
     // Entries a deferred target platform's analysis in phase 2 put into
     // the walk's plan (phase 2, S3) are compared as configured nodes only.
-    let phase2 = &driver.engine_ref().phase2_analyzed;
+    let coord = bodies.coord();
+    let phase2 = &coord.engine.phase2_analyzed;
     let walk_plan = plan
         .iter()
         .map(|(key, _)| key.clone())
@@ -326,18 +392,18 @@ fn verify_with(
     }
     // The CT1 values by ConfiguredTargetKey (first variants).
     let mut eval_ok = BTreeMap::new();
-    for (key, ct) in &driver.first.canonical {
-        let Some(id) = driver.interner.get(&NodeKey::Ct1(ct.clone())) else {
+    for (key, ct) in &coord.first.canonical {
+        let Some(id) = graph.get(&NodeKey::Ct1(ct.clone())) else {
             continue;
         };
-        if let Some(value) = driver.value(id)
+        if let Some(value) = graph.value(id)
             && let NodeValue::Ct1(value) = value.as_ref()
             && value.outcome.is_ok()
         {
             eval_ok.insert(key.clone(), std::sync::Arc::clone(value));
         }
     }
-    let engine = driver.engine_ref();
+    let engine = &*coord.engine;
     let walk_keys = configured.keys().cloned().collect::<BTreeSet<_>>();
     let eval_keys = eval_ok.keys().cloned().collect::<BTreeSet<_>>();
     for missing in walk_keys.difference(&eval_keys) {
@@ -431,19 +497,14 @@ fn verify_with(
                 .collect::<Vec<_>>()
         ));
     }
-    if engine.toolchain_implementations != driver.first.claims {
+    if engine.toolchain_implementations != coord.first.claims {
         diffs.push(format!(
             "toolchain implementations: walk {} / eval {}",
             engine.toolchain_implementations.len(),
-            driver.first.claims.len()
+            coord.first.claims.len()
         ));
     }
-    Ok((driver.computed, diffs))
-}
-
-impl Inline<'_> {
-    /// A coordinator lookup outside any node (the requests' trimming).
-    fn engine_mut_target(&mut self, label: &Label) -> Result<Target, String> {
-        self.engine().target(label)
-    }
+    let nodes = graph.len();
+    drop(coord);
+    Ok((nodes, diffs))
 }

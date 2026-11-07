@@ -20,52 +20,22 @@ use crate::toolchains::{RegisteredToolchains, ToolchainContextKey, UnloadedToolc
 use crate::visibility::Visibility;
 
 use super::super::super::{
-    AspectToolchains, ConfiguredNode, ConfiguredTargetKey, EdgeCfg, Engine, ExecutionPlatforms,
+    AspectToolchains, ConfiguredNode, ConfiguredTargetKey, EdgeCfg, ExecutionPlatforms,
     PlatformError, Registration, ResolutionError, RunUnderEdge, Target, TransitionCacheKey,
     TransitionConfigurations, TransitionDetails, check_macro_namespace, cquery,
     uses_toolchain_resolution,
 };
-use super::super::cx::{Cx, Missing};
-use super::super::key::{CtKey, NodeId, NodeKey, Observes};
+use super::super::cx::Missing;
+use super::super::key::{CtKey, NodeKey, Observes};
 use super::super::shared::EvalShared;
 use super::super::transcript::{Event, Transcript};
 use super::super::value::{Ct1Ok, Ct1Value, NodeValue};
+use super::bodies::Phase1Cx;
 use super::host::Host;
 use super::phase1::Phase1;
 
-/// What a phase-1 body needs of its context besides [`Cx`] in S1.
-///
-/// - [`Self::engine`]: the coordinator's loading services (the engine's
-///   package loading, target lookups, package groups, aspect
-///   definitions, registration pattern expansion). S2 replaces them with
-///   `Pkg`/`Tgt`/`Group` node bodies over [`EvalShared`].
-/// - [`Self::state`]: the first-visit facts the inline driver decides in
-///   DFS order (pass 1's job in S2): the canonical `CtKey` variant of a
-///   ConfiguredTargetKey, toolchain-implementation claims, cycle reports,
-///   the aspect memos.
-/// - the active chain (cycle texts).
-pub(crate) trait Phase1Cx: Cx {
-    fn engine(&mut self) -> &mut Engine;
-    fn state(&mut self) -> &mut FirstVisit;
-    fn state_ref(&self) -> &FirstVisit;
-    /// The value of a done node, without needing it (S1: the inline
-    /// driver's reads of `configured`; S2: a need).
-    fn done_value(&self, key: &NodeKey) -> Option<Arc<NodeValue>>;
-    /// Whether the node is being computed (an ancestor of this attempt).
-    fn in_progress(&self, key: &NodeKey) -> bool;
-    /// The configured targets being analyzed, outermost first, since the
-    /// last detached analysis (a platform's tree, a registration).
-    fn active_ct1(&self) -> Vec<ConfiguredTargetKey>;
-    /// The transcript of a done node is not empty (a consumer records a
-    /// `MemoUse` of it).
-    fn has_effects(&self, id: NodeId) -> bool;
-    /// The id events name a node by.
-    fn intern(&mut self, key: &NodeKey) -> NodeId;
-    /// Incremental tracking is on: record `Access`/`Source` events.
-    fn tracking(&self) -> bool;
-}
-
-/// The S1 inline driver's first-visit state (DFS order = the walk's).
+/// The S1 first-visit state (the inline DFS order = the walk's; pass 1
+/// decides it from S2 on).
 #[derive(Default)]
 pub(crate) struct FirstVisit {
     /// The first `CtKey` variant of each ConfiguredTargetKey.
@@ -110,9 +80,9 @@ struct Ct1Acc {
 }
 
 /// One attempt of a phase-1 node body.
-pub(crate) struct EvalHost<'c> {
+pub(crate) struct EvalHost<'c, 'e> {
     shared: &'c EvalShared,
-    cx: &'c mut dyn Phase1Cx,
+    cx: &'c mut dyn Phase1Cx<'e>,
     /// The CT1 key being analyzed (CT1 and Src bodies).
     own: Option<CtKey>,
     /// Inside a platform's tree (the empty configuration).
@@ -124,10 +94,10 @@ pub(crate) struct EvalHost<'c> {
     resolving_aspect_toolchains: bool,
 }
 
-impl<'c> EvalHost<'c> {
+impl<'c, 'e> EvalHost<'c, 'e> {
     pub(crate) fn new(
         shared: &'c EvalShared,
-        cx: &'c mut dyn Phase1Cx,
+        cx: &'c mut dyn Phase1Cx<'e>,
         own: Option<CtKey>,
         platform_tree: bool,
     ) -> Self {
@@ -161,7 +131,7 @@ impl<'c> EvalHost<'c> {
     }
 
     fn memo_use(&mut self, key: &NodeKey) {
-        let id = self.cx.intern(key);
+        let id = self.cx.id_of(key);
         self.emit(Event::MemoUse(id));
     }
 
@@ -172,11 +142,7 @@ impl<'c> EvalHost<'c> {
     /// The done CT1 value of `key`'s first variant (the walk's
     /// `configured` lookup: absent when not analyzed or failed).
     fn ct1_value(&self, key: &ConfiguredTargetKey) -> Option<Arc<super::super::value::Ct1Value>> {
-        let ct = self.cx.state_ref().canonical.get(key)?;
-        match self.cx.done_value(&NodeKey::Ct1(ct.clone()))?.as_ref() {
-            NodeValue::Ct1(value) => Some(Arc::clone(value)),
-            _ => None,
-        }
+        self.cx.coord().ct1(key)
     }
 
     fn ct1_ok<T>(&self, key: &ConfiguredTargetKey, read: impl FnOnce(&Ct1Ok) -> T) -> Option<T> {
@@ -187,27 +153,15 @@ impl<'c> EvalHost<'c> {
     /// The CtKey of an edge to `rule` in `config` from this attempt: the
     /// first variant already analyzed, else this context's.
     fn edge_key(&mut self, rule: &Rule, key: ConfiguredTargetKey) -> CtKey {
-        if let Some(found) = self.cx.state_ref().canonical.get(&key) {
-            return found.clone();
-        }
-        let forced_exec = self.cx.state_ref().claims.get(&key).cloned();
         let no_config = self.configuration(key.config).native.no_config;
-        // platform_tree is kept for every rule of a tree: the context
-        // propagates to the rule's dependencies (CtKey::normalized's
-        // per-rule rule would let a filegroup's genrule dependency escape
-        // the empty configuration).
-        let ct = CtKey {
-            key: key.clone(),
-            platform_tree: self.platform_tree,
-            forced_exec,
-        }
-        .normalized(Observes {
+        let platform_tree = self.platform_tree;
+        edge_ct_key(
+            &mut self.cx.coord().first,
             no_config,
-            toolchain_resolution: uses_toolchain_resolution(rule),
-            exec_edges: true,
-        });
-        self.cx.state().canonical.insert(key, ct.clone());
-        ct
+            rule,
+            key,
+            platform_tree,
+        )
     }
 
     /// Need the CT1 node of `rule`'s key (a dependency edge): its outcome.
@@ -219,14 +173,14 @@ impl<'c> EvalHost<'c> {
     ) -> Result<(), String> {
         let ct = self.edge_key(rule, key.clone());
         let node = NodeKey::Ct1(ct);
-        let id = self.cx.intern(&node);
+        let id = self.cx.id_of(&node);
         if reach {
             self.emit(Event::Reach(id));
         }
-        let done = self.cx.done_value(&node).is_some();
+        let done = self.cx.coord().ct1(&key).is_some();
         if !done {
             // The walk's active chain checks (Engine::analyze_key_body).
-            let active = self.cx.active_ct1();
+            let active = self.cx.coord().active_ct1();
             if let Some(start) = active.iter().position(|active| *active == key) {
                 return Err(self.cycle_error(rule, &active[..start], &active[start..]));
             }
@@ -242,7 +196,7 @@ impl<'c> EvalHost<'c> {
             Err(Missing::BackEdge(_)) => {
                 // An ancestor outside the current detached segment: the
                 // whole chain names the cycle.
-                let active = self.cx.active_ct1();
+                let active = self.cx.coord().active_ct1();
                 let start = active.iter().position(|active| *active == key).unwrap_or(0);
                 Err(self.cycle_error(rule, &active[..start], &active[start..]))
             }
@@ -317,7 +271,7 @@ impl<'c> EvalHost<'c> {
     }
 }
 
-impl Host for EvalHost<'_> {
+impl Host for EvalHost<'_, '_> {
     fn repositories(&self) -> &Arc<RepositorySet> {
         &self.shared.repositories
     }
@@ -391,35 +345,29 @@ impl Host for EvalHost<'_> {
     }
 
     fn requested_trimmed_root(&self) -> Option<ConfiguredTargetKey> {
-        self.cx.state_ref().requested_trimmed_root.clone()
+        self.cx.coord().first.requested_trimmed_root.clone()
     }
 
     fn target(&mut self, label: &Label) -> Result<Target, String> {
-        if self.cx.tracking() {
+        if self.cx.coord().tracking {
             self.emit(Event::Access(label.clone()));
         }
         let key = NodeKey::Tgt(label.clone());
         match self.need(key.clone()) {
-            Ok(value) => {
-                let id = self.cx.intern(&key);
-                if self.cx.has_effects(id) {
-                    self.emit(Event::MemoUse(id));
-                }
-                match value.as_ref() {
-                    NodeValue::Tgt(result) => result.clone(),
-                    _ => Err("internal error: a Tgt key with another value".to_owned()),
-                }
-            }
+            Ok(value) => match value.as_ref() {
+                NodeValue::Tgt(result) => result.clone(),
+                _ => Err("internal error: a Tgt key with another value".to_owned()),
+            },
             Err(missing) => Err(self.stop(missing)),
         }
     }
 
     fn load_package(&mut self, package: &PackageId) -> Result<(), String> {
-        self.cx.engine().load_package(package)
+        self.cx.coord().engine.load_package(package)
     }
 
     fn source_visibility(&mut self, label: &Label) -> Visibility {
-        self.cx.engine().source_visibility(label)
+        self.cx.coord().engine.source_visibility(label)
     }
 
     fn resolve_group(&mut self, label: &Label) -> Result<Arc<GroupNode>, String> {
@@ -434,11 +382,11 @@ impl Host for EvalHost<'_> {
     }
 
     fn package_args(&mut self, package: &PackageId) -> crate::package::PackageArgs {
-        self.cx.engine().packages[package].args.clone()
+        self.cx.coord().engine.packages[package].args.clone()
     }
 
     fn implicit_tests(&mut self, suite: &Rule) -> Vec<Label> {
-        self.cx.engine().implicit_tests(suite)
+        self.cx.coord().engine.implicit_tests(suite)
     }
 
     fn expand_registration_patterns(
@@ -447,7 +395,8 @@ impl Host for EvalHost<'_> {
         kind: Registration,
     ) -> Result<Vec<Label>, ResolutionError> {
         self.cx
-            .engine()
+            .coord()
+            .engine
             .expand_registration_patterns(patterns, kind)
     }
 
@@ -459,7 +408,7 @@ impl Host for EvalHost<'_> {
         &mut self,
         resolve: bool,
     ) -> Result<Vec<(String, String)>, String> {
-        self.cx.engine().module_execution_platforms(resolve)
+        self.cx.coord().engine.module_execution_platforms(resolve)
     }
 
     fn attribute_aspects(
@@ -467,7 +416,7 @@ impl Host for EvalHost<'_> {
         rule: &Rule,
         identities: &[String],
     ) -> Result<Vec<Arc<crate::aspects::AspectDefinition>>, String> {
-        self.cx.engine().attribute_aspects(rule, identities)
+        self.cx.coord().engine.attribute_aspects(rule, identities)
     }
 
     fn loaded_attribute_aspects(
@@ -475,29 +424,26 @@ impl Host for EvalHost<'_> {
         rule: &Rule,
         identities: &[String],
     ) -> Vec<Arc<crate::aspects::AspectDefinition>> {
-        self.cx.engine().loaded_attribute_aspects(rule, identities)
+        self.cx
+            .coord()
+            .engine
+            .loaded_attribute_aspects(rule, identities)
     }
 
     fn analyze(&mut self, label: &Label, config: ConfigId) -> Result<(), String> {
         // A source file analyzed before (Engine::analyzed_sources): no
         // lookup.
         let source = NodeKey::Src(label.clone());
-        if let Some(value) = self.cx.done_value(&source)
-            && matches!(value.as_ref(), NodeValue::Src(Ok(())))
-        {
-            if self.cx.tracking() {
-                if self.cx.tracking() {
-                    self.emit(Event::Source(label.clone()));
-                }
+        if self.cx.coord().source_analyzed(label) {
+            if self.cx.coord().tracking {
+                self.emit(Event::Source(label.clone()));
             }
             return Ok(());
         }
         let rule = match self.target(label)? {
             Target::Source(_) => {
-                if self.cx.tracking() {
-                    if self.cx.tracking() {
-                        self.emit(Event::Source(label.clone()));
-                    }
+                if self.cx.coord().tracking {
+                    self.emit(Event::Source(label.clone()));
                 }
                 return match self.need(source) {
                     Ok(value) => match value.as_ref() {
@@ -647,7 +593,7 @@ impl Host for EvalHost<'_> {
     }
 
     fn active_keys(&mut self) -> Vec<ConfiguredTargetKey> {
-        self.cx.active_ct1()
+        self.cx.coord().active_ct1()
     }
 
     fn ahead(&self) -> bool {
@@ -669,7 +615,7 @@ impl Host for EvalHost<'_> {
     fn track_position(&mut self, _tracked: Option<u32>, _plan_len: usize) {}
 
     fn track_source(&mut self, label: &Label) {
-        if self.cx.tracking() {
+        if self.cx.coord().tracking {
             self.emit(Event::Source(label.clone()));
         }
     }
@@ -816,7 +762,7 @@ impl Host for EvalHost<'_> {
     ) -> Option<crate::feature_flags::FeatureFlagValue> {
         // S1: the walk's planned providers when it ran first (S2: the
         // CsMatch node needs the flag's CT2).
-        self.cx.engine().planned_feature_flag(key)
+        self.cx.coord().engine.planned_feature_flag(key)
     }
 
     fn platform_tree(&self) -> bool {
@@ -866,20 +812,25 @@ impl Host for EvalHost<'_> {
     }
 
     fn registered_toolchains_in_progress(&mut self, config: ConfigId) -> bool {
-        self.cx.in_progress(&NodeKey::RegToolchains(config))
+        self.cx.coord().in_progress(&NodeKey::RegToolchains(config))
     }
 
     fn set_computing_toolchain(&mut self, _label: &Label) {}
 
     fn record_toolchain_cycle_report(&mut self, config: ConfigId, report: String) {
         self.cx
-            .state()
+            .coord()
+            .first
             .toolchain_cycle_reports
             .insert(config, report);
     }
 
     fn take_toolchain_cycle_report(&mut self, config: ConfigId) -> Option<String> {
-        self.cx.state().toolchain_cycle_reports.remove(&config)
+        self.cx
+            .coord()
+            .first
+            .toolchain_cycle_reports
+            .remove(&config)
     }
 
     fn registered_execution_platforms(
@@ -904,19 +855,23 @@ impl Host for EvalHost<'_> {
     }
 
     fn execution_platforms_in_progress(&mut self, config: ConfigId) -> bool {
-        self.cx.in_progress(&NodeKey::RegExecPlatforms(config))
+        self.cx
+            .coord()
+            .in_progress(&NodeKey::RegExecPlatforms(config))
     }
 
     fn record_execution_platform_cycle_report(&mut self, config: ConfigId, report: String) {
         self.cx
-            .state()
+            .coord()
+            .first
             .execution_platform_cycle_reports
             .insert(config, report);
     }
 
     fn take_execution_platform_cycle_report(&mut self, config: ConfigId) -> Option<String> {
         self.cx
-            .state()
+            .coord()
+            .first
             .execution_platform_cycle_reports
             .remove(&config)
     }
@@ -965,7 +920,8 @@ impl Host for EvalHost<'_> {
         key: &TransitionCacheKey,
     ) -> Option<(TransitionConfigurations, Vec<String>)> {
         self.cx
-            .state_ref()
+            .coord()
+            .first
             .transition_cache
             .get(key)
             .map(|(id, printed)| (Arc::clone(id), printed.clone()))
@@ -976,7 +932,7 @@ impl Host for EvalHost<'_> {
         key: TransitionCacheKey,
         value: (TransitionConfigurations, Vec<String>),
     ) {
-        self.cx.state().transition_cache.insert(key, value);
+        self.cx.coord().first.transition_cache.insert(key, value);
     }
 
     fn claim_toolchain_implementation(
@@ -988,7 +944,7 @@ impl Host for EvalHost<'_> {
             implementation: key.clone(),
             exec_platform: exec_platform.clone(),
         });
-        let claims = &mut self.cx.state().claims;
+        let claims = &mut self.cx.coord().first.claims;
         match claims.get(&key) {
             Some(existing) => Some(existing.clone()),
             None => {
@@ -1001,7 +957,7 @@ impl Host for EvalHost<'_> {
     fn forced_exec(&mut self, key: &ConfiguredTargetKey) -> Option<Label> {
         match &self.own {
             Some(own) if own.key == *key => own.forced_exec.clone(),
-            _ => self.cx.state_ref().claims.get(key).cloned(),
+            _ => self.cx.coord().first.claims.get(key).cloned(),
         }
     }
 
@@ -1014,18 +970,18 @@ impl Host for EvalHost<'_> {
     }
 
     fn aspect_predicate(&mut self, memo: &(Label, String)) -> Option<bool> {
-        self.cx.state_ref().aspect_predicates.get(memo).copied()
+        self.cx.coord().first.aspect_predicates.get(memo).copied()
     }
 
     fn set_aspect_predicate(&mut self, memo: (Label, String), value: bool) {
-        self.cx.state().aspect_predicates.insert(memo, value);
+        self.cx.coord().first.aspect_predicates.insert(memo, value);
     }
 
     fn aspect_attr_aspects(
         &mut self,
         memo: &(ConfiguredTargetKey, String),
     ) -> Option<(Option<Arc<[String]>>, Option<Arc<[String]>>)> {
-        self.cx.state_ref().aspect_attr_aspects.get(memo).cloned()
+        self.cx.coord().first.aspect_attr_aspects.get(memo).cloned()
     }
 
     fn set_aspect_attr_aspects(
@@ -1033,15 +989,19 @@ impl Host for EvalHost<'_> {
         memo: (ConfiguredTargetKey, String),
         value: (Option<Arc<[String]>>, Option<Arc<[String]>>),
     ) {
-        self.cx.state().aspect_attr_aspects.insert(memo, value);
+        self.cx
+            .coord()
+            .first
+            .aspect_attr_aspects
+            .insert(memo, value);
     }
 
     fn aspect_toolchains(&mut self, memo: &(ConfigId, String)) -> Option<Arc<AspectToolchains>> {
-        self.cx.state_ref().aspect_toolchains.get(memo).cloned()
+        self.cx.coord().first.aspect_toolchains.get(memo).cloned()
     }
 
     fn set_aspect_toolchains(&mut self, memo: (ConfigId, String), value: Arc<AspectToolchains>) {
-        self.cx.state().aspect_toolchains.insert(memo, value);
+        self.cx.coord().first.aspect_toolchains.insert(memo, value);
     }
 
     fn aspect_attribute_configs(
@@ -1049,7 +1009,8 @@ impl Host for EvalHost<'_> {
         memo: &(ConfiguredTargetKey, String),
     ) -> Option<Arc<BTreeMap<String, TransitionConfigurations>>> {
         self.cx
-            .state_ref()
+            .coord()
+            .first
             .aspect_attribute_configs
             .get(memo)
             .cloned()
@@ -1060,21 +1021,57 @@ impl Host for EvalHost<'_> {
         memo: (ConfiguredTargetKey, String),
         value: Arc<BTreeMap<String, TransitionConfigurations>>,
     ) {
-        self.cx.state().aspect_attribute_configs.insert(memo, value);
+        self.cx
+            .coord()
+            .first
+            .aspect_attribute_configs
+            .insert(memo, value);
     }
+}
+
+/// The CtKey of an edge to `rule`'s `key` from a context inside a
+/// platform's tree or not: the first variant already analyzed (the walk's
+/// first-visit memo), else this context's.
+pub(crate) fn edge_ct_key(
+    first: &mut FirstVisit,
+    no_config: bool,
+    rule: &Rule,
+    key: ConfiguredTargetKey,
+    platform_tree: bool,
+) -> CtKey {
+    if let Some(found) = first.canonical.get(&key) {
+        return found.clone();
+    }
+    let forced_exec = first.claims.get(&key).cloned();
+    // platform_tree is kept for every rule of a tree: the context
+    // propagates to the rule's dependencies (CtKey::normalized's per-rule
+    // rule would let a filegroup's genrule dependency escape the empty
+    // configuration).
+    let ct = CtKey {
+        key: key.clone(),
+        platform_tree,
+        forced_exec,
+    }
+    .normalized(Observes {
+        no_config,
+        toolchain_resolution: uses_toolchain_resolution(rule),
+        exec_edges: true,
+    });
+    first.canonical.insert(key, ct.clone());
+    ct
 }
 
 /// The phase-1 node bodies: the value of `key` (S1: the coordinator's
 /// loading nodes run on the engine).
 pub(crate) fn body(
     shared: &EvalShared,
-    cx: &mut dyn Phase1Cx,
+    cx: &mut dyn Phase1Cx<'_>,
     key: &NodeKey,
 ) -> Result<NodeValue, Missing> {
     match key {
-        NodeKey::Tgt(label) => Ok(NodeValue::Tgt(cx.engine().target(label))),
+        NodeKey::Tgt(label) => Ok(NodeValue::Tgt(cx.coord().engine.target(label))),
         NodeKey::Group(label) => Ok(NodeValue::Group(
-            cx.engine().resolve_group(label, &mut Vec::new()),
+            cx.coord().engine.resolve_group(label, &mut Vec::new()),
         )),
         NodeKey::Src(label) => {
             let mut host = EvalHost::new(shared, cx, None, false);

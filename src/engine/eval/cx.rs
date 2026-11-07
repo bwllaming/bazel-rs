@@ -89,6 +89,10 @@ pub(crate) trait Cx {
 
     /// The node being computed.
     fn current(&self) -> NodeId;
+
+    /// The id of `key` (interned on first sight): what events name a node
+    /// by (`Reach`, `MemoUse`). Interface change (B, S1).
+    fn id_of(&self, key: &NodeKey) -> NodeId;
 }
 
 /// A node body.
@@ -143,6 +147,10 @@ pub(crate) mod tests {
 
         fn current(&self) -> NodeId {
             *self.active.last().expect("a node is being computed")
+        }
+
+        fn id_of(&self, key: &NodeKey) -> NodeId {
+            self.interner.intern(key)
         }
     }
 

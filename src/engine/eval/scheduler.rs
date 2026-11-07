@@ -1063,6 +1063,10 @@ impl<B: Bodies> Cx for InlineCx<'_, '_, '_, B> {
     fn current(&self) -> NodeId {
         self.id
     }
+
+    fn id_of(&self, key: &NodeKey) -> NodeId {
+        self.evaluator.graph.intern(key)
+    }
 }
 
 /// The pool driver's context: `need` answers from published values.
@@ -1105,6 +1109,10 @@ impl<B: Bodies> Cx for PoolCx<'_, '_, B> {
 
     fn current(&self) -> NodeId {
         self.id
+    }
+
+    fn id_of(&self, key: &NodeKey) -> NodeId {
+        self.evaluator.graph.intern(key)
     }
 }
 
