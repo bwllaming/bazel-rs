@@ -266,7 +266,7 @@ pub const VALIDATION_ASPECT_IDENTITY: &str = VALIDATION_ASPECT_NAME;
 /// configured target and the directly required aspects
 /// (AspectKeyCreator.AspectKey). Identity and equality follow the key: the
 /// same aspect over the same base and base aspects is one application.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct AspectApplicationKey {
     pub base: ConfiguredTargetKey,
     pub aspect: String,

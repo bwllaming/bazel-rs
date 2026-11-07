@@ -16067,6 +16067,9 @@ impl Engine {
         labels: &[Label],
         checkpoint: Option<&mut root_checkpoint::Callback<'_>>,
     ) -> Result<root_checkpoint::Outcome<BuildPlan>, String> {
+        // BAZEL_RS_ANALYSIS / BAZEL_RS_EVAL_VERIFY (docs/EVALUATOR.md):
+        // the walk below unless the evaluator is asked for.
+        eval::check_mode()?;
         crate::progress::analysis_targets(labels.len());
         crate::perf_mark("plan.start");
         // The workspace status is computed at most once per build
