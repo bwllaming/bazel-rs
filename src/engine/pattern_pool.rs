@@ -56,6 +56,7 @@ pub(super) fn blocker(error: &str) -> Option<&str> {
 #[derive(Default)]
 struct Counts {
     retried: u64,
+    withdrawn: u64,
     waited: u64,
     wait_micros: u64,
 }
@@ -68,6 +69,8 @@ struct State<T> {
     /// print events are the coordinator's to replay first).
     aborted: Vec<Vec<T>>,
     retries: Vec<u8>,
+    /// Units a worker is evaluating now.
+    running: Vec<bool>,
     /// Finished units aborted on a demand, by that demand.
     blocked: HashMap<String, Vec<usize>>,
     /// The batches of units queued again in waves ([`Batch`]).
@@ -106,6 +109,22 @@ fn release_wave<T>(state: &mut State<T>, batch: usize) -> bool {
     !released.is_empty()
 }
 
+/// Take `index` back from the queue or its batch's waiting units (the
+/// coordinator reached it first); whether a next wave was queued.
+fn withdraw<T>(state: &mut State<T>, index: usize) -> bool {
+    state.queue.retain(|queued| *queued != index);
+    for batch in &mut state.batches {
+        batch.waiting.retain(|waiting| *waiting != index);
+    }
+    match state.wave_of.remove(&index) {
+        Some(batch) => {
+            state.batches[batch].running -= 1;
+            state.batches[batch].running == 0 && release_wave(state, batch)
+        }
+        None => false,
+    }
+}
+
 /// The shared queue of one pattern's loading workers and its coordinator.
 pub(super) struct PatternPool<T> {
     state: Mutex<State<T>>,
@@ -122,6 +141,7 @@ impl<T> PatternPool<T> {
                 results: (0..units).map(|_| None).collect(),
                 aborted: (0..units).map(|_| Vec::new()).collect(),
                 retries: vec![0; units],
+                running: vec![false; units],
                 blocked: HashMap::new(),
                 batches: Vec::new(),
                 wave_of: HashMap::new(),
@@ -147,6 +167,7 @@ impl<T> PatternPool<T> {
                 return None;
             }
             if let Some(index) = state.queue.pop_front() {
+                state.running[index] = true;
                 return Some(index);
             }
             state = self
@@ -170,6 +191,7 @@ impl<T> PatternPool<T> {
                 .push(index);
         }
         state.results[index] = Some(unit);
+        state.running[index] = false;
         let queued = match state.wave_of.remove(&index) {
             Some(batch) => {
                 state.batches[batch].running -= 1;
@@ -259,6 +281,22 @@ impl<T> PatternPool<T> {
                     let aborted = std::mem::take(&mut state.aborted[index]);
                     return Ok((aborted, unit));
                 }
+                // Queued again but not running yet (behind other units,
+                // or in a later wave of its batch): the coordinator does
+                // not wait for it — its last aborted attempt goes to the
+                // inline re-run at its slot, as before the re-runs.
+                if !state.running[index]
+                    && let Some(unit) = state.aborted[index].pop()
+                {
+                    let queued = withdraw(&mut state, index);
+                    let aborted = std::mem::take(&mut state.aborted[index]);
+                    state.counts.withdrawn += 1;
+                    drop(state);
+                    if queued {
+                        self.work.notify_all();
+                    }
+                    return Ok((aborted, unit));
+                }
                 waited = true;
                 let (state, _) = self
                     .done
@@ -290,11 +328,12 @@ impl<T> PatternPool<T> {
         self.done.notify_all();
     }
 
-    /// `(retried, waited, wait seconds)` for the timing report.
-    pub(super) fn counts(&self) -> (u64, u64, f64) {
+    /// `(retried, withdrawn, waited, wait seconds)` for the timing report.
+    pub(super) fn counts(&self) -> (u64, u64, u64, f64) {
         let state = self.lock();
         (
             state.counts.retried,
+            state.counts.withdrawn,
             state.counts.waited,
             state.counts.wait_micros as f64 / 1e6,
         )
@@ -455,6 +494,37 @@ mod tests {
         assert_eq!(pool.next(), Some(4));
         pool.finish(1, 11, None);
         assert_eq!(pool.next(), Some(3));
+    }
+
+    /// The coordinator reaching a unit still waiting in a later wave (or
+    /// queued, not running) takes it back with its last aborted attempt
+    /// (the inline re-run) instead of waiting; the wave accounting goes on.
+    #[test]
+    fn a_waiting_unit_the_coordinator_reaches_is_withdrawn() {
+        let pool = PatternPool::new(4);
+        for _ in 0..4 {
+            assert!(pool.next().is_some());
+        }
+        pool.finish(0, 0, None);
+        for index in 1..4 {
+            pool.finish(index, index, Some("X"));
+        }
+        let (_, unit) = pool.take(0, |_| false).unwrap();
+        assert_eq!(unit, 0);
+        pool.retry_ready(|_| true);
+        // Wave [1] is queued, [2, 3] wait; nothing runs yet.
+        let (aborted, unit) = pool.take(1, |_| false).unwrap();
+        assert_eq!((aborted, unit), (vec![], 1));
+        // Withdrawing the wave's only unit released the next wave.
+        assert_eq!(pool.next(), Some(2));
+        let (aborted, unit) = pool.take(3, |_| false).unwrap();
+        assert_eq!((aborted, unit), (vec![], 3));
+        pool.finish(2, 12, None);
+        let (aborted, unit) = pool.take(2, |_| false).unwrap();
+        assert_eq!((aborted, unit), (vec![2], 12));
+        pool.shutdown();
+        assert_eq!(pool.next(), None);
+        assert_eq!(pool.counts().1, 2);
     }
 
     /// A unit already taken is never queued again, whatever gets ready.

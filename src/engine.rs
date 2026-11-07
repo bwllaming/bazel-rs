@@ -3624,10 +3624,16 @@ impl Engine {
         // Hidden test hook (review §5): reproducible per-package jitter
         // shuffles worker completion order without changing results.
         let jitter_millis = loading_jitter_millis();
+        // Hidden test hook: a worker panics on this package (the command
+        // fails with an error, never a crash).
+        let panic_on = std::env::var("BAZEL_RS_DEBUG_LOADING_WORKER_PANIC").ok();
+        let panic_on = &panic_on;
         std::thread::scope(|scope| {
-            // The workers exit once the coordinator leaves, an error
-            // included.
+            // Should the coordinator unwind, the workers still exit (the
+            // scope joins them).
             let _shutdown = pattern_pool::ShutdownOnDrop(pool);
+            let mut handles = Vec::with_capacity(workers);
+            let mut spawn_error = None;
             for worker in 0..workers {
                 let spawn = std::thread::Builder::new()
                     .stack_size(LOADING_WORKER_STACK)
@@ -3635,6 +3641,9 @@ impl Engine {
                         let _note = pattern_pool::PanicNote(pool);
                         while let Some(index) = pool.next() {
                             let id = &pending[index];
+                            if panic_on.as_deref() == Some(id.package.as_str()) {
+                                panic!("BAZEL_RS_DEBUG_LOADING_WORKER_PANIC: //{}", id.package);
+                            }
                             if jitter_millis > 0 {
                                 let bound = jitter_millis + 1;
                                 let roll = loading_jitter_roll(index as u64, worker as u64);
@@ -3678,69 +3687,108 @@ impl Engine {
                             pool.finish(index, unit, blocked.as_deref());
                         }
                     });
-                if let Err(error) = spawn {
-                    return Err(format!("cannot spawn package-loading worker: {error}"));
-                }
-            }
-            // Commit in pattern order: the same sequence of commits — and
-            // of printed output — as the sequential engine, whatever order
-            // the workers finished in. Each package's follow-up (its
-            // targets) runs right after its commit, interleaved exactly
-            // like the sequential path, so warnings and first errors cannot
-            // move. Packages already loaded before this call commit nothing
-            // but still run their follow-up, like the sequential path.
-            let ready = |blocked: &str| repositories.sentinel_ready(blocked);
-            let mut dispatched = 0;
-            for id in ids {
-                let index = (pending.get(dispatched) == Some(id)).then(|| {
-                    dispatched += 1;
-                    dispatched - 1
-                });
-                if let Some(index) = index
-                    && !self.packages.contains_key(id)
-                {
-                    let (aborted, unit) = pool.take(index, ready)?;
-                    // The commit, with an inline re-run of a unit that
-                    // needed a repository or an extension
-                    // (BAZEL_RS_TIMING_TIMELINE).
-                    let span = crate::timeline::span("pattern-commit", || {
-                        format!("@@{}//{}", id.repository, id.package)
-                    });
-                    // Attempts aborted before a re-run on a worker: their
-                    // module events print first, as an aborted unit's
-                    // before its inline re-run (commit_load_unit).
-                    for attempt in aborted {
-                        self.emit_load_prints(
-                            attempt
-                                .prints
-                                .into_iter()
-                                .filter(|event| {
-                                    !matches!(event, crate::loading::LoadPrintEvent::Build(_))
-                                })
-                                .collect(),
-                        );
-                    }
-                    let committed = self.commit_load_unit(id, unit);
-                    drop(span);
-                    // The commit may have satisfied the demands later units
-                    // were blocked on: those re-run on the workers now.
-                    pool.retry_ready(ready);
-                    if let Err(error) = committed {
-                        self.skip_package_error(error)?;
-                        continue;
+                match spawn {
+                    Ok(handle) => handles.push(handle),
+                    Err(error) => {
+                        spawn_error = Some(format!("cannot spawn package-loading worker: {error}"));
+                        break;
                     }
                 }
-                after_commit(self, id)?;
             }
-            if crate::plan_timings::enabled() {
-                let (retried, waited, wait) = pool.counts();
-                crate::snapshot::diag::line_fmt(format_args!(
-                    "PERF-PATTERN units={} workers={workers} retried={retried} waited={waited} wait={wait:.3}s",
-                    pending.len()
-                ));
+            let committed = match spawn_error {
+                Some(error) => Err(error),
+                None => self.commit_pattern_units(
+                    ids,
+                    pending,
+                    pool,
+                    repositories,
+                    workers,
+                    &mut after_commit,
+                ),
+            };
+            // The workers exit once the coordinator left (an error
+            // included) and are joined here: a worker that panicked fails
+            // the command with an error, never a crash of the scope.
+            pool.shutdown();
+            let mut panicked = false;
+            for handle in handles {
+                panicked |= handle.join().is_err();
             }
-            Ok(())
+            if panicked {
+                return Err("parallel package loading worker panicked".to_owned());
+            }
+            committed
         })
+    }
+
+    /// The coordinator's part of [`Self::load_packages_parallel`].
+    fn commit_pattern_units(
+        &mut self,
+        ids: &[PackageId],
+        pending: &[PackageId],
+        pool: &pattern_pool::PatternPool<package::LoadUnit>,
+        repositories: &Arc<crate::repository::RepositorySet>,
+        workers: usize,
+        after_commit: &mut impl FnMut(&mut Self, &PackageId) -> Result<(), String>,
+    ) -> Result<(), String> {
+        // Commit in pattern order: the same sequence of commits — and
+        // of printed output — as the sequential engine, whatever order
+        // the workers finished in. Each package's follow-up (its
+        // targets) runs right after its commit, interleaved exactly
+        // like the sequential path, so warnings and first errors cannot
+        // move. Packages already loaded before this call commit nothing
+        // but still run their follow-up, like the sequential path.
+        let ready = |blocked: &str| repositories.sentinel_ready(blocked);
+        let mut dispatched = 0;
+        for id in ids {
+            let index = (pending.get(dispatched) == Some(id)).then(|| {
+                dispatched += 1;
+                dispatched - 1
+            });
+            if let Some(index) = index
+                && !self.packages.contains_key(id)
+            {
+                let (aborted, unit) = pool.take(index, ready)?;
+                // The commit, with an inline re-run of a unit that
+                // needed a repository or an extension
+                // (BAZEL_RS_TIMING_TIMELINE).
+                let span = crate::timeline::span("pattern-commit", || {
+                    format!("@@{}//{}", id.repository, id.package)
+                });
+                // Attempts aborted before a re-run on a worker: their
+                // module events print first, as an aborted unit's
+                // before its inline re-run (commit_load_unit).
+                for attempt in aborted {
+                    self.emit_load_prints(
+                        attempt
+                            .prints
+                            .into_iter()
+                            .filter(|event| {
+                                !matches!(event, crate::loading::LoadPrintEvent::Build(_))
+                            })
+                            .collect(),
+                    );
+                }
+                let committed = self.commit_load_unit(id, unit);
+                drop(span);
+                // The commit may have satisfied the demands later units
+                // were blocked on: those re-run on the workers now.
+                pool.retry_ready(ready);
+                if let Err(error) = committed {
+                    self.skip_package_error(error)?;
+                    continue;
+                }
+            }
+            after_commit(self, id)?;
+        }
+        if crate::plan_timings::enabled() {
+            let (retried, withdrawn, waited, wait) = pool.counts();
+            crate::snapshot::diag::line_fmt(format_args!(
+                "PERF-PATTERN units={} workers={workers} retried={retried} withdrawn={withdrawn} waited={waited} wait={wait:.3}s",
+                pending.len()
+            ));
+        }
+        Ok(())
     }
 
     /// A package of a wildcard failed to load: under a keep-going target
