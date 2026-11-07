@@ -124,6 +124,8 @@ const DIAGNOSTIC_ENV: &[&str] = &[
     "BAZEL_RS_DUMP_ACTIONS",
     "BAZEL_RS_LOADING_JITTER",
     "BAZEL_RS_LOADING_NO_DEMAND",
+    // The analysis evaluator's completion-order jitter (docs/EVALUATOR.md).
+    "BAZEL_RS_EVAL_JITTER",
     // Integration-20 (taint TestHook, crate::snapshot::record): the
     // analysis self-checks of the memoized dependency views and the
     // artifact index (they only ever fail a command), and the persistent

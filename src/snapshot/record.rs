@@ -43,6 +43,8 @@ pub const DUMP_VAR: &str = "BAZEL_RS_SNAPSHOT_DUMP";
 pub const TEST_HOOKS: &[&str] = &[
     "BAZEL_RS_LOADING_JITTER",
     "BAZEL_RS_LOADING_NO_DEMAND",
+    // The analysis evaluator's completion-order jitter (docs/EVALUATOR.md).
+    "BAZEL_RS_EVAL_JITTER",
     "BAZEL_RS_VERIFY_VIEWS",
     "BAZEL_RS_VERIFY_ARTIFACTS",
     "BAZEL_RS_DIGEST_MEMO",

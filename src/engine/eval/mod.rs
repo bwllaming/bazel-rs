@@ -6,7 +6,8 @@
 //! Files and owners (docs/EVALUATOR.md "Ownership"):
 //! - [`key`] NodeKey, CtKey, NodeId interning — worker A;
 //! - [`cx`] the body context (`need`, `Missing`) — worker A;
-//!   S1 adds `graph.rs`, `scheduler.rs`, `cycles.rs` (A);
+//! - [`graph`], [`scheduler`], [`cycles`] node storage, the inline and pool
+//!   drivers, cycles at quiescence — worker A (S1);
 //! - [`value`] node values, [`shared`] the shared read view — worker B;
 //!   S1 adds the node bodies (`bodies/*.rs`, B);
 //! - [`transcript`] events and the tape, [`replay_bench`] — worker C;

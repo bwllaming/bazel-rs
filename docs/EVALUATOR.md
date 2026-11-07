@@ -96,6 +96,89 @@ completion spawns ready waiters LIFO on the local deque; a boost heap
 favours the linearizer's frontier (the lowest unmerged plan indices). No
 lock is held across a body, a fetch or Starlark.
 
+**As built (S1, worker A)** — `graph.rs`, `scheduler.rs`, `cycles.rs`:
+
+- `Graph`: the interner plus one `Entry` per id in a segmented arena
+  (lock-free by id): state (`Fresh`, `Queued`, `Running`, `Waiting`,
+  `Done`, `Deferred`), `missing` (outstanding deps + 1 guard), `epoch`
+  (bumped per park; a waiter registration carries it, stale ones are
+  ignored), `attempts`, `wanted`, the value (`OnceLock<Arc<NodeValue>>`),
+  the transcript of the successful attempt (`Entry::transcript`, the
+  events it `emit`ted) and a short mutex over the waiter list and what
+  the node waits for (`Wait`). `Tracked` mutexes count the locks a thread
+  holds (debug builds); `graph::assert_no_locks(what)` checks it where a
+  body or a fetch starts (bodies may call it before Starlark).
+- `trait Bodies: Sync { type Attempt; begin(id, key) -> Attempt;
+  run(&mut dyn Cx, key) -> Result<NodeValue, Missing>; finish(Attempt,
+  NodeValue) -> NodeValue; abandon(Attempt); target_platform(ConfigId) ->
+  NodeKey; stops_build(key, value) -> bool }`: `begin`/`finish`/`abandon`
+  bracket every attempt on its thread — **the hook for the caller's
+  Isolation and `observed_fs` frame** (a `Missing` attempt is abandoned,
+  a done one finished; at one thread the frames nest like the walk's).
+  `FnBodies { shared, body: NodeFn, target_platform }` adapts a `NodeFn`.
+- `Evaluator::new(&bodies, EvalConfig { threads, keep_going,
+  jitter_micros })`; `evaluate(&roots, &mut dyn RepoLane, &mut dyn
+  CycleHandler) -> Outcome { complete, unresolved, deferred, first_error
+  }`; `value(&key)`, `graph()`, `boost(&key, priority)`, `stats()`,
+  `frontier_only()`. Several `evaluate` calls share the graph.
+  `EvalConfig::for_build(loading_phase_threads, keep_going, cap_mb)`:
+  threads = `worker_threads` = min(cores, `--loading_phase_threads`,
+  cap / 64 MB), at least 1; jitter from `BAZEL_RS_EVAL_JITTER` (µs bound
+  of a reproducible per-attempt sleep; a snapshot test hook).
+- **Inline driver** (`threads == 1`, no pool): `need` runs each missing
+  key in place, in key order (today's DFS); a key that is running (an
+  ancestor, or the node itself) answers `BackEdge(key)` if no earlier key
+  of the batch is missing; `Missing::Repo` is fetched at once through the
+  lane and the node re-run; a body's own `Missing::Nodes` runs the fresh
+  ones and re-runs. A node that cannot finish (an unconverted back edge)
+  parks; `need` re-runs parked nodes it meets.
+- **Pool driver**: `build_pool` (16 MiB stacks, `eval-N` threads bound to
+  the caller's jemalloc arena). Each attempt: CAS `Queued → Running`;
+  `need` answers from published values only (`BackEdge` for the node
+  itself and for handler-answered pairs); a value is published and its
+  waiters counted down — the first ready one continues on the same
+  thread, the rest are pushed on the local deque (LIFO); `Missing` parks:
+  `Nodes` (deduplicated; fresh ones claimed and spawned in chunks: ≥ 8
+  per worker, ≤ 64 nodes each), `TargetPlatform(cfg)` (as `Nodes` of
+  `Bodies::target_platform(cfg)`), `Repo(name)` (parked on the name; the
+  coordinator's FIFO lane fetches each once and re-queues the demanders;
+  a repository fetched *before* the attempt began is `Unresolvable`),
+  `BackEdge` (parked for the handler). Coordinator-only keys run on the
+  thread that called `evaluate`, which also runs the lane.
+- **Quiescence** (no job outstanding, coordinator queues empty, roots not
+  done): the coordinator builds a `WaitGraph` (parked nodes and their
+  waits in need order, deferred nodes, answered pairs) and calls
+  `CycleHandler::at_quiescence` → `Resolution::Answer(vec![(parent,
+  child)])` (each parent re-runs; its `need` of the child answers
+  `BackEdge`) or `Stop`. A pair is answered at most once; nothing new →
+  stop, parked nodes in `Outcome::unresolved`. `cycles::DfsCycles` (the
+  first back edge of a DFS from the roots over the wait graph) is the
+  stand-in until pass 1 (C) provides the handler.
+- **Frontier-only**: without `keep_going`, the first value
+  `Bodies::stops_build` calls fatal (default: a failed CT1/CT2/Aspect)
+  sets `Outcome::first_error` and switches it on: queued nodes not
+  `wanted` become `Deferred` instead of running. `boost(key, p)` wants a
+  node and (transitively) what it waits for, un-defers them, and pushes
+  it on the boost heap that every job pops (lowest `p`) before its own
+  nodes; a wanted node's dependencies inherit `wanted` when it parks.
+  The inline driver ignores the mode (it is the DFS itself).
+- **Panics** in a body propagate out of `evaluate` (no hang: the job's
+  outstanding count is released by a drop guard).
+
+Measured (release without LTO, this host, `cargo test --release --lib
+eval_scheduler_bench -- --ignored --nocapture`; trivial bodies, keys
+pre-interned):
+
+| Graph | 1 thread (inline) | 2 | 8 | 32 |
+|---|---|---|---|---|
+| tree 64×64×50 (208,961 nodes) | 0.85 µs/node | 0.83 | 0.42 wall (3.4 CPU) | 0.23 wall (7.3 CPU) |
+| one node needing 200,000 | 0.69 µs/node | 1.51 | 1.36 | 1.22 |
+
+Chain latency (dependency completed → dependent's attempt running), a
+5,000 chain: median 0.35–0.39 µs, p99 0.74–0.90 µs, max 3–8 µs at 2/8/32
+threads; with two dependencies where the last completes on another
+worker: median 0.59 µs, p99 2.7 µs (target ≤ 50 µs).
+
 CT2(K) runs when CT1(K), the CT2 of its edges, toolchain implementations
 and aspects are done **and** pass 1 has assigned K's plan index. Memory:
 unmerged CT2 deltas capped at 16,384; CT2 far beyond the merge frontier
@@ -197,6 +280,18 @@ change announced to the other two workers; adding a helper is not.
 - `delta.rs`: `merge_ops`/`merge_op`/`MergeSink` (the linearizer's
   merge; `Engine::merge_delta` calls it), `DeltaOp::kind`,
   `DeltaOp::replay_copy`.
+
+### Interface changes
+
+- 2026-11-07 (A, S1): none to the frozen interfaces. Added beside them:
+  `graph.rs`, `scheduler.rs` (`Bodies`, `FnBodies`, `RepoLane`,
+  `Evaluator`, `EvalConfig`, `Outcome`), `cycles.rs` (`CycleHandler`,
+  `WaitGraph`, `Resolution`, `DfsCycles`); `key::slot_of` is
+  `pub(super)` (the graph shares the interner's arena layout). Semantics
+  made precise: `Cx::need` takes the keys in order and answers
+  `BackEdge(k)` only when no earlier key of the batch is missing
+  (`MapCx` answers it first); the events a body `emit`s are kept with the
+  successful attempt (`Entry::transcript`), not put into the value.
 
 ## 4. Stages and gates
 
