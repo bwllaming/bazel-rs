@@ -5,6 +5,9 @@ Program: oracle design review `ses_eb8f16924ffeNtzHiI8k1sLAME` (2026-10-19),
 `parity-parallel-analysis` (base `feb566f`). P0 and P1 landed; P2/P3 follow
 in a later session after the parent reviews P1.
 
+Successor (2026-11-07): the parallel analysis evaluator, docs/EVALUATOR.md,
+replaces the pipeline plan's S3–S6.
+
 ## P0 — baseline (`BAZEL_RS_TIMING` phase marks)
 
 `BAZEL_RS_TIMING=1` prints `PERF <elapsed>s rss=<kB> <mark>` on stderr
