@@ -2813,6 +2813,9 @@ pub struct Engine {
     /// Dependency tracking for incremental analysis (crate::engine's
     /// `incremental` module), on while the analysis snapshot saves.
     incremental: Option<Box<incremental::Tracker>>,
+    /// BAZEL_RS_EVAL_VERIFY_PHASE1: the configured targets phase 2
+    /// analyzed (a deferred target platform's tree) into the plan.
+    phase2_analyzed: BTreeSet<ConfiguredTargetKey>,
 }
 
 impl Engine {
@@ -2921,6 +2924,7 @@ impl Engine {
             incompatible_errors: BTreeMap::new(),
             pattern_load_errors: None,
             incremental: None,
+            phase2_analyzed: BTreeSet::new(),
         }
     }
 
@@ -5403,7 +5407,13 @@ impl Engine {
             // Not inside phase 2's walk: there is no plan to extend.
             return self.target_platform(config, configured, &mut Vec::new());
         };
+        let before = plan.len();
         let platform = self.target_platform(config, configured, &mut plan);
+        if eval::nodes::verify_phase1::enabled() {
+            // The walk's plan entries phase 2 analyzed (not phase 1's).
+            self.phase2_analyzed
+                .extend(plan[before..].iter().map(|(key, _)| key.clone()));
+        }
         self.planning_plan = Some(plan);
         platform
     }
@@ -11595,6 +11605,9 @@ impl Engine {
         }
         crate::progress::analysis_planned(plan.len());
         crate::perf_mark("plan.phase1_analysis_done");
+        if eval::nodes::verify_phase1::enabled() {
+            self.verify_phase1(labels, top, &configured, &plan)?;
+        }
         // Alias-like targets and the end of their alias chain: dependents see
         // that target's label, kind and providers (AliasConfiguredTarget).
         let forwarded: BTreeMap<ConfiguredTargetKey, Label> = configured

@@ -94,3 +94,57 @@ pub(crate) struct EvalShared {
 #[allow(clippy::extra_unused_type_parameters)]
 const fn assert_sync<T: Sync>() {}
 const _: () = assert_sync::<EvalShared>();
+
+impl EvalShared {
+    /// The shared view of `engine`'s request (S1: built per evaluation).
+    /// The configurations move into the view (the one write bodies make,
+    /// an intern) and back with [`Self::restore`]; the engine's coordinator
+    /// services (package loading, target lookups, aspect definitions) never
+    /// read them.
+    pub(crate) fn from_engine(engine: &mut super::super::Engine) -> Self {
+        let options = EvalOptions {
+            loading_phase_threads: engine.loading_phase_threads,
+            keep_going: engine.keep_going,
+            cquery: engine.cquery_capture.is_some(),
+            cquery_files: engine.cquery_files,
+            cquery_build: engine.cquery_build,
+            cquery_transitions: engine.cquery_transitions,
+            cquery_fragments: engine.cquery_fragments,
+            aquery: engine.aquery_capture.is_some(),
+            compact_repo_mapping: engine.compact_repo_mapping,
+            run_under: engine.run_under.clone(),
+            output_selection: engine.output_selection.clone(),
+            requested_aspects: engine.requested_aspects.clone(),
+            aspect_parameters: engine.aspect_parameters.clone(),
+            tests_requested: engine.tests_requested,
+            execute_build: engine.execute_build,
+            skip_incompatible_explicit_targets: engine.skip_incompatible_explicit_targets,
+            explicit_targets: engine.explicit_targets.clone(),
+            workspace_status: engine.workspace_status.clone(),
+            run_requests: engine.run_requests.clone(),
+            run_trees: engine.run_trees,
+        };
+        Self {
+            repositories: Arc::clone(&engine.repositories),
+            options,
+            configurations: Mutex::new(std::mem::take(&mut engine.configurations)),
+            // S1: aspect definitions are a coordinator service (the
+            // engine's registry, filled by `.bzl` loads).
+            aspects: Mutex::new(crate::aspects::AspectRegistry::default()),
+            loaded_functions: Arc::clone(&engine.loaded_functions),
+            client_environment: Arc::default(),
+            input_groups: Arc::default(),
+            input_memos: Arc::default(),
+            artifacts: Arc::default(),
+            target_identities: Default::default(),
+        }
+    }
+
+    /// Give the configurations (with what the evaluation interned) back.
+    pub(crate) fn restore(self, engine: &mut super::super::Engine) {
+        engine.configurations = self
+            .configurations
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+}
