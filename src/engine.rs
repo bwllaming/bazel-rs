@@ -36,6 +36,7 @@ mod compatibility;
 pub mod cquery;
 mod cquery_presentation;
 mod delta;
+mod eval;
 mod genquery;
 mod incremental;
 mod keep_going;
@@ -16328,6 +16329,19 @@ impl Engine {
         }
         self.stop_analysis_pool();
         crate::perf_mark("plan.phase2_actions_done");
+        if eval::replay_bench::enabled() {
+            eval::replay_bench::report(eval::replay_bench::Volume {
+                plan: plan.len(),
+                producers: state.producers.paths.len(),
+                nodes: state.nodes.entries(),
+                artifacts: state.artifact_index.shared.len(),
+                declared: state.declared.len(),
+                dry: state.dry.len(),
+                providers: state.custom_providers.len(),
+                runfiles_info: state.runfiles_info.len(),
+                runfiles_nodes: state.runfiles_nodes.len(),
+            });
+        }
         if self.cquery_capture.is_some() {
             // aquery keeps the planned actions of the whole universe.
             self.aquery_top_level(labels, top, &state);
@@ -18483,7 +18497,7 @@ fn report_input_groups(nodes: &[PlannedAction], listed_tree_actions: usize) {
 /// The source inputs of one planned action (ActionPlanning::source_inputs):
 /// its own, then its shared input groups' (PA-1), which every action using
 /// the group holds instead of a copy.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct SourceInputs {
     /// [`source_paths`] of the action's own inputs, kept only when they are
     /// not the planned action's own listed sources (MEM2,

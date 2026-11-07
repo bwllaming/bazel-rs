@@ -1572,78 +1572,187 @@ impl Engine {
     }
 
     /// Apply `delta` (the commit of `key`) to the planning state, in its
-    /// order; its error last.
+    /// order; its error last ([`merge_ops`]).
     pub(super) fn merge_delta(
         &mut self,
         state: &mut ActionPlanning,
         key: &ConfiguredTargetKey,
         delta: TargetDelta,
     ) -> Result<(), String> {
-        for op in delta.ops {
-            match op {
-                DeltaOp::Providers(providers, provider_keys) => {
-                    state.custom_providers.insert(key.clone(), providers);
-                    state.provider_keys.insert(key.clone(), provider_keys);
-                }
-                DeltaOp::Output(path, producer) => {
-                    parallel::record_registered_output(&path);
-                    state.producers.insert(path, producer);
-                }
-                DeltaOp::Shared(path, registered) => {
-                    parallel::record_registered_output(&path);
-                    parallel::note_shared(state.producers.stamp, registered, state.producers.turn)
-                }
-                DeltaOp::Artifact(file, artifact) => {
-                    register_artifact(&state.artifact_index, &file, &artifact);
-                }
-                DeltaOp::Declared {
-                    key,
-                    artifact,
-                    replace,
-                } => {
-                    if replace {
-                        state.declared.insert(key, artifact);
-                    } else {
-                        state.declared.entry(key).or_insert(artifact);
-                    }
-                }
-                DeltaOp::RunfilesInfo(runfiles) => {
-                    state.runfiles_info.insert(key.clone(), runfiles);
-                }
-                DeltaOp::RunfilesNodes(nodes) => {
-                    state.runfiles_nodes.insert(key.clone(), *nodes);
-                }
-                DeltaOp::Node(planned, sources) => {
-                    if let Some((id, sources)) = sources {
-                        state.source_inputs.insert(id, sources);
-                    }
-                    state.nodes.push(*planned);
-                }
-                DeltaOp::Lowering(pending) => {
-                    state
-                        .nodes
-                        .enqueue(pending, self.warnings.len(), self.errors.len());
-                }
-                DeltaOp::ActionExecution(id, execution) => {
-                    self.action_executions.insert(id, execution);
-                }
-                DeltaOp::BuildInfoAction(id) => {
-                    self.build_info_actions.insert(id);
-                }
-                DeltaOp::Dry(defaults) => {
-                    state.dry.insert(key.clone(), defaults);
-                }
-                DeltaOp::ListedTreeAction => state.listed_tree_actions += 1,
+        // BAZEL_RS_EVAL_REPLAY_BENCH (docs/EVALUATOR.md): keep a copy for
+        // the stub linearizer's replay, and time the real merge.
+        let bench = super::eval::replay_bench::enabled();
+        if bench {
+            super::eval::replay_bench::record(key, &delta);
+        }
+        let started = bench.then(std::time::Instant::now);
+        let sink = MergeSink {
+            action_executions: &mut self.action_executions,
+            build_info_actions: &mut self.build_info_actions,
+            warnings: self.warnings.len(),
+            errors: self.errors.len(),
+        };
+        let merged = merge_ops(state, sink, key, delta);
+        if let Some(started) = started {
+            super::eval::replay_bench::note_merge(started.elapsed());
+        }
+        merged
+    }
+}
+
+/// What a delta's merge writes outside the planning state: the engine's
+/// per-action tables and the console marks of a lowering in flight.
+pub(super) struct MergeSink<'a> {
+    pub(super) action_executions: &'a mut BTreeMap<String, crate::exec_groups::ActionExecution>,
+    pub(super) build_info_actions: &'a mut std::collections::BTreeSet<String>,
+    /// The engine's warnings and errors so far (a lowering's marks).
+    pub(super) warnings: usize,
+    pub(super) errors: usize,
+}
+
+/// Apply `delta` (the commit of `key`) to `state` and `sink`, in its
+/// order; its error last: the linearizer's merge ([`Engine::merge_delta`];
+/// the stub linearizer of [`super::eval::replay_bench`] replays through it).
+pub(super) fn merge_ops(
+    state: &mut ActionPlanning,
+    sink: MergeSink<'_>,
+    key: &ConfiguredTargetKey,
+    delta: TargetDelta,
+) -> Result<(), String> {
+    for op in delta.ops {
+        merge_op(
+            state,
+            &mut *sink.action_executions,
+            &mut *sink.build_info_actions,
+            (sink.warnings, sink.errors),
+            key,
+            op,
+        );
+    }
+    if let Some(path) = &delta.failed_output {
+        // As register_output records the path it fails on.
+        parallel::record_registered_output(path);
+    }
+    match delta.error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// One operation of [`merge_ops`].
+pub(super) fn merge_op(
+    state: &mut ActionPlanning,
+    action_executions: &mut BTreeMap<String, crate::exec_groups::ActionExecution>,
+    build_info_actions: &mut std::collections::BTreeSet<String>,
+    (warnings, errors): (usize, usize),
+    key: &ConfiguredTargetKey,
+    op: DeltaOp,
+) {
+    match op {
+        DeltaOp::Providers(providers, provider_keys) => {
+            state.custom_providers.insert(key.clone(), providers);
+            state.provider_keys.insert(key.clone(), provider_keys);
+        }
+        DeltaOp::Output(path, producer) => {
+            parallel::record_registered_output(&path);
+            state.producers.insert(path, producer);
+        }
+        DeltaOp::Shared(path, registered) => {
+            parallel::record_registered_output(&path);
+            parallel::note_shared(state.producers.stamp, registered, state.producers.turn)
+        }
+        DeltaOp::Artifact(file, artifact) => {
+            register_artifact(&state.artifact_index, &file, &artifact);
+        }
+        DeltaOp::Declared {
+            key,
+            artifact,
+            replace,
+        } => {
+            if replace {
+                state.declared.insert(key, artifact);
+            } else {
+                state.declared.entry(key).or_insert(artifact);
             }
         }
-        if let Some(path) = &delta.failed_output {
-            // As register_output records the path it fails on.
-            parallel::record_registered_output(path);
+        DeltaOp::RunfilesInfo(runfiles) => {
+            state.runfiles_info.insert(key.clone(), runfiles);
         }
-        match delta.error {
-            Some(error) => Err(error),
-            None => Ok(()),
+        DeltaOp::RunfilesNodes(nodes) => {
+            state.runfiles_nodes.insert(key.clone(), *nodes);
         }
+        DeltaOp::Node(planned, sources) => {
+            if let Some((id, sources)) = sources {
+                state.source_inputs.insert(id, sources);
+            }
+            state.nodes.push(*planned);
+        }
+        DeltaOp::Lowering(pending) => {
+            state.nodes.enqueue(pending, warnings, errors);
+        }
+        DeltaOp::ActionExecution(id, execution) => {
+            action_executions.insert(id, execution);
+        }
+        DeltaOp::BuildInfoAction(id) => {
+            build_info_actions.insert(id);
+        }
+        DeltaOp::Dry(defaults) => {
+            state.dry.insert(key.clone(), defaults);
+        }
+        DeltaOp::ListedTreeAction => state.listed_tree_actions += 1,
+    }
+}
+
+impl DeltaOp {
+    /// The operation's kind, for the replay bench's breakdown.
+    pub(super) fn kind(&self) -> &'static str {
+        match self {
+            DeltaOp::Providers(..) => "providers",
+            DeltaOp::Output(..) => "output",
+            DeltaOp::Shared(..) => "shared",
+            DeltaOp::Artifact(..) => "artifact",
+            DeltaOp::Declared { .. } => "declared",
+            DeltaOp::RunfilesInfo(..) => "runfiles_info",
+            DeltaOp::RunfilesNodes(..) => "runfiles_nodes",
+            DeltaOp::Node(..) => "node",
+            DeltaOp::Lowering(..) => "lowering",
+            DeltaOp::ActionExecution(..) => "action_execution",
+            DeltaOp::BuildInfoAction(..) => "build_info_action",
+            DeltaOp::Dry(..) => "dry",
+            DeltaOp::ListedTreeAction => "listed_tree_action",
+        }
+    }
+
+    /// A copy of the operation for the replay bench; `None` for a lowering
+    /// in flight (it owns its worker's outcome).
+    pub(super) fn replay_copy(&self) -> Option<DeltaOp> {
+        Some(match self {
+            DeltaOp::Providers(providers, keys) => {
+                DeltaOp::Providers(providers.clone(), keys.clone())
+            }
+            DeltaOp::Output(path, producer) => DeltaOp::Output(path.clone(), Arc::clone(producer)),
+            DeltaOp::Shared(path, registered) => DeltaOp::Shared(path.clone(), *registered),
+            DeltaOp::Artifact(file, artifact) => DeltaOp::Artifact(file.clone(), artifact.clone()),
+            DeltaOp::Declared {
+                key,
+                artifact,
+                replace,
+            } => DeltaOp::Declared {
+                key: key.clone(),
+                artifact: artifact.clone(),
+                replace: *replace,
+            },
+            DeltaOp::RunfilesInfo(runfiles) => DeltaOp::RunfilesInfo(Arc::clone(runfiles)),
+            DeltaOp::RunfilesNodes(nodes) => DeltaOp::RunfilesNodes(nodes.clone()),
+            DeltaOp::Node(planned, sources) => DeltaOp::Node(planned.clone(), sources.clone()),
+            DeltaOp::Lowering(_) => return None,
+            DeltaOp::ActionExecution(id, execution) => {
+                DeltaOp::ActionExecution(id.clone(), execution.clone())
+            }
+            DeltaOp::BuildInfoAction(id) => DeltaOp::BuildInfoAction(id.clone()),
+            DeltaOp::Dry(defaults) => DeltaOp::Dry(Arc::clone(defaults)),
+            DeltaOp::ListedTreeAction => DeltaOp::ListedTreeAction,
+        })
     }
 }
 
