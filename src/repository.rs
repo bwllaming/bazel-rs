@@ -3682,7 +3682,23 @@ impl RepositorySet {
         let count = self.roots_materialized_count(sequential);
         let known = last
             .filter(|known| known.roots.len() == count)
-            .map(|known| Arc::clone(&known.others));
+            .map(|known| {
+                // The count shortcut relies on roots only ever beginning
+                // to count, never changing their path: the full list (when
+                // no root began to count meanwhile) is the cached one.
+                #[cfg(debug_assertions)]
+                {
+                    let roots = self.roots_materialized(sequential);
+                    debug_assert!(
+                        roots.len() != count
+                            || roots.iter().zip(&known.roots).all(|((a, p), (b, q))| {
+                                a == b && p.as_os_str() == q.as_os_str()
+                            }),
+                        "link policy: {count} roots, not the cached ones"
+                    );
+                }
+                Arc::clone(&known.others)
+            });
         let others = match known {
             Some(others) => others,
             None => {
