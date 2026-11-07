@@ -1132,7 +1132,10 @@ fn a_panicking_loading_worker_is_an_error_not_a_crash() {
 
 /// Every path below the `external/` directories of the cache's
 /// worktrees, and the lockfiles (the hidden ones and the workspace's).
-fn cache_state(ws: &Workspace) -> (Vec<String>, Vec<(String, Vec<u8>)>) {
+/// `external/` paths and `(which, bytes)` lockfiles.
+type CacheState = (Vec<String>, Vec<(String, Vec<u8>)>);
+
+fn cache_state(ws: &Workspace) -> CacheState {
     fn walk(path: &Path, prefix: &str, out: &mut Vec<String>) {
         if let Ok(entries) = fs::read_dir(path) {
             for entry in entries.flatten() {
@@ -1167,9 +1170,9 @@ fn cache_state(ws: &Workspace) -> (Vec<String>, Vec<(String, Vec<u8>)>) {
 /// lockfile each time: stderr, the exit code, the lockfiles and the
 /// `external/` entries are the threads=1 run's at every thread count.
 fn assert_fresh_state_identical_across_threads(ws: &Workspace, args: &[&str]) -> String {
-    let mut reference: Option<(String, Option<i32>, (Vec<String>, Vec<(String, Vec<u8>)>))> = None;
+    let mut reference: Option<(String, Option<i32>, CacheState)> = None;
     for (threads, jitter) in [(1u64, 0u64), (2, 0), (8, 0), (32, 0), (8, 40)] {
-        let _ = sealed_trees::remove_tree(&ws.0.join("cache"));
+        let _ = sealed_trees::remove_tree(ws.0.join("cache"));
         let _ = fs::remove_file(ws.0.join("MODULE.bazel.lock"));
         let jitter_text = jitter.to_string();
         let env: &[(&str, &str)] = if jitter > 0 {
