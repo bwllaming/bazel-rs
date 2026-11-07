@@ -61,6 +61,8 @@ pub(crate) trait Phase1Cx: Cx {
     fn has_effects(&self, id: NodeId) -> bool;
     /// The id events name a node by.
     fn intern(&mut self, key: &NodeKey) -> NodeId;
+    /// Incremental tracking is on: record `Access`/`Source` events.
+    fn tracking(&self) -> bool;
 }
 
 /// The S1 inline driver's first-visit state (DFS order = the walk's).
@@ -81,6 +83,10 @@ pub(crate) struct FirstVisit {
         BTreeMap<(ConfiguredTargetKey, String), Arc<BTreeMap<String, TransitionConfigurations>>>,
     /// The requested top-level rule being analyzed when test trimmed.
     pub(crate) requested_trimmed_root: Option<ConfiguredTargetKey>,
+    /// StarlarkTransitionCache (S1: a first-visit memo; S2: `Transition`
+    /// nodes keyed with their definition).
+    pub(crate) transition_cache:
+        crate::fast_hash::FxHashMap<TransitionCacheKey, (TransitionConfigurations, Vec<String>)>,
 }
 
 /// The error text a body returns when an attempt stops at a [`Missing`]
@@ -389,7 +395,9 @@ impl Host for EvalHost<'_> {
     }
 
     fn target(&mut self, label: &Label) -> Result<Target, String> {
-        self.emit(Event::Access(label.clone()));
+        if self.cx.tracking() {
+            self.emit(Event::Access(label.clone()));
+        }
         let key = NodeKey::Tgt(label.clone());
         match self.need(key.clone()) {
             Ok(value) => {
@@ -477,12 +485,20 @@ impl Host for EvalHost<'_> {
         if let Some(value) = self.cx.done_value(&source)
             && matches!(value.as_ref(), NodeValue::Src(Ok(())))
         {
-            self.emit(Event::Source(label.clone()));
+            if self.cx.tracking() {
+                if self.cx.tracking() {
+                    self.emit(Event::Source(label.clone()));
+                }
+            }
             return Ok(());
         }
         let rule = match self.target(label)? {
             Target::Source(_) => {
-                self.emit(Event::Source(label.clone()));
+                if self.cx.tracking() {
+                    if self.cx.tracking() {
+                        self.emit(Event::Source(label.clone()));
+                    }
+                }
                 return match self.need(source) {
                     Ok(value) => match value.as_ref() {
                         NodeValue::Src(result) => result.clone(),
@@ -653,7 +669,9 @@ impl Host for EvalHost<'_> {
     fn track_position(&mut self, _tracked: Option<u32>, _plan_len: usize) {}
 
     fn track_source(&mut self, label: &Label) {
-        self.emit(Event::Source(label.clone()));
+        if self.cx.tracking() {
+            self.emit(Event::Source(label.clone()));
+        }
     }
 
     fn prefetch_rule(&mut self, _rule: &Rule) {}
@@ -944,18 +962,21 @@ impl Host for EvalHost<'_> {
 
     fn transition_cache_get(
         &mut self,
-        _key: &TransitionCacheKey,
+        key: &TransitionCacheKey,
     ) -> Option<(TransitionConfigurations, Vec<String>)> {
-        // S1: every application is computed (its prints are the same; a
-        // `Transition` node needs the definition in its key, S2).
-        None
+        self.cx
+            .state_ref()
+            .transition_cache
+            .get(key)
+            .map(|(id, printed)| (Arc::clone(id), printed.clone()))
     }
 
     fn transition_cache_put(
         &mut self,
-        _key: TransitionCacheKey,
-        _value: (TransitionConfigurations, Vec<String>),
+        key: TransitionCacheKey,
+        value: (TransitionConfigurations, Vec<String>),
     ) {
+        self.cx.state().transition_cache.insert(key, value);
     }
 
     fn claim_toolchain_implementation(

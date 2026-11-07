@@ -120,6 +120,18 @@ impl Diffs {
     }
 }
 
+/// What phase 1 decides of a configured rule (its full Debug form holds
+/// the rule class: too big to format per target).
+fn rule_facts(rule: &crate::package::Rule) -> String {
+    match &rule.custom {
+        Some(custom) => format!(
+            "{:?} {:?} {:?} {:?}",
+            rule.srcs, custom.attrs, custom.split_dependencies, custom.setting_value
+        ),
+        None => format!("{:?} {:?}", rule.srcs, rule.native),
+    }
+}
+
 fn shorten(text: Option<&str>) -> String {
     match text {
         None => "(none)".to_owned(),
@@ -156,8 +168,9 @@ impl Engine {
         let (nodes, diffs) = result?;
         if diffs.count > 0 {
             return Err(format!(
-                "BAZEL_RS_EVAL_VERIFY_PHASE1: {} difference(s) between the walk and the phase-1 nodes:\n{}",
+                "BAZEL_RS_EVAL_VERIFY_PHASE1: {} difference(s) between the walk and the phase-1 nodes ({nodes} nodes, {:.2} s):\n{}",
                 diffs.count,
+                started.elapsed().as_secs_f64(),
                 diffs.lines.join("\n")
             ));
         }
@@ -274,6 +287,7 @@ fn verify_with(
         diffs.push(format!("the walk failed, the nodes did not: {walk:?}"));
         return Ok((driver.computed, diffs));
     }
+    crate::perf_mark("plan.verify_phase1_evaluated");
     let mut replay = Replay {
         driver: &driver,
         visited: FxHashSet::default(),
@@ -345,8 +359,12 @@ fn verify_with(
             diffs.compare(
                 "configured rule",
                 key,
-                engine.configured_rules.get(key).map(|rule| &**rule),
-                Some(&*ok.rule),
+                engine
+                    .configured_rules
+                    .get(key)
+                    .map(|rule| rule_facts(rule))
+                    .as_ref(),
+                Some(&rule_facts(&ok.rule)),
             );
         }
         diffs.compare(

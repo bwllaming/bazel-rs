@@ -45,6 +45,8 @@ pub(crate) struct Inline<'a> {
     pub(crate) saw_flush: bool,
     /// The last value of each failed node that is not memoized.
     failed: FxHashMap<NodeId, Arc<NodeValue>>,
+    /// Record `Access`/`Source` events (incremental tracking).
+    pub(crate) tracking: bool,
 }
 
 impl<'a> Inline<'a> {
@@ -62,6 +64,7 @@ impl<'a> Inline<'a> {
             computed: 0,
             saw_flush: false,
             failed: FxHashMap::default(),
+            tracking: false,
         }
     }
 
@@ -77,8 +80,12 @@ impl<'a> Inline<'a> {
         self.values.get(&id)
     }
 
+    /// A done node's transcript (a CT1 value carries its own).
     pub(crate) fn transcript(&self, id: NodeId) -> Option<&Transcript> {
-        self.transcripts.get(&id)
+        match self.values.get(&id).map(|value| value.as_ref()) {
+            Some(NodeValue::Ct1(value)) => Some(&value.transcript),
+            _ => self.transcripts.get(&id),
+        }
     }
 
     /// Every done node.
@@ -99,12 +106,14 @@ impl<'a> Inline<'a> {
         self.on_stack.remove(&id);
         let value = Arc::new(result?);
         self.computed += 1;
-        self.transcripts.insert(
-            id,
-            Transcript {
-                events: frame.events,
-            },
-        );
+        if !matches!(key, NodeKey::Ct1(_)) && !frame.events.is_empty() {
+            self.transcripts.insert(
+                id,
+                Transcript {
+                    events: frame.events,
+                },
+            );
+        }
         // The walk memoizes only the successes of these (a failure is
         // analyzed again at its next edge, in that edge's active chain:
         // a cycle report names it); the others memoize errors too.
@@ -201,9 +210,12 @@ impl Phase1Cx for Inline<'_> {
     }
 
     fn has_effects(&self, id: NodeId) -> bool {
-        self.transcripts
-            .get(&id)
+        self.transcript(id)
             .is_some_and(|transcript| !transcript.events.is_empty())
+    }
+
+    fn tracking(&self) -> bool {
+        self.tracking
     }
 
     fn intern(&mut self, key: &NodeKey) -> NodeId {
