@@ -292,6 +292,70 @@ change announced to the other two workers; adding a helper is not.
   `BackEdge(k)` only when no earlier key of the batch is missing
   (`MapCx` answers it first); the events a body `emit`s are kept with the
   successful attempt (`Entry::transcript`), not put into the value.
+- 2026-11-07 (B, S1): `Cx::id_of(&self, &NodeKey) -> NodeId` (the id an
+  event names a node by: `Reach`, `MemoUse`; `InlineCx`/`PoolCx`/`MapCx`
+  intern through the graph). `Ct1Value::transcript` keeps a copy of the
+  attempt's events (the same as `Entry::transcript`).
+  `CtKey::normalized`'s per-rule `platform_tree` rule is unsound: the
+  context propagates to the rule's dependencies (a filegroup inside a
+  platform's tree would let its genrule escape the empty configuration);
+  B's bodies keep `platform_tree` for every rule of a tree (they pass
+  `Observes { exec_edges: true, .. }`; `forced_exec` is normalized as
+  documented). The `ExecCfg` value marks an interning failure with
+  `nodes::phase1::EXEC_INTERN_ERROR` (the consumer locates it at its
+  rule).
+
+**Phase-1 bodies as built (S1, worker B)** — `eval/nodes/`:
+
+- `phase1.rs`: the walk's phase-1 region (`analyze_key_body` …
+  `check_target_compatibility`, the memo functions' bodies, aspects'
+  phase 1), moved off `&mut Engine` into `trait Phase1: Host` (default
+  methods, blanket impl). `host.rs`: `trait Host`, the primitives a body
+  reads and writes (shared reads, loading, dependency edges, the analyzed
+  key's results, order-observable effects, memo nodes).
+- `walk.rs`: `Walk { engine, active, configured, plan }` implements
+  `Host` with today's code (`BAZEL_RS_ANALYSIS=walk` is unchanged; the
+  engine's `analyze`, `target_platform`, `platform_info`, … wrap it).
+- `eval_host.rs`: `EvalHost` implements `Host` for one attempt: reads go
+  to `EvalShared` or needed nodes; writes become the `Ct1Ok` fields or
+  events (`Reach`, `PlanPush`, `MemoUse` of Platform / RegToolchains /
+  RegExecPlatforms / ExecCfg / FlagScope / TransitionDetails, `Warn`,
+  `Print`, `CqueryEdge`, `Flush`, `ToolchainImpl`, `Error`; `Access` /
+  `Source` only while incremental tracking is on; `ScopeEnter`/`Exit`
+  not yet: S4). `body()` serves `Tgt`, `Group` (S1: the engine, see
+  below), `Src`, `Ct1`, `Platform`, `RegToolchains`, `RegExecPlatforms`,
+  `ExecCfg`, `FlagScope`, `TransitionDetails`, `CsMatch` (S1: the
+  config_setting's CT1 matching).
+- `bodies.rs`: `Phase1Bodies` implements A's `Bodies`; `begin`/`finish`/
+  `abandon` keep the stack of attempts (the walk's active chain: cycle
+  texts, the 256 depth limit, "registered toolchains in progress") and the
+  done CT1 values a body reads without a need (`configured` lookups).
+  `trait Phase1Cx<'e>: Cx { coord() }`: the S1 coordinator (`Coord`):
+  the engine's loading services (package loading, target lookups, package
+  groups, source visibility, package args, aspect definitions,
+  registration patterns, module execution platforms — `Pkg`/`Tgt`/`Group`
+  bodies over `EvalShared` in S2) and the first-visit state pass 1
+  decides from S2 on (`FirstVisit`: the first `CtKey` variant per
+  ConfiguredTargetKey, toolchain-implementation claims and `forced_exec`,
+  cycle reports, aspect memos, the transition cache).
+- `verify_phase1.rs`: `BAZEL_RS_EVAL_VERIFY_PHASE1=1` (log of successes:
+  `BAZEL_RS_EVAL_VERIFY_PHASE1_LOG=<file>`): after the walk's phase 1
+  (or its failure), the requests are evaluated by A's evaluator (one
+  thread, a 1 GiB stack) and compared with the walk: plan order (a DFS
+  replay of the transcripts), configured nodes, delegations, configured
+  rules, toolchain/exec-group contexts, exec/group/edge configurations,
+  deferred duplicates, empty-configuration rules, toolchain claims, the
+  error text. Not compared (S2+): plan entries phase 2 analyzes (a
+  deferred target platform); errors after a `Flush` (Starlark
+  flag_values keys: the walk plans their CT2 there; `planned_feature_flag`
+  reads the walk's planning in S1); which registered target a toolchain /
+  execution-platform cycle report names (the graph memoizes the first
+  failure, the walk re-analyzes it per registration: pass 1's, §7);
+  cquery captures, `--keep_going`, top-level `--aspects` (skipped, S4).
+  Measured: the test suites (2,952 verified builds), ~/code //src/...
+  (`build` and `test --nobuild`: 133,173 configured targets, 133,156
+  plan entries, 444,236 nodes, identical; the inline evaluation 13 s
+  after the walk loaded every package).
 
 ## 4. Stages and gates
 
