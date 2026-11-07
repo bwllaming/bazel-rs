@@ -287,11 +287,16 @@ fn check(toy: &Toy, roots: &[NodeKey], config: EvalConfig) -> Outcome {
     let mut lane = Lane::of(toy);
     let outcome = evaluator.evaluate(roots, &mut lane, &mut DfsCycles::default());
     assert!(outcome.complete, "{config:?}: {outcome:?}");
-    let mut memo = FxHashMap::default();
-    for id in evaluator.graph().ids() {
+    let ids: Vec<NodeId> = evaluator.graph().ids().collect();
+    let expected: Vec<Result<u64, String>> = big(|| {
+        let mut memo = FxHashMap::default();
+        ids.iter()
+            .map(|&id| toy.expected(evaluator.graph().key(id), &mut memo))
+            .collect()
+    });
+    for (&id, expected) in ids.iter().zip(expected) {
         let key = evaluator.graph().key(id);
         let value = evaluator.graph().value(id).expect("every node is done");
-        let expected = big(|| toy.expected(key, &mut memo));
         assert_eq!(read(value), expected, "{key:?} at {config:?}");
         let spec = toy.specs.get(key).cloned().unwrap_or_default();
         let bound = (spec.batches.len() + spec.repos.len() + 1) as u32;
@@ -735,21 +740,44 @@ fn the_pool_has_big_stacks() {
 #[test]
 #[ignore]
 fn eval_scheduler_bench() {
-    const N: usize = 200_000;
-    let mut toy = Toy::default();
-    toy.spec(tgt(0)).batches = vec![(1..=N).map(tgt).collect()];
-    for threads in [1, 2, 8, 32] {
-        let toy = Bare(&toy);
-        let evaluator = Evaluator::new(&toy, config(threads));
-        let start = Instant::now();
-        evaluator.evaluate(&[tgt(0)], &mut NoRepositories, &mut DfsCycles::default());
-        let elapsed = start.elapsed();
-        println!(
-            "fan-out {N} at {threads} threads: {:?} = {:.2} µs/node (wall), {:.2} µs/node·thread",
-            elapsed,
-            elapsed.as_secs_f64() * 1e6 / N as f64,
-            elapsed.as_secs_f64() * 1e6 * threads as f64 / N as f64,
-        );
+    // Per-node overhead (claim, schedule, run a trivial body, publish,
+    // count down): a tree 64 × 64 × 50 (208,001 nodes; every inner node
+    // restarts once), and the worst case, one node needing 200,000.
+    let mut tree = Toy::default();
+    let mut next = 1;
+    let mut level = vec![0];
+    for width in [64, 64, 50] {
+        let mut below = Vec::new();
+        for &parent in &level {
+            let children: Vec<usize> = (next..next + width).collect();
+            next += width;
+            tree.spec(tgt(parent)).batches = vec![children.iter().map(|&c| tgt(c)).collect()];
+            below.extend(children);
+        }
+        level = below;
+    }
+    let mut fan = Toy::default();
+    fan.spec(tgt(0)).batches = vec![(1..=200_000).map(tgt).collect()];
+    for (name, toy, nodes) in [("tree", &tree, next), ("fan-out", &fan, 200_001)] {
+        for threads in [1, 2, 8, 32] {
+            let bare = Bare(toy);
+            let evaluator = Evaluator::new(&bare, config(threads));
+            // Interning is the body's `need`, measured apart.
+            for i in 0..nodes {
+                evaluator.graph().intern(&tgt(i));
+            }
+            let start = Instant::now();
+            let outcome =
+                evaluator.evaluate(&[tgt(0)], &mut NoRepositories, &mut DfsCycles::default());
+            let elapsed = start.elapsed();
+            assert!(outcome.complete);
+            println!(
+                "{name} {nodes} at {threads} threads: {elapsed:?} = {:.2} µs/node wall, {:.2} µs/node CPU-bound ({} attempts)",
+                elapsed.as_secs_f64() * 1e6 / nodes as f64,
+                elapsed.as_secs_f64() * 1e6 * threads as f64 / nodes as f64,
+                evaluator.stats().runs,
+            );
+        }
     }
     // Chain latency: completion of a dependency → its dependent running.
     const CHAIN: usize = 5_000;
@@ -782,6 +810,32 @@ fn eval_scheduler_bench() {
             latencies[latencies.len() - 1],
         );
     }
+    // Cross-thread wake: the dependent parked on another worker (two
+    // chains that alternate: a waits on b, b on a', ...; each completion
+    // wakes a node another job parked).
+    let mut toy = Toy::default();
+    for i in 0..CHAIN - 1 {
+        toy.spec(tgt(i)).batches = vec![vec![tgt(i + 1), memo(&format!("{i}"))]];
+        toy.spec(memo(&format!("{i}"))).sleep = Duration::from_micros(20);
+    }
+    toy.times = Some(Mutex::default());
+    let evaluator = Evaluator::new(&toy, config(8));
+    evaluator.evaluate(&[tgt(0)], &mut NoRepositories, &mut DfsCycles::default());
+    let times = toy.times.as_ref().unwrap().lock().unwrap();
+    let mut latencies: Vec<f64> = (0..CHAIN - 1)
+        .map(|i| {
+            let dependent = times[&tgt(i)].0;
+            let last = times[&tgt(i + 1)].1.max(times[&memo(&format!("{i}"))].1);
+            dependent.saturating_duration_since(last).as_secs_f64() * 1e6
+        })
+        .collect();
+    latencies.sort_by(f64::total_cmp);
+    println!(
+        "two-dependency chain {CHAIN} at 8 threads: last completion → dependent running: median {:.2} µs, p99 {:.2} µs, max {:.2} µs",
+        latencies[latencies.len() / 2],
+        latencies[latencies.len() * 99 / 100],
+        latencies[latencies.len() - 1],
+    );
 }
 
 /// The toy without its bookkeeping (the benchmark's bodies).
@@ -791,17 +845,43 @@ impl Bodies for Bare<'_> {
     type Attempt = ();
     fn begin(&self, _id: NodeId, _key: &NodeKey) {}
     fn run(&self, cx: &mut dyn Cx, key: &NodeKey) -> Result<NodeValue, Missing> {
-        let mut sum = 1;
         if let Some(spec) = self.0.specs.get(key) {
             for batch in &spec.batches {
-                for value in cx.need(batch)?.iter() {
-                    sum += read(value).unwrap();
-                }
+                cx.need(batch)?;
             }
         }
-        Ok(number(sum))
+        Ok(NodeValue::FlagScope(Ok(true)))
     }
     fn target_platform(&self, config: ConfigId) -> NodeKey {
         self.0.target_platform(config)
+    }
+}
+
+#[test]
+fn a_panicking_body_propagates_without_hanging() {
+    struct Panics;
+    impl Bodies for Panics {
+        type Attempt = ();
+        fn begin(&self, _id: NodeId, _key: &NodeKey) {}
+        fn run(&self, cx: &mut dyn Cx, key: &NodeKey) -> Result<NodeValue, Missing> {
+            if *key == tgt(0) {
+                cx.need(&(1..=100).map(tgt).collect::<Vec<_>>())?;
+            }
+            if *key == tgt(50) {
+                panic!("a body bug");
+            }
+            Ok(NodeValue::FlagScope(Ok(true)))
+        }
+        fn target_platform(&self, _config: ConfigId) -> NodeKey {
+            memo("target_platform")
+        }
+    }
+    for threads in [1, 8] {
+        let result = std::panic::catch_unwind(|| {
+            let evaluator = Evaluator::new(&Panics, config(threads));
+            evaluator.evaluate(&[tgt(0)], &mut NoRepositories, &mut DfsCycles::default())
+        });
+        let message = result.unwrap_err();
+        assert_eq!(message.downcast_ref::<&str>(), Some(&"a body bug"));
     }
 }

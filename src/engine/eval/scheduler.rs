@@ -223,7 +223,8 @@ pub(crate) struct Outcome {
     pub(crate) first_error: Option<NodeId>,
 }
 
-/// Counters (cumulative over evaluations).
+/// Counters (cumulative over evaluations; `runs`, `done` and `parks` are
+/// summed over the entries).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Stats {
     /// Attempts started.
@@ -240,11 +241,10 @@ pub(crate) struct Stats {
     pub(crate) quiescences: u64,
 }
 
+/// The rare events' counters (attempts and completions are counted per
+/// entry: no shared cache line on the hot path).
 #[derive(Default)]
 struct Counters {
-    runs: AtomicU64,
-    done: AtomicU64,
-    parks: AtomicU64,
     fetches: AtomicU64,
     back_edges: AtomicU64,
     quiescences: AtomicU64,
@@ -270,6 +270,18 @@ struct Repos {
     fetched: FxHashMap<String, u64>,
 }
 
+/// A value alone in its cache line (no false sharing with the read-mostly
+/// flags beside it).
+#[repr(align(128))]
+struct Padded<T>(T);
+
+impl<T> std::ops::Deref for Padded<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
 /// No error yet (`first_error`).
 const NO_ERROR: u32 = u32::MAX;
 
@@ -285,8 +297,9 @@ pub(crate) struct Evaluator<'b, B: Bodies> {
     boosted: AtomicUsize,
     coord: Tracked<Coord>,
     coord_wake: std::sync::Condvar,
-    /// Jobs and coordinator nodes scheduled and not finished.
-    outstanding: AtomicUsize,
+    /// Jobs and coordinator nodes scheduled and not finished (written by
+    /// every job: a cache line of its own).
+    outstanding: Padded<AtomicUsize>,
     answered: Tracked<FxHashSet<(NodeId, NodeId)>>,
     any_answered: AtomicBool,
     repos: Tracked<Repos>,
@@ -309,7 +322,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             boosted: AtomicUsize::new(0),
             coord: Tracked::default(),
             coord_wake: std::sync::Condvar::new(),
-            outstanding: AtomicUsize::new(0),
+            outstanding: Padded(AtomicUsize::new(0)),
             answered: Tracked::default(),
             any_answered: AtomicBool::new(false),
             repos: Tracked::default(),
@@ -336,12 +349,20 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         self.frontier.load(Ordering::Acquire)
     }
 
+    /// The counters (an O(nodes) scan: between evaluations).
     pub(crate) fn stats(&self) -> Stats {
         let c = &self.counters;
+        let (mut runs, mut done) = (0, 0);
+        for id in self.graph.ids() {
+            let entry = self.graph.entry(id);
+            runs += u64::from(entry.attempts.load(Ordering::Relaxed));
+            done += u64::from(entry.state() == State::Done);
+        }
         Stats {
-            runs: c.runs.load(Ordering::Relaxed),
-            done: c.done.load(Ordering::Relaxed),
-            parks: c.parks.load(Ordering::Relaxed),
+            runs,
+            done,
+            // Every attempt either completes or parks.
+            parks: runs - done,
             fetches: c.fetches.load(Ordering::Relaxed),
             back_edges: c.back_edges.load(Ordering::Relaxed),
             quiescences: c.quiescences.load(Ordering::Relaxed),
@@ -415,7 +436,6 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         let stops = !self.config.keep_going && self.bodies.stops_build(key, &value);
         let entry = self.graph.entry(id);
         let waiters = entry.complete(Arc::new(value), Transcript { events });
-        self.counters.done.fetch_add(1, Ordering::Relaxed);
         if stops {
             let _ = self.first_error.compare_exchange(
                 NO_ERROR,
@@ -447,7 +467,6 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         let from = entry.state();
         let parked = entry.transition(from, State::Waiting);
         debug_assert!(parked && from == State::Running);
-        self.counters.parks.fetch_add(1, Ordering::Relaxed);
         epoch
     }
 
@@ -564,7 +583,6 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         loop {
             entry.set_state(State::Running);
             entry.attempts.fetch_add(1, Ordering::Relaxed);
-            self.counters.runs.fetch_add(1, Ordering::Relaxed);
             let attempt_seq = self.repo_seq.load(Ordering::Acquire);
             assert_no_locks("a node body");
             let attempt = self.bodies.begin(id, key);
@@ -681,15 +699,54 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         None
     }
 
-    /// One pool job: boosted nodes first, then its node, then the ready
-    /// waiter each completion hands on.
+    /// Schedule many nodes just made `Queued`: pool nodes in chunks (one
+    /// spawn per chunk, at least eight chunks per worker, at most 64
+    /// nodes each), so that a wide batch does not cost a spawn and a
+    /// wake-up per node on one thread.
+    fn schedule_many<'s>(&'s self, scope: &Scope<'s>, ids: Vec<NodeId>) {
+        if ids.len() < 2 {
+            for id in ids {
+                self.schedule(Some(scope), id);
+            }
+            return;
+        }
+        let (coordinator, pool): (Vec<NodeId>, Vec<NodeId>) = ids
+            .into_iter()
+            .partition(|&id| self.graph.key(id).coordinator_only());
+        for id in coordinator {
+            self.schedule(Some(scope), id);
+        }
+        let chunk = (pool.len() / (self.config.threads * 8)).clamp(1, 64);
+        for ids in pool.chunks(chunk) {
+            if let [id] = ids {
+                self.schedule(Some(scope), *id);
+                continue;
+            }
+            let mut ids = ids.to_vec();
+            // Run in order (popped from the end).
+            ids.reverse();
+            self.outstanding.fetch_add(1, Ordering::AcqRel);
+            scope.spawn(move |scope| {
+                let _done = Outstanding(self);
+                self.drive(scope, None, ids);
+            });
+        }
+    }
+
+    /// One pool job.
     fn job<'s>(&'s self, scope: &Scope<'s>, id: NodeId) {
         let _done = Outstanding(self);
-        let mut own = Some(id);
+        self.drive(scope, Some(id), Vec::new());
+    }
+
+    /// Run a job's nodes: boosted nodes first, then the ready node the
+    /// last completion handed on, then its own nodes (`rest` from the
+    /// end).
+    fn drive<'s>(&'s self, scope: &Scope<'s>, mut own: Option<NodeId>, mut rest: Vec<NodeId>) {
         loop {
             let next = match self.pop_boost() {
                 Some(boosted) => boosted,
-                None => match own.take() {
+                None => match own.take().or_else(|| rest.pop()) {
                     Some(id) => id,
                     None => break,
                 },
@@ -722,7 +779,6 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         }
         let key = self.graph.key(id);
         let attempt_number = entry.attempts.fetch_add(1, Ordering::Relaxed);
-        self.counters.runs.fetch_add(1, Ordering::Relaxed);
         self.jitter(id, attempt_number);
         let attempt_seq = self.repo_seq.load(Ordering::Acquire);
         assert_no_locks("a node body");
@@ -744,9 +800,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                     .position(|&id| !self.graph.key(id).coordinator_only())
                     .map(|index| ready.remove(index));
                 // Pushed in order, popped LIFO by this worker.
-                for other in ready {
-                    self.schedule(Some(scope), other);
-                }
+                self.schedule_many(scope, ready);
                 first
             }
             Err(missing) => {
@@ -818,18 +872,20 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         let epoch = self.park_as(id, Wait::Nodes(deps.clone()), count + 1);
         let wanted = entry.wanted.load(Ordering::SeqCst);
         let mut satisfied = 0;
+        let mut fresh = Vec::new();
         for &dep in &deps {
             if wanted {
                 self.want(Some(scope), dep);
             }
             let dependency = self.graph.entry(dep);
             if dependency.transition(State::Fresh, State::Queued) {
-                self.schedule(Some(scope), dep);
+                fresh.push(dep);
             }
             if !dependency.add_waiter(id, epoch) {
                 satisfied += 1;
             }
         }
+        self.schedule_many(scope, fresh);
         if entry.count_down(epoch, satisfied + 1) {
             let requeued = entry.transition(State::Waiting, State::Queued);
             debug_assert!(requeued);
@@ -869,14 +925,16 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         lane: &mut dyn RepoLane,
         cycles: &mut dyn CycleHandler,
     ) -> Outcome {
+        let mut fresh = Vec::new();
         for &root in roots {
             let entry = self.graph.entry(root);
             if entry.transition(State::Fresh, State::Queued) {
-                self.schedule(Some(scope), root);
+                fresh.push(root);
             } else if entry.state() == State::Deferred {
                 self.want(Some(scope), root);
             }
         }
+        self.schedule_many(scope, fresh);
         loop {
             let mut coord = self.coord.lock();
             while coord.nodes.is_empty()
@@ -897,12 +955,11 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             if !coord.starts.is_empty() {
                 let starts = std::mem::take(&mut coord.starts);
                 drop(coord);
-                for id in starts {
-                    if self.graph.entry(id).state() == State::Queued {
-                        self.outstanding.fetch_add(1, Ordering::AcqRel);
-                        scope.spawn(move |scope| self.job(scope, id));
-                    }
-                }
+                let queued = starts
+                    .into_iter()
+                    .filter(|&id| self.graph.entry(id).state() == State::Queued)
+                    .collect();
+                self.schedule_many(scope, queued);
                 continue;
             }
             if let Some(name) = coord.repos.pop_front() {
@@ -916,13 +973,16 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                     repos.fetched.insert(name.clone(), seq);
                     repos.parked.remove(&name).unwrap_or_default()
                 };
-                for (id, epoch) in demanders {
-                    let entry = self.graph.entry(id);
-                    if entry.count_down(epoch, 1) && entry.transition(State::Waiting, State::Queued)
-                    {
-                        self.schedule(Some(scope), id);
-                    }
-                }
+                let ready = demanders
+                    .into_iter()
+                    .filter(|&(id, epoch)| {
+                        let entry = self.graph.entry(id);
+                        entry.count_down(epoch, 1)
+                            && entry.transition(State::Waiting, State::Queued)
+                    })
+                    .map(|(id, _)| id)
+                    .collect();
+                self.schedule_many(scope, ready);
                 continue;
             }
             drop(coord);
