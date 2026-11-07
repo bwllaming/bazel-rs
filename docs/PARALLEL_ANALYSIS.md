@@ -1023,9 +1023,12 @@ on the coordinator (the rest of S2, below).
   tracker deferred and dropped; anything observed is stashed for its turn,
   where the check runs again). The `go_library` chains (rules_go's
   transitioning rules) were the largest cascade.
-- **Native rules ahead of their turn.** A native rule that registers no
-  output (`registers_no_output`; not a filegroup with an `output_group`,
-  whose files may name the workspace status) is classified like a Starlark
+- **Native rules ahead of their turn.** A native rule of a reviewed class
+  (an allowlist: alias, label_flag, label_setting, filegroup without an
+  `output_group` — whose files may name the workspace status —, test_suite,
+  config_setting, constraint_setting, constraint_value, platform,
+  toolchain, toolchain_type, package_group, java_plugins_flag_alias; any
+  other class commits at its turn) is classified like a Starlark
   rule: it waits for the keys of its every dependency edge (an output
   file's generating rule) in the edge's configuration and of its resolved
   toolchains (`Engine::native_requirements`), and once they are committed it
@@ -1038,7 +1041,12 @@ on the coordinator (the rest of S2, below).
   turn. Its dependents (the `py_library` of a pip package behind its
   filegroups and aliases) then wake ahead. Only walks that commit ahead
   (no `--keep_going`, no aquery capture, not cquery) do it;
-  `BAZEL_RS_NO_NATIVE_AHEAD=1` turns it off. Fallback reasons:
+  `BAZEL_RS_NO_NATIVE_AHEAD=1` turns it off; the committed-segment bound
+  (`BAZEL_RS_COMMITTED_LIMIT`) holds them too. BAZEL_RS_VERIFY_AHEAD checks
+  that every key it waited for was committed when it committed ahead and
+  that its turn reads the same keys (`verified_native=`), and makes a commit
+  ahead whose deferred target platform was resolved before its turn a hard
+  error (`platform_late=`, 0 in the tests). Fallback reasons:
   `native_committed_ahead`, `native_ready_late`, `native_dependency_late`.
 - **Deferred target platforms.** A target prepared while its
   configuration's target platform was deferred (the default host platform,

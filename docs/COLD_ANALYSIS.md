@@ -447,6 +447,13 @@ coordinator in between (S2's second part) and publishing before the merge
 66 of ≤4,096: 2.0 s; 1,085 of ≤256 entries — `config_setting` flushes —:
 2.6 s), so narrowing the flushes (S4) matters as much.
 
+Review experiment (not kept): noticing finished computes inside the
+lookahead's prepares and native commits too (earliest first) cut the
+finished → noticed latency from 2.0 to 0.8 ms and ready → dispatched from
+2.6 to 2.2 ms for entries committed ahead, but the at-turn entries'
+ready → dispatched went from 2.3–3.0 to 3.9–4.4 ms and the wall did not move
+(50.2 vs 49.2 / 50.9 s, wait 6.2 vs 5.8 / 6.2 s).
+
 ## What remains
 
 The goal (cold analysis faster than genuine 9.3.1: 10 s wall on this host)
