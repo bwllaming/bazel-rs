@@ -1324,12 +1324,17 @@ fn run() -> Result<(), String> {
     // by the memory cap (perf follow-up 3: min(auto, cap/64 MB per
     // worker heap), floored at 2 — crate::memory_limit); an explicit
     // integer is the user's stated intent and is never rewritten.
-    engine.set_loading_phase_threads(loading_threads_for_report(
+    let loading_threads = loading_threads_for_report(
         &command,
         loading_phase_threads,
         &query_options,
         memory_limit_mb,
-    ));
+    );
+    engine.set_loading_phase_threads(loading_threads);
+    // The extension groups the root module uses are prepared ahead of
+    // their demand (crate::extension_speculation), overlapping the
+    // configuration and the pattern's loading; stopped with the command.
+    let _extension_speculation = repositories.start_extension_speculation(loading_threads);
     // BuildRequest.getTopLevelArtifactContext (BuildRequest.java:412-421):
     // the requested output groups; a command that runs the tests it builds
     // keeps the `default` group for failure reporting (shouldRunTests).

@@ -134,6 +134,16 @@ impl Drop for UnitRoots {
     }
 }
 
+/// Stops a repository set's extension speculations when dropped
+/// ([`RepositorySet::start_extension_speculation`]).
+pub struct ExtensionSpeculationGuard(RepositorySet);
+
+impl Drop for ExtensionSpeculationGuard {
+    fn drop(&mut self) {
+        self.0.state.extension_speculation.stop();
+    }
+}
+
 /// [`RepositorySet::root_extension_fixups`]: (extension, buildozer commands)
 /// per fixup, and the failures.
 pub type RootFixups = (Vec<(String, Vec<String>)>, Vec<String>);
@@ -294,6 +304,20 @@ struct RepositoryState {
     /// `mod tidy`: extensions are evaluated for their eval-only value
     /// (no `use_repo` fixup warning).
     eval_only: std::sync::atomic::AtomicBool,
+    /// Extension groups prepared ahead of their sequential demand
+    /// (crate::extension_speculation).
+    extension_speculation: crate::extension_speculation::Pool<ExtensionOutcome>,
+    /// The registry module trees speculative extension preparations load
+    /// from before the coordinator materializes the module
+    /// ([`RepositorySet::speculative_registry_root`]), by module.
+    speculative_registry_roots: OnceLock<BTreeMap<String, OnceLock<Option<PathBuf>>>>,
+    /// The finished speculative preparations of extension groups, by group
+    /// id, for other speculative preparations that use their repositories
+    /// ([`RepositorySet::adopt_speculated_group`]).
+    speculative_groups: OnceLock<BTreeMap<String, OnceLock<Arc<PreparedOrdinary>>>>,
+    /// The width extension speculations start with once the module graph
+    /// is resolved (0: not armed; [`RepositorySet::start_extension_speculation`]).
+    extension_speculation_armed: std::sync::atomic::AtomicUsize,
 }
 
 type IgnoredResult = Result<Arc<crate::ignored::IgnoredSubdirectories>, String>;
@@ -742,6 +766,59 @@ struct PreparedOrdinary {
     provenance_digest: [u8; 32],
 }
 
+/// The error of a speculative extension preparation that is not
+/// eligible (never shown: the coordinator prepares the group itself).
+const INELIGIBLE: &str = "extension preparation not speculated";
+
+/// What the commit of a speculative extension preparation checks again
+/// (crate::extension_speculation): the lockfile entry the preparation
+/// reused, with what forms its lock key.
+#[derive(Debug)]
+struct SpeculatedLock {
+    definition: crate::module_extension::ExtensionDefinition,
+    factors: String,
+    entry: crate::lockfile::Json,
+}
+
+/// A finished speculative extension preparation, for the coordinator's
+/// commit ([`RepositorySet::commit_extension_speculation`]).
+#[derive(Debug)]
+struct ExtensionOutcome {
+    prepared: Arc<PreparedOrdinary>,
+    /// The speculative preparations of other groups it used, in first-use
+    /// order ([`RepositorySet::adopt_speculated_group`]).
+    adopted: Adopted,
+    lock: SpeculatedLock,
+    /// Its console writes, in order.
+    output: Vec<crate::ui::Deferred>,
+    /// What it observed for the analysis snapshot.
+    observations: Option<Arc<crate::observed_fs::Captured>>,
+    /// The direct and generated repository roots it obtained.
+    obtained: Vec<String>,
+    /// The registry module roots it loaded from before they were
+    /// materialized, in first-use order, with the trees it used.
+    registry_roots: Vec<(String, PathBuf)>,
+    /// What its definition loads added to the definition `.bzl` cache.
+    definitions: crate::loading::SpeculativeDefinitions,
+}
+
+/// The other groups' speculative preparations a speculative extension
+/// preparation used, by group id ([`ExtensionOutcome::adopted`]).
+type Adopted = Vec<(String, Arc<PreparedOrdinary>)>;
+
+thread_local! {
+    /// The registry module roots the speculative extension preparation on
+    /// this thread loaded from ([`ExtensionOutcome::registry_roots`]).
+    static SPECULATIVE_ROOTS: std::cell::RefCell<Vec<(String, PathBuf)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// The other groups' speculative preparations the speculative
+    /// extension preparation on this thread used
+    /// ([`ExtensionOutcome::adopted`]), and whether it had written to the
+    /// console before it used the first one.
+    static ADOPTED: std::cell::RefCell<(Adopted, bool)> =
+        const { std::cell::RefCell::new((Vec::new(), false)) };
+}
+
 /// An ordinary group's provenance parts that its [`PreparedOrdinary`]
 /// does not keep otherwise (lockfile case only: no evaluation-derived
 /// module tags, inputs or watched environment are part of the bytes).
@@ -1085,6 +1162,10 @@ impl RepositorySet {
                 root_warmer: Default::default(),
                 pending_speculation: Default::default(),
                 eval_only: Default::default(),
+                extension_speculation: Default::default(),
+                speculative_registry_roots: OnceLock::new(),
+                speculative_groups: OnceLock::new(),
+                extension_speculation_armed: Default::default(),
             }),
         }
     }
@@ -1271,6 +1352,12 @@ impl RepositorySet {
     /// the `root()` and `mapping()` results until the guard drops are
     /// pinned (definition loads of repository rules, local executions).
     fn replay_scope(&self) -> Option<crate::snapshot::replay::Scope> {
+        // A speculative extension preparation's definition loads pin
+        // nothing: its commit pins what they would have pinned
+        // (crate::loading::commit_speculative_definitions).
+        if crate::extension_speculation::active() {
+            return None;
+        }
         // Phase-1 prefetch runs beside the record mode's capture (W6R):
         // a loading worker never opens a scope (it cannot prepare a group
         // or execute a local rule: the no-demand sentinel).
@@ -2017,7 +2104,8 @@ impl RepositorySet {
         if self.pinned_tables().is_some() {
             return Err(format!("the module graph is {NOT_PINNED}"));
         }
-        self.state
+        let resolved = self
+            .state
             .resolved
             .get_or_init(|| {
                 let _span = crate::timeline::span("resolve", || "module graph".to_owned());
@@ -2029,7 +2117,18 @@ impl RepositorySet {
                 )
             })
             .as_ref()
-            .map_err(Clone::clone)
+            .map_err(Clone::clone);
+        if resolved.is_ok()
+            && self
+                .state
+                .extension_speculation_armed
+                .load(Ordering::Relaxed)
+                > 0
+            && !crate::repository_demand::no_demand_active()
+        {
+            self.launch_extension_speculation();
+        }
+        resolved
     }
 
     /// `fetch --repo` (RepositoryFetcher.getRepositoryName): the canonical
@@ -3156,6 +3255,378 @@ impl RepositorySet {
         self.state.speculation.stop();
     }
 
+    /// Prepare the extension groups the root module uses ahead of their
+    /// sequential demand on at most `width` workers
+    /// (crate::extension_speculation), until the returned guard drops. Off
+    /// with one loading thread, for a pinned set, a publication proof,
+    /// `mod tidy`, the cquery current-loading experiment, without the
+    /// definition `.bzl` cache, and with
+    /// `BAZEL_RS_DEBUG_NO_SPECULATION` or
+    /// `BAZEL_RS_DEBUG_NO_EXTENSION_SPECULATION`.
+    pub fn start_extension_speculation(&self, width: usize) -> ExtensionSpeculationGuard {
+        let guard = ExtensionSpeculationGuard(self.clone());
+        if width <= 1
+            || self.state.pinned.is_some()
+            || self.state.publication_proof
+            || self.state.eval_only.load(Ordering::Relaxed)
+            || self.state.current_loading.load(Ordering::Relaxed)
+            || std::env::var_os("BAZEL_RS_DEBUG_NO_SPECULATION").is_some()
+            || std::env::var_os("BAZEL_RS_DEBUG_NO_EXTENSION_SPECULATION").is_some()
+            || std::env::var_os("BAZEL_RS_LOADING_NO_DEMAND").is_some()
+            // The uncached definition loader prints straight to stderr.
+            || !self.definition_cache_allowed()
+            || self.state.options.registry_session.session().is_none()
+        {
+            return guard;
+        }
+        // Started once the module graph is resolved (now, or at its lazy
+        // resolution: `resolve_graph`).
+        self.state
+            .extension_speculation_armed
+            .store(width, Ordering::SeqCst);
+        if self.state.resolved.get().is_some_and(Result::is_ok) {
+            self.launch_extension_speculation();
+        }
+        guard
+    }
+
+    /// [`Self::start_extension_speculation`] once the module graph is
+    /// resolved: request the groups the root module uses.
+    fn launch_extension_speculation(&self) {
+        let width = self
+            .state
+            .extension_speculation_armed
+            .swap(0, Ordering::SeqCst);
+        if width <= 1 {
+            return;
+        }
+        let Ok(runtime) = self.direct_runtime() else {
+            return;
+        };
+        // Warm module roots live in the store (`speculative_registry_root`).
+        if self.source_cache_path().is_err() {
+            return;
+        }
+        self.state.speculative_groups.get_or_init(|| {
+            runtime
+                .catalog
+                .ordinary_groups
+                .keys()
+                .map(|id| (id.clone(), OnceLock::new()))
+                .collect()
+        });
+        let ids: Vec<&String> = runtime
+            .catalog
+            .ordinary_groups
+            .iter()
+            .filter(|(id, group)| {
+                group
+                    .participants
+                    .iter()
+                    .any(|participant| participant.is_root)
+                    && runtime
+                        .ordinary
+                        .get(*id)
+                        .is_some_and(|slot| slot.ready().is_none())
+            })
+            .map(|(id, _)| id)
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let this = self.clone();
+        self.state.extension_speculation.start(
+            width.min(ids.len()),
+            Arc::new(move |id: &str| this.extension_speculation_job(id)),
+            crate::engine::loading_jitter_millis(),
+        );
+        for id in ids {
+            self.state.extension_speculation.request(id);
+        }
+        // Hidden test hook: the speculations finish before the command
+        // goes on (whatever it does next sees them finished).
+        if std::env::var_os("BAZEL_RS_DEBUG_EXTENSION_SPECULATION_WAIT").is_some() {
+            self.state.extension_speculation.wait_idle();
+        }
+    }
+
+    /// Queue again the extension speculations blocked on a demand that is
+    /// satisfied now ([`Self::sentinel_ready`]).
+    fn retry_extension_speculations(&self) {
+        if !self.state.extension_speculation.any_blocked() {
+            return;
+        }
+        self.state
+            .extension_speculation
+            .retry(&|blocked| self.extension_sentinel_ready(blocked));
+    }
+
+    /// [`Self::sentinel_ready`] for an extension speculation: a group
+    /// another speculation prepared counts as ready
+    /// ([`Self::adopt_speculated_group`]).
+    fn extension_sentinel_ready(&self, blocked: &str) -> bool {
+        self.sentinel_ready(blocked)
+            || self
+                .speculated_group_blocker(blocked)
+                .is_some_and(|id| self.speculated_group(id).is_some())
+    }
+
+    /// The coordinator obtained a direct or generated repository's root:
+    /// extension speculations blocked on it may go on.
+    fn retry_root_blocked(&self) {
+        if !crate::repository_demand::no_demand_active() {
+            self.retry_extension_speculations();
+        }
+    }
+
+    /// The group whose preparation the no-demand sentinel `blocked` names.
+    fn speculated_group_blocker<'a>(&self, blocked: &'a str) -> Option<&'a str> {
+        let start = blocked.find(crate::repository_demand::NEEDS_REPOSITORY)?;
+        let rest = blocked[start + crate::repository_demand::NEEDS_REPOSITORY.len()..]
+            .strip_prefix(": runtime ")?;
+        let (_, key) = rest.split_once(':')?;
+        let (key, _) = key.split_once(" is unfetched")?;
+        key.strip_prefix("prepare:ordinary:")
+    }
+
+    /// The finished speculative preparation of the group `id`, if any.
+    fn speculated_group(&self, id: &str) -> Option<&Arc<PreparedOrdinary>> {
+        self.state.speculative_groups.get()?.get(id)?.get()
+    }
+
+    /// On a speculative extension preparation's thread: the speculative
+    /// preparation of the group `id`, which the coordinator has not
+    /// prepared yet, to use instead (noted for the commit, which prepares
+    /// `id` on the coordinator first and keeps the outcome only when that
+    /// is this very preparation). `None` elsewhere.
+    fn adopt_speculated_group(&self, id: &str) -> Option<&PreparedOrdinary> {
+        if !crate::extension_speculation::active() {
+            return None;
+        }
+        let prepared = self.speculated_group(id)?;
+        ADOPTED.with(|adopted| {
+            let mut adopted = adopted.borrow_mut();
+            if !adopted.0.iter().any(|(adopted, _)| adopted == id) {
+                if adopted.0.is_empty() {
+                    // Its writes so far would precede the adopted group's
+                    // preparation in the sequential order.
+                    adopted.1 = !crate::ui::deferred_split().is_empty();
+                }
+                adopted.0.push((id.to_owned(), prepared.clone()));
+            }
+        });
+        Some(prepared)
+    }
+
+    /// One speculative preparation of the extension group `id` on a worker
+    /// (crate::extension_speculation): the coordinator's preparation in
+    /// no-demand + reuse-only mode, holding back everything it would make
+    /// visible ([`ExtensionOutcome`]).
+    fn extension_speculation_job(
+        &self,
+        id: &str,
+    ) -> crate::extension_speculation::Finished<ExtensionOutcome> {
+        use crate::extension_speculation::Finished;
+        let _guard = crate::repository_demand::no_demand();
+        let _reuse = crate::repository_demand::reuse_only();
+        let _ = crate::repository_demand::take_order_dependent();
+        if self.state.eval_only.load(Ordering::Relaxed) {
+            return Finished::Failed;
+        }
+        let Ok(runtime) = self.direct_runtime() else {
+            return Finished::Failed;
+        };
+        let (Some(group), Some(slot)) = (
+            runtime.catalog.ordinary_groups.get(id),
+            runtime.ordinary.get(id),
+        ) else {
+            return Finished::Failed;
+        };
+        if slot.ready().is_some() {
+            return Finished::Failed;
+        }
+        let sentinels = crate::repository_demand::sentinels_raised();
+        let _span = crate::timeline::span("extension-speculation", || id.to_owned());
+        SPECULATIVE_ROOTS.with(|roots| roots.borrow_mut().clear());
+        ADOPTED.with(|adopted| *adopted.borrow_mut() = (Vec::new(), false));
+        let console = crate::ui::DeferredConsole::start();
+        let unit = UnitRoots::record();
+        let mut lock = None;
+        let ((result, observations), definitions) = crate::loading::speculative_definitions(|| {
+            crate::observed_fs::capture_detached(|| {
+                self.compute_ordinary(id, runtime, group, Some(&mut lock))
+            })
+        });
+        let obtained = unit.finish();
+        let output = console.finish();
+        let registry_roots =
+            SPECULATIVE_ROOTS.with(|roots| std::mem::take(&mut *roots.borrow_mut()));
+        let (adopted, wrote_before) =
+            ADOPTED.with(|adopted| std::mem::take(&mut *adopted.borrow_mut()));
+        let order_dependent = crate::repository_demand::take_order_dependent();
+        let prepared = match result {
+            Err(error)
+                if !order_dependent
+                    && crate::repository_demand::is_needs_repository(&error)
+                    && error.contains(" is unfetched") =>
+            {
+                // A group it needs is prepared ahead too.
+                if let Some(blocker) = self.speculated_group_blocker(&error) {
+                    self.state.extension_speculation.request(blocker);
+                }
+                return Finished::Blocked(error);
+            }
+            Err(_) => return Finished::Failed,
+            Ok(prepared) => prepared,
+        };
+        // A sentinel some lookup swallowed may have shaped the result, and
+        // writes before a group it used would precede that group's commit.
+        let (Some(lock), false, false, true) = (
+            lock,
+            order_dependent,
+            wrote_before,
+            crate::repository_demand::sentinels_raised() == sentinels,
+        ) else {
+            return Finished::Failed;
+        };
+        let prepared = Arc::new(prepared);
+        // Other speculations may use it now.
+        if let Some(slot) = self
+            .state
+            .speculative_groups
+            .get()
+            .and_then(|groups| groups.get(id))
+        {
+            let _ = slot.set(prepared.clone());
+        }
+        self.retry_extension_speculations();
+        Finished::Done(Box::new(ExtensionOutcome {
+            prepared,
+            adopted,
+            lock,
+            output,
+            observations,
+            obtained,
+            registry_roots,
+            definitions,
+        }))
+    }
+
+    /// The coordinator prepares `group`, which a speculation prepared
+    /// already (crate::extension_speculation): it demands the registry
+    /// module roots the speculation loaded from, in its order, and checks
+    /// the lockfile entry again against the inputs as they are now — the
+    /// sequential preparation's root demands and lockfile check, here.
+    /// When the roots are the trees the speculation used and the entry is
+    /// still the one it reused, what the speculation held back counts
+    /// now: its observations, the roots it obtained, its definition `.bzl`
+    /// cache entries, the lockfile record and its console output, in that
+    /// order. Otherwise `None`: the coordinator prepares the group itself
+    /// (what the roots and the check did here it would do the same).
+    fn commit_extension_speculation(
+        &self,
+        group: &repository_catalog::OrdinaryGroup,
+        outcome: ExtensionOutcome,
+    ) -> Option<Arc<PreparedOrdinary>> {
+        let ExtensionOutcome {
+            prepared,
+            adopted,
+            lock: speculated,
+            output,
+            observations,
+            obtained,
+            registry_roots,
+            definitions,
+        } = outcome;
+        // A root's materialization is the sequential engine's at this load;
+        // it prints nothing but download warnings, written as they come.
+        let same_roots = registry_roots
+            .iter()
+            .all(|(name, used)| self.root(name).is_ok_and(|root| root == used));
+        if !same_roots {
+            return None;
+        }
+        // The groups it used are prepared where its loads demand them
+        // (before it wrote anything): they must be the very preparations
+        // it used.
+        for (id, used) in &adopted {
+            match self.evaluate_ordinary_group(id) {
+                Ok(prepared) if std::ptr::eq(prepared, &**used) => {}
+                _ => return None,
+            }
+        }
+        let console = crate::ui::DeferredConsole::start();
+        let checked = self
+            .extension_lock(
+                group,
+                &speculated.definition,
+                &prepared.loaded,
+                speculated.factors.clone(),
+            )
+            .ok()
+            .flatten()
+            .and_then(|lock| match self.reusable_lock_entry(&lock) {
+                Ok(Some(entry)) if entry == speculated.entry => Some(lock),
+                _ => None,
+            });
+        // The check prints nothing when the entry is reusable; anything
+        // else is the coordinator's own preparation's to print.
+        let check_output = console.finish();
+        let lock = checked.filter(|_| check_output.is_empty())?;
+        self.record_extension_lock(
+            &lock,
+            Some(&speculated.entry),
+            None,
+            &prepared.loaded,
+            prepared.metadata.as_ref(),
+            Vec::new(),
+        )
+        .ok()?;
+        crate::observed_fs::replay_some(observations.as_ref());
+        self.note_committed_roots(&obtained);
+        crate::loading::commit_speculative_definitions(self, definitions);
+        crate::ui::replay(output);
+        Some(prepared)
+    }
+
+    /// The root of the registry module `repository`, not materialized yet,
+    /// for a speculative extension preparation's loads: its tree published
+    /// into the repository store now (as crate::module_root_warm warms it),
+    /// never its demand slot; noted for the commit, which demands it.
+    fn speculative_registry_root(&self, repository: &str) -> Result<&Path, String> {
+        let unfetched = || {
+            crate::repository_demand::note_sentinel();
+            format!(
+                "{}: repository @@{repository} is unfetched and this thread does not fetch",
+                crate::repository_demand::NEEDS_REPOSITORY
+            )
+        };
+        let Some(Ok(graph)) = self.state.resolved.get() else {
+            return Err(unfetched());
+        };
+        let slots = self.state.speculative_registry_roots.get_or_init(|| {
+            graph
+                .modules
+                .keys()
+                .map(|name| (name.clone(), OnceLock::new()))
+                .collect()
+        });
+        let Some(slot) = slots.get(repository) else {
+            return Err(unfetched());
+        };
+        let root = slot
+            .get_or_init(|| self.warm_root(repository))
+            .as_deref()
+            .ok_or_else(unfetched)?;
+        SPECULATIVE_ROOTS.with(|roots| {
+            let mut roots = roots.borrow_mut();
+            if !roots.iter().any(|(name, _)| name == repository) {
+                roots.push((repository.to_owned(), root.to_path_buf()));
+            }
+        });
+        Ok(root)
+    }
+
     /// A loading worker's unit was blocked on `sentinel` (the no-demand
     /// sentinel): when it names a direct or extension-generated repository,
     /// execute that repository's rule ahead of its sequential demand.
@@ -3201,6 +3672,7 @@ impl RepositorySet {
         self.state
             .speculation
             .retry(&|blocked| self.sentinel_ready(blocked));
+        self.retry_extension_speculations();
     }
 
     /// One speculation of `canonical` on a fetch worker
@@ -3825,7 +4297,8 @@ impl RepositorySet {
                     .map(|name| (name.clone(), OnceLock::new()))
                     .collect()
             });
-            return guarded_root_slot(&roots[repository], repository, || {
+            let unmaterialized = roots[repository].get().is_none();
+            let root = guarded_root_slot(&roots[repository], repository, || {
                 let cache = self.source_cache_path()?.join("builtins");
                 let _span = crate::timeline::span("builtin", || "bazel_tools".to_owned());
                 if self.state.publication_proof {
@@ -3834,6 +4307,10 @@ impl RepositorySet {
                     crate::builtin_tools::materialize(&cache)
                 }
             });
+            if unmaterialized && root.is_ok() {
+                self.retry_extension_speculations();
+            }
+            return root;
         }
         match &module.source {
             ModuleSource::Embedded(_) => Err("embedded module source requires the genuine built-in profile and canonical bazel_tools repository".to_owned()),
@@ -3890,7 +4367,11 @@ impl RepositorySet {
                         .map(|name| (name.clone(), OnceLock::new()))
                         .collect()
                 });
-                guarded_root_slot(&roots[repository], repository, || {
+                let unmaterialized = roots[repository].get().is_none();
+                if unmaterialized && crate::extension_speculation::active() {
+                    return self.speculative_registry_root(repository);
+                }
+                let root = guarded_root_slot(&roots[repository], repository, || {
                     registry_source_root(
                         &self.state.options.registry_session,
                         registry,
@@ -3904,7 +4385,11 @@ impl RepositorySet {
                     .map_err(|error| {
                         format!("repository @@{repository} is not materialized: {error}")
                     })
-                })
+                });
+                if unmaterialized && root.is_ok() {
+                    self.retry_extension_speculations();
+                }
+                root
             }
         }
     }
@@ -4265,7 +4750,10 @@ impl RepositorySet {
                 self.materialize_direct(canonical, entry, prepared)
             },
         )
-        .inspect(|_| runtime.note_obtained(canonical, slot))
+        .inspect(|_| {
+            runtime.note_obtained(canonical, slot);
+            self.retry_root_blocked();
+        })
         .map(PathBuf::as_path)
     }
 
@@ -4441,12 +4929,33 @@ impl RepositorySet {
             .ordinary
             .get(id)
             .ok_or_else(|| format!("missing ordinary extension preparation slot {id:?}"))?;
+        // Another group's speculative preparation uses this group's
+        // speculative one (crate::extension_speculation; its commit checks
+        // that the coordinator commits that very preparation).
+        if slot.ready().is_none()
+            && let Some(prepared) = self.adopt_speculated_group(id)
+        {
+            return Ok(prepared);
+        }
         let prepared = slot.get_or_try_init(
             self.state.runtime_id,
             &format!("prepare:ordinary:{id}"),
             || {
                 let _span = crate::timeline::span("extension", || id.to_owned());
-                self.compute_ordinary(id, runtime, group).map(Arc::new)
+                // Prepared ahead already (crate::extension_speculation):
+                // committed here, where the sequential engine prepares it.
+                if let Some(outcome) = self.state.extension_speculation.take(id) {
+                    let chained = !outcome.adopted.is_empty();
+                    let committed = self.commit_extension_speculation(group, *outcome);
+                    self.state
+                        .extension_speculation
+                        .note_commit(committed.is_some(), chained);
+                    if let Some(prepared) = committed {
+                        return Ok(prepared);
+                    }
+                }
+                self.compute_ordinary(id, runtime, group, None)
+                    .map(Arc::new)
             },
         );
         if prepared.is_ok() {
@@ -4456,17 +4965,23 @@ impl RepositorySet {
             for canonical in pending.unwrap_or_default() {
                 self.state.speculation.request(&canonical);
             }
+            self.retry_extension_speculations();
         }
         prepared.map(|prepared| &**prepared)
     }
 
-    /// The preparation of the extension group `group`
-    /// (SingleExtensionValue.evalKey), at the group's demand.
+    /// The preparation of the extension group `group` (SingleExtensionValue
+    /// .evalKey): on the coordinator at the group's demand, or on an
+    /// extension speculation's worker (crate::extension_speculation), then
+    /// with `speculated` receiving what the commit re-checks — an
+    /// evaluation that does not reuse the lockfile entry is not speculated,
+    /// and the lockfile is only read.
     fn compute_ordinary(
         &self,
         id: &str,
         runtime: &DirectRuntime,
         group: &repository_catalog::OrdinaryGroup,
+        speculated: Option<&mut Option<SpeculatedLock>>,
     ) -> Result<PreparedOrdinary, String> {
         for participant in &group.participants {
             if let Some(error) = &participant.source_profile_error {
@@ -4520,6 +5035,11 @@ impl RepositorySet {
                 (recorded, metadata, None)
             }
             None => {
+                if speculated.is_some() {
+                    // Only a reusable lockfile entry is prepared ahead:
+                    // the extension itself runs at its demand.
+                    return Err(INELIGIBLE.to_owned());
+                }
                 if self.state.publication_proof {
                     return Err(
                         "publication proof requires a currently valid extension lock entry".into(),
@@ -4729,14 +5249,20 @@ impl RepositorySet {
                     ))
                 })
                 .collect::<Result<Vec<_>, String>>()?;
-            let recorded_entry = self.record_extension_lock(
-                lock,
-                reused.as_ref(),
-                execution.as_ref(),
-                &loaded,
-                metadata.as_ref(),
-                specs,
-            )?;
+            // A speculation only reads the lockfile: its commit records.
+            let recorded_entry = if speculated.is_some() {
+                drop(specs);
+                None
+            } else {
+                self.record_extension_lock(
+                    lock,
+                    reused.as_ref(),
+                    execution.as_ref(),
+                    &loaded,
+                    metadata.as_ref(),
+                    specs,
+                )?
+            };
             if let (Some(pending), Some(entry)) = (evaluated_taint.take(), recorded_entry) {
                 pending.reprobe(
                     self,
@@ -4865,6 +5391,16 @@ impl RepositorySet {
             provenance.shrink_to_fit(); // the sink grows by doubling
             (OnceLock::from(provenance), None)
         };
+        if let Some(speculated) = speculated {
+            let (Some(lock), Some(entry)) = (lock, reused) else {
+                return Err(INELIGIBLE.to_owned());
+            };
+            *speculated = Some(SpeculatedLock {
+                definition,
+                factors: lock.factors,
+                entry,
+            });
+        }
         Ok(PreparedOrdinary {
             loaded,
             generated_mapping,
@@ -4926,7 +5462,13 @@ impl RepositorySet {
         let Some(id) = runtime.catalog.ordinary_routes.get(prefix) else {
             return Ok(None);
         };
-        let Some(prepared) = runtime.ordinary.get(id).and_then(|s| s.ready()) else {
+        let Some(prepared) = runtime
+            .ordinary
+            .get(id)
+            .and_then(|s| s.ready())
+            .map(|prepared| &**prepared)
+            .or_else(|| self.adopt_speculated_group(id))
+        else {
             return Ok(None);
         };
         let (_, repository) = self.ordinary_repository(canonical)?;
@@ -4989,7 +5531,10 @@ impl RepositorySet {
                     self.materialize_ordinary(prepared, repository)
                 },
             )
-            .inspect(|_| runtime.note_obtained(canonical, &repository.root))
+            .inspect(|_| {
+                runtime.note_obtained(canonical, &repository.root);
+                self.retry_root_blocked();
+            })
             .map(PathBuf::as_path)
     }
 
@@ -5522,8 +6067,12 @@ impl RepositorySet {
         let workspace = session.lockfile();
         let hidden = session.hidden_lockfile();
         // Its entry and facts are consulted in every mode: the analysis
-        // snapshot's record of the hidden lockfile covers them.
-        session.note_hidden_consulted(&id);
+        // snapshot's record of the hidden lockfile covers them. A
+        // speculative preparation's are consulted where it is committed
+        // (crate::extension_speculation: the commit checks the lock again).
+        if !crate::extension_speculation::active() {
+            session.note_hidden_consulted(&id);
+        }
         let lx::LockSelection {
             facts,
             workspace_facts,

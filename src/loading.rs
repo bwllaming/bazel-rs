@@ -439,6 +439,23 @@ static DEFINITION_MODULES: std::sync::Mutex<Option<std::collections::BTreeSet<La
     std::sync::Mutex::new(None);
 
 fn note_definition_modules(loader: &Loader<'_>, label: &Label) {
+    // A speculative extension preparation's modules count once the
+    // coordinator commits it ([`speculative_definitions`]).
+    let held = SPECULATIVE_DEFINITIONS.with(|held| match held.borrow_mut().as_mut() {
+        Some(held) => {
+            held.modules.insert(label.clone());
+            held.modules.extend(loader.cache.keys().cloned());
+            held.modules.extend(loader.load_graph.keys().cloned());
+            for loads in loader.load_graph.values() {
+                held.modules.extend(loads.iter().cloned());
+            }
+            true
+        }
+        None => false,
+    });
+    if held {
+        return;
+    }
     let mut modules = DEFINITION_MODULES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1114,20 +1131,155 @@ impl std::fmt::Debug for DefinitionBzlCache {
 
 impl DefinitionBzlCache {
     fn get(&self, label: &Label) -> Option<Arc<CachedDefinitionBzl>> {
-        self.modules
+        let shared = self
+            .modules
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(label)
-            .cloned()
+            .cloned();
+        shared.or_else(|| {
+            SPECULATIVE_DEFINITIONS.with(|held| {
+                held.borrow().as_ref().and_then(|held| {
+                    held.entries
+                        .iter()
+                        .find(|(held, _)| held == label)
+                        .map(|(_, module)| module.clone())
+                })
+            })
+        })
     }
 
     fn insert(&self, label: Label, module: CachedDefinitionBzl) {
+        let module = Arc::new(module);
+        // A speculative extension preparation's entries are this thread's
+        // until the coordinator commits it ([`speculative_definitions`]):
+        // a hit replays no observations, so an entry must not be shared
+        // before the evaluation's observations count.
+        let held = SPECULATIVE_DEFINITIONS.with(|held| match held.borrow_mut().as_mut() {
+            Some(held) => {
+                held.entries.push((label.clone(), module.clone()));
+                true
+            }
+            None => false,
+        });
+        if !held {
+            self.share(label, module);
+        }
+    }
+
+    fn share(&self, label: Label, module: Arc<CachedDefinitionBzl>) {
         self.modules
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(label)
-            .or_insert_with(|| Arc::new(module));
+            .or_insert(module);
     }
+}
+
+/// crate::snapshot::incremental::note_module_code, held while a
+/// speculative extension preparation loads ([`speculative_definitions`]).
+fn note_module_code(label: &Label, bytes: &[u8]) {
+    let held = SPECULATIVE_DEFINITIONS.with(|held| match held.borrow_mut().as_mut() {
+        Some(held) => {
+            held.code.push((label.clone(), bytes.to_vec()));
+            true
+        }
+        None => false,
+    });
+    if !held {
+        crate::snapshot::incremental::note_module_code(label, bytes);
+    }
+}
+
+/// What the definition loads of a speculative extension preparation
+/// (crate::extension_speculation) added to the definition `.bzl` cache and
+/// to the definition modules, held until the coordinator commits it.
+#[derive(Default)]
+pub(crate) struct SpeculativeDefinitions {
+    entries: Vec<(Label, Arc<CachedDefinitionBzl>)>,
+    modules: std::collections::BTreeSet<Label>,
+    /// The main-repository modules it read, with their code.
+    code: Vec<(Label, Vec<u8>)>,
+}
+
+impl std::fmt::Debug for SpeculativeDefinitions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpeculativeDefinitions")
+            .field("entries", &self.entries.len())
+            .field("modules", &self.modules.len())
+            .finish()
+    }
+}
+
+thread_local! {
+    static SPECULATIVE_DEFINITIONS: RefCell<Option<SpeculativeDefinitions>> =
+        const { RefCell::new(None) };
+}
+
+/// Run `f` holding what its definition loads add to the definition `.bzl`
+/// cache and the definition modules ([`SpeculativeDefinitions`]); its own
+/// later loads hit what it added.
+pub(crate) fn speculative_definitions<R>(f: impl FnOnce() -> R) -> (R, SpeculativeDefinitions) {
+    struct Restore(Option<SpeculativeDefinitions>, bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if !self.1 {
+                let previous = self.0.take();
+                let _ = SPECULATIVE_DEFINITIONS.try_with(|held| {
+                    if let Ok(mut held) = held.try_borrow_mut() {
+                        *held = previous;
+                    }
+                });
+            }
+        }
+    }
+    let previous = SPECULATIVE_DEFINITIONS.with(|held| held.replace(Some(Default::default())));
+    let mut restore = Restore(previous, false);
+    let result = f();
+    let held = SPECULATIVE_DEFINITIONS
+        .with(|held| held.replace(restore.0.take()))
+        .unwrap_or_default();
+    restore.1 = true;
+    (result, held)
+}
+
+/// Commit what a speculative preparation held ([`speculative_definitions`])
+/// where the sequential engine prepares the group: its entries join the
+/// definition `.bzl` cache (unless one exists already) and its modules the
+/// definition modules.
+///
+/// Its definition loads ran inside replay scopes on the coordinator
+/// (crate::snapshot::replay): what they pinned — the `root()`/`mapping()`
+/// lookups of every module they entered, which the cache entries keep —
+/// is pinned here, in a scope, as a load hitting those entries pins it.
+pub(crate) fn commit_speculative_definitions(
+    repositories: &RepositorySet,
+    held: SpeculativeDefinitions,
+) {
+    let cache = repositories.definition_bzl_cache();
+    for (label, module) in held.entries {
+        cache.share(label, module);
+    }
+    for (label, code) in held.code {
+        crate::snapshot::incremental::note_module_code(&label, &code);
+    }
+    if held.modules.is_empty() {
+        return;
+    }
+    if repositories.records_for_replay() {
+        let _scope = crate::snapshot::replay::scope();
+        for label in &held.modules {
+            if let Some(module) = cache.get(label) {
+                repositories.repeat_lookups(&module.lookups);
+            }
+        }
+    }
+    let mut modules = DEFINITION_MODULES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    modules
+        .get_or_insert_with(Default::default)
+        .extend(held.modules);
 }
 
 /// Buffered stderr output of one package load unit (review §1.4 and the
@@ -1888,7 +2040,7 @@ impl<'a> Loader<'a> {
         let bytes = crate::observed_fs::read(&path)
             .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?;
         if label.repository.is_empty() {
-            crate::snapshot::incremental::note_module_code(label, &bytes);
+            note_module_code(label, &bytes);
         }
         let timing_parse = std::time::Instant::now();
         let source = std::str::from_utf8(&bytes)
