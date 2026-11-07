@@ -22,7 +22,7 @@ use std::time::Duration;
 /// How often one unit is queued again (a re-run blocked once more on a
 /// demand satisfied in the meantime goes back; past this it re-runs
 /// inline at its slot).
-pub(super) const MAX_RETRIES: u8 = 4;
+pub(super) const MAX_RETRIES: u8 = 8;
 
 /// How long the coordinator waits for a unit before it looks for blocked
 /// units again (a speculation may have published a root meanwhile).
