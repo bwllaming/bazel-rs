@@ -38,8 +38,13 @@ pub(crate) struct Inline<'a> {
     pub(crate) first: FirstVisit,
     /// Events emitted outside any node (the requests' own analyses).
     pub(crate) root_events: Vec<Event>,
-    /// Nodes computed, in completion order.
+    /// Nodes computed.
     pub(crate) computed: usize,
+    /// A `Flush` was emitted (a config_setting with Starlark flag_values
+    /// keys: its CT2 dependencies are S2).
+    pub(crate) saw_flush: bool,
+    /// The last value of each failed node that is not memoized.
+    failed: FxHashMap<NodeId, Arc<NodeValue>>,
 }
 
 impl<'a> Inline<'a> {
@@ -55,6 +60,8 @@ impl<'a> Inline<'a> {
             first: FirstVisit::default(),
             root_events: Vec::new(),
             computed: 0,
+            saw_flush: false,
+            failed: FxHashMap::default(),
         }
     }
 
@@ -91,14 +98,33 @@ impl<'a> Inline<'a> {
         let frame = self.stack.pop().expect("the frame pushed above");
         self.on_stack.remove(&id);
         let value = Arc::new(result?);
-        self.values.insert(id, Arc::clone(&value));
+        self.computed += 1;
         self.transcripts.insert(
             id,
             Transcript {
                 events: frame.events,
             },
         );
-        self.computed += 1;
+        // The walk memoizes only the successes of these (a failure is
+        // analyzed again at its next edge, in that edge's active chain:
+        // a cycle report names it); the others memoize errors too.
+        let memoized = value.error().is_none()
+            || !matches!(
+                key,
+                NodeKey::Ct1(_)
+                    | NodeKey::Src(_)
+                    | NodeKey::Group(_)
+                    | NodeKey::FlagScope(_)
+                    | NodeKey::ExecCfg(..)
+            );
+        if memoized {
+            self.values.insert(id, Arc::clone(&value));
+        } else {
+            if let NodeKey::Ct1(ct) = &key {
+                self.first.canonical.remove(&ct.key);
+            }
+            self.failed.insert(id, Arc::clone(&value));
+        }
         Ok(value)
     }
 }
@@ -121,6 +147,7 @@ impl Cx for Inline<'_> {
     }
 
     fn emit(&mut self, event: Event) {
+        self.saw_flush |= event == Event::Flush;
         match self.stack.last_mut() {
             Some(frame) => frame.events.push(event),
             None => self.root_events.push(event),

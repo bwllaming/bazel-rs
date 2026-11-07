@@ -27,6 +27,7 @@ use super::super::shared::EvalShared;
 use super::super::transcript::Event;
 use super::super::value::NodeValue;
 use super::eval_host::EvalHost;
+use super::eval_host::Phase1Cx;
 use super::host::Host;
 use super::inline::Inline;
 
@@ -136,6 +137,7 @@ impl Engine {
         top: ConfigId,
         configured: &ConfiguredNodes,
         plan: &Plan,
+        walk_error: Option<&str>,
     ) -> Result<(), String> {
         if self.cquery_capture.is_some() || self.keep_going || !self.requested_aspects.is_empty() {
             // S1: cquery captures, keep-going bookkeeping and top-level
@@ -147,7 +149,7 @@ impl Engine {
         let warnings = self.warnings.len();
         let incremental = self.incremental.take();
         let shared = EvalShared::from_engine(self);
-        let result = verify_with(self, &shared, labels, top, configured, plan);
+        let result = verify_with(self, &shared, labels, top, configured, plan, walk_error);
         shared.restore(self);
         self.incremental = incremental;
         self.warnings.truncate(warnings);
@@ -164,6 +166,7 @@ impl Engine {
         // snapshot-unrecorded: a diagnostic log path; it never changes the plan.
         if let Some(log) = std::env::var_os("BAZEL_RS_EVAL_VERIFY_PHASE1_LOG") {
             use std::io::Write;
+            // snapshot-unrecorded: a diagnostic log, written after the comparison.
             if let Ok(mut file) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -190,7 +193,9 @@ fn verify_with(
     top: ConfigId,
     configured: &ConfiguredNodes,
     plan: &Plan,
+    walk_error: Option<&str>,
 ) -> Result<(usize, Diffs), String> {
+    let mut diffs = Diffs::default();
     let mut driver = Inline::new(engine, shared);
     // Engine::plan_build: a non-default target platform first.
     let top_configuration = shared
@@ -204,8 +209,15 @@ fn verify_with(
         && target != top_configuration.native.host_platform
     {
         let mut host = EvalHost::new(shared, &mut driver, None, false);
-        host.platform_info(&target, top)
-            .map_err(|error| error.target_text())?;
+        if let Err(error) = host.platform_info(&target, top) {
+            let error = error.target_text();
+            if walk_error != Some(error.as_str()) {
+                diffs.push(format!(
+                    "the target platform: walk {walk_error:?} / eval {error:?}"
+                ));
+            }
+            return Ok((driver.computed, diffs));
+        }
     }
     for label in labels {
         // Engine::analyze_requested.
@@ -221,9 +233,46 @@ fn verify_with(
         let mut host = EvalHost::new(shared, &mut driver, None, false);
         let analyzed = host.analyze(label, top);
         driver.first.requested_trimmed_root = None;
-        analyzed.map_err(|error| {
-            format!("BAZEL_RS_EVAL_VERIFY_PHASE1: the nodes failed where the walk did not: {error}")
-        })?;
+        // Engine::analyze_requested's report of an aborted analysis.
+        let analyzed = analyzed.map_err(|error| {
+            match error.split_once(super::super::super::ANALYSIS_ABORTED) {
+                Some((_, message)) => format!(
+                    "Analysis of target '{}' failed; build aborted: {message}",
+                    crate::rule_declarations::canonical_form(label)
+                ),
+                None => error,
+            }
+        });
+        match (analyzed, walk_error) {
+            (Ok(()), None) => {}
+            (Ok(()), Some(walk)) => {
+                // The walk's failure may be the requested target's own
+                // compatibility (after its analysis).
+                let compatible = driver
+                    .engine()
+                    .check_requested_compatibility(configured, label, top);
+                if let Err(error) = compatible {
+                    if error != walk {
+                        diffs.push(format!("{label}: walk {walk:?} / compatibility {error:?}"));
+                    }
+                    return Ok((driver.computed, diffs));
+                }
+            }
+            (Err(error), walk) => {
+                // A config_setting's Starlark flag_values keys need the
+                // planned implementations (the walk's flush runs phase 2;
+                // the CsMatch node with CT2 dependencies is S2): an error
+                // of that phase 2 is not comparable here.
+                if walk != Some(error.as_str()) && !driver.saw_flush {
+                    diffs.push(format!("{label}: walk {walk:?} / eval {error:?}"));
+                }
+                return Ok((driver.computed, diffs));
+            }
+        }
+    }
+    if let Some(walk) = walk_error {
+        diffs.push(format!("the walk failed, the nodes did not: {walk:?}"));
+        return Ok((driver.computed, diffs));
     }
     let mut replay = Replay {
         driver: &driver,
@@ -234,7 +283,6 @@ fn verify_with(
     let roots = driver.root_events.clone();
     replay.events(&roots);
     let (eval_plan, eval_empty) = (replay.plan, replay.empty);
-    let mut diffs = Diffs::default();
     // The plan, keys and order.
     // Entries a deferred target platform's analysis in phase 2 put into
     // the walk's plan (phase 2, S3) are compared as configured nodes only.
@@ -378,7 +426,6 @@ fn verify_with(
 impl Inline<'_> {
     /// A coordinator lookup outside any node (the requests' trimming).
     fn engine_mut_target(&mut self, label: &Label) -> Result<Target, String> {
-        use super::eval_host::Phase1Cx;
         self.engine().target(label)
     }
 }

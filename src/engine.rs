@@ -11598,6 +11598,11 @@ impl Engine {
         // targets are analyzed, and stops with phase 1 however it ends.
         self.start_prefetch(labels);
         let analyzed = self.analyze_requested(labels, top, &mut configured, &mut plan, checkpoint);
+        if let Err(error) = &analyzed
+            && eval::nodes::verify_phase1::enabled()
+        {
+            self.verify_phase1(labels, top, &configured, &plan, Some(error))?;
+        }
         self.stop_prefetch();
         if let root_checkpoint::Outcome::AcceptedQuery(graph) = analyzed? {
             // The live phase1 plan/nodes drop here; never export partial capture.
@@ -11606,7 +11611,7 @@ impl Engine {
         crate::progress::analysis_planned(plan.len());
         crate::perf_mark("plan.phase1_analysis_done");
         if eval::nodes::verify_phase1::enabled() {
-            self.verify_phase1(labels, top, &configured, &plan)?;
+            self.verify_phase1(labels, top, &configured, &plan, None)?;
         }
         // Alias-like targets and the end of their alias chain: dependents see
         // that target's label, kind and providers (AliasConfiguredTarget).
