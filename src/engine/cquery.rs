@@ -64,6 +64,59 @@ struct CapturedAspect {
 }
 
 impl Capture {
+    /// The captured graph as text (BAZEL_RS_EVAL_VERIFY compares two
+    /// engines' captures).
+    pub(super) fn verify_text(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        let key = |id: u32| self.target_keys[id as usize].to_string();
+        for edge in &self.edges {
+            let _ = writeln!(
+                out,
+                "edge {} -> {} {} tool={} aspect={}",
+                key(edge.from),
+                key(edge.to),
+                edge.attribute,
+                edge.tool,
+                edge.aspect
+            );
+        }
+        for rule in self.rules.keys() {
+            let _ = writeln!(out, "rule {rule}");
+        }
+        for (target, conditions) in &self.incompatible {
+            let names: Vec<&str> = conditions.iter().map(|(name, _)| name.as_str()).collect();
+            let _ = writeln!(out, "incompatible {target} {names:?}");
+        }
+        for target in &self.direct_incompatible {
+            let _ = writeln!(out, "direct-incompatible {target}");
+        }
+        for application in &self.applications {
+            let _ = writeln!(
+                out,
+                "application {} {} {} {} {:?} {:?} {:?}",
+                key(application.base),
+                application.class,
+                application.descriptor,
+                application.applicable,
+                application
+                    .targets
+                    .iter()
+                    .map(|id| key(*id))
+                    .collect::<Vec<_>>(),
+                application.aspects,
+                application.fragments
+            );
+        }
+        for (from, applications) in &self.requests {
+            let _ = writeln!(out, "request {} {applications:?}", key(*from));
+        }
+        for (identity, facts) in &self.facts {
+            let _ = writeln!(out, "facts {identity:?} {facts:?}");
+        }
+        out
+    }
+
     fn string(&mut self, text: &str) -> Arc<str> {
         if let Some(text) = self.strings.get(text) {
             return text.clone();

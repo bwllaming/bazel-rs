@@ -17,6 +17,7 @@ use crate::label::Label;
 use super::super::super::{ConfiguredTargetKey, Engine};
 use super::super::cx::{Cx, Missing, Vals};
 use super::super::key::{NodeId, NodeKey};
+use super::super::linearize::driver::{Linearizer, Store};
 use super::super::scheduler::Bodies;
 use super::super::shared::EvalShared;
 use super::super::transcript::Event;
@@ -35,12 +36,20 @@ pub(crate) struct Coord<'e> {
     /// A `Flush` was emitted (a config_setting with Starlark flag_values
     /// keys: its CT2 dependencies are S2).
     pub(crate) saw_flush: bool,
-    /// The attempts running, outermost first.
-    stack: Vec<NodeKey>,
+    /// The attempts running, outermost first, each with what it emitted
+    /// so far (worker C: the transcripts pass 1 replays, with what the
+    /// engine's services did in between, `Coord::drain`).
+    pub(crate) stack: Vec<Running>,
+    /// The finished transcripts, the segments and the captured console
+    /// writes (worker C).
+    pub(crate) store: Store,
+    /// `BAZEL_RS_ANALYSIS=eval`'s linearizer (pass 1 and the tape's
+    /// application; `None` under BAZEL_RS_EVAL_VERIFY_PHASE1).
+    pub(crate) lin: Option<Box<Linearizer>>,
     /// The done CT1 value of each ConfiguredTargetKey's first variant.
-    ct1_done: FxHashMap<ConfiguredTargetKey, Arc<Ct1Value>>,
+    pub(crate) ct1_done: FxHashMap<ConfiguredTargetKey, Arc<Ct1Value>>,
     /// The source files whose analysis succeeded (`analyzed_sources`).
-    sources: FxHashSet<Label>,
+    pub(crate) sources: FxHashSet<Label>,
 }
 
 impl Coord<'_> {
@@ -53,7 +62,7 @@ impl Coord<'_> {
     }
 
     pub(crate) fn in_progress(&self, key: &NodeKey) -> bool {
-        self.stack.contains(key)
+        self.stack.iter().any(|running| running.key == *key)
     }
 
     /// The configured targets being analyzed, outermost first, since the
@@ -61,8 +70,8 @@ impl Coord<'_> {
     /// walk's fresh `active`).
     pub(crate) fn active_ct1(&self) -> Vec<ConfiguredTargetKey> {
         let mut active = Vec::new();
-        for key in self.stack.iter().rev() {
-            match key {
+        for running in self.stack.iter().rev() {
+            match &running.key {
                 NodeKey::Ct1(ct) => active.push(ct.key.clone()),
                 NodeKey::Platform(_) | NodeKey::RegToolchains(_) | NodeKey::RegExecPlatforms(_) => {
                     break;
@@ -73,6 +82,14 @@ impl Coord<'_> {
         active.reverse();
         active
     }
+}
+
+/// One running attempt.
+pub(crate) struct Running {
+    pub(crate) id: NodeId,
+    pub(crate) key: NodeKey,
+    /// What it emitted so far.
+    pub(crate) events: Vec<Event>,
 }
 
 /// What a phase-1 body needs of its context besides [`Cx`] in S1.
@@ -92,8 +109,13 @@ impl Cx for BodyCx<'_, '_> {
     }
 
     fn emit(&mut self, event: Event) {
-        if event == Event::Flush {
-            self.coord().saw_flush = true;
+        {
+            let mut coord = self.coord();
+            if event == Event::Flush {
+                coord.saw_flush = true;
+            }
+            coord.drain();
+            coord.push_event(event.clone());
         }
         self.cx.emit(event);
     }
@@ -131,6 +153,8 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
                 tracking,
                 saw_flush: false,
                 stack: Vec::new(),
+                store: Store::default(),
+                lin: None,
                 ct1_done: FxHashMap::default(),
                 sources: FxHashSet::default(),
             }),
@@ -144,15 +168,19 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
     }
 
     fn pop(&self) {
-        self.coord().stack.pop();
+        let mut coord = self.coord();
+        coord.drain();
+        coord.abandon_attempt();
     }
 }
 
 impl Bodies for Phase1Bodies<'_, '_> {
     type Attempt = ();
 
-    fn begin(&self, _id: NodeId, key: &NodeKey) {
-        self.coord().stack.push(key.clone());
+    fn begin(&self, id: NodeId, key: &NodeKey) {
+        let mut coord = self.coord();
+        coord.drain();
+        coord.begin_attempt(id, key.clone());
     }
 
     fn run(&self, cx: &mut dyn Cx, key: &NodeKey) -> Result<NodeValue, Missing> {
@@ -165,11 +193,13 @@ impl Bodies for Phase1Bodies<'_, '_> {
 
     fn finish(&self, _attempt: (), value: NodeValue) -> NodeValue {
         let mut coord = self.coord();
-        let key = coord.stack.pop();
+        coord.drain();
+        let key = coord.finish_attempt(&value);
         match (key, &value) {
             (Some(NodeKey::Ct1(ct)), NodeValue::Ct1(ct1)) => {
                 if coord.first.canonical.get(&ct.key) == Some(&ct) {
                     coord.ct1_done.insert(ct.key.clone(), Arc::clone(ct1));
+                    coord.store.fresh_ct1.push(ct.key.clone());
                 }
             }
             (Some(NodeKey::Src(label)), NodeValue::Src(Ok(()))) => {

@@ -239,7 +239,7 @@ fn satisfies(required: &[Vec<ProviderRequirement>], advertised: &[ProviderRequir
 /// The registry of every aspect definition the invocation can reach: those
 /// exported by loaded `.bzl` modules and the native `ValidateTarget`
 /// (rules/core/ValidateTarget.java). Keyed by identity.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct AspectRegistry {
     definitions: BTreeMap<String, Arc<AspectDefinition>>,
 }

@@ -41,12 +41,35 @@ thread_local! {
     static SUITE_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
+/// The transcript names of the scopes that are not shared computations
+/// (`Event::ScopeEnter`): a [`PatternScope`] and a [`SuiteScope`].
+pub(super) const PATTERN_SCOPE: &str = "\u{0}pattern";
+pub(super) const SUITE_SCOPE: &str = "\u{0}suite";
+
+/// A scope entered by a tape replay ([`TapeReplay`]).
+enum ReplayedScope {
+    Shared(#[allow(dead_code)] SharedScope),
+    Pattern(#[allow(dead_code)] PatternScope),
+    Suite(#[allow(dead_code)] SuiteScope),
+}
+
+impl ReplayedScope {
+    fn enter(name: &'static str) -> Self {
+        match name {
+            PATTERN_SCOPE => Self::Pattern(PatternScope::enter()),
+            SUITE_SCOPE => Self::Suite(SuiteScope::enter()),
+            name => Self::Shared(SharedScope::enter(name)),
+        }
+    }
+}
+
 /// While alive, the packages the engine looks up are read by a test
 /// suite's expansion in the target pattern phase.
 pub(super) struct SuiteScope(());
 
 impl SuiteScope {
     pub(super) fn enter() -> Self {
+        super::eval::linearize::capture::scope_enter(SUITE_SCOPE);
         SUITE_DEPTH.with(|depth| depth.set(depth.get() + 1));
         Self(())
     }
@@ -54,6 +77,7 @@ impl SuiteScope {
 
 impl Drop for SuiteScope {
     fn drop(&mut self) {
+        super::eval::linearize::capture::scope_exit();
         SUITE_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
     }
 }
@@ -64,6 +88,7 @@ pub(super) struct SharedScope(());
 
 impl SharedScope {
     pub(super) fn enter(name: &'static str) -> Self {
+        super::eval::linearize::capture::scope_enter(name);
         SHARED_DEPTH.with(|depth| {
             if depth.get() == 0 {
                 SHARED_NAME.with(|shared| shared.set(name));
@@ -76,6 +101,7 @@ impl SharedScope {
 
 impl Drop for SharedScope {
     fn drop(&mut self) {
+        super::eval::linearize::capture::scope_exit();
         SHARED_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
     }
 }
@@ -85,6 +111,7 @@ pub(super) struct PatternScope(());
 
 impl PatternScope {
     pub(super) fn enter() -> Self {
+        super::eval::linearize::capture::scope_enter(PATTERN_SCOPE);
         PATTERN_DEPTH.with(|depth| depth.set(depth.get() + 1));
         Self(())
     }
@@ -92,6 +119,7 @@ impl PatternScope {
 
 impl Drop for PatternScope {
     fn drop(&mut self) {
+        super::eval::linearize::capture::scope_exit();
         PATTERN_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
     }
 }
@@ -171,6 +199,41 @@ pub(super) struct Tracker {
     deferred: Option<Vec<Deferred>>,
 }
 
+impl Tracker {
+    /// A copy for a second engine (BAZEL_RS_EVAL_VERIFY's fork), not
+    /// deferring.
+    pub(super) fn fork(&self) -> Self {
+        debug_assert!(self.deferred.is_none());
+        Self {
+            keys: self.keys.clone(),
+            key_ids: self.key_ids.clone(),
+            frames: self.frames.clone(),
+            edges: self.edges.clone(),
+            edge_set: self.edge_set.clone(),
+            accesses: self.accesses.clone(),
+            label_accesses: self.label_accesses.clone(),
+            packages: self.packages.clone(),
+            package_ids: self.package_ids.clone(),
+            shared_keys: self.shared_keys.clone(),
+            printed_keys: self.printed_keys.clone(),
+            aspects: self.aspects.clone(),
+            roots: self.roots.clone(),
+            requested: self.requested.clone(),
+            planned: self.planned.clone(),
+            root_analysis: self.root_analysis,
+            root_reached: self.root_reached,
+            root_entries: self.root_entries.clone(),
+            demand: self.demand.clone(),
+            pattern_position: self.pattern_position,
+            covered: self.covered.clone(),
+            patterns_simple: self.patterns_simple,
+            suite_packages: self.suite_packages.clone(),
+            costs: self.costs.clone(),
+            deferred: None,
+        }
+    }
+}
+
 /// One tracker event recorded while deferring ([`Tracker::deferred`]).
 type Deferred = Box<dyn FnOnce(&mut Tracker) + Send + Sync>;
 
@@ -231,7 +294,7 @@ impl TrackLog {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct PackageRecord {
     id: Option<PackageId>,
     global: bool,
@@ -335,6 +398,120 @@ impl Tracker {
         } else if !self.requested.contains(label) {
             self.make_global(id, || format!("{label} looked up outside every target"));
         }
+    }
+}
+
+/// Applies pass 1's tape to a tracker op by op, as the walk's tracker
+/// calls at each position: reaches with their frames and plan entries,
+/// target and source accesses in their shared scopes, prints, the
+/// requested roots. A flush's phase 2 is not on the tape (its planning
+/// frames are pass 2's).
+pub(super) struct TapeReplay {
+    plan_len: u32,
+    /// (the entered key's id, the frame depth before its reach).
+    entered: Vec<(u32, usize)>,
+    scopes: Vec<ReplayedScope>,
+    roots: usize,
+}
+
+impl TapeReplay {
+    /// `plan_len`: the plan's length when the tape begins.
+    pub(super) fn new(plan_len: usize) -> Self {
+        Self {
+            plan_len: plan_len as u32,
+            entered: Vec::new(),
+            scopes: Vec::new(),
+            roots: 0,
+        }
+    }
+
+    pub(super) fn apply(&mut self, tracker: &mut Tracker, op: &super::eval::transcript::TapeOp) {
+        use super::eval::transcript::{Event, SegmentKind, TapeOp};
+        match op {
+            TapeOp::Segment(kind) => {
+                tracker.root_analysis = None;
+                tracker.root_reached = false;
+                match kind {
+                    SegmentKind::Root { position, .. } => {
+                        if *position == 0 {
+                            tracker.root_entries.clear();
+                        }
+                        if tracker.root_entries.len() == *position {
+                            tracker.root_entries.push(self.plan_len);
+                        }
+                        tracker.root_analysis = Some(*position as u32);
+                        self.roots = position + 1;
+                    }
+                    SegmentKind::RootsDone => {
+                        if self.roots == 0 {
+                            tracker.root_entries.clear();
+                        }
+                        if tracker.root_entries.len() == self.roots {
+                            tracker.root_entries.push(self.plan_len);
+                        }
+                    }
+                    SegmentKind::Setup | SegmentKind::TopLevelAspects { .. } => {}
+                }
+            }
+            TapeOp::Reach { key, enter, .. } => {
+                let depth = tracker.frames.len();
+                let id = tracker.reach((
+                    key.label.clone(),
+                    Some(key.config),
+                    key.apply_rule_transition,
+                ));
+                if *enter {
+                    tracker.frames.push((id, shared_depth()));
+                    tracker
+                        .planned
+                        .entry(id)
+                        .or_insert((self.plan_len, u32::MAX));
+                    self.entered.push((id, depth));
+                }
+            }
+            TapeOp::Leave => {
+                if let Some((_, depth)) = self.entered.pop() {
+                    tracker.frames.truncate(depth);
+                }
+            }
+            TapeOp::Plan { position, .. } => {
+                if *position
+                    && let Some((id, _)) = self.entered.last()
+                    && let Some(planned) = tracker.planned.get_mut(id)
+                    && planned.1 == u32::MAX
+                {
+                    planned.1 = self.plan_len;
+                }
+                self.plan_len += 1;
+            }
+            TapeOp::Effect(Event::Access(label)) => tracker.access(label),
+            // The commit's record (`track_package_printed`; its BUILD
+            // prints are pass 2's to note).
+            TapeOp::Effect(Event::PkgCommit(package)) => {
+                let id = tracker.package(package);
+                tracker.packages[id as usize].pattern |= pattern();
+            }
+            TapeOp::Effect(Event::Source(label)) => {
+                tracker.reach((label.clone(), None, true));
+            }
+            TapeOp::Effect(Event::ScopeEnter(name)) => self.scopes.push(ReplayedScope::enter(name)),
+            TapeOp::Effect(Event::ScopeExit) => {
+                self.scopes.pop();
+            }
+            TapeOp::Effect(Event::Print(_)) => {
+                if let Some((frame, _)) = tracker.frames.last().copied() {
+                    tracker.printed_keys.insert(frame);
+                }
+            }
+            TapeOp::Fail(_) | TapeOp::Flush | TapeOp::Effect(_) => {}
+        }
+    }
+
+    pub(super) fn finish(mut self, tracker: &mut Tracker) {
+        tracker.root_analysis = None;
+        tracker.root_reached = false;
+        // Unbalanced scopes (a failed phase 1) close innermost first.
+        while self.scopes.pop().is_some() {}
     }
 }
 

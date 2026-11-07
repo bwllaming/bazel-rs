@@ -3329,6 +3329,7 @@ impl RepositorySet {
         crate::observed_fs::replay_some(outcome.obtained.observations.as_ref());
         self.note_committed_roots(&outcome.obtained.keys);
         // Its notes are marked (crate::ui).
+        let _shared = crate::ui::SharedWork::enter();
         crate::ui::emit(&outcome.output);
         outcome.root
     }
@@ -3767,7 +3768,12 @@ impl RepositorySet {
                 .map(|root| root.path.as_path())
                 .ok_or_else(|| format!("repository @@{repository} is {NOT_PINNED}"));
         }
-        let root = self.external_root(repository)?;
+        let root = {
+            // Repository work (a rule's execution, an extension's
+            // evaluation) is the repository set's, not one engine's.
+            let _shared = crate::ui::SharedWork::enter();
+            self.external_root(repository)?
+        };
         if self.state.replay.is_some() {
             crate::snapshot::replay::note_lookup(|| {
                 crate::snapshot::replay::Lookup::Root(repository.to_owned())

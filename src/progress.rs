@@ -288,6 +288,21 @@ pub(crate) fn package_loaded() {
     COUNTERS.packages.fetch_add(1, Ordering::Relaxed);
 }
 
+/// The package and aspect-application counts (BAZEL_RS_EVAL_VERIFY
+/// restores them after its shadow analysis, so the reported analysis is
+/// the verified engine's alone).
+pub(crate) fn analysis_counts() -> (usize, usize) {
+    (
+        COUNTERS.packages.load(Ordering::Relaxed),
+        COUNTERS.aspects.load(Ordering::Relaxed),
+    )
+}
+
+pub(crate) fn restore_analysis_counts((packages, aspects): (usize, usize)) {
+    COUNTERS.packages.store(packages, Ordering::Relaxed);
+    COUNTERS.aspects.store(aspects, Ordering::Relaxed);
+}
+
 /// An aspect application was configured (its implementation ran).
 #[inline]
 pub(crate) fn aspect_applied() {

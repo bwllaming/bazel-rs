@@ -3001,6 +3001,12 @@ pub struct Engine {
     /// BAZEL_RS_EVAL_VERIFY_PHASE1: the configured targets phase 2
     /// analyzed (a deferred target platform's tree) into the plan.
     phase2_analyzed: BTreeSet<ConfiguredTargetKey>,
+    /// The analysis mode forced on this engine (BAZEL_RS_EVAL_VERIFY's
+    /// two engines); `None`: `BAZEL_RS_ANALYSIS` decides.
+    eval_mode: Option<eval::AnalysisMode>,
+    /// Inside BAZEL_RS_EVAL_VERIFY's comparison (no nested verification),
+    /// with what the comparison reads of phase 1 (eval::verify).
+    eval_verifying: Option<Box<eval::verify::Observed>>,
 }
 
 impl Engine {
@@ -3110,6 +3116,8 @@ impl Engine {
             pattern_load_errors: None,
             incremental: None,
             phase2_analyzed: BTreeSet::new(),
+            eval_mode: None,
+            eval_verifying: None,
         }
     }
 
@@ -4055,6 +4063,9 @@ impl Engine {
                         _ => self.emitted_bzl_prints.insert(label.clone()),
                     };
                     if emit {
+                        // A `.bzl` module's first evaluation is the
+                        // repository set's (its cache is shared).
+                        let _shared = crate::ui::SharedWork::enter();
                         crate::ui::note(&line);
                     }
                     block = Some((label, emit));
@@ -4062,6 +4073,7 @@ impl Engine {
                 LoadPrintEvent::Cached(label) => {
                     block = None;
                     if self.emitted_bzl_prints.insert(label.clone()) {
+                        let _shared = crate::ui::SharedWork::enter();
                         for line in self.repositories.build_bzl_cache().prints(&label) {
                             crate::ui::note(&line);
                         }
@@ -4152,6 +4164,8 @@ impl Engine {
     }
 
     fn target(&mut self, label: &Label) -> Result<Target, String> {
+        // BAZEL_RS_ANALYSIS=eval: the lookup belongs to the running node.
+        eval::linearize::capture::access(label);
         if self.incremental.is_some() {
             self.track_access(label);
         }
@@ -11781,7 +11795,13 @@ impl Engine {
     ) -> Result<root_checkpoint::Outcome<BuildPlan>, String> {
         // BAZEL_RS_ANALYSIS / BAZEL_RS_EVAL_VERIFY (docs/EVALUATOR.md):
         // the walk below unless the evaluator is asked for.
-        eval::check_mode()?;
+        let mode = match self.eval_mode {
+            Some(mode) => mode,
+            None => eval::check_mode()?,
+        };
+        if self.eval_verifying.is_none() && eval::verify::enabled() {
+            return self.plan_build_verified(labels, checkpoint);
+        }
         crate::progress::analysis_targets(labels.len());
         crate::perf_mark("plan.start");
         // The workspace status is computed at most once per build
@@ -11843,29 +11863,45 @@ impl Engine {
         // a constraint needs it (docs/PLATFORMS.md).
         let top_configuration = self.configurations.top_configuration().clone();
         let target = top_configuration.native.target_platform().clone();
-        if target != crate::configuration::default_host_platform()
-            && target != top_configuration.native.host_platform
-        {
-            self.platform_info(&target, top, &mut configured, &mut plan)
-                .map_err(|error| error.target_text())?;
-        }
-        // Phase-1 prefetch (crate::prefetch) runs while the requested
-        // targets are analyzed, and stops with phase 1 however it ends.
-        self.start_prefetch(labels);
-        let analyzed = self.analyze_requested(labels, top, &mut configured, &mut plan, checkpoint);
-        if let Err(error) = &analyzed
-            && eval::nodes::verify_phase1::enabled()
-        {
-            self.verify_phase1(labels, top, &configured, &plan, Some(error))?;
-        }
-        self.stop_prefetch();
+        // BAZEL_RS_ANALYSIS=eval (S1, docs/EVALUATOR.md): phase 1 by the
+        // node bodies on the inline driver, linearized by pass 1 (the
+        // requests the evaluator does not cover yet plan with the walk).
+        let evaluate = mode == eval::AnalysisMode::Eval && self.eval_covers(checkpoint.is_some());
+        let analyzed = if evaluate {
+            self.start_prefetch(labels);
+            let analyzed = self
+                .eval_phase1(labels, top, &mut configured, &mut plan)
+                .map(root_checkpoint::Outcome::Continue);
+            self.stop_prefetch();
+            analyzed
+        } else {
+            if target != crate::configuration::default_host_platform()
+                && target != top_configuration.native.host_platform
+            {
+                self.platform_info(&target, top, &mut configured, &mut plan)
+                    .map_err(|error| error.target_text())?;
+            }
+            // Phase-1 prefetch (crate::prefetch) runs while the requested
+            // targets are analyzed, and stops with phase 1 however it ends.
+            self.start_prefetch(labels);
+            let analyzed =
+                self.analyze_requested(labels, top, &mut configured, &mut plan, checkpoint);
+            if let Err(error) = &analyzed
+                && eval::nodes::verify_phase1::enabled()
+            {
+                self.verify_phase1(labels, top, &configured, &plan, Some(error))?;
+            }
+            self.stop_prefetch();
+            analyzed
+        };
         if let root_checkpoint::Outcome::AcceptedQuery(graph) = analyzed? {
             // The live phase1 plan/nodes drop here; never export partial capture.
             return Ok(root_checkpoint::Outcome::AcceptedQuery(graph));
         }
+        self.eval_observe_phase1(&plan, &configured);
         crate::progress::analysis_planned(plan.len());
         crate::perf_mark("plan.phase1_analysis_done");
-        if eval::nodes::verify_phase1::enabled() {
+        if !evaluate && eval::nodes::verify_phase1::enabled() {
             self.verify_phase1(labels, top, &configured, &plan, None)?;
         }
         // Alias-like targets and the end of their alias chain: dependents see

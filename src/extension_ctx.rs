@@ -1220,6 +1220,8 @@ pub fn execute(
     });
     // Its recorded inputs belong to no repository.
     let _owner = crate::observed_fs::repository_owner(None);
+    // Its console output is the repository set's work (crate::ui).
+    let _shared = crate::ui::SharedWork::enter();
     let run = || -> anyhow::Result<ExtensionExecution> {
         let tag_repo_mappings = RefCell::new(Vec::new());
         let modules = bind_modules(&repositories, definition, participants, &tag_repo_mappings)

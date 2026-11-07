@@ -1,10 +1,11 @@
 # The parallel analysis evaluator
 
-Status: **S0 done** (interfaces frozen, measurements below). Nothing here
-runs in a build yet: `BAZEL_RS_ANALYSIS=walk` (the default) is today's
-sequential phase-1 walk with the P3/S1/S2 pipeline
-(docs/PARALLEL_ANALYSIS.md); `BAZEL_RS_ANALYSIS=eval` and
-`BAZEL_RS_EVAL_VERIFY=1` fail with an error naming the stage.
+Status: **S0 done**; S1 in progress (A merged; C: pass 1, the recorded
+walk and the verifier below). `BAZEL_RS_ANALYSIS=walk` (the default) is
+today's sequential phase-1 walk with the P3/S1/S2 pipeline
+(docs/PARALLEL_ANALYSIS.md); `BAZEL_RS_ANALYSIS=eval` (S1) is the walk
+recording its transcripts, linearized and checked by pass 1;
+`BAZEL_RS_EVAL_VERIFY=1` plans with both and compares.
 
 Goal: cold analysis of `~/code //src/...` (repositories fetched, analysis
 snapshot off) below genuine Bazel (~10–11 s; bazel-rs today ~49–50 s). The
@@ -357,6 +358,26 @@ change announced to the other two workers; adding a helper is not.
   plan entries, 444,236 nodes, identical; the inline evaluation 13 s
   after the walk loaded every package).
 
+- 2026-11-07 (C, S1; announced to A and B):
+  - `Event::Done` (new): the body's configured node is complete (the
+    walk's `configured.insert`); later reaches are memo hits, reaches after
+    it are no longer below the key in the active chain. B emits it where
+    the walk inserts the node (main path, delegation, incompatible target).
+  - `Event::PlanPush` carries no key (always the body's own CtKey);
+    `Event::CqueryEdge(Box<CqueryEdge>)` and
+    `Event::ToolchainImpl(Box<ToolchainImpl>)` box their payloads: `Event`
+    is 80 bytes instead of 248 (~/code: 5.9 M events in phase 1).
+  - `Event::ScopeEnter` also names the tracker's pattern and suite scopes
+    (`"\0pattern"`, `"\0suite"`, incremental::PATTERN_SCOPE/SUITE_SCOPE).
+  - `Event::Reach` contract: emitted at the walk's `track_key` point; what
+    the walk does before it (the reached label's lookup, a package
+    group's resolution) belongs to the reacher.
+  - `TapeOp` (C-owned) extended (`Segment`, `Reach`, `Fail`, `Leave`,
+    `Plan { key, position }`); `pass1::TapeSink` streams it.
+  - Pass 1 reads per CT1 visit `empty_configuration` (also for a failed
+    body: the walk inserts it before most errors) and `incompatible`
+    (`pass1::Ct1Record`), besides the value's `delegate`.
+
 ## 4. Stages and gates
 
 | Stage | Work | Gate |
@@ -367,6 +388,123 @@ change announced to the other two workers; adding a helper is not.
 | S3 (3–4 wk) | plan-index gating, delta cap, platform waits; native deltas; pass 2 | EVAL_VERIFY + per-node verify; linearizer ≤ 3 s; wall ≤ 15 s |
 | S4 (~3 wk) | repo lane + cold tests; Aspect nodes, top-level aspects, deferred platform trees; keep_going, aquery/cquery, snapshots, affected digests | all suites in the thread matrix; ~/code identical; wall ≤ 11 s |
 | S5 (1–2 wk) | delete Pipeline, the lowering queue, ui::HELD, plan_pending, … | after 2 weeks green CI and one release with `walk` available |
+
+### S1, worker C: pass 1 and the walk driven by it
+
+Code: `src/engine/eval/linearize/{pass1,record,check}.rs`,
+`eval/verify.rs`, `Tracker::replay_tape` (incremental.rs).
+
+- **Pass 1** (`pass1::run`) replays transcripts depth first over the
+  top-level segments (`SegmentKind`: `Setup` — the explicit
+  `--platforms` resolution —, one `Root` per requested label, `RootsDone`,
+  `TopLevelAspects` per label), each with an empty active chain. A Reach of
+  a complete key (its body's `Done` passed) is a memo hit; otherwise the
+  frame begins, the cycle check (`Transcripts::cycle_error`, i.e.
+  `Engine::cycle_error_with_root`, the requested trimmed root included)
+  and the depth limit run, and the body replays with the key on the chain;
+  `Done` pops the chain's top (as the walk's `active.pop()`), marks the key
+  complete and records its delegation. A failed body (no `Done`) stays on
+  the chain like the walk's `?` leaves it and is re-entered on a revisit
+  (its next recorded visit; an evaluator with memoized errors has one).
+  MemoUse replays a memo's transcript at its first use in a fresh chain
+  (inside a platform's tree for `Platform`); PkgCommit and Warn are
+  reported once (warnings reported before phase 1 count); ToolchainImpl
+  keeps the first execution platform and reports the walk's conflict
+  error; a reached variant's `platform_tree`/`forced_exec` are checked
+  against pass 1's own state, and a second variant must be observably equal
+  to the first-visited one (`Transcripts::same_observable`): both are
+  context divergences (internal errors). Output (`Linearized`): the tape,
+  the plan, `rule_delegations`, `empty_configuration_rules`, the reach
+  edges (keep-going), `toolchain_implementations`, the warnings, pass-1
+  failures, each segment's final chain length, the first successful
+  registered-toolchains configuration (`root_checkpoint.first`).
+- **The tape** (`TapeOp`): `Segment`, `Reach{node, key, parent, enter}`,
+  `Fail` (cycle/depth), `Leave`, `Effect(Event)`, `Plan{key, position}`,
+  `Flush`. `Tracker::replay_tape` applies it to the incremental tracker
+  (frames, plan entries, accesses in their shared scopes, prints, roots).
+- **`BAZEL_RS_ANALYSIS=eval` in S1** (until B's bodies run under A's inline
+  driver): the walk itself records its transcripts (`record.rs`: hooks at
+  `analyze_key`, the reach/enter/cycle/depth points, `Done`, plan entries,
+  target lookups, sources, prints, warnings, cquery edges, shared scopes,
+  toolchain implementations, the three memo fills that start fresh active
+  chains — platform, registered toolchains, registered execution platforms
+  —, `plan_pending` flushes and package commits) and the tape it lives.
+  Pass 1 over the recording must reproduce that tape op by op and the
+  walk's linearizer-only state (plan order, delegations, empty-configuration
+  rules, toolchain implementations, phase-1 warnings, keep-going edges, the
+  tracker replayed from the tape when no flush ran); the first difference is
+  an internal error naming it. Phase 2 then runs on pass 1's plan. A flush
+  (phase 2 inside phase 1) records only the memo fills it triggers (a
+  deferred target platform's tree, with the shared scopes around them); any
+  other phase-1 analysis inside a flush marks the recording unsupported.
+  Console effects stay the walk's live writes in S1 (S3's pass 2 emits them
+  from the tape).
+- **`BAZEL_RS_EVAL_VERIFY=1`** (`verify.rs`): `plan_build` forks the
+  engine before planning (`Engine::fork_for_verify`: every pre-planning
+  field cloned, the per-build state fresh, the same `Arc<RepositorySet>`),
+  plans the walk on the fork with its console captured
+  (`ui::DeferredConsole`; the progress package/aspect counters restored
+  afterwards), then the evaluator on the engine, captured, and compares in
+  `Compared` order: phase-1 plan, configured nodes (Debug digests),
+  toolchain/exec-group contexts and exec configurations, delegations
+  (+ empty-configuration rules, toolchain implementations, configured
+  rules), the planned actions (`request::format_action_graph`, the
+  BAZEL_RS_DUMP_ACTIONS text with remote platforms) and requested/result
+  artifacts, warnings/errors and the console writes, the incremental index
+  (the SNAPSHOT_INDEX_DUMP form), the cquery capture
+  (`Capture::verify_text`). Process-wide state the walk leaves is restored
+  first (progress counters, printed `--toolchain_resolution_debug`
+  events). Writes of work shared through the repository set (repository
+  rules, module extensions, first `.bzl` evaluations; `ui::SharedWork`,
+  `Deferred::Shared`) happen in the walk only: when only they differ, the
+  consoles agree, and the walk's console (the sequential one) is written.
+  Known limit: once-per-process test hooks (`BAZEL_RS_LOWERING_FAIL`) fire
+  in the walk only.
+- **Test-suite modes**: a binary built with `BAZEL_RS_DEFAULT_ANALYSIS=eval`
+  (resp. `BAZEL_RS_DEFAULT_EVAL_VERIFY=1`) in the build environment plans
+  that way unless the environment says otherwise (the integration tests
+  clear the environment): e.g. `BAZEL_RS_DEFAULT_ANALYSIS=eval
+  CARGO_TARGET_DIR=<other> python3 ptest.py`.
+
+- **Cycles**: `linearize::cycles::Pass1Cycles` is the walk-order
+  `CycleHandler` replacing A's stand-in `DfsCycles`: the parked graph is
+  replayed depth first from the roots in need order; a CT1 node is a back
+  edge only when active in the current chain (the walk's `active`), the
+  platform/registration memos open a fresh chain (a CT1 node active only
+  outside it is entered again, as the walk analyzes it again, and meets the
+  memo's global guard), any other node is a back edge when active anywhere.
+- **Console audit** (direct stderr writes that could bypass the console's
+  order during analysis): `execute(quiet=False)`'s echo
+  (`repository_process::echo`), the direct-dependency check's `ERROR`
+  (module_graph) and a git fetch's cleanup error now go through
+  `crate::ui::raw` (held/deferred like every console write; unit test
+  `the_echo_is_held_in_the_console_order`). The rest are diagnostics
+  behind environment switches (`PERF*`, `PROVENANCE`), output written
+  after analysis (cquery/build results, coverage, action output through
+  `ui::event_with_output`) or tests. Open hazard for S2: the
+  `--toolchain_resolution_debug` events are deduplicated process-wide
+  (`toolchains::debug_event`) and printed with `ui::note` from resolution:
+  under the pool they must become transcript `Print`s.
+- **S1 results (C)**: `BAZEL_RS_ANALYSIS=eval` (the recorded walk checked
+  by pass 1): the whole suite passes (ptest 3658/3658, binary built with
+  `BAZEL_RS_DEFAULT_ANALYSIS=eval`). ~/code `80d6724f3a` (release
+  binary): `build --nobuild //src/...` (58,425 actions), `test --nobuild
+  //src/...`, `cquery 'deps(//src/rust/...)'`, `cquery //src/python/...
+  --output=jsonproto` and `affected --base=HEAD^` (digests) are
+  byte-identical to the walk in both `eval` and `BAZEL_RS_EVAL_VERIFY=1`
+  (stderr without timing lines, stdout, BAZEL_RS_DUMP_ACTIONS). Recording
+  cost on ~/code: 133,173 bodies, 5.88 M tape ops (3.5 M accesses);
+  phase 1 42.1 s in both modes, hwm 9.26 GB vs 8.92 GB (+0.34 GB); verify
+  ~2× wall (two plannings) and ~17 GB hwm. `BAZEL_RS_EVAL_VERIFY` over the
+  suite (`BAZEL_RS_DEFAULT_EVAL_VERIFY=1`): 3644/3658; the 14 failures are
+  the harness's two plannings in one process, not pass-1 differences —
+  snapshot recording/telemetry counts and status-command runs
+  (snapshot, planned_request), the allocation report, the cquery root
+  checkpoint (given to the evaluator only), a once-per-process test hook
+  (`BAZEL_RS_LOWERING_FAIL`), the hidden lockfile seeding (worktrees) and
+  the definition `.bzl` cache's print replay across two engines
+  (definition_bzl_cache). `BAZEL_RS_EVAL_VERIFY_DUMP=<dir>` writes both
+  consoles; `BAZEL_RS_EVAL_STATS=1` prints the recording's sizes.
 
 ## 5. Test strategy
 

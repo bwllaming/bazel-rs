@@ -31,7 +31,7 @@
 #![deny(unsafe_code)]
 
 use std::ffi::{OsStr, OsString};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -416,15 +416,43 @@ pub(crate) fn echo(stdout: &[u8], stderr: &[u8]) {
     if !stdout.is_empty() || !stderr.is_empty() {
         crate::ui::note_printed();
     }
-    let mut sink = io::stderr().lock();
-    let _ = sink.write_all(stdout);
-    let _ = sink.write_all(stderr);
-    let _ = sink.flush();
+    // Through the console (crate::ui::raw): held like every other write
+    // while this thread's writes are deferred or held behind action
+    // lowerings, so the echo never overtakes the writes of earlier turns.
+    crate::ui::raw(stdout);
+    crate::ui::raw(stderr);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    /// `execute(quiet=False)`'s echo keeps the console's order: while this
+    /// thread's writes are held (a deferred console of an analysis ahead of
+    /// its turn, or writes held behind action lowerings), it is held after
+    /// the earlier writes instead of overtaking them on fd 2.
+    #[test]
+    fn the_echo_is_held_in_the_console_order() {
+        let console = crate::ui::DeferredConsole::start();
+        crate::ui::note("DEBUG: before the fetch");
+        echo(b"out\n", b"err\n");
+        crate::ui::note("DEBUG: after the fetch");
+        let writes: Vec<String> = console
+            .finish()
+            .iter()
+            .map(|write| format!("{write:?}"))
+            .collect();
+        assert_eq!(
+            writes,
+            [
+                "Note(\"DEBUG: before the fetch\")",
+                "Raw([111, 117, 116, 10])",
+                "Raw([101, 114, 114, 10])",
+                "Note(\"DEBUG: after the fetch\")",
+            ]
+        );
+    }
 
     fn request<'a>(argv: &[&str], cwd: &'a Path, path: Option<&'a [u8]>) -> Request<'a> {
         Request {

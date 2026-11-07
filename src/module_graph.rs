@@ -1460,7 +1460,9 @@ fn verify_root_direct_deps(
         if mode == CheckDirectDeps::Warning {
             crate::note!("WARNING: {message}");
         } else {
-            eprintln!("ERROR: {message}");
+            // In the console's order (module resolution may run inside
+            // analysis, crate::ui::raw).
+            crate::ui::raw(format!("ERROR: {message}\n").as_bytes());
             failure = true;
         }
     }

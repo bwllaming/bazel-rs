@@ -24,6 +24,7 @@ pub(super) mod cx;
 pub(super) mod cycles;
 pub(super) mod graph;
 pub(super) mod key;
+pub(super) mod linearize;
 pub(super) mod nodes;
 pub(super) mod replay_bench;
 pub(super) mod scheduler;
@@ -57,24 +58,25 @@ impl AnalysisMode {
     pub(crate) fn from_env() -> Result<Self, String> {
         // snapshot-unrecorded: an internal engine switch; both engines must plan identically.
         let value = std::env::var("BAZEL_RS_ANALYSIS").ok();
-        Self::parse(value.as_deref())
+        // The test-suite mode: a binary built with
+        // BAZEL_RS_DEFAULT_ANALYSIS=eval plans with the evaluator unless the
+        // environment says otherwise (integration tests clear it).
+        Self::parse(
+            value
+                .as_deref()
+                .or(option_env!("BAZEL_RS_DEFAULT_ANALYSIS")),
+        )
     }
 }
 
-/// The gate at the start of planning: the walk runs unless the
-/// environment asks for the evaluator or its verifier, which S0 does not
-/// implement yet (an error, never a silent fallback).
-pub(crate) fn check_mode() -> Result<(), String> {
-    if verify::enabled() {
-        return verify::run();
-    }
-    match AnalysisMode::from_env()? {
-        AnalysisMode::Walk => Ok(()),
-        AnalysisMode::Eval => Err(
-            "BAZEL_RS_ANALYSIS=eval: the parallel analysis evaluator is not implemented yet (stage S0, docs/EVALUATOR.md); unset it or use BAZEL_RS_ANALYSIS=walk"
-                .to_owned(),
-        ),
-    }
+/// The gate at the start of planning: the mode this build plans in.
+///
+/// S1: `eval` is the walk recording its transcripts (the stand-in for the
+/// inline driver over worker B's bodies), linearized by pass 1 and checked
+/// against what the walk lived; phase 2 runs on pass 1's plan
+/// (docs/EVALUATOR.md "S1").
+pub(crate) fn check_mode() -> Result<AnalysisMode, String> {
+    AnalysisMode::from_env()
 }
 
 #[cfg(test)]

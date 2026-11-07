@@ -1,0 +1,777 @@
+//! `BAZEL_RS_ANALYSIS=eval` phase 1 (S1, docs/EVALUATOR.md): worker B's
+//! node bodies on worker A's inline driver (one thread: `need` evaluates in
+//! place, the walk's DFS), their transcripts linearized by pass 1, and the
+//! tape applied to the engine where the walk would have written:
+//!
+//! - every transcript is the running attempt's events plus what the
+//!   engine's coordinator services did in between ([`Coord::drain`]: the
+//!   tracker scopes and target lookups of [`super::capture`], the warnings
+//!   the engine pushed, the console writes held by the evaluation's
+//!   `DeferredConsole` as [`Event::Console`]); a `Tgt` lookup's belong to
+//!   its user (the walk looks targets up inline);
+//! - pass 1 runs as far as the transcripts go at each `Flush` (a
+//!   config_setting with Starlark `flag_values`: the walk's `plan_pending`)
+//!   and at the end; its tape is applied in order ([`Coord::linearize`]):
+//!   console writes and `print()` lines, warnings, the incremental tracker
+//!   (`TapeReplay`), the plan with each entry's configured rule, and at a
+//!   `Flush` the phase 2 of the plan so far, after the done CT1 and memo
+//!   values were published into the engine's maps (what phase 2 reads);
+//! - after phase 1 the engine holds what the walk would: `configured`, the
+//!   plan, the per-key maps, the warnings, the tracker; phase 2 continues
+//!   on pass 1's plan.
+//!
+//! Not covered in S1 (the walk plans these requests): cquery/aquery
+//! captures, `--keep_going`, top-level aspects, the cquery root
+//! checkpoint (S4).
+
+use std::sync::Arc;
+
+use crate::configuration::ConfigId;
+use crate::fast_hash::FxHashMap;
+use crate::label::Label;
+use crate::platforms::PlatformInfo;
+use crate::toolchains::RegisteredToolchains;
+
+use super::super::super::incremental::{TapeReplay, Tracker};
+use super::super::super::{
+    ConfiguredNodes, ConfiguredTargetKey, Engine, ExecutionPlatforms, Plan, PlatformError,
+    ResolutionError, RuleKind, Target, TransitionDetails, forwards,
+};
+use super::super::key::{NodeId, NodeKey};
+use super::super::nodes::bodies::{Coord, Phase1Bodies, Running};
+use super::super::nodes::eval_host::edge_ct_key;
+use super::super::scheduler::{EvalConfig, Evaluator, NoRepositories};
+use super::super::shared::EvalShared;
+use super::super::transcript::{Event, SegmentKind, TapeOp, Transcript};
+use super::super::value::{Ct1Value, NodeValue};
+use super::cycles::Pass1Cycles;
+use super::pass1::{Ct1Record, MemoRecord, Options, Pass1, Progress, SegmentRecord, Transcripts};
+
+/// A memo value the engine keeps (phase 2 reads it).
+pub(crate) enum Published {
+    Platform(
+        ConfiguredTargetKey,
+        Result<Arc<PlatformInfo>, PlatformError>,
+    ),
+    RegToolchains(ConfigId, Result<Arc<RegisteredToolchains>, ResolutionError>),
+    RegExecPlatforms(ConfigId, Result<ExecutionPlatforms, ResolutionError>),
+    ExecCfg(ConfigId, Label, ConfigId),
+    FlagScope(Label, bool),
+    TransitionDetails(Vec<Label>, Result<TransitionDetails, String>),
+    Source(Label),
+}
+
+/// The finished transcripts, the segments and the captured console writes.
+#[derive(Default)]
+pub(crate) struct Store {
+    pub(crate) keys: FxHashMap<NodeId, NodeKey>,
+    pub(crate) transcripts: FxHashMap<NodeId, Transcript>,
+    pub(crate) memo_ok: FxHashMap<NodeId, bool>,
+    pub(crate) segments: Vec<(SegmentKind, Vec<Event>)>,
+    pub(crate) segments_done: bool,
+    pub(crate) consoles: Vec<Option<crate::ui::Deferred>>,
+    /// What an abandoned attempt captured that happened anyway (console
+    /// writes, warnings): its rerun's.
+    pub(crate) carry: FxHashMap<NodeId, Vec<Event>>,
+    /// The engine's warnings already accounted for.
+    pub(crate) warnings_seen: usize,
+    /// Memo values to publish, in completion order.
+    pub(crate) published: Vec<Published>,
+    /// Canonical CT1 values done since the last publication.
+    pub(crate) fresh_ct1: Vec<ConfiguredTargetKey>,
+}
+
+/// The linearizer's state while the evaluator runs.
+pub(crate) struct Linearizer {
+    pass: Pass1,
+    ops: Vec<TapeOp>,
+    tracker: Option<Box<Tracker>>,
+    replay: TapeReplay,
+    configured: ConfiguredNodes,
+    plan: Plan,
+    published_memos: usize,
+}
+
+impl Coord<'_> {
+    /// Move what the engine's services did since the last call into the
+    /// running attempt (or the current segment).
+    pub(crate) fn drain(&mut self) {
+        let mut events = super::capture::take();
+        if self.engine.warnings.len() > self.store.warnings_seen {
+            let seen = self.store.warnings_seen;
+            events.extend(self.engine.warnings.drain(seen..).map(Event::Warn));
+        }
+        for write in crate::ui::deferred_split() {
+            events.push(Event::Console(self.store.consoles.len() as u32));
+            self.store.consoles.push(Some(write));
+        }
+        for event in events {
+            self.push_event(event);
+        }
+    }
+
+    /// Record `event` in the running attempt (or the current segment).
+    pub(crate) fn push_event(&mut self, event: Event) {
+        match self.stack.last_mut() {
+            Some(running) => running.events.push(event),
+            None => {
+                if let Some((_, events)) = self.store.segments.last_mut() {
+                    events.push(event);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn begin_attempt(&mut self, id: NodeId, key: NodeKey) {
+        self.store.keys.entry(id).or_insert_with(|| key.clone());
+        let events = self.store.carry.remove(&id).unwrap_or_default();
+        self.stack.push(Running { id, key, events });
+    }
+
+    /// The attempt ends with `value`: its transcript is kept (a `Tgt`
+    /// lookup's goes to its user); returns its key.
+    pub(crate) fn finish_attempt(&mut self, value: &NodeValue) -> Option<NodeKey> {
+        let running = self.stack.pop()?;
+        if matches!(running.key, NodeKey::Tgt(_)) {
+            for event in running.events {
+                self.push_event(event);
+            }
+            return Some(running.key);
+        }
+        self.store
+            .memo_ok
+            .insert(running.id, value.error().is_none());
+        let published = match (&running.key, value) {
+            (NodeKey::Platform(key), NodeValue::Platform(result)) => {
+                Some(Published::Platform(key.clone(), result.clone()))
+            }
+            (NodeKey::RegToolchains(config), NodeValue::RegToolchains(result)) => {
+                Some(Published::RegToolchains(*config, result.clone()))
+            }
+            (NodeKey::RegExecPlatforms(config), NodeValue::RegExecPlatforms(result)) => {
+                Some(Published::RegExecPlatforms(*config, result.clone()))
+            }
+            (NodeKey::ExecCfg(config, platform), NodeValue::ExecCfg(Ok(exec))) => {
+                Some(Published::ExecCfg(*config, platform.clone(), *exec))
+            }
+            (NodeKey::FlagScope(label), NodeValue::FlagScope(Ok(scoped))) => {
+                Some(Published::FlagScope(label.clone(), *scoped))
+            }
+            (NodeKey::TransitionDetails(settings), NodeValue::TransitionDetails(result)) => Some(
+                Published::TransitionDetails(settings.clone(), result.clone()),
+            ),
+            (NodeKey::Src(label), NodeValue::Src(Ok(()))) => Some(Published::Source(label.clone())),
+            _ => None,
+        };
+        self.store.published.extend(published);
+        self.store.transcripts.insert(
+            running.id,
+            Transcript {
+                events: running.events,
+            },
+        );
+        Some(running.key)
+    }
+
+    /// The attempt stopped (`Missing`): it reruns from the start; what
+    /// happened anyway (console writes, warnings) stays its.
+    pub(crate) fn abandon_attempt(&mut self) {
+        if let Some(running) = self.stack.pop() {
+            let kept: Vec<Event> = running
+                .events
+                .into_iter()
+                .filter(|event| matches!(event, Event::Console(_) | Event::Warn(_)))
+                .collect();
+            if !kept.is_empty() {
+                self.store.carry.entry(running.id).or_default().extend(kept);
+            }
+        }
+    }
+
+    /// Pass 1 as far as the transcripts go, its tape applied (a `Flush`
+    /// runs the plan so far's phase 2). A no-op without the linearizer
+    /// (BAZEL_RS_EVAL_VERIFY_PHASE1).
+    pub(crate) fn linearize(&mut self, shared: &EvalShared) -> Result<(), String> {
+        let Some(mut lin) = self.lin.take() else {
+            return Ok(());
+        };
+        self.drain();
+        let result = self.linearize_with(&mut lin, shared);
+        self.lin = Some(lin);
+        result
+    }
+
+    fn linearize_with(&mut self, lin: &mut Linearizer, shared: &EvalShared) -> Result<(), String> {
+        {
+            let view = View {
+                store: &self.store,
+                stack: &self.stack,
+                ct1_done: &self.ct1_done,
+            };
+            lin.pass.resume(&view, &mut lin.ops)?;
+        }
+        let ops = std::mem::take(&mut lin.ops);
+        for op in ops {
+            if let Some(tracker) = lin.tracker.as_deref_mut() {
+                lin.replay.apply(tracker, &op);
+            }
+            match op {
+                TapeOp::Effect(Event::Print(line)) => {
+                    crate::ui::without_deferred(|| crate::ui::note(&line));
+                }
+                TapeOp::Effect(Event::Console(index)) => {
+                    if let Some(write) = self
+                        .store
+                        .consoles
+                        .get_mut(index as usize)
+                        .and_then(Option::take)
+                    {
+                        crate::ui::without_deferred(|| crate::ui::replay(vec![write]));
+                    }
+                }
+                TapeOp::Effect(Event::Warn(warning)) => {
+                    self.engine.warnings.push(warning);
+                    self.store.warnings_seen = self.engine.warnings.len();
+                }
+                TapeOp::Plan { key, .. } => {
+                    let rule = self
+                        .ct1_done
+                        .get(&key.key)
+                        .and_then(|value| value.outcome.as_ref().ok())
+                        .map(|ok| Arc::clone(&ok.rule))
+                        .ok_or_else(|| {
+                            format!(
+                                "internal error: BAZEL_RS_ANALYSIS=eval: {} is planned without its configured rule",
+                                key.key
+                            )
+                        })?;
+                    lin.plan.push((key.key, rule));
+                }
+                TapeOp::Flush => self.flush(lin, shared)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// The walk's `plan_pending`: phase 2 of the plan so far, the engine
+    /// holding the published values, the configurations and the tracker.
+    fn flush(&mut self, lin: &mut Linearizer, shared: &EvalShared) -> Result<(), String> {
+        self.publish(lin);
+        let before = lin.plan.len();
+        let result = self.with_engine(lin, shared, |engine, lin| {
+            let Some(mut state) = engine.action_planning.take() else {
+                return Err(
+                    "internal error: BAZEL_RS_ANALYSIS=eval: a flush without the planning state"
+                        .to_owned(),
+                );
+            };
+            let result = engine.plan_targets(&mut state, &mut lin.plan, &mut lin.configured, false);
+            engine.action_planning = Some(state);
+            result
+        });
+        // What the flush's phase 2 analyzed itself (a deferred target
+        // platform's tree): complete for pass 1 from now on.
+        for (key, _) in &lin.plan[before..] {
+            lin.pass.external(key.clone(), NodeId(u32::MAX), true);
+        }
+        result
+    }
+
+    /// Run `f` with the engine as the walk has it: the configurations
+    /// (the evaluator's shared view holds them), the tracker, a direct
+    /// console.
+    fn with_engine<R>(
+        &mut self,
+        lin: &mut Linearizer,
+        shared: &EvalShared,
+        f: impl FnOnce(&mut Engine, &mut Linearizer) -> R,
+    ) -> R {
+        super::capture::pause(true);
+        let engine = &mut *self.engine;
+        let mut configurations = shared
+            .configurations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::swap(&mut engine.configurations, &mut *configurations);
+        engine.incremental = lin.tracker.take();
+        let result = crate::ui::without_deferred(|| f(engine, lin));
+        lin.tracker = engine.incremental.take();
+        std::mem::swap(&mut engine.configurations, &mut *configurations);
+        // What it reported is at its place already.
+        self.store.warnings_seen = engine.warnings.len();
+        super::capture::pause(false);
+        result
+    }
+
+    /// Publish the done values into the engine's maps (the walk's writes
+    /// phase 2 reads).
+    fn publish(&mut self, lin: &mut Linearizer) {
+        let engine = &mut *self.engine;
+        for key in std::mem::take(&mut self.store.fresh_ct1) {
+            let Some(value) = self.ct1_done.get(&key) else {
+                continue;
+            };
+            let Ok(ok) = &value.outcome else {
+                continue;
+            };
+            if lin.configured.contains_key(&key) {
+                continue;
+            }
+            lin.configured.insert(key.clone(), ok.node.clone());
+            if let Some(context) = &ok.toolchain_context {
+                engine
+                    .toolchain_contexts
+                    .insert(key.clone(), context.clone());
+            }
+            if let Some(groups) = &ok.exec_groups {
+                engine
+                    .exec_group_contexts
+                    .insert(key.clone(), groups.clone());
+            }
+            if let Some(config) = ok.exec_config {
+                engine.exec_configurations.insert(key.clone(), config);
+            }
+            for (group, config) in &ok.group_exec_configs {
+                engine
+                    .group_exec_configurations
+                    .insert((key.clone(), group.clone()), *config);
+            }
+            if let Some(configs) = &ok.edge_configs {
+                engine.edge_configs.insert(key.clone(), configs.clone());
+            }
+            if let Some(errors) = &ok.deferred_duplicates {
+                engine
+                    .deferred_duplicates
+                    .insert(key.clone(), errors.clone());
+            }
+            match &ok.delegate {
+                Some(owner) => {
+                    engine.rule_delegations.insert(key.clone(), owner.clone());
+                }
+                None => {
+                    if ok.rule.custom.is_some() || ok.node.incompatible.is_some() {
+                        engine
+                            .configured_rules
+                            .insert(key.clone(), Arc::clone(&ok.rule));
+                    }
+                }
+            }
+            if ok.empty_configuration {
+                engine.empty_configuration_rules.insert(key);
+            }
+        }
+        for (key, platform) in &self.first.claims {
+            engine
+                .toolchain_implementations
+                .entry(key.clone())
+                .or_insert_with(|| platform.clone());
+        }
+        for (memo, value) in &self.first.aspect_predicates {
+            engine
+                .aspect_predicates
+                .entry(memo.clone())
+                .or_insert(*value);
+        }
+        for (memo, value) in &self.first.aspect_attr_aspects {
+            engine
+                .aspect_attr_aspects
+                .entry(memo.clone())
+                .or_insert_with(|| value.clone());
+        }
+        for (memo, value) in &self.first.aspect_toolchains {
+            engine
+                .aspect_toolchains
+                .entry(memo.clone())
+                .or_insert_with(|| Arc::clone(value));
+        }
+        for (memo, value) in &self.first.aspect_attribute_configs {
+            engine
+                .aspect_attribute_configs
+                .entry(memo.clone())
+                .or_insert_with(|| Arc::clone(value));
+        }
+        for (key, value) in &self.first.transition_cache {
+            engine
+                .transition_cache
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
+        }
+        for published in &self.store.published[lin.published_memos..] {
+            match published {
+                Published::Platform(key, result) => {
+                    engine
+                        .platforms
+                        .entry(key.clone())
+                        .or_insert_with(|| result.clone());
+                }
+                Published::RegToolchains(config, result) => {
+                    engine
+                        .registered_toolchains
+                        .entry(*config)
+                        .or_insert_with(|| result.clone());
+                }
+                Published::RegExecPlatforms(config, result) => {
+                    engine
+                        .registered_execution_platforms
+                        .entry(*config)
+                        .or_insert_with(|| result.clone());
+                }
+                Published::ExecCfg(config, platform, exec) => {
+                    engine
+                        .exec_transitions
+                        .entry((*config, platform.clone()))
+                        .or_insert(*exec);
+                }
+                Published::FlagScope(label, scoped) => {
+                    engine.flag_scopes.entry(label.clone()).or_insert(*scoped);
+                }
+                Published::TransitionDetails(settings, result) => {
+                    engine
+                        .transition_details
+                        .entry(settings.clone())
+                        .or_insert_with(|| result.clone());
+                }
+                Published::Source(label) => {
+                    engine.analyzed_sources.insert(label.clone());
+                }
+            }
+        }
+        lin.published_memos = self.store.published.len();
+    }
+
+    /// A new top-level segment.
+    fn begin_segment(&mut self, kind: SegmentKind) {
+        self.drain();
+        self.store.segments.push((kind, Vec::new()));
+    }
+}
+
+/// The store as pass 1's source.
+struct View<'a> {
+    store: &'a Store,
+    stack: &'a [Running],
+    ct1_done: &'a FxHashMap<ConfiguredTargetKey, Arc<Ct1Value>>,
+}
+
+impl View<'_> {
+    /// A node's events so far, and whether it finished.
+    fn events(&self, node: NodeId) -> Option<(&[Event], bool)> {
+        if let Some(running) = self.stack.iter().rev().find(|running| running.id == node) {
+            return Some((&running.events, false));
+        }
+        self.store
+            .transcripts
+            .get(&node)
+            .map(|transcript| (transcript.events.as_slice(), true))
+    }
+}
+
+impl Transcripts for View<'_> {
+    fn key(&self, node: NodeId) -> NodeKey {
+        self.store
+            .keys
+            .get(&node)
+            .cloned()
+            .unwrap_or_else(|| NodeKey::Status)
+    }
+
+    fn ct1(&self, node: NodeId) -> Option<Ct1Record<'_>> {
+        let (events, complete) = self.events(node)?;
+        let ok = match self.store.keys.get(&node) {
+            Some(NodeKey::Ct1(ct)) => self
+                .ct1_done
+                .get(&ct.key)
+                .and_then(|value| value.outcome.as_ref().ok()),
+            _ => None,
+        };
+        Some(Ct1Record {
+            events,
+            complete,
+            delegate: ok.and_then(|ok| ok.delegate.as_ref()),
+            empty_configuration: ok.is_some_and(|ok| ok.empty_configuration),
+            incompatible: ok.is_some_and(|ok| ok.node.incompatible.is_some()),
+        })
+    }
+
+    fn memo(&self, node: NodeId) -> Option<MemoRecord<'_>> {
+        let (events, complete) = self.events(node)?;
+        Some(MemoRecord {
+            events,
+            complete,
+            ok: self.store.memo_ok.get(&node).copied().unwrap_or(false),
+        })
+    }
+
+    fn segment(&self, index: usize) -> Option<SegmentRecord<'_>> {
+        let (kind, events) = self.store.segments.get(index)?;
+        Some(SegmentRecord {
+            kind,
+            events,
+            complete: index + 1 < self.store.segments.len() || self.store.segments_done,
+        })
+    }
+
+    fn segments_complete(&self) -> bool {
+        self.store.segments_done
+    }
+
+    fn cycle_error(
+        &self,
+        head: &ConfiguredTargetKey,
+        path: &[ConfiguredTargetKey],
+        cycle: &[ConfiguredTargetKey],
+        _trimmed_root: Option<&ConfiguredTargetKey>,
+    ) -> String {
+        // S1: the body words the error the build reports (the inline
+        // driver's chain is the walk's); the tape's `Fail` names the cycle.
+        format!(
+            "cycle in dependency graph at {head}: {} on the path, {} in the cycle",
+            path.len(),
+            cycle.len()
+        )
+    }
+}
+
+impl Engine {
+    /// Whether the evaluator plans this request (S1: not cquery/aquery
+    /// captures, `--keep_going`, top-level aspects or a root checkpoint).
+    pub(in crate::engine) fn eval_covers(&self, checkpoint: bool) -> bool {
+        !checkpoint
+            && self.cquery_capture.is_none()
+            && self.aquery_capture.is_none()
+            && !self.keep_going
+            && self.requested_aspects.is_empty()
+    }
+
+    /// Phase 1 of `labels` in `top` by the evaluator (see the module
+    /// documentation): `configured` and `plan` as the walk's
+    /// `analyze_requested` leaves them.
+    pub(in crate::engine) fn eval_phase1(
+        &mut self,
+        labels: &[Label],
+        top: ConfigId,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Plan,
+    ) -> Result<(), String> {
+        let tracker = self.incremental.take();
+        let tracking = tracker.is_some();
+        let warnings = self.warnings.clone();
+        let target_platform = {
+            let top = self.configurations.top_configuration();
+            let target = top.native.target_platform().clone();
+            (target != crate::configuration::default_host_platform()
+                && target != top.native.host_platform)
+                .then_some(target)
+        };
+        super::capture::start(tracking);
+        let console = crate::ui::DeferredConsole::start();
+        let shared = EvalShared::from_engine(self);
+        let lin = Linearizer {
+            pass: Pass1::new(Options { warnings }),
+            ops: Vec::new(),
+            tracker,
+            replay: TapeReplay::new(0),
+            configured: std::mem::take(configured),
+            plan: std::mem::take(plan),
+            published_memos: 0,
+        };
+        let (result, lin) = {
+            let bodies = Phase1Bodies::new(&shared, self, tracking);
+            {
+                let mut coord = bodies.coord();
+                coord.store.warnings_seen = coord.engine.warnings.len();
+                coord.lin = Some(Box::new(lin));
+                coord.begin_segment(SegmentKind::Setup);
+            }
+            let evaluator = Evaluator::new(
+                &bodies,
+                EvalConfig {
+                    threads: 1,
+                    keep_going: false,
+                    jitter_micros: 0,
+                },
+            );
+            let result = drive(&bodies, &evaluator, &shared, labels, top, target_platform);
+            let mut coord = bodies.coord();
+            coord.drain();
+            coord.store.segments_done = true;
+            let finished = coord.linearize(&shared);
+            let mut lin = coord.lin.take().expect("the linearizer");
+            coord.publish(&mut lin);
+            let result = result.and(finished).and_then(|()| {
+                let view = View {
+                    store: &coord.store,
+                    stack: &coord.stack,
+                    ct1_done: &coord.ct1_done,
+                };
+                match lin.pass.resume(&view, &mut lin.ops)? {
+                    Progress::Finished => Ok(()),
+                    Progress::Blocked => Err(
+                        "internal error: BAZEL_RS_ANALYSIS=eval: pass 1 did not reach the end of phase 1"
+                            .to_owned(),
+                    ),
+                }
+            });
+            (result, lin)
+        };
+        let leftover = console.finish();
+        super::capture::stop();
+        shared.restore(self);
+        let Linearizer {
+            pass,
+            tracker,
+            replay,
+            configured: done,
+            plan: planned,
+            ..
+        } = *lin;
+        if let Some(mut tracker) = tracker {
+            replay.finish(&mut tracker);
+            self.incremental = Some(tracker);
+        }
+        *configured = done;
+        *plan = planned;
+        crate::ui::replay(leftover);
+        let linearized = pass.finish();
+        crate::perf_mark("plan.eval_phase1_done");
+        result?;
+        if let Some(divergence) = linearized.divergences.first() {
+            return Err(format!(
+                "internal error: BAZEL_RS_ANALYSIS=eval: context divergence: {divergence}; rerun with BAZEL_RS_ANALYSIS=walk"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The walk's `plan_build` phase 1 over the evaluator: the explicit
+/// target platform, then each requested label (`analyze_requested`).
+fn drive(
+    bodies: &Phase1Bodies<'_, '_>,
+    evaluator: &Evaluator<'_, Phase1Bodies<'_, '_>>,
+    shared: &EvalShared,
+    labels: &[Label],
+    top: ConfigId,
+    target_platform: Option<Label>,
+) -> Result<(), String> {
+    let evaluate = |key: &NodeKey| -> Arc<NodeValue> {
+        evaluator.evaluate(
+            std::slice::from_ref(key),
+            &mut NoRepositories,
+            &mut Pass1Cycles::default(),
+        );
+        evaluator.value(key).cloned().unwrap_or_else(|| {
+            Arc::new(NodeValue::Src(Err(format!(
+                "internal error: BAZEL_RS_ANALYSIS=eval: {key:?} did not finish"
+            ))))
+        })
+    };
+    if let Some(target) = target_platform {
+        let key = NodeKey::Platform(ConfiguredTargetKey::new(target, top));
+        let id = evaluator.graph().intern(&key);
+        bodies.coord().push_event(Event::MemoUse(id));
+        if let NodeValue::Platform(Err(error)) = evaluate(&key).as_ref() {
+            return Err(error.clone().target_text());
+        }
+    }
+    let no_config = shared
+        .configurations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(top)
+        .native
+        .no_config;
+    for (position, label) in labels.iter().enumerate() {
+        // Engine::analyze_requested: the test-trimmed top-level key.
+        let looked_up = {
+            let mut coord = bodies.coord();
+            coord.drain();
+            coord.engine.target(label)
+        };
+        let trimmed = match &looked_up {
+            Ok(Target::Rule(rule))
+                if !forwards(rule) && !matches!(rule.kind, RuleKind::PackageGroup(_)) =>
+            {
+                Some(ConfiguredTargetKey::new(rule.label.clone(), top))
+            }
+            _ => None,
+        };
+        {
+            let mut coord = bodies.coord();
+            coord.begin_segment(SegmentKind::Root {
+                position,
+                label: label.clone(),
+                trimmed_root: trimmed.clone(),
+            });
+            coord.first.requested_trimmed_root = trimmed;
+        }
+        // The root edge (Engine::analyze → analyze_key_body): its lookup,
+        // then the source file or the configured target.
+        let root = {
+            let mut coord = bodies.coord();
+            if coord.tracking {
+                coord.push_event(Event::Access(label.clone()));
+            }
+            match coord.engine.target(label) {
+                Err(error) => Err(error),
+                Ok(Target::Source(_)) => {
+                    if coord.tracking {
+                        coord.push_event(Event::Source(label.clone()));
+                    }
+                    let key = NodeKey::Src(label.clone());
+                    let id = evaluator.graph().intern(&key);
+                    coord.push_event(Event::MemoUse(id));
+                    Ok(key)
+                }
+                Ok(Target::Rule(rule) | Target::Output(rule, _)) => {
+                    super::super::super::check_macro_namespace(&rule, label).map(|()| {
+                        let key = ConfiguredTargetKey::new(rule.label.clone(), top);
+                        let key = NodeKey::Ct1(edge_ct_key(
+                            &mut coord.first,
+                            no_config,
+                            &rule,
+                            key,
+                            false,
+                        ));
+                        let id = evaluator.graph().intern(&key);
+                        coord.push_event(Event::Reach(id));
+                        key
+                    })
+                }
+            }
+        };
+        let analyzed = root.and_then(|root| match evaluate(&root).as_ref() {
+            NodeValue::Src(result) => result.clone(),
+            NodeValue::Ct1(value) => value.outcome.as_ref().map(|_| ()).map_err(Clone::clone),
+            _ => Err("internal error: a root with another value".to_owned()),
+        });
+        bodies.coord().first.requested_trimmed_root = None;
+        // The requested target's compatibility, on the published nodes.
+        let analyzed = analyzed.and_then(|()| {
+            let mut coord = bodies.coord();
+            coord.linearize(shared)?;
+            let Some(mut lin) = coord.lin.take() else {
+                return Ok(());
+            };
+            coord.publish(&mut lin);
+            let checked = coord.with_engine(&mut lin, shared, |engine, lin| {
+                engine.check_requested_compatibility(&lin.configured, label, top)
+            });
+            coord.lin = Some(lin);
+            checked
+        });
+        // Engine::analyze_requested's report of an aborted analysis.
+        analyzed.map_err(|error| {
+            match error.split_once(super::super::super::ANALYSIS_ABORTED) {
+                Some((_, message)) => format!(
+                    "Analysis of target '{}' failed; build aborted: {message}",
+                    crate::rule_declarations::canonical_form(label)
+                ),
+                None => error,
+            }
+        })?;
+    }
+    bodies.coord().begin_segment(SegmentKind::RootsDone);
+    Ok(())
+}

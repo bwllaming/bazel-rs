@@ -399,11 +399,26 @@ pub fn debug_resolution(labels: &[&Label]) -> bool {
     labels.iter().any(|label| filter.is_included(&shown(label)))
 }
 
+/// The debug events printed so far (process-wide: one build per process).
+static PRINTED: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+    std::sync::Mutex::new(None);
+
+/// The printed debug events (BAZEL_RS_EVAL_VERIFY restores them after its
+/// shadow analysis, so the verified engine prints what it would alone).
+pub(crate) fn printed_debug_events() -> Option<std::collections::HashSet<String>> {
+    PRINTED
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+pub(crate) fn restore_printed_debug_events(printed: Option<std::collections::HashSet<String>>) {
+    *PRINTED.lock().unwrap_or_else(|error| error.into_inner()) = printed;
+}
+
 /// One INFO event (crate::ui notes), printed once per identical text:
 /// Bazel evaluates each resolution SkyKey once per build.
 fn debug_event(text: String) {
-    static PRINTED: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
-        std::sync::Mutex::new(None);
     let mut printed = PRINTED.lock().unwrap_or_else(|error| error.into_inner());
     if printed
         .get_or_insert_with(Default::default)

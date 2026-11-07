@@ -81,7 +81,7 @@ impl fmt::Display for ConfiguredTargetKey {
 }
 
 /// The configurations of one build, interned by identity.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Configurations {
     by_id: BTreeMap<ConfigId, Arc<Configuration>>,
     /// The top-level target configuration: requested targets are analyzed

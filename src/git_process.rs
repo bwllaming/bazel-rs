@@ -325,7 +325,8 @@ impl Drop for GroupGuard {
         if self.armed
             && let Err(error) = self.cleanup()
         {
-            eprintln!("{error}");
+            // In the console's order (a fetch may run inside analysis).
+            crate::ui::raw(format!("{error}\n").as_bytes());
         }
     }
 }

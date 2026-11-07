@@ -50,11 +50,11 @@ struct Replay<'g> {
 }
 
 impl Replay<'_> {
-    fn events(&mut self, events: &[Event]) {
+    fn events(&mut self, owner: Option<&ConfiguredTargetKey>, events: &[Event]) {
         for event in events {
             match event {
                 Event::Reach(id) | Event::MemoUse(id) => self.node(*id),
-                Event::PlanPush(ct) => self.plan.push(ct.key.clone()),
+                Event::PlanPush => self.plan.extend(owner.cloned()),
                 _ => {}
             }
         }
@@ -76,7 +76,11 @@ impl Replay<'_> {
             self.empty.insert(ct.key.clone());
         }
         if let Some(transcript) = graph.entry(id).transcript() {
-            self.events(&transcript.events);
+            let owner = match graph.key(id) {
+                NodeKey::Ct1(ct) => Some(ct.key.clone()),
+                _ => None,
+            };
+            self.events(owner.as_ref(), &transcript.events);
         }
     }
 }
@@ -370,7 +374,7 @@ fn verify_with(
         empty: BTreeSet::new(),
     };
     let roots = roots.into_iter().map(Event::Reach).collect::<Vec<_>>();
-    replay.events(&roots);
+    replay.events(None, &roots);
     let (eval_plan, eval_empty) = (replay.plan, replay.empty);
     // The plan, keys and order.
     // Entries a deferred target platform's analysis in phase 2 put into

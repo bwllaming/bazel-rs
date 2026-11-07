@@ -1364,32 +1364,40 @@ pub fn dump_action_graph(nodes: &[PlannedAction]) {
         return;
     };
     // `=remote`: also each spawn's remote platform (or why it has none).
-    let remote = mode == "remote";
+    eprint!("{}", format_action_graph(nodes, mode == "remote"));
+}
+
+/// The text of [`dump_action_graph`] (BAZEL_RS_EVAL_VERIFY compares it).
+pub(crate) fn format_action_graph(nodes: &[PlannedAction], remote: bool) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
     for node in nodes {
         let action: &Action = &node.action;
-        eprintln!("ACTION {}", action.id);
+        let _ = writeln!(out, "ACTION {}", action.id);
         if let Some(write) = &action.write {
-            eprintln!(
+            let _ = writeln!(
+                out,
                 "  write {} bytes executable={}",
                 write.content.len(),
                 write.executable
             );
         } else if let Some(program) = &action.program {
-            eprintln!("  program {program}");
+            let _ = writeln!(out, "  program {program}");
         }
         if !action.arguments.is_empty() {
-            eprintln!("  arguments {}", action.arguments.join("\u{1}"));
+            let _ = writeln!(out, "  arguments {}", action.arguments.join("\u{1}"));
         }
         if let Some(java) = &action.extra.java_compile {
-            eprintln!("  java-mode {:?}", java.mode);
-            eprintln!("  java-flags {}", java.flags.join("\u{1}"));
+            let _ = writeln!(out, "  java-mode {:?}", java.mode);
+            let _ = writeln!(out, "  java-flags {}", java.flags.join("\u{1}"));
             for (name, paths) in [
                 ("classpath", &java.classpath),
                 ("direct", &java.direct_jars),
                 ("jdeps", &java.dependency_jdeps),
                 ("mandatory", &java.mandatory_inputs),
             ] {
-                eprintln!(
+                let _ = writeln!(
+                    out,
                     "  java-{name} {}",
                     paths
                         .iter()
@@ -1400,14 +1408,20 @@ pub fn dump_action_graph(nodes: &[PlannedAction]) {
             }
         }
         if !action.command.is_empty() {
-            eprintln!("  command {}", action.command);
+            let _ = writeln!(out, "  command {}", action.command);
         }
         // The listed inputs: a node's shared groups after its own (PA-1).
         for (source, destination) in node.inputs() {
-            eprintln!("  input {} -> {}", source.display(), destination.display());
+            let _ = writeln!(
+                out,
+                "  input {} -> {}",
+                source.display(),
+                destination.display()
+            );
         }
         for dependency in node.all_dependencies() {
-            eprintln!(
+            let _ = writeln!(
+                out,
                 "  generated {}[{}] -> {}",
                 dependency.action_id,
                 dependency.output_index,
@@ -1415,19 +1429,24 @@ pub fn dump_action_graph(nodes: &[PlannedAction]) {
             );
         }
         for output in &action.outputs {
-            eprintln!("  output {}", output.display());
+            let _ = writeln!(out, "  output {}", output.display());
         }
         for (key, value) in &action.environment {
-            eprintln!("  env {key}={value}");
+            let _ = writeln!(out, "  env {key}={value}");
         }
         if remote {
             match &action.remote_unsupported {
-                Some(reason) => eprintln!("  remote-unsupported {reason}"),
-                None => eprintln!("  remote-platform {:?}", action.remote_platform),
+                Some(reason) => {
+                    let _ = writeln!(out, "  remote-unsupported {reason}");
+                }
+                None => {
+                    let _ = writeln!(out, "  remote-platform {:?}", action.remote_platform);
+                }
             }
         }
         if !action.execution_info.is_empty() {
-            eprintln!(
+            let _ = writeln!(
+                out,
                 "  execution-info {}",
                 action
                     .execution_info
@@ -1438,6 +1457,7 @@ pub fn dump_action_graph(nodes: &[PlannedAction]) {
             );
         }
     }
+    out
 }
 
 #[cfg(test)]

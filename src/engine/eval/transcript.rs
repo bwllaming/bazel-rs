@@ -18,11 +18,19 @@ use super::super::ConfiguredTargetKey;
 use super::key::{CtKey, NodeId};
 
 /// One recorded effect of a body, in body order.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Event {
     /// A dependency edge to a CT1 node (today an `analyze`/`analyze_key`
     /// call): pass 1 descends into it here (DFS order, cycle detection by
     /// the active chain, `keep_going_state.record_edge`).
+    ///
+    /// Contract: emitted where the walk calls `track_key` (after the
+    /// target lookup and the macro-namespace checks of the reached label,
+    /// before its memo check). What the walk does before that point (the
+    /// lookup's `Access`, a package group's resolution) belongs to the
+    /// reacher. The node is a `Ct1(CtKey)` whose `platform_tree` and
+    /// `forced_exec` (when kept by normalization) pass 1 checks against
+    /// its own first-visit state.
     Reach(NodeId),
     /// An incremental-tracker target access (`track_access`).
     Access(Label),
@@ -41,18 +49,13 @@ pub(crate) enum Event {
     /// An analysis print() line (`note_analysis_print`; transition
     /// applications replay theirs on every use).
     Print(String),
-    /// A cquery graph edge (`capture_cquery_edge`).
-    CqueryEdge {
-        from: ConfiguredTargetKey,
-        to: Label,
-        config: ConfigId,
-        attribute: String,
-        /// A tool (exec) dependency.
-        tool: bool,
-        /// An aspect's dependency.
-        aspect: bool,
-    },
-    /// An incremental shared scope entered/left (`SharedScope::enter`).
+    /// A cquery graph edge (`capture_cquery_edge`); boxed (S1: keeps
+    /// `Event` small, transcripts hold millions).
+    CqueryEdge(Box<CqueryEdge>),
+    /// An incremental-tracker scope entered/left: a shared computation
+    /// (`SharedScope::enter(name)`), or the target pattern phase / a test
+    /// suite's expansion (`PatternScope`, `SuiteScope`: the names
+    /// `"\0pattern"`, `"\0suite"`).
     ScopeEnter(&'static str),
     ScopeExit,
     /// A `plan_pending` flush point: the CT2 deltas planned so far merge
@@ -63,14 +66,46 @@ pub(crate) enum Event {
     /// A selected toolchain implementation needed for `exec_platform`
     /// (`toolchain_implementation`): pass 1 checks conflicts and decides
     /// `forced_exec` first-visit.
-    ToolchainImpl {
-        implementation: ConfiguredTargetKey,
-        exec_platform: Label,
-    },
+    ToolchainImpl(Box<ToolchainImpl>),
     /// The body failed here (its value is the error).
     Error(String),
-    /// The configured target joins the plan here (`plan.push`).
-    PlanPush(CtKey),
+    /// The body's configured target joins the plan here (`plan.push`; S1:
+    /// always the body's own key, so the event carries none).
+    PlanPush,
+    /// The body's configured node is complete here (S1 interface change,
+    /// docs/EVALUATOR.md "Interface changes"): the walk's
+    /// `configured.insert` (main path, delegation, incompatible target),
+    /// where the key leaves the active chain. Later reaches of the key are
+    /// memo hits; reaches after it (the aspect edges) are no longer below
+    /// the key in the active chain (their keep-going parent is the key's
+    /// parent). A failed body has no `Done` (it is re-entered on a revisit,
+    /// as the walk re-runs it).
+    Done,
+    /// A console write a coordinator service made while the evaluator
+    /// ran (a package's load prints, a repository's fetch output), the
+    /// index of the write the evaluation captured (S1 interface addition:
+    /// written once, at its linearized position).
+    Console(u32),
+}
+
+/// [`Event::CqueryEdge`]'s payload.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct CqueryEdge {
+    pub(crate) from: ConfiguredTargetKey,
+    pub(crate) to: Label,
+    pub(crate) config: ConfigId,
+    pub(crate) attribute: String,
+    /// A tool (exec) dependency.
+    pub(crate) tool: bool,
+    /// An aspect's dependency.
+    pub(crate) aspect: bool,
+}
+
+/// [`Event::ToolchainImpl`]'s payload.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ToolchainImpl {
+    pub(crate) implementation: ConfiguredTargetKey,
+    pub(crate) exec_platform: Label,
 }
 
 /// One node's events, in body order.
@@ -93,13 +128,54 @@ impl Transcript {
     }
 }
 
-/// One step of the tape pass 2 streams.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A top-level part of phase 1 (`plan_build`/`analyze_requested`): each
+/// starts with an empty active chain.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum SegmentKind {
+    /// Before the requested targets: the explicit `--platforms` entry's
+    /// resolution.
+    Setup,
+    /// The requested label at `position` (`track_root_entry`,
+    /// `track_root_analysis`, `keep_going_state.current`); a cycle through
+    /// `trimmed_root` prints its untrimmed key first (`cycle_error`).
+    Root {
+        position: usize,
+        label: Label,
+        trimmed_root: Option<ConfiguredTargetKey>,
+    },
+    /// Every requested label analyzed (`track_root_entry(labels.len())`).
+    RootsDone,
+    /// The top-level aspects' applications on a requested label.
+    TopLevelAspects { label: Label },
+}
+
+/// One step of the tape (pass 1's output; pass 2 streams it). Owned by C:
+/// extended in S1 with what the linearizer-only state needs (the tracker's
+/// frames, keep-going edges, segment boundaries).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum TapeOp {
+    /// A top-level segment begins (its active chain is empty).
+    Segment(SegmentKind),
+    /// A CT1 node is reached (`track_key`, `record_edge(parent, key)`);
+    /// `enter`: not a memo hit, its frame begins (`track_enter`,
+    /// `track_entry(plan length)`) and a `Leave` ends it.
+    Reach {
+        node: NodeId,
+        key: ConfiguredTargetKey,
+        parent: Option<ConfiguredTargetKey>,
+        enter: bool,
+    },
+    /// The entered reach failed before its body (pass 1's cycle or depth
+    /// check): the error the reacher receives.
+    Fail(String),
+    /// The innermost entered reach ends (`track_restore`).
+    Leave,
     /// Emit a phase-1 effect at its linearized position.
     Effect(Event),
-    /// The plan index of a configured target (pass 1's order).
-    Plan(CtKey),
+    /// The plan index of a configured target (pass 1's order); `position`:
+    /// the tracker records its plan position (`track_position`; not for an
+    /// incompatible target).
+    Plan { key: CtKey, position: bool },
     /// Merge the CT2 deltas of plan[flushed..len] here.
     Flush,
 }
@@ -115,10 +191,15 @@ pub(crate) struct Tape {
 
 impl Tape {
     /// Append a plan entry; returns its plan index.
-    pub(crate) fn plan(&mut self, key: CtKey) -> usize {
-        self.ops.push(TapeOp::Plan(key));
+    pub(crate) fn plan(&mut self, key: CtKey, position: bool) -> usize {
+        self.ops.push(TapeOp::Plan { key, position });
         self.planned += 1;
         self.planned - 1
+    }
+
+    pub(crate) fn push(&mut self, op: TapeOp) {
+        debug_assert!(!matches!(op, TapeOp::Plan { .. }), "Tape::plan counts");
+        self.ops.push(op);
     }
 
     pub(crate) fn effect(&mut self, event: Event) {
@@ -134,12 +215,26 @@ impl Tape {
     }
 }
 
+impl TapeOp {
+    /// A digest of the op (the recorder keeps the walk's tape as digests).
+    pub(crate) fn digest(&self) -> u64 {
+        use std::hash::BuildHasher;
+
+        crate::fast_hash::FxBuildHasher::default().hash_one(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn transcript_reaches_in_order_and_tape_counts_plan_entries() {
+        assert!(
+            std::mem::size_of::<Event>() <= 80,
+            "{}",
+            std::mem::size_of::<Event>()
+        );
         let mut transcript = Transcript::default();
         transcript.push(Event::Reach(NodeId(3)));
         transcript.push(Event::Warn("w".into()));
@@ -154,9 +249,9 @@ mod tests {
         ));
         let mut tape = Tape::default();
         tape.effect(Event::Warn("w".into()));
-        assert_eq!(tape.plan(key.clone()), 0);
+        assert_eq!(tape.plan(key.clone(), true), 0);
         tape.flush();
-        assert_eq!(tape.plan(key), 1);
+        assert_eq!(tape.plan(key, false), 1);
         assert_eq!(tape.planned(), 2);
         assert_eq!(tape.ops.len(), 4);
     }

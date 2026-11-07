@@ -252,6 +252,40 @@ pub(crate) enum Deferred {
     Note(String),
     Emit(Vec<u8>),
     Raw(Vec<u8>),
+    /// A write made while work shared by every engine over one repository
+    /// set ran ([`SharedWork`]: a repository rule, a module extension, a
+    /// `.bzl` module's first evaluation); BAZEL_RS_EVAL_VERIFY's second
+    /// engine finds that work done, so its comparison may set these aside.
+    Shared(Box<Deferred>),
+}
+
+thread_local! {
+    static SHARED_WORK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// While alive, this thread's held writes are [`Deferred::Shared`].
+pub(crate) struct SharedWork(());
+
+impl SharedWork {
+    pub(crate) fn enter() -> Self {
+        SHARED_WORK.with(|depth| depth.set(depth.get() + 1));
+        Self(())
+    }
+}
+
+impl Drop for SharedWork {
+    fn drop(&mut self) {
+        SHARED_WORK.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+/// `write`, tagged while shared work runs.
+fn tagged(write: Deferred) -> Deferred {
+    if SHARED_WORK.with(std::cell::Cell::get) > 0 && !matches!(write, Deferred::Shared(_)) {
+        Deferred::Shared(Box::new(write))
+    } else {
+        write
+    }
 }
 
 thread_local! {
@@ -274,7 +308,7 @@ fn defer(write: impl FnOnce() -> Deferred) -> bool {
     let mut write = Some(write);
     let deferred = DEFERRED.with(|deferred| match deferred.borrow_mut().as_mut() {
         Some(held) => {
-            held.push((write.take().expect("one write"))());
+            held.push(tagged((write.take().expect("one write"))()));
             true
         }
         None => false,
@@ -282,7 +316,7 @@ fn defer(write: impl FnOnce() -> Deferred) -> bool {
     deferred
         || HELD.with(|held| match held.borrow_mut().as_mut() {
             Some(held) => {
-                held.push((write.take().expect("one write"))());
+                held.push(tagged((write.take().expect("one write"))()));
                 true
             }
             None => false,
@@ -315,6 +349,24 @@ pub(crate) fn deferred_split() -> Vec<Deferred> {
             .map(std::mem::take)
             .unwrap_or_default()
     })
+}
+
+/// Run `f` with this thread's [`DeferredConsole`] (if any) set aside: its
+/// writes go where they would without it (BAZEL_RS_ANALYSIS=eval's tape
+/// application writes at its linearized position while the evaluation's
+/// console stays deferred around it).
+pub(crate) fn without_deferred<R>(f: impl FnOnce() -> R) -> R {
+    let saved = DEFERRED.with(|deferred| deferred.borrow_mut().take());
+    struct Restore(Option<Option<Vec<Deferred>>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if let Some(saved) = self.0.take() {
+                DEFERRED.with(|deferred| *deferred.borrow_mut() = saved);
+            }
+        }
+    }
+    let _restore = Restore(Some(saved));
+    f()
 }
 
 /// Stop holding; returns what was held.
@@ -357,10 +409,18 @@ impl Drop for DeferredConsole {
 /// Write held console writes ([`DeferredConsole`]) in order.
 pub(crate) fn replay(writes: Vec<Deferred>) {
     for write in writes {
-        match write {
-            Deferred::Note(text) => note(&text),
-            Deferred::Emit(bytes) => emit(&bytes),
-            Deferred::Raw(bytes) => raw(&bytes),
+        replay_one(write);
+    }
+}
+
+fn replay_one(write: Deferred) {
+    match write {
+        Deferred::Note(text) => note(&text),
+        Deferred::Emit(bytes) => emit(&bytes),
+        Deferred::Raw(bytes) => raw(&bytes),
+        Deferred::Shared(write) => {
+            let _shared = SharedWork::enter();
+            replay_one(*write);
         }
     }
 }
@@ -597,6 +657,26 @@ macro_rules! note {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writes_of_shared_work_are_tagged_and_replay_as_themselves() {
+        let console = DeferredConsole::start();
+        note("own");
+        {
+            let _shared = SharedWork::enter();
+            note("fetched");
+        }
+        let writes = console.finish();
+        assert!(matches!(&writes[0], Deferred::Note(text) if text == "own"));
+        assert!(
+            matches!(&writes[1], Deferred::Shared(inner) if matches!(&**inner, Deferred::Note(text) if text == "fetched"))
+        );
+        let outer = DeferredConsole::start();
+        replay(writes);
+        let replayed = outer.finish();
+        assert_eq!(replayed.len(), 2);
+        assert!(matches!(&replayed[1], Deferred::Shared(_)));
+    }
 
     fn run(quiet: bool, chunks: &[&[u8]]) -> Vec<u8> {
         let mut filter = Filter::new(quiet);

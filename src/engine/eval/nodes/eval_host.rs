@@ -28,7 +28,7 @@ use super::super::super::{
 use super::super::cx::Missing;
 use super::super::key::{CtKey, NodeKey, Observes};
 use super::super::shared::EvalShared;
-use super::super::transcript::{Event, Transcript};
+use super::super::transcript::{CqueryEdge, Event, ToolchainImpl, Transcript};
 use super::super::value::{Ct1Ok, Ct1Value, NodeValue};
 use super::bodies::Phase1Cx;
 use super::host::Host;
@@ -371,6 +371,8 @@ impl Host for EvalHost<'_, '_> {
     }
 
     fn resolve_group(&mut self, label: &Label) -> Result<Arc<GroupNode>, String> {
+        // The walk resolves a group once (`group_nodes`), inside the user.
+        self.memo_use(&NodeKey::Group(label.clone()));
         match self.need(NodeKey::Group(label.clone())) {
             Ok(value) => match value.as_ref() {
                 NodeValue::Group(result) => result.clone(),
@@ -445,6 +447,9 @@ impl Host for EvalHost<'_, '_> {
                 if self.cx.coord().tracking {
                     self.emit(Event::Source(label.clone()));
                 }
+                // The visibility check runs once (`analyzed_sources`),
+                // inside the first user.
+                self.memo_use(&source);
                 return match self.need(source) {
                     Ok(value) => match value.as_ref() {
                         NodeValue::Src(result) => result.clone(),
@@ -649,12 +654,17 @@ impl Host for EvalHost<'_, '_> {
         {
             self.acc.rule = Some(rule);
             self.acc.planned = true;
-            self.emit(Event::PlanPush(own));
+            self.emit(Event::PlanPush);
         }
     }
 
-    fn publish_node(&mut self, _key: &ConfiguredTargetKey, node: ConfiguredNode) {
+    fn publish_node(&mut self, key: &ConfiguredTargetKey, node: ConfiguredNode) {
         self.acc.node = Some(node);
+        // The walk's `configured.insert`: the key leaves the active chain
+        // (pass 1's `Done`).
+        if self.own_key() == Some(key) {
+            self.emit(Event::Done);
+        }
     }
 
     fn record_delegation(&mut self, _key: ConfiguredTargetKey, owner: ConfiguredTargetKey) {
@@ -732,14 +742,14 @@ impl Host for EvalHost<'_, '_> {
         aspect: bool,
     ) {
         if self.shared.options.cquery {
-            self.emit(Event::CqueryEdge {
+            self.emit(Event::CqueryEdge(Box::new(CqueryEdge {
                 from: from.clone(),
                 to: label,
                 config,
                 attribute: attribute.to_owned(),
                 tool,
                 aspect,
-            });
+            })));
         }
     }
 
@@ -753,7 +763,10 @@ impl Host for EvalHost<'_, '_> {
 
     fn flush_pending(&mut self, _config_setting: &Rule) -> Result<(), String> {
         self.emit(Event::Flush);
-        Ok(())
+        // BAZEL_RS_ANALYSIS=eval: pass 1 up to here, then the flush's
+        // phase 2 (the walk's `plan_pending`; worker C's driver).
+        let shared = self.shared;
+        self.cx.coord().linearize(shared)
     }
 
     fn planned_feature_flag(
@@ -940,10 +953,10 @@ impl Host for EvalHost<'_, '_> {
         key: ConfiguredTargetKey,
         exec_platform: &Label,
     ) -> Option<Label> {
-        self.emit(Event::ToolchainImpl {
+        self.emit(Event::ToolchainImpl(Box::new(ToolchainImpl {
             implementation: key.clone(),
             exec_platform: exec_platform.clone(),
-        });
+        })));
         let claims = &mut self.cx.coord().first.claims;
         match claims.get(&key) {
             Some(existing) => Some(existing.clone()),
