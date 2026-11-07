@@ -81,8 +81,7 @@ struct State<T> {
     counts: Counts,
 }
 
-/// Units queued again together (their demands got ready at once), in
-/// waves of 1, 2, 4, … units in pattern order, each wave once the previous
+/// The units of one demand queued again together, in waves of 1, 2, 4, … units in pattern order, each wave once the previous
 /// one finished: units blocked on one demand mostly load the same files
 /// (an extension's hub and the thousands of repositories it loads), and a
 /// later wave finds them in the shared `.bzl` cache instead of every unit
@@ -199,32 +198,36 @@ impl<T> PatternPool<T> {
             .filter(|blocked| ready(blocked))
             .cloned()
             .collect();
-        let mut indexes: Vec<usize> = satisfied
-            .iter()
-            .filter_map(|blocked| state.blocked.remove(blocked))
-            .flatten()
-            .filter(|index| *index >= state.taken)
-            .collect();
-        indexes.sort_unstable();
-        let mut batch = Batch {
-            waiting: VecDeque::new(),
-            running: 0,
-            wave: 1,
-        };
-        for index in indexes {
-            let Some(unit) = state.results[index].take() else {
+        // One batch per demand: its units mostly load the same files.
+        let mut queued = false;
+        for blocked in satisfied {
+            let Some(mut indexes) = state.blocked.remove(&blocked) else {
                 continue;
             };
-            state.aborted[index].push(unit);
-            state.retries[index] += 1;
-            state.counts.retried += 1;
-            batch.waiting.push_back(index);
+            indexes.sort_unstable();
+            let mut batch = Batch {
+                waiting: VecDeque::new(),
+                running: 0,
+                wave: 1,
+            };
+            for index in indexes {
+                if index < state.taken {
+                    continue;
+                }
+                let Some(unit) = state.results[index].take() else {
+                    continue;
+                };
+                state.aborted[index].push(unit);
+                state.retries[index] += 1;
+                state.counts.retried += 1;
+                batch.waiting.push_back(index);
+            }
+            if batch.waiting.is_empty() {
+                continue;
+            }
+            state.batches.push(batch);
+            queued |= release_wave(state, state.batches.len() - 1);
         }
-        if batch.waiting.is_empty() {
-            return;
-        }
-        state.batches.push(batch);
-        let queued = release_wave(state, state.batches.len() - 1);
         if queued {
             self.work.notify_all();
         }
@@ -400,7 +403,7 @@ mod tests {
         assert_eq!(pool.counts().0, 2);
     }
 
-    /// Units queued again together run in waves of 1, 2, 4, … in order.
+    /// The units of one demand run in waves of 1, 2, 4, … in order.
     #[test]
     fn batches_run_in_doubling_waves() {
         let pool = PatternPool::new(6);
@@ -408,7 +411,7 @@ mod tests {
             assert!(pool.next().is_some());
         }
         for index in 0..6 {
-            pool.finish(index, index, Some(if index % 2 == 0 { "X" } else { "Y" }));
+            pool.finish(index, index, Some("X"));
         }
         let (_, unit) = pool.take(0, |_| false).unwrap();
         assert_eq!(unit, 0);
@@ -428,6 +431,30 @@ mod tests {
             let (aborted, unit) = pool.take(index, |_| false).unwrap();
             assert_eq!((aborted, unit), (vec![index], index + 10));
         }
+    }
+
+    /// Units of two demands ready at once form two batches, each starting
+    /// with its first unit.
+    #[test]
+    fn each_demand_is_its_own_batch() {
+        let pool = PatternPool::new(5);
+        for _ in 0..5 {
+            assert!(pool.next().is_some());
+        }
+        pool.finish(0, 0, None);
+        for index in 1..5 {
+            pool.finish(index, index, Some(if index % 2 == 0 { "X" } else { "Y" }));
+        }
+        let (_, unit) = pool.take(0, |_| false).unwrap();
+        assert_eq!(unit, 0);
+        pool.retry_ready(|_| true);
+        let mut first = vec![pool.next().unwrap(), pool.next().unwrap()];
+        first.sort_unstable();
+        assert_eq!(first, vec![1, 2]);
+        pool.finish(2, 12, None);
+        assert_eq!(pool.next(), Some(4));
+        pool.finish(1, 11, None);
+        assert_eq!(pool.next(), Some(3));
     }
 
     /// A unit already taken is never queued again, whatever gets ready.
