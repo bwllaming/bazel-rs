@@ -70,13 +70,41 @@ struct State<T> {
     retries: Vec<u8>,
     /// Finished units aborted on a demand, by that demand.
     blocked: HashMap<String, Vec<usize>>,
-    /// Units queued again once the unit they follow finished.
-    followers: HashMap<usize, Vec<usize>>,
+    /// The batches of units queued again in waves ([`Batch`]).
+    batches: Vec<Batch>,
+    /// The batch of each unit of a wave running now.
+    wave_of: HashMap<usize, usize>,
     /// Units below this one are taken (never queued again).
     taken: usize,
     shutdown: bool,
     panicked: bool,
     counts: Counts,
+}
+
+/// Units queued again together (their demands got ready at once), in
+/// waves of 1, 2, 4, … units in pattern order, each wave once the previous
+/// one finished: units blocked on one demand mostly load the same files
+/// (an extension's hub and the thousands of repositories it loads), and a
+/// later wave finds them in the shared `.bzl` cache instead of every unit
+/// walking the same graph at once.
+struct Batch {
+    waiting: VecDeque<usize>,
+    running: usize,
+    wave: usize,
+}
+
+/// Queue the next wave of `batch` (whether any unit was queued).
+fn release_wave<T>(state: &mut State<T>, batch: usize) -> bool {
+    let wave = &mut state.batches[batch];
+    let size = wave.wave.min(wave.waiting.len());
+    wave.wave = wave.wave.saturating_mul(2);
+    wave.running = size;
+    let released: Vec<usize> = wave.waiting.drain(..size).collect();
+    for &index in &released {
+        state.wave_of.insert(index, batch);
+        state.queue.push_back(index);
+    }
+    !released.is_empty()
 }
 
 /// The shared queue of one pattern's loading workers and its coordinator.
@@ -96,7 +124,8 @@ impl<T> PatternPool<T> {
                 aborted: (0..units).map(|_| Vec::new()).collect(),
                 retries: vec![0; units],
                 blocked: HashMap::new(),
-                followers: HashMap::new(),
+                batches: Vec::new(),
+                wave_of: HashMap::new(),
                 taken: 0,
                 shutdown: false,
                 panicked: false,
@@ -142,9 +171,13 @@ impl<T> PatternPool<T> {
                 .push(index);
         }
         state.results[index] = Some(unit);
-        let followers = state.followers.remove(&index).unwrap_or_default();
-        let queued = !followers.is_empty();
-        state.queue.extend(followers);
+        let queued = match state.wave_of.remove(&index) {
+            Some(batch) => {
+                state.batches[batch].running -= 1;
+                state.batches[batch].running == 0 && release_wave(&mut *state, batch)
+            }
+            None => false,
+        };
         drop(state);
         if queued {
             self.work.notify_all();
@@ -173,8 +206,11 @@ impl<T> PatternPool<T> {
             .filter(|index| *index >= state.taken)
             .collect();
         indexes.sort_unstable();
-        let mut queued = false;
-        let mut leader = None;
+        let mut batch = Batch {
+            waiting: VecDeque::new(),
+            running: 0,
+            wave: 1,
+        };
         for index in indexes {
             let Some(unit) = state.results[index].take() else {
                 continue;
@@ -182,20 +218,13 @@ impl<T> PatternPool<T> {
             state.aborted[index].push(unit);
             state.retries[index] += 1;
             state.counts.retried += 1;
-            // The first unit of the demands satisfied together re-runs at
-            // once; the others follow once it finished: units blocked on
-            // one demand mostly load the same files (an extension's hub),
-            // and they then find them in the shared `.bzl` cache instead
-            // of all walking the same graph at once.
-            match leader {
-                None => {
-                    leader = Some(index);
-                    state.queue.push_back(index);
-                    queued = true;
-                }
-                Some(leader) => state.followers.entry(leader).or_default().push(index),
-            }
+            batch.waiting.push_back(index);
         }
+        if batch.waiting.is_empty() {
+            return;
+        }
+        state.batches.push(batch);
+        let queued = release_wave(state, state.batches.len() - 1);
         if queued {
             self.work.notify_all();
         }
@@ -369,6 +398,36 @@ mod tests {
         let (aborted, unit) = pool.take(3, |_| false).unwrap();
         assert_eq!((aborted, unit), (vec!["x3"], "z3"));
         assert_eq!(pool.counts().0, 2);
+    }
+
+    /// Units queued again together run in waves of 1, 2, 4, … in order.
+    #[test]
+    fn batches_run_in_doubling_waves() {
+        let pool = PatternPool::new(6);
+        for _ in 0..6 {
+            assert!(pool.next().is_some());
+        }
+        for index in 0..6 {
+            pool.finish(index, index, Some(if index % 2 == 0 { "X" } else { "Y" }));
+        }
+        let (_, unit) = pool.take(0, |_| false).unwrap();
+        assert_eq!(unit, 0);
+        pool.retry_ready(|_| true);
+        // Units 1..=5: wave [1], then [2, 3], then [4, 5].
+        assert_eq!(pool.next(), Some(1));
+        pool.finish(1, 11, None);
+        assert_eq!(pool.next(), Some(2));
+        assert_eq!(pool.next(), Some(3));
+        pool.finish(3, 13, None);
+        pool.finish(2, 12, None);
+        assert_eq!(pool.next(), Some(4));
+        assert_eq!(pool.next(), Some(5));
+        pool.finish(4, 14, None);
+        pool.finish(5, 15, None);
+        for index in 1..6 {
+            let (aborted, unit) = pool.take(index, |_| false).unwrap();
+            assert_eq!((aborted, unit), (vec![index], index + 10));
+        }
     }
 
     /// A unit already taken is never queued again, whatever gets ready.
