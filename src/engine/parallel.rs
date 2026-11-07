@@ -48,7 +48,7 @@ type Job = Box<dyn FnOnce() + Send>;
 /// A finished compute: its plan index, the outputs its commit registers
 /// (`None`: not known, e.g. it raised a sentinel and runs again inline)
 /// and whether its implementation asked for a deferred target platform.
-type Finished = (usize, Option<Arc<OutputSummary>>, bool);
+type Finished = (usize, Option<Arc<OutputSummary>>, bool, std::time::Instant);
 
 /// The output paths the commit of a finished compute registers, hashed
 /// ([`path_hash`]), and their proper ancestors: what decides whether two
@@ -178,7 +178,9 @@ pub(super) struct AnalysisPool {
     /// finished entries ahead of their turn), with the outputs its commit
     /// registers when they are known (plan B: no sentinel).
     finished: (mpsc::Sender<Finished>, mpsc::Receiver<Finished>),
-    jobs: Option<mpsc::Sender<Job>>,
+    /// S2: the queued computes, the earliest plan index first (the entry at
+    /// its turn, then the ones closest to it: the walk waits for them).
+    jobs: Arc<JobQueue>,
     workers: Vec<std::thread::JoinHandle<()>>,
     size: usize,
     /// Set when the pool stops: queued computes are skipped (their
@@ -232,6 +234,83 @@ fn install_worker_panic_hook() {
     });
 }
 
+/// One queued compute: its plan index and submission order.
+struct Queued {
+    index: usize,
+    order: u64,
+    job: Job,
+}
+
+impl PartialEq for Queued {
+    fn eq(&self, other: &Self) -> bool {
+        (self.index, self.order) == (other.index, other.order)
+    }
+}
+
+impl Eq for Queued {}
+
+impl PartialOrd for Queued {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Queued {
+    /// The greatest is the earliest plan index, then the first submitted
+    /// (std's BinaryHeap pops the greatest).
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (other.index, other.order).cmp(&(self.index, self.order))
+    }
+}
+
+/// The analysis workers' queue ([`AnalysisPool::jobs`]).
+#[derive(Default)]
+struct JobQueue {
+    state: std::sync::Mutex<JobState>,
+    ready: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct JobState {
+    queued: std::collections::BinaryHeap<Queued>,
+    order: u64,
+    closed: bool,
+}
+
+impl JobQueue {
+    fn push(&self, index: usize, job: Job) -> Result<(), Job> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.closed {
+            return Err(job);
+        }
+        state.order += 1;
+        let order = state.order;
+        state.queued.push(Queued { index, order, job });
+        drop(state);
+        self.ready.notify_one();
+        Ok(())
+    }
+
+    /// The next job (`None`: the queue is closed and empty).
+    fn pop(&self) -> Option<Job> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if let Some(queued) = state.queued.pop() {
+                return Some(queued.job);
+            }
+            if state.closed {
+                return None;
+            }
+            state = self.ready.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    fn close(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).closed = true;
+        self.ready.notify_all();
+    }
+}
+
 impl AnalysisPool {
     fn start(size: usize) -> Option<Self> {
         install_worker_panic_hook();
@@ -239,11 +318,10 @@ impl AnalysisPool {
         // snapshots, providers and actions they make are kept and freed by
         // the coordinator (src/alloc_arena.rs).
         let coordinator_arena = crate::alloc_arena::current();
-        let (sender, receiver) = mpsc::channel::<Job>();
-        let receiver = Arc::new(std::sync::Mutex::new(receiver));
+        let queue = Arc::new(JobQueue::default());
         let mut workers = Vec::with_capacity(size);
         for index in 0..size {
-            let receiver = Arc::clone(&receiver);
+            let queue = Arc::clone(&queue);
             let spawned = std::thread::Builder::new()
                 .name(format!("analysis-{index}"))
                 .stack_size(LOADING_WORKER_STACK)
@@ -252,15 +330,8 @@ impl AnalysisPool {
                     if let Some(arena) = coordinator_arena {
                         crate::alloc_arena::bind(arena);
                     }
-                    loop {
-                        let job = {
-                            let receiver = receiver.lock().unwrap_or_else(|e| e.into_inner());
-                            receiver.recv()
-                        };
-                        match job {
-                            Ok(job) => job(),
-                            Err(_) => break,
-                        }
+                    while let Some(job) = queue.pop() {
+                        job();
                     }
                 });
             match spawned {
@@ -269,22 +340,21 @@ impl AnalysisPool {
             }
         }
         if workers.is_empty() {
+            queue.close();
             return None;
         }
         Some(Self {
             finished: mpsc::channel(),
-            jobs: Some(sender),
+            jobs: queue,
             size: workers.len(),
             workers,
             cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
-    fn submit(&self, job: Job) -> Result<(), Job> {
-        match &self.jobs {
-            Some(jobs) => jobs.send(job).map_err(|error| error.0),
-            None => Err(job),
-        }
+    /// Queue the compute of plan index `index`.
+    fn submit(&self, index: usize, job: Job) -> Result<(), Job> {
+        self.jobs.push(index, job)
     }
 }
 
@@ -292,7 +362,7 @@ impl Drop for AnalysisPool {
     fn drop(&mut self) {
         self.cancelled
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        self.jobs = None;
+        self.jobs.close();
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
@@ -589,6 +659,14 @@ struct Pipeline {
     /// before it (its prepare is then the one its turn would make).
     platform_pending: HashMap<ConfigId, OrderedSet<usize>>,
     platform_config: HashMap<usize, ConfigId>,
+    /// The entries prepared ahead whose computes finished (the rest are in
+    /// flight on the workers).
+    computed: std::collections::HashSet<usize>,
+    /// S2: finished entries waiting for an earlier one ([`Self::park`]).
+    parked: HashMap<usize, Vec<usize>>,
+    /// Latency diagnostics: when each entry became ready, was dispatched,
+    /// finished on its worker and was noticed by the coordinator.
+    lat: HashMap<usize, [Option<std::time::Instant>; 4]>,
     /// S2: the native rules classified to commit ahead of their turn (once
     /// their dependencies are committed, [`Engine::commit_native_ahead`]),
     /// and those whose dependencies are.
@@ -660,6 +738,7 @@ impl Pipeline {
         if self.remove_unknown(index, label) {
             self.add_known(index, summary);
         }
+        self.unpark(index);
     }
 
     /// `index` (in `config`) may resolve its configuration's deferred
@@ -674,6 +753,7 @@ impl Pipeline {
 
     /// `index` resolves no target platform (any more).
     fn platform_settled(&mut self, index: usize) {
+        self.unpark(index);
         if let Some(config) = self.platform_config.remove(&index)
             && let Some(pending) = self.platform_pending.get_mut(&config)
         {
@@ -686,11 +766,10 @@ impl Pipeline {
 
     /// Whether an entry before `index` may still resolve the deferred
     /// target platform of `config`.
-    fn platform_resolver_before(&self, index: usize, config: ConfigId) -> bool {
+    fn platform_resolver_before(&self, index: usize, config: ConfigId) -> Option<usize> {
         self.platform_pending
             .get(&config)
-            .and_then(|pending| pending.first())
-            .is_some_and(|first| *first < index)
+            .and_then(|pending| pending.range(..index).next_back().copied())
     }
 
     /// `index` (of `label`) is committed.
@@ -713,47 +792,65 @@ impl Pipeline {
             unindex(&mut self.known_ancestors, &summary.ancestors);
         }
         self.barriers.remove(&index);
+        self.unpark(index);
     }
 
     /// Whether an uncommitted entry before `index` with known outputs
     /// registers one of `summary`'s paths, an ancestor of one, or a path
     /// below one.
-    fn meets_known(&self, index: usize, summary: &OutputSummary) -> bool {
+    fn meets_known(&self, index: usize, summary: &OutputSummary) -> Option<usize> {
         let earlier = |indexes: Option<&OrderedSet<usize>>| {
-            indexes.is_some_and(|indexes| indexes.first().is_some_and(|first| *first < index))
+            indexes
+                .and_then(|indexes| indexes.first().copied())
+                .filter(|first| *first < index)
         };
-        summary.paths.iter().any(|path| {
-            earlier(self.known_paths.get(path)) || earlier(self.known_ancestors.get(path))
-        }) || summary
-            .ancestors
+        summary
+            .paths
             .iter()
-            .any(|ancestor| earlier(self.known_paths.get(ancestor)))
+            .find_map(|path| {
+                earlier(self.known_paths.get(path))
+                    .or_else(|| earlier(self.known_ancestors.get(path)))
+            })
+            .or_else(|| {
+                summary
+                    .ancestors
+                    .iter()
+                    .find_map(|ancestor| earlier(self.known_paths.get(ancestor)))
+            })
     }
 
     /// Whether an uncommitted entry before `index` may register `label`'s
     /// output paths (`summary`), or paths above or below them, and why: 0
     /// one of its package, 1 of an enclosing one, 2 of an enclosed one
     /// (outputs not known yet), 3 an entry whose known outputs meet these,
-    /// 4 an aspect barrier (`None`: its outputs are settled).
-    fn unsettled(&self, index: usize, label: &Label, summary: &OutputSummary) -> Option<usize> {
-        if self.barriers.first().is_some_and(|first| *first < index) {
-            return Some(4);
+    /// 4 an aspect barrier (`None`: its outputs are settled); with the
+    /// earlier entry it waits for (S2: it is retried when that one's
+    /// outputs become known or it commits, [`Self::park`]).
+    fn unsettled(
+        &self,
+        index: usize,
+        label: &Label,
+        summary: &OutputSummary,
+    ) -> Option<(usize, usize)> {
+        if let Some(last) = self.barriers.range(..index).next_back() {
+            return Some((4, *last));
         }
-        if self.meets_known(index, summary) {
-            return Some(3);
+        if let Some(blocker) = self.meets_known(index, summary) {
+            return Some((3, blocker));
         }
-        let earlier =
-            |pending: &OrderedSet<usize>| pending.first().is_some_and(|first| *first < index);
+        // The last earlier one (retried when it settles; the earlier ones
+        // mostly settled before it).
+        let earlier = |pending: &OrderedSet<usize>| pending.range(..index).next_back().copied();
         let repository = &label.repository;
         // The package and every enclosing one.
         let mut package = label.package.as_str();
         loop {
-            if self
+            if let Some(blocker) = self
                 .pending_packages
                 .get(&(repository.clone(), package.to_owned()))
-                .is_some_and(earlier)
+                .and_then(earlier)
             {
-                return Some(if package == label.package { 0 } else { 1 });
+                return Some((if package == label.package { 0 } else { 1 }, blocker));
             }
             if package.is_empty() {
                 break;
@@ -770,8 +867,26 @@ impl Pipeline {
         let end = format!("{}\u{10FFFF}", below);
         self.pending_packages
             .range((repository.clone(), below)..(repository.clone(), end))
-            .any(|((_, package), pending)| package != &label.package && earlier(pending))
-            .then_some(2)
+            .filter(|((_, package), _)| package != &label.package)
+            .find_map(|(_, pending)| earlier(pending))
+            .map(|blocker| (2, blocker))
+    }
+
+    /// S2: the finished entry `index` waits for `blocker` (an earlier entry
+    /// whose outputs are not known, or meet its own, or a barrier, or one
+    /// that may resolve its deferred target platform): it is retried when
+    /// that one's outputs become known, its platform settles or it commits
+    /// ([`Self::unpark`]), not on every poll.
+    fn park(&mut self, index: usize, blocker: usize) {
+        self.finished.remove(&index);
+        self.parked.entry(blocker).or_default().push(index);
+    }
+
+    /// The entries parked on `index` are retried.
+    fn unpark(&mut self, index: usize) {
+        if let Some(waiters) = self.parked.remove(&index) {
+            self.finished.extend(waiters);
+        }
     }
 }
 
@@ -832,6 +947,7 @@ struct Stats {
     walk_turn_us: [AtomicU64; 4],
     /// S2 diagnostics (`PERF-PARALLEL diag`).
     diag: std::sync::Mutex<BTreeMap<String, u64>>,
+    lat: std::sync::Mutex<BTreeMap<String, (u64, u64)>>,
 }
 
 use std::sync::atomic::AtomicU64;
@@ -851,6 +967,15 @@ fn diag(what: &str) {
         && let Ok(mut counts) = stats().diag.lock()
     {
         *counts.entry(what.to_owned()).or_default() += 1;
+    }
+}
+
+/// Latency diagnostics: add `us` microseconds under `what`.
+fn lat_add(what: &str, us: u64) {
+    if let Ok(mut counts) = stats().lat.lock() {
+        let entry = counts.entry(what.to_owned()).or_default();
+        entry.0 += 1;
+        entry.1 += us;
     }
 }
 
@@ -997,6 +1122,15 @@ pub(super) fn report(workers: usize) {
         .map(|counts| counts.clone().into_iter().collect())
         .unwrap_or_default();
     crate::snapshot::diag::line_fmt(format_args!("PERF-PARALLEL diag {}", line(diags)));
+    if let Ok(lat) = stats.lat.lock() {
+        for (what, (count, us)) in lat.iter() {
+            crate::snapshot::diag::line_fmt(format_args!(
+                "PERF-PARALLEL lat {what} count={count} total={:.3}s avg={:.3}ms",
+                *us as f64 / 1e6,
+                *us as f64 / 1e3 / (*count).max(1) as f64
+            ));
+        }
+    }
     let deltas = stats
         .deltas
         .lock()
@@ -1494,9 +1628,37 @@ impl Engine {
                     pipe, index, &key, &rule, classified, was_ready, &ahead, configured, state,
                 );
             }
+            if crate::plan_timings::enabled()
+                && let Some([Some(ready), Some(dispatched), finished, noticed]) =
+                    pipe.lat.remove(&index)
+            {
+                let now = std::time::Instant::now();
+                let kind = match &ahead {
+                    Some(Ahead::Committed(_)) => "ahead",
+                    _ => "turn",
+                };
+                let us = |a: std::time::Instant, b: std::time::Instant| {
+                    b.saturating_duration_since(a).as_micros() as u64
+                };
+                lat_add(&format!("{kind}_ready_to_dispatch"), us(ready, dispatched));
+                if let (Some(finished), Some(noticed)) = (finished, noticed) {
+                    lat_add(
+                        &format!("{kind}_dispatch_to_finish"),
+                        us(dispatched, finished),
+                    );
+                    lat_add(&format!("{kind}_finish_to_notice"), us(finished, noticed));
+                    lat_add(&format!("{kind}_notice_to_turn"), us(noticed, now));
+                } else {
+                    lat_add(
+                        &format!("{kind}_dispatch_to_turn_unfinished"),
+                        us(dispatched, now),
+                    );
+                }
+            }
             pipe.ready.remove(&index);
             pipe.native_ready.remove(&index);
             pipe.finished.remove(&index);
+            pipe.computed.remove(&index);
             for effects in pipe.stashed.remove(&index).unwrap_or_default() {
                 effects.apply(self, false);
             }
@@ -1658,6 +1820,9 @@ impl Engine {
         }
         if crate::plan_timings::enabled() {
             pipe.woken_by.insert(index, pipe.waking.clone());
+        }
+        if crate::plan_timings::enabled() {
+            pipe.lat.entry(index).or_default()[0] = Some(std::time::Instant::now());
         }
         if pipe.natives.contains(&index) {
             pipe.native_ready.insert(index);
@@ -2178,11 +2343,11 @@ impl Engine {
             });
             let _ = sender.send(result);
             if let Some(finished) = finished {
-                let _ = finished.send((index, summary, platform_read));
+                let _ = finished.send((index, summary, platform_read, std::time::Instant::now()));
             }
         });
         if let Some(pool) = &self.analysis_pool
-            && let Err(job) = pool.submit(job)
+            && let Err(job) = pool.submit(index, job)
         {
             job();
         }
@@ -2238,7 +2403,9 @@ impl Engine {
         if pipe.scanned < turn + 1 {
             pipe.scanned = turn + 1;
         }
-        while pipe.ahead.len() < pipe.capacity {
+        // In flight: the entries prepared ahead whose computes have not
+        // finished (a finished one waiting to commit takes no worker).
+        while pipe.ahead.len().saturating_sub(pipe.computed.len()) < pipe.capacity {
             if pipe.ready.is_empty() && pipe.scanned < horizon {
                 let index = pipe.scanned;
                 pipe.scanned += 1;
@@ -2299,6 +2466,9 @@ impl Engine {
             let mut stash = Vec::new();
             match self.prepare_ahead(state, configured, &key, &rule, index, &mut stash) {
                 Some(ahead) => {
+                    if crate::plan_timings::enabled() {
+                        pipe.lat.entry(index).or_default()[1] = Some(std::time::Instant::now());
+                    }
                     pipe.ahead.insert(index, ahead);
                 }
                 None => {
@@ -2689,11 +2859,17 @@ impl Engine {
         while let Ok(finished) = pool.finished.1.try_recv() {
             received.push(finished);
         }
-        for (index, summary, platform_read) in received {
+        for (index, summary, platform_read, at) in received {
+            if crate::plan_timings::enabled() {
+                let entry = pipe.lat.entry(index).or_default();
+                entry[2] = Some(at);
+                entry[3] = Some(std::time::Instant::now());
+            }
             if index <= turn {
                 continue;
             }
             pipe.finished.insert(index);
+            pipe.computed.insert(index);
             if !platform_read {
                 pipe.platform_settled(index);
             }
@@ -2760,9 +2936,10 @@ impl Engine {
         if !matches!(pipe.ahead.get(&index), Some(Ahead::Computing { .. })) {
             return Retry::Done(false);
         }
-        if pipe.barriers.first().is_some_and(|first| *first < index) {
+        if let Some(first) = pipe.barriers.range(..index).next_back().copied() {
             bump(&stats().ahead_barrier, 1);
             pipe.last_try.insert(index, "unsettled_barrier");
+            pipe.park(index, first);
             return Retry::Later;
         }
         // What waits for its turn is bounded (nodes and lowerings of the
@@ -2777,7 +2954,8 @@ impl Engine {
             pipe.last_try.insert(index, "outputs_unknown");
             return Retry::Done(false);
         };
-        if let Some(reason) = pipe.unsettled(index, &key.label, &summary) {
+        if let Some((reason, blocker)) = pipe.unsettled(index, &key.label, &summary) {
+            pipe.park(index, blocker);
             bump(&stats().ahead_package, 1);
             bump(&stats().unsettled[reason.min(3)], 1);
             pipe.last_try.insert(
@@ -2848,7 +3026,8 @@ impl Engine {
         if !platform_known {
             let retry = if worker.outcome.platform_read || self.platform_resolved(&key) {
                 Retry::Done(false)
-            } else if pipe.platform_resolver_before(index, key.config) {
+            } else if let Some(blocker) = pipe.platform_resolver_before(index, key.config) {
+                pipe.park(index, blocker);
                 Retry::Later
             } else {
                 Retry::Done(true)
@@ -2885,6 +3064,7 @@ impl Engine {
             let delta = self.delta_inputs(state, &rule, &parts, class);
             let pending = self.dispatch(snapshot, parts.transitive.clone(), index, class, delta);
             put_back(pipe, parts, prepare_effects, prepare_track, pending);
+            pipe.computed.remove(&index);
             pipe.last_try.insert(index, "delta_meets_producer");
             note_delta("recomputed_on_worker", std::time::Duration::ZERO);
             return Retry::Done(false);
@@ -3009,6 +3189,7 @@ impl Engine {
         };
         let warnings = self.warnings.split_off(marks.0);
         let errors = self.errors.split_off(marks.1);
+        pipe.computed.remove(&index);
         pipe.committed.insert(
             index,
             Box::new(CommittedAhead {
