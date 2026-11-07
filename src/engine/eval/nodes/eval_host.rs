@@ -190,7 +190,10 @@ impl<'c, 'e> EvalHost<'c, 'e> {
         }
         match self.need(node) {
             Ok(value) => match value.as_ref() {
-                NodeValue::Ct1(value) => value.outcome.as_ref().map(|_| ()).map_err(Clone::clone),
+                NodeValue::Ct1(value) => match &value.outcome {
+                    Ok(_) => Ok(()),
+                    Err(error) => Err(self.reword_cycle_report(error, &key)),
+                },
                 _ => Err("internal error: a CT1 key with another value".to_owned()),
             },
             Err(Missing::BackEdge(_)) => {
@@ -202,6 +205,100 @@ impl<'c, 'e> EvalHost<'c, 'e> {
             }
             Err(missing) => Err(self.stop(missing)),
         }
+    }
+
+    /// A memoized failure of `reached` that is a registration cycle report
+    /// (`toolchain_cycle`, `execution_platform_cycle`) names the chain of
+    /// the registration that first analyzed it; the walk re-analyzes the
+    /// failed target in the current registration's chain and reports that
+    /// chain (S1, worker C: the inline driver's chain is the walk's; the
+    /// graph memoizes the failure). The report is reworded for the current
+    /// chain and recorded for the registration being computed.
+    fn reword_cycle_report(&mut self, error: &str, reached: &ConfiguredTargetKey) -> String {
+        let (toolchains, registration) = {
+            let coord = self.cx.coord();
+            let registration = coord
+                .stack
+                .iter()
+                .rev()
+                .find_map(|running| match running.key {
+                    NodeKey::RegToolchains(config) => Some((true, config)),
+                    NodeKey::RegExecPlatforms(config) => Some((false, config)),
+                    _ => None,
+                });
+            match registration {
+                Some((toolchains, config)) => (toolchains, config),
+                None => return error.to_owned(),
+            }
+        };
+        let (prefix, end) = if toolchains {
+            ("Misconfigured toolchains: ", "`-- RegisteredToolchains")
+        } else {
+            (
+                "Misconfigured execution platforms: ",
+                "`-- RegisteredExecutionPlatforms",
+            )
+        };
+        let Some(start) = error.find(prefix) else {
+            return error.to_owned();
+        };
+        let Some(length) = error[start..].find(end).map(|at| at + end.len()) else {
+            return error.to_owned();
+        };
+        let report = &error[start..start + length];
+        let mut lines = report.lines();
+        let (Some(first), Some(arrow)) = (lines.next(), lines.next()) else {
+            return error.to_owned();
+        };
+        let rest: Vec<&str> = lines.collect();
+        let elements: Vec<&str> = rest
+            .iter()
+            .take_while(|line| !line.starts_with("|   toolchain type"))
+            .filter_map(|line| line.strip_prefix("|   "))
+            .collect();
+        let shown = crate::rule_declarations::canonical_form;
+        let reached = shown(&reached.label);
+        let Some(at) = elements.iter().position(|element| *element == reached) else {
+            return error.to_owned();
+        };
+        let mut chain: Vec<String> = self
+            .cx
+            .coord()
+            .active_ct1()
+            .iter()
+            .map(|key| shown(&key.label))
+            .collect();
+        chain.extend(elements[at..].iter().map(|element| (*element).to_owned()));
+        if chain
+            .iter()
+            .map(String::as_str)
+            .eq(elements.iter().copied())
+        {
+            return error.to_owned();
+        }
+        let Some(old_head) = elements.first() else {
+            return error.to_owned();
+        };
+        let first = first.replacen(
+            &format!("{prefix}{old_head}"),
+            &format!("{prefix}{}", chain[0]),
+            1,
+        );
+        let mut reworded = format!("{first}\n{arrow}");
+        for element in &chain {
+            reworded.push_str("\n|   ");
+            reworded.push_str(element);
+        }
+        for line in &rest[elements.len()..] {
+            reworded.push('\n');
+            reworded.push_str(line);
+        }
+        if toolchains {
+            self.record_toolchain_cycle_report(registration, reworded.clone());
+        } else {
+            self.record_execution_platform_cycle_report(registration, reworded.clone());
+        }
+        format!("{}{reworded}{}", &error[..start], &error[start + length..])
     }
 
     /// Run the CT1 body for `key` (the evaluator's `analyze_key_body`

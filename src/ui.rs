@@ -108,6 +108,9 @@ pub fn marked(text: &str) -> Vec<u8> {
 /// planning prints, written marked into it (its reader forwards it
 /// filtered, a snapshot hit replays it filtered).
 pub fn note(text: &str) {
+    if suppressed_before_deferral() {
+        return;
+    }
     if defer(|| Deferred::Note(text.to_owned())) {
         return;
     }
@@ -217,6 +220,9 @@ pub fn emit(bytes: &[u8]) {
     if bytes.is_empty() {
         return;
     }
+    if suppressed_before_deferral() {
+        return;
+    }
     if defer(|| Deferred::Emit(bytes.to_vec())) {
         return;
     }
@@ -302,6 +308,25 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+thread_local! {
+    static COUNT_DEFERRED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Count the writes this thread's [`DeferredConsole`] holds as printed
+/// ([`prints_on_this_thread`]): BAZEL_RS_ANALYSIS=eval holds every console
+/// write of phase 1 and writes it at its linearized position, and a module
+/// extension evaluated meanwhile must still count as printing.
+pub(crate) fn set_count_deferred(on: bool) {
+    COUNT_DEFERRED.with(|cell| cell.set(on));
+}
+
+/// A [`PrivateNotes`] scope swallows the write before BAZEL_RS_ANALYSIS=eval's
+/// deferred console could hold it (it would be written later, outside the
+/// scope).
+fn suppressed_before_deferral() -> bool {
+    COUNT_DEFERRED.with(std::cell::Cell::get) && suppress_note()
+}
+
 /// Hold `write` in this thread's deferred console, if one is open, else
 /// behind the deferred lowerings, if any.
 fn defer(write: impl FnOnce() -> Deferred) -> bool {
@@ -309,6 +334,9 @@ fn defer(write: impl FnOnce() -> Deferred) -> bool {
     let deferred = DEFERRED.with(|deferred| match deferred.borrow_mut().as_mut() {
         Some(held) => {
             held.push(tagged((write.take().expect("one write"))()));
+            if COUNT_DEFERRED.with(std::cell::Cell::get) {
+                count_print();
+            }
             true
         }
         None => false,

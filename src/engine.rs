@@ -11869,9 +11869,21 @@ impl Engine {
         let evaluate = mode == eval::AnalysisMode::Eval && self.eval_covers(checkpoint.is_some());
         let analyzed = if evaluate {
             self.start_prefetch(labels);
+            // M5 (plan_timings): phase 1 is one outermost analysis span,
+            // as the walk's analyses are.
+            let timing = crate::plan_timings::enabled();
+            self.analyze_depth += usize::from(timing);
+            let timer = crate::plan_timings::StageTimer::start_outermost(
+                crate::plan_timings::PlanStage::Analyze,
+                u64::MAX,
+                0,
+                timing,
+            );
             let analyzed = self
                 .eval_phase1(labels, top, &mut configured, &mut plan)
                 .map(root_checkpoint::Outcome::Continue);
+            timer.finish();
+            self.analyze_depth -= usize::from(timing);
             self.stop_prefetch();
             analyzed
         } else {
@@ -18156,6 +18168,9 @@ m = macro(implementation=emit)
             "",
             "",
         );
+        // The walk's maps after a failed analysis (the evaluator publishes
+        // only what succeeded).
+        engine.eval_mode = Some(eval::AnalysisMode::Walk);
         let labels = engine.select_for_build(&["//:a".into()], "").unwrap();
         let error = engine.plan_build(&labels).unwrap_err();
         let top = engine.configurations.top();

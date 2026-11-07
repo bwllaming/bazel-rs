@@ -394,7 +394,7 @@ impl Coord<'_> {
         for (key, value) in &self.first.transition_cache {
             engine
                 .transition_cache
-                .entry(key.clone())
+                .entry(*key)
                 .or_insert_with(|| value.clone());
         }
         for published in &self.store.published[lin.published_memos..] {
@@ -473,7 +473,7 @@ impl Transcripts for View<'_> {
             .keys
             .get(&node)
             .cloned()
-            .unwrap_or_else(|| NodeKey::Status)
+            .unwrap_or(NodeKey::Status)
     }
 
     fn ct1(&self, node: NodeId) -> Option<Ct1Record<'_>> {
@@ -566,6 +566,7 @@ impl Engine {
         };
         super::capture::start(tracking);
         let console = crate::ui::DeferredConsole::start();
+        crate::ui::set_count_deferred(true);
         let shared = EvalShared::from_engine(self);
         let lin = Linearizer {
             pass: Pass1::new(Options { warnings }),
@@ -615,6 +616,7 @@ impl Engine {
             });
             (result, lin)
         };
+        crate::ui::set_count_deferred(false);
         let leftover = console.finish();
         super::capture::stop();
         shared.restore(self);

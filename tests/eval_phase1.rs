@@ -146,6 +146,8 @@ impl Workspace {
             .env("TMPDIR", self.path().join("tmp"))
             .env("BAZEL_RS_CACHE_GC", "off")
             .env("BAZEL_RS_EVAL_VERIFY_PHASE1", "1")
+            // The comparison runs after the walk's phase 1.
+            .env("BAZEL_RS_ANALYSIS", "walk")
             .env(
                 "BAZEL_RS_EVAL_VERIFY_PHASE1_LOG",
                 self.path().join("verify.log"),
