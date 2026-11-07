@@ -423,12 +423,19 @@ the fetch pool (3.47 s busy over 32 workers, but demanded a few at a time
 by the sequential re-runs: a 1.14–2.84 s window); ~500 plain commits
 ~0.4 s.
 
+Since branch `pre-analysis-x` (docs/COLD_ANALYSIS.md, "Pattern loading:
+blocked units re-run on the workers"): X = 2.09–2.51 s with the LTO binary
+(main 2.80–4.61 s on the same host the same hour); `select.discovered` →
+`select.loaded` 1.68 s. Blocked units re-run on the workers once the
+coordinator satisfied their demand (~600 re-runs, in waves); the
+critical path is the coordinator's inline re-runs up to the `npm`
+extension (~0.93 s), then `//src/ts` on a worker (0.73–0.86 s).
+
 What would cut X (to ~1 s):
 
-1. Bulk repository demand for pattern loading: collect the sentinels of
-   all failed units, warm-validate them in one parallel batch (3.5 s CPU
-   → ~0.15 s at 32 workers), re-run the failed units on the workers;
-   only the commits stay ordered. Est. loading 2.6 → ~0.6 s.
+1. ~~Bulk repository demand for pattern loading~~ (done in
+   `pre-analysis-x`, as pipelined re-runs: 2.6 → 1.7 s; the batch shape
+   is limited by the demands only the coordinator satisfies, in order).
 2. Evaluate the module extensions the lockfile names in parallel at
    startup (npm 0.26, pip 0.15, crate 0.07, python 0.06 s … ≈0.6 s
    sequential, ≈0.26 s critical), overlapped with the configuration step.

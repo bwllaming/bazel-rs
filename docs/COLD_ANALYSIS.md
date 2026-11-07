@@ -510,6 +510,87 @@ buy at ~10% of the coordinator. S4 next (phase 1 in parallel, the
 and its fork-join shape (many independent keys per batch) suits the `Sync`
 engine and the shared-read contexts this branch adds.
 
+## Pattern loading: blocked units re-run on the workers (branch `pre-analysis-x`)
+
+The pre-analysis span X (start → `select.loaded`, docs/EVALUATOR.md) was
+3.0 s on ~/code `//src/...` warm, 2.6 s of it the pattern's loading: the
+514 worker units finish in 0.05 s, but 300 of them abort with the
+no-demand sentinel — on a registry module root (`@@rules_go+`,
+`@@aspect_rules_js+`, `@@aspect_bazel_lib+`, `@@rules_oci+`), an extension
+group (`npm`, `pip`, `crate`, `workspace_deps`) or a generated repository
+— and the coordinator re-ran every one of them inline at its commit slot,
+one after another (`//src/ts` 0.73 s, `//src/website3` 0.46 s, ~250 Go
+packages ~0.7 ms each).
+
+Now (`crate::engine::pattern_pool`):
+
+- **Pipelined commits.** The workers take units from a queue; the
+  coordinator commits in pattern order as soon as each unit is there.
+- **Re-runs on the workers.** A worker's sentinel names the demand that
+  blocked the unit (`pattern_pool::blocker`: the `runtime N:KEY` /
+  `repository @@NAME` text `RepositorySet::sentinel_ready` decides on).
+  The coordinator satisfies each demand where the sequential engine does —
+  the first unit blocked on it re-runs inline at its slot, as before —
+  and after every commit (and while it waits for a unit) it queues again
+  every later unit whose demand is ready now. A re-run aborted on another
+  demand waits for that one (at most 8 re-runs, then the unit re-runs
+  inline at its slot). This is phase-1 prefetch's retry
+  (`Prefetcher::retry`) for the pattern's units: the same no-demand +
+  reuse-only workers, beside the coordinator, under the same two guards
+  (docs/PARALLEL_ANALYSIS.md: probes publish only while no evaluator
+  runs; link decisions that depend on the materialized roots abort). The
+  coordinator commits a re-run unit like a first attempt: the aborted
+  attempts' module print events first (as before an inline re-run), then
+  the unit's prints, roots and observations at its slot. Repository and
+  extension demands, their output, errors, the lockfile and the snapshot's
+  recordings stay where the sequential engine has them.
+- **Waves.** The units of one demand re-run in waves of 1, 2, 4, … in
+  pattern order, each once the previous one finished: units blocked on
+  one demand mostly load the same files (the `@npm` hub loads 1,700
+  `__links` `.bzl` files), and a later wave finds them in the shared
+  `.bzl` cache. Without waves 18 `//src/ts/...` units walked the same
+  graph at once (the shared cache claims a module only at its finish, so
+  every traversal entered every module) and `//src/ts` took 1.6–1.9 s on
+  a worker instead of 0.7 s.
+- **Loads warmed ahead from the workers.** A pattern unit is committed
+  (up to the pattern's first error), so its workers run in committed-unit
+  mode (`repository_demand::committed_unit`): `warm_load_roots` requests
+  the repositories of the files it loads on the speculation pool and the
+  module-root warmer, as the coordinator's loads do — the 3,531 `__links`
+  repositories validate in parallel instead of one probe after another
+  on the worker.
+- **Link policy by count.** `RepositorySet::link_policy` built the list of
+  every materialized root (~4,000 names and paths) and compared it with
+  the cached one on each call — on every `.bzl` reached through a symlink.
+  Roots only begin to count and never change their path, so the same
+  count is the same list (`roots_materialized_count`, no allocation).
+
+| ~/code `//src/...`, warm, `BAZEL_RS_SNAPSHOT=off`, LTO release, 3 runs each (shared host) | main 521de384 | this branch |
+|---|---|---|
+| X (`select.loaded`) | 2.80 / 3.12 / 4.61 s | **2.09 / 2.10 / 2.51 s** |
+| — `startup.configuration` | 0.40 / 0.42 / 0.77 s | 0.39 / 0.39 / 0.47 s |
+| — `select.discovered` → `select.loaded` | 2.36 / 2.67 / 3.80 s | **1.68 / 1.68 / 1.90 s** |
+| `plan.phase1_analysis_done` | 38.4 / 38.9 / 40.7 s | 36.9 / 37.3 / 37.3 s |
+| cold fetch (fresh cache): X, wall | 28.0 s, 256.8 s | 24.7 s, 253.6 s |
+
+`PERF-PATTERN units= workers= retried= waited= wait=` (`BAZEL_RS_TIMING`)
+counts the re-runs: ~600 on ~/code. The remaining critical path (quiet
+host): configuration 0.39 s → the coordinator's sequential inline re-runs
+up to the `npm` extension (`//src/ansible`'s `pip` 0.14 s,
+`//src/beyondwork.ai/idl/api/taskrunner`'s `npm` 0.26 s, ready at
+~0.93 s) → `//src/ts` on a worker (0.73–0.86 s: 1,700 `.bzl` modules on
+one thread) → `//src/website3`'s inline re-run (0.2 s: a generated
+repository only the coordinator executes) → `select.loaded` ~2.1 s.
+
+Not done (each needs its own design): evaluating the extensions the
+lockfile names at startup (an extension's preparation is coordinator-only:
+its root demands, definition `.bzl` cache, recorded-input keys, lockfile
+recording and output happen at its sequential demand; a speculative
+preparation would need the repository speculation's deferral for all of
+them — it would move `npm` from ~0.93 s to ~0.5 s); overlapping the
+Starlark-option loads with discovery (~0.08 s: the first wave of units
+only takes 0.05 s); reusing the resolved module graph (~0.1 s).
+
 ## What remains
 
 The goal (cold analysis faster than genuine 9.3.1: 10 s wall on this host)
