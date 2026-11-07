@@ -399,6 +399,54 @@ walk's tail is latency-bound (the turn waits for chain links), so the
 coordinator time saved does not show in the wall. Moving the at-turn links
 off the coordinator needs their prepare there (S2).
 
+### S2, first part: the at-turn cascade roots (branch `analysis-s2`)
+
+Design: docs/PARALLEL_ANALYSIS.md, "S2, first part". Same setup (private
+clone at `80d6724f3a`, repositories warm, `BAZEL_RS_SNAPSHOT=off`,
+storagebox overrides, `nice -n 10`, the shared host, load 5–14), runs
+interleaved; genuine 9.3.1 re-measured the same night (`--batch`, its own
+output base, repositories fetched by a first run):
+
+| command | main 8054e96e | this branch | genuine 9.3.1 |
+|---|---|---|---|
+| `build --nobuild //src/...` wall | 54.0 / 54.0 s | **47.9 / 48.1 s** | 11.0 / 11.0 s |
+| — CPU user + sys | 98.7 + 41.3 / 100.3 + 37.5 s | 101.1 + 39.4 / 105.1 + 40.1 s | 290.0 + 24.4 / 277.2 + 21.4 s |
+| — peak RSS | 8,730 / 8,682 MB | 8,732 / 8,844 MB | 7,205 / 8,122 MB |
+| — implementations computed at their turn (`turn`, `turn_compute`) | 7,310 / 7,177, 11.8 s | 2,554, 4.0 s | – |
+| — stage totals: commit / prepare | 8.6 / 8.5 s | 6.7 / 8.5 s | – |
+| — coordinator thread CPU (`coordinator_cpu`) | – | 33.5 + 4.2 s | – |
+| `test --nobuild //src/...` wall, RSS | 54.4 s, 8,712 MB | **48.5 s**, 8,852 MB | 11.6 s, 7,320 MB |
+| CI `affected --base=HEAD^` wall, RSS | 69.0 s, 7,400 MB | **60.3 s**, 7,368 MB | – |
+| `affected` P2 pair (warm) | – | 163.8 s, 9,618 MB | – |
+
+A recorded snapshot's `verify` peaks at 9,501 MB on main and 9,639 /
+11,077 MB on this branch (two runs: jemalloc decay timing; the live peak is
+bounded by the held entries, 8 × the in-flight bound).
+`PERF-PARALLEL fallback` of `build`: `committed_ahead=32,863
+native_committed_ahead=87,114 ready_late=2,240 late=2,028
+unsettled_package=1,066 native_ready_late=3,716` (main: `committed_ahead`
+~23,900, `ready_late` ~6,900, `late` ~2,600, every native at its turn).
+`BAZEL_RS_NO_ARENA_BINDING=1`: 49.8 vs 50.0 s, the same coordinator CPU —
+no arena contention while the prepares stay on the coordinator.
+
+**Where the wall goes now.** `PERF-PARALLEL lat` (`build`): an entry
+committed ahead waits on average 3.4 ms from ready (its last dependency
+merged) to dispatched (the coordinator prepares it), 1.0 ms on its worker
+(compute and delta), 1.9 ms until the coordinator notices it finished —
+the coordinator's turnaround is ~5 of each link's ~6 ms. Moving the
+remaining at-turn implementations to a worker as well (an experiment,
+`BAZEL_RS_TURN_ON_WORKER`, not kept) cut the coordinator's CPU from 38.8 to
+33.6 s but its wait for workers grew from 6.5 to 15 s and the wall from 49.6
+to 52.0 / 52.6 s: what is left at the turn is the critical path of the
+walk's chains, advanced at the coordinator's pace. So moving the prepares
+to the workers (the rest of S2: −8.5 s of coordinator CPU) pays only when
+the links stop going through the coordinator's turnaround: the ready queue
+dispatching prepare + compute + delta from a merged dependency without the
+coordinator in between (S2's second part) and publishing before the merge
+(S3). The wait is spread over the walks (2 walks of ~10,000 entries: 1.6 s;
+66 of ≤4,096: 2.0 s; 1,085 of ≤256 entries — `config_setting` flushes —:
+2.6 s), so narrowing the flushes (S4) matters as much.
+
 ## What remains
 
 The goal (cold analysis faster than genuine 9.3.1: 10 s wall on this host)

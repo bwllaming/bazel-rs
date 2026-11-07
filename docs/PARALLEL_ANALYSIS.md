@@ -1002,6 +1002,107 @@ main's; `BAZEL_RS_VERIFY_DELTA=1` clean on `build` and `test --nobuild
 //src/...` (31,170 / 31,174 deltas), also together with
 `BAZEL_RS_VERIFY_AHEAD=1`; a recorded snapshot verifies at threads 1 and 8.
 
+## S2, first part — the at-turn cascade roots (`src/engine/parallel.rs`)
+
+S1 left ~7,200 Starlark entries computed at their turn on the coordinator.
+`PERF-PARALLEL diag` (`BAZEL_RS_TIMING=1`) names what woke each of them
+(`ready_late_<class>_by_<cause>`, `late_<class>_by_<cause>`: a commit ahead,
+a delegation, or the commit at its turn of a native rule class or of a
+Starlark rule with its own fallback reason): almost all were chain links
+woken by a dependency committed *at its turn*, and the roots of those
+cascades were few. This part removes them; the prepare itself still runs
+on the coordinator (the rest of S2, below).
+
+- **Transition allowlists.** A Starlark rule with a transition used to be
+  `ineligible_transition_or_restricted` (its commit checks the function
+  transition allowlist, whose package_group loads on first need). The
+  reason is now split: `ineligible_restricted` stays; `ineligible_transition`
+  (decided last, after every other reason) is lifted on the coordinator when
+  the allowlist check runs ahead of its turn on lookups alone
+  (`Engine::transition_allowlist_settled`: `self.ahead`, an `Isolation`, the
+  tracker deferred and dropped; anything observed is stashed for its turn,
+  where the check runs again). The `go_library` chains (rules_go's
+  transitioning rules) were the largest cascade.
+- **Native rules ahead of their turn.** A native rule that registers no
+  output (`registers_no_output`; not a filegroup with an `output_group`,
+  whose files may name the workspace status) is classified like a Starlark
+  rule: it waits for the keys of its every dependency edge (an output
+  file's generating rule) in the edge's configuration and of its resolved
+  toolchains (`Engine::native_requirements`), and once they are committed it
+  is prepared and committed ahead of its turn on the coordinator
+  (`Engine::commit_native_ahead`) exactly like a Starlark commit ahead: its
+  console, observations, obtained roots, tracker events, warnings and
+  errors held for its turn, its registrations stamped with its index, its
+  nodes in a segment; a commit that needed a fetch, an analysis or a
+  package is the internal error naming `BAZEL_RS_NO_COMMIT_AHEAD=1` at its
+  turn. Its dependents (the `py_library` of a pip package behind its
+  filegroups and aliases) then wake ahead. Only walks that commit ahead
+  (no `--keep_going`, no aquery capture, not cquery) do it;
+  `BAZEL_RS_NO_NATIVE_AHEAD=1` turns it off. Fallback reasons:
+  `native_committed_ahead`, `native_ready_late`, `native_dependency_late`.
+- **Deferred target platforms.** A target prepared while its
+  configuration's target platform was deferred (the default host platform,
+  resolved only when an implementation asks) used to commit at its turn
+  (its turn prepares it again if a commit resolved the platform between).
+  Within a walk the platform of a configuration is resolved late only at the
+  turn of a Starlark rule in that configuration whose implementation asked
+  for it (`NEEDS_TARGET_PLATFORM`) or of a genrule (`$(TARGET_CPU)`). The
+  pipeline keeps, per configuration, the classified uncommitted entries that
+  may still do that (`platform_pending`: Starlark rules whose compute has
+  not finished without asking, genrules); an implementation that asks is
+  noted (`crate::platforms::note_deferred_read`, set at the three
+  `NEEDS_TARGET_PLATFORM` sites, so a caller swallowing the error still
+  counts). A target prepared with the platform deferred commits ahead when
+  its own implementation did not ask, the platform is still unresolved and
+  no earlier entry may resolve it — its turn would prepare exactly the same
+  (the ctx surface and the execution table, whose host-platform constraints
+  also depend on it). Its outputs are known as soon as such a compute
+  finishes. (Committing such targets ahead regardless of later resolutions
+  was tried and rejected: BAZEL_RS_VERIFY_AHEAD caught the execution table
+  differing.)
+- **Retries.** A finished entry that cannot commit ahead yet now waits for
+  the earlier entry that holds it (`Pipeline::park`: the last earlier entry
+  of a related package with unknown outputs, one whose known outputs meet
+  its own, an aspect barrier, a possible platform resolver) and is retried
+  when that one's outputs become known, its platform settles or it commits,
+  instead of on every poll (`later_package` retries 418,000 → ~22,000). The
+  in-flight bound (2 × workers) counts unfinished computes only, the entries
+  prepared ahead and waiting to commit are bounded by 8 × that, and the
+  analysis workers take the earliest plan index first (a priority queue).
+- `BAZEL_RS_TIMING=1` adds `PERF-PARALLEL coordinator_cpu` (the
+  coordinator thread's user/system CPU, stable under host load) and
+  `PERF-PARALLEL lat` (per entry: ready → dispatched → finished on its
+  worker → noticed by the coordinator → its turn, for entries committed
+  ahead and at their turn).
+
+**Determinism evidence.** `tests/parallel_rule_implementations.rs`:
+`transition_allowlists_settled_commit_ahead` (chains of transitioned and
+plain rules under the built-in module profile, the default target platform
+deferred until a target in the middle of the plan asks for it, with and
+without a non-allowlisted target, with and without `--keep_going`; checks
+that targets prepared with the platform deferred committed ahead) and
+`native_rules_commit_ahead_of_their_turn` (filegroups with `srcs` and
+`data`, alias chains, a test_suite, a config_setting through a select, a
+filegroup with an `output_group`; the same output with
+`BAZEL_RS_NO_NATIVE_AHEAD=1`), at threads 2/8/32, with 25/40 ms jitter and
+with BAZEL_RS_VERIFY_AHEAD + BAZEL_RS_VERIFY_DELTA, against threads 1. On
+~/code (`80d6724f3a`): the action dumps of `build`/`test --nobuild //src/...`
+at the default threads, 1 and 32 with 5 ms jitter (md5 `b15ecff1…`,
+6,483,434 lines), the remote dump, the rest of stderr, `aquery` (text and
+summary) of `//src/python/bworker/...` and
+`//src/beyondwork.ai/tools/oauth2token/...`, the CI `affected` output and
+digests and the P1 / P2 pairs identical to main's; BAZEL_RS_VERIFY_AHEAD +
+BAZEL_RS_VERIFY_DELTA clean on `build` and `test --nobuild` (37,041 prepares
+and 35,430 commits ahead re-prepared at their turn, 36,644 worker deltas,
+132,220 output summaries); a recorded snapshot verifies at threads 1 and 8.
+
+**Not yet (the rest of S2).** The prepare on the workers (an `EngineView`
+plus recorder instead of `&mut Engine`, the views memo single-flight with
+FirstUse replay, console and aquery owners in the delta), the ready queue
+dispatching prepare + compute + delta as soon as the dependencies merge,
+and native commits as deltas. Measured why that alone will not move the wall
+much: docs/COLD_ANALYSIS.md, "S2, first part".
+
 ## Phase-1 prefetch (W6, `src/prefetch.rs`)
 
 P2 parallelized only the packages a target pattern names. On a warm
