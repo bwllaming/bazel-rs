@@ -149,6 +149,7 @@ dependencies = [
  "flate2",
  "fs2",
  "h2",
+ "hashbrown 0.16.1",
  "http",
  "hyper",
  "landlock",

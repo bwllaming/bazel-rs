@@ -596,11 +596,47 @@ struct ConcurrentArtifactIndex {
     shards: Box<[std::sync::RwLock<IndexShard>]>,
 }
 
-/// One shard of [`ConcurrentArtifactIndex`]: File -> (artifact, stamp).
-type IndexShard = crate::fast_hash::FxHashMap<File, (Artifact, u32)>;
+/// One entry of [`ConcurrentArtifactIndex`]: a File, its artifact and the
+/// plan index from which it is visible, with the File's hash
+/// ([`file_hash`], kept so a growing shard never hashes it again).
+struct IndexEntry {
+    hash: u64,
+    file: File,
+    artifact: Artifact,
+    stamp: u32,
+}
+
+/// One shard of [`ConcurrentArtifactIndex`]: File -> (artifact, stamp),
+/// hashed by [`file_hash`] (computed once per lookup or registration).
+type IndexShard = hashbrown::HashTable<IndexEntry>;
 
 /// The shards of [`ConcurrentArtifactIndex`] (a power of two).
 const ARTIFACT_SHARDS: usize = 64;
+
+/// The hash of a File in [`ConcurrentArtifactIndex`]: FxHash of its path
+/// (equal Files have equal paths; Files that share a path — rare — only
+/// share a bucket chain).
+fn file_hash(file: &File) -> u64 {
+    use std::hash::BuildHasher;
+    crate::fast_hash::FxBuildHasher::default().hash_one(file.path.as_bytes())
+}
+
+/// A value given by reference (cloned when it is kept) or owned (moved).
+trait IntoOwned<T>: std::borrow::Borrow<T> {
+    fn into_owned(self) -> T;
+}
+
+impl<T: Clone> IntoOwned<T> for &T {
+    fn into_owned(self) -> T {
+        self.clone()
+    }
+}
+
+impl<T> IntoOwned<T> for T {
+    fn into_owned(self) -> T {
+        self
+    }
+}
 
 impl Default for ConcurrentArtifactIndex {
     fn default() -> Self {
@@ -611,34 +647,56 @@ impl Default for ConcurrentArtifactIndex {
 }
 
 impl ConcurrentArtifactIndex {
-    fn shard(&self, file: &File) -> &std::sync::RwLock<IndexShard> {
-        // A cheap key (equal Files have equal paths): the map hashes the
-        // whole File again.
-        &self.shards[(quick_key(file) >> 58) as usize & (ARTIFACT_SHARDS - 1)]
+    fn shard(&self, hash: u64) -> &std::sync::RwLock<IndexShard> {
+        &self.shards[(hash >> 58) as usize & (ARTIFACT_SHARDS - 1)]
     }
 
     /// The registered artifact of `file` visible to the reader at plan
     /// index `reader` (`u32::MAX`: everything).
     fn get(&self, file: &File, reader: u32) -> Option<Artifact> {
-        let shard = self.shard(file).read().unwrap_or_else(|e| e.into_inner());
+        let hash = file_hash(file);
+        let shard = self.shard(hash).read().unwrap_or_else(|e| e.into_inner());
         shard
-            .get(file)
-            .filter(|(_, stamp)| *stamp <= reader)
-            .map(|(artifact, _)| artifact.clone())
+            .find(hash, |entry| entry.file == *file)
+            .filter(|entry| entry.stamp <= reader)
+            .map(|entry| entry.artifact.clone())
     }
 
-    /// Register `artifact` for `file`, visible from plan index `stamp`
-    /// (replacing a registration; one made ahead of its turn becomes
-    /// visible from the earlier stamp).
-    fn insert(&self, file: File, artifact: Artifact, stamp: u32) {
-        let mut shard = self.shard(&file).write().unwrap_or_else(|e| e.into_inner());
-        match shard.get_mut(&file) {
-            Some(entry) => {
-                entry.0 = artifact;
-                entry.1 = entry.1.min(stamp);
+    /// [`register_artifact`]'s lookup and registration under one hash and
+    /// one lock: an entry of `file` visible to `reader` is kept (checked
+    /// against `artifact`, [`check_reregistered`]); otherwise `artifact` is
+    /// registered, visible from `stamp` (replacing a registration made
+    /// ahead of its turn, which becomes visible from the earlier stamp).
+    fn register(
+        &self,
+        file: impl IntoOwned<File>,
+        artifact: impl IntoOwned<Artifact>,
+        reader: u32,
+        stamp: u32,
+    ) {
+        let hash = file_hash(file.borrow());
+        let mut shard = self.shard(hash).write().unwrap_or_else(|e| e.into_inner());
+        match shard.entry(
+            hash,
+            |entry| entry.file == *file.borrow(),
+            |entry| entry.hash,
+        ) {
+            hashbrown::hash_table::Entry::Occupied(mut entry) => {
+                let entry = entry.get_mut();
+                if entry.stamp <= reader {
+                    check_reregistered(&entry.file, &entry.artifact, artifact.borrow());
+                } else {
+                    entry.artifact = artifact.into_owned();
+                    entry.stamp = entry.stamp.min(stamp);
+                }
             }
-            None => {
-                shard.insert(file, (artifact, stamp));
+            hashbrown::hash_table::Entry::Vacant(entry) => {
+                entry.insert(IndexEntry {
+                    hash,
+                    file: file.into_owned(),
+                    artifact: artifact.into_owned(),
+                    stamp,
+                });
             }
         }
     }
@@ -703,10 +761,12 @@ impl ArtifactIndex {
         self.shared.get(file, self.turn)
     }
 
-    /// Register `artifact` for `file` (replacing a registration; a
-    /// registration made ahead of its turn becomes visible from now on).
-    fn insert(&self, file: File, artifact: Artifact) {
-        self.shared.insert(file, artifact, self.stamp);
+    /// [`ConcurrentArtifactIndex::register`] at this point: an entry
+    /// visible now is kept, else `artifact` is registered (replacing a
+    /// registration made ahead of its turn, which becomes visible from now
+    /// on).
+    fn register(&self, file: impl IntoOwned<File>, artifact: impl IntoOwned<Artifact>) {
+        self.shared.register(file, artifact, self.turn, self.stamp);
     }
 
     fn len(&self) -> usize {
@@ -765,20 +825,24 @@ impl ArtifactIndex {
 /// one is an internal error, checked in debug builds and under
 /// BAZEL_RS_VERIFY_ARTIFACTS.
 fn register_artifact(index: &ArtifactIndex, file: &File, artifact: &Artifact) {
-    match index.get(file) {
-        Some(registered) => {
-            if (cfg!(debug_assertions) || verify_artifacts())
-                && !same_artifact(&registered, artifact)
-            {
-                panic!(
-                    "internal error: File {} re-registered with a different artifact: registered {registered:?}, now {artifact:?}",
-                    file.path
-                );
-            }
-        }
-        None => {
-            index.insert(file.clone(), artifact.clone());
-        }
+    index.register(file, artifact);
+}
+
+/// [`register_artifact`] of an owned File and Artifact (the merge of a
+/// commit delta): nothing is cloned to register them.
+fn register_owned_artifact(index: &ArtifactIndex, file: File, artifact: Artifact) {
+    index.register(file, artifact);
+}
+
+/// [`register_artifact`]'s invariant: a File registered again is
+/// registered with the same Artifact (checked in debug builds and under
+/// BAZEL_RS_VERIFY_ARTIFACTS).
+fn check_reregistered(file: &File, registered: &Artifact, artifact: &Artifact) {
+    if (cfg!(debug_assertions) || verify_artifacts()) && !same_artifact(registered, artifact) {
+        panic!(
+            "internal error: File {} re-registered with a different artifact: registered {registered:?}, now {artifact:?}",
+            file.path
+        );
     }
 }
 

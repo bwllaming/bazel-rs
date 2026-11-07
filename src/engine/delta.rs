@@ -1662,7 +1662,7 @@ pub(super) fn merge_op(
             parallel::note_shared(state.producers.stamp, registered, state.producers.turn)
         }
         DeltaOp::Artifact(file, artifact) => {
-            register_artifact(&state.artifact_index, &file, &artifact);
+            register_owned_artifact(&state.artifact_index, file, artifact);
         }
         DeltaOp::Declared {
             key,

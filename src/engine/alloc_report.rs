@@ -855,6 +855,19 @@ impl<K: std::hash::Hash + Eq + Clone, V: Footprint> Footprint for super::delta::
     }
 }
 
+impl<T: Footprint> Footprint for hashbrown::HashTable<T> {
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        walker.alloc(hash_table_bytes::<T>(self.capacity()))
+            + self.iter().map(|entry| entry.heap(walker)).sum::<usize>()
+    }
+}
+
+impl Footprint for super::IndexEntry {
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        self.file.heap(walker) + self.artifact.heap(walker)
+    }
+}
+
 impl<K: Footprint, S> Footprint for HashSet<K, S> {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
         walker.alloc(hash_table_bytes::<K>(self.capacity()))

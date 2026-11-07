@@ -40,6 +40,11 @@ lzma-rust2 = { version = "=0.22.0", default-features = false, features = ["std",
 # process. Same version the lock already has through std's dependents (no
 # new code is built).
 libc = "=0.2.190"
+# Hash tables keyed by a hash computed once (HashTable): the evaluator's
+# merge registers each artifact and output path with one hash and one lock
+# (crate::engine::ConcurrentArtifactIndex, Producers). Same version the lock
+# already has through allocative (no new code is built).
+hashbrown = { version = "=0.16.1", default-features = false }
 # SIMD substring search: the store-path scan of a repository tree rides on
 # its hashing read (crate::repository_slots); same version the lock already
 # has through regex/aho-corasick (no new code is built).
