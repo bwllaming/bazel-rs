@@ -70,6 +70,8 @@ struct State<T> {
     retries: Vec<u8>,
     /// Finished units aborted on a demand, by that demand.
     blocked: HashMap<String, Vec<usize>>,
+    /// Units queued again once the unit they follow finished.
+    followers: HashMap<usize, Vec<usize>>,
     /// Units below this one are taken (never queued again).
     taken: usize,
     shutdown: bool,
@@ -94,6 +96,7 @@ impl<T> PatternPool<T> {
                 aborted: (0..units).map(|_| Vec::new()).collect(),
                 retries: vec![0; units],
                 blocked: HashMap::new(),
+                followers: HashMap::new(),
                 taken: 0,
                 shutdown: false,
                 panicked: false,
@@ -139,7 +142,13 @@ impl<T> PatternPool<T> {
                 .push(index);
         }
         state.results[index] = Some(unit);
+        let followers = state.followers.remove(&index).unwrap_or_default();
+        let queued = !followers.is_empty();
+        state.queue.extend(followers);
         drop(state);
+        if queued {
+            self.work.notify_all();
+        }
         self.done.notify_all();
     }
 
@@ -163,6 +172,7 @@ impl<T> PatternPool<T> {
                 continue;
             };
             indexes.sort_unstable();
+            let mut leader = None;
             for index in indexes {
                 if index < state.taken {
                     continue;
@@ -173,8 +183,19 @@ impl<T> PatternPool<T> {
                 state.aborted[index].push(unit);
                 state.retries[index] += 1;
                 state.counts.retried += 1;
-                state.queue.push_back(index);
-                queued = true;
+                // The first unit of a demand re-runs at once; the others
+                // follow once it finished: units blocked on one demand
+                // mostly load the same files (an extension's hub), and
+                // they then find them in the shared `.bzl` cache instead
+                // of all walking the same graph at once.
+                match leader {
+                    None => {
+                        leader = Some(index);
+                        state.queue.push_back(index);
+                        queued = true;
+                    }
+                    Some(leader) => state.followers.entry(leader).or_default().push(index),
+                }
             }
         }
         if queued {
@@ -336,9 +357,10 @@ mod tests {
         assert!(aborted.is_empty());
         assert_eq!(unit, "ok0");
         pool.retry_ready(|blocked| blocked == "X");
+        // Unit 1 leads; unit 3 follows once it finished.
         assert_eq!(pool.next(), Some(1));
-        assert_eq!(pool.next(), Some(3));
         pool.finish(1, "ok1", None);
+        assert_eq!(pool.next(), Some(3));
         // Blocked on another demand this time.
         pool.finish(3, "z3", Some("Z"));
         let (aborted, unit) = pool.take(1, |_| false).unwrap();
