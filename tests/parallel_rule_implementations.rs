@@ -67,6 +67,34 @@ impl Drop for Workspace {
     }
 }
 
+/// The lines of `new` that differ from `old`: the common prefix and suffix
+/// left out, the rest of each side shown (`-` old, `+` new) with the line
+/// number of the first difference and two lines of context.
+fn line_diff(old: &str, new: &str) -> String {
+    let (old, new): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
+    let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut text = format!("first difference at line {}\n", prefix + 1);
+    for line in &old[prefix.saturating_sub(2)..prefix] {
+        text.push_str(&format!("  {line}\n"));
+    }
+    for line in &old[prefix..old.len() - suffix] {
+        text.push_str(&format!("- {line}\n"));
+    }
+    for line in &new[prefix..new.len() - suffix] {
+        text.push_str(&format!("+ {line}\n"));
+    }
+    for line in old[old.len() - suffix..].iter().take(2) {
+        text.push_str(&format!("  {line}\n"));
+    }
+    text
+}
+
 fn stderr(output: &Output) -> String {
     without_elapsed(&String::from_utf8_lossy(&output.stderr))
 }
@@ -224,12 +252,11 @@ fn assert_like_sequential(ws: &Workspace, env: &[(&str, &str)], args: &[&str]) -
             stderr(&run)
         );
         assert_eq!(run.stdout, reference.stdout, "{label}: stdout differs");
-        assert_eq!(
-            stderr(&run),
-            stderr(&reference),
-            "{label}: stderr differs\n-- run --\n{}\n-- sequential --\n{}",
-            stderr(&run),
-            stderr(&reference)
+        let (run_text, reference_text) = (stderr(&run), stderr(&reference));
+        assert!(
+            run_text == reference_text,
+            "{label}: stderr differs\n-- diff (sequential -> run) --\n{}\n-- run --\n{run_text}\n-- sequential --\n{reference_text}",
+            line_diff(&reference_text, &run_text)
         );
     }
     reference
@@ -1666,6 +1693,65 @@ fn a_status_file_in_a_tools_runfiles_is_planned_at_its_sequential_place() {
         let reference = assert_like_sequential(&ws, &[("BAZEL_RS_DUMP_ACTIONS", "1")], &args);
         assert!(reference.status.success(), "{}", stderr(&reference));
     }
+}
+
+/// The workspace status command's stderr (the build's stderr, printed when
+/// the first target needing the status commits) keeps its sequential place
+/// behind the console writes of earlier turns that are still held behind
+/// action lowerings in flight (P4, crate::ui's hold): the lowerings are
+/// slowed down so that they always are (it used to print first, a flake of
+/// the test above under load).
+#[test]
+fn the_status_command_prints_behind_writes_held_by_lowerings() {
+    let ws = Workspace::new();
+    commit_ahead_workspace(&ws);
+    ws.file("rules/status.bzl", STATUS_TOOL_DEFS);
+    ws.file(
+        "status.sh",
+        "#!/bin/sh\necho 'status command runs' >&2\necho STABLE_X 1\n",
+    );
+    std::fs::set_permissions(
+        ws.0.join("status.sh"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    ws.file(
+        "slow/BUILD",
+        "load('//rules:p4.bzl', 'w')\npackage(default_visibility = ['//visibility:public'])\n\
+         w(name = 's0', out = 's0')\nw(name = 's1', out = 's1')\n",
+    );
+    ws.file(
+        "a/BUILD",
+        "load('//rules:status.bzl', 'j')\nj(name = 'j', deps = ['//slow:s0', '//slow:s1'])\n",
+    );
+    let status = format!(
+        "--workspace_status_command={}",
+        ws.0.join("status.sh").display()
+    );
+    let args = ["--nobuild", P4_HOST, status.as_str(), "//a:j"];
+    let env = [
+        ("BAZEL_RS_SNAPSHOT", "off"),
+        ("BAZEL_RS_LOWERING_DELAY", "300"),
+    ];
+    let mut sequential = vec!["build", "--loading_phase_threads=1"];
+    sequential.extend(args);
+    let reference = ws.run_env(&env, &sequential);
+    assert!(reference.status.success(), "{}", stderr(&reference));
+    let text = stderr(&reference);
+    let position = |text: &str, needle: &str| {
+        text.find(needle)
+            .unwrap_or_else(|| panic!("{needle}: {text}"))
+    };
+    assert!(position(&text, "w @@//slow:s1") < position(&text, "status command runs"));
+    let mut parallel = vec!["build", "--loading_phase_threads=8"];
+    parallel.extend(args);
+    let run = ws.run_env(&env, &parallel);
+    let run_text = stderr(&run);
+    assert!(
+        run_text == text,
+        "stderr differs\n{}",
+        line_diff(&text, &run_text)
+    );
 }
 
 /// Review of S1, item B: a worker's delta whose own registration failed (a
