@@ -40,6 +40,10 @@ use std::sync::mpsc;
 /// does the work again).
 const AHEAD_ABORT: &str = "\u{1}parallel-analysis-ahead-abort";
 
+/// The most entries prepared ahead and not committed (computing or
+/// finished, waiting to commit), as a multiple of the in-flight bound.
+const HELD_FACTOR: usize = 8;
+
 /// How many plan entries past the turn the coordinator classifies.
 const HORIZON: usize = 4096;
 
@@ -2404,8 +2408,12 @@ impl Engine {
             pipe.scanned = turn + 1;
         }
         // In flight: the entries prepared ahead whose computes have not
-        // finished (a finished one waiting to commit takes no worker).
-        while pipe.ahead.len().saturating_sub(pipe.computed.len()) < pipe.capacity {
+        // finished (a finished one waiting to commit takes no worker); the
+        // finished ones waiting are bounded too (their snapshots and
+        // results are held: memory).
+        while pipe.ahead.len().saturating_sub(pipe.computed.len()) < pipe.capacity
+            && pipe.ahead.len() < pipe.capacity * HELD_FACTOR
+        {
             if pipe.ready.is_empty() && pipe.scanned < horizon {
                 let index = pipe.scanned;
                 pipe.scanned += 1;
