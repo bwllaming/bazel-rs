@@ -1092,7 +1092,7 @@ at the default threads, 1 and 32 with 5 ms jitter (md5 `b15ecff1…`,
 summary) of `//src/python/bworker/...` and
 `//src/beyondwork.ai/tools/oauth2token/...`, the CI `affected` output and
 digests and the P1 / P2 pairs identical to main's; BAZEL_RS_VERIFY_AHEAD +
-BAZEL_RS_VERIFY_DELTA clean on `build` and `test --nobuild` (37,041 prepares
+BAZEL_RS_VERIFY_DELTA clean on `build` and `test --nobuild` (`test`: 37,041 prepares
 and 35,430 commits ahead re-prepared at their turn, 36,644 worker deltas,
 132,220 output summaries); a recorded snapshot verifies at threads 1 and 8.
 
