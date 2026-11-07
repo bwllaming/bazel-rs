@@ -3210,6 +3210,11 @@ impl Engine {
                 Retry::Done(done) => {
                     committed |= done;
                     pipe.finished.remove(&index);
+                    // S2: what it woke is dispatched at once (its chain
+                    // advances) before the next finished entry commits.
+                    if done && eager_dispatch() && !pipe.ready.is_empty() {
+                        self.fill_lookahead(state, configured, pipe, turn);
+                    }
                 }
             }
         }
@@ -3825,15 +3830,24 @@ fn run_batch<I: Sync, T: Send>(batch: &[I], run: &(dyn Fn(&I) -> T + Sync)) -> V
     };
     let results: Vec<std::sync::Mutex<Option<T>>> =
         batch.iter().map(|_| std::sync::Mutex::new(None)).collect();
-    pool.in_place_scope(|scope| {
-        for (item, slot) in batch.iter().zip(&results).skip(1) {
-            scope.spawn(move |_| {
-                let result = run(item);
-                *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
-            });
+    // Every thread claims the next item until none is left: the caller
+    // does not wait for a helper still waking up to start one.
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let work = || {
+        loop {
+            let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some(item) = batch.get(at) else {
+                break;
+            };
+            let result = run(item);
+            *results[at].lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
         }
-        let first = run(&batch[0]);
-        *results[0].lock().unwrap_or_else(|e| e.into_inner()) = Some(first);
+    };
+    pool.in_place_scope(|scope| {
+        for _ in 1..batch.len().min(prepare_threads() + 1) {
+            scope.spawn(|_| work());
+        }
+        work();
     });
     results
         .into_iter()
@@ -3882,6 +3896,16 @@ fn prepare_threads() -> usize {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(7)
+    })
+}
+
+/// `BAZEL_RS_EAGER_DISPATCH=1` (hidden experiment): dispatch what a commit
+/// ahead woke before committing the next finished entry.
+fn eager_dispatch() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
+        std::env::var_os("BAZEL_RS_EAGER_DISPATCH").is_some_and(|value| value == "1")
     })
 }
 
