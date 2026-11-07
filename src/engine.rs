@@ -3621,7 +3621,13 @@ impl Engine {
                             // a miss still aborts with the sentinel.
                             let guard = crate::repository_demand::no_demand();
                             let reuse = crate::repository_demand::reuse_only();
+                            // BAZEL_RS_TIMING_TIMELINE: the worker's unit
+                            // (docs/EVALUATOR.md, the pre-analysis span).
+                            let span = crate::timeline::span("pattern-unit", || {
+                                format!("@@{}//{}", id.repository, id.package)
+                            });
                             let unit = package::evaluate_load_unit(repositories.clone(), id);
+                            drop(span);
                             drop(reuse);
                             drop(guard);
                             // The coordinator loads this package next to
@@ -3662,7 +3668,14 @@ impl Engine {
                     .take()
                     .expect("every dispatched package finished");
                 dispatched += 1;
-                if let Err(error) = self.commit_load_unit(id, unit) {
+                // The commit, with an inline re-run of a unit that needed
+                // a repository or an extension (BAZEL_RS_TIMING_TIMELINE).
+                let span = crate::timeline::span("pattern-commit", || {
+                    format!("@@{}//{}", id.repository, id.package)
+                });
+                let committed = self.commit_load_unit(id, unit);
+                drop(span);
+                if let Err(error) = committed {
                     self.skip_package_error(error)?;
                     continue;
                 }

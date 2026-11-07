@@ -265,6 +265,9 @@ fn run() -> Result<(), String> {
     // An rc file's or `--config`'s error is a command-line error (exit 2).
     let options = evaluate_rc(&line, rc_command, &cwd, &root, &path_to_binary)
         .map_err(bazel_rs::exit_code::command_line)?;
+    // The pre-analysis span's parts (docs/EVALUATOR.md "Measured: the
+    // pre-analysis span"): rc files and --config expanded.
+    bazel_rs::perf_mark("startup.rc");
     // CoverageCommand extends TestCommand (runtime/commands/CoverageCommand.java):
     // the `test` command with `--collect_code_coverage` required and the
     // coverage timeouts as computed defaults (docs/COVERAGE.md); its rc
@@ -1174,6 +1177,7 @@ fn run() -> Result<(), String> {
         }
         _ => {}
     }
+    bazel_rs::perf_mark("startup.options");
     let session = open_registry_session()?;
     resolver_options.registry_session = session.clone();
     snapshot.set_registry_session(session.clone());
@@ -1207,6 +1211,7 @@ fn run() -> Result<(), String> {
     {
         repositories.resolve_graph()?;
     }
+    bazel_rs::perf_mark("startup.modules");
     // BazelLockFileModule.afterCommand (Bazel 9.3 :63-100) runs in
     // LockfileMode.UPDATE/REFRESH only and combines BazelModuleResolution-
     // Value, BazelDepGraphValue and the SingleExtensionValues of the
@@ -1387,6 +1392,7 @@ fn run() -> Result<(), String> {
         bazel_rs::config_registry::validate_top(&top)?;
         engine.set_configuration(top);
     }
+    bazel_rs::perf_mark("startup.configuration");
     // TargetPattern.Parser's relativeDirectory is the working directory below
     // the workspace root, whether or not it is a package
     // (cmdline/TargetPattern.java:783-789).
