@@ -1158,6 +1158,11 @@ fn incremental_index_is_the_sequential_one_at_every_thread_count() {
             ])
             .env("BAZEL_RS_SNAPSHOT_INDEX_DUMP", &dump)
             .env("BAZEL_RS_ANALYSIS_JITTER", jitter.to_string())
+            // S2: prepares side by side on prepare threads under jitter.
+            .env(
+                "BAZEL_RS_PREPARE_THREADS",
+                if jitter > 0 { "4" } else { "0" },
+            )
             .current_dir(ws.path())
             .explicit_modules()
             .output()

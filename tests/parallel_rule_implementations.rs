@@ -168,14 +168,18 @@ fn library_workspace(ws: &Workspace) {
 /// The third element: BAZEL_RS_VERIFY_AHEAD=1 (every prepare ahead of its
 /// turn is repeated at the turn and compared) and BAZEL_RS_VERIFY_DELTA=1
 /// (every commit delta a worker built is built again where it merges and
-/// compared).
-const RUNS: [(usize, u64, bool); 6] = [
-    (2, 0, false),
-    (8, 0, false),
-    (32, 0, false),
-    (8, 25, false),
-    (32, 40, false),
-    (8, 10, true),
+/// compared). The fourth: the prepare threads besides the coordinator (S2:
+/// the prepares of a batch run side by side, filling the shared memos —
+/// dependency views, `Target` identities, output groups — in whatever
+/// order they meet them).
+const RUNS: [(usize, u64, bool, &str); 7] = [
+    (2, 0, false, "0"),
+    (8, 0, false, "0"),
+    (32, 0, false, "4"),
+    (8, 25, false, "4"),
+    (32, 40, false, "7"),
+    (8, 10, true, "0"),
+    (8, 5, true, "4"),
 ];
 
 fn assert_like_sequential(ws: &Workspace, env: &[(&str, &str)], args: &[&str]) -> Output {
@@ -195,9 +199,10 @@ fn assert_like_sequential(ws: &Workspace, env: &[(&str, &str)], args: &[&str]) -
     assert_eq!(off.status.code(), reference.status.code());
     assert_eq!(off.stdout, reference.stdout);
     assert_eq!(stderr(&off), stderr(&reference));
-    for (threads, jitter, verify) in RUNS {
+    for (threads, jitter, verify, prepare_threads) in RUNS {
         let jitter_text = jitter.to_string();
         let mut run_env = env.to_vec();
+        run_env.push(("BAZEL_RS_PREPARE_THREADS", prepare_threads));
         if jitter > 0 {
             run_env.push(("BAZEL_RS_ANALYSIS_JITTER", jitter_text.as_str()));
         }
@@ -209,7 +214,9 @@ fn assert_like_sequential(ws: &Workspace, env: &[(&str, &str)], args: &[&str]) -
         let mut run_args = vec![args[0], threads_arg.as_str()];
         run_args.extend(&args[1..]);
         let run = ws.run_env(&run_env, &run_args);
-        let label = format!("threads={threads} jitter={jitter} verify={verify}");
+        let label = format!(
+            "threads={threads} jitter={jitter} verify={verify} prepare_threads={prepare_threads}"
+        );
         assert_eq!(
             run.status.code(),
             reference.status.code(),
@@ -260,10 +267,24 @@ fn action_graph_and_prints_are_the_sequential_ones() {
             ("BAZEL_RS_SNAPSHOT", "off"),
             ("BAZEL_RS_VERIFY_AHEAD", "1"),
             ("BAZEL_RS_VERIFY_DELTA", "1"),
+            ("BAZEL_RS_PREPARE_THREADS", "4"),
         ],
         &["build", "--loading_phase_threads=8", "--nobuild", "//..."],
     );
     let timed = stderr(&timed);
+    // S2: the prepares ahead of their turn ran in batches off the
+    // coordinator's planning state (each compared at its turn with the
+    // coordinator's own prepare: BAZEL_RS_VERIFY_AHEAD).
+    let prepare = timed
+        .lines()
+        .find(|line| line.starts_with("PERF-PARALLEL prepare "))
+        .unwrap_or_else(|| panic!("no PERF-PARALLEL prepare line: {timed}"));
+    let shared: u64 = prepare
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("shared="))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    assert!(shared > 0, "{prepare}");
     // S1: workers built commit deltas, each built again where it merged
     // and compared (BAZEL_RS_VERIFY_DELTA).
     let delta = timed
@@ -899,12 +920,28 @@ fn incremental_index_does_not_depend_on_who_built_a_view() {
          lib(name = 'j', deps = [':d'])\n",
     );
     let mut indexes = Vec::new();
-    for (run, threads) in ["1", "8", "8"].into_iter().enumerate() {
+    // S2: the last two with prepares side by side on prepare threads (the
+    // shared memos filled by whichever prepare meets them first), under
+    // worker jitter.
+    for (run, (threads, prepare_threads, jitter)) in [
+        ("1", "0", "0"),
+        ("8", "0", "0"),
+        ("8", "0", "0"),
+        ("8", "4", "0"),
+        ("8", "4", "20"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let dump = ws.0.join(format!("index-{run}.txt"));
         let cache = format!("--cache-dir=cache-{run}");
         let threads = format!("--loading_phase_threads={threads}");
         let output = ws.run_env(
-            &[("BAZEL_RS_SNAPSHOT_INDEX_DUMP", dump.to_str().unwrap())],
+            &[
+                ("BAZEL_RS_SNAPSHOT_INDEX_DUMP", dump.to_str().unwrap()),
+                ("BAZEL_RS_PREPARE_THREADS", prepare_threads),
+                ("BAZEL_RS_ANALYSIS_JITTER", jitter),
+            ],
             &[&cache, "build", &threads, "//t:i", "//t:j"],
         );
         assert!(output.status.success(), "{}", stderr(&output));
@@ -914,8 +951,9 @@ fn incremental_index_does_not_depend_on_who_built_a_view() {
         indexes.push(index);
     }
     assert!(indexes[0].contains("label_accesses"), "{}", indexes[0]);
-    assert_eq!(indexes[1], indexes[0], "threads 8: the index differs");
-    assert_eq!(indexes[2], indexes[0], "threads 8 again: the index differs");
+    for (run, index) in indexes.iter().enumerate().skip(1) {
+        assert_eq!(index, &indexes[0], "run {run}: the index differs");
+    }
 }
 
 /// P3 review item 3: a build that fails at an early turn stops the

@@ -439,14 +439,11 @@ impl<'a> SharedPrepare<'a> {
             declared: &state.declared,
             validation: &state.validation,
         };
-        let hit = match self.state.views.get(&key) {
-            Some(view) => Some(ViewFill {
-                view: view.clone(),
-                artifacts: engine.view_artifacts.get(&key).cloned(),
-                accesses: engine.view_accesses.get(&key).cloned(),
-            }),
-            None => None,
-        };
+        let hit = self.state.views.get(&key).map(|view| ViewFill {
+            view: view.clone(),
+            artifacts: engine.view_artifacts.get(&key).cloned(),
+            accesses: engine.view_accesses.get(&key).cloned(),
+        });
         let fill = match hit {
             Some(fill) => fill,
             None => {

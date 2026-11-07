@@ -14169,7 +14169,7 @@ impl Engine {
             repositories: engine.repositories.clone(),
             run_under: engine.run_under_dependency_key(config),
         };
-        return Ok(PreparedTarget {
+        Ok(PreparedTarget {
             key,
             config,
             output_root,
@@ -14182,7 +14182,7 @@ impl Engine {
                 snapshot,
                 action_execution,
             })),
-        });
+        })
     }
 
     /// Phase 3 of one plan entry (the P1 split of plan_target): apply the

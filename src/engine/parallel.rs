@@ -121,7 +121,16 @@ impl OutputSummary {
     }
 }
 
+/// `BAZEL_RS_TIMING`: the requirements of the entry classified last (the
+/// walk's chain depths, `PERF-PARALLEL chains`).
+fn note_classified_keys(keys: &[ConfiguredTargetKey]) {
+    if crate::plan_timings::enabled() {
+        CLASSIFIED_KEYS.with(|slot| *slot.borrow_mut() = Some(keys.to_vec()));
+    }
+}
+
 thread_local! {
+    static CLASSIFIED_KEYS: std::cell::RefCell<Option<Vec<ConfiguredTargetKey>>> = const { std::cell::RefCell::new(None) };
     /// BAZEL_RS_VERIFY_AHEAD: the requirements the last native
     /// classification found (coordinator only; Pipeline::native_keys).
     static VERIFY_NATIVE_KEYS: std::cell::RefCell<Option<Vec<ConfiguredTargetKey>>> = const { std::cell::RefCell::new(None) };
@@ -700,6 +709,11 @@ struct Pipeline {
     waking: String,
     /// The fallback reason of the entry at its turn.
     turn_reason: &'static str,
+    /// `BAZEL_RS_TIMING`: the chain depth of each classified key (Starlark
+    /// implementations along its deepest requirement path within the walk)
+    /// and the walk's deepest.
+    depth: HashMap<ConfiguredTargetKey, u32>,
+    max_depth: u32,
 }
 
 impl Pipeline {
@@ -968,6 +982,10 @@ struct Stats {
     /// and their implementations computed at their turn (µs).
     walk_entries: [AtomicU64; 4],
     walk_turn_us: [AtomicU64; 4],
+    /// The sum of the walks' deepest chains (`PERF-PARALLEL chains`) and
+    /// the deepest of all.
+    walk_depth: [AtomicU64; 4],
+    deepest: AtomicU64,
     /// S2 diagnostics (`PERF-PARALLEL diag`).
     diag: std::sync::Mutex<BTreeMap<String, u64>>,
     lat: std::sync::Mutex<BTreeMap<String, (u64, u64)>>,
@@ -1114,6 +1132,14 @@ pub(super) fn report(workers: usize) {
         get(&stats.ahead_ineligible),
         get(&stats.turn_compute_us) as f64 / 1e6,
         buckets.join(" ")
+    ));
+    crate::snapshot::diag::line_fmt(format_args!(
+        "PERF-PARALLEL chains (<=16,<=256,<=4096,more: sum of the walks' deepest Starlark chains) {} {} {} {} deepest={}",
+        get(&stats.walk_depth[0]),
+        get(&stats.walk_depth[1]),
+        get(&stats.walk_depth[2]),
+        get(&stats.walk_depth[3]),
+        get(&stats.deepest)
     ));
     crate::snapshot::diag::line_fmt(format_args!(
         "PERF-PARALLEL unsettled package={} enclosing={} enclosed={} outputs={} budget={} platform_late={} verified_turn={} verified_outputs={} verified_native={}",
@@ -1645,6 +1671,11 @@ impl Engine {
                 - turn_before;
             bump(&stats().walk_entries[bucket], entries as u64);
             bump(&stats().walk_turn_us[bucket], turn);
+            bump(&stats().walk_depth[bucket], u64::from(pipe.max_depth));
+            stats().deepest.fetch_max(
+                u64::from(pipe.max_depth),
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
         // A failed lowering queued before the walk's error (or its end) is
         // the first error.
@@ -2493,11 +2524,12 @@ impl Engine {
         while pipe.ahead.len().saturating_sub(pipe.computed.len()) < pipe.capacity
             && pipe.ahead.len() < pipe.capacity * HELD_FACTOR
         {
-            // S2: classify until the ready entries fill the room (prepared
-            // together, Self::prepare_ahead_batch).
+            // S2: the ready entries the pipeline has room for are prepared
+            // together (Self::prepare_ahead_batch); more are classified
+            // only when none is ready (the ready ones go first).
             let room = (pipe.capacity - pipe.ahead.len().saturating_sub(pipe.computed.len()))
                 .min(pipe.capacity * HELD_FACTOR - pipe.ahead.len());
-            if pipe.ready.range(turn + 1..).take(room).count() < room && pipe.scanned < horizon {
+            if pipe.ready.is_empty() && pipe.scanned < horizon {
                 let index = pipe.scanned;
                 pipe.scanned += 1;
                 let Some((key, rule)) = self
@@ -2510,6 +2542,22 @@ impl Engine {
                 };
                 let mut stash = Vec::new();
                 let classified = self.classify(state, configured, &key, &rule, &mut stash);
+                if crate::plan_timings::enabled() {
+                    // The walk's chains: an entry's depth is its deepest
+                    // requirement's plus one for a Starlark implementation.
+                    let keys = CLASSIFIED_KEYS.with(|slot| slot.borrow_mut().take());
+                    let deepest = keys
+                        .iter()
+                        .flatten()
+                        .filter_map(|key| pipe.depth.get(key))
+                        .max()
+                        .copied()
+                        .unwrap_or(0);
+                    let own = u32::from(matches!(rule.kind, RuleKind::Custom));
+                    let depth = deepest + own;
+                    pipe.depth.insert(key.clone(), depth);
+                    pipe.max_depth = pipe.max_depth.max(depth);
+                }
                 if let Some(keys) = VERIFY_NATIVE_KEYS.with(|slot| slot.borrow_mut().take()) {
                     pipe.native_keys.insert(index, keys);
                 }
@@ -2643,9 +2691,6 @@ impl Engine {
         self.apply_batch_memos(state, memos);
         bump(&stats().batches, 1);
         bump(&stats().batch_entries, batch.len() as u64);
-        if batch.len() >= 2 {
-            bump(&stats().batch_threads, (batch.len() - 1) as u64);
-        }
         for (((index, key, rule), outcome), platform_known) in
             batch.into_iter().zip(outcomes).zip(platform_known)
         {
@@ -2813,6 +2858,7 @@ impl Engine {
         }
         match keys {
             Some(keys) if !aborted && !sentinel && quiet => {
+                note_classified_keys(&keys);
                 let missing: Vec<ConfiguredTargetKey> = keys
                     .into_iter()
                     .filter(|key| !state.dry.contains_key(key))
@@ -2862,6 +2908,7 @@ impl Engine {
         }
         match keys {
             Some(keys) if !aborted && !sentinel && quiet => {
+                note_classified_keys(&keys);
                 let missing: Vec<ConfiguredTargetKey> = keys
                     .into_iter()
                     .filter(|key| !state.dry.contains_key(key))
@@ -3210,11 +3257,6 @@ impl Engine {
                 Retry::Done(done) => {
                     committed |= done;
                     pipe.finished.remove(&index);
-                    // S2: what it woke is dispatched at once (its chain
-                    // advances) before the next finished entry commits.
-                    if done && eager_dispatch() && !pipe.ready.is_empty() {
-                        self.fill_lookahead(state, configured, pipe, turn);
-                    }
                 }
             }
         }
@@ -3844,7 +3886,9 @@ fn run_batch<I: Sync, T: Send>(batch: &[I], run: &(dyn Fn(&I) -> T + Sync)) -> V
         }
     };
     pool.in_place_scope(|scope| {
-        for _ in 1..batch.len().min(prepare_threads() + 1) {
+        let helpers = batch.len().min(prepare_threads() + 1) - 1;
+        bump(&stats().batch_threads, helpers as u64);
+        for _ in 0..helpers {
             scope.spawn(|_| work());
         }
         work();
@@ -3886,8 +3930,13 @@ fn prepare_pool() -> Option<&'static rayon_core::ThreadPool> {
     .as_ref()
 }
 
-/// The most helper threads a prepare batch starts (`BAZEL_RS_PREPARE_THREADS`,
-/// hidden; 0: the coordinator prepares the batch alone).
+/// The prepare threads of a batch besides the coordinator
+/// (`BAZEL_RS_PREPARE_THREADS`, hidden). 0 by default: measured on ~/code,
+/// a prepare off the coordinator's core takes about twice its CPU (the
+/// planning state it reads was just written there) and the coordinator
+/// waits for the batch's slowest, so helper threads did not shorten the
+/// coordinator's time in prepares (docs/COLD_ANALYSIS.md, "S2, second
+/// part"); the tests run with helpers.
 fn prepare_threads() -> usize {
     static THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *THREADS.get_or_init(|| {
@@ -3895,17 +3944,7 @@ fn prepare_threads() -> usize {
         std::env::var("BAZEL_RS_PREPARE_THREADS")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(7)
-    })
-}
-
-/// `BAZEL_RS_EAGER_DISPATCH=1` (hidden experiment): dispatch what a commit
-/// ahead woke before committing the next finished entry.
-fn eager_dispatch() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
-        std::env::var_os("BAZEL_RS_EAGER_DISPATCH").is_some_and(|value| value == "1")
+            .unwrap_or(0)
     })
 }
 
