@@ -37,7 +37,6 @@
 //! script's stderr passes through to the build's stderr (:113-119).
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::process::{Command, Stdio};
 
 /// The `--workspace_status_command`/`--embed_label` values
@@ -263,7 +262,8 @@ pub fn validate_embed_label(embed_label: &str) -> Result<(), String> {
 
 /// Run the workspace status command and compute both status files. The
 /// script's stderr is the build's stderr (:113-119): written to stderr
-/// here. Non-empty, it keeps the analysis snapshot from being saved
+/// here, in the console's order (crate::ui::raw: behind the writes of
+/// earlier turns still held behind action lowerings). Non-empty, it keeps the analysis snapshot from being saved
 /// (crate::snapshot: a hit would print it a second time, at another place).
 pub(crate) fn compute(
     options: &WorkspaceStatusOptions,
@@ -273,7 +273,7 @@ pub(crate) fn compute(
 ) -> Result<WorkspaceStatus, WorkspaceStatusError> {
     let (status, stderr) = compute_quiet(options, workspace, client_env, now_millis);
     if !stderr.is_empty() {
-        let _ = std::io::stderr().write_all(&stderr);
+        crate::ui::raw(&stderr);
         crate::observed_fs::taint(crate::observed_fs::Taint::WorkspaceStatusStderr, || {
             format!("{} bytes", stderr.len())
         });

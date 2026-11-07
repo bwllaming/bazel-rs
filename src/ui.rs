@@ -233,11 +233,25 @@ pub fn emit(bytes: &[u8]) {
     let _ = stderr.flush();
 }
 
+/// Write a child process's stderr that is the build's stderr (the
+/// workspace status command's) as it is, in the console's order: held like
+/// a [`note`] while this thread's writes are deferred or held behind action
+/// lowerings in flight, so it never overtakes the writes of earlier turns.
+pub(crate) fn raw(bytes: &[u8]) {
+    if bytes.is_empty() || defer(|| Deferred::Raw(bytes.to_vec())) {
+        return;
+    }
+    let mut stderr = std::io::stderr().lock();
+    let _ = stderr.write_all(bytes);
+    let _ = stderr.flush();
+}
+
 /// One console write held by a [`DeferredConsole`].
 #[derive(Debug)]
 pub(crate) enum Deferred {
     Note(String),
     Emit(Vec<u8>),
+    Raw(Vec<u8>),
 }
 
 thread_local! {
@@ -346,6 +360,7 @@ pub(crate) fn replay(writes: Vec<Deferred>) {
         match write {
             Deferred::Note(text) => note(&text),
             Deferred::Emit(bytes) => emit(&bytes),
+            Deferred::Raw(bytes) => raw(&bytes),
         }
     }
 }

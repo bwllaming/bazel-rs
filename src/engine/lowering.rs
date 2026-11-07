@@ -297,7 +297,11 @@ impl LoweringHandle {
             Box::new(job) as Box<dyn FnOnce() -> Result<Lowered, String> + Send>
         )));
         let taken = Arc::clone(&slot);
+        let delay = test_delay();
         let wrapped: Job = Box::new(move || {
+            if delay > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+            }
             let job = taken.lock().unwrap_or_else(|e| e.into_inner()).take();
             if let Some(job) = job {
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
@@ -337,6 +341,20 @@ fn lowering_workers() -> usize {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(4)
+    })
+}
+
+/// `BAZEL_RS_LOWERING_DELAY=<ms>` (hidden test hook): every lowering on a
+/// lowering worker first sleeps that long, so the console writes behind it
+/// stay held (crate::ui::hold_restart) while later turns run.
+fn test_delay() -> u64 {
+    static DELAY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *DELAY.get_or_init(|| {
+        // snapshot-unrecorded: a hidden test hook delaying action lowerings; no result depends on it.
+        std::env::var("BAZEL_RS_LOWERING_DELAY")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0)
     })
 }
 
