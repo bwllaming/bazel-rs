@@ -10711,6 +10711,9 @@ impl Engine {
         self.run_trees = spec.trees;
         self.run_plans.clear();
         let planned = self.plan_build(spec.build);
+        // The planning tail's parts (docs/EVALUATOR.md): the top-level
+        // artifacts and the reachable plan are built.
+        crate::perf_mark("plan.built");
         self.run_requests.clear();
         self.run_trees = true;
         let (nodes, requested, aspect_reports, results) = planned?;
