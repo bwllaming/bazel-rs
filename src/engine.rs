@@ -261,7 +261,98 @@ type Locations = BTreeMap<String, Vec<PathBuf>>;
 /// The client environment inherited action variables resolve against
 /// (read once per build on first need, crate::action_env).
 type ClientEnvironment = std::sync::OnceLock<Arc<BTreeMap<String, std::ffi::OsString>>>;
-type Declared = crate::fast_hash::FxHashMap<(ConfigId, PathBuf), Artifact>;
+/// Declared generated artifacts by configuration and execution path.
+#[derive(Default)]
+struct Declared {
+    /// Hashed by [`DeclaredKey::new`] (lookups only, never iterated).
+    entries: hashbrown::HashTable<(DeclaredKey, Artifact)>,
+}
+
+/// A key of [`Declared`]: a configuration and an execution path, with its
+/// hash (the path's [`parallel::path_hash`] mixed with the configuration's
+/// digest), computed once — on the analysis worker for a commit delta.
+#[derive(Clone)]
+struct DeclaredKey {
+    hash: u64,
+    config: ConfigId,
+    path: PathBuf,
+}
+
+impl DeclaredKey {
+    fn new(config: ConfigId, path: PathBuf) -> Self {
+        let hash = declared_hash(config, parallel::path_hash(&path));
+        Self { hash, config, path }
+    }
+
+    fn matches(&self, config: ConfigId, path: &Path) -> bool {
+        self.config == config && self.path == path
+    }
+}
+
+/// Rendered as the `(config, path)` tuple it stands for.
+impl std::fmt::Debug for DeclaredKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        (&self.config, &self.path).fmt(f)
+    }
+}
+
+/// [`DeclaredKey`]'s hash of a path hashed as `path` in `config` (a
+/// SHA-256 digest: its first word is as good as any).
+fn declared_hash(config: ConfigId, path: u64) -> u64 {
+    let bytes = config.bytes();
+    let word = u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ]);
+    path ^ word
+}
+
+impl Declared {
+    /// The declared artifact of `path` in `config`.
+    fn get(&self, config: ConfigId, path: &Path) -> Option<&Artifact> {
+        let hash = declared_hash(config, parallel::path_hash(path));
+        self.entries
+            .find(hash, |(key, _)| key.matches(config, path))
+            .map(|(_, artifact)| artifact)
+    }
+
+    /// Declare `artifact` at `path` in `config`, replacing a declaration.
+    fn insert(&mut self, config: ConfigId, path: PathBuf, artifact: Artifact) {
+        self.put(DeclaredKey::new(config, path), artifact, true);
+    }
+
+    /// Declare `artifact` at `path` in `config` unless it is declared.
+    fn insert_absent(&mut self, config: ConfigId, path: PathBuf, artifact: Artifact) {
+        self.put(DeclaredKey::new(config, path), artifact, false);
+    }
+
+    /// Declare `artifact` at `key` (`replace`: replacing a declaration,
+    /// else kept when present).
+    fn put(&mut self, key: DeclaredKey, artifact: Artifact, replace: bool) {
+        match self.entries.entry(
+            key.hash,
+            |(known, _)| known.matches(key.config, &key.path),
+            |(known, _)| known.hash,
+        ) {
+            hashbrown::hash_table::Entry::Occupied(mut entry) => {
+                if replace {
+                    entry.get_mut().1 = artifact;
+                }
+            }
+            hashbrown::hash_table::Entry::Vacant(entry) => {
+                entry.insert((key, artifact));
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Room for `additional` more declarations.
+    fn reserve(&mut self, additional: usize) {
+        self.entries.reserve(additional, |(key, _)| key.hash);
+    }
+}
 /// A lookup-only map by configured target key (never iterated where the
 /// order is observed).
 type KeyMap<V> = crate::fast_hash::FxHashMap<ConfiguredTargetKey, V>;
@@ -663,18 +754,19 @@ impl ConcurrentArtifactIndex {
     }
 
     /// [`register_artifact`]'s lookup and registration under one hash and
-    /// one lock: an entry of `file` visible to `reader` is kept (checked
+    /// one lock (`hash`: the [`file_hash`] of `file`): an entry of `file`
+    /// visible to `reader` is kept (checked
     /// against `artifact`, [`check_reregistered`]); otherwise `artifact` is
     /// registered, visible from `stamp` (replacing a registration made
     /// ahead of its turn, which becomes visible from the earlier stamp).
     fn register(
         &self,
+        hash: u64,
         file: impl IntoOwned<File>,
         artifact: impl IntoOwned<Artifact>,
         reader: u32,
         stamp: u32,
     ) {
-        let hash = file_hash(file.borrow());
         let mut shard = self.shard(hash).write().unwrap_or_else(|e| e.into_inner());
         match shard.entry(
             hash,
@@ -765,8 +857,9 @@ impl ArtifactIndex {
     /// visible now is kept, else `artifact` is registered (replacing a
     /// registration made ahead of its turn, which becomes visible from now
     /// on).
-    fn register(&self, file: impl IntoOwned<File>, artifact: impl IntoOwned<Artifact>) {
-        self.shared.register(file, artifact, self.turn, self.stamp);
+    fn register(&self, hash: u64, file: impl IntoOwned<File>, artifact: impl IntoOwned<Artifact>) {
+        self.shared
+            .register(hash, file, artifact, self.turn, self.stamp);
     }
 
     fn len(&self) -> usize {
@@ -825,13 +918,14 @@ impl ArtifactIndex {
 /// one is an internal error, checked in debug builds and under
 /// BAZEL_RS_VERIFY_ARTIFACTS.
 fn register_artifact(index: &ArtifactIndex, file: &File, artifact: &Artifact) {
-    index.register(file, artifact);
+    index.register(file_hash(file), file, artifact);
 }
 
-/// [`register_artifact`] of an owned File and Artifact (the merge of a
-/// commit delta): nothing is cloned to register them.
-fn register_owned_artifact(index: &ArtifactIndex, file: File, artifact: Artifact) {
-    index.register(file, artifact);
+/// [`register_artifact`] of an owned File hashed as `hash` ([`file_hash`])
+/// and Artifact (the merge of a commit delta): nothing is hashed or cloned
+/// to register them.
+fn register_owned_artifact(index: &ArtifactIndex, hash: u64, file: File, artifact: Artifact) {
+    index.register(hash, file, artifact);
 }
 
 /// [`register_artifact`]'s invariant: a File registered again is
@@ -921,6 +1015,26 @@ struct PlanState<'a> {
 }
 
 impl ActionPlanning {
+    /// Size the per-target maps phase 2 fills for `plan` up front (no
+    /// rehashing while it merges): a files-to-build entry per planned
+    /// target, providers and runfiles per Starlark rule target — about
+    /// what they hold at the end (natives add runfiles; aspects and
+    /// top-level additions add entries), so no larger than growth makes
+    /// them.
+    fn presize(&mut self, plan: &Plan) {
+        let starlark = plan
+            .iter()
+            .filter(|(_, rule)| rule.custom.is_some())
+            .count();
+        self.dry.reserve(plan.len().saturating_sub(self.dry.len()));
+        self.custom_providers
+            .reserve(starlark.saturating_sub(self.custom_providers.len()));
+        self.provider_keys
+            .reserve(starlark.saturating_sub(self.provider_keys.len()));
+        self.runfiles_info
+            .reserve(starlark.saturating_sub(self.runfiles_info.len()));
+    }
+
     /// Reborrow every planning field (the caller's bindings stay usable).
     fn plan_state(&mut self) -> PlanState<'_> {
         let ActionPlanning {
@@ -5863,7 +5977,7 @@ impl Engine {
                     .with_name(&out)?
                     .generated_exec_path(&engine.configurations.output_root(config));
                 declared
-                    .get(&(config, exec))
+                    .get(config, &exec)
                     .cloned()
                     .map(|artifact| Arc::new(vec![artifact]))
                     .ok_or_else(|| format!("missing analyzed output {label}"))
@@ -10664,7 +10778,7 @@ impl Engine {
                 .collect::<Vec<_>>();
             for artifact in &artifacts {
                 register_artifact(artifact_index, &artifact.file, artifact);
-                declared.insert((config, artifact.exec.to_path_buf()), artifact.clone());
+                declared.insert(config, artifact.exec.to_path_buf(), artifact.clone());
             }
             runfiles_info.insert(
                 key.clone(),
@@ -10745,7 +10859,7 @@ impl Engine {
                     false,
                 );
                 register_artifact(artifact_index, &artifact.file, &artifact);
-                declared.insert((config, artifact.exec.to_path_buf()), artifact.clone());
+                declared.insert(config, artifact.exec.to_path_buf(), artifact.clone());
                 artifacts.push(artifact);
             }
             artifacts.truncate(1);
@@ -10812,7 +10926,7 @@ impl Engine {
                 false,
             );
             register_artifact(artifact_index, &artifact.file, &artifact);
-            declared.insert((config, artifact.exec.to_path_buf()), artifact.clone());
+            declared.insert(config, artifact.exec.to_path_buf(), artifact.clone());
             runfiles_info.insert(
                 key.clone(),
                 Arc::new(
@@ -11766,6 +11880,7 @@ impl Engine {
         // the same exec paths as the actual generated files. Targets planned
         // early (a Starlark flag_values key, Self::plan_pending) are kept.
         let mut state = self.action_planning.take().unwrap_or_default();
+        state.presize(&plan);
         self.plan_targets(&mut state, &mut plan, &mut configured, true)?;
         // --keep_going: the requested targets whose analysis failed in
         // either phase (docs/KEEP_GOING.md), skipped from here on.
@@ -14038,9 +14153,9 @@ fn register_action_outputs(
             verify_declared_file(file, &artifact);
             register_artifact(artifact_index, file, &artifact);
             if first.is_none() || predeclared(&exec) {
-                declared.insert((config, exec), artifact);
+                declared.insert(config, exec, artifact);
             } else {
-                declared.entry((config, exec)).or_insert(artifact);
+                declared.insert_absent(config, exec, artifact);
             }
         }
         shared.push(first.is_some());

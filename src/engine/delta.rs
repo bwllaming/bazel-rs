@@ -231,12 +231,13 @@ pub(super) enum DeltaOp {
     /// An output shared with the equal action that registered it first
     /// (stamped `registered`; plan B S0's shared counter).
     Shared(PathBuf, u32),
-    /// A File's artifact registered in the build's index.
-    Artifact(File, Artifact),
+    /// A File's artifact registered in the build's index, with the File's
+    /// hash there (computed where the delta is built).
+    Artifact(File, Artifact, u64),
     /// An output-file entry of `declared` (`replace`: inserted, else kept
     /// when present).
     Declared {
-        key: (ConfigId, PathBuf),
+        key: DeclaredKey,
         artifact: Artifact,
         replace: bool,
     },
@@ -600,8 +601,11 @@ impl<'a> DeltaBuilder<'a> {
             None => {
                 self.keys.insert(quick_key(file));
                 self.index.insert(file.clone(), artifact.clone());
-                self.ops
-                    .push(DeltaOp::Artifact(file.clone(), artifact.clone()));
+                self.ops.push(DeltaOp::Artifact(
+                    file.clone(),
+                    artifact.clone(),
+                    file_hash(file),
+                ));
             }
         }
     }
@@ -898,7 +902,7 @@ impl<'a> DeltaBuilder<'a> {
                 self.register_artifact(file, &artifact);
                 let replace = first.is_none() || predeclared(&exec);
                 self.ops.push(DeltaOp::Declared {
-                    key: (config, exec),
+                    key: DeclaredKey::new(config, exec),
                     artifact,
                     replace,
                 });
@@ -927,7 +931,7 @@ impl<'a> DeltaBuilder<'a> {
         );
         self.register_artifact(file, &artifact);
         self.ops.push(DeltaOp::Declared {
-            key: (key.config, exec),
+            key: DeclaredKey::new(key.config, exec),
             artifact: artifact.clone(),
             replace: true,
         });
@@ -1380,7 +1384,7 @@ impl<'a> DeltaBuilder<'a> {
             // generating-rule identity. Other consumers resolve through the index.
             if predeclared(file) {
                 self.ops.push(DeltaOp::Declared {
-                    key: (config, PathBuf::from(&file.path)),
+                    key: DeclaredKey::new(config, PathBuf::from(&file.path)),
                     artifact,
                     replace: true,
                 });
@@ -1664,19 +1668,15 @@ pub(super) fn merge_op(
             parallel::record_registered_output(&path);
             parallel::note_shared(state.producers.stamp, registered, state.producers.turn)
         }
-        DeltaOp::Artifact(file, artifact) => {
-            register_owned_artifact(&state.artifact_index, file, artifact);
+        DeltaOp::Artifact(file, artifact, hash) => {
+            register_owned_artifact(&state.artifact_index, hash, file, artifact);
         }
         DeltaOp::Declared {
             key,
             artifact,
             replace,
         } => {
-            if replace {
-                state.declared.insert(key, artifact);
-            } else {
-                state.declared.entry(key).or_insert(artifact);
-            }
+            state.declared.put(key, artifact, replace);
         }
         DeltaOp::RunfilesInfo(runfiles) => {
             state.runfiles_info.insert(key.clone(), runfiles);
@@ -1735,7 +1735,9 @@ impl DeltaOp {
             }
             DeltaOp::Output(path, producer) => DeltaOp::Output(path.clone(), Arc::clone(producer)),
             DeltaOp::Shared(path, registered) => DeltaOp::Shared(path.clone(), *registered),
-            DeltaOp::Artifact(file, artifact) => DeltaOp::Artifact(file.clone(), artifact.clone()),
+            DeltaOp::Artifact(file, artifact, hash) => {
+                DeltaOp::Artifact(file.clone(), artifact.clone(), *hash)
+            }
             DeltaOp::Declared {
                 key,
                 artifact,
@@ -2009,7 +2011,7 @@ fn rendered(op: &DeltaOp) -> String {
             producer.action.as_ref().map(|(id, _)| id)
         ),
         DeltaOp::Shared(path, registered) => format!("shared {} {registered}", path.display()),
-        DeltaOp::Artifact(file, artifact) => format!("artifact {file:?} {artifact:?}"),
+        DeltaOp::Artifact(file, artifact, _) => format!("artifact {file:?} {artifact:?}"),
         DeltaOp::Declared {
             key,
             artifact,

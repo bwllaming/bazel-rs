@@ -1160,7 +1160,7 @@ pub(super) fn register_outputs<'a>(
         // Runtime declarations with the same path must not overwrite their
         // generating-rule identity. Other consumers resolve through `index`.
         if predeclared(file) {
-            declared.insert((config, PathBuf::from(&file.path)), artifact);
+            declared.insert(config, PathBuf::from(&file.path), artifact);
         }
     }
 }

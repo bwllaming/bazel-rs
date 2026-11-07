@@ -923,6 +923,8 @@ impl Footprint for Artifact {
 }
 fields!(super::Producers { paths, ancestors });
 fields!(super::ProducerEntry { path, producer });
+fields!(super::Declared { entries });
+fields!(super::DeclaredKey { path });
 // One producer per producing action, shared by its outputs' entries.
 fields!(OutputProducer {
     owner,
