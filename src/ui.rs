@@ -379,24 +379,6 @@ pub(crate) fn deferred_split() -> Vec<Deferred> {
     })
 }
 
-/// Run `f` with this thread's [`DeferredConsole`] (if any) set aside: its
-/// writes go where they would without it (BAZEL_RS_ANALYSIS=eval's tape
-/// application writes at its linearized position while the evaluation's
-/// console stays deferred around it).
-pub(crate) fn without_deferred<R>(f: impl FnOnce() -> R) -> R {
-    let saved = DEFERRED.with(|deferred| deferred.borrow_mut().take());
-    struct Restore(Option<Option<Vec<Deferred>>>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            if let Some(saved) = self.0.take() {
-                DEFERRED.with(|deferred| *deferred.borrow_mut() = saved);
-            }
-        }
-    }
-    let _restore = Restore(Some(saved));
-    f()
-}
-
 /// Stop holding; returns what was held.
 pub(crate) fn hold_stop() -> Vec<Deferred> {
     HELD.with(|held| held.take()).unwrap_or_default()
@@ -415,6 +397,19 @@ impl DeferredConsole {
         Self {
             previous: Some(DEFERRED.with(|deferred| deferred.replace(Some(Vec::new())))),
         }
+    }
+
+    /// Run `f` with this console set aside: its writes go where they would
+    /// without it (the console it was started in, or the terminal);
+    /// BAZEL_RS_ANALYSIS=eval writes the tape's effects at their linearized
+    /// positions while the evaluation's console stays deferred around them.
+    pub(crate) fn bypass<R>(&mut self, f: impl FnOnce() -> R) -> R {
+        let outer = self.previous.take().unwrap_or_default();
+        let mine = DEFERRED.with(|deferred| deferred.replace(outer));
+        let result = f();
+        let outer = DEFERRED.with(|deferred| deferred.replace(mine));
+        self.previous = Some(outer);
+        result
     }
 
     /// The writes held since [`Self::start`], in order.

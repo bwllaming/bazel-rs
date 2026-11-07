@@ -90,6 +90,23 @@ pub(crate) struct Linearizer {
     configured: ConfiguredNodes,
     plan: Plan,
     published_memos: usize,
+    /// The evaluation's console (everything written during phase 1 is
+    /// held; the tape's effects are written around it).
+    console: Option<crate::ui::DeferredConsole>,
+}
+
+impl Linearizer {
+    /// Run `f` with the evaluation's console set aside.
+    fn direct<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        match self.console.take() {
+            Some(mut console) => {
+                let result = console.bypass(|| f(self));
+                self.console = Some(console);
+                result
+            }
+            None => f(self),
+        }
+    }
 }
 
 impl Coord<'_> {
@@ -217,7 +234,7 @@ impl Coord<'_> {
             }
             match op {
                 TapeOp::Effect(Event::Print(line)) => {
-                    crate::ui::without_deferred(|| crate::ui::note(&line));
+                    lin.direct(|_| crate::ui::note(&line));
                 }
                 TapeOp::Effect(Event::Console(index)) => {
                     if let Some(write) = self
@@ -226,7 +243,7 @@ impl Coord<'_> {
                         .get_mut(index as usize)
                         .and_then(Option::take)
                     {
-                        crate::ui::without_deferred(|| crate::ui::replay(vec![write]));
+                        lin.direct(|_| crate::ui::replay(vec![write]));
                     }
                 }
                 TapeOp::Effect(Event::Warn(warning)) => {
@@ -295,7 +312,7 @@ impl Coord<'_> {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         std::mem::swap(&mut engine.configurations, &mut *configurations);
         engine.incremental = lin.tracker.take();
-        let result = crate::ui::without_deferred(|| f(engine, lin));
+        let result = lin.direct(|lin| f(engine, lin));
         lin.tracker = engine.incremental.take();
         std::mem::swap(&mut engine.configurations, &mut *configurations);
         // What it reported is at its place already.
@@ -576,6 +593,7 @@ impl Engine {
             configured: std::mem::take(configured),
             plan: std::mem::take(plan),
             published_memos: 0,
+            console: Some(console),
         };
         let (result, lin) = {
             let bodies = Phase1Bodies::new(&shared, self, tracking);
@@ -617,7 +635,12 @@ impl Engine {
             (result, lin)
         };
         crate::ui::set_count_deferred(false);
-        let leftover = console.finish();
+        let mut lin = lin;
+        let leftover = lin
+            .console
+            .take()
+            .map(crate::ui::DeferredConsole::finish)
+            .unwrap_or_default();
         super::capture::stop();
         shared.restore(self);
         let Linearizer {
