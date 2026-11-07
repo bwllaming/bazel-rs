@@ -20,8 +20,11 @@
 #![allow(dead_code)]
 
 pub(super) mod cx;
+pub(super) mod cycles;
+pub(super) mod graph;
 pub(super) mod key;
 pub(super) mod replay_bench;
+pub(super) mod scheduler;
 pub(super) mod shared;
 pub(super) mod transcript;
 pub(super) mod value;

@@ -217,7 +217,7 @@ impl Default for Interner {
 }
 
 /// The arena position of an id: (segment, offset).
-fn slot_of(id: u32) -> (usize, usize) {
+pub(super) fn slot_of(id: u32) -> (usize, usize) {
     // Segment i starts at FIRST_SEGMENT * (2^i - 1).
     let scaled = id as usize / FIRST_SEGMENT + 1;
     let segment = (usize::BITS - 1 - scaled.leading_zeros()) as usize;
