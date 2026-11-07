@@ -1102,3 +1102,140 @@ bad = module_extension(implementation = _bad_impl)\n",
         assert!(keep_going.contains(&format!("z{index}")), "{keep_going}");
     }
 }
+
+/// A loading worker that panics fails the command with the parallel
+/// loading error — never a crash of the worker scope (hidden hook
+/// `BAZEL_RS_DEBUG_LOADING_WORKER_PANIC=<package>`).
+#[test]
+fn a_panicking_loading_worker_is_an_error_not_a_crash() {
+    let ws = Workspace::new();
+    for index in 0..6 {
+        ws.file(
+            &format!("p{index}/BUILD"),
+            &format!("filegroup(name = 'f{index}')\n"),
+        );
+    }
+    let run = ws.run_env(
+        &[("BAZEL_RS_DEBUG_LOADING_WORKER_PANIC", "p3")],
+        &["build", "--loading_phase_threads=4", "--nobuild", "//..."],
+    );
+    let error = stderr(&run);
+    assert!(
+        error.contains("parallel package loading worker panicked"),
+        "{error}"
+    );
+    // An error exit, not the panic exit of an aborted process.
+    assert_ne!(run.status.code(), Some(101), "{error}");
+    assert!(run.status.code().is_some(), "{error}");
+    assert!(!error.contains("a scoped thread panicked"), "{error}");
+}
+
+/// Every path below the `external/` directories of the cache's
+/// worktrees, and the lockfiles (the hidden ones and the workspace's).
+fn cache_state(ws: &Workspace) -> (Vec<String>, Vec<(String, Vec<u8>)>) {
+    fn walk(path: &Path, prefix: &str, out: &mut Vec<String>) {
+        if let Ok(entries) = fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let name = format!("{prefix}/{}", entry.file_name().to_string_lossy());
+                let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+                out.push(name.clone());
+                if is_dir {
+                    walk(&entry.path(), &name, out);
+                }
+            }
+        }
+    }
+    let mut external = Vec::new();
+    let mut lockfiles = Vec::new();
+    if let Ok(entries) = fs::read_dir(ws.0.join("cache/worktrees")) {
+        for entry in entries.flatten() {
+            walk(&entry.path().join("external"), "external", &mut external);
+            if let Ok(bytes) = fs::read(entry.path().join("MODULE.bazel.lock")) {
+                lockfiles.push(("hidden".to_owned(), bytes));
+            }
+        }
+    }
+    if let Ok(bytes) = fs::read(ws.0.join("MODULE.bazel.lock")) {
+        lockfiles.push(("workspace".to_owned(), bytes));
+    }
+    external.sort();
+    lockfiles.sort();
+    (external, lockfiles)
+}
+
+/// The A/B of an early error and of a success, from a fresh cache and
+/// lockfile each time: stderr, the exit code, the lockfiles and the
+/// `external/` entries are the threads=1 run's at every thread count.
+fn assert_fresh_state_identical_across_threads(ws: &Workspace, args: &[&str]) -> String {
+    let mut reference: Option<(String, Option<i32>, (Vec<String>, Vec<(String, Vec<u8>)>))> = None;
+    for (threads, jitter) in [(1u64, 0u64), (2, 0), (8, 0), (32, 0), (8, 40)] {
+        let _ = sealed_trees::remove_tree(&ws.0.join("cache"));
+        let _ = fs::remove_file(ws.0.join("MODULE.bazel.lock"));
+        let jitter_text = jitter.to_string();
+        let env: &[(&str, &str)] = if jitter > 0 {
+            &[("BAZEL_RS_LOADING_JITTER", jitter_text.as_str())]
+        } else {
+            &[]
+        };
+        let threads_flag = format!("--loading_phase_threads={threads}");
+        let mut all = args.to_vec();
+        all.insert(1, &threads_flag);
+        let run = ws.run_env(env, &all);
+        let current = (stderr(&run), run.status.code(), cache_state(ws));
+        match &reference {
+            None => reference = Some(current),
+            Some(expected) => {
+                assert_eq!(
+                    current.0, expected.0,
+                    "threads={threads} jitter={jitter}: stderr"
+                );
+                assert_eq!(current.1, expected.1, "threads={threads}: exit");
+                assert_eq!(current.2.0, expected.2.0, "threads={threads}: external/");
+                assert!(current.2.1 == expected.2.1, "threads={threads}: lockfiles");
+            }
+        }
+    }
+    reference.unwrap().0
+}
+
+/// An early package error (no --keep_going) with later units that need
+/// registry modules and an extension the coordinator never reaches: the
+/// state left behind is the sequential run's. The same workspace without
+/// the error (the extension and modules then materialize) too.
+#[test]
+fn an_early_error_leaves_the_sequential_state_behind() {
+    let ws = Workspace::new();
+    let registry = local_registry(&ws, &["ext1", "ext2"]);
+    let mut module = fs::read_to_string(ws.0.join("MODULE.bazel")).unwrap();
+    module.push_str("good = use_extension('//:ext.bzl', 'good')\nuse_repo(good, 'gen')\n");
+    ws.file("MODULE.bazel", &module);
+    ws.file("BUILD", "");
+    ws.file(
+        "ext.bzl",
+        "def _repo_impl(rctx):\n    rctx.file('BUILD', '')\n    rctx.file('defs.bzl', \"def _impl(ctx):\\n    return DefaultInfo()\\ngen_rule = rule(implementation = _impl)\\n\")\n\
+_repo = repository_rule(implementation = _repo_impl)\n\
+def _good_impl(mctx):\n    print('good extension runs')\n    _repo(name = 'gen')\n\
+good = module_extension(implementation = _good_impl)\n",
+    );
+    for index in 0..6 {
+        ws.file(
+            &format!("b{index}/BUILD"),
+            &format!(
+                "load('@ext1//:defs.bzl', 'ext1_rule')\nload('@gen//:defs.bzl', 'gen_rule')\nprint('b{index}')\next1_rule(name = 'r')\ngen_rule(name = 'g')\n"
+            ),
+        );
+        ws.file(
+            &format!("c{index}/BUILD"),
+            &format!(
+                "load('@ext2//:defs.bzl', 'ext2_rule')\nprint('c{index}')\next2_rule(name = 'r')\n"
+            ),
+        );
+    }
+    let args = ["build", registry.as_str(), "--nobuild", "//..."];
+    let success = assert_fresh_state_identical_across_threads(&ws, &args);
+    assert!(success.contains("good extension runs"), "{success}");
+    ws.file("a/BUILD", "print('a')\nfail('a fails early')\n");
+    let failure = assert_fresh_state_identical_across_threads(&ws, &args);
+    assert!(failure.contains("a fails early"), "{failure}");
+    assert!(!failure.contains("good extension runs"), "{failure}");
+}
