@@ -166,36 +166,34 @@ impl<T> PatternPool<T> {
             .filter(|blocked| ready(blocked))
             .cloned()
             .collect();
+        let mut indexes: Vec<usize> = satisfied
+            .iter()
+            .filter_map(|blocked| state.blocked.remove(blocked))
+            .flatten()
+            .filter(|index| *index >= state.taken)
+            .collect();
+        indexes.sort_unstable();
         let mut queued = false;
-        for blocked in satisfied {
-            let Some(mut indexes) = state.blocked.remove(&blocked) else {
+        let mut leader = None;
+        for index in indexes {
+            let Some(unit) = state.results[index].take() else {
                 continue;
             };
-            indexes.sort_unstable();
-            let mut leader = None;
-            for index in indexes {
-                if index < state.taken {
-                    continue;
+            state.aborted[index].push(unit);
+            state.retries[index] += 1;
+            state.counts.retried += 1;
+            // The first unit of the demands satisfied together re-runs at
+            // once; the others follow once it finished: units blocked on
+            // one demand mostly load the same files (an extension's hub),
+            // and they then find them in the shared `.bzl` cache instead
+            // of all walking the same graph at once.
+            match leader {
+                None => {
+                    leader = Some(index);
+                    state.queue.push_back(index);
+                    queued = true;
                 }
-                let Some(unit) = state.results[index].take() else {
-                    continue;
-                };
-                state.aborted[index].push(unit);
-                state.retries[index] += 1;
-                state.counts.retried += 1;
-                // The first unit of a demand re-runs at once; the others
-                // follow once it finished: units blocked on one demand
-                // mostly load the same files (an extension's hub), and
-                // they then find them in the shared `.bzl` cache instead
-                // of all walking the same graph at once.
-                match leader {
-                    None => {
-                        leader = Some(index);
-                        state.queue.push_back(index);
-                        queued = true;
-                    }
-                    Some(leader) => state.followers.entry(leader).or_default().push(index),
-                }
+                Some(leader) => state.followers.entry(leader).or_default().push(index),
             }
         }
         if queued {
