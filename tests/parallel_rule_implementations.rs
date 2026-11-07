@@ -1838,6 +1838,14 @@ fn transition_allowlists_settled_commit_ahead() {
             .unwrap_or(0)
     };
     assert!(count("committed_ahead=") > 0, "{fallback}");
+    // BAZEL_RS_VERIFY_AHEAD: none committed ahead with its deferred target
+    // platform resolved before its turn (a hard error there).
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("PERF-PARALLEL unsettled")
+                && line.contains(" platform_late=0 ")),
+        "{text}"
+    );
     // The allowlist's package is loaded by the first check: later ones
     // commit ahead.
     assert!(count("ineligible_transition=") < 12, "{fallback}");
@@ -1920,6 +1928,36 @@ fn native_rules_commit_ahead_of_their_turn() {
             .unwrap_or(0)
     };
     assert!(count("native_committed_ahead=") > 0, "{fallback}");
+    // BAZEL_RS_VERIFY_AHEAD: each native rule committed ahead had every key
+    // it reads committed, and its turn reads the same keys (verified_native);
+    // no target committed ahead with a platform resolved before its turn.
+    let unsettled = text
+        .lines()
+        .find(|line| line.starts_with("PERF-PARALLEL unsettled"))
+        .unwrap_or_else(|| panic!("no unsettled line: {text}"));
+    let field = |name: &str| -> u64 {
+        unsettled
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix(name))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(u64::MAX)
+    };
+    assert_eq!(
+        field("verified_native="),
+        count("native_committed_ahead="),
+        "{unsettled}"
+    );
+    assert_eq!(field("platform_late="), 0, "{unsettled}");
+    // Bounded: with one held node at a time, the same output.
+    let bounded = ws.run_env(
+        &[
+            ("BAZEL_RS_DUMP_ACTIONS", "1"),
+            ("BAZEL_RS_SNAPSHOT", "off"),
+            ("BAZEL_RS_COMMITTED_LIMIT", "1"),
+        ],
+        &["build", "--loading_phase_threads=8", "--nobuild", "//..."],
+    );
+    assert_eq!(stderr(&bounded), stderr(&reference));
     // Off: every native rule at its turn, the same output.
     let off = ws.run_env(
         &[

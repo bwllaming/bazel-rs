@@ -122,6 +122,9 @@ impl OutputSummary {
 }
 
 thread_local! {
+    /// BAZEL_RS_VERIFY_AHEAD: the requirements the last native
+    /// classification found (coordinator only; Pipeline::native_keys).
+    static VERIFY_NATIVE_KEYS: std::cell::RefCell<Option<Vec<ConfiguredTargetKey>>> = const { std::cell::RefCell::new(None) };
     /// BAZEL_RS_VERIFY_AHEAD: the output paths the commit being verified
     /// registered (crate::engine::register_output).
     static REGISTERED: std::cell::RefCell<Option<Vec<u64>>> = const { std::cell::RefCell::new(None) };
@@ -597,6 +600,10 @@ struct CommittedAhead {
     /// BAZEL_RS_VERIFY_AHEAD: the prepare repeated right before the commit
     /// ahead (equal to the one it committed), compared again at its turn.
     verified: Option<Box<(PreparedParts, ComputeSnapshot)>>,
+    /// BAZEL_RS_VERIFY_AHEAD, a native rule: the keys it waited for (all
+    /// committed when it committed ahead), compared at its turn with
+    /// [`Engine::native_requirements`] again.
+    native_requirements: Option<Vec<ConfiguredTargetKey>>,
 }
 
 /// Why an entry cannot be prepared ahead yet.
@@ -666,6 +673,9 @@ struct Pipeline {
     /// The entries prepared ahead whose computes finished (the rest are in
     /// flight on the workers).
     computed: std::collections::HashSet<usize>,
+    /// BAZEL_RS_VERIFY_AHEAD: the keys each native rule classified to commit
+    /// ahead waits for ([`Engine::native_requirements`]).
+    native_keys: HashMap<usize, Vec<ConfiguredTargetKey>>,
     /// S2: finished entries waiting for an earlier one ([`Self::park`]).
     parked: HashMap<usize, Vec<usize>>,
     /// Latency diagnostics: when each entry became ready, was dispatched,
@@ -925,6 +935,9 @@ struct Stats {
     /// BAZEL_RS_VERIFY_AHEAD comparisons at the turn of entries committed
     /// ahead.
     verified_turn: AtomicU64,
+    /// BAZEL_RS_VERIFY_AHEAD: native rules committed ahead whose
+    /// requirements were compared at their turn.
+    verified_native: AtomicU64,
     unsettled: [AtomicU64; 4],
     /// BAZEL_RS_VERIFY_AHEAD: commits whose registered outputs were checked
     /// against their compute's output summary.
@@ -1086,7 +1099,7 @@ pub(super) fn report(workers: usize) {
         buckets.join(" ")
     ));
     crate::snapshot::diag::line_fmt(format_args!(
-        "PERF-PARALLEL unsettled package={} enclosing={} enclosed={} outputs={} budget={} platform_late={} verified_turn={} verified_outputs={}",
+        "PERF-PARALLEL unsettled package={} enclosing={} enclosed={} outputs={} budget={} platform_late={} verified_turn={} verified_outputs={} verified_native={}",
         get(&stats.unsettled[0]),
         get(&stats.unsettled[1]),
         get(&stats.unsettled[2]),
@@ -1094,7 +1107,8 @@ pub(super) fn report(workers: usize) {
         get(&stats.ahead_budget),
         get(&stats.committed_platform_late),
         get(&stats.verified_turn),
-        get(&stats.verified_outputs)
+        get(&stats.verified_outputs),
+        get(&stats.verified_native)
     ));
     let line = |counts: Vec<(String, u64)>| {
         counts
@@ -1435,19 +1449,35 @@ fn native_ahead_enabled() -> bool {
 }
 
 /// S2: whether the native rule `rule` may commit ahead of its turn once its
-/// dependencies are committed: it registers no output
-/// ([`registers_no_output`]) and needs nothing registered on first need
-/// (a filegroup's `output_group` files may name the workspace status).
+/// dependencies are committed: one of the reviewed classes, which register
+/// no output ([`registers_no_output`]) and need nothing registered on first
+/// need (a filegroup's `output_group` files may name the workspace status,
+/// so such a filegroup commits at its turn). Any other class — genquery
+/// and starlark_doc_extract (outputs; their commit queries or loads), a
+/// class added later — commits at its turn.
 fn native_ahead_eligible(rule: &Rule) -> bool {
-    if !registers_no_output(rule) {
-        return false;
-    }
-    match (&rule.kind, &rule.native) {
+    let reviewed = match (&rule.kind, &rule.native) {
         (RuleKind::Filegroup, Some(native)) => native
             .string("output_group")
             .is_none_or(|group| group.is_empty()),
-        _ => true,
-    }
+        (RuleKind::Filegroup, None) | (RuleKind::PackageGroup(_), _) => true,
+        (RuleKind::Native(name), _) => matches!(
+            *name,
+            "alias"
+                | "label_flag"
+                | "label_setting"
+                | "test_suite"
+                | "config_setting"
+                | "constraint_setting"
+                | "constraint_value"
+                | "platform"
+                | "toolchain"
+                | "toolchain_type"
+                | "java_plugins_flag_alias"
+        ),
+        (RuleKind::Genrule | RuleKind::Custom, _) => false,
+    };
+    reviewed && registers_no_output(rule)
 }
 
 /// `BAZEL_RS_NO_WORKER_DELTAS` (hidden): every Starlark commit's delta is
@@ -1922,17 +1952,26 @@ impl Engine {
                     elapsed,
                     platform_known,
                     verified,
+                    native_requirements,
                 } = *committed;
                 pipe.committed_entries -= segment.entries();
                 if !platform_known && self.platform_resolved(key) {
                     // Never committed ahead (Self::commit_ahead); the turn
                     // would have prepared it again.
                     bump(&stats().committed_platform_late, 1);
+                    assert!(
+                        !verify_ahead(),
+                        "internal error: BAZEL_RS_VERIFY_AHEAD: {} was committed ahead with a deferred target platform resolved before its turn",
+                        key.label
+                    );
                     debug_assert!(
                         false,
                         "internal error: {} was committed ahead with a deferred target platform resolved before its turn",
                         key.label
                     );
+                }
+                if let Some(keys) = native_requirements {
+                    self.verify_native_requirements(key, rule, keys);
                 }
                 if let Some(verified) = verified {
                     // BAZEL_RS_VERIFY_AHEAD: the prepare its turn repeats is
@@ -2389,7 +2428,9 @@ impl Engine {
         loop {
             self.commit_natives_ahead(state, configured, pipe, turn);
             self.fill_lookahead_once(state, configured, pipe, turn);
-            if pipe.native_ready.range(turn + 1..).next().is_none() {
+            if pipe.native_ready.range(turn + 1..).next().is_none()
+                || pipe.committed_entries >= committed_limit()
+            {
                 break;
             }
         }
@@ -2428,6 +2469,9 @@ impl Engine {
                 };
                 let mut stash = Vec::new();
                 let classified = self.classify(state, configured, &key, &rule, &mut stash);
+                if let Some(keys) = VERIFY_NATIVE_KEYS.with(|slot| slot.borrow_mut().take()) {
+                    pipe.native_keys.insert(index, keys);
+                }
                 if !stash.is_empty() {
                     pipe.stashed.entry(index).or_default().extend(stash);
                 }
@@ -2593,6 +2637,10 @@ impl Engine {
         self.track_defer_start();
         let isolation = Isolation::enter();
         let keys = self.native_requirements(key, rule);
+        if verify_ahead() {
+            // Checked at the commit ahead and at the turn.
+            VERIFY_NATIVE_KEYS.with(|slot| *slot.borrow_mut() = keys.clone());
+        }
         let (effects, sentinel) = isolation.finish();
         drop(self.track_defer_finish());
         self.ahead = false;
@@ -2677,6 +2725,35 @@ impl Engine {
         Some(keys)
     }
 
+    /// BAZEL_RS_VERIFY_AHEAD: at the turn of a native rule committed ahead,
+    /// the keys its prepare and commit read are the ones it waited for
+    /// (lookups only, as its classification).
+    fn verify_native_requirements(
+        &mut self,
+        key: &ConfiguredTargetKey,
+        rule: &Rule,
+        waited: Vec<ConfiguredTargetKey>,
+    ) {
+        self.ahead = true;
+        self.ahead_aborted = false;
+        self.track_defer_start();
+        let isolation = Isolation::enter();
+        let again = self.native_requirements(key, rule);
+        let (effects, _) = isolation.finish();
+        drop(self.track_defer_finish());
+        self.ahead = false;
+        self.ahead_aborted = false;
+        effects.apply(self, false);
+        let set = |keys: &[ConfiguredTargetKey]| keys.iter().cloned().collect::<BTreeSet<_>>();
+        if again.as_deref().map(set) != Some(set(&waited)) {
+            panic!(
+                "internal error: BAZEL_RS_VERIFY_AHEAD: the native rule {} committed ahead of its turn waited for {:?}, its turn reads {:?}",
+                key.label, waited, again
+            );
+        }
+        bump(&stats().verified_native, 1);
+    }
+
     /// S2: commit the native rules whose dependencies are committed ahead of
     /// their turn ([`Self::commit_native_ahead`]).
     fn commit_natives_ahead(
@@ -2686,7 +2763,10 @@ impl Engine {
         pipe: &mut Pipeline,
         turn: usize,
     ) {
-        while let Some(index) = pipe.native_ready.pop_first() {
+        while pipe.committed_entries < committed_limit() {
+            let Some(index) = pipe.native_ready.pop_first() else {
+                break;
+            };
             if index <= turn {
                 continue;
             }
@@ -2717,6 +2797,15 @@ impl Engine {
         else {
             return;
         };
+        let native_requirements = pipe.native_keys.remove(&index);
+        if let Some(keys) = &native_requirements
+            && let Some(missing) = keys.iter().find(|key| !state.dry.contains_key(*key))
+        {
+            panic!(
+                "internal error: BAZEL_RS_VERIFY_AHEAD: the native rule {} committed ahead of its turn before {} it reads",
+                key.label, missing.label
+            );
+        }
         let marks = (self.warnings.len(), self.errors.len());
         let main_nodes = std::mem::replace(&mut state.nodes, lowering::PlannedNodes::segment());
         self.ahead = true;
@@ -2771,6 +2860,7 @@ impl Engine {
                 // A native rule's commit reads no target platform.
                 platform_known: true,
                 verified: None,
+                native_requirements,
             }),
         );
         pipe.note_committed(index, &key.label);
@@ -2868,6 +2958,7 @@ impl Engine {
         while let Ok(finished) = pool.finished.1.try_recv() {
             received.push(finished);
         }
+
         for (index, summary, platform_read, at) in received {
             if crate::plan_timings::enabled() {
                 let entry = pipe.lat.entry(index).or_default();
@@ -3215,6 +3306,7 @@ impl Engine {
                 elapsed: prepare_elapsed + compute_elapsed + commit_elapsed,
                 platform_known,
                 verified,
+                native_requirements: None,
             }),
         );
         pipe.note_committed(index, &key.label);
