@@ -89,6 +89,21 @@ impl<K: std::hash::Hash + Eq + Clone, V> SingleFlight<K, V> {
         }))
     }
 
+    /// Every filled entry, consumed (S2: a prepare batch's memo fills move
+    /// into the planning state; no order is observed).
+    pub(super) fn into_filled(self) -> Vec<(K, Arc<V>)> {
+        let mut filled = Vec::new();
+        for shard in self.shards.into_vec() {
+            let shard = shard.into_inner().unwrap_or_else(|e| e.into_inner());
+            for (key, slot) in shard {
+                if let Some(value) = slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                    filled.push((key, value));
+                }
+            }
+        }
+        filled
+    }
+
     /// Every filled value (reports only; no order is observed).
     pub(super) fn values(&self) -> Vec<Arc<V>> {
         let mut values = Vec::new();

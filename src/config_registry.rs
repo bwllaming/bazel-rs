@@ -11,10 +11,10 @@
 //! configuration except across the exec transition ([`exec_transition`],
 //! N18b) and Starlark 1:1 transitions (crate::starlark_transitions, N18c;
 //! [`Configurations::intern_derived`]); split transitions are N18d.
-use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
 
@@ -92,7 +92,7 @@ pub struct Configurations {
     /// transition applied for its `--host_platform` (SkyframeExecutor.adjustForExec,
     /// skyframe/SkyframeExecutor.java:1525-1572; BaselineOptionsFunction,
     /// skyframe/config/BaselineOptionsFunction.java:47-95).
-    exec_baseline: OnceCell<Arc<Configuration>>,
+    exec_baseline: OnceLock<Arc<Configuration>>,
     /// The output path mnemonic of each configuration.
     mnemonics: BTreeMap<ConfigId, String>,
 }
@@ -110,7 +110,7 @@ impl Configurations {
         let mut configurations = Self {
             by_id: BTreeMap::new(),
             top: id,
-            exec_baseline: OnceCell::new(),
+            exec_baseline: OnceLock::new(),
             mnemonics: BTreeMap::new(),
         };
         // The top-level configuration is never an exec configuration
@@ -258,6 +258,12 @@ impl Configurations {
             .entry(id)
             .or_insert_with(|| Arc::new(configuration));
         id
+    }
+
+    /// Whether `id` is interned (S2: a prepare off the coordinator reads the
+    /// no-config configuration only once interned).
+    pub fn is_interned(&self, id: ConfigId) -> bool {
+        self.by_id.contains_key(&id) && self.mnemonics.contains_key(&id)
     }
 
     /// Whether `id` is the no-config configuration.

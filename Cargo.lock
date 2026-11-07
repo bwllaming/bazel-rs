@@ -157,6 +157,7 @@ dependencies = [
  "memchr",
  "num-bigint",
  "postcard",
+ "rayon-core",
  "reqwest",
  "rustix",
  "rustls",

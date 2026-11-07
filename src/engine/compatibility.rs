@@ -155,10 +155,9 @@ impl Engine {
         (skipped, self.bep_plan(&[]))
     }
 
-    pub(super) fn incompatible_dependency_view(
-        &mut self,
+    pub(super) fn incompatible_dependency_view_in<C: super::prepare::ViewCx>(
+        cx: &mut C,
         configured: &ConfiguredNodes,
-        identities: &mut BTreeMap<TargetIdentityKey, Arc<crate::starlark_types::Target>>,
         label: &Label,
         config: ConfigId,
     ) -> Result<DependencyTarget, String> {
@@ -166,38 +165,36 @@ impl Engine {
         // A label_flag remains a LateBoundAlias and retains BuildSettingProvider
         // in ConfiguredNode. An ordinary alias was replaced by the indirect
         // checker and therefore has its own label/class and no forwarded map.
-        let actual = self
+        let actual = cx
+            .engine()
             .forwarded_actual(configured, &key)
             .unwrap_or_else(|| label.clone());
-        let rule = match self.target(&actual)? {
+        let rule = match cx.target(&actual)? {
             Target::Rule(rule) | Target::Output(rule, _) => rule,
             Target::Source(_) => return Err("incompatible source configured target".into()),
         };
         let runfiles = Arc::new(crate::runfiles::TargetRunfiles::default());
-        let identity_config = self.delegated_config(
+        let identity_config = cx.engine().delegated_config(
             &ConfiguredTargetKey::new(rule.label.clone(), config),
             config,
         );
-        let identity = identities
-            .entry((label.clone(), Some(identity_config)))
-            .or_insert_with(|| {
-                let mut target = analysis::dependency_target_data(
-                    &label.to_string(),
-                    &actual.to_string(),
-                    &[],
-                    false,
-                    true,
-                    false,
-                    false,
-                    &BTreeMap::new(),
-                    &[],
-                    &runfiles,
-                )
-                .with_rule_class(Some(rule.rule_class_name()));
-                target.incompatible = true;
-                Arc::new(target)
-            })
-            .clone();
+        let identity = cx.identity((label.clone(), Some(identity_config)), &mut || {
+            let mut target = analysis::dependency_target_data(
+                &label.to_string(),
+                &actual.to_string(),
+                &[],
+                false,
+                true,
+                false,
+                false,
+                &BTreeMap::new(),
+                &[],
+                &runfiles,
+            )
+            .with_rule_class(Some(rule.rule_class_name()));
+            target.incompatible = true;
+            Arc::new(target)
+        });
         Ok(DependencyTarget::new(analysis::DependencyView {
             label: actual.to_string(),
             files: Vec::new(),
@@ -219,7 +216,17 @@ impl Engine {
         label: &Label,
         config: ConfigId,
     ) -> Result<Option<Arc<Incompatibility>>, String> {
-        let owner = match self.target(label)? {
+        Self::target_incompatibility_in(self, configured, label, config)
+    }
+
+    /// [`Self::target_incompatibility`] over a lookup context (S2).
+    pub(super) fn target_incompatibility_in<C: super::prepare::Lookup + ?Sized>(
+        cx: &mut C,
+        configured: &ConfiguredNodes,
+        label: &Label,
+        config: ConfigId,
+    ) -> Result<Option<Arc<Incompatibility>>, String> {
+        let owner = match cx.target(label)? {
             Target::Output(rule, _) => rule.label.clone(),
             _ => label.clone(),
         };

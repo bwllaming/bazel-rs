@@ -50,6 +50,10 @@ num-bigint = "=0.4.8"
 # `pagable`; std only (no heapless, no CRC: the store checksums sections).
 postcard = { version = "=1.1.3", default-features = false, features = ["use-std"] }
 reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "rustls-tls-native-roots"] }
+# The S2 prepare threads (crate::engine::parallel::run_batch): a fork-join
+# pool whose jobs borrow the engine without unsafe code. Same version the
+# lock already has through blake3 (no new code is built).
+rayon-core = "=1.13.0"
 ruzstd = "=0.9.1"
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "=0.8.4"

@@ -57,7 +57,8 @@ pub(super) type Pending = mpsc::Receiver<Outcome>;
 enum Queued {
     Node(Box<PlannedAction>),
     Lowering {
-        outcome: mpsc::Receiver<Outcome>,
+        /// (A mutex: the planning state is shared with the S2 prepares.)
+        outcome: std::sync::Mutex<Pending>,
         /// The engine's warnings and errors when it was dispatched (kept
         /// up to there when it fails).
         warnings: usize,
@@ -154,7 +155,11 @@ impl PlannedNodes {
                     outcome,
                     warnings,
                     errors,
-                } => self.enqueue(outcome, warnings - from.0 + to.0, errors - from.1 + to.1),
+                } => self.enqueue(
+                    outcome.into_inner().unwrap_or_else(|e| e.into_inner()),
+                    warnings - from.0 + to.0,
+                    errors - from.1 + to.1,
+                ),
             }
         }
     }
@@ -169,7 +174,7 @@ impl PlannedNodes {
                 self.queue.push_back(Queued::Console(writes));
             }
             self.queue.push_back(Queued::Lowering {
-                outcome,
+                outcome: std::sync::Mutex::new(outcome),
                 warnings,
                 errors,
             });
@@ -181,7 +186,7 @@ impl PlannedNodes {
         }
         self.holding = true;
         self.queue.push_back(Queued::Lowering {
-            outcome,
+            outcome: std::sync::Mutex::new(outcome),
             warnings,
             errors,
         });
@@ -396,7 +401,9 @@ impl Engine {
                     Drain::Bounded => {
                         state.nodes.queue.len() > QUEUE_LIMIT || {
                             // Peek: a finished lowering is placed now.
-                            match outcome.try_recv() {
+                            let peeked =
+                                outcome.lock().unwrap_or_else(|e| e.into_inner()).try_recv();
+                            match peeked {
                                 Ok(received) => {
                                     let Some(Queued::Lowering {
                                         warnings, errors, ..
@@ -426,6 +433,7 @@ impl Engine {
                     warnings,
                     errors,
                 }) => {
+                    let outcome = outcome.into_inner().unwrap_or_else(|e| e.into_inner());
                     let received = outcome.recv().unwrap_or_else(|_| {
                         Ok(Err("internal error: a lowering worker stopped".to_owned()))
                     });

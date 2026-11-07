@@ -172,11 +172,11 @@ pub(super) struct Tracker {
 }
 
 /// One tracker event recorded while deferring ([`Tracker::deferred`]).
-type Deferred = Box<dyn FnOnce(&mut Tracker) + Send>;
+type Deferred = Box<dyn FnOnce(&mut Tracker) + Send + Sync>;
 
 /// The thread-local scopes a tracker event reads, as it was recorded.
 #[derive(Clone, Copy)]
-struct ScopeContext {
+pub(super) struct ScopeContext {
     shared_depth: u32,
     shared_name: &'static str,
     pattern_depth: u32,
@@ -184,7 +184,7 @@ struct ScopeContext {
 }
 
 impl ScopeContext {
-    fn current() -> Self {
+    pub(super) fn current() -> Self {
         Self {
             shared_depth: SHARED_DEPTH.with(Cell::get),
             shared_name: SHARED_NAME.with(Cell::get),
@@ -214,6 +214,22 @@ impl ScopeContext {
 /// ([`Engine::track_defer_start`]).
 #[derive(Default)]
 pub(super) struct TrackLog(Vec<Deferred>);
+
+impl TrackLog {
+    /// The events of a prepare off the coordinator (S2, its target lookups
+    /// recorded in order: Engine::track_access while deferring), each in
+    /// the scopes `context` the coordinator had when it ran the prepare.
+    pub(super) fn accesses(labels: Vec<Label>, context: ScopeContext) -> Self {
+        Self(
+            labels
+                .into_iter()
+                .map(|label| -> Deferred {
+                    Box::new(move |tracker: &mut Tracker| context.enter(|| tracker.access(&label)))
+                })
+                .collect(),
+        )
+    }
+}
 
 #[derive(Default)]
 struct PackageRecord {
@@ -337,7 +353,7 @@ impl Engine {
 
     /// Apply `event` to the tracker, or hold it with its scope context
     /// while deferring ([`Self::track_defer_start`]).
-    fn track_with(&mut self, event: impl FnOnce(&mut Tracker) + Send + 'static) {
+    fn track_with(&mut self, event: impl FnOnce(&mut Tracker) + Send + Sync + 'static) {
         let Some(tracker) = self.incremental.as_mut() else {
             return;
         };

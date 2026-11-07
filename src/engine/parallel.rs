@@ -184,7 +184,10 @@ pub(super) struct AnalysisPool {
     /// The plan index of each finished compute (P4: the coordinator commits
     /// finished entries ahead of their turn), with the outputs its commit
     /// registers when they are known (plan B: no sentinel).
-    finished: (mpsc::Sender<Finished>, mpsc::Receiver<Finished>),
+    finished: (
+        mpsc::Sender<Finished>,
+        std::sync::Mutex<mpsc::Receiver<Finished>>,
+    ),
     /// S2: the queued computes, the earliest plan index first (the entry at
     /// its turn, then the ones closest to it: the walk waits for them).
     jobs: Arc<JobQueue>,
@@ -351,7 +354,10 @@ impl AnalysisPool {
             return None;
         }
         Some(Self {
-            finished: mpsc::channel(),
+            finished: {
+                let (sender, receiver) = mpsc::channel();
+                (sender, std::sync::Mutex::new(receiver))
+            },
             jobs: queue,
             size: workers.len(),
             workers,
@@ -965,6 +971,17 @@ struct Stats {
     /// S2 diagnostics (`PERF-PARALLEL diag`).
     diag: std::sync::Mutex<BTreeMap<String, u64>>,
     lat: std::sync::Mutex<BTreeMap<String, (u64, u64)>>,
+    /// S2: prepares ahead of their turn off the coordinator, the batches
+    /// they ran in, the batches' entries and helper threads, the
+    /// coordinator's time in prepares (batches, fallbacks, turns; µs) and
+    /// the prepares that needed the coordinator, by the reason.
+    shared_prepares: AtomicU64,
+    batches: AtomicU64,
+    batch_entries: AtomicU64,
+    batch_threads: AtomicU64,
+    coordinator_prepare_us: AtomicU64,
+    batch_run_us: AtomicU64,
+    prepare_fallback: std::sync::Mutex<BTreeMap<&'static str, u64>>,
 }
 
 use std::sync::atomic::AtomicU64;
@@ -1128,6 +1145,26 @@ pub(super) fn report(workers: usize) {
         })
         .unwrap_or_default();
     crate::snapshot::diag::line_fmt(format_args!("PERF-PARALLEL fallback {}", line(fallbacks)));
+    let prepare_fallbacks = stats
+        .prepare_fallback
+        .lock()
+        .map(|counts| {
+            counts
+                .iter()
+                .map(|(reason, count)| ((*reason).to_owned(), *count))
+                .collect()
+        })
+        .unwrap_or_default();
+    crate::snapshot::diag::line_fmt(format_args!(
+        "PERF-PARALLEL prepare shared={} batches={} batch_entries={} batch_threads={} coordinator={:.3}s batch_run={:.3}s fallback {}",
+        get(&stats.shared_prepares),
+        get(&stats.batches),
+        get(&stats.batch_entries),
+        get(&stats.batch_threads),
+        get(&stats.coordinator_prepare_us) as f64 / 1e6,
+        get(&stats.batch_run_us) as f64 / 1e6,
+        line(prepare_fallbacks)
+    ));
     let effects = stats
         .effects
         .lock()
@@ -2456,7 +2493,11 @@ impl Engine {
         while pipe.ahead.len().saturating_sub(pipe.computed.len()) < pipe.capacity
             && pipe.ahead.len() < pipe.capacity * HELD_FACTOR
         {
-            if pipe.ready.is_empty() && pipe.scanned < horizon {
+            // S2: classify until the ready entries fill the room (prepared
+            // together, Self::prepare_ahead_batch).
+            let room = (pipe.capacity - pipe.ahead.len().saturating_sub(pipe.computed.len()))
+                .min(pipe.capacity * HELD_FACTOR - pipe.ahead.len());
+            if pipe.ready.range(turn + 1..).take(room).count() < room && pipe.scanned < horizon {
                 let index = pipe.scanned;
                 pipe.scanned += 1;
                 let Some((key, rule)) = self
@@ -2502,34 +2543,198 @@ impl Engine {
                 }
                 continue;
             }
-            let Some(index) = pipe.ready.pop_first() else {
-                break;
-            };
-            if index <= turn {
-                continue;
-            }
-            let Some((key, rule)) = self
-                .planning_plan
-                .as_ref()
-                .and_then(|plan| plan.get(index))
-                .cloned()
-            else {
-                continue;
-            };
-            let mut stash = Vec::new();
-            match self.prepare_ahead(state, configured, &key, &rule, index, &mut stash) {
-                Some(ahead) => {
-                    if crate::plan_timings::enabled() {
-                        pipe.lat.entry(index).or_default()[1] = Some(std::time::Instant::now());
-                    }
-                    pipe.ahead.insert(index, ahead);
+            // S2: the ready entries the pipeline has room for, prepared
+            // together off the coordinator (Self::prepare_ahead_batch).
+            let mut batch = Vec::new();
+            while batch.len() < room {
+                let Some(index) = pipe.ready.pop_first() else {
+                    break;
+                };
+                if index <= turn {
+                    continue;
                 }
-                None => {
-                    pipe.prepare_aborted.insert(index);
+                if let Some((key, rule)) = self
+                    .planning_plan
+                    .as_ref()
+                    .and_then(|plan| plan.get(index))
+                    .cloned()
+                {
+                    batch.push((index, key, rule));
                 }
             }
-            if !stash.is_empty() {
-                pipe.stashed.entry(index).or_default().extend(stash);
+            if batch.is_empty() {
+                if pipe.ready.is_empty() {
+                    break;
+                }
+                continue;
+            }
+            self.prepare_ahead_batch(state, configured, pipe, batch);
+        }
+    }
+
+    /// S2: prepare the ready entries of `batch` ahead of their turn on
+    /// prepare threads while the coordinator waits ([`prepare::SharedPrepare`]:
+    /// the engine and the planning state read through shared references,
+    /// what a prepare writes recorded and applied here in plan order), and
+    /// dispatch their computes. An entry whose prepare needs the coordinator
+    /// is prepared here ([`Self::prepare_ahead`], `PERF-PARALLEL
+    /// prepare_fallback`).
+    fn prepare_ahead_batch(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        pipe: &mut Pipeline,
+        batch: Vec<(usize, ConfiguredTargetKey, Arc<Rule>)>,
+    ) {
+        let coordinator_started = std::time::Instant::now();
+        if !shared_prepares() {
+            for (index, key, rule) in batch {
+                self.prepare_ahead_one(state, configured, pipe, index, &key, &rule);
+            }
+            bump(
+                &stats().coordinator_prepare_us,
+                coordinator_started.elapsed().as_micros() as u64,
+            );
+            return;
+        }
+        let platform_known: Vec<bool> = batch
+            .iter()
+            .map(|(_, key, _)| self.platform_resolved(key))
+            .collect();
+        let context = incremental::ScopeContext::current();
+        let memos = prepare::BatchMemos::default();
+        let outcomes = {
+            let engine: &Engine = self;
+            let shared_state: &ActionPlanning = state;
+            let shared_configured: &ConfiguredNodes = configured;
+            let run = |(index, key, rule): &(usize, ConfiguredTargetKey, Arc<Rule>)| {
+                let class = crate::plan_timings::class_id(rule.rule_class_name());
+                let isolation = Isolation::enter();
+                let started = std::time::Instant::now();
+                let timer = crate::plan_timings::StageTimer::start(
+                    crate::plan_timings::PlanStage::Prepare,
+                    *index as u64,
+                    class,
+                );
+                let mut cx = prepare::SharedPrepare::new(
+                    engine,
+                    shared_state,
+                    shared_configured,
+                    &memos,
+                    *index,
+                );
+                let prepared = Engine::prepare_custom(&mut cx, key, rule);
+                timer.finish();
+                let elapsed = started.elapsed();
+                let (effects, sentinel) = isolation.finish();
+                SharedOutcome {
+                    prepared,
+                    record: cx.record,
+                    effects,
+                    sentinel,
+                    elapsed,
+                }
+            };
+            let started = std::time::Instant::now();
+            let outcomes = run_batch(&batch, &run);
+            bump(&stats().batch_run_us, started.elapsed().as_micros() as u64);
+            outcomes
+        };
+        self.apply_batch_memos(state, memos);
+        bump(&stats().batches, 1);
+        bump(&stats().batch_entries, batch.len() as u64);
+        if batch.len() >= 2 {
+            bump(&stats().batch_threads, (batch.len() - 1) as u64);
+        }
+        for (((index, key, rule), outcome), platform_known) in
+            batch.into_iter().zip(outcomes).zip(platform_known)
+        {
+            let SharedOutcome {
+                prepared,
+                record,
+                effects,
+                sentinel,
+                elapsed,
+            } = outcome;
+            let prepare::SharedRecord {
+                accesses,
+                owner,
+                abort,
+            } = record;
+            if let Some(why) = abort {
+                // The coordinator prepares it (what the attempt observed
+                // counts: a memo it filled is a hit there).
+                prepare_fallback(why);
+                if !effects.console.is_empty() {
+                    note_lost(effects.console.len());
+                }
+                pipe.stashed.entry(index).or_default().push(effects);
+                self.prepare_ahead_one(state, configured, pipe, index, &key, &rule);
+                continue;
+            }
+            bump(&stats().shared_prepares, 1);
+            if let Some((action_owner, console, owner_key)) = owner {
+                self.console_owners.insert(action_owner.clone(), console);
+                self.aquery_owner(&action_owner, &owner_key, Vec::new);
+            }
+            let track = if self.tracking() {
+                incremental::TrackLog::accesses(accesses, context)
+            } else {
+                incremental::TrackLog::default()
+            };
+            let aborted = sentinel
+                || prepared
+                    .as_ref()
+                    .is_err_and(|error| crate::repository_demand::is_inline_rerun_sentinel(error));
+            let ahead = self.prepared_ahead(
+                state,
+                &rule,
+                index,
+                prepared,
+                effects,
+                track,
+                aborted,
+                platform_known,
+                elapsed,
+                &mut |stash| pipe.stashed.entry(index).or_default().push(stash),
+            );
+            self.note_prepared_ahead(pipe, index, ahead);
+        }
+        bump(
+            &stats().coordinator_prepare_us,
+            coordinator_started.elapsed().as_micros() as u64,
+        );
+    }
+
+    /// Prepare one ready entry ahead of its turn on the coordinator
+    /// ([`Self::prepare_ahead`]).
+    fn prepare_ahead_one(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        pipe: &mut Pipeline,
+        index: usize,
+        key: &ConfiguredTargetKey,
+        rule: &Arc<Rule>,
+    ) {
+        let mut stash = Vec::new();
+        let ahead = self.prepare_ahead(state, configured, key, rule, index, &mut stash);
+        if !stash.is_empty() {
+            pipe.stashed.entry(index).or_default().extend(stash);
+        }
+        self.note_prepared_ahead(pipe, index, ahead);
+    }
+
+    fn note_prepared_ahead(&mut self, pipe: &mut Pipeline, index: usize, ahead: Option<Ahead>) {
+        match ahead {
+            Some(ahead) => {
+                if crate::plan_timings::enabled() {
+                    pipe.lat.entry(index).or_default()[1] = Some(std::time::Instant::now());
+                }
+                pipe.ahead.insert(index, ahead);
+            }
+            None => {
+                pipe.prepare_aborted.insert(index);
             }
         }
     }
@@ -2949,15 +3154,17 @@ impl Engine {
             return false;
         };
         let mut received = Vec::new();
+        let finished = pool.finished.1.lock().unwrap_or_else(|e| e.into_inner());
         if block {
-            match pool.finished.1.recv() {
+            match finished.recv() {
                 Ok(finished) => received.push(finished),
                 Err(_) => return false,
             }
         }
-        while let Ok(finished) = pool.finished.1.try_recv() {
+        while let Ok(finished) = finished.try_recv() {
             received.push(finished);
         }
+        drop(finished);
 
         for (index, summary, platform_read, at) in received {
             if crate::plan_timings::enabled() {
@@ -3517,6 +3724,38 @@ impl Engine {
             "internal error: a prepare ahead of its turn analyzed {}",
             key.label
         );
+        self.prepared_ahead(
+            state,
+            rule,
+            index,
+            prepared,
+            effects,
+            track,
+            aborted,
+            platform_known,
+            prepare_elapsed,
+            &mut |effects| stash.push(effects),
+        )
+    }
+
+    /// What a prepare ahead of its turn made of `index` (on the coordinator
+    /// or a prepare thread): `None` when it aborted (prepared again at its
+    /// turn; its effects stashed), else its compute dispatched or its error.
+    #[allow(clippy::too_many_arguments)]
+    fn prepared_ahead(
+        &mut self,
+        state: &ActionPlanning,
+        rule: &Arc<Rule>,
+        index: usize,
+        prepared: Result<PreparedTarget, String>,
+        effects: Effects,
+        track: incremental::TrackLog,
+        aborted: bool,
+        platform_known: bool,
+        prepare_elapsed: std::time::Duration,
+        stash: &mut dyn FnMut(Effects),
+    ) -> Option<Ahead> {
+        let class = crate::plan_timings::class_id(rule.rule_class_name());
         if aborted {
             // Done again at the turn; what it observed counts (memo misses
             // it filled are hits there), its notes and tracker events recur.
@@ -3525,7 +3764,7 @@ impl Engine {
             if !effects.console.is_empty() {
                 note_lost(effects.console.len());
             }
-            stash.push(effects);
+            stash(effects);
             drop(track);
             return None;
         }
@@ -3559,11 +3798,110 @@ impl Engine {
                     // Not reached (a classified entry is a Starlark rule);
                     // its prepare is repeated at the turn.
                     bump(&stats().aborted, 1);
-                    stash.push(effects);
+                    stash(effects);
                     None
                 }
             },
         }
+    }
+}
+
+/// A prepare's result from a prepare thread (S2).
+struct SharedOutcome {
+    prepared: Result<PreparedTarget, String>,
+    record: prepare::SharedRecord,
+    effects: Effects,
+    sentinel: bool,
+    elapsed: std::time::Duration,
+}
+
+/// Run `run` over every item of `batch` on the prepare threads
+/// ([`prepare_pool`]; the caller runs the first), the results in `batch`'s
+/// order.
+fn run_batch<I: Sync, T: Send>(batch: &[I], run: &(dyn Fn(&I) -> T + Sync)) -> Vec<T> {
+    let pool = match prepare_pool() {
+        Some(pool) if batch.len() >= 2 => pool,
+        _ => return batch.iter().map(run).collect(),
+    };
+    let results: Vec<std::sync::Mutex<Option<T>>> =
+        batch.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    pool.in_place_scope(|scope| {
+        for (item, slot) in batch.iter().zip(&results).skip(1) {
+            scope.spawn(move |_| {
+                let result = run(item);
+                *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
+            });
+        }
+        let first = run(&batch[0]);
+        *results[0].lock().unwrap_or_else(|e| e.into_inner()) = Some(first);
+    });
+    results
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|| panic!("internal error: a prepare of a batch did not run"))
+        })
+        .collect()
+}
+
+/// The prepare threads (S2; 16 MiB stacks like the analysis workers,
+/// allocating in the coordinator's jemalloc arena: what they make is kept
+/// and freed by the coordinator, src/alloc_arena.rs). `None` without
+/// helper threads.
+fn prepare_pool() -> Option<&'static rayon_core::ThreadPool> {
+    static POOL: std::sync::OnceLock<Option<rayon_core::ThreadPool>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let threads = prepare_threads();
+        if threads == 0 {
+            return None;
+        }
+        let arena = crate::alloc_arena::current();
+        rayon_core::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .stack_size(LOADING_WORKER_STACK)
+            .thread_name(|index| format!("prepare-{index}"))
+            .start_handler(move |_| {
+                if let Some(arena) = arena {
+                    crate::alloc_arena::bind(arena);
+                }
+            })
+            .build()
+            .ok()
+    })
+    .as_ref()
+}
+
+/// The most helper threads a prepare batch starts (`BAZEL_RS_PREPARE_THREADS`,
+/// hidden; 0: the coordinator prepares the batch alone).
+fn prepare_threads() -> usize {
+    static THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *THREADS.get_or_init(|| {
+        // snapshot-unrecorded: a diagnostics override of the scheduling only; the output is the same either way.
+        std::env::var("BAZEL_RS_PREPARE_THREADS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(7)
+    })
+}
+
+/// `BAZEL_RS_NO_SHARED_PREPARE` (hidden): every prepare ahead of its turn
+/// runs on the coordinator (S2; the output is the same either way).
+fn shared_prepares() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        // snapshot-unrecorded: a diagnostics switch choosing where prepares run; the output is the same either way.
+        std::env::var_os("BAZEL_RS_NO_SHARED_PREPARE").is_none()
+    })
+}
+
+/// S2: count a prepare ahead of its turn that needed the coordinator, by
+/// the reason (`PERF-PARALLEL prepare_fallback`).
+fn prepare_fallback(reason: &'static str) {
+    if crate::plan_timings::enabled()
+        && let Ok(mut counts) = stats().prepare_fallback.lock()
+    {
+        *counts.entry(reason).or_default() += 1;
     }
 }
 
@@ -3688,3 +4026,12 @@ pub(super) fn ahead_unsafe(
 /// commit checks the transition allowlist (a package group's package, loaded
 /// on first need).
 const INELIGIBLE_TRANSITION: &str = "ineligible_transition";
+
+/// S2: the engine, the planning state and the configured nodes are read by
+/// the prepares off the coordinator ([`Engine::prepare_batch`]).
+const _: () = {
+    const fn sync<T: Sync>() {}
+    sync::<Engine>();
+    sync::<ActionPlanning>();
+    sync::<ConfiguredNodes>();
+};
