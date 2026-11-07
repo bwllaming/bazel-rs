@@ -116,6 +116,21 @@ starlark_syntax = { path = "vendor/starlark_syntax-0.14.2" }
 # directories (vendor/tempfile-3.27.0.provenance.json).
 tempfile = { path = "vendor/tempfile-3.27.0" }
 
+# Dev and test builds (the test profile inherits dev). Line tables keep
+# file:line in backtraces and panics but drop variables and types for
+# debuggers (CARGO_PROFILE_DEV_DEBUG=2 restores them for a session; CI's
+# CARGO_PROFILE_DEV_DEBUG=0 still applies there). The bazel-rs crate gets one
+# codegen unit per module instead of rustc's 256 merged ones: the merge
+# reshuffles whenever sizes change, so an 11-line edit re-generated half of
+# the crate's object code. The 11 latest src/ commits replayed as incremental
+# builds (1.99.0, 64 cores): median 40.4 -> 26.2 s, peak rustc RSS
+# 5.2 -> 4.5 GB; a full rebuild of the crate is unchanged (61.4 -> 62.2 s).
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package.bazel-rs]
+codegen-units = 4096
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
