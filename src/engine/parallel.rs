@@ -989,16 +989,18 @@ struct Stats {
     /// S2 diagnostics (`PERF-PARALLEL diag`).
     diag: std::sync::Mutex<BTreeMap<String, u64>>,
     lat: std::sync::Mutex<BTreeMap<String, (u64, u64)>>,
-    /// S2: prepares ahead of their turn off the coordinator, the batches
-    /// they ran in, the batches' entries and helper threads, the
-    /// coordinator's time in prepares (batches, fallbacks, turns; µs) and
-    /// the prepares that needed the coordinator, by the reason.
+    /// S2: prepares ahead of their turn off the coordinator's state, the
+    /// batches they ran in, the batches' entries and helper threads, the
+    /// coordinator's time in the batches (with their fallbacks and
+    /// dispatches), in running them, and in the prepares at the turn (µs),
+    /// and the prepares that needed the coordinator, by the reason.
     shared_prepares: AtomicU64,
     batches: AtomicU64,
     batch_entries: AtomicU64,
     batch_threads: AtomicU64,
     coordinator_prepare_us: AtomicU64,
     batch_run_us: AtomicU64,
+    coordinator_turn_prepare_us: AtomicU64,
     prepare_fallback: std::sync::Mutex<BTreeMap<&'static str, u64>>,
 }
 
@@ -1182,13 +1184,14 @@ pub(super) fn report(workers: usize) {
         })
         .unwrap_or_default();
     crate::snapshot::diag::line_fmt(format_args!(
-        "PERF-PARALLEL prepare shared={} batches={} batch_entries={} batch_threads={} coordinator={:.3}s batch_run={:.3}s fallback {}",
+        "PERF-PARALLEL prepare shared={} batches={} batch_entries={} batch_threads={} coordinator_ahead={:.3}s batch_run={:.3}s coordinator_turn={:.3}s fallback {}",
         get(&stats.shared_prepares),
         get(&stats.batches),
         get(&stats.batch_entries),
         get(&stats.batch_threads),
         get(&stats.coordinator_prepare_us) as f64 / 1e6,
         get(&stats.batch_run_us) as f64 / 1e6,
+        get(&stats.coordinator_turn_prepare_us) as f64 / 1e6,
         line(prepare_fallbacks)
     ));
     let effects = stats
@@ -2284,7 +2287,13 @@ impl Engine {
         use crate::plan_timings::{PlanStage, StageTimer};
         bump(&stats().turn, 1);
         let timer = StageTimer::start(PlanStage::Prepare, index as u64, class);
-        let prepared = self.prepare_target(state, key, rule, configured)?;
+        let started = std::time::Instant::now();
+        let prepared = self.prepare_target(state, key, rule, configured);
+        bump(
+            &stats().coordinator_turn_prepare_us,
+            started.elapsed().as_micros() as u64,
+        );
+        let prepared = prepared?;
         timer.finish();
         match PreparedParts::split(prepared) {
             Some((parts, snapshot)) => Ok((parts, Compute::Inline(Box::new(snapshot)))),
