@@ -340,7 +340,17 @@ fn verify_with(
                 // planned implementations (the walk's flush runs phase 2;
                 // the CsMatch node with CT2 dependencies is S2): an error
                 // of that phase 2 is not comparable here.
-                if walk != Some(error.as_str()) && !bodies.coord().saw_flush {
+                // Which registered target a toolchain / execution platform
+                // cycle report names is pass 1's decision (the walk
+                // re-analyzes a failed target in each registration's
+                // chain; the graph memoizes the first failure; §7:
+                // `toolchain_cycle_reports` is linearizer-only).
+                let cycle_report = |text: &str| {
+                    text.starts_with("Misconfigured toolchains: ")
+                        || text.starts_with("Misconfigured execution platforms: ")
+                };
+                let pass1 = walk.is_some_and(cycle_report) && cycle_report(&error);
+                if walk != Some(error.as_str()) && !bodies.coord().saw_flush && !pass1 {
                     diffs.push(format!("{label}: walk {walk:?} / eval {error:?}"));
                 }
                 return Ok((computed(&evaluator), diffs));
