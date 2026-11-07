@@ -137,7 +137,7 @@ fn replay(
         state.runfiles_info.reserve(recorded.len());
         state.dry.reserve(recorded.len());
     }
-    let mut action_executions = BTreeMap::new();
+    let mut action_executions = Default::default();
     let mut build_info_actions = BTreeSet::new();
     let started = Instant::now();
     for Recorded { key, delta } in recorded {

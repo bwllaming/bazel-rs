@@ -1610,7 +1610,7 @@ impl Engine {
 /// What a delta's merge writes outside the planning state: the engine's
 /// per-action tables and the console marks of a lowering in flight.
 pub(super) struct MergeSink<'a> {
-    pub(super) action_executions: &'a mut BTreeMap<String, crate::exec_groups::ActionExecution>,
+    pub(super) action_executions: &'a mut ActionExecutions,
     pub(super) build_info_actions: &'a mut std::collections::BTreeSet<String>,
     /// The engine's warnings and errors so far (a lowering's marks).
     pub(super) warnings: usize,
@@ -1649,7 +1649,7 @@ pub(super) fn merge_ops(
 /// One operation of [`merge_ops`].
 pub(super) fn merge_op(
     state: &mut ActionPlanning,
-    action_executions: &mut BTreeMap<String, crate::exec_groups::ActionExecution>,
+    action_executions: &mut ActionExecutions,
     build_info_actions: &mut std::collections::BTreeSet<String>,
     (warnings, errors): (usize, usize),
     key: &ConfiguredTargetKey,

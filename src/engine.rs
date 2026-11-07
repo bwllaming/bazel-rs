@@ -357,6 +357,8 @@ impl Declared {
 /// order is observed).
 type KeyMap<V> = crate::fast_hash::FxHashMap<ConfiguredTargetKey, V>;
 type ResolvedInputs = (Vec<Artifact>, Locations);
+/// [`Engine`]'s `action_executions`.
+type ActionExecutions = crate::fast_hash::FxHashMap<String, crate::exec_groups::ActionExecution>;
 
 /// The identity key of a configured target's one shared `Target` value
 /// (N55): the label and the configuration Bazel keys the configured target
@@ -2833,8 +2835,9 @@ pub struct Engine {
     /// `config.exec(exec_group = NAME)` dependency edges.
     group_exec_configurations: BTreeMap<(ConfiguredTargetKey, String), ConfigId>,
     /// The exec group, execution platform and exec properties of each
-    /// planned Starlark action (docs/EXEC_GROUPS.md).
-    action_executions: BTreeMap<String, crate::exec_groups::ActionExecution>,
+    /// planned Starlark action (docs/EXEC_GROUPS.md), by action id
+    /// (lookups only, never iterated).
+    action_executions: ActionExecutions,
     /// Phase-2 state of the current build (Self::plan_pending).
     action_planning: Option<ActionPlanning>,
     /// The build's plan while phase 2 walks it (Self::plan_targets): a
@@ -3055,7 +3058,7 @@ impl Engine {
             toolchain_contexts: KeyMap::default(),
             exec_group_contexts: KeyMap::default(),
             group_exec_configurations: BTreeMap::new(),
-            action_executions: BTreeMap::new(),
+            action_executions: Default::default(),
             action_planning: None,
             planning_plan: None,
             ahead: false,
