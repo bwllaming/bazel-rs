@@ -232,6 +232,9 @@ All on ~/code `80d6724f3a` (private clone), `build --nobuild //src/...`,
 repositories fetched (warm cache), `BAZEL_RS_SNAPSHOT=off`, default
 threads, `BAZEL_RS_TIMING=1` (+ `BAZEL_RS_TIMING_TIMELINE=1` for the
 spans), fast release profile (no LTO). Wall 49.7–50.3 s.
+With the LTO release binary: wall 47.9 s, X = 3.06 s (modules 0.21 s,
+configuration 0.24 s, pattern loading 2.56 s), phase 1 35.4 s, phase-2 tail
+6.5 s, plan.built 1.7 s.
 
 ### The pre-analysis span X = 3.07–3.09 s
 
