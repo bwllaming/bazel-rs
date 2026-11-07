@@ -820,10 +820,13 @@ fn load_build_file_modules(
 /// Bazel requests the loads of a file as one Skyframe batch, fetching
 /// their repositories in parallel: warm the module roots of `labels`
 /// before the loader demands them one at a time (crate::module_root_warm;
-/// only where the sequential engine loads: a thread that must not fetch
-/// may be loading a package the build never commits).
+/// only where the sequential engine loads, or for a unit the build
+/// commits: a thread that must not fetch may otherwise be loading a
+/// package the build never commits).
 fn warm_load_roots(repositories: &RepositorySet, labels: &[Label]) {
-    if !crate::repository_demand::no_demand_active() {
+    if !crate::repository_demand::no_demand_active()
+        || crate::repository_demand::committed_unit_active()
+    {
         repositories.warm_loads(labels);
     }
 }

@@ -183,6 +183,35 @@ impl Drop for ReuseOnlyGuard {
 }
 
 thread_local! {
+    /// Depth of committed-unit mode on this thread: the no-demand load
+    /// running here is one the build commits (a target pattern's package,
+    /// crate::engine::pattern_pool), not a guess, so the repositories its
+    /// files load from may be fetched (reused) ahead like the sequential
+    /// engine's (crate::loading's `warm_load_roots`).
+    static COMMITTED_UNIT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether the no-demand load on this thread is one the build commits
+/// ([`committed_unit`]).
+pub fn committed_unit_active() -> bool {
+    COMMITTED_UNIT.with(std::cell::Cell::get) > 0
+}
+
+/// RAII scope: committed-unit mode (see [`committed_unit_active`]).
+pub struct CommittedUnitGuard;
+
+pub fn committed_unit() -> CommittedUnitGuard {
+    COMMITTED_UNIT.with(|depth| depth.set(depth.get() + 1));
+    CommittedUnitGuard
+}
+
+impl Drop for CommittedUnitGuard {
+    fn drop(&mut self) {
+        COMMITTED_UNIT.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+thread_local! {
     /// The slots whose reuse-only probe runs on this thread, outermost
     /// first ([`DemandSlot::get_or_probe`]). A probe nested in another one
     /// (a recorded input in another repository) never waits for a third

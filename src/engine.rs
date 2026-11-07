@@ -42,6 +42,7 @@ mod incremental;
 mod keep_going;
 mod lowering;
 mod parallel;
+mod pattern_pool;
 mod prepare;
 pub mod query;
 mod query_attrs;
@@ -3613,34 +3614,27 @@ impl Engine {
         self.repositories.resolve_graph()?;
         let _ = self.repositories.source_cache_path();
         let workers = self.loading_phase_threads.min(pending.len());
-        let slots: Vec<std::sync::Mutex<Option<package::LoadUnit>>> = pending
-            .iter()
-            .map(|_| std::sync::Mutex::new(None))
-            .collect();
-        let next = std::sync::atomic::AtomicUsize::new(0);
+        let pool = pattern_pool::PatternPool::<package::LoadUnit>::new(pending.len());
         let repositories = self.repositories.clone();
         // Shared by reference: every worker closure captures these Copy
         // references (the scope keeps them alive).
         let pending = &pending;
-        let slots = &slots;
-        let next = &next;
+        let pool = &pool;
         let repositories = &repositories;
         // Hidden test hook (review §5): reproducible per-package jitter
         // shuffles worker completion order without changing results.
         let jitter_millis = loading_jitter_millis();
         std::thread::scope(|scope| {
-            let mut handles = Vec::new();
+            // The workers exit once the coordinator leaves, an error
+            // included.
+            let _shutdown = pattern_pool::ShutdownOnDrop(pool);
             for worker in 0..workers {
-                let jitter_seed = worker as u64;
                 let spawn = std::thread::Builder::new()
                     .stack_size(LOADING_WORKER_STACK)
                     .spawn_scoped(scope, move || {
-                        let _ = jitter_seed;
-                        loop {
-                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let Some(id) = pending.get(index) else {
-                                break;
-                            };
+                        let _note = pattern_pool::PanicNote(pool);
+                        while let Some(index) = pool.next() {
+                            let id = &pending[index];
                             if jitter_millis > 0 {
                                 let bound = jitter_millis + 1;
                                 let roll = loading_jitter_roll(index as u64, worker as u64);
@@ -3648,14 +3642,21 @@ impl Engine {
                             }
                             // Workers never fetch (review §1.2): asking for
                             // an unfetched repository returns the sentinel;
-                            // the coordinator re-runs the unit inline at
-                            // its commit slot. Step C: reuse-only demand is
-                            // enabled — a warm publication whose recorded
-                            // inputs validate may be served on the worker
-                            // (pure reads, published into the demand slot);
-                            // a miss still aborts with the sentinel.
+                            // the unit is queued again once the coordinator
+                            // satisfied that demand, or re-runs inline at
+                            // its commit slot (crate::engine::pattern_pool).
+                            // Step C: reuse-only demand is enabled — a warm
+                            // publication whose recorded inputs validate may
+                            // be served on the worker (pure reads, published
+                            // into the demand slot); a miss still aborts
+                            // with the sentinel.
                             let guard = crate::repository_demand::no_demand();
                             let reuse = crate::repository_demand::reuse_only();
+                            // The build commits every unit of the pattern
+                            // (up to its first error): what its files load
+                            // is fetched (reused) ahead on the speculation
+                            // pool, as the coordinator's loads do.
+                            let committed = crate::repository_demand::committed_unit();
                             // BAZEL_RS_TIMING_TIMELINE: the worker's unit
                             // (docs/EVALUATOR.md, the pre-analysis span).
                             let span = crate::timeline::span("pattern-unit", || {
@@ -3663,61 +3664,83 @@ impl Engine {
                             });
                             let unit = package::evaluate_load_unit(repositories.clone(), id);
                             drop(span);
+                            drop(committed);
                             drop(reuse);
                             drop(guard);
-                            // The coordinator loads this package next to
-                            // the others: what blocked it is fetched ahead.
-                            if let Err(error) = &unit.result {
-                                repositories.fetch_blocked_ahead(error);
-                            }
-                            *slots[index].lock().unwrap() = Some(unit);
+                            let blocked = match &unit.result {
+                                Err(error) => {
+                                    // What blocked it is fetched ahead.
+                                    repositories.fetch_blocked_ahead(error);
+                                    pattern_pool::blocker(error).map(str::to_owned)
+                                }
+                                Ok(_) => None,
+                            };
+                            pool.finish(index, unit, blocked.as_deref());
                         }
                     });
-                match spawn {
-                    Ok(handle) => handles.push(handle),
-                    Err(error) => {
-                        return Err(format!("cannot spawn package-loading worker: {error}"));
+                if let Err(error) = spawn {
+                    return Err(format!("cannot spawn package-loading worker: {error}"));
+                }
+            }
+            // Commit in pattern order: the same sequence of commits — and
+            // of printed output — as the sequential engine, whatever order
+            // the workers finished in. Each package's follow-up (its
+            // targets) runs right after its commit, interleaved exactly
+            // like the sequential path, so warnings and first errors cannot
+            // move. Packages already loaded before this call commit nothing
+            // but still run their follow-up, like the sequential path.
+            let ready = |blocked: &str| repositories.sentinel_ready(blocked);
+            let mut dispatched = 0;
+            for id in ids {
+                let index = (pending.get(dispatched) == Some(id)).then(|| {
+                    dispatched += 1;
+                    dispatched - 1
+                });
+                if let Some(index) = index
+                    && !self.packages.contains_key(id)
+                {
+                    let (aborted, unit) = pool.take(index, ready)?;
+                    // The commit, with an inline re-run of a unit that
+                    // needed a repository or an extension
+                    // (BAZEL_RS_TIMING_TIMELINE).
+                    let span = crate::timeline::span("pattern-commit", || {
+                        format!("@@{}//{}", id.repository, id.package)
+                    });
+                    // Attempts aborted before a re-run on a worker: their
+                    // module events print first, as an aborted unit's
+                    // before its inline re-run (commit_load_unit).
+                    for attempt in aborted {
+                        self.emit_load_prints(
+                            attempt
+                                .prints
+                                .into_iter()
+                                .filter(|event| {
+                                    !matches!(event, crate::loading::LoadPrintEvent::Build(_))
+                                })
+                                .collect(),
+                        );
+                    }
+                    let committed = self.commit_load_unit(id, unit);
+                    drop(span);
+                    // The commit may have satisfied the demands later units
+                    // were blocked on: those re-run on the workers now.
+                    pool.retry_ready(ready);
+                    if let Err(error) = committed {
+                        self.skip_package_error(error)?;
+                        continue;
                     }
                 }
+                after_commit(self, id)?;
             }
-            for handle in handles {
-                if handle.join().is_err() {
-                    return Err("parallel package loading worker panicked".to_owned());
-                }
+            if crate::plan_timings::enabled() {
+                let (retried, waited, wait) = pool.counts();
+                crate::snapshot::diag::line_fmt(format_args!(
+                    "PERF-PATTERN units={} workers={workers} retried={retried} waited={waited} wait={wait:.3}s",
+                    pending.len()
+                ));
             }
             Ok(())
-        })?;
-        // Commit in pattern order: the same sequence of commits — and of
-        // printed output — as the sequential engine, whatever order the
-        // workers finished in. Each package's follow-up (its targets)
-        // runs right after its commit, interleaved exactly like the
-        // sequential path, so warnings and first errors cannot move.
-        // Packages already loaded before this call commit nothing but
-        // still run their follow-up, like the sequential path.
-        let mut dispatched = 0;
-        for id in ids {
-            if !self.packages.contains_key(id) {
-                let unit = slots[dispatched]
-                    .lock()
-                    .unwrap()
-                    .take()
-                    .expect("every dispatched package finished");
-                dispatched += 1;
-                // The commit, with an inline re-run of a unit that needed
-                // a repository or an extension (BAZEL_RS_TIMING_TIMELINE).
-                let span = crate::timeline::span("pattern-commit", || {
-                    format!("@@{}//{}", id.repository, id.package)
-                });
-                let committed = self.commit_load_unit(id, unit);
-                drop(span);
-                if let Err(error) = committed {
-                    self.skip_package_error(error)?;
-                    continue;
-                }
-            }
-            after_commit(self, id)?;
-        }
-        Ok(())
+        })
     }
 
     /// A package of a wildcard failed to load: under a keep-going target
