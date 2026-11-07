@@ -29,15 +29,6 @@ struct LinkOthers {
     others: Arc<Vec<(String, PathBuf)>>,
 }
 
-/// Byte-equal root lists (stricter than component-wise path equality).
-fn same_roots(known: &[(String, PathBuf)], roots: &[(String, PathBuf)]) -> bool {
-    known.len() == roots.len()
-        && known
-            .iter()
-            .zip(roots)
-            .all(|((a, p), (b, q))| a == b && p.as_os_str() == q.as_os_str())
-}
-
 /// The canonical form of a root, the repository store or a blocked prefix
 /// as the link policy and the recorded-input keys take it (W6R): not
 /// recorded where taken — [`RepositorySet::record_link_anchors`] records
@@ -2780,57 +2771,78 @@ impl RepositorySet {
     /// The roots of [`Self::materialized_roots`] (`sequential` false) or of
     /// [`Self::sequential_roots`].
     fn roots_materialized(&self, sequential: bool) -> Vec<(String, PathBuf)> {
+        let mut roots = Vec::new();
+        self.visit_roots_materialized(sequential, |name, root| {
+            roots.push((name.to_owned(), root.to_path_buf()));
+        });
+        roots
+    }
+
+    /// How many roots [`Self::roots_materialized`] lists now, without
+    /// building the list. Roots only ever begin to count (a slot fills
+    /// once, a group is prepared once, a root counting for the sequential
+    /// engine keeps counting) and never change their path, so two lists
+    /// of one set of the same length are the same list
+    /// ([`Self::link_policy`]'s cache).
+    fn roots_materialized_count(&self, sequential: bool) -> usize {
+        let mut count = 0;
+        self.visit_roots_materialized(sequential, |_, _| count += 1);
+        count
+    }
+
+    /// [`Self::roots_materialized`]'s roots, in its order.
+    fn visit_roots_materialized(&self, sequential: bool, mut visit: impl FnMut(&str, &Path)) {
         let ready = |slot: &DemandSlot<PathBuf>| {
             if sequential {
-                slot.sequential().cloned()
+                slot.sequential().is_some()
             } else {
-                slot.ready().cloned()
+                slot.ready().is_some()
             }
         };
-        let mut roots = vec![(String::new(), self.state.root.clone())];
+        visit("", &self.state.root);
         if let Some(pinned) = self.pinned_tables() {
             // Pinned: every recorded root (published trees anchor links in
             // any order anyway, crate::source_links::StoreTrees).
-            roots.extend(
-                pinned
-                    .roots
-                    .iter()
-                    .map(|(name, root)| (name.clone(), root.path.clone())),
-            );
-            return roots;
+            for (name, root) in &pinned.roots {
+                visit(name, &root.path);
+            }
+            return;
         }
         if let Some(Ok(graph)) = self.state.resolved.get() {
             for (name, module) in &graph.modules {
                 if let ModuleSource::LocalPath(root) = &module.source {
-                    roots.push((name.clone(), root.clone()));
+                    visit(name, root);
                 }
             }
         }
         if let Some(registry_roots) = self.state.registry_roots.get() {
             for (name, slot) in registry_roots {
                 if let Some(Ok(root)) = slot.get() {
-                    roots.push((name.clone(), root.clone()));
+                    visit(name, root);
                 }
             }
         }
         if let Some(Ok(runtime)) = self.state.direct.get() {
             for (name, slot) in &runtime.roots {
-                if let Some(root) = ready(slot) {
-                    roots.push((name.clone(), root));
+                if ready(slot)
+                    && let Some(root) = slot.ready()
+                {
+                    visit(name, root);
                 }
             }
             // Groups are prepared outside no-demand mode only.
             for slot in runtime.ordinary.values() {
                 if let Some(prepared) = slot.ready() {
                     for repository in prepared.repositories.values() {
-                        if let Some(root) = ready(&repository.root) {
-                            roots.push((repository.canonical_name.clone(), root));
+                        if ready(&repository.root)
+                            && let Some(root) = repository.root.ready()
+                        {
+                            visit(&repository.canonical_name, root);
                         }
                     }
                 }
             }
         }
-        roots
     }
 
     /// The coordinator committed a load unit that obtained these roots on
@@ -3651,17 +3663,15 @@ impl RepositorySet {
         }
         let sequential = crate::observed_fs::recording()
             && crate::observed_fs::hook(crate::observed_fs::Hook::Link);
-        let roots = if sequential {
-            self.sequential_roots()
-        } else {
-            self.materialized_roots()
-        };
         // The same roots as last time share the canonical list (a root
         // that does not exist yet is retried: such a list is not kept).
         // Neither lock is held while a path is canonicalized: the
         // coordinator and the loading workers ask for policies all the
         // time, and two threads canonicalizing the same new root get the
-        // same answer.
+        // same answer. Roots only begin to count: as many as last time are
+        // the same ones ([`Self::roots_materialized_count`]), recognized
+        // without building the list (a `.bzl` load through a link asks for
+        // a policy each time, while thousands of roots count).
         let slot = usize::from(sequential);
         let last = self
             .state
@@ -3669,12 +3679,14 @@ impl RepositorySet {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)[slot]
             .clone();
+        let count = self.roots_materialized_count(sequential);
         let known = last
-            .filter(|known| same_roots(&known.roots, &roots))
+            .filter(|known| known.roots.len() == count)
             .map(|known| Arc::clone(&known.others));
         let others = match known {
             Some(others) => others,
             None => {
+                let roots = self.roots_materialized(sequential);
                 let count = roots.len();
                 let others: Vec<(String, PathBuf)> = roots
                     .iter()
