@@ -24,6 +24,7 @@ use super::super::{ActionPlanning, ConfiguredTargetKey};
 /// Whether `BAZEL_RS_EVAL_REPLAY_BENCH=1` asks for the bench.
 pub(in crate::engine) fn enabled() -> bool {
     static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a diagnostic switch; it never changes the plan.
         std::env::var_os("BAZEL_RS_EVAL_REPLAY_BENCH").is_some_and(|value| value == "1")
     });
     *ON

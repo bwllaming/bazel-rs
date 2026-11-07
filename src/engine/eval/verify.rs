@@ -14,6 +14,7 @@
 
 /// Whether `BAZEL_RS_EVAL_VERIFY=1` asks for the comparison.
 pub(crate) fn enabled() -> bool {
+    // snapshot-unrecorded: a diagnostic switch; it never changes the plan.
     std::env::var_os("BAZEL_RS_EVAL_VERIFY").is_some_and(|value| value == "1")
 }
 

@@ -50,6 +50,7 @@ impl AnalysisMode {
 
     /// The process's mode.
     pub(crate) fn from_env() -> Result<Self, String> {
+        // snapshot-unrecorded: an internal engine switch; both engines must plan identically.
         let value = std::env::var("BAZEL_RS_ANALYSIS").ok();
         Self::parse(value.as_deref())
     }
