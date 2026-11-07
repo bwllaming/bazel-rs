@@ -374,6 +374,27 @@ impl Speculations {
         )
     }
 
+    /// Wait (at most `timeout`) while the speculation of `canonical` runs:
+    /// a committed load demands it now (its transfers are demanded,
+    /// [`speculative`]).
+    pub(crate) fn wait_running(&self, canonical: &str, timeout: std::time::Duration) {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut state = lock(&self.shared.state);
+        while let Some(Entry::Running(demanded)) = state.entries.get(canonical) {
+            demanded.store(true, Ordering::Relaxed);
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return;
+            }
+            state = self
+                .shared
+                .changed
+                .wait_timeout(state, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
     /// The coordinator demands `canonical`: the outcome of its speculation
     /// (waiting while it runs), or `None` when the coordinator executes the
     /// rule itself. Either way it is never speculated again.
@@ -814,6 +835,44 @@ mod tests {
             matches!(state.entries.get("blocked"), None | Some(Entry::Failed)),
             "never retried after the stop"
         );
+    }
+
+    /// A committed load's probe waits for the running speculation of the
+    /// repository it demands (marking it demanded), never past its bound,
+    /// and not at all for one not running.
+    #[test]
+    fn wait_running_waits_for_the_speculation_in_flight() {
+        let speculations = Speculations::default();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let started_tx = Mutex::new(started_tx);
+        let job: Job = Arc::new(move |_: &str| {
+            lock(&started_tx).send(()).unwrap();
+            lock(&release_rx)
+                .recv_timeout(Duration::from_secs(60))
+                .unwrap();
+            assert!(!speculative(), "demanded by the waiting probe");
+            Finished::Published
+        });
+        speculations.start(1, job, Arc::new(|| {}), 0);
+        // Nothing runs: no wait.
+        let started = std::time::Instant::now();
+        speculations.wait_running("idle", Duration::from_secs(60));
+        assert!(started.elapsed() < Duration::from_secs(30));
+        speculations.request("r");
+        started_rx.recv_timeout(Duration::from_secs(60)).unwrap();
+        // Bounded.
+        speculations.wait_running("r", Duration::from_millis(20));
+        assert!(speculations.hides("r"));
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| speculations.wait_running("r", Duration::from_secs(60)));
+            std::thread::sleep(Duration::from_millis(50));
+            release_tx.send(()).unwrap();
+            waiter.join().unwrap();
+        });
+        assert!(!speculations.hides("r"));
+        speculations.stop();
     }
 
     /// Stopping the pool cancels the speculation in flight (it sees

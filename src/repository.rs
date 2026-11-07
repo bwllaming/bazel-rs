@@ -766,6 +766,10 @@ struct PreparedOrdinary {
     provenance_digest: [u8; 32],
 }
 
+/// How long a committed load's probe waits for the speculation executing
+/// the repository it demands ([`RepositorySet::published_after_speculation`]).
+const SPECULATION_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// The error of a speculative extension preparation that is not
 /// eligible (never shown: the coordinator prepares the group itself).
 const INELIGIBLE: &str = "extension preparation not speculated";
@@ -4621,10 +4625,42 @@ impl RepositorySet {
         // Before and after: a speculation that starts while this probe runs
         // may publish the tree it reads (crate::repository_speculation).
         if self.state.speculation.hides(canonical) {
-            return Ok(None);
+            return Ok(self.published_after_speculation(canonical));
         }
         let reused = self.try_reuse_direct_unhidden(canonical, entry)?;
         Ok(reused.filter(|_| !self.state.speculation.hides(canonical)))
+    }
+
+    /// A reuse-only probe of `canonical` found a speculation executing it
+    /// (crate::repository_speculation). The probe of a load the build
+    /// commits (crate::repository_demand::committed_unit: a target
+    /// pattern's package) waits for it instead of aborting its unit — the
+    /// unit's re-run would only find what the speculation publishes — and
+    /// serves the root it published, if it published one (a speculation
+    /// that printed stays the coordinator's). `None` otherwise: a miss.
+    fn published_after_speculation(&self, canonical: &str) -> Option<PathBuf> {
+        if !crate::repository_demand::committed_unit_active() {
+            return None;
+        }
+        self.state
+            .speculation
+            .wait_running(canonical, SPECULATION_WAIT);
+        let runtime = self.direct_runtime().ok()?;
+        let slot = match runtime.roots.get(canonical) {
+            Some(slot) => slot,
+            None => {
+                let (prefix, name) = canonical.rsplit_once('+')?;
+                let id = runtime.catalog.ordinary_routes.get(prefix)?;
+                let prepared = runtime
+                    .ordinary
+                    .get(id)
+                    .and_then(DemandSlot::ready)
+                    .map(|prepared| &**prepared)
+                    .or_else(|| self.adopt_speculated_group(id))?;
+                &prepared.repositories.get(name)?.root
+            }
+        };
+        slot.ready().cloned()
     }
 
     fn try_reuse_direct_unhidden(
@@ -5448,7 +5484,7 @@ impl RepositorySet {
         // Before and after: a speculation that starts while this probe runs
         // may publish the tree it reads (crate::repository_speculation).
         if self.state.speculation.hides(canonical) {
-            return Ok(None);
+            return Ok(self.published_after_speculation(canonical));
         }
         let reused = self.try_reuse_ordinary_unhidden(canonical)?;
         Ok(reused.filter(|_| !self.state.speculation.hides(canonical)))
