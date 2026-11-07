@@ -1169,6 +1169,7 @@ pub(super) fn report(workers: usize) {
     }
     // S2: the coordinator thread's CPU time so far (user, system; stable
     // under host load, unlike the wall time).
+    // snapshot-unrecorded: a BAZEL_RS_TIMING diagnostic of this process's own CPU time; no analysis result depends on it.
     if let Ok(stat) = std::fs::read_to_string("/proc/thread-self/stat")
         && let Some(fields) = stat.rsplit_once(')').map(|(_, rest)| {
             rest.split_whitespace()
