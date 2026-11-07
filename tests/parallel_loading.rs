@@ -873,3 +873,232 @@ fn action_dump_is_identical_across_thread_counts_and_jitter() {
         assert_eq!(clean(&run), clean(&reference), "threads={threads}: stderr");
     }
 }
+
+/// A file:// registry of local_path modules `names` (sources under
+/// `<name>_src`, each with a printing `defs.bzl`): their roots materialize
+/// on the coordinator's first demand, so every worker unit loading from
+/// them aborts with the sentinel and re-runs once the root is there.
+fn local_registry(ws: &Workspace, names: &[&str]) -> String {
+    ws.file("registry/bazel_registry.json", "{\"mirrors\": []}\n");
+    let mut module = String::from("module(name='main')\n");
+    for name in names {
+        ws.file(
+            &format!("registry/modules/{name}/1.0/MODULE.bazel"),
+            &format!("module(name='{name}', version='1.0')\n"),
+        );
+        ws.file(
+            &format!("registry/modules/{name}/1.0/source.json"),
+            &format!(
+                "{{\"type\": \"local_path\", \"path\": {}}}\n",
+                json_string(&ws.0.join(format!("{name}_src")))
+            ),
+        );
+        ws.file(
+            &format!("{name}_src/MODULE.bazel"),
+            &format!("module(name='{name}')\n"),
+        );
+        ws.file(&format!("{name}_src/BUILD"), "");
+        ws.file(
+            &format!("{name}_src/defs.bzl"),
+            &format!(
+                "print('{name} top-level')\ndef _impl(ctx):\n    return DefaultInfo()\n{name}_rule = rule(implementation = _impl)\n"
+            ),
+        );
+        module.push_str(&format!("bazel_dep(name = '{name}', version = '1.0')\n"));
+    }
+    ws.file("MODULE.bazel", &module);
+    format!("--registry=file://{}", ws.0.join("registry").display())
+}
+
+/// Runs `args` at threads 1/2/8/32 and 8 with jitter: stdout, stderr and
+/// the exit code are the sequential run's. Returns the reference stderr.
+fn assert_identical_across_threads(ws: &Workspace, args: &[&str]) -> String {
+    let mut reference: Option<(Vec<u8>, String, Option<i32>)> = None;
+    for (threads, jitter) in [(1u64, 0u64), (2, 0), (8, 0), (32, 0), (8, 40)] {
+        let jitter_text = jitter.to_string();
+        let env: &[(&str, &str)] = if jitter > 0 {
+            &[("BAZEL_RS_LOADING_JITTER", jitter_text.as_str())]
+        } else {
+            &[]
+        };
+        let threads_flag = format!("--loading_phase_threads={threads}");
+        let mut all = args.to_vec();
+        all.insert(1, &threads_flag);
+        let run = ws.run_env(env, &all);
+        let current = (run.stdout.clone(), stderr(&run), run.status.code());
+        match &reference {
+            None => reference = Some(current),
+            Some(expected) => {
+                assert_eq!(current.0, expected.0, "threads={threads}: stdout");
+                assert_eq!(
+                    current.1, expected.1,
+                    "threads={threads} jitter={jitter}: stderr\n--\n{}",
+                    current.1
+                );
+                assert_eq!(current.2, expected.2, "threads={threads}: exit");
+            }
+        }
+    }
+    reference.unwrap().1
+}
+
+/// How many blocked units the pattern's coordinator queued again on the
+/// workers (`PERF-PATTERN retried=`, summed over the pattern's loads).
+fn pattern_retries(output: &Output) -> u64 {
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .filter_map(|line| line.strip_prefix("PERF-PATTERN "))
+        .filter_map(|line| {
+            line.split_whitespace()
+                .find_map(|field| field.strip_prefix("retried="))
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .sum()
+}
+
+/// Pattern loading re-runs blocked units on the workers (docs/COLD_ANALYSIS.md,
+/// "Pattern loading: blocked units re-run on the workers"): packages that
+/// need several repositories, repositories needed by many packages, `.bzl`
+/// and BUILD prints in every package — the first package of a demand
+/// re-runs inline, the later ones on the workers, in waves. Cold and warm,
+/// the output is the sequential run's at every thread count and under
+/// jitter, prints once per module in the sequential order.
+#[test]
+fn blocked_units_rerun_on_workers_with_the_sequential_output() {
+    let ws = Workspace::new();
+    let registry = local_registry(&ws, &["ext1", "ext2", "ext3"]);
+    for index in 0..10 {
+        // One repository, needed by many packages.
+        ws.file(
+            &format!("one/p{index:02}/BUILD"),
+            &format!("load('@ext1//:defs.bzl', 'ext1_rule')\nprint('one p{index:02}')\next1_rule(name = 'r')\n"),
+        );
+    }
+    for index in 0..6 {
+        // Several repositories per package, in two load orders.
+        let (first, second) = if index % 2 == 0 {
+            ("ext2", "ext3")
+        } else {
+            ("ext3", "ext2")
+        };
+        ws.file(
+            &format!("several/q{index:02}/BUILD"),
+            &format!(
+                "load('@{first}//:defs.bzl', '{first}_rule')\nload('@{second}//:defs.bzl', '{second}_rule')\nload('@ext1//:defs.bzl', 'ext1_rule')\nprint('several q{index:02}')\n{first}_rule(name = 'a')\n{second}_rule(name = 'b')\next1_rule(name = 'c')\n"
+            ),
+        );
+    }
+    ws.file("plain/BUILD", "print('plain')\nfilegroup(name = 'p')\n");
+    let args = [
+        "build",
+        registry.as_str(),
+        "--lockfile_mode=off",
+        "--nobuild",
+        "//...",
+    ];
+    // Cold at 8 threads: the roots materialize at their sequential demand
+    // and the later units re-run on the workers.
+    let mut cold_args = args.to_vec();
+    cold_args.insert(1, "--loading_phase_threads=8");
+    let cold = ws.run_env(&[("BAZEL_RS_TIMING", "1")], &cold_args);
+    assert!(cold.status.success(), "cold: {}", stderr(&cold));
+    assert!(
+        pattern_retries(&cold) > 0,
+        "no unit re-ran on the workers: {}",
+        stderr(&cold)
+    );
+    let error = assert_identical_across_threads(&ws, &args);
+    let prints: Vec<&str> = error
+        .lines()
+        .filter(|line| line.starts_with("DEBUG") || !line.contains(':'))
+        .collect();
+    for name in ["ext1", "ext2", "ext3"] {
+        assert_eq!(
+            error.matches(&format!("{name} top-level")).count(),
+            1,
+            "{name}: {error}"
+        );
+    }
+    for index in 0..10 {
+        assert_eq!(error.matches(&format!("one p{index:02}")).count(), 1);
+    }
+    // BUILD prints in pattern order.
+    let order: Vec<usize> = (0..10)
+        .map(|index| error.find(&format!("one p{index:02}")).unwrap())
+        .collect();
+    assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{prints:?}");
+}
+
+/// Units blocked on a module extension re-run on the workers once the
+/// coordinator evaluated it; an extension that fails fails the first
+/// package (in pattern order) that needs it, with the sequential message,
+/// at every thread count — with and without --keep_going.
+#[test]
+fn units_blocked_on_extensions_rerun_and_a_failing_extension_fails_identically() {
+    let ws = Workspace::new();
+    ws.file(
+        "MODULE.bazel",
+        "module(name='main')\ngood = use_extension('//:ext.bzl', 'good')\nuse_repo(good, 'gen')\nbad = use_extension('//:ext.bzl', 'bad')\nuse_repo(bad, 'badgen')\n",
+    );
+    ws.file("BUILD", "");
+    ws.file(
+        "ext.bzl",
+        "print('ext.bzl top-level')\n\
+def _repo_impl(rctx):\n    rctx.file('BUILD', '')\n    rctx.file('defs.bzl', \"print('gen defs top-level')\\ndef _impl(ctx):\\n    return DefaultInfo()\\ngen_rule = rule(implementation = _impl)\\n\")\n\
+_repo = repository_rule(implementation = _repo_impl)\n\
+def _good_impl(mctx):\n    _repo(name = 'gen')\n\
+good = module_extension(implementation = _good_impl)\n\
+def _bad_impl(mctx):\n    fail('the bad extension fails')\n\
+bad = module_extension(implementation = _bad_impl)\n",
+    );
+    for index in 0..8 {
+        ws.file(
+            &format!("good/a{index}/BUILD"),
+            &format!(
+                "load('@gen//:defs.bzl', 'gen_rule')\nprint('a{index}')\ngen_rule(name = 'r')\n"
+            ),
+        );
+    }
+    ws.file("m/BUILD", "load('@badgen//:defs.bzl', 'x')\nprint('m')\n");
+    for index in 0..4 {
+        ws.file(
+            &format!("z{index}/BUILD"),
+            &format!(
+                "load('@gen//:defs.bzl', 'gen_rule')\nprint('z{index}')\ngen_rule(name = 'r')\n"
+            ),
+        );
+    }
+    // The good packages alone: blocked on the extension, re-run on the
+    // workers, identical output.
+    let good_args = ["build", "--lockfile_mode=off", "--nobuild", "//good/..."];
+    let good = assert_identical_across_threads(&ws, &good_args);
+    assert_eq!(good.matches("gen defs top-level").count(), 1, "{good}");
+    let mut timed = good_args.to_vec();
+    timed.insert(1, "--loading_phase_threads=8");
+    let timed = ws.run_env(&[("BAZEL_RS_TIMING", "1")], &timed);
+    assert!(timed.status.success(), "{}", stderr(&timed));
+    assert!(pattern_retries(&timed) > 0, "{}", stderr(&timed));
+    // The failing extension: the first error in pattern order.
+    let failing = assert_identical_across_threads(
+        &ws,
+        &["build", "--lockfile_mode=off", "--nobuild", "//..."],
+    );
+    assert!(failing.contains("the bad extension fails"), "{failing}");
+    let keep_going = assert_identical_across_threads(
+        &ws,
+        &[
+            "build",
+            "--lockfile_mode=off",
+            "--nobuild",
+            "--keep_going",
+            "//...",
+        ],
+    );
+    assert!(
+        keep_going.contains("the bad extension fails"),
+        "{keep_going}"
+    );
+    for index in 0..4 {
+        assert!(keep_going.contains(&format!("z{index}")), "{keep_going}");
+    }
+}
