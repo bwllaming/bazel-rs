@@ -1104,12 +1104,91 @@ BAZEL_RS_VERIFY_DELTA clean on `build` and `test --nobuild` (`test`: 37,041 prep
 and 35,430 commits ahead re-prepared at their turn, 36,644 worker deltas,
 132,220 output summaries); a recorded snapshot verifies at threads 1 and 8.
 
-**Not yet (the rest of S2).** The prepare on the workers (an `EngineView`
-plus recorder instead of `&mut Engine`, the views memo single-flight with
-FirstUse replay, console and aquery owners in the delta), the ready queue
-dispatching prepare + compute + delta as soon as the dependencies merge,
-and native commits as deltas. Measured why that alone will not move the wall
-much: docs/COLD_ANALYSIS.md, "S2, first part".
+**Not yet (the rest of S2).** See "S2, second part" below.
+
+## S2, second part — prepares off the coordinator's state (`src/engine/prepare.rs`)
+
+- **One prepare, two contexts.** A Starlark rule's prepare
+  (`Engine::prepare_custom`: dependency views, prerequisite checks,
+  toolchain and exec-group contexts, ctx surface, snapshot) is one generic
+  function over a context (`PrepareCx`, with `Lookup` and `ViewCx` for its
+  helpers: `custom_dependencies_in`, `dependency_view_in`,
+  `starlark_prerequisite_errors`, `target_incompatibility_in`,
+  `shared_artifacts_in`, …). `CoordPrepare` is the coordinator's
+  (`&mut Engine`, the planning state: exactly the former code, which
+  `prepare_target` now calls for every Starlark rule, at its turn and in a
+  fallback); `SharedPrepare` reads the engine, the planning state and the
+  configured nodes through shared references and records what it writes.
+  `Engine`, `ActionPlanning` and `ConfiguredNodes` are `Sync` (a compile-time
+  check; the receivers they held are behind mutexes, the configuration
+  registry's lazy exec baseline is a `OnceLock`).
+- **What a shared prepare records** (applied by the coordinator in plan
+  order, `SharedRecord`): the console and aquery owners of the target's
+  actions, the tracker's accesses (replayed as the `TrackLog` of a prepare
+  ahead, each in the scopes the coordinator had: `TrackLog::accesses`), and
+  — through the batch's single-flight memos (`BatchMemos`, `SingleFlight`) —
+  the dependency views it built (with the artifacts they registered and the
+  lookups their miss path made: `view_artifacts`, `view_accesses`), the
+  shared `Target` identities and native output groups: whichever prepare of
+  the batch meets an entry first fills the one value the others share; the
+  coordinator moves the fills into the planning state after the batch (all
+  misses there: the batch read the planning state's memo first). Artifact
+  registrations go to the concurrent index with the entry's own stamp.
+  Observations, obtained roots and console notes are held by the prepare's
+  `Isolation` on its thread, as for a compute. A lookup only the
+  coordinator can answer (a package not loaded, a source file not memoized,
+  an attribute aspect, the no-config configuration not interned) aborts it:
+  the coordinator prepares the entry itself (`PERF-PARALLEL prepare
+  fallback`, 10 on `//src/...`).
+- **Batches.** The ready entries the pipeline has room for are prepared
+  together (`Engine::prepare_ahead_batch`), the coordinator waiting,
+  nothing written while they run; `BAZEL_RS_PREPARE_THREADS=<n>` (hidden)
+  runs them on `n` rayon-core threads besides the coordinator (each claims
+  the next entry; 16 MiB stacks; bound to the coordinator's jemalloc arena).
+  The default is **0**: measured on ~/code, a prepare on another core takes
+  about twice the CPU (the state it reads was just written on the
+  coordinator's), helpers wake late, and the coordinator waits for the
+  batch's slowest, so the batches took as long with 7 helpers as without
+  (`batch_run=` 4.4–4.7 vs 4.2–4.6 s) — docs/COLD_ANALYSIS.md, "S2, second
+  part". `BAZEL_RS_NO_SHARED_PREPARE=1` prepares ahead with `CoordPrepare`.
+- **Not done (and why).** A prepare that runs *while the coordinator merges*
+  (the ready queue of the plan, the coordinator out of the dispatch path)
+  needs everything a prepare reads to be readable concurrently with the
+  merges: the planning-state maps the views read (`dry`, providers, runfiles,
+  declared outputs, validation sets), the memos, and the engine's phase-1
+  tables (frozen during a walk but owned by `&mut Engine`). Measured first
+  what it would buy: the coordinator's prepares ahead of their turn are
+  ~4.5 s of its ~38 s, and the turn's prepares are the chain links (prepared
+  on a worker they make the turn wait, as `BAZEL_RS_TURN_ON_WORKER` showed).
+  Dispatching what a commit ahead woke before committing the next finished
+  entry (an experiment, not kept) cut ready → dispatched from 2.6 to 2.2 ms
+  and moved neither the wall nor the coordinator's CPU.
+- `BAZEL_RS_TIMING=1` adds `PERF-PARALLEL prepare shared= batches=
+  batch_entries= batch_threads= coordinator_ahead= batch_run=
+  coordinator_turn= fallback …` and `PERF-PARALLEL chains`: per walk size,
+  the sum of the walks' deepest chains of Starlark implementations (each
+  classified entry's depth is its deepest requirement's, plus one for a
+  Starlark rule) and the deepest.
+
+**Determinism evidence.** `tests/parallel_rule_implementations.rs`: every
+comparison against the sequential engine adds runs with 4 and 7 prepare
+threads (with jitter, and with BAZEL_RS_VERIFY_AHEAD + VERIFY_DELTA, which
+prepares every entry prepared ahead again at its turn with `CoordPrepare`
+and compares: the shared prepare against the coordinator's);
+`action_graph_and_prints_are_the_sequential_ones` checks the prepares ran
+shared; `incremental_index_does_not_depend_on_who_built_a_view` and
+`tests/platforms.rs` `incremental_index_is_the_sequential_one_at_every_thread_count`
+(deferred host platform, an alias to a constraint value) compare the
+incremental index with prepare threads under jitter. On ~/code
+(`80d6724f3a`): the action dumps of `build`/`test --nobuild //src/...` at
+the default threads, 1 and 32 with 5 ms jitter, and with 7 prepare
+threads, the remote dump, the rest of stderr, `aquery` (text and summary)
+of `//src/python/bworker/...` and `//src/beyondwork.ai/tools/oauth2token/...`,
+the CI `affected` output and digests and the P1 / P2 pairs identical to
+main's; BAZEL_RS_VERIFY_AHEAD + VERIFY_DELTA with 7 prepare threads clean on
+`build` (37,442 prepares ahead verified at their turn, 36,433 commits ahead,
+87,252 natives, 37,035 deltas) and `test --nobuild`; a snapshot recorded
+with 7 prepare threads verifies at threads 1 and 8.
 
 ## Phase-1 prefetch (W6, `src/prefetch.rs`)
 

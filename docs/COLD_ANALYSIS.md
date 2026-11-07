@@ -454,6 +454,62 @@ finished → noticed latency from 2.0 to 0.8 ms and ready → dispatched from
 ready → dispatched went from 2.3–3.0 to 3.9–4.4 ms and the wall did not move
 (50.2 vs 49.2 / 50.9 s, wait 6.2 vs 5.8 / 6.2 s).
 
+### S2, second part: prepares off the coordinator's state (branch `analysis-s2b`)
+
+Design: docs/PARALLEL_ANALYSIS.md, "S2, second part". Same setup (private
+clone at `80d6724f3a`, repositories warm, `BAZEL_RS_SNAPSHOT=off`,
+storagebox overrides, `nice -n 10`, the shared host, load 8–15), runs
+interleaved; genuine 9.3.1 the same night (`--batch`, its own output base,
+repositories fetched by a first run):
+
+| command | main f260892f | this branch | genuine 9.3.1 |
+|---|---|---|---|
+| `build --nobuild //src/...` wall | 46.3 / 47.2 s | 47.3 / 48.6 s | 11.0 / 10.2 s |
+| — CPU user + sys | 93.4 + 41.9 / 99.0 + 44.9 s | 95.5 + 39.0 / 101.1 + 39.7 s | 295.9 + 19.3 / 284.6 + 14.9 s |
+| — peak RSS | 8,808 / 8,820 MB | 8,757 / 8,887 MB | 6,558 / 5,988 MB |
+| — coordinator thread CPU | 32.9 + 4.3 / 33.4 + 4.2 s | 33.9 + 4.3 / 34.9 + 4.1 s | – |
+| — with 7 prepare threads; and without the arena binding | – | 49.0 s; 48.9 s (coordinator 32.8 + 4.2 s both) | – |
+| `test --nobuild //src/...` wall, CPU, RSS | 48.8 s, 102.1 + 38.3 s, 8,909 MB | 48.2 s, 104.2 + 39.7 s, 8,844 MB | 11.0 s, 320.6 + 14.6 s, 5,611 MB |
+| CI `affected --base=HEAD^` wall, RSS | 64.4 s, 7,370 MB | 60.7 s, 7,396 MB | – |
+| `affected` P2 pair (warm) | – | 166.6 s, 9,635 MB | – |
+| `BAZEL_RS_SNAPSHOT=record` peak RSS | 10,252 MB | 10,250 MB | – |
+
+No change, as the counters predicted. `PERF-PARALLEL prepare` (`build`,
+default): 36,168 prepares ahead of their turn through the shared context in
+26,991 batches (1.3 entries each), 10 fallbacks (a source file not
+memoized); the coordinator's time in them 5.7 s (4.6 s preparing, the rest
+dispatching), in the turn's prepares 3.6 s (2.8 s of it the rules applying
+attribute aspects, which never prepare ahead). With 7 prepare threads the
+batches took as long (`batch_run` 4.4–4.7 s, the `prepare` stage's CPU
+8.4 → 10.5–13.4 s: a prepare on another core costs about twice the CPU, and
+the coordinator waits for the batch's slowest); classifying until the room
+was full (10,800 batches of 3.3) did not help either. Without the jemalloc
+arena binding, with 7 prepare threads: 48.9 vs 49.0 s and the same `prepare`
+stage — no arena contention.
+
+**Where the wall goes** (pprof of the coordinator, ~40 s CPU): phase-1
+analysis 12.8 s and package loading 1.8 s; the walks ~23 s — commits ahead,
+native commits ahead, classification and the prepare batches 6.2 s,
+implementations computed at their turn 4.8 s, commits at the turn 3.6 s,
+prepares at the turn 4.1 s (aspects 2.8 s), the rest bookkeeping. Latency
+per chain link (`PERF-PARALLEL lat`, committed ahead): ready → dispatched
+2.8 ms, on the worker 1.1 ms, finished → noticed 2.1 ms. **Critical path**
+(`PERF-PARALLEL chains`): the walks' deepest chains of Starlark
+implementations sum to 1,121 links (164 over the 2,821 entries of walks of
+≤16 entries, 452 over the ≤256 ones — the `config_setting` flushes —, 465
+over the ≤4,096 ones, 40 over the two large ones; the deepest 47): ~6.7 s at
+today's ~6 ms per link, ~1.2 s at the worker's 1.1 ms. So the chains bound
+the wall at a few seconds even before S3; the coordinator's own work (~38 s
+of a ~47 s wall: phase 1 and the flush walks' merges, natives and at-turn
+links) is what keeps the wall far above 25 s. The gate of S2 (coordinator
+prepares ≤1 s, ready → dispatched ≤0.5 ms, wall ≤~30 s) is not met; even
+the prepares the plan meant to move (~4.5 s ahead, the rest are the turn's
+links and aspect applications) bound what moving them all to workers could
+buy at ~10% of the coordinator. S4 next (phase 1 in parallel, the
+`config_setting` flushes narrowed): phase 1 is the largest serial block,
+and its fork-join shape (many independent keys per batch) suits the `Sync`
+engine and the shared-read contexts this branch adds.
+
 ## What remains
 
 The goal (cold analysis faster than genuine 9.3.1: 10 s wall on this host)
