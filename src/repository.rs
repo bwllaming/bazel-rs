@@ -516,7 +516,7 @@ struct DirectRuntime {
     catalog: DirectCatalog,
     groups: BTreeMap<String, DemandSlot<PreparedGroup>>,
     roots: BTreeMap<String, DemandSlot<PathBuf>>,
-    ordinary: BTreeMap<String, DemandSlot<PreparedOrdinary>>,
+    ordinary: BTreeMap<String, DemandSlot<Arc<PreparedOrdinary>>>,
 }
 
 impl DirectRuntime {
@@ -4441,284 +4441,388 @@ impl RepositorySet {
             .ordinary
             .get(id)
             .ok_or_else(|| format!("missing ordinary extension preparation slot {id:?}"))?;
-        let prepared = slot.get_or_try_init(self.state.runtime_id, &format!("prepare:ordinary:{id}"), || {
-            let _span = crate::timeline::span("extension", || id.to_owned());
-            for participant in &group.participants {
-                if let Some(error) = &participant.source_profile_error {
-                    return Err(error.clone());
-                }
+        let prepared = slot.get_or_try_init(
+            self.state.runtime_id,
+            &format!("prepare:ordinary:{id}"),
+            || {
+                let _span = crate::timeline::span("extension", || id.to_owned());
+                self.compute_ordinary(id, runtime, group).map(Arc::new)
+            },
+        );
+        if prepared.is_ok() {
+            // The loads a file entered before this group was prepared
+            // (`warm_loads`) can execute ahead now.
+            let pending = lock_ignoring_poison(&self.state.pending_speculation).remove(id);
+            for canonical in pending.unwrap_or_default() {
+                self.state.speculation.request(&canonical);
             }
-            let pinning = self.replay_scope();
-            let loaded = loading::load_shared_definition_module_in(
-                Arc::new(self.clone()), &group.label, &group.symbol, false,
-            )?;
-            drop(pinning);
-            let mut preparation_budget = crate::repository_budget::HostBudget::unbounded();
-            for (label, source) in &loaded.sources {
-                preparation_budget.string(label)?;
-                preparation_budget.bytes(source.bytes.len())?;
-                for (apparent, canonical) in &source.mapping {
-                    preparation_budget.string(apparent)?;
-                    preparation_budget.string(canonical)?;
-                }
-            }
-            let definition = crate::module_extension::unpack(&loaded.value)
-                .map_err(|error| format!("module extension {}%{}: {error}", group.label, group.symbol))?;
-            let host = self.host()?;
-            let host_factors = host.factors(definition.os_dependent, definition.arch_dependent, &mut preparation_budget)?;
-            // SingleExtensionEvalFunction.compute (Bazel 9.3:144-318): a valid
-            // lockfile entry is used instead of running the extension.
-            let mut loaded = loaded;
-            let lock = self.extension_lock(group, &definition, &loaded, host_factors.lockfile_key())?;
-            let reused = match &lock {
-                Some(lock) => self.reusable_lock_entry(lock)?,
-                None => None,
-            };
-            // An evaluation's analysis-snapshot taint, held until its result
-            // is re-probed ([`EvaluatedTaint`]).
-            let mut evaluated_taint: Option<EvaluatedTaint> = None;
-            let (recorded_repositories, metadata, execution) = match &reused {
-                Some(entry) => {
-                    let (recorded, functions) = self.repositories_from_lock_entry(entry)?;
-                    loaded.functions.extend(functions);
-                    let metadata = crate::lockfile_extensions::member(entry, "moduleExtensionMetadata")
-                        .map(crate::lockfile_extensions::metadata_from_json)
-                        .transpose()?;
-                    (recorded, metadata, None)
-                }
-                None => {
-                    if self.state.publication_proof {
-                        return Err("publication proof requires a currently valid extension lock entry".into());
-                    }
-                    // Re-probed once its result is recorded when the next
-                    // command could reuse it: a lockfile mode that writes the
-                    // hidden lockfile, a window that may be saved.
-                    let reprobes = lock.as_ref().is_some_and(|lock| lock.mode.writes())
-                        && crate::observed_fs::reprobes_executions()
-                        && self
-                            .state
-                            .options
-                            .registry_session
-                            .session()
-                            .is_some_and(|session| session.writes_hidden_lockfile());
-                    let pending = evaluated_taint.insert(EvaluatedTaint::new(
-                        format!("{}%{}", group.label, group.symbol),
-                        reprobes,
-                    ));
-                    let network = pending.network.clone();
-                    let facts = lock.as_ref().map(|lock| lock.facts.clone()).unwrap_or_default();
-                    let tainted = crate::observed_fs::tainted_section();
-                    // Its downloads taint the run as such — settled with its
-                    // re-probe —, never as a running repository rule's (an
-                    // extension evaluated while one executes:
-                    // crate::observed_fs::NetworkSink).
-                    let mut execution = crate::observed_fs::with_network_sink(network, || {
-                        crate::extension_ctx::execute(
-                            Arc::new(self.clone()), &definition, &loaded.functions, &group.label,
-                            &group.symbol, &group.prefix, &group.participants,
-                            group.root_has_non_dev_dependency, facts,
-                        )
-                    })?;
-                    drop(tainted);
-                    let recorded = std::mem::take(&mut execution.repositories);
-                    (recorded, execution.metadata.clone(), Some(execution))
-                }
-            };
-            // RepoRule.instantiate stores only explicitly specified, non-None
-            // attributes, in call order (bazel/repository/RepoRule.java:110-117).
-            let explicit_attributes: BTreeMap<String, Vec<String>> = recorded_repositories
-                .iter()
-                .map(|recorded| {
-                    let names = recorded
-                        .order
-                        .iter()
-                        .filter(|name| {
-                            !crate::lockfile_extensions::LEGACY_BUILTIN_ATTRIBUTES.contains(&name.as_str())
-                                && !matches!(
-                                    recorded.attributes.get(name.as_str()),
-                                    None | Some(crate::extension_calls::RecordedValue::None)
-                                )
-                        })
-                        .cloned()
-                        .collect();
-                    (recorded.name.clone(), names)
-                })
-                .collect();
+        }
+        prepared.map(|prepared| &**prepared)
+    }
 
-            // The requested extension host owns this mapping, not its first
-            // importing MODULE. Install all siblings before binding any spec.
-            let host_mapping = self.mapping(&group.label.repository)?;
-            for (apparent, canonical) in host_mapping {
+    /// The preparation of the extension group `group`
+    /// (SingleExtensionValue.evalKey), at the group's demand.
+    fn compute_ordinary(
+        &self,
+        id: &str,
+        runtime: &DirectRuntime,
+        group: &repository_catalog::OrdinaryGroup,
+    ) -> Result<PreparedOrdinary, String> {
+        for participant in &group.participants {
+            if let Some(error) = &participant.source_profile_error {
+                return Err(error.clone());
+            }
+        }
+        let pinning = self.replay_scope();
+        let loaded = loading::load_shared_definition_module_in(
+            Arc::new(self.clone()),
+            &group.label,
+            &group.symbol,
+            false,
+        )?;
+        drop(pinning);
+        let mut preparation_budget = crate::repository_budget::HostBudget::unbounded();
+        for (label, source) in &loaded.sources {
+            preparation_budget.string(label)?;
+            preparation_budget.bytes(source.bytes.len())?;
+            for (apparent, canonical) in &source.mapping {
                 preparation_budget.string(apparent)?;
                 preparation_budget.string(canonical)?;
             }
-            let mut generated_mapping = host_mapping.clone();
-            let mut names = BTreeSet::new();
-            // generatedRepoSpecs.keySet(): creation order, for metadata fixups.
-            let mut generated_order = Vec::new();
-            for recorded in &recorded_repositories {
-                preparation_budget.string(&recorded.name)?;
-                preparation_budget.bytes(group.prefix.len())?;
-                crate::bzlmod::validate_repo_name(&recorded.name).map_err(|e| e.to_string())?;
-                if !names.insert(recorded.name.clone()) {
-                    return Err(format!("duplicate generated repository {:?}", recorded.name));
-                }
-                let canonical = format!("{}+{}", group.prefix, recorded.name);
-                validate_repository_name(&canonical)?;
-                let (prefix, _) = canonical.rsplit_once('+')
-                    .ok_or_else(|| format!("invalid generated repository @@{canonical}"))?;
-                if runtime.catalog.ordinary_routes.get(prefix).map(String::as_str) != Some(id) {
-                    return Err(format!("ambiguous ordinary extension route for @@{canonical}"));
-                }
-                if self.resolve_graph()?.modules.contains_key(&canonical)
-                    || runtime.catalog.repositories.contains_key(&canonical) {
-                    return Err(format!("generated repository canonical name collision: @@{canonical}"));
-                }
-                generated_mapping.insert(recorded.name.clone(), canonical);
-                generated_order.push(recorded.name.clone());
+        }
+        let definition = crate::module_extension::unpack(&loaded.value).map_err(|error| {
+            format!("module extension {}%{}: {error}", group.label, group.symbol)
+        })?;
+        let host = self.host()?;
+        let host_factors = host.factors(
+            definition.os_dependent,
+            definition.arch_dependent,
+            &mut preparation_budget,
+        )?;
+        // SingleExtensionEvalFunction.compute (Bazel 9.3:144-318): a valid
+        // lockfile entry is used instead of running the extension.
+        let mut loaded = loaded;
+        let lock = self.extension_lock(group, &definition, &loaded, host_factors.lockfile_key())?;
+        let reused = match &lock {
+            Some(lock) => self.reusable_lock_entry(lock)?,
+            None => None,
+        };
+        // An evaluation's analysis-snapshot taint, held until its result
+        // is re-probed ([`EvaluatedTaint`]).
+        let mut evaluated_taint: Option<EvaluatedTaint> = None;
+        let (recorded_repositories, metadata, execution) = match &reused {
+            Some(entry) => {
+                let (recorded, functions) = self.repositories_from_lock_entry(entry)?;
+                loaded.functions.extend(functions);
+                let metadata = crate::lockfile_extensions::member(entry, "moduleExtensionMetadata")
+                    .map(crate::lockfile_extensions::metadata_from_json)
+                    .transpose()?;
+                (recorded, metadata, None)
             }
-            let mut repositories = BTreeMap::new();
-            let resolution_budget = std::cell::RefCell::new(crate::repository_budget::HostBudget::unbounded());
-            for recorded in recorded_repositories {
-                // Charge omitted defaults and supplied values before the binder
-                // expands either into another owned attribute map.
-                preparation_budget.schema(&recorded.definition.schema)?;
-                recorded.definition.environ.charge(&mut preparation_budget)?;
-                for (name, value) in &recorded.attributes {
-                    preparation_budget.string(name)?;
-                    preparation_budget.recorded(value, 0)?;
+            None => {
+                if self.state.publication_proof {
+                    return Err(
+                        "publication proof requires a currently valid extension lock entry".into(),
+                    );
                 }
-                let canonical_name = generated_mapping[&recorded.name].clone();
-                let attributes = repository_rule::bind_recorded_attributes_where(
-                    &recorded.definition, &recorded.attributes, &canonical_name,
-                    |text| {
-                        resolution_budget.borrow_mut().bytes(Label::resolution_size_bound(text, &group.label.repository, &group.label.package, &generated_mapping))?;
-                        Label::parse_in(text, &group.label.repository, &group.label.package, &generated_mapping)
-                    },
-                    &format!("in the extension '{}%{}'", group.label.canonical_starlark(), group.symbol),
-                ).map_err(|error| format!("repository @@{canonical_name}: {error}"))?;
-                let explicit = explicit_attributes.get(&recorded.name).cloned().unwrap_or_default();
-                repositories.insert(recorded.name.clone(), OrdinaryRepository {
+                // Re-probed once its result is recorded when the next
+                // command could reuse it: a lockfile mode that writes the
+                // hidden lockfile, a window that may be saved.
+                let reprobes = lock.as_ref().is_some_and(|lock| lock.mode.writes())
+                    && crate::observed_fs::reprobes_executions()
+                    && self
+                        .state
+                        .options
+                        .registry_session
+                        .session()
+                        .is_some_and(|session| session.writes_hidden_lockfile());
+                let pending = evaluated_taint.insert(EvaluatedTaint::new(
+                    format!("{}%{}", group.label, group.symbol),
+                    reprobes,
+                ));
+                let network = pending.network.clone();
+                let facts = lock
+                    .as_ref()
+                    .map(|lock| lock.facts.clone())
+                    .unwrap_or_default();
+                let tainted = crate::observed_fs::tainted_section();
+                // Its downloads taint the run as such — settled with its
+                // re-probe —, never as a running repository rule's (an
+                // extension evaluated while one executes:
+                // crate::observed_fs::NetworkSink).
+                let mut execution = crate::observed_fs::with_network_sink(network, || {
+                    crate::extension_ctx::execute(
+                        Arc::new(self.clone()),
+                        &definition,
+                        &loaded.functions,
+                        &group.label,
+                        &group.symbol,
+                        &group.prefix,
+                        &group.participants,
+                        group.root_has_non_dev_dependency,
+                        facts,
+                    )
+                })?;
+                drop(tainted);
+                let recorded = std::mem::take(&mut execution.repositories);
+                (recorded, execution.metadata.clone(), Some(execution))
+            }
+        };
+        // RepoRule.instantiate stores only explicitly specified, non-None
+        // attributes, in call order (bazel/repository/RepoRule.java:110-117).
+        let explicit_attributes: BTreeMap<String, Vec<String>> = recorded_repositories
+            .iter()
+            .map(|recorded| {
+                let names = recorded
+                    .order
+                    .iter()
+                    .filter(|name| {
+                        !crate::lockfile_extensions::LEGACY_BUILTIN_ATTRIBUTES
+                            .contains(&name.as_str())
+                            && !matches!(
+                                recorded.attributes.get(name.as_str()),
+                                None | Some(crate::extension_calls::RecordedValue::None)
+                            )
+                    })
+                    .cloned()
+                    .collect();
+                (recorded.name.clone(), names)
+            })
+            .collect();
+
+        // The requested extension host owns this mapping, not its first
+        // importing MODULE. Install all siblings before binding any spec.
+        let host_mapping = self.mapping(&group.label.repository)?;
+        for (apparent, canonical) in host_mapping {
+            preparation_budget.string(apparent)?;
+            preparation_budget.string(canonical)?;
+        }
+        let mut generated_mapping = host_mapping.clone();
+        let mut names = BTreeSet::new();
+        // generatedRepoSpecs.keySet(): creation order, for metadata fixups.
+        let mut generated_order = Vec::new();
+        for recorded in &recorded_repositories {
+            preparation_budget.string(&recorded.name)?;
+            preparation_budget.bytes(group.prefix.len())?;
+            crate::bzlmod::validate_repo_name(&recorded.name).map_err(|e| e.to_string())?;
+            if !names.insert(recorded.name.clone()) {
+                return Err(format!(
+                    "duplicate generated repository {:?}",
+                    recorded.name
+                ));
+            }
+            let canonical = format!("{}+{}", group.prefix, recorded.name);
+            validate_repository_name(&canonical)?;
+            let (prefix, _) = canonical
+                .rsplit_once('+')
+                .ok_or_else(|| format!("invalid generated repository @@{canonical}"))?;
+            if runtime
+                .catalog
+                .ordinary_routes
+                .get(prefix)
+                .map(String::as_str)
+                != Some(id)
+            {
+                return Err(format!(
+                    "ambiguous ordinary extension route for @@{canonical}"
+                ));
+            }
+            if self.resolve_graph()?.modules.contains_key(&canonical)
+                || runtime.catalog.repositories.contains_key(&canonical)
+            {
+                return Err(format!(
+                    "generated repository canonical name collision: @@{canonical}"
+                ));
+            }
+            generated_mapping.insert(recorded.name.clone(), canonical);
+            generated_order.push(recorded.name.clone());
+        }
+        let mut repositories = BTreeMap::new();
+        let resolution_budget =
+            std::cell::RefCell::new(crate::repository_budget::HostBudget::unbounded());
+        for recorded in recorded_repositories {
+            // Charge omitted defaults and supplied values before the binder
+            // expands either into another owned attribute map.
+            preparation_budget.schema(&recorded.definition.schema)?;
+            recorded
+                .definition
+                .environ
+                .charge(&mut preparation_budget)?;
+            for (name, value) in &recorded.attributes {
+                preparation_budget.string(name)?;
+                preparation_budget.recorded(value, 0)?;
+            }
+            let canonical_name = generated_mapping[&recorded.name].clone();
+            let attributes = repository_rule::bind_recorded_attributes_where(
+                &recorded.definition,
+                &recorded.attributes,
+                &canonical_name,
+                |text| {
+                    resolution_budget
+                        .borrow_mut()
+                        .bytes(Label::resolution_size_bound(
+                            text,
+                            &group.label.repository,
+                            &group.label.package,
+                            &generated_mapping,
+                        ))?;
+                    Label::parse_in(
+                        text,
+                        &group.label.repository,
+                        &group.label.package,
+                        &generated_mapping,
+                    )
+                },
+                &format!(
+                    "in the extension '{}%{}'",
+                    group.label.canonical_starlark(),
+                    group.symbol
+                ),
+            )
+            .map_err(|error| format!("repository @@{canonical_name}: {error}"))?;
+            let explicit = explicit_attributes
+                .get(&recorded.name)
+                .cloned()
+                .unwrap_or_default();
+            repositories.insert(
+                recorded.name.clone(),
+                OrdinaryRepository {
                     definition: recorded.definition,
                     attributes,
                     explicit,
                     original_name: recorded.name,
                     canonical_name,
                     root: DemandSlot::new(),
-                });
-            }
-            if let Some(lock) = &lock {
-                let specs = generated_order
-                    .iter()
-                    .map(|name| {
-                        let repository = &repositories[name];
-                        let mut attributes = Vec::new();
-                        for attribute in &explicit_attributes[name] {
-                            if let Some(value) = repository.attributes.get(attribute) {
-                                attributes.push((
-                                    attribute.clone(),
-                                    crate::lockfile_extensions::attribute_json(value)?,
-                                ));
-                            }
+                },
+            );
+        }
+        if let Some(lock) = &lock {
+            let specs = generated_order
+                .iter()
+                .map(|name| {
+                    let repository = &repositories[name];
+                    let mut attributes = Vec::new();
+                    for attribute in &explicit_attributes[name] {
+                        if let Some(value) = repository.attributes.get(attribute) {
+                            attributes.push((
+                                attribute.clone(),
+                                crate::lockfile_extensions::attribute_json(value)?,
+                            ));
                         }
-                        Ok((
-                            name.clone(),
-                            crate::lockfile::Json::Object(vec![
-                                (
-                                    "repoRuleId".into(),
-                                    crate::lockfile::Json::String(
-                                        crate::lockfile_extensions::repo_rule_id(
-                                            &repository.definition.identity,
-                                        )?,
-                                    ),
+                    }
+                    Ok((
+                        name.clone(),
+                        crate::lockfile::Json::Object(vec![
+                            (
+                                "repoRuleId".into(),
+                                crate::lockfile::Json::String(
+                                    crate::lockfile_extensions::repo_rule_id(
+                                        &repository.definition.identity,
+                                    )?,
                                 ),
-                                ("attributes".into(), crate::lockfile::Json::Object(attributes)),
-                            ]),
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-                let recorded_entry = self.record_extension_lock(
+                            ),
+                            (
+                                "attributes".into(),
+                                crate::lockfile::Json::Object(attributes),
+                            ),
+                        ]),
+                    ))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let recorded_entry = self.record_extension_lock(
+                lock,
+                reused.as_ref(),
+                execution.as_ref(),
+                &loaded,
+                metadata.as_ref(),
+                specs,
+            )?;
+            if let (Some(pending), Some(entry)) = (evaluated_taint.take(), recorded_entry) {
+                pending.reprobe(
+                    self,
                     lock,
-                    reused.as_ref(),
-                    execution.as_ref(),
-                    &loaded,
-                    metadata.as_ref(),
-                    specs,
-                )?;
-                if let (Some(pending), Some(entry)) = (evaluated_taint.take(), recorded_entry) {
-                    pending.reprobe(self, lock, &entry, &ReprobedGroup {
+                    &entry,
+                    &ReprobedGroup {
                         group,
                         generated_mapping: &generated_mapping,
                         generated_order: &generated_order,
                         repositories: &repositories,
                         explicit_attributes: &explicit_attributes,
                         metadata: metadata.as_ref(),
-                    });
-                }
+                    },
+                );
             }
-            drop(evaluated_taint);
-            // SingleExtensionEvalFunction.createSingleExtensionValue (Bazel
-            // 9.3:455-487) then SingleExtensionFunction.java:53: metadata errors
-            // fail the evaluation; the fixup warning precedes the import check.
-            if let (Some(metadata), Some(root_usage)) = (&metadata, &group.root_usage) {
-                match crate::extension_metadata::generate_fixup(metadata, root_usage, &generated_order) {
-                    // SingleExtensionFunction reports the fixup; `mod tidy`
-                    // reads the eval-only value, which does not.
-                    Ok(Some(fixup)) if !self.state.eval_only.load(Ordering::Relaxed) => {
-                        crate::ui::note(&fixup.warning())
-                    }
-                    Ok(Some(_)) => {}
-                    Ok(None) => {}
-                    Err(message) => return Err(format!(
+        }
+        drop(evaluated_taint);
+        // SingleExtensionEvalFunction.createSingleExtensionValue (Bazel
+        // 9.3:455-487) then SingleExtensionFunction.java:53: metadata errors
+        // fail the evaluation; the fixup warning precedes the import check.
+        if let (Some(metadata), Some(root_usage)) = (&metadata, &group.root_usage) {
+            match crate::extension_metadata::generate_fixup(metadata, root_usage, &generated_order)
+            {
+                // SingleExtensionFunction reports the fixup; `mod tidy`
+                // reads the eval-only value, which does not.
+                Ok(Some(fixup)) if !self.state.eval_only.load(Ordering::Relaxed) => {
+                    crate::ui::note(&fixup.warning())
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => {}
+                Err(message) => {
+                    return Err(format!(
                         "{message}\nerror evaluating module extension {} in {}",
                         group.symbol, group.label,
-                    )),
+                    ));
                 }
             }
-            // Missing imports invalidate the complete usage even if that alias
-            // was never requested. Nothing from this group is published yet.
-            let mut imports = Vec::new();
-            let mut source_guards = Vec::new();
-            let mut import_error = None;
-            for participant in &group.participants {
-                preparation_budget.string(&participant.owner)?;
-                source_guards.push(serde_json::json!({
-                    "owner": participant.owner,
-                    "source_profile_error": participant.source_profile_error,
-                }));
-                for import in &participant.imports {
-                    preparation_budget.string(&import.local_name)?;
-                    preparation_budget.string(&import.exported_name)?;
-                    if !repositories.contains_key(&import.exported_name) {
-                        import_error.get_or_insert_with(|| format!(
+        }
+        // Missing imports invalidate the complete usage even if that alias
+        // was never requested. Nothing from this group is published yet.
+        let mut imports = Vec::new();
+        let mut source_guards = Vec::new();
+        let mut import_error = None;
+        for participant in &group.participants {
+            preparation_budget.string(&participant.owner)?;
+            source_guards.push(serde_json::json!({
+                "owner": participant.owner,
+                "source_profile_error": participant.source_profile_error,
+            }));
+            for import in &participant.imports {
+                preparation_budget.string(&import.local_name)?;
+                preparation_budget.string(&import.exported_name)?;
+                if !repositories.contains_key(&import.exported_name) {
+                    import_error.get_or_insert_with(|| format!(
                             "module extension {}%{} did not declare imported repository {:?} (alias @{} in MODULE owner {:?})",
                             group.label, group.symbol, import.exported_name, import.local_name, participant.owner,
                         ));
-                        continue;
-                    }
-                    imports.push(serde_json::json!({
-                        "owner": participant.owner,
-                        "local_name": import.local_name,
-                        "exported_name": import.exported_name,
-                        "dev_dependency": import.dev_dependency,
-                    }));
+                    continue;
                 }
+                imports.push(serde_json::json!({
+                    "owner": participant.owner,
+                    "local_name": import.local_name,
+                    "exported_name": import.exported_name,
+                    "dev_dependency": import.dev_dependency,
+                }));
             }
-            // With a lockfile, an extension result may be evaluated or taken
-            // from MODULE.bazel.lock; generated repositories then depend only
-            // on what the result determines (each its own spec, the group's
-            // sources and imports), so both paths give the same identity. Without one, the evaluation's
-            // bound tags and recorded inputs are kept (previous identities).
-            let no_inputs = crate::repository_ctx::ExecutionInputs::default();
-            let evaluated = execution.as_ref().filter(|_| lock.is_none());
-            let inputs = evaluated.map_or(&no_inputs, |execution| &execution.inputs);
-            let modules = evaluated.map_or(&[][..], |execution| &execution.modules[..]);
-            let provenance = bounded_provenance(&OrdinaryProvenance {
+        }
+        // With a lockfile, an extension result may be evaluated or taken
+        // from MODULE.bazel.lock; generated repositories then depend only
+        // on what the result determines (each its own spec, the group's
+        // sources and imports), so both paths give the same identity. Without one, the evaluation's
+        // bound tags and recorded inputs are kept (previous identities).
+        let no_inputs = crate::repository_ctx::ExecutionInputs::default();
+        let evaluated = execution.as_ref().filter(|_| lock.is_none());
+        let inputs = evaluated.map_or(&no_inputs, |execution| &execution.inputs);
+        let modules = evaluated.map_or(&[][..], |execution| &execution.modules[..]);
+        let provenance = bounded_provenance(
+            &OrdinaryProvenance {
                 profile: ORDINARY_PROFILE,
                 public_label: group.label.to_string(),
-                symbol: &group.symbol, prefix: &group.prefix,
-                sources: &loaded.sources, tag_classes: &definition.tag_classes,
-                modules, source_guards: &source_guards,
+                symbol: &group.symbol,
+                prefix: &group.prefix,
+                sources: &loaded.sources,
+                tag_classes: &definition.tag_classes,
+                modules,
+                source_guards: &source_guards,
                 root_has_non_dev_dependency: group.root_has_non_dev_dependency,
                 imports: &imports,
                 host_factors,
@@ -4730,56 +4834,48 @@ impl RepositorySet {
                     }),
                 environ: &definition.environ,
                 watched_env: inputs.watched_env.as_ref(),
-            }, usize::MAX)?; // No size cap (Bazel has none); allocation failure stays explicit.
-            let provenance_digest = {
-                use sha2::Digest as _;
-                sha2::Sha256::digest(&provenance).into()
+            },
+            usize::MAX,
+        )?; // No size cap (Bazel has none); allocation failure stays explicit.
+        let provenance_digest = {
+            use sha2::Digest as _;
+            sha2::Sha256::digest(&provenance).into()
+        };
+        // Only an executing repository reads the bytes again (MEM2):
+        // with a lockfile they are regenerated on demand from the
+        // recipe (checked against the digest); without one they may
+        // hold the evaluation's observations, so they are kept.
+        let (provenance, recipe) = if lock.is_some() {
+            let (host_os, host_arch) = host_factors.parts();
+            let recipe = ProvenanceRecipe {
+                public_label: group.label.to_string(),
+                symbol: group.symbol.clone(),
+                prefix: group.prefix.clone(),
+                tag_classes: definition.tag_classes.clone(),
+                source_guards,
+                root_has_non_dev_dependency: group.root_has_non_dev_dependency,
+                imports,
+                host_os: host_os.map(str::to_owned),
+                host_arch: host_arch.map(str::to_owned),
+                environ: definition.environ.clone(),
             };
-            // Only an executing repository reads the bytes again (MEM2):
-            // with a lockfile they are regenerated on demand from the
-            // recipe (checked against the digest); without one they may
-            // hold the evaluation's observations, so they are kept.
-            let (provenance, recipe) = if lock.is_some() {
-                let (host_os, host_arch) = host_factors.parts();
-                let recipe = ProvenanceRecipe {
-                    public_label: group.label.to_string(),
-                    symbol: group.symbol.clone(),
-                    prefix: group.prefix.clone(),
-                    tag_classes: definition.tag_classes.clone(),
-                    source_guards,
-                    root_has_non_dev_dependency: group.root_has_non_dev_dependency,
-                    imports,
-                    host_os: host_os.map(str::to_owned),
-                    host_arch: host_arch.map(str::to_owned),
-                    environ: definition.environ.clone(),
-                };
-                (OnceLock::new(), Some(recipe))
-            } else {
-                let mut provenance = provenance;
-                provenance.shrink_to_fit(); // the sink grows by doubling
-                (OnceLock::from(provenance), None)
-            };
-            Ok(PreparedOrdinary {
-                loaded,
-                generated_mapping,
-                repositories,
-                provenance,
-                recipe,
-                spec_keys: std::sync::Mutex::new(BTreeMap::new()),
-                metadata,
-                import_error,
-                provenance_digest,
-            })
-        });
-        if prepared.is_ok() {
-            // The loads a file entered before this group was prepared
-            // (`warm_loads`) can execute ahead now.
-            let pending = lock_ignoring_poison(&self.state.pending_speculation).remove(id);
-            for canonical in pending.unwrap_or_default() {
-                self.state.speculation.request(&canonical);
-            }
-        }
-        prepared
+            (OnceLock::new(), Some(recipe))
+        } else {
+            let mut provenance = provenance;
+            provenance.shrink_to_fit(); // the sink grows by doubling
+            (OnceLock::from(provenance), None)
+        };
+        Ok(PreparedOrdinary {
+            loaded,
+            generated_mapping,
+            repositories,
+            provenance,
+            recipe,
+            spec_keys: std::sync::Mutex::new(BTreeMap::new()),
+            metadata,
+            import_error,
+            provenance_digest,
+        })
     }
 
     fn ordinary_repository(
