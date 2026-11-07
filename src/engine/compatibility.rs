@@ -234,32 +234,4 @@ impl Engine {
             .get(&ConfiguredTargetKey::new(owner, config))
             .and_then(|node| node.incompatible.clone()))
     }
-
-    pub(super) fn publish_incompatible(
-        &mut self,
-        key: ConfiguredTargetKey,
-        rule: Arc<Rule>,
-        conditions: Vec<(String, ConfigMatching)>,
-        incompatible: Arc<Incompatibility>,
-        configured: &mut ConfiguredNodes,
-        plan: &mut Plan,
-    ) {
-        let direct = matches!(*incompatible, Incompatibility::Direct { .. });
-        configured.insert(
-            key.clone(),
-            ConfiguredNode {
-                incompatible: Some(incompatible),
-                ..Default::default()
-            },
-        );
-        self.configured_rules.insert(key.clone(), rule.clone());
-        if let Some(capture) = &mut self.cquery_capture {
-            if direct {
-                capture.direct_incompatible.insert(key.clone());
-            }
-            capture.incompatible.insert(key.clone(), conditions);
-            capture.rules.insert(key.clone(), rule.clone());
-        }
-        plan.push((key, rule));
-    }
 }

@@ -18,34 +18,6 @@ impl Engine {
         })
     }
 
-    pub(super) fn split_attribute_dependencies(
-        &mut self,
-        rule: &Rule,
-        configurations: &BTreeMap<String, TransitionConfigurations>,
-    ) -> Result<BTreeMap<String, SplitAttribute>, String> {
-        let mut attributes = BTreeMap::new();
-        let Some(custom) = &rule.custom else {
-            return Ok(attributes);
-        };
-        for (name, branches) in configurations {
-            // The many rules_go patch-transition edges keep their original
-            // representation: no per-file split metadata allocation.
-            if branches.len() == 1 && branches[0].0.is_empty() {
-                continue;
-            }
-            let value = custom
-                .attrs
-                .get(name)
-                .ok_or_else(|| format!("missing transitioned attribute {name}"))?;
-            let labels = analysis::dependency_labels(value)
-                .into_iter()
-                .map(|text| self.resolve_rule_src(rule, text))
-                .collect::<Result<Vec<_>, _>>()?;
-            attributes.insert(name.clone(), self.split_attribute(name, labels, branches)?);
-        }
-        Ok(attributes)
-    }
-
     pub(super) fn split_attribute(
         &mut self,
         name: &str,
