@@ -471,7 +471,7 @@ impl Pass1 {
                 }
                 self.reach(source, sink, node)?;
             }
-            Event::PkgCommit(ref package) => {
+            Event::PkgCommit(ref package, _) => {
                 if self.packages.insert(package.clone()) {
                     sink.op(TapeOp::Effect(event));
                 }
@@ -937,7 +937,7 @@ pub(crate) mod tests {
         let b = f.body(
             "b",
             vec![
-                Event::PkgCommit(package.clone()),
+                Event::PkgCommit(package.clone(), false),
                 Event::Warn("w1".into()),
                 Event::Warn("w0".into()),
             ],
@@ -946,7 +946,7 @@ pub(crate) mod tests {
             "a",
             vec![
                 Event::Reach(b),
-                Event::PkgCommit(package),
+                Event::PkgCommit(package, true),
                 Event::Warn("w1".into()),
                 Event::Warn("w2".into()),
             ],
@@ -964,7 +964,7 @@ pub(crate) mod tests {
             .tape
             .ops
             .iter()
-            .filter(|op| matches!(op, TapeOp::Effect(Event::PkgCommit(_))))
+            .filter(|op| matches!(op, TapeOp::Effect(Event::PkgCommit(..))))
             .count();
         assert_eq!(commits, 1);
     }

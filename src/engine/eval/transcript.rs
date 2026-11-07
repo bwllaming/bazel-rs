@@ -37,8 +37,9 @@ pub(crate) enum Event {
     /// A source file reached (`track_source`).
     Source(Label),
     /// A package first committed here (its load prints, `generated`,
-    /// progress; `commit_load_unit`).
-    PkgCommit(PackageId),
+    /// progress; `commit_load_unit`); `true`: its BUILD file printed (the
+    /// incremental tracker's package record, S1 addition).
+    PkgCommit(PackageId, bool),
     /// A memo node used here: its first linearized use emits its effects
     /// (prints of an aspect predicate, a registered-toolchains cycle
     /// report, a toolchain implementation's forced platform).

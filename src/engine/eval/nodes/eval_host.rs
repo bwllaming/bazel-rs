@@ -114,7 +114,9 @@ impl<'c, 'e> EvalHost<'c, 'e> {
     }
 
     fn emit(&mut self, event: Event) {
-        if self.own.is_some() {
+        // The value's copy of the transcript, unless the coordinator keeps
+        // it (BAZEL_RS_ANALYSIS=eval).
+        if self.own.is_some() && self.cx.coord().lin.is_none() {
             self.events.push(event.clone());
         }
         self.cx.emit(event);
@@ -305,7 +307,20 @@ impl<'c, 'e> EvalHost<'c, 'e> {
     /// after the memo): the loaded rule's gates, then
     /// [`Phase1::analyze_rule`].
     fn ct1(&mut self, key: ConfiguredTargetKey) -> Result<(), String> {
-        let rule = match self.target(&key.label)? {
+        // The reacher looked the label up (its `Access`); the walk's body
+        // does not look it up again (not even the engine's own lookup of a
+        // reached output file's rule).
+        let paused = crate::engine::eval::linearize::capture::pause(true);
+        let needed = self.need(NodeKey::Tgt(key.label.clone()));
+        crate::engine::eval::linearize::capture::pause(paused);
+        let looked_up = match needed {
+            Ok(value) => match value.as_ref() {
+                NodeValue::Tgt(result) => result.clone(),
+                _ => Err("internal error: a Tgt key with another value".to_owned()),
+            },
+            Err(missing) => Err(self.stop(missing)),
+        };
+        let rule = match looked_up? {
             Target::Rule(rule) | Target::Output(rule, _) => rule,
             Target::Source(_) => {
                 return Err(format!(
@@ -722,23 +737,69 @@ impl Host for EvalHost<'_, '_> {
         }
     }
 
-    fn prefetch_rule(&mut self, _rule: &Rule) {}
+    // Phase-1 prefetch (crate::prefetch), fed as the walk feeds it (S1:
+    // a coordinator service; it also decides which repositories a
+    // speculation executes, which the incremental index records).
+    fn prefetch_rule(&mut self, rule: &Rule) {
+        self.cx.coord().engine.prefetch_rule(rule);
+    }
 
     fn prefetch_note_condition(
         &mut self,
-        _text: &str,
-        _matching: &crate::configured_attributes::ConfigMatching,
+        text: &str,
+        matching: &crate::configured_attributes::ConfigMatching,
     ) {
+        // Phase-1 prefetch: which select() branches the build certainly
+        // takes (crate::prefetch::certain_labels).
+        let coord = self.cx.coord();
+        if let Some(prefetch) = &coord.engine.prefetch
+            && let Ok(key) = Label::parse_canonical(text)
+        {
+            prefetch.note_condition(
+                &key,
+                match &matching.result {
+                    crate::configured_attributes::MatchResult::Match => Some(true),
+                    crate::configured_attributes::MatchResult::NoMatch(_) => Some(false),
+                    crate::configured_attributes::MatchResult::InError(_) => None,
+                },
+            );
+        }
     }
 
-    fn prefetch_platforms(&mut self, _target: &Arc<PlatformInfo>, _host: &Arc<PlatformInfo>) {}
+    fn prefetch_platforms(&mut self, target: &Arc<PlatformInfo>, host: &Arc<PlatformInfo>) {
+        // Phase-1 prefetch: from here on, the implementation of every
+        // toolchain compatible with these platforms is queued as soon as
+        // the toolchain is analyzed (`prefetch_compatible_toolchain`).
+        let mut coord = self.cx.coord();
+        if coord.engine.prefetch.is_some() && coord.engine.prefetch_platforms.is_none() {
+            coord.engine.prefetch_platforms = Some((target.clone(), host.clone()));
+        }
+    }
 
-    fn prefetch_resolved(&mut self, _resolved: &UnloadedToolchainContext) {}
+    fn prefetch_resolved(&mut self, resolved: &UnloadedToolchainContext) {
+        // Phase-1 prefetch: the selected implementations are analyzed after
+        // the rule's attribute dependencies.
+        let mut coord = self.cx.coord();
+        let engine = &mut *coord.engine;
+        if engine.prefetch.is_some() {
+            for label in resolved.resolved_labels() {
+                if engine.prefetch_followed.insert(label.clone())
+                    && let Some(prefetch) = &engine.prefetch
+                {
+                    prefetch.submit_targets([(label.package_id(), Some(label.name))], 1, true);
+                }
+            }
+        }
+    }
 
     fn prefetch_compatible_toolchain(
         &mut self,
-        _declared: &crate::toolchains::DeclaredToolchainInfo,
+        declared: &crate::toolchains::DeclaredToolchainInfo,
     ) {
+        self.cx
+            .coord()
+            .engine
+            .prefetch_compatible_toolchain(declared);
     }
 
     fn plan_len(&mut self) -> usize {

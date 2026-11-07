@@ -39,9 +39,10 @@ thread_local! {
 }
 
 /// Set capturing aside (`true`) while the engine works as the walk (a
-/// flush's phase 2), or take it up again (`false`).
-pub(crate) fn pause(paused: bool) {
-    PAUSED.with(|cell| cell.set(paused));
+/// flush's phase 2), or take it up again (`false`); returns the previous
+/// setting.
+pub(crate) fn pause(paused: bool) -> bool {
+    PAUSED.with(|cell| cell.replace(paused))
 }
 
 fn push(event: impl FnOnce() -> Event) {
@@ -64,6 +65,14 @@ pub(crate) fn scope_exit() {
 pub(crate) fn access(label: &Label) {
     if TRACKING.with(Cell::get) {
         push(|| Event::Access(label.clone()));
+    }
+}
+
+/// A package is committed (`track_package_printed`; `printed`: its BUILD
+/// file printed).
+pub(crate) fn package(package: &crate::label::PackageId, printed: bool) {
+    if TRACKING.with(Cell::get) {
+        push(|| Event::PkgCommit(package.clone(), printed));
     }
 }
 

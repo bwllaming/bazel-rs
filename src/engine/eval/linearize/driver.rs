@@ -228,6 +228,25 @@ impl Coord<'_> {
             lin.pass.resume(&view, &mut lin.ops)?;
         }
         let ops = std::mem::take(&mut lin.ops);
+        // snapshot-unrecorded: a diagnostics dump of the tape; it changes nothing the analysis computes.
+        if let Some(path) = std::env::var_os("BAZEL_RS_EVAL_TAPE_DUMP") {
+            use std::io::Write as _;
+            // snapshot-unrecorded: writes the diagnostics dump requested above.
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                for op in &ops {
+                    let _ = match op {
+                        TapeOp::Reach {
+                            node, key, enter, ..
+                        } => writeln!(file, "Reach {node:?} {key} enter={enter}"),
+                        op => writeln!(file, "{op:?}"),
+                    };
+                }
+            }
+        }
         for op in ops {
             if let Some(tracker) = lin.tracker.as_deref_mut() {
                 lin.replay.apply(tracker, &op);
@@ -304,7 +323,7 @@ impl Coord<'_> {
         shared: &EvalShared,
         f: impl FnOnce(&mut Engine, &mut Linearizer) -> R,
     ) -> R {
-        super::capture::pause(true);
+        let paused = super::capture::pause(true);
         let engine = &mut *self.engine;
         let mut configurations = shared
             .configurations
@@ -317,7 +336,7 @@ impl Coord<'_> {
         std::mem::swap(&mut engine.configurations, &mut *configurations);
         // What it reported is at its place already.
         self.store.warnings_seen = engine.warnings.len();
-        super::capture::pause(false);
+        super::capture::pause(paused);
         result
     }
 
@@ -735,10 +754,10 @@ fn drive(
         // then the source file or the configured target.
         let root = {
             let mut coord = bodies.coord();
-            if coord.tracking {
-                coord.push_event(Event::Access(label.clone()));
-            }
-            match coord.engine.target(label) {
+            // The lookup's `Access` is captured (Engine::target).
+            let looked_up = coord.engine.target(label);
+            coord.drain();
+            match looked_up {
                 Err(error) => Err(error),
                 Ok(Target::Source(_)) => {
                     if coord.tracking {

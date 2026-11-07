@@ -109,15 +109,20 @@ impl Cx for BodyCx<'_, '_> {
     }
 
     fn emit(&mut self, event: Event) {
-        {
+        let linearized = {
             let mut coord = self.coord();
             if event == Event::Flush {
                 coord.saw_flush = true;
             }
             coord.drain();
             coord.push_event(event.clone());
+            coord.lin.is_some()
+        };
+        // Under BAZEL_RS_ANALYSIS=eval the coordinator's store is the
+        // transcript of record (one copy: ~/code emits millions of events).
+        if !linearized {
+            self.cx.emit(event);
         }
-        self.cx.emit(event);
     }
 
     fn current(&self) -> NodeId {

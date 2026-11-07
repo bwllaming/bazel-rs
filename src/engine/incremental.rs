@@ -46,23 +46,6 @@ thread_local! {
 pub(super) const PATTERN_SCOPE: &str = "\u{0}pattern";
 pub(super) const SUITE_SCOPE: &str = "\u{0}suite";
 
-/// A scope entered by a tape replay ([`TapeReplay`]).
-enum ReplayedScope {
-    Shared(#[allow(dead_code)] SharedScope),
-    Pattern(#[allow(dead_code)] PatternScope),
-    Suite(#[allow(dead_code)] SuiteScope),
-}
-
-impl ReplayedScope {
-    fn enter(name: &'static str) -> Self {
-        match name {
-            PATTERN_SCOPE => Self::Pattern(PatternScope::enter()),
-            SUITE_SCOPE => Self::Suite(SuiteScope::enter()),
-            name => Self::Shared(SharedScope::enter(name)),
-        }
-    }
-}
-
 /// While alive, the packages the engine looks up are read by a test
 /// suite's expansion in the target pattern phase.
 pub(super) struct SuiteScope(());
@@ -410,7 +393,10 @@ pub(super) struct TapeReplay {
     plan_len: u32,
     /// (the entered key's id, the frame depth before its reach).
     entered: Vec<(u32, usize)>,
-    scopes: Vec<ReplayedScope>,
+    /// The tracker scopes the tape entered, outermost first (its own
+    /// context, installed around each op: the evaluation's thread-local
+    /// scopes are the live ones).
+    scopes: Vec<&'static str>,
     roots: usize,
 }
 
@@ -425,7 +411,42 @@ impl TapeReplay {
         }
     }
 
+    /// The scope context the tape is in.
+    fn context(&self) -> ScopeContext {
+        let shared: Vec<&'static str> = self
+            .scopes
+            .iter()
+            .copied()
+            .filter(|name| *name != PATTERN_SCOPE && *name != SUITE_SCOPE)
+            .collect();
+        ScopeContext {
+            shared_depth: shared.len() as u32,
+            shared_name: shared.first().copied().unwrap_or(""),
+            pattern_depth: self
+                .scopes
+                .iter()
+                .filter(|name| **name == PATTERN_SCOPE)
+                .count() as u32,
+            suite_depth: self
+                .scopes
+                .iter()
+                .filter(|name| **name == SUITE_SCOPE)
+                .count() as u32,
+        }
+    }
+
     pub(super) fn apply(&mut self, tracker: &mut Tracker, op: &super::eval::transcript::TapeOp) {
+        use super::eval::transcript::{Event, TapeOp};
+        match op {
+            TapeOp::Effect(Event::ScopeEnter(name)) => self.scopes.push(name),
+            TapeOp::Effect(Event::ScopeExit) => {
+                self.scopes.pop();
+            }
+            op => self.context().enter(|| self.apply_in_context(tracker, op)),
+        }
+    }
+
+    fn apply_in_context(&mut self, tracker: &mut Tracker, op: &super::eval::transcript::TapeOp) {
         use super::eval::transcript::{Event, SegmentKind, TapeOp};
         match op {
             TapeOp::Segment(kind) => {
@@ -487,16 +508,14 @@ impl TapeReplay {
             TapeOp::Effect(Event::Access(label)) => tracker.access(label),
             // The commit's record (`track_package_printed`; its BUILD
             // prints are pass 2's to note).
-            TapeOp::Effect(Event::PkgCommit(package)) => {
+            TapeOp::Effect(Event::PkgCommit(package, printed)) => {
                 let id = tracker.package(package);
-                tracker.packages[id as usize].pattern |= pattern();
+                let record = &mut tracker.packages[id as usize];
+                record.printed |= *printed;
+                record.pattern |= pattern();
             }
             TapeOp::Effect(Event::Source(label)) => {
                 tracker.reach((label.clone(), None, true));
-            }
-            TapeOp::Effect(Event::ScopeEnter(name)) => self.scopes.push(ReplayedScope::enter(name)),
-            TapeOp::Effect(Event::ScopeExit) => {
-                self.scopes.pop();
             }
             TapeOp::Effect(Event::Print(_)) => {
                 if let Some((frame, _)) = tracker.frames.last().copied() {
@@ -507,11 +526,9 @@ impl TapeReplay {
         }
     }
 
-    pub(super) fn finish(mut self, tracker: &mut Tracker) {
+    pub(super) fn finish(self, tracker: &mut Tracker) {
         tracker.root_analysis = None;
         tracker.root_reached = false;
-        // Unbalanced scopes (a failed phase 1) close innermost first.
-        while self.scopes.pop().is_some() {}
     }
 }
 
@@ -734,6 +751,8 @@ impl Engine {
 
     /// A package was committed; `printed`: its BUILD file printed.
     pub(super) fn track_package_printed(&mut self, package: &PackageId, printed: bool) {
+        // BAZEL_RS_ANALYSIS=eval: the commit belongs to the running node.
+        super::eval::linearize::capture::package(package, printed);
         if self.tracking() {
             let package = package.clone();
             self.track_with(move |tracker| {
