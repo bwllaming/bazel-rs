@@ -142,18 +142,27 @@ thread_local! {
 /// Note an output path a commit registers (BAZEL_RS_VERIFY_AHEAD records
 /// them to check the commit's [`OutputSummary`]).
 pub(super) fn record_registered_output(output: &Path) {
-    // The workspace status files belong to no target: whichever commit
-    // needs them first registers them (Engine::ensure_workspace_status), and
-    // a commit that needs them never commits ahead of its turn.
-    if matches!(
-        output.to_str(),
-        Some("bazel-out/stable-status.txt" | "bazel-out/volatile-status.txt")
-    ) {
-        return;
-    }
+    record_registered(output, || path_hash(output));
+}
+
+/// [`record_registered_output`] of a path hashed as `hash` ([`path_hash`]).
+pub(super) fn record_registered_hashed(output: &Path, hash: u64) {
+    record_registered(output, || hash);
+}
+
+fn record_registered(output: &Path, hash: impl FnOnce() -> u64) {
     REGISTERED.with(|registered| {
         if let Some(registered) = registered.borrow_mut().as_mut() {
-            registered.push(path_hash(output));
+            // The workspace status files belong to no target: whichever
+            // commit needs them first registers them
+            // (Engine::ensure_workspace_status), and a commit that needs
+            // them never commits ahead of its turn.
+            if !matches!(
+                output.to_str(),
+                Some("bazel-out/stable-status.txt" | "bazel-out/volatile-status.txt")
+            ) {
+                registered.push(hash());
+            }
         }
     });
 }

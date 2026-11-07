@@ -130,8 +130,7 @@ fn replay(
                 }
             }
         }
-        state.producers.paths.reserve(outputs);
-        state.producers.ancestors.reserve(outputs);
+        state.producers.reserve(outputs);
         state.declared.reserve(declared);
         state.custom_providers.reserve(recorded.len());
         state.provider_keys.reserve(recorded.len());

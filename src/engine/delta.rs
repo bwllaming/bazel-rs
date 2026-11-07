@@ -142,14 +142,16 @@ pub(super) struct PathHashes {
 }
 
 impl PathHashes {
-    pub(super) fn insert(&self, output: &Path) {
+    /// Note a registered output path, by its hash and its proper
+    /// ancestors' (nearest first, [`HashedPath`]).
+    pub(super) fn insert_hashed(&self, path: u64, proper_ancestors: &[u64]) {
         self.paths
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(parallel::path_hash(output));
+            .insert(path);
         let mut ancestors = self.ancestors.lock().unwrap_or_else(|e| e.into_inner());
-        for ancestor in output.ancestors().skip(1) {
-            if ancestor.as_os_str().is_empty() || !ancestors.insert(parallel::path_hash(ancestor)) {
+        for hash in proper_ancestors {
+            if !ancestors.insert(*hash) {
                 break;
             }
         }
@@ -223,8 +225,9 @@ pub(super) enum DeltaOp {
         BTreeMap<String, starlark::values::OwnedFrozenValue>,
         Vec<String>,
     ),
-    /// An output path registered with its producer (register_output).
-    Output(PathBuf, Arc<OutputProducer>),
+    /// An output path registered with its producer (register_output),
+    /// with its hashes (computed where the delta is built).
+    Output(HashedPath, Arc<OutputProducer>),
     /// An output shared with the equal action that registered it first
     /// (stamped `registered`; plan B S0's shared counter).
     Shared(PathBuf, u32),
@@ -626,10 +629,10 @@ impl<'a> DeltaBuilder<'a> {
         });
         match checked? {
             OutputRegistration::New => {
-                self.producers
-                    .insert(output.to_path_buf(), Arc::clone(producer));
+                let hashed = HashedPath::new(output.to_path_buf());
                 self.ops
-                    .push(DeltaOp::Output(output.to_path_buf(), Arc::clone(producer)));
+                    .push(DeltaOp::Output(hashed.clone(), Arc::clone(producer)));
+                self.producers.insert_hashed(hashed, Arc::clone(producer));
                 Ok(None)
             }
             OutputRegistration::Shared(id, registered) => {
@@ -1563,7 +1566,7 @@ impl Engine {
     pub(super) fn delta_meets_producers(state: &ActionPlanning, delta: &TargetDelta) -> bool {
         delta.unchecked
             && (delta.ops.iter().any(|op| match op {
-                DeltaOp::Output(path, _) => meets_producer(&state.producers, path),
+                DeltaOp::Output(path, _) => meets_producer_hashed(&state.producers, path),
                 _ => false,
             }) || delta
                 .failed_output
@@ -1654,8 +1657,8 @@ pub(super) fn merge_op(
             state.provider_keys.insert(key.clone(), provider_keys);
         }
         DeltaOp::Output(path, producer) => {
-            parallel::record_registered_output(&path);
-            state.producers.insert(path, producer);
+            parallel::record_registered_hashed(path.path(), path.hash());
+            state.producers.insert_hashed(path, producer);
         }
         DeltaOp::Shared(path, registered) => {
             parallel::record_registered_output(&path);
@@ -2000,7 +2003,7 @@ fn rendered(op: &DeltaOp) -> String {
         ),
         DeltaOp::Output(path, producer) => format!(
             "output {} {} {:?} {:?}",
-            path.display(),
+            path.path().display(),
             producer.owner,
             producer.label,
             producer.action.as_ref().map(|(id, _)| id)

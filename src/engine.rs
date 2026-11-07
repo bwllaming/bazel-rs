@@ -13585,12 +13585,13 @@ fn check_macro_namespace(rule: &Rule, target: &Label) -> Result<(), String> {
 /// one shared [`OutputProducer`] per producing action (or native output).
 struct Producers {
     /// Output path -> producer (lookups only, never iterated in an order
-    /// that is observed), with the plan index that registered it.
-    paths: crate::fast_hash::FxHashMap<PathBuf, (Arc<OutputProducer>, u32)>,
+    /// that is observed), with the plan index that registered it; hashed
+    /// by [`parallel::path_hash`].
+    paths: hashbrown::HashTable<ProducerEntry>,
     /// Every proper ancestor of a registered output path: a path in it has
     /// a registered path below it (the prefix-conflict check), answered
-    /// without an ordered map.
-    ancestors: crate::fast_hash::FxHashSet<PathBuf>,
+    /// without an ordered map; with its [`parallel::path_hash`].
+    ancestors: hashbrown::HashTable<(u64, PathBuf)>,
     /// The plan index of the target registering now while a pipelined walk
     /// commits (its turn, or its index when it commits ahead of its turn);
     /// `u32::MAX` (unordered) outside one.
@@ -13602,6 +13603,59 @@ struct Producers {
     /// the analysis workers (S1: a worker whose outputs meet one leaves
     /// the delta to the coordinator); `None` in a delta's own producers.
     hashes: Option<Arc<delta::PathHashes>>,
+}
+
+/// One registered output path of [`Producers`].
+struct ProducerEntry {
+    hash: u64,
+    path: PathBuf,
+    producer: Arc<OutputProducer>,
+    /// The plan index that registered it.
+    stamp: u32,
+}
+
+/// An output path with the [`parallel::path_hash`] of itself and of each
+/// of its proper ancestors (nearest first, the empty path excluded):
+/// computed once — on the analysis worker that builds a commit delta — and
+/// used by every map a registration updates or checks ([`Producers`],
+/// [`delta::PathHashes`]).
+#[derive(Clone)]
+pub(super) struct HashedPath {
+    path: PathBuf,
+    hash: u64,
+    ancestors: Box<[u64]>,
+}
+
+impl HashedPath {
+    fn new(path: PathBuf) -> Self {
+        let hash = parallel::path_hash(&path);
+        let ancestors = proper_ancestors(&path).map(parallel::path_hash).collect();
+        Self {
+            path,
+            hash,
+            ancestors,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn hash(&self) -> u64 {
+        self.hash
+    }
+
+    /// The proper ancestors with their hashes, nearest first.
+    fn ancestors(&self) -> impl Iterator<Item = (&Path, u64)> {
+        proper_ancestors(&self.path).zip(self.ancestors.iter().copied())
+    }
+}
+
+/// The proper ancestors of `path` that Producers keeps, nearest first.
+fn proper_ancestors(path: &Path) -> impl Iterator<Item = &Path> {
+    path.ancestors()
+        .skip(1)
+        .take_while(|ancestor| !ancestor.as_os_str().is_empty())
 }
 
 impl Default for Producers {
@@ -13636,9 +13690,21 @@ impl Producers {
     }
 
     fn get_indexed(&self, output: &Path) -> Option<(&Arc<OutputProducer>, u32)> {
+        self.get_hashed(parallel::path_hash(output), output)
+    }
+
+    /// [`Self::get_indexed`] of `output` hashed as `hash`.
+    fn get_hashed(&self, hash: u64, output: &Path) -> Option<(&Arc<OutputProducer>, u32)> {
         self.paths
-            .get(output)
-            .map(|(producer, index)| (producer, *index))
+            .find(hash, |entry| entry.path == output)
+            .map(|entry| (&entry.producer, entry.stamp))
+    }
+
+    /// Whether `output` (hashed as `hash`) has a registered path below it.
+    fn has_below(&self, hash: u64, output: &Path) -> bool {
+        self.ancestors
+            .find(hash, |(_, ancestor)| ancestor == output)
+            .is_some()
     }
 
     #[cfg(test)]
@@ -13648,7 +13714,7 @@ impl Producers {
 
     #[cfg(test)]
     fn values(&self) -> impl Iterator<Item = &Arc<OutputProducer>> {
-        self.paths.values().map(|(producer, _)| producer)
+        self.paths.iter().map(|entry| &entry.producer)
     }
 
     /// A delta's own producers ([`delta::DeltaBuilder`]), registering as
@@ -13662,28 +13728,66 @@ impl Producers {
     }
 
     fn insert(&mut self, output: PathBuf, producer: Arc<OutputProducer>) {
+        self.insert_hashed(HashedPath::new(output), producer);
+    }
+
+    /// Register `producer` for `output` (replacing a registration of the
+    /// path), with the hashes `output` carries: each map hashes nothing,
+    /// and an ancestor is allocated only when it is new.
+    fn insert_hashed(&mut self, output: HashedPath, producer: Arc<OutputProducer>) {
         if let Some(hashes) = &self.hashes {
-            hashes.insert(&output);
+            hashes.insert_hashed(output.hash, &output.ancestors);
         }
-        for ancestor in output.ancestors().skip(1) {
-            if ancestor.as_os_str().is_empty() || !self.ancestors.insert(ancestor.to_path_buf()) {
-                break;
+        for (ancestor, hash) in output.ancestors() {
+            match self
+                .ancestors
+                .entry(hash, |(_, known)| known == ancestor, |(hash, _)| *hash)
+            {
+                hashbrown::hash_table::Entry::Occupied(_) => break,
+                hashbrown::hash_table::Entry::Vacant(entry) => {
+                    entry.insert((hash, ancestor.to_path_buf()));
+                }
             }
         }
-        self.paths.insert(output, (producer, self.stamp));
+        let HashedPath { path, hash, .. } = output;
+        let stamp = self.stamp;
+        match self
+            .paths
+            .entry(hash, |entry| entry.path == path, |entry| entry.hash)
+        {
+            hashbrown::hash_table::Entry::Occupied(mut entry) => {
+                let entry = entry.get_mut();
+                entry.producer = producer;
+                entry.stamp = stamp;
+            }
+            hashbrown::hash_table::Entry::Vacant(entry) => {
+                entry.insert(ProducerEntry {
+                    hash,
+                    path,
+                    producer,
+                    stamp,
+                });
+            }
+        }
+    }
+
+    /// Room for `additional` more output paths and ancestors.
+    fn reserve(&mut self, additional: usize) {
+        self.paths.reserve(additional, |entry| entry.hash);
+        self.ancestors.reserve(additional, |(hash, _)| *hash);
     }
 
     /// The first registered path below `output` in path order (what an
     /// ordered map's range from `output` finds first), if any.
     fn first_below(&self, output: &Path) -> Option<(&PathBuf, &Arc<OutputProducer>, u32)> {
-        if !self.ancestors.contains(output) {
+        if !self.has_below(parallel::path_hash(output), output) {
             return None;
         }
         self.paths
             .iter()
-            .filter(|(path, _)| path.as_path() != output && path.starts_with(output))
-            .min_by(|(a, _), (b, _)| a.cmp(b))
-            .map(|(path, (producer, index))| (path, producer, *index))
+            .filter(|entry| entry.path.as_path() != output && entry.path.starts_with(output))
+            .min_by(|a, b| a.path.cmp(&b.path))
+            .map(|entry| (&entry.path, &entry.producer, entry.stamp))
     }
 }
 
@@ -13849,11 +13953,20 @@ fn check_output(
 /// built without them is built again on the coordinator then).
 fn meets_producer(producers: &Producers, output: &Path) -> bool {
     producers.get_indexed(output).is_some()
-        || producers.ancestors.contains(output)
+        || producers.has_below(parallel::path_hash(output), output)
         || output
             .ancestors()
             .skip(1)
             .any(|ancestor| producers.get_indexed(ancestor).is_some())
+}
+
+/// [`meets_producer`] of an output path with its hashes.
+fn meets_producer_hashed(producers: &Producers, output: &HashedPath) -> bool {
+    producers.get_hashed(output.hash, output.path()).is_some()
+        || producers.has_below(output.hash, output.path())
+        || output
+            .ancestors()
+            .any(|(ancestor, hash)| producers.get_hashed(hash, ancestor).is_some())
 }
 
 /// Register `producer` for `output`. Output paths are global across
