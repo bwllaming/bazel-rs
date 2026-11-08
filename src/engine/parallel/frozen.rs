@@ -31,11 +31,25 @@
 
 use super::*;
 
-/// `BAZEL_RS_EVAL_FROZEN_PREPARES=1`.
+/// `BAZEL_RS_EVAL_FROZEN_PREPARES=1` (`all`: every walk, the tests').
 pub(super) fn enabled() -> bool {
+    walk_min().is_some()
+}
+
+/// The shortest walk that prepares on the workers (the frozen view costs
+/// a fork of the engine), `None`: off.
+pub(super) fn walk_min() -> Option<usize> {
     // snapshot-unrecorded: a scheduling switch; the output is the same either way.
-    let value = std::env::var_os("BAZEL_RS_EVAL_FROZEN_PREPARES");
-    value.is_some_and(|value| value == "1")
+    let value = std::env::var("BAZEL_RS_EVAL_FROZEN_PREPARES")
+        .ok()
+        // A binary built with it (the test suites' mode, like
+        // BAZEL_RS_DEFAULT_ANALYSIS).
+        .or(option_env!("BAZEL_RS_DEFAULT_EVAL_FROZEN_PREPARES").map(str::to_owned))?;
+    match value.as_str() {
+        "1" => Some(2048),
+        "all" => Some(0),
+        _ => None,
+    }
 }
 
 /// What the analysis workers' prepares read during one walk.

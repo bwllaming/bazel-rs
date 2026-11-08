@@ -50,10 +50,6 @@ const HELD_FACTOR: usize = 8;
 /// How many plan entries past the turn the coordinator classifies.
 const HORIZON: usize = 4096;
 
-/// S3 (eval pass 2): the shortest walk that prepares on the workers (the
-/// frozen view costs a fork of the engine).
-const FROZEN_WALK_MIN: usize = 2048;
-
 /// S3: the analysis workers of an evaluated build (they prepare too):
 /// `--loading_phase_threads`, bounded by the cores.
 fn frozen_workers(loading_phase_threads: usize) -> usize {
@@ -1825,7 +1821,7 @@ impl Engine {
             .planning_plan
             .as_ref()
             .map_or(0, |plan| plan.len().saturating_sub(state.done));
-        if remaining >= FROZEN_WALK_MIN && self.frozen_prepares(state) {
+        if frozen::walk_min().is_some_and(|min| remaining >= min) && self.frozen_prepares(state) {
             crate::perf_mark("pass2.freeze");
             let frozen = self.freeze(state, configured);
             crate::perf_mark("pass2.frozen");
