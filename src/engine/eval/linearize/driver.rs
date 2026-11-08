@@ -1230,6 +1230,8 @@ impl Engine {
             let pool_roots = if evaluator.pooled() {
                 let roots = warm_up(&evaluator, &shared, labels, top, target_platform.clone());
                 evaluator.set_inline(true);
+                // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
+                evaluator.set_assist(std::env::var_os("BAZEL_RS_EVAL_NO_ASSIST").is_none());
                 Some(roots)
             } else {
                 None
@@ -1244,6 +1246,7 @@ impl Engine {
             } else {
                 0
             };
+            let driving = std::time::Instant::now();
             let result = drive(
                 &bodies,
                 &evaluator,
@@ -1252,6 +1255,10 @@ impl Engine {
                 top,
                 target_platform,
                 pool_roots.as_deref(),
+            );
+            DRIVE[2].fetch_add(
+                driving.elapsed().as_micros() as u64,
+                std::sync::atomic::Ordering::Relaxed,
             );
             if stats_enabled() {
                 let stats = evaluator.stats();
@@ -1303,9 +1310,18 @@ impl Engine {
                 let drive =
                     |index: usize| DRIVE[index].load(std::sync::atomic::Ordering::Relaxed) / 1000;
                 crate::note!(
-                    "bazel-rs: eval phase 1: driver: pool rounds {} ms, requested targets' lookups and evaluations {} ms (the linearizer's flushes included)",
+                    "bazel-rs: eval phase 1: driver {} ms: pool rounds {} ms, requested targets' lookups and evaluations {} ms, their linearization {} ms (the linearizer's flushes are in both)",
+                    drive(2),
                     drive(0),
-                    drive(1)
+                    drive(1),
+                    drive(3)
+                );
+                crate::note!(
+                    "bazel-rs: eval phase 1: the sequential attempts applied the tape for {} ms; requested-target lookups {} ms",
+                    super::super::nodes::bodies::BEGIN_LINEARIZE
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        / 1000,
+                    LOOKUPS.load(std::sync::atomic::Ordering::Relaxed) / 1000
                 );
                 let spec = &super::super::nodes::speculate::STATS;
                 let spec = |index: usize| spec[index].load(std::sync::atomic::Ordering::Relaxed);
@@ -1369,6 +1385,15 @@ impl Engine {
         crate::ui::replay(leftover);
         let linearized = pass.finish();
         crate::perf_mark("plan.eval_phase1_done");
+        // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
+        if std::env::var_os("BAZEL_RS_EVAL_PARKED_DEBUG").is_some() {
+            let kinds = std::mem::take(
+                &mut *super::super::nodes::bodies::SEQUENTIAL_KINDS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            crate::note!("bazel-rs: eval phase 1: sequential attempts by kind: {kinds:?}");
+        }
         if stats_enabled() {
             let ms = |index: usize| STATS[index].load(std::sync::atomic::Ordering::Relaxed) / 1000;
             crate::note!(
@@ -1528,36 +1553,6 @@ pub(crate) fn commit_roots(repositories: &crate::repository::RepositorySet, root
     let scope = crate::observed_fs::unit_scope();
     repositories.note_committed_roots(roots);
     crate::observed_fs::commit_to_recorder(scope.finish());
-}
-
-/// The first node below `root`, in the walk's order (a depth-first walk
-/// of the parked nodes in need order), that waits for the sequential pass
-/// (`bodies::INLINE`).
-fn first_inline_blocker(
-    evaluator: &Evaluator<'_, Phase1Bodies<'_, '_>>,
-    root: NodeId,
-) -> Option<NodeId> {
-    use super::super::graph::{State, Wait};
-    use super::super::nodes::bodies::INLINE;
-    let graph = evaluator.graph();
-    let mut seen = FxHashSet::default();
-    let mut stack = vec![root];
-    while let Some(id) = stack.pop() {
-        if !seen.insert(id) {
-            continue;
-        }
-        let entry = graph.entry(id);
-        if entry.state() != State::Waiting {
-            continue;
-        }
-        let wait = entry.inner.lock().wait.clone();
-        match wait {
-            Wait::Repo(name) | Wait::Unresolvable(name) if name == INLINE => return Some(id),
-            Wait::Nodes(nodes) => stack.extend(nodes.into_iter().rev()),
-            _ => {}
-        }
-    }
-    None
 }
 
 /// BAZEL_RS_EVAL_PARKED_DEBUG: what the parked nodes wait for, by kind.
@@ -1732,10 +1727,27 @@ fn pool_round(
 
 /// BAZEL_RS_EVAL_STATS: the sequential driver's time (µs) in the later
 /// pool rounds, and in the requested targets' lookups and evaluations.
-static DRIVE: [std::sync::atomic::AtomicU64; 2] = [
+static DRIVE: [std::sync::atomic::AtomicU64; 4] = [
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
     std::sync::atomic::AtomicU64::new(0),
     std::sync::atomic::AtomicU64::new(0),
 ];
+
+/// Adds its lifetime's µs to the counter when dropped.
+struct Timed<'a>(&'a std::sync::atomic::AtomicU64, std::time::Instant);
+
+impl Drop for Timed<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_add(
+            self.1.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}
+
+/// BAZEL_RS_EVAL_STATS: the µs of the requested targets' lookups.
+static LOOKUPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// BAZEL_RS_EVAL_STATS: the later pool rounds (nodes done, time).
 static ROUNDS: std::sync::Mutex<Vec<(u64, std::time::Duration)>> =
@@ -1761,7 +1773,7 @@ fn drive(
     // did real work (it may have unblocked what the pool parked).
     let mut ran = sequential_attempts();
     let evaluate = |key: &NodeKey| -> Arc<NodeValue> {
-        evaluator.evaluate(
+        evaluator.evaluate_values(
             std::slice::from_ref(key),
             &mut Lane { shared },
             &mut Pass1Cycles::default(),
@@ -1802,6 +1814,8 @@ fn drive(
     // tracking) and its package's commit (a `MemoUse` of its Pkg node) in
     // the current segment, then the Tgt node.
     let lookup = |label: &Label| -> Result<Target, String> {
+        let started = std::time::Instant::now();
+        let _timed = Timed(&LOOKUPS, started);
         {
             let mut coord = bodies.coord();
             coord.drain();
@@ -1870,31 +1884,6 @@ fn drive(
                 }
             }
         };
-        let resolving = std::time::Instant::now();
-        // What only the sequential pass can run (a package blocked on an
-        // extension's preparation, a flag left to its flush), one at a
-        // time in the walk's order, each followed by the pool on what it
-        // unblocked (S2): the sequential pass then finds the rest done.
-        if pool_roots.is_some()
-            && let Ok(root) = &root
-        {
-            let round = std::time::Instant::now();
-            let root_id = evaluator.graph().intern(root);
-            while let Some(blocker) = first_inline_blocker(evaluator, root_id) {
-                let key = evaluator.graph().key(blocker).clone();
-                evaluate(&key);
-                if evaluator.graph().value(blocker).is_none() {
-                    // It waits for more (the sequential pass below runs it).
-                    break;
-                }
-                pool_round(bodies, evaluator, shared, std::slice::from_ref(root));
-            }
-            DRIVE[0].fetch_add(
-                round.elapsed().as_micros() as u64,
-                std::sync::atomic::Ordering::Relaxed,
-            );
-        }
-        let resolved = resolving.elapsed();
         // The linearizer's frontier first (the pool: it runs before the
         // evaluator's own work).
         let frontier = bodies.coord().frontier();
@@ -1907,7 +1896,7 @@ fn drive(
             _ => Err("internal error: a root with another value".to_owned()),
         });
         DRIVE[1].fetch_add(
-            started.elapsed().saturating_sub(resolved).as_micros() as u64,
+            started.elapsed().as_micros() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
         // The requested target's segment renders the chain errors.
@@ -1923,6 +1912,7 @@ fn drive(
             }
             ok => ok,
         };
+        let linearizing = std::time::Instant::now();
         // The requested target's compatibility, on the published nodes.
         let analyzed = analyzed.and_then(|()| {
             let mut coord = bodies.coord();
@@ -1939,6 +1929,10 @@ fn drive(
             coord.lin = Some(lin);
             checked
         });
+        DRIVE[3].fetch_add(
+            linearizing.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         // Engine::analyze_requested's report of an aborted analysis.
         analyzed.map_err(|error| {
             match error.split_once(super::super::super::ANALYSIS_ABORTED) {

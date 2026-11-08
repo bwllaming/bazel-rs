@@ -330,6 +330,15 @@ pub(crate) static INLINE_REASONS: [std::sync::atomic::AtomicU64; 4] = [
 pub(crate) static SEQUENTIAL_ATTEMPTS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+/// BAZEL_RS_EVAL_STATS: the µs the sequential pass's attempts spent
+/// applying the tape first.
+pub(crate) static BEGIN_LINEARIZE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// BAZEL_RS_EVAL_PARKED_DEBUG: the sequential pass's attempts by kind.
+pub(crate) static SEQUENTIAL_KINDS: Mutex<std::collections::BTreeMap<&'static str, u64>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
 /// The marker of [`Missing::Repo`] for an attempt only the sequential
 /// pass can run (S2: on the pool, a flush or a repository demand): it
 /// parks until the inline pass.
@@ -445,10 +454,23 @@ impl Bodies for Phase1Bodies<'_, '_> {
             let mut coord = self.coord();
             if self.framed && !self.pooled() {
                 SEQUENTIAL_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
+                if std::env::var_os("BAZEL_RS_EVAL_PARKED_DEBUG").is_some() {
+                    *SEQUENTIAL_KINDS
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .entry(key.kind())
+                        .or_default() += 1;
+                }
                 // The sequential pass of a pooled evaluation: what the walk
                 // did before this point (the pool's packages committed,
                 // their roots counting) is applied first.
+                let started = std::time::Instant::now();
                 let _ = coord.linearize(self.shared);
+                BEGIN_LINEARIZE.fetch_add(
+                    started.elapsed().as_micros() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
             }
             coord.drain();
             coord.begin_attempt(id, key)
@@ -600,6 +622,13 @@ impl Bodies for Phase1Bodies<'_, '_> {
         if let Some(running) = with_running(Vec::pop) {
             self.coord().abandon_attempt(running);
         }
+    }
+
+    fn set_pooled(&self, pooled: bool) {
+        self.shared
+            .loading
+            .pooled
+            .store(pooled, std::sync::atomic::Ordering::Release);
     }
 
     fn target_platform(&self, config: ConfigId) -> NodeKey {

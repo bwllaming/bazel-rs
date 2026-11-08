@@ -91,6 +91,12 @@ pub(crate) trait Bodies: Sync {
     /// The node a `Missing::TargetPlatform(config)` waits for.
     fn target_platform(&self, config: ConfigId) -> NodeKey;
 
+    /// Attempts run on the pool (`true`) or inline from now on (S2: the
+    /// bodies' own switch; [`Evaluator::set_assist`]).
+    fn set_pooled(&self, pooled: bool) {
+        let _ = pooled;
+    }
+
     /// Whether `value` fails the build without `--keep_going` (switches
     /// to frontier-only mode). Default: a failed CT1, CT2 or aspect.
     fn stops_build(&self, key: &NodeKey, value: &NodeValue) -> bool {
@@ -335,6 +341,9 @@ pub(crate) struct Evaluator<'b, B: Bodies> {
     /// The pool's evaluation stops at quiescence without the cycle
     /// handler ([`Self::evaluate_round`]).
     round: AtomicBool,
+    /// The inline driver evaluates a fresh configured target's subtree on
+    /// the pool first ([`Self::set_assist`]).
+    assist: AtomicBool,
     /// Pool waiters the inline driver's completions made ready (queued):
     /// scheduled when the pool evaluates next.
     woken: Tracked<Vec<NodeId>>,
@@ -363,6 +372,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             inline: AtomicBool::new(false),
             unresolvable: Tracked::default(),
             round: AtomicBool::new(false),
+            assist: AtomicBool::new(false),
             woken: Tracked::default(),
         }
     }
@@ -392,6 +402,43 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         let outcome = self.evaluate(roots, lane, &mut super::cycles::DfsCycles::default());
         self.round.store(false, Ordering::SeqCst);
         outcome
+    }
+
+    /// S2: from now on the inline driver, before it runs a configured
+    /// target nobody ran yet, evaluates its subtree on the pool (a round
+    /// over it alone: what is parked stays parked, the inline driver then
+    /// runs what is left in its order).
+    pub(crate) fn set_assist(&self, assist: bool) {
+        self.assist
+            .store(assist && self.pool.is_some(), Ordering::SeqCst);
+    }
+
+    /// The pool's round over `id` alone, from the inline driver.
+    fn assist(&self, id: NodeId, lane: &RefCell<&mut dyn RepoLane>) {
+        let Some(pool) = &self.pool else {
+            return;
+        };
+        // Waiters inline completions woke elsewhere wait for the driver's
+        // next round.
+        let woken = std::mem::take(&mut *self.woken.lock());
+        self.bodies.set_pooled(true);
+        self.inline.store(false, Ordering::SeqCst);
+        self.round.store(true, Ordering::SeqCst);
+        {
+            let mut lane = lane.borrow_mut();
+            pool.in_place_scope(|scope| {
+                self.coordinate(
+                    scope,
+                    &[id],
+                    &mut **lane,
+                    &mut super::cycles::DfsCycles::default(),
+                )
+            });
+        }
+        self.round.store(false, Ordering::SeqCst);
+        self.inline.store(true, Ordering::SeqCst);
+        self.bodies.set_pooled(false);
+        self.woken.lock().extend(woken);
     }
 
     /// From now on, [`Self::evaluate`] uses the inline driver (`true`) or
@@ -477,6 +524,23 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             }
             _ => self.evaluate_inline(&roots, lane, cycles),
         }
+    }
+
+    /// [`Self::evaluate`] for the roots' values only: the inline driver
+    /// skips the outcome's scan of every node (S2: the sequential pass
+    /// evaluates each requested target's lookups and node this way).
+    pub(crate) fn evaluate_values(
+        &self,
+        roots: &[NodeKey],
+        lane: &mut dyn RepoLane,
+        cycles: &mut dyn CycleHandler,
+    ) {
+        if self.pooled() {
+            self.evaluate(roots, lane, cycles);
+            return;
+        }
+        let roots: Vec<NodeId> = roots.iter().map(|key| self.graph.intern(key)).collect();
+        self.run_inline_roots(&roots, lane, cycles);
     }
 
     // ---- shared by both drivers -------------------------------------
@@ -632,6 +696,18 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         lane: &mut dyn RepoLane,
         cycles: &mut dyn CycleHandler,
     ) -> Outcome {
+        self.run_inline_roots(roots, lane, cycles);
+        self.outcome(roots)
+    }
+
+    /// The inline driver over `roots` (without the outcome's O(nodes)
+    /// scan).
+    fn run_inline_roots(
+        &self,
+        roots: &[NodeId],
+        lane: &mut dyn RepoLane,
+        cycles: &mut dyn CycleHandler,
+    ) {
         let lane = RefCell::new(lane);
         loop {
             for &root in roots {
@@ -648,7 +724,6 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                 break;
             }
         }
-        self.outcome(roots)
     }
 
     /// Run `id` to completion in place (re-running it after each
@@ -1138,6 +1213,13 @@ impl<B: Bodies> Cx for InlineCx<'_, '_, '_, B> {
                     return Err(Missing::BackEdge(id));
                 }
                 break;
+            }
+            if entry.value().is_none()
+                && entry.state() == State::Fresh
+                && matches!(key, NodeKey::Ct1(_))
+                && evaluator.assist.load(Ordering::Relaxed)
+            {
+                evaluator.assist(id, self.lane);
             }
             if entry.value().is_none() {
                 evaluator.run_inline(id, self.lane);
