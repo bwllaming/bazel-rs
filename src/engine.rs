@@ -2662,7 +2662,7 @@ struct TestExpansions {
 
 /// A directory on a source file's path (`Engine::source_target`).
 #[derive(Clone, Debug)]
-enum SourceDirProbe {
+pub(crate) enum SourceDirProbe {
     Missing,
     Error(String),
     Dir { symlink: bool, boundary: bool },
@@ -4101,37 +4101,7 @@ impl Engine {
     /// default (Rule.getLabels visits computed defaults too; paired capture
     /// N28 B4/missing_default: `rule '//p:nope' does not exist`).
     fn package_input_labels(&self, package: &Package) -> HashSet<Label> {
-        let mut labels = HashSet::new();
-        for rule in package.values().filter(|rule| {
-            rule.macro_owner.is_none() && !matches!(rule.kind, RuleKind::PackageGroup(_))
-        }) {
-            labels.extend(
-                rule.srcs
-                    .iter()
-                    .filter_map(|src| self.resolve_rule_src(rule, src).ok()),
-            );
-            if let Some(native) = &rule.native {
-                labels.extend(native.input_labels.iter().cloned());
-            }
-            if let Some(custom) = &rule.custom {
-                labels.extend(
-                    custom
-                        .declaration
-                        .builtin
-                        .target
-                        .input_labels
-                        .iter()
-                        .cloned(),
-                );
-                labels.extend(custom.declaration.configurable_labels.iter().cloned());
-            }
-            labels.extend(
-                rule.package_metadata
-                    .iter()
-                    .filter_map(|text| Label::parse_canonical(text).ok()),
-            );
-        }
-        labels
+        package_input_labels_in(&self.repositories, package)
     }
 
     /// Whether `label` is an input file target of its loaded package: an
@@ -4216,158 +4186,15 @@ impl Engine {
     /// link policy of the repositories materialized so far, so it is
     /// resolved again on every lookup, as before.
     fn source_target(&mut self, label: &Label) -> Result<(PathBuf, bool), String> {
-        let repository_root = self.repositories.root(&label.repository)?.to_path_buf();
-        let package_dir = repository_root.join(&label.package);
-        // A source name with a lone (non-UTF-8) byte escape: Bazel 9.3 reads
-        // source files through java.io, which cannot name that byte, so the
-        // file is an input in error at execution even when it exists (paired
-        // probe, docs/LABEL_SYNTAX.md). Native: a missing input file.
-        if crate::bazel_bytes::has_lone_bytes(&label.name) {
-            let full = package_dir.join(&label.name);
-            self.missing_sources.insert(full.clone(), label.clone());
-            return Ok((full, true));
-        }
-        let ignored = self.ignored(&label.repository)?;
-        let mut path = package_dir.clone();
-        let mut relative = label.package.clone();
-        let mut linked = false;
-        let mut last_metadata = None;
-        let parts: Vec<_> = Path::new(&label.name).components().collect();
-        if parts
-            .iter()
-            .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err(format!("unsafe source label {label}"));
-        }
-        // Directories on the way are probed once per invocation (outside a
-        // recording, which observes every probe in its own frame): many
-        // source files share them.
-        let memo = !crate::observed_fs::recording();
-        for (i, component) in parts.iter().enumerate() {
-            path.push(component.as_os_str());
-            if !relative.is_empty() {
-                relative.push('/');
-            }
-            relative.push_str(&component.as_os_str().to_string_lossy());
-            if memo && i + 1 < parts.len() {
-                let probe = match self.source_dir_probes.get(&path) {
-                    Some(probe) => probe.clone(),
-                    None => {
-                        let probe = match crate::observed_fs::symlink_metadata(&path) {
-                            Ok(metadata) => SourceDirProbe::Dir {
-                                symlink: metadata.file_type().is_symlink(),
-                                boundary: ignored.matching_entry(&relative).is_none()
-                                    && !crate::ignored::is_deleted_directory(&path)
-                                    && crate::label::is_valid_package_name(&relative)
-                                    && (crate::observed_fs::is_file(path.join("BUILD.bazel"))
-                                        || crate::observed_fs::is_file(path.join("BUILD"))),
-                            },
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                                SourceDirProbe::Missing
-                            }
-                            Err(error) => SourceDirProbe::Error(error.to_string()),
-                        };
-                        self.source_dir_probes.insert(path.clone(), probe.clone());
-                        probe
-                    }
-                };
-                match probe {
-                    SourceDirProbe::Missing => {
-                        let full = package_dir.join(&label.name);
-                        self.missing_sources.insert(full.clone(), label.clone());
-                        return Ok((full, true));
-                    }
-                    SourceDirProbe::Error(error) => {
-                        return Err(format!("no target or source {label}: {error}"));
-                    }
-                    SourceDirProbe::Dir { boundary: true, .. } => {
-                        return Err(format!(
-                            "{label} crosses a package boundary at {}",
-                            path.display()
-                        ));
-                    }
-                    SourceDirProbe::Dir { symlink, .. } => linked |= symlink,
-                }
-                continue;
-            }
-            let metadata = match crate::observed_fs::symlink_metadata(&path) {
-                Ok(metadata) => metadata,
-                // A declared (assumed) input file is a target whether or not
-                // the file exists (Package.java:893-920); a missing file only
-                // fails when an action or the build request needs it
-                // (skyframe/ArtifactFunction.java:79-90).
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    let full = package_dir.join(&label.name);
-                    self.missing_sources.insert(full.clone(), label.clone());
-                    return Ok((full, true));
-                }
-                Err(error) => return Err(format!("no target or source {label}: {error}")),
-            };
-            // Bazel follows source symlinks (docs/ARCHIVE_SYMLINKS.md); package
-            // boundaries below stay checked on the logical label path.
-            linked |= metadata.file_type().is_symlink();
-            if i + 1 == parts.len() {
-                last_metadata = Some(metadata);
-            }
-            // An invalid package name is no package (PackageLookupFunction
-            // .java:91-96), so no boundary either.
-            if i + 1 < parts.len()
-                && ignored.matching_entry(&relative).is_none()
-                && !crate::ignored::is_deleted_directory(&path)
-                && crate::label::is_valid_package_name(&relative)
-                && (crate::observed_fs::is_file(path.join("BUILD.bazel"))
-                    || crate::observed_fs::is_file(path.join("BUILD")))
-            {
-                return Err(format!(
-                    "{label} crosses a package boundary at {}",
-                    path.display()
-                ));
-            }
-        }
-        if linked {
-            let relative = Path::new(&label.package).join(&label.name);
-            // Links may continue into a repository already materialized in
-            // this invocation, or (repository-rule-generated repositories
-            // only) a host path; reads only (source_links::LinkPolicy).
-            let policy = self.repositories.link_policy(&label.repository);
-            match crate::source_links::resolve_with_policy(&repository_root, &relative, &policy)
-                .map_err(|error| format!("source {label}: {error}"))?
-            {
-                crate::source_links::Resolution::Resolved(resolved) => path = resolved,
-                // A dangling source symlink is a missing input file, like a
-                // declared source that does not exist.
-                crate::source_links::Resolution::Missing(missing) => {
-                    self.missing_sources.insert(missing.clone(), label.clone());
-                    return Ok((missing, false));
-                }
-            }
-        }
-        // A source directory is an input file target too, matched by name
-        // like any file (Package.java:893-920, RuleContext.java:1865); only
-        // its use as an action input or requested output is not modelled.
-        // No link on the way: the last component's lstat is the stat
-        // `is_dir`/`is_file` would make (outside a recording, which
-        // observes those stats themselves).
-        let known = last_metadata.filter(|_| !linked && !crate::observed_fs::recording());
-        let is_dir = match &known {
-            Some(metadata) => metadata.is_dir(),
-            None => crate::observed_fs::is_dir(&path),
-        };
-        if is_dir {
-            self.source_directories
-                .entry(path.clone())
-                .or_default()
-                .insert(label.clone());
-            return Ok((path, !linked));
-        }
-        let is_file = match &known {
-            Some(metadata) => metadata.is_file(),
-            None => crate::observed_fs::is_file(&path),
-        };
-        if !is_file {
-            return Err(format!("source is not a regular file: {label}"));
-        }
-        Ok((path, !linked))
+        let mut side = SourceSide::default();
+        let found = source_target_in(
+            &self.repositories,
+            label,
+            &mut self.source_dir_probes,
+            &mut side,
+        );
+        side.apply(&mut self.missing_sources, &mut self.source_directories);
+        found
     }
 
     /// NoSuchTargetException for an undeclared target of a loaded package:
@@ -4375,116 +4202,28 @@ impl Engine {
     /// getAlternateTargetSuggestion (:364-396) and TargetSuggester
     /// (packages/TargetSuggester.java), NoSuchTargetException.java:51.
     fn no_such_target(&self, label: &Label) -> Result<String, String> {
-        let root = self.repositories.root(&label.repository)?;
-        let Ok(build) = workspace::package_build_file(root, &label.package) else {
-            // Without a BUILD file path, the succinct form (Package.java:348-350).
-            return Ok(format!(
-                "no such target '{}': target '{}' not declared in package '{}'",
-                crate::rule_declarations::canonical_form(label),
-                label.name,
-                label.package
-            ));
-        };
-        let directory = root.join(&label.package);
-        let candidate = directory.join(&label.name);
-        let build_name = build
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let relative_build = if label.package.is_empty() {
-            build_name
-        } else {
-            format!("{}/{build_name}", label.package)
-        };
-        let suggestion = if label.name == "*" {
-            String::new()
-        } else if crate::observed_fs::is_dir(&candidate) {
-            format!(
-                "; however, a source directory of this name exists.  (Perhaps add 'exports_files([\"{}\"])' to {relative_build}, or define a filegroup?)",
-                label.name
-            )
-        } else if crate::observed_fs::exists(&candidate) {
-            format!(
-                "; however, a source file of this name exists.  (Perhaps add 'exports_files([\"{}\"])' to {relative_build}?)",
-                label.name
-            )
-        } else {
-            suggest_targets(&label.name, &self.package_target_names(&label.package_id()))
-        };
-        Ok(format!(
-            "no such target '{}': target '{}' not declared in package '{}' defined by {}{suggestion}",
-            crate::rule_declarations::canonical_form(label),
-            label.name,
-            label.package,
-            build.display()
-        ))
+        no_such_target_in(
+            &self.repositories,
+            self.packages
+                .get(&label.package_id())
+                .map(|package| &**package),
+            label,
+        )
     }
 
     /// Names of a loaded package's targets (rules, outputs, exported and
     /// assumed input files), in sorted order (Packageoid.targets is an
     /// ImmutableSortedMap, packages/Packageoid.java:84).
     fn package_target_names(&self, package: &PackageId) -> BTreeSet<String> {
-        let mut names = BTreeSet::new();
-        let Some(rules) = self.packages.get(package) else {
-            return names;
-        };
-        names.extend(rules.exports.keys().map(|label| label.name.clone()));
-        for rule in rules.values() {
-            names.insert(rule.label.name.clone());
-            names.extend(rule.outs.iter().cloned());
-            if rule.macro_owner.is_some() || matches!(rule.kind, RuleKind::PackageGroup(_)) {
-                continue;
-            }
-            let mut labels = rule
-                .srcs
-                .iter()
-                .filter_map(|src| self.resolve_rule_src(rule, src).ok())
-                .collect::<Vec<_>>();
-            if let Some(native) = &rule.native {
-                labels.extend(native.input_labels.iter().cloned());
-            }
-            if let Some(custom) = &rule.custom {
-                labels.extend(
-                    custom
-                        .declaration
-                        .builtin
-                        .target
-                        .input_labels
-                        .iter()
-                        .cloned(),
-                );
-                labels.extend(custom.declaration.configurable_labels.iter().cloned());
-            }
-            labels.extend(
-                rule.package_metadata
-                    .iter()
-                    .filter_map(|text| Label::parse_canonical(text).ok()),
-            );
-            names.extend(
-                labels
-                    .into_iter()
-                    .filter(|label| label.package_id() == *package)
-                    .map(|label| label.name),
-            );
-        }
-        names
+        package_target_names_in(
+            &self.repositories,
+            self.packages.get(package).map(|package| &**package),
+            package,
+        )
     }
 
     fn resolve_rule_src(&self, rule: &Rule, text: &str) -> Result<Label, String> {
-        if matches!(rule.kind, RuleKind::Custom)
-            || (rule.native.is_some() && (text.starts_with("//") || text.starts_with("@@")))
-        {
-            // Custom and native attributes were canonicalized during package evaluation.
-            // In particular, //p:t here denotes main, even in an external rule.
-            Label::parse_canonical(text)
-        } else {
-            // Native rules keep raw apparent-repository labels; Bazel's
-            // attribute conversion never fails on a non-visible repository
-            // (Label.parseWithPackageContext), only its package lookup does
-            // (crate::label::unresolvable_package_message).
-            self.repositories
-                .parse_deferred(text, &rule.label.repository, &rule.label.package)
-        }
+        resolve_rule_src_in(&self.repositories, rule, text)
     }
 
     /// Target patterns (crate::target_pattern), not the query language:
@@ -18298,5 +18037,359 @@ m = macro(implementation=emit)
             expand("$<", &[]),
             Err("variable '$<' : no input file".to_owned())
         );
+    }
+}
+
+fn resolve_rule_src_in(
+    repositories: &RepositorySet,
+    rule: &Rule,
+    text: &str,
+) -> Result<Label, String> {
+    if matches!(rule.kind, RuleKind::Custom)
+        || (rule.native.is_some() && (text.starts_with("//") || text.starts_with("@@")))
+    {
+        // Custom and native attributes were canonicalized during package evaluation.
+        // In particular, //p:t here denotes main, even in an external rule.
+        Label::parse_canonical(text)
+    } else {
+        // Native rules keep raw apparent-repository labels; Bazel's
+        // attribute conversion never fails on a non-visible repository
+        // (Label.parseWithPackageContext), only its package lookup does
+        // (crate::label::unresolvable_package_message).
+        repositories.parse_deferred(text, &rule.label.repository, &rule.label.package)
+    }
+}
+
+fn package_input_labels_in(repositories: &RepositorySet, package: &Package) -> HashSet<Label> {
+    let mut labels = HashSet::new();
+    for rule in package.values().filter(|rule| {
+        rule.macro_owner.is_none() && !matches!(rule.kind, RuleKind::PackageGroup(_))
+    }) {
+        labels.extend(
+            rule.srcs
+                .iter()
+                .filter_map(|src| resolve_rule_src_in(repositories, rule, src).ok()),
+        );
+        if let Some(native) = &rule.native {
+            labels.extend(native.input_labels.iter().cloned());
+        }
+        if let Some(custom) = &rule.custom {
+            labels.extend(
+                custom
+                    .declaration
+                    .builtin
+                    .target
+                    .input_labels
+                    .iter()
+                    .cloned(),
+            );
+            labels.extend(custom.declaration.configurable_labels.iter().cloned());
+        }
+        labels.extend(
+            rule.package_metadata
+                .iter()
+                .filter_map(|text| Label::parse_canonical(text).ok()),
+        );
+    }
+    labels
+}
+
+fn package_target_names_in(
+    repositories: &RepositorySet,
+    loaded: Option<&Package>,
+    package: &PackageId,
+) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let Some(rules) = loaded else {
+        return names;
+    };
+    names.extend(rules.exports.keys().map(|label| label.name.clone()));
+    for rule in rules.values() {
+        names.insert(rule.label.name.clone());
+        names.extend(rule.outs.iter().cloned());
+        if rule.macro_owner.is_some() || matches!(rule.kind, RuleKind::PackageGroup(_)) {
+            continue;
+        }
+        let mut labels = rule
+            .srcs
+            .iter()
+            .filter_map(|src| resolve_rule_src_in(repositories, rule, src).ok())
+            .collect::<Vec<_>>();
+        if let Some(native) = &rule.native {
+            labels.extend(native.input_labels.iter().cloned());
+        }
+        if let Some(custom) = &rule.custom {
+            labels.extend(
+                custom
+                    .declaration
+                    .builtin
+                    .target
+                    .input_labels
+                    .iter()
+                    .cloned(),
+            );
+            labels.extend(custom.declaration.configurable_labels.iter().cloned());
+        }
+        labels.extend(
+            rule.package_metadata
+                .iter()
+                .filter_map(|text| Label::parse_canonical(text).ok()),
+        );
+        names.extend(
+            labels
+                .into_iter()
+                .filter(|label| label.package_id() == *package)
+                .map(|label| label.name),
+        );
+    }
+    names
+}
+
+fn no_such_target_in(
+    repositories: &RepositorySet,
+    loaded: Option<&Package>,
+    label: &Label,
+) -> Result<String, String> {
+    let root = repositories.root(&label.repository)?;
+    let Ok(build) = workspace::package_build_file(root, &label.package) else {
+        // Without a BUILD file path, the succinct form (Package.java:348-350).
+        return Ok(format!(
+            "no such target '{}': target '{}' not declared in package '{}'",
+            crate::rule_declarations::canonical_form(label),
+            label.name,
+            label.package
+        ));
+    };
+    let directory = root.join(&label.package);
+    let candidate = directory.join(&label.name);
+    let build_name = build
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let relative_build = if label.package.is_empty() {
+        build_name
+    } else {
+        format!("{}/{build_name}", label.package)
+    };
+    let suggestion = if label.name == "*" {
+        String::new()
+    } else if crate::observed_fs::is_dir(&candidate) {
+        format!(
+            "; however, a source directory of this name exists.  (Perhaps add 'exports_files([\"{}\"])' to {relative_build}, or define a filegroup?)",
+            label.name
+        )
+    } else if crate::observed_fs::exists(&candidate) {
+        format!(
+            "; however, a source file of this name exists.  (Perhaps add 'exports_files([\"{}\"])' to {relative_build}?)",
+            label.name
+        )
+    } else {
+        suggest_targets(
+            &label.name,
+            &package_target_names_in(repositories, loaded, &label.package_id()),
+        )
+    };
+    Ok(format!(
+        "no such target '{}': target '{}' not declared in package '{}' defined by {}{suggestion}",
+        crate::rule_declarations::canonical_form(label),
+        label.name,
+        label.package,
+        build.display()
+    ))
+}
+
+fn source_target_in(
+    repositories: &RepositorySet,
+    label: &Label,
+    probes: &mut dyn SourceProbes,
+    side: &mut SourceSide,
+) -> Result<(PathBuf, bool), String> {
+    let repository_root = repositories.root(&label.repository)?.to_path_buf();
+    let package_dir = repository_root.join(&label.package);
+    // A source name with a lone (non-UTF-8) byte escape: Bazel 9.3 reads
+    // source files through java.io, which cannot name that byte, so the
+    // file is an input in error at execution even when it exists (paired
+    // probe, docs/LABEL_SYNTAX.md). Native: a missing input file.
+    if crate::bazel_bytes::has_lone_bytes(&label.name) {
+        let full = package_dir.join(&label.name);
+        side.missing.push((full.clone(), label.clone()));
+        return Ok((full, true));
+    }
+    let ignored = repositories.ignored_subdirectories(&label.repository)?;
+    let mut path = package_dir.clone();
+    let mut relative = label.package.clone();
+    let mut linked = false;
+    let mut last_metadata = None;
+    let parts: Vec<_> = Path::new(&label.name).components().collect();
+    if parts
+        .iter()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(format!("unsafe source label {label}"));
+    }
+    // Directories on the way are probed once per invocation (outside a
+    // recording, which observes every probe in its own frame): many
+    // source files share them.
+    let memo = !crate::observed_fs::recording();
+    for (i, component) in parts.iter().enumerate() {
+        path.push(component.as_os_str());
+        if !relative.is_empty() {
+            relative.push('/');
+        }
+        relative.push_str(&component.as_os_str().to_string_lossy());
+        if memo && i + 1 < parts.len() {
+            let probe = match probes.get(&path) {
+                Some(probe) => probe.clone(),
+                None => {
+                    let probe = match crate::observed_fs::symlink_metadata(&path) {
+                        Ok(metadata) => SourceDirProbe::Dir {
+                            symlink: metadata.file_type().is_symlink(),
+                            boundary: ignored.matching_entry(&relative).is_none()
+                                && !crate::ignored::is_deleted_directory(&path)
+                                && crate::label::is_valid_package_name(&relative)
+                                && (crate::observed_fs::is_file(path.join("BUILD.bazel"))
+                                    || crate::observed_fs::is_file(path.join("BUILD"))),
+                        },
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            SourceDirProbe::Missing
+                        }
+                        Err(error) => SourceDirProbe::Error(error.to_string()),
+                    };
+                    probes.put(path.clone(), probe.clone());
+                    probe
+                }
+            };
+            match probe {
+                SourceDirProbe::Missing => {
+                    let full = package_dir.join(&label.name);
+                    side.missing.push((full.clone(), label.clone()));
+                    return Ok((full, true));
+                }
+                SourceDirProbe::Error(error) => {
+                    return Err(format!("no target or source {label}: {error}"));
+                }
+                SourceDirProbe::Dir { boundary: true, .. } => {
+                    return Err(format!(
+                        "{label} crosses a package boundary at {}",
+                        path.display()
+                    ));
+                }
+                SourceDirProbe::Dir { symlink, .. } => linked |= symlink,
+            }
+            continue;
+        }
+        let metadata = match crate::observed_fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            // A declared (assumed) input file is a target whether or not
+            // the file exists (Package.java:893-920); a missing file only
+            // fails when an action or the build request needs it
+            // (skyframe/ArtifactFunction.java:79-90).
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let full = package_dir.join(&label.name);
+                side.missing.push((full.clone(), label.clone()));
+                return Ok((full, true));
+            }
+            Err(error) => return Err(format!("no target or source {label}: {error}")),
+        };
+        // Bazel follows source symlinks (docs/ARCHIVE_SYMLINKS.md); package
+        // boundaries below stay checked on the logical label path.
+        linked |= metadata.file_type().is_symlink();
+        if i + 1 == parts.len() {
+            last_metadata = Some(metadata);
+        }
+        // An invalid package name is no package (PackageLookupFunction
+        // .java:91-96), so no boundary either.
+        if i + 1 < parts.len()
+            && ignored.matching_entry(&relative).is_none()
+            && !crate::ignored::is_deleted_directory(&path)
+            && crate::label::is_valid_package_name(&relative)
+            && (crate::observed_fs::is_file(path.join("BUILD.bazel"))
+                || crate::observed_fs::is_file(path.join("BUILD")))
+        {
+            return Err(format!(
+                "{label} crosses a package boundary at {}",
+                path.display()
+            ));
+        }
+    }
+    if linked {
+        let relative = Path::new(&label.package).join(&label.name);
+        // Links may continue into a repository already materialized in
+        // this invocation, or (repository-rule-generated repositories
+        // only) a host path; reads only (source_links::LinkPolicy).
+        let policy = repositories.link_policy(&label.repository);
+        match crate::source_links::resolve_with_policy(&repository_root, &relative, &policy)
+            .map_err(|error| format!("source {label}: {error}"))?
+        {
+            crate::source_links::Resolution::Resolved(resolved) => path = resolved,
+            // A dangling source symlink is a missing input file, like a
+            // declared source that does not exist.
+            crate::source_links::Resolution::Missing(missing) => {
+                side.missing.push((missing.clone(), label.clone()));
+                return Ok((missing, false));
+            }
+        }
+    }
+    // A source directory is an input file target too, matched by name
+    // like any file (Package.java:893-920, RuleContext.java:1865); only
+    // its use as an action input or requested output is not modelled.
+    // No link on the way: the last component's lstat is the stat
+    // `is_dir`/`is_file` would make (outside a recording, which
+    // observes those stats themselves).
+    let known = last_metadata.filter(|_| !linked && !crate::observed_fs::recording());
+    let is_dir = match &known {
+        Some(metadata) => metadata.is_dir(),
+        None => crate::observed_fs::is_dir(&path),
+    };
+    if is_dir {
+        side.directories.push((path.clone(), label.clone()));
+        return Ok((path, !linked));
+    }
+    let is_file = match &known {
+        Some(metadata) => metadata.is_file(),
+        None => crate::observed_fs::is_file(&path),
+    };
+    if !is_file {
+        return Err(format!("source is not a regular file: {label}"));
+    }
+    Ok((path, !linked))
+}
+
+/// What a source-file lookup records besides its result: missing input
+/// files and source directories (linearizer-only maps; order-free).
+#[derive(Default, Debug, Clone)]
+pub(crate) struct SourceSide {
+    pub(crate) missing: Vec<(PathBuf, Label)>,
+    pub(crate) directories: Vec<(PathBuf, Label)>,
+}
+
+impl SourceSide {
+    pub(crate) fn apply(
+        self,
+        missing: &mut BTreeMap<PathBuf, Label>,
+        directories: &mut BTreeMap<PathBuf, BTreeSet<Label>>,
+    ) {
+        for (path, label) in self.missing {
+            missing.insert(path, label);
+        }
+        for (path, label) in self.directories {
+            directories.entry(path).or_default().insert(label);
+        }
+    }
+}
+
+/// The source-directory probe cache (`Engine::source_dir_probes`; the
+/// evaluator's shared one).
+pub(crate) trait SourceProbes {
+    fn get(&self, path: &Path) -> Option<SourceDirProbe>;
+    fn put(&mut self, path: PathBuf, probe: SourceDirProbe);
+}
+
+impl SourceProbes for HashMap<PathBuf, SourceDirProbe> {
+    fn get(&self, path: &Path) -> Option<SourceDirProbe> {
+        HashMap::get(self, path).cloned()
+    }
+    fn put(&mut self, path: PathBuf, probe: SourceDirProbe) {
+        self.insert(path, probe);
     }
 }
