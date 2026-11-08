@@ -645,7 +645,14 @@ impl Bodies for Phase1Bodies<'_, '_> {
         drop(no_demand);
         // Roots obtained before the sequential engine had them count from
         // where the tape replays the node.
-        let obtained = roots.finish();
+        let mut obtained = roots.finish();
+        if crate::repository_demand::sentinels_raised() != sentinels
+            && !matches!(key, NodeKey::Pkg(_))
+        {
+            // Left to the sequential pass (below), which prepares an
+            // extension group it needs itself, where the walk does.
+            obtained.retain(|root| !root.starts_with(crate::repository::EVAL_GROUP_KEY));
+        }
         if !obtained.is_empty() && result.is_ok() {
             let current = cx.current();
             self.defer(Box::new(move |coord: &mut Coord<'_>| {
@@ -1055,11 +1062,26 @@ fn apply_finish(
     if coord.store.replayed.contains(&running.id)
         && let Some(roots) = coord.store.roots.remove(&running.id)
     {
-        // No extension group among them (a Pkg node's are committed at
-        // its first use, after it finished).
-        let writes =
-            super::super::linearize::driver::commit_roots(&coord.engine.repositories, &roots);
-        crate::ui::replay(writes);
+        if roots
+            .iter()
+            .any(|root| root.starts_with(crate::repository::EVAL_GROUP_KEY))
+        {
+            // An extension group is prepared where the tape replays its
+            // user (a Pkg node's first use, after it finished; any other
+            // attempt that would need one leaves itself to the sequential
+            // pass): here, on whichever thread applies the record, it
+            // would be too late and maybe without demand. Fail closed.
+            crate::repository::note_eval_adoption_mismatch(|| {
+                format!(
+                    "{:?} obtained an extension group's repository after the tape replayed it",
+                    running.key
+                )
+            });
+        } else {
+            let writes =
+                super::super::linearize::driver::commit_roots(&coord.engine.repositories, &roots);
+            crate::ui::replay(writes);
+        }
     }
     if let Some(observations) = observations.filter(|observations| !observations.is_empty()) {
         if coord.store.replayed.contains(&running.id) {

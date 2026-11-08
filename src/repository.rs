@@ -247,6 +247,12 @@ pub(crate) static EVAL_ADOPTIONS: [AtomicU64; 4] = [
 /// repositories). Taken by the evaluator's linearizer.
 static EVAL_ADOPTION_MISMATCH: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// Note an internal error of the evaluator's use of speculative
+/// preparations (the first one is kept).
+pub(crate) fn note_eval_adoption_mismatch(text: impl FnOnce() -> String) {
+    lock_ignoring_poison(&EVAL_ADOPTION_MISMATCH).get_or_insert_with(text);
+}
+
 /// The first [`EVAL_ADOPTION_MISMATCH`], taken.
 pub(crate) fn take_eval_adoption_mismatch() -> Option<String> {
     lock_ignoring_poison(&EVAL_ADOPTION_MISMATCH).take()
@@ -3135,11 +3141,14 @@ impl RepositorySet {
             // speculatively (its commit prepares the group first).
             let (prefix, generated) = repository.rsplit_once('+')?;
             let id = runtime.catalog.ordinary_routes.get(prefix)?;
-            let prepared = self.eval_adopt_group(id)?;
-            prepared
-                .repositories
-                .get(generated)
-                .map(|repository| &repository.root)
+            if let Some(prepared) = self.eval_adopt_group(id) {
+                return prepared
+                    .repositories
+                    .get(generated)
+                    .map(|repository| &repository.root);
+            }
+            self.note_unprepared_group(id, repository);
+            None
         });
         let Some(slot) = slot else {
             return;
@@ -3149,6 +3158,34 @@ impl RepositorySet {
             return;
         }
         runtime.note_obtained(repository, slot);
+    }
+
+    /// A memo hit served a module of `repository`, a repository of the
+    /// group `id`, which the coordinator has not prepared: only an
+    /// evaluator's pool load can have filled such an entry, on the group's
+    /// speculative preparation ([`EvalAdoption`]). The sequential engine's
+    /// lookup there demands the root, preparing the group: on a thread
+    /// that may demand, that happens here; on a no-demand thread (a load
+    /// that does not adopt), the group and the root are noted for the
+    /// unit's commit, which prepares the group first
+    /// ([`Self::note_committed_roots`]), and a sentinel is counted (an
+    /// evaluator's attempt other than a package load leaves itself to the
+    /// sequential pass).
+    fn note_unprepared_group(&self, id: &str, repository: &str) {
+        if !lock_ignoring_poison(&self.state.eval_used_groups).contains(id) {
+            return;
+        }
+        if !crate::repository_demand::no_demand_active() {
+            let _ = self.root(repository);
+            return;
+        }
+        crate::repository_demand::note_sentinel();
+        UNIT_ROOTS.with(|roots| {
+            if let Some(roots) = roots.borrow_mut().as_mut() {
+                roots.insert(format!("{EVAL_GROUP_KEY}{id}"));
+                roots.insert(repository.to_owned());
+            }
+        });
     }
 
     /// Start parallel fetching for this set (crate::repository_speculation,
@@ -3649,25 +3686,22 @@ impl RepositorySet {
         {
             EVAL_ADOPTIONS[2].fetch_add(1, Ordering::Relaxed);
         }
-        if let Err(error) = self.evaluate_ordinary_group(id) {
-            // evaluate_ordinary_group noted it (`check_eval_group`).
-            let _ = error;
-        }
+        // The preparation must be the very one the load used (a group the
+        // walk prepared otherwise, or one that failed, is the mismatch).
+        let prepared = self.evaluate_ordinary_group(id).ok();
+        self.check_eval_group(id, prepared);
     }
 
     /// The group `id` was prepared as `prepared` (`None`: it failed): when
     /// the evaluator's pool used its speculative preparation, it must be
     /// that very one ([`EVAL_ADOPTION_MISMATCH`] otherwise).
     fn check_eval_group(&self, id: &str, prepared: Option<&PreparedOrdinary>) {
-        if !lock_ignoring_poison(&self.state.eval_used_groups).contains(id) {
-            return;
-        }
         let same = prepared.is_some_and(|prepared| {
             self.speculated_group(id)
                 .is_some_and(|used| std::ptr::eq(prepared, &**used))
         });
         if !same {
-            lock_ignoring_poison(&EVAL_ADOPTION_MISMATCH).get_or_insert_with(|| {
+            note_eval_adoption_mismatch(|| {
                 format!(
                     "the module extension group {id} the pool loaded with its speculative preparation was prepared otherwise where the walk prepares it"
                 )
@@ -3809,11 +3843,36 @@ impl RepositorySet {
         ) else {
             return false;
         };
-        let Some((lock, adopted)) = self.state.extension_speculation.with_done(id, |outcome| {
-            (outcome.lock.clone(), outcome.adopted.clone())
-        }) else {
+        let Some((lock, adopted, registry_roots)) =
+            self.state.extension_speculation.with_done(id, |outcome| {
+                (
+                    outcome.lock.clone(),
+                    outcome.adopted.clone(),
+                    outcome.registry_roots.clone(),
+                )
+            })
+        else {
             return false;
         };
+        // The commit's root check (`commit_extension_speculation`): a
+        // registry module root materialized already must be the tree the
+        // speculation used (one not materialized yet is the commit's to
+        // check: it materializes it there, and a difference is the
+        // mismatch).
+        let materialized = self.state.registry_roots.get();
+        let same_roots = registry_roots.iter().all(|(name, used)| {
+            match materialized
+                .and_then(|roots| roots.get(name))
+                .and_then(OnceLock::get)
+            {
+                Some(Ok(root)) => root == used,
+                Some(Err(_)) => false,
+                None => true,
+            }
+        });
+        if !same_roots {
+            return false;
+        }
         for (used, preparation) in &adopted {
             let ready = runtime.ordinary.get(used).and_then(DemandSlot::ready);
             let same = match ready {
@@ -5473,13 +5532,6 @@ impl RepositorySet {
                     .map(Arc::new)
             },
         );
-        // A no-demand thread prepares nothing (the sentinel, or a ready
-        // group).
-        if self.state.eval_used.load(Ordering::Relaxed)
-            && !crate::repository_demand::no_demand_active()
-        {
-            self.check_eval_group(id, prepared.as_ref().ok().map(|prepared| &***prepared));
-        }
         if prepared.is_ok() {
             // The loads a file entered before this group was prepared
             // (`warm_loads`) can execute ahead now.
