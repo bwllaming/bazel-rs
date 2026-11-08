@@ -167,11 +167,13 @@ const LOCAL_BLOCKER: &str = "\u{2}local:";
 /// pool unit was blocked on (where demand may fetch), its console writes
 /// kept for the unit's re-run.
 pub(crate) fn lane_fetch(shared: &EvalShared, blocker: &str) {
+    // At most this long per blocker (the unit parks again past it).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     if let Some(group) = blocker.strip_prefix(EXTENSION_BLOCKER) {
         // Blocked on a registry module's root: materialized here (what it
         // writes and observes is the waiting unit's), then once more.
         for _ in 0..4 {
-            let Some(error) = shared.repositories.wait_eval_group(group) else {
+            let Some(error) = shared.repositories.wait_eval_group(group, deadline) else {
                 break;
             };
             let Some(root) = module_root_blocker(&error) else {
@@ -186,7 +188,7 @@ pub(crate) fn lane_fetch(shared: &EvalShared, blocker: &str) {
         // Blocked on a registry module's root: materialized here (what it
         // writes and observes is the waiting unit's), then once more.
         for _ in 0..4 {
-            let Some(error) = shared.repositories.wait_eval_local(canonical) else {
+            let Some(error) = shared.repositories.wait_eval_local(canonical, deadline) else {
                 break;
             };
             let Some(root) = module_root_blocker(&error) else {

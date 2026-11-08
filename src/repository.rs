@@ -453,6 +453,9 @@ struct RepositoryState {
     /// speculative preparation of their extension group, and execute even
     /// when local ([`RepositorySet::eval_local_blocker`]).
     eval_local: std::sync::Mutex<BTreeSet<String>>,
+    /// Those whose speculative execution called `execute()` (left to the
+    /// sequential pass, never queued again).
+    eval_local_refused: std::sync::Mutex<BTreeSet<String>>,
     /// The width extension speculations start with once the module graph
     /// is resolved (0: not armed; [`RepositorySet::start_extension_speculation`]).
     extension_speculation_armed: std::sync::atomic::AtomicUsize,
@@ -1314,6 +1317,7 @@ impl RepositorySet {
                 eval_used_groups: Default::default(),
                 eval_used: Default::default(),
                 eval_local: Default::default(),
+                eval_local_refused: Default::default(),
                 extension_speculation_armed: Default::default(),
             }),
         }
@@ -3759,21 +3763,31 @@ impl RepositorySet {
                 }
             }
         };
-        (eligible && !lock_ignoring_poison(&self.state.eval_local).contains(canonical))
-            .then_some(canonical)
+        (eligible
+            && !lock_ignoring_poison(&self.state.eval_local).contains(canonical)
+            && !lock_ignoring_poison(&self.state.eval_local_refused).contains(canonical))
+        .then_some(canonical)
     }
 
     /// The pool's lane: execute the repository `canonical` speculatively
     /// ([`Self::eval_local_blocker`]), waiting (at most a few seconds) for
     /// it. When it is blocked on a registry module's root, that root (to
     /// materialize on the lane, then call again).
-    pub(crate) fn wait_eval_local(&self, canonical: &str) -> Option<String> {
+    pub(crate) fn wait_eval_local(
+        &self,
+        canonical: &str,
+        deadline: std::time::Instant,
+    ) -> Option<String> {
+        // One that called `execute()` never runs ahead: not queued again.
+        if lock_ignoring_poison(&self.state.eval_local_refused).contains(canonical) {
+            return None;
+        }
         lock_ignoring_poison(&self.state.eval_local).insert(canonical.to_owned());
         self.state.speculation.request_again(canonical);
-        let blocked = self
-            .state
-            .speculation
-            .wait_settled(canonical, std::time::Duration::from_secs(10));
+        let blocked = self.state.speculation.wait_settled(
+            canonical,
+            deadline.saturating_duration_since(std::time::Instant::now()),
+        );
         if self
             .speculation_slot(canonical)
             .is_ok_and(|slot| slot.ready().is_some())
@@ -3785,14 +3799,14 @@ impl RepositorySet {
 
     /// The pool's lane: wait (at most a few seconds) for the speculative
     /// preparation of the group `id` an evaluator's pool load waits for.
-    pub(crate) fn wait_eval_group(&self, id: &str) -> Option<String> {
-        let wait = std::time::Duration::from_secs(10);
+    pub(crate) fn wait_eval_group(&self, id: &str, deadline: std::time::Instant) -> Option<String> {
+        let wait = || deadline.saturating_duration_since(std::time::Instant::now());
         self.state.extension_speculation.request(id);
         for _ in 0..4 {
             let _ = self
                 .state
                 .extension_speculation
-                .finished_waiting(id, wait, true);
+                .finished_waiting(id, wait(), true);
             let blocked = self.state.extension_speculation.blocked_on(id)?;
             if let Some(other) = self.speculated_group_blocker(&blocked) {
                 // Another group's preparation: prepared ahead too.
@@ -3801,7 +3815,7 @@ impl RepositorySet {
                 let _ = self
                     .state
                     .extension_speculation
-                    .finished_waiting(&other, wait, true);
+                    .finished_waiting(&other, wait(), true);
             } else if let Some(canonical) = sentinel_repository(&blocked) {
                 // A local repository (or one of a group used
                 // speculatively): executed ahead as for a pool load.
@@ -3811,7 +3825,7 @@ impl RepositorySet {
                     return None;
                 }
                 let canonical = canonical.to_owned();
-                if let Some(error) = self.wait_eval_local(&canonical) {
+                if let Some(error) = self.wait_eval_local(&canonical, deadline) {
                     return Some(error);
                 }
             } else {
@@ -4186,6 +4200,9 @@ impl RepositorySet {
             .contains(canonical)
             .then(EvalAdoption::start);
         let slot = match self.speculation_slot(canonical) {
+            // The coordinator evaluates it now (a local rule it executes
+            // itself unless it takes this speculation: never both).
+            Ok(slot) if adoption.is_some() && slot.evaluating() => return Finished::Failed,
             Ok(slot) if slot.ready().is_none() => slot,
             Ok(_) => return Finished::Failed,
             Err(error) if crate::repository_demand::is_needs_repository(&error) => {
@@ -4194,8 +4211,12 @@ impl RepositorySet {
             Err(_) => return Finished::Failed,
         };
         let (result, obtained) = UnitRoots::during(|| self.speculative_materialize(canonical));
+        let eval_requested = adoption.is_some();
         drop(adoption);
         let order_dependent = crate::repository_demand::take_order_dependent();
+        if eval_requested && order_dependent && result.is_err() {
+            lock_ignoring_poison(&self.state.eval_local_refused).insert(canonical.to_owned());
+        }
         let root = match result {
             Err(error) if crate::repository_demand::is_needs_repository(&error) => {
                 return if order_dependent {
@@ -4297,6 +4318,14 @@ impl RepositorySet {
             None
         };
         self.materialize_ordinary(prepared, repository)
+    }
+
+    /// Whether the pool's lane asked repository speculation for the local
+    /// rule `canonical` ([`Self::wait_eval_local`]): the coordinator's own
+    /// evaluation of its root then takes the speculation (waiting while it
+    /// runs) instead of executing the rule a second time.
+    fn eval_local_requested(&self, canonical: &str) -> bool {
+        lock_ignoring_poison(&self.state.eval_local).contains(canonical)
     }
 
     /// A local rule's speculative execution, only for an evaluator's pool
@@ -5316,7 +5345,7 @@ impl RepositorySet {
                 // Executed already by a speculation (parallel fetching,
                 // crate::repository_speculation): committed here, where the
                 // sequential engine executes the rule.
-                if !prepared.definition.local
+                if (!prepared.definition.local || self.eval_local_requested(canonical))
                     && let Some(outcome) = self.state.speculation.take(canonical)
                 {
                     return Ok(self.commit_speculation(*outcome));
@@ -6097,7 +6126,7 @@ impl RepositorySet {
                     // Executed already by a speculation (parallel fetching,
                     // crate::repository_speculation): committed here, where
                     // the sequential engine executes the rule.
-                    if !repository.definition.local
+                    if (!repository.definition.local || self.eval_local_requested(canonical))
                         && let Some(outcome) = self.state.speculation.take(canonical)
                     {
                         return Ok(self.commit_speculation(*outcome));

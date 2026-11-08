@@ -456,6 +456,14 @@ impl<T> DemandSlot<T> {
         ProbeClaim::Finished
     }
 
+    /// Whether an evaluator of this slot runs now (on any thread).
+    pub fn evaluating(&self) -> bool {
+        match self.running.lock() {
+            Ok(running) => running.is_some(),
+            Err(poisoned) => poisoned.into_inner().is_some(),
+        }
+    }
+
     /// The successfully computed value, if any; never evaluates.
     pub fn ready(&self) -> Option<&T> {
         self.ready.get().and_then(|result| result.as_ref().ok())
