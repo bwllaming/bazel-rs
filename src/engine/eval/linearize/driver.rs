@@ -47,6 +47,28 @@ use super::super::value::{Ct1Value, NodeValue};
 use super::cycles::Pass1Cycles;
 use super::pass1::{Ct1Record, MemoRecord, Options, Pass1, Progress, SegmentRecord, Transcripts};
 
+/// BAZEL_RS_EVAL_STATS=1: where the linearizer's time goes (µs).
+static STATS: [std::sync::atomic::AtomicU64; 4] = [
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+];
+const STAT_PASS1: usize = 0;
+const STAT_APPLY: usize = 1;
+const STAT_PUBLISH: usize = 2;
+const STAT_PHASE2: usize = 3;
+
+fn stat<R>(index: usize, f: impl FnOnce() -> R) -> R {
+    let started = std::time::Instant::now();
+    let result = f();
+    STATS[index].fetch_add(
+        started.elapsed().as_micros() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    result
+}
+
 /// A memo value the engine keeps (phase 2 reads it).
 pub(crate) enum Published {
     Platform(
@@ -225,8 +247,9 @@ impl Coord<'_> {
                 stack: &self.stack,
                 ct1_done: &self.ct1_done,
             };
-            lin.pass.resume(&view, &mut lin.ops)?;
+            stat(STAT_PASS1, || lin.pass.resume(&view, &mut lin.ops))?;
         }
+        let started = std::time::Instant::now();
         let ops = std::mem::take(&mut lin.ops);
         // snapshot-unrecorded: a diagnostics dump of the tape; it changes nothing the analysis computes.
         if let Some(path) = std::env::var_os("BAZEL_RS_EVAL_TAPE_DUMP") {
@@ -283,18 +306,34 @@ impl Coord<'_> {
                         })?;
                     lin.plan.push((key.key, rule));
                 }
-                TapeOp::Flush => self.flush(lin, shared)?,
+                TapeOp::Flush => {
+                    STATS[STAT_APPLY].fetch_add(
+                        started.elapsed().as_micros() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    let flushed = self.flush(lin, shared);
+                    STATS[STAT_APPLY].fetch_sub(
+                        started.elapsed().as_micros() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    flushed?
+                }
                 _ => {}
             }
         }
+        STATS[STAT_APPLY].fetch_add(
+            started.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         Ok(())
     }
 
     /// The walk's `plan_pending`: phase 2 of the plan so far, the engine
     /// holding the published values, the configurations and the tracker.
     fn flush(&mut self, lin: &mut Linearizer, shared: &EvalShared) -> Result<(), String> {
-        self.publish(lin);
+        stat(STAT_PUBLISH, || self.publish(lin));
         let before = lin.plan.len();
+        let started = std::time::Instant::now();
         let result = self.with_engine(lin, shared, |engine, lin| {
             let Some(mut state) = engine.action_planning.take() else {
                 return Err(
@@ -313,6 +352,10 @@ impl Coord<'_> {
         }
         let added = lin.plan.len() - before;
         lin.replay.planned_elsewhere(added);
+        STATS[STAT_PHASE2].fetch_add(
+            started.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         result
     }
 
@@ -399,42 +442,9 @@ impl Coord<'_> {
                 engine.empty_configuration_rules.insert(key);
             }
         }
-        for (key, platform) in &self.first.claims {
-            engine
-                .toolchain_implementations
-                .entry(key.clone())
-                .or_insert_with(|| platform.clone());
-        }
-        for (memo, value) in &self.first.aspect_predicates {
-            engine
-                .aspect_predicates
-                .entry(memo.clone())
-                .or_insert(*value);
-        }
-        for (memo, value) in &self.first.aspect_attr_aspects {
-            engine
-                .aspect_attr_aspects
-                .entry(memo.clone())
-                .or_insert_with(|| value.clone());
-        }
-        for (memo, value) in &self.first.aspect_toolchains {
-            engine
-                .aspect_toolchains
-                .entry(memo.clone())
-                .or_insert_with(|| Arc::clone(value));
-        }
-        for (memo, value) in &self.first.aspect_attribute_configs {
-            engine
-                .aspect_attribute_configs
-                .entry(memo.clone())
-                .or_insert_with(|| Arc::clone(value));
-        }
-        for (key, value) in &self.first.transition_cache {
-            engine
-                .transition_cache
-                .entry(*key)
-                .or_insert_with(|| value.clone());
-        }
+        // The first-visit memos (toolchain implementation claims, aspect
+        // memos, the transition cache) are written through to the engine
+        // as the bodies decide them (eval_host).
         for published in &self.store.published[lin.published_memos..] {
             match published {
                 Published::Platform(key, result) => {
@@ -681,6 +691,17 @@ impl Engine {
         crate::ui::replay(leftover);
         let linearized = pass.finish();
         crate::perf_mark("plan.eval_phase1_done");
+        // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
+        if std::env::var_os("BAZEL_RS_EVAL_STATS").is_some() {
+            let ms = |index: usize| STATS[index].load(std::sync::atomic::Ordering::Relaxed) / 1000;
+            crate::note!(
+                "bazel-rs: eval phase 1: pass 1 {} ms, tape application {} ms, publication {} ms, flush phase 2 {} ms",
+                ms(STAT_PASS1),
+                ms(STAT_APPLY),
+                ms(STAT_PUBLISH),
+                ms(STAT_PHASE2)
+            );
+        }
         result?;
         if let Some(divergence) = linearized.divergences.first() {
             return Err(format!(

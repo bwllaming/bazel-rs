@@ -1103,7 +1103,16 @@ impl Host for EvalHost<'_, '_> {
         key: TransitionCacheKey,
         value: (TransitionConfigurations, Vec<String>),
     ) {
-        self.cx.coord().first.transition_cache.insert(key, value);
+        let mut coord = self.cx.coord();
+        // BAZEL_RS_ANALYSIS=eval: the engine's map too (phase 2 reads it).
+        if coord.lin.is_some() {
+            coord
+                .engine
+                .transition_cache
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
+        }
+        coord.first.transition_cache.insert(key, value);
     }
 
     fn claim_toolchain_implementation(
@@ -1115,11 +1124,18 @@ impl Host for EvalHost<'_, '_> {
             implementation: key.clone(),
             exec_platform: exec_platform.clone(),
         })));
-        let claims = &mut self.cx.coord().first.claims;
-        match claims.get(&key) {
+        let mut coord = self.cx.coord();
+        match coord.first.claims.get(&key) {
             Some(existing) => Some(existing.clone()),
             None => {
-                claims.insert(key, exec_platform.clone());
+                // BAZEL_RS_ANALYSIS=eval: the engine's map too.
+                if coord.lin.is_some() {
+                    coord
+                        .engine
+                        .toolchain_implementations
+                        .insert(key.clone(), exec_platform.clone());
+                }
+                coord.first.claims.insert(key, exec_platform.clone());
                 None
             }
         }
@@ -1145,7 +1161,15 @@ impl Host for EvalHost<'_, '_> {
     }
 
     fn set_aspect_predicate(&mut self, memo: (Label, String), value: bool) {
-        self.cx.coord().first.aspect_predicates.insert(memo, value);
+        let mut coord = self.cx.coord();
+        if coord.lin.is_some() {
+            coord
+                .engine
+                .aspect_predicates
+                .entry(memo.clone())
+                .or_insert(value);
+        }
+        coord.first.aspect_predicates.insert(memo, value);
     }
 
     fn aspect_attr_aspects(
@@ -1160,11 +1184,15 @@ impl Host for EvalHost<'_, '_> {
         memo: (ConfiguredTargetKey, String),
         value: (Option<Arc<[String]>>, Option<Arc<[String]>>),
     ) {
-        self.cx
-            .coord()
-            .first
-            .aspect_attr_aspects
-            .insert(memo, value);
+        let mut coord = self.cx.coord();
+        if coord.lin.is_some() {
+            coord
+                .engine
+                .aspect_attr_aspects
+                .entry(memo.clone())
+                .or_insert_with(|| value.clone());
+        }
+        coord.first.aspect_attr_aspects.insert(memo, value);
     }
 
     fn aspect_toolchains(&mut self, memo: &(ConfigId, String)) -> Option<Arc<AspectToolchains>> {
@@ -1172,7 +1200,15 @@ impl Host for EvalHost<'_, '_> {
     }
 
     fn set_aspect_toolchains(&mut self, memo: (ConfigId, String), value: Arc<AspectToolchains>) {
-        self.cx.coord().first.aspect_toolchains.insert(memo, value);
+        let mut coord = self.cx.coord();
+        if coord.lin.is_some() {
+            coord
+                .engine
+                .aspect_toolchains
+                .entry(memo.clone())
+                .or_insert_with(|| Arc::clone(&value));
+        }
+        coord.first.aspect_toolchains.insert(memo, value);
     }
 
     fn aspect_attribute_configs(
@@ -1192,11 +1228,15 @@ impl Host for EvalHost<'_, '_> {
         memo: (ConfiguredTargetKey, String),
         value: Arc<BTreeMap<String, TransitionConfigurations>>,
     ) {
-        self.cx
-            .coord()
-            .first
-            .aspect_attribute_configs
-            .insert(memo, value);
+        let mut coord = self.cx.coord();
+        if coord.lin.is_some() {
+            coord
+                .engine
+                .aspect_attribute_configs
+                .entry(memo.clone())
+                .or_insert_with(|| Arc::clone(&value));
+        }
+        coord.first.aspect_attribute_configs.insert(memo, value);
     }
 }
 
