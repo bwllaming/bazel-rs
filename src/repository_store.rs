@@ -1091,7 +1091,7 @@ fn probe_loaded(
             existing.files.len() as u64,
             existing.files.values().map(|e| e.size).sum::<u64>(),
         );
-        verify_snapshot_detailed(destination, &existing.files, verify_mode()).ok()?
+        verify_snapshot_shared(destination, &existing.files, verify_mode()).ok()?
     };
     verified.matched.then_some(verified)
 }
@@ -2899,7 +2899,7 @@ fn verify_snapshot(
 /// refreshed fingerprints for entries whose fallback hash matched but
 /// whose recorded fingerprint was missing/stale/racy (review R3: the
 /// caller persists them so the next warm run trusts by stat).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Verified {
     matched: bool,
     refreshed: BTreeMap<String, StatFingerprint>,
@@ -2909,6 +2909,61 @@ struct Verified {
     /// assertion on it flaky).
     #[cfg_attr(not(test), allow(dead_code))]
     hashed: u64,
+}
+
+/// The verification of one tree in flight, by root, inventory size and
+/// mode ([`verify_snapshot_shared`]).
+type VerifyingKey = (PathBuf, usize, bool);
+type VerifyingSlot = std::sync::Arc<std::sync::Mutex<Option<Result<Verified, String>>>>;
+static VERIFYING: std::sync::Mutex<Option<std::collections::HashMap<VerifyingKey, VerifyingSlot>>> =
+    std::sync::Mutex::new(None);
+
+/// [`verify_snapshot_detailed`], single-flight per tree: a thread whose
+/// tree another thread is verifying waits for that verification and takes
+/// its result (a published tree never changes; the verification reads
+/// files only and waits for nothing, so the wait cannot be part of a
+/// cycle). Many warm-reuse probes of one big tree at once (the evaluator's
+/// pool: probes nested in other repositories' recorded-input checks,
+/// which never wait for each other's probe) verify it once.
+fn verify_snapshot_shared(
+    root: &Path,
+    expected: &BTreeMap<String, Entry>,
+    mode: VerifyMode,
+) -> Result<Verified, String> {
+    let key = (root.to_path_buf(), expected.len(), mode == VerifyMode::Full);
+    let lock = || {
+        VERIFYING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    let running = lock()
+        .get_or_insert_with(Default::default)
+        .get(&key)
+        .cloned();
+    if let Some(running) = running
+        && let Ok(done) = running.lock()
+        && let Some(result) = done.as_ref()
+    {
+        return result.clone();
+    }
+    let slot: VerifyingSlot = std::sync::Arc::default();
+    let mut guard = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    lock()
+        .get_or_insert_with(Default::default)
+        .insert(key.clone(), std::sync::Arc::clone(&slot));
+    let result = verify_snapshot_detailed(root, expected, mode);
+    *guard = Some(result.clone());
+    drop(guard);
+    if let Some(running) = lock().as_mut()
+        && running
+            .get(&key)
+            .is_some_and(|running| std::sync::Arc::ptr_eq(running, &slot))
+    {
+        running.remove(&key);
+    }
+    result
 }
 
 fn verify_snapshot_detailed(
