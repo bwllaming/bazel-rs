@@ -530,12 +530,148 @@ type DependencyViews = HashMap<ConfiguredTargetKey, DependencyTarget>;
 #[derive(Clone, Copy)]
 struct ViewReads<'r> {
     configured: &'r ConfiguredNodes,
-    dry: &'r KeyMap<Artifacts>,
-    custom_providers: &'r KeyMap<BTreeMap<String, starlark::values::OwnedFrozenValue>>,
-    provider_keys: &'r KeyMap<Vec<String>>,
-    runfiles_info: &'r KeyMap<Arc<crate::runfiles::TargetRunfiles>>,
-    declared: &'r Declared,
-    validation: &'r BTreeMap<ConfiguredTargetKey, crate::starlark_types::Depset>,
+    reads: &'r dyn PlanReads,
+}
+
+/// What a prepare reads of the targets planned so far (their committed
+/// results): the planning state's maps ([`MapReads`]), or (S3, eval pass
+/// 2) the results a prepare off the coordinator reads concurrently with
+/// the commits ([`parallel::PlannedResults`]).
+trait PlanReads: Sync {
+    fn dry(&self, key: &ConfiguredTargetKey) -> Option<Artifacts>;
+    fn providers(
+        &self,
+        key: &ConfiguredTargetKey,
+    ) -> Option<BTreeMap<String, starlark::values::OwnedFrozenValue>>;
+    fn provider(
+        &self,
+        key: &ConfiguredTargetKey,
+        id: &str,
+    ) -> Option<starlark::values::OwnedFrozenValue>;
+    fn provider_keys(&self, key: &ConfiguredTargetKey) -> Option<Vec<String>>;
+    fn runfiles_info(
+        &self,
+        key: &ConfiguredTargetKey,
+    ) -> Option<Arc<crate::runfiles::TargetRunfiles>>;
+    fn declared(&self, config: ConfigId, path: &Path) -> Option<Artifact>;
+    fn validation(&self, key: &ConfiguredTargetKey) -> Option<crate::starlark_types::Depset>;
+    fn repositories(&self, key: &ConfiguredTargetKey) -> Option<Arc<BTreeSet<String>>>;
+}
+
+/// [`PlanReads`] over the planning state's maps (each borrowed apart: the
+/// callers hold the others mutably). A map not given reads as empty.
+#[derive(Clone, Copy, Default)]
+struct MapReads<'r> {
+    dry: Option<&'r KeyMap<Artifacts>>,
+    custom_providers: Option<&'r KeyMap<BTreeMap<String, starlark::values::OwnedFrozenValue>>>,
+    provider_keys: Option<&'r KeyMap<Vec<String>>>,
+    runfiles_info: Option<&'r KeyMap<Arc<crate::runfiles::TargetRunfiles>>>,
+    declared: Option<&'r Declared>,
+    validation: Option<&'r BTreeMap<ConfiguredTargetKey, crate::starlark_types::Depset>>,
+    repositories: Option<&'r KeyMap<Arc<BTreeSet<String>>>>,
+}
+
+impl ActionPlanning {
+    /// Every per-target map, read.
+    fn reads(&self) -> MapReads<'_> {
+        MapReads {
+            dry: Some(&self.dry),
+            custom_providers: Some(&self.custom_providers),
+            provider_keys: Some(&self.provider_keys),
+            runfiles_info: Some(&self.runfiles_info),
+            declared: Some(&self.declared),
+            validation: Some(&self.validation),
+            repositories: Some(&self.repositories),
+        }
+    }
+}
+
+impl PlanReads for ActionPlanning {
+    fn dry(&self, key: &ConfiguredTargetKey) -> Option<Artifacts> {
+        self.reads().dry(key)
+    }
+
+    fn providers(
+        &self,
+        key: &ConfiguredTargetKey,
+    ) -> Option<BTreeMap<String, starlark::values::OwnedFrozenValue>> {
+        self.reads().providers(key)
+    }
+
+    fn provider(
+        &self,
+        key: &ConfiguredTargetKey,
+        id: &str,
+    ) -> Option<starlark::values::OwnedFrozenValue> {
+        self.reads().provider(key, id)
+    }
+
+    fn provider_keys(&self, key: &ConfiguredTargetKey) -> Option<Vec<String>> {
+        self.reads().provider_keys(key)
+    }
+
+    fn runfiles_info(
+        &self,
+        key: &ConfiguredTargetKey,
+    ) -> Option<Arc<crate::runfiles::TargetRunfiles>> {
+        self.reads().runfiles_info(key)
+    }
+
+    fn declared(&self, config: ConfigId, path: &Path) -> Option<Artifact> {
+        self.reads().declared(config, path)
+    }
+
+    fn validation(&self, key: &ConfiguredTargetKey) -> Option<crate::starlark_types::Depset> {
+        self.reads().validation(key)
+    }
+
+    fn repositories(&self, key: &ConfiguredTargetKey) -> Option<Arc<BTreeSet<String>>> {
+        self.reads().repositories(key)
+    }
+}
+
+impl PlanReads for MapReads<'_> {
+    fn dry(&self, key: &ConfiguredTargetKey) -> Option<Artifacts> {
+        self.dry?.get(key).cloned()
+    }
+
+    fn providers(
+        &self,
+        key: &ConfiguredTargetKey,
+    ) -> Option<BTreeMap<String, starlark::values::OwnedFrozenValue>> {
+        self.custom_providers?.get(key).cloned()
+    }
+
+    fn provider(
+        &self,
+        key: &ConfiguredTargetKey,
+        id: &str,
+    ) -> Option<starlark::values::OwnedFrozenValue> {
+        self.custom_providers?.get(key)?.get(id).cloned()
+    }
+
+    fn provider_keys(&self, key: &ConfiguredTargetKey) -> Option<Vec<String>> {
+        self.provider_keys?.get(key).cloned()
+    }
+
+    fn runfiles_info(
+        &self,
+        key: &ConfiguredTargetKey,
+    ) -> Option<Arc<crate::runfiles::TargetRunfiles>> {
+        self.runfiles_info?.get(key).cloned()
+    }
+
+    fn declared(&self, config: ConfigId, path: &Path) -> Option<Artifact> {
+        self.declared?.get(config, path).cloned()
+    }
+
+    fn validation(&self, key: &ConfiguredTargetKey) -> Option<crate::starlark_types::Depset> {
+        self.validation?.get(key).cloned()
+    }
+
+    fn repositories(&self, key: &ConfiguredTargetKey) -> Option<Arc<BTreeSet<String>>> {
+        self.repositories?.get(key).cloned()
+    }
 }
 
 /// BAZEL_RS_VERIFY_VIEWS: the memoized view of `key` equals the view this
@@ -4561,16 +4697,16 @@ impl Engine {
         config: ConfigId,
         context: Option<&UnloadedToolchainContext>,
         target_description: &str,
-        custom_providers: &KeyMap<BTreeMap<String, starlark::values::OwnedFrozenValue>>,
+        reads: &dyn PlanReads,
     ) -> Result<crate::toolchain_info::ToolchainContextData, String> {
         let mut toolchains = BTreeMap::new();
         let mut requested = Vec::new();
         if let Some(context) = context {
             for (info, implementation) in &context.resolved {
-                let Some(provider) = custom_providers
-                    .get(&ConfiguredTargetKey::new(implementation.clone(), config))
-                    .and_then(|providers| providers.get(crate::toolchain_info::PROVIDER_ID))
-                else {
+                let Some(provider) = reads.provider(
+                    &ConfiguredTargetKey::new(implementation.clone(), config),
+                    crate::toolchain_info::PROVIDER_ID,
+                ) else {
                     return Err(self.toolchain_error(
                         rule,
                         config,
@@ -4578,7 +4714,7 @@ impl Engine {
                         &crate::toolchains::not_a_toolchain(&info.type_label, implementation),
                     ));
                 };
-                toolchains.insert(info.type_label.clone(), provider.clone());
+                toolchains.insert(info.type_label.clone(), provider);
             }
             requested = context
                 .requested
@@ -5582,7 +5718,12 @@ impl Engine {
         built: &KeyMap<Artifacts>,
         declared: &Declared,
     ) -> Result<Artifacts, String> {
-        Self::shared_artifacts_in(self, label, config, built, declared)
+        let reads = MapReads {
+            dry: Some(built),
+            declared: Some(declared),
+            ..MapReads::default()
+        };
+        Self::shared_artifacts_in(self, label, config, &reads)
     }
 
     /// [`Self::shared_artifacts`] over a lookup context (S2).
@@ -5590,8 +5731,7 @@ impl Engine {
         cx: &mut C,
         label: &Label,
         config: ConfigId,
-        built: &KeyMap<Artifacts>,
-        declared: &Declared,
+        reads: &dyn PlanReads,
     ) -> Result<Artifacts, String> {
         match cx.target(label)? {
             Target::Source(real) => Ok(Arc::new(vec![Artifact::new(
@@ -5602,9 +5742,8 @@ impl Engine {
                 false,
                 false,
             )])),
-            Target::Rule(rule) => built
-                .get(&ConfiguredTargetKey::new(rule.label.clone(), config))
-                .cloned()
+            Target::Rule(rule) => reads
+                .dry(&ConfiguredTargetKey::new(rule.label.clone(), config))
                 .ok_or_else(|| format!("internal analysis order error: {label}")),
             Target::Output(rule, out) => {
                 // The generating rule's configuration, after its rule
@@ -5619,9 +5758,8 @@ impl Engine {
                     .label
                     .with_name(&out)?
                     .generated_exec_path(&engine.configurations.output_root(config));
-                declared
-                    .get(config, &exec)
-                    .cloned()
+                reads
+                    .declared(config, &exec)
                     .map(|artifact| Arc::new(vec![artifact]))
                     .ok_or_else(|| format!("missing analyzed output {label}"))
             }
@@ -6410,15 +6548,29 @@ impl Engine {
         label: Label,
         config: Option<ConfigId>,
     ) -> BTreeSet<String> {
+        let reads = MapReads {
+            repositories: Some(repositories),
+            ..MapReads::default()
+        };
+        self.dependency_repositories_in(&reads, label, config)
+    }
+
+    /// [`Self::dependency_repositories`] over [`PlanReads`].
+    fn dependency_repositories_in(
+        &self,
+        reads: &dyn PlanReads,
+        label: Label,
+        config: Option<ConfigId>,
+    ) -> BTreeSet<String> {
         let own = BTreeSet::from([label.repository.clone()]);
         let Some(config) = config else {
             return own;
         };
         let key = ConfiguredTargetKey::new(label, config);
         let key = self.rule_delegations.get(&key).cloned().unwrap_or(key);
-        repositories
-            .get(&key)
-            .map(|known| (**known).clone())
+        reads
+            .repositories(&key)
+            .map(|known| (*known).clone())
             .unwrap_or(own)
     }
 
@@ -6467,13 +6619,26 @@ impl Engine {
         validation: &BTreeMap<ConfiguredTargetKey, crate::starlark_types::Depset>,
         key: &ConfiguredTargetKey,
     ) -> Option<crate::starlark_types::Depset> {
+        let reads = MapReads {
+            custom_providers: Some(custom_providers),
+            validation: Some(validation),
+            ..MapReads::default()
+        };
+        self.planned_validation_in(&reads, key)
+    }
+
+    /// [`Self::planned_validation`] over [`PlanReads`].
+    fn planned_validation_in(
+        &self,
+        reads: &dyn PlanReads,
+        key: &ConfiguredTargetKey,
+    ) -> Option<crate::starlark_types::Depset> {
         let key = self.rule_delegations.get(key).unwrap_or(key);
-        if let Some(set) = validation.get(key) {
-            return Some(set.clone());
+        if let Some(set) = reads.validation(key) {
+            return Some(set);
         }
-        custom_providers
-            .get(key)
-            .and_then(|providers| providers.get(crate::output_group_info::PROVIDER_ID))
+        reads
+            .provider(key, crate::output_group_info::PROVIDER_ID)
             .and_then(|info| {
                 crate::output_group_info::validation(info.value())
                     .map(crate::output_group_info::shared_validation)
@@ -7466,14 +7631,18 @@ impl Engine {
         label: &Label,
         edge_config: ConfigId,
     ) -> Result<DependencyTarget, String> {
+        let maps = MapReads {
+            dry: Some(dry),
+            custom_providers: Some(custom_providers),
+            provider_keys: Some(provider_keys),
+            runfiles_info: Some(runfiles_info),
+            declared: Some(declared),
+            validation: Some(validation),
+            repositories: None,
+        };
         let reads = ViewReads {
             configured,
-            dry,
-            custom_providers,
-            provider_keys,
-            runfiles_info,
-            declared,
-            validation,
+            reads: &maps,
         };
         Self::dependency_view_in(
             &mut prepare::CoordViews {
@@ -7497,19 +7666,11 @@ impl Engine {
         label: &Label,
         edge_config: ConfigId,
     ) -> Result<DependencyTarget, String> {
-        let ViewReads {
-            configured,
-            dry,
-            custom_providers,
-            provider_keys,
-            runfiles_info,
-            declared,
-            validation,
-        } = *reads;
+        let ViewReads { configured, reads } = *reads;
         if Self::target_incompatibility_in(cx, configured, label, edge_config)?.is_some() {
             return Self::incompatible_dependency_view_in(cx, configured, label, edge_config);
         }
-        let artifacts = Self::shared_artifacts_in(cx, label, edge_config, dry, declared)?;
+        let artifacts = Self::shared_artifacts_in(cx, label, edge_config, reads)?;
         let files = artifacts.iter().map(Artifact::file).collect::<Vec<_>>();
         for artifact in artifacts.iter() {
             cx.register(&artifact.file, artifact);
@@ -7539,11 +7700,9 @@ impl Engine {
             ),
         );
         let is_rule = matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)));
-        let runfiles = dependency_runfiles(&target, &files, runfiles_info.get(&actual_key));
-        let mut providers = custom_providers
-            .get(&dependency)
-            .cloned()
-            .unwrap_or_default();
+        let runfiles =
+            dependency_runfiles(&target, &files, reads.runfiles_info(&actual_key).as_ref());
+        let mut providers = reads.providers(&dependency).unwrap_or_default();
         // Every rule target has an OutputGroupInfo
         // (RuleConfiguredTargetBuilder.java:155-173): a native rule's
         // is the HIDDEN_TOP_LEVEL group of its default runfiles plus
@@ -7555,7 +7714,7 @@ impl Engine {
             let value = cx.native_output_group(&actual_key, &mut |engine: &Engine| {
                 crate::output_group_info::freeze(
                     runfiles.default_runfiles().all_artifacts_depset(),
-                    engine.planned_validation(custom_providers, validation, &actual_key),
+                    engine.planned_validation_in(reads, &actual_key),
                 )
             })?;
             providers.insert(crate::output_group_info::PROVIDER_ID.to_owned(), value);
@@ -7566,10 +7725,7 @@ impl Engine {
         // transition, Self::artifacts), present only when non-empty.
         if let Target::Output(generating, _) = &target {
             let owner = ConfiguredTargetKey::new(generating.label.clone(), edge_config);
-            if let Some(set) = cx
-                .engine()
-                .planned_validation(custom_providers, validation, &owner)
-            {
+            if let Some(set) = cx.engine().planned_validation_in(reads, &owner) {
                 providers.insert(
                     crate::output_group_info::PROVIDER_ID.to_owned(),
                     crate::output_group_info::freeze_validation(set)?,
@@ -7607,13 +7763,10 @@ impl Engine {
             // crate::analysis); an output file answers with its
             // generating rule's.
             let generated = match &target {
-                Target::Output(generating, _) if coverage => custom_providers
-                    .get(&ConfiguredTargetKey::new(
-                        generating.label.clone(),
-                        edge_config,
-                    ))
-                    .and_then(|providers| providers.get(crate::instrumented_files::PROVIDER_ID))
-                    .cloned(),
+                Target::Output(generating, _) if coverage => reads.provider(
+                    &ConfiguredTargetKey::new(generating.label.clone(), edge_config),
+                    crate::instrumented_files::PROVIDER_ID,
+                ),
                 _ => None,
             };
             let info = match generated {
@@ -7652,7 +7805,7 @@ impl Engine {
             }
         };
         let identity = cx.identity((label.clone(), identity_config), &mut || {
-            let provider_keys = provider_keys.get(&actual_key).cloned().unwrap_or_default();
+            let provider_keys = reads.provider_keys(&actual_key).unwrap_or_default();
             std::sync::Arc::new(analysis::dependency_target_data(
                 &label.to_string(),
                 &actual.to_string(),
@@ -7677,7 +7830,7 @@ impl Engine {
             is_package_group: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_))),
             is_filegroup: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::Filegroup)),
             providers,
-            provider_keys: provider_keys.get(&actual_key).cloned().unwrap_or_default(),
+            provider_keys: reads.provider_keys(&actual_key).unwrap_or_default(),
             runfiles,
             rule_class: match &target {
                 Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)) => {
@@ -8272,7 +8425,10 @@ impl Engine {
             base_key.config,
             toolchains.default.as_ref(),
             &target_description,
-            state.custom_providers,
+            &MapReads {
+                custom_providers: Some(state.custom_providers),
+                ..MapReads::default()
+            },
         )?;
         let mut group_toolchains = Vec::new();
         for group in &toolchains.groups.groups {
@@ -8284,7 +8440,10 @@ impl Engine {
                         base_key.config,
                         group.context.as_ref(),
                         &target_description,
-                        state.custom_providers,
+                        &MapReads {
+                            custom_providers: Some(state.custom_providers),
+                            ..MapReads::default()
+                        },
                     )?,
                 )),
             ));
@@ -9151,8 +9310,8 @@ impl Engine {
         if execution_plan {
             transitive.insert(rule.label.repository.clone());
             for (label, edge_config, _, _) in &dependency_labels {
-                transitive.extend(cx.engine().dependency_repositories(
-                    &cx.state().repositories,
+                transitive.extend(cx.engine().dependency_repositories_in(
+                    cx.reads(),
                     label.clone(),
                     Some(*edge_config),
                 ));
@@ -9170,7 +9329,7 @@ impl Engine {
         cx.prerequisite_errors(rule, &key, exec_config, &dependency_targets)?;
         // Everything below reads the engine and the planning state only.
         let engine = cx.engine();
-        let custom_providers = &cx.state().custom_providers;
+        let reads = cx.reads();
         // ctx.target_platform_has_constraint: a toolchain-resolving
         // rule sees its target platform; a deferred default host
         // platform is resolved only when the implementation asks,
@@ -9227,11 +9386,11 @@ impl Engine {
                     .flatten()
                 {
                     for (_, implementation) in &context.resolved {
-                        if let Some(variables) = custom_providers
-                            .get(&dependency_key(implementation.clone()))
-                            .and_then(|providers| {
-                                providers.get(crate::template_variable_info::PROVIDER_ID)
-                            })
+                        if let Some(variables) = reads
+                            .provider(
+                                &dependency_key(implementation.clone()),
+                                crate::template_variable_info::PROVIDER_ID,
+                            )
                             .and_then(|provider| {
                                 crate::template_variable_info::variables(provider.value())
                             })
@@ -9245,7 +9404,7 @@ impl Engine {
                     config,
                     engine.toolchain_contexts.get(&key),
                     &target_description,
-                    custom_providers,
+                    reads,
                 )?;
                 let mut groups = Vec::new();
                 for group in &exec_groups.groups {
@@ -9258,7 +9417,7 @@ impl Engine {
                                 config,
                                 group.context.as_ref(),
                                 &target_description,
-                                custom_providers,
+                                reads,
                             )?,
                         ))
                     };

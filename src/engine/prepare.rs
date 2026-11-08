@@ -67,7 +67,8 @@ pub(super) trait ViewCx: Lookup {
 
 /// A Starlark target's prepare ([`Engine::prepare_custom`]).
 pub(super) trait PrepareCx: Lookup {
-    fn state(&self) -> &ActionPlanning;
+    /// The results of the targets planned so far.
+    fn reads(&self) -> &dyn PlanReads;
     /// The console and aquery owners of the target's actions.
     fn note_owner(
         &mut self,
@@ -232,8 +233,8 @@ impl PrepareCx for CoordPrepare<'_> {
         )
     }
 
-    fn state(&self) -> &ActionPlanning {
-        self.state
+    fn reads(&self) -> &dyn PlanReads {
+        &*self.state
     }
 
     fn note_owner(
@@ -432,12 +433,7 @@ impl<'a> SharedPrepare<'a> {
         let state = self.state;
         let reads = ViewReads {
             configured: self.configured,
-            dry: &state.dry,
-            custom_providers: &state.custom_providers,
-            provider_keys: &state.provider_keys,
-            runfiles_info: &state.runfiles_info,
-            declared: &state.declared,
-            validation: &state.validation,
+            reads: state,
         };
         let hit = self.state.views.get(&key).map(|view| ViewFill {
             view: view.clone(),
@@ -598,7 +594,7 @@ impl PrepareCx for SharedPrepare<'_> {
         Engine::starlark_prerequisite_errors(self, rule, key, exec_config, configured, targets)
     }
 
-    fn state(&self) -> &ActionPlanning {
+    fn reads(&self) -> &dyn PlanReads {
         self.state
     }
 
