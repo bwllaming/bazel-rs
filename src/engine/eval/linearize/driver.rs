@@ -242,8 +242,9 @@ pub(crate) struct Linearizer {
     segments: std::collections::VecDeque<(usize, usize, Option<super::pass1::FlushPoint>)>,
     /// The platforms published (applied or pending).
     platforms: FxHashSet<ConfiguredTargetKey>,
-    /// The target platform of each configuration (the deferral check).
-    target_platforms: FxHashMap<ConfigId, ConfiguredTargetKey>,
+    /// The target platform of each configuration (the deferral check;
+    /// `None`: the no-config configuration).
+    target_platforms: FxHashMap<ConfigId, Option<ConfiguredTargetKey>>,
 }
 
 /// A flush of the tape that failed.
@@ -784,6 +785,9 @@ impl Coord<'_> {
     /// Whether the plan segment `[start, end)` holds a Starlark rule or a
     /// genrule whose configuration's target platform is not resolved: its
     /// phase 2 may resolve it (and plan the platform's tree at the flush).
+    /// The no-config configuration's rules (licenses, package metadata)
+    /// have no target platform to resolve (a walk that does is the
+    /// internal error of `Engine::eval_pass2_resolves_platform`).
     fn platform_unresolved(
         &self,
         lin: &mut Linearizer,
@@ -806,16 +810,14 @@ impl Coord<'_> {
                     .configurations
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                ConfiguredTargetKey::new(
-                    configurations
-                        .get(key.config)
-                        .native
-                        .target_platform()
-                        .clone(),
-                    key.config,
-                )
+                let native = &configurations.get(key.config).native;
+                (!native.no_config)
+                    .then(|| ConfiguredTargetKey::new(native.target_platform().clone(), key.config))
             });
-            if !platforms.contains(platform) && !self.engine.platforms.contains_key(platform) {
+            if let Some(platform) = platform
+                && !platforms.contains(platform)
+                && !self.engine.platforms.contains_key(platform)
+            {
                 return true;
             }
         }
