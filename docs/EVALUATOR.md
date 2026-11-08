@@ -1131,6 +1131,38 @@ and before the walk's first demand of the group, is the internal error
 a rewrite before phase 1 (the target pattern phase) fails the use check
 and changes nothing.
 
+**Review fixes (eval-round1, second round).**
+- A `.bzl` module the pool loaded through an adopted group sits in the
+  shared cache: a hit by a load that does not adopt (the sequential pass's
+  package before the adopter in walk order, a loading worker) would skip
+  the group's preparation. `RepositorySet::note_obtained` (now called
+  before a hit is served) prepares the group there on a thread that may
+  demand (`root()`, as the walk's load), or notes `EVAL_GROUP_KEY` and the
+  root in the unit (no demand), counting a sentinel (an evaluator attempt
+  other than a package load leaves itself to the sequential pass).
+- The mismatch check runs only at a used group's commit
+  (`commit_eval_group`): an attempt discarded after its use, or a
+  repository speculation's use, is no mismatch. When the walk prepares a
+  used group otherwise, what the pool loaded from the speculative
+  preparation leaves the shared caches (`evict_dropped_group`: the `.bzl`
+  modules of its repositories and their loaders, transitively, the
+  load-graph memo, the ignored subdirectories). The use check compares a
+  materialized registry root with the one the speculation used.
+- A group key among the roots of an attempt the tape replayed before it
+  finished is not committed on the thread applying the record: an internal
+  error (fail closed; never expected: only package loads adopt).
+- A local rule the lane asked speculation for: the coordinator's own
+  evaluation of its root takes that speculation (waiting while it runs),
+  and a speculation gives up while the coordinator evaluates the root —
+  never two executions. A rule refused for `execute()` is not queued again;
+  the lane waits at most 10 s per blocker. No local rule runs ahead while
+  any replay capture is installed (checked at use).
+- Residuals: a published local root's workspace or host reads can go stale
+  if an earlier repository's `execute()` writes them (as for any
+  non-local speculation); the module events of a discarded pool attempt
+  of a package (kept for its rerun) may name a module re-evaluated after
+  such an eviction (its lines are printed once, the first version's).
+
 **Not done: overlapping the linearizer with the pool rounds** (item (4)
 of "What remains" above): it runs in `driver.rs` beside eval-s3's pass 2,
 which moves the flushes' phase 2 out of the coordinator's linearization
