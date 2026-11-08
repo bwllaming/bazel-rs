@@ -121,6 +121,9 @@ pub(crate) struct Store {
     /// Transcripts pass 1 has replayed for the last time, freed (eval's
     /// memory stays near the walk's: ~/code emits millions of events).
     pub(crate) released: FxHashSet<NodeId>,
+    /// A rerun emitted other events than its abandoned attempt (an internal
+    /// error: pass 1 may have replayed them).
+    pub(crate) rerun_mismatch: Option<String>,
 }
 
 impl Store {
@@ -187,9 +190,42 @@ impl Coord<'_> {
         }
     }
 
-    /// Record `event` in the running attempt (or the current segment).
+    /// Record `event` in the running attempt (or the current segment). A
+    /// rerun re-emits its abandoned attempt's events, which stay in place
+    /// (pass 1 may have replayed them); the one-time effects of the engine's
+    /// services there (a package's load output and commit, its warnings)
+    /// are not re-emitted.
     pub(crate) fn push_event(&mut self, event: Event) {
         match self.stack.last_mut() {
+            Some(running) if running.cursor < running.replay => {
+                let one_time = |event: &Event| {
+                    matches!(
+                        event,
+                        Event::Console(_) | Event::PkgCommit(..) | Event::Warn(_)
+                    )
+                };
+                while running.cursor < running.replay
+                    && running.events[running.cursor] != event
+                    && one_time(&running.events[running.cursor])
+                {
+                    running.cursor += 1;
+                }
+                if running.cursor < running.replay && running.events[running.cursor] == event {
+                    running.cursor += 1;
+                    return;
+                }
+                if running.cursor < running.replay {
+                    self.store.rerun_mismatch.get_or_insert_with(|| {
+                        format!(
+                            "{:?} re-emits {event:?} where its abandoned attempt emitted {:?}",
+                            running.key, running.events[running.cursor]
+                        )
+                    });
+                    running.events.truncate(running.cursor);
+                    running.replay = running.cursor;
+                }
+                running.events.push(event);
+            }
             Some(running) => running.events.push(event),
             None => {
                 if let Some((_, events)) = self.store.segments.last_mut() {
@@ -202,13 +238,44 @@ impl Coord<'_> {
     pub(crate) fn begin_attempt(&mut self, id: NodeId, key: NodeKey) {
         self.store.keys.entry(id).or_insert_with(|| key.clone());
         let events = self.store.carry.remove(&id).unwrap_or_default();
-        self.stack.push(Running { id, key, events });
+        self.stack.push(Running {
+            id,
+            key,
+            replay: events.len(),
+            cursor: 0,
+            events,
+            missing_at: None,
+        });
+    }
+
+    /// The running attempt received a `Missing`: it stops here.
+    pub(crate) fn missing_here(&mut self) {
+        self.drain();
+        if let Some(running) = self.stack.last_mut() {
+            running.missing_at.get_or_insert(running.events.len());
+        }
     }
 
     /// The attempt ends with `value`: its transcript is kept (a `Tgt`
     /// lookup's goes to its user); returns its key.
     pub(crate) fn finish_attempt(&mut self, value: &NodeValue) -> Option<NodeKey> {
         let running = self.stack.pop()?;
+        if let Some(event) = running.events[running.cursor.min(running.replay)..running.replay]
+            .iter()
+            .find(|event| {
+                !matches!(
+                    event,
+                    Event::Console(_) | Event::PkgCommit(..) | Event::Warn(_)
+                )
+            })
+        {
+            self.store.rerun_mismatch.get_or_insert_with(|| {
+                format!(
+                    "{:?} finished without re-emitting {event:?} of its abandoned attempt",
+                    running.key
+                )
+            });
+        }
         if matches!(running.key, NodeKey::Tgt(_)) {
             for event in running.events {
                 self.push_event(event);
@@ -259,17 +326,18 @@ impl Coord<'_> {
         Some(running.key)
     }
 
-    /// The attempt stopped (`Missing`): it reruns from the start; what
-    /// happened anyway (console writes, warnings) stays its.
+    /// The attempt stopped (`Missing`): it reruns from the start, its
+    /// events up to the `Missing` stay (pass 1 may have replayed them; the
+    /// rerun re-emits them, `push_event`), with what happened anyway.
     pub(crate) fn abandon_attempt(&mut self) {
-        if let Some(running) = self.stack.pop() {
-            let kept: Vec<Event> = running
-                .events
-                .into_iter()
-                .filter(|event| matches!(event, Event::Console(_) | Event::Warn(_)))
-                .collect();
-            if !kept.is_empty() {
-                self.store.carry.entry(running.id).or_default().extend(kept);
+        if let Some(mut running) = self.stack.pop() {
+            let keep = running
+                .missing_at
+                .unwrap_or(running.events.len())
+                .max(running.replay);
+            running.events.truncate(keep);
+            if !running.events.is_empty() {
+                self.store.carry.insert(running.id, running.events);
             }
         }
     }
@@ -288,6 +356,11 @@ impl Coord<'_> {
     }
 
     fn linearize_with(&mut self, lin: &mut Linearizer, shared: &EvalShared) -> Result<(), String> {
+        if let Some(mismatch) = &self.store.rerun_mismatch {
+            return Err(format!(
+                "internal error: BAZEL_RS_ANALYSIS=eval: {mismatch}; rerun with BAZEL_RS_ANALYSIS=walk"
+            ));
+        }
         {
             let view = View {
                 store: &self.store,

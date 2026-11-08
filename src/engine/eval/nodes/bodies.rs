@@ -104,8 +104,17 @@ impl Coord<'_> {
 pub(crate) struct Running {
     pub(crate) id: NodeId,
     pub(crate) key: NodeKey,
-    /// What it emitted so far.
+    /// What it emitted so far (a rerun: starting with the abandoned
+    /// attempt's events, which it re-emits; `Coord::push_event`).
     pub(crate) events: Vec<Event>,
+    /// The leading events a rerun re-emits (the abandoned attempt's, up to
+    /// its `Missing`): pass 1 may have replayed them already.
+    pub(crate) replay: usize,
+    /// How many of them the rerun re-emitted.
+    pub(crate) cursor: usize,
+    /// The events when the attempt first received a `Missing` (what it
+    /// emitted while it stopped is not the rerun's).
+    pub(crate) missing_at: Option<usize>,
 }
 
 /// What a phase-1 body needs of its context besides [`Cx`] in S1.
@@ -121,7 +130,13 @@ struct BodyCx<'a, 'e> {
 
 impl Cx for BodyCx<'_, '_> {
     fn need(&mut self, keys: &[NodeKey]) -> Result<Vals, Missing> {
-        let vals = self.cx.need(keys)?;
+        let vals = match self.cx.need(keys) {
+            Ok(vals) => vals,
+            Err(missing) => {
+                self.coord().missing_here();
+                return Err(missing);
+            }
+        };
         // BAZEL_RS_EVAL_RESTARTS=<seed> (a test hook): the first need of a
         // key by a node is answered `Missing` at random (one in four), as
         // a parallel evaluation parks an attempt: the attempt is abandoned
@@ -137,6 +152,7 @@ impl Cx for BodyCx<'_, '_> {
             ));
             let fresh = self.coord().restarted.insert((current, ids.clone()));
             if fresh && roll % 4 == 0 {
+                self.coord().missing_here();
                 return Err(Missing::Nodes(ids));
             }
         }
