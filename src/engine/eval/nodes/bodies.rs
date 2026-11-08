@@ -753,11 +753,11 @@ impl Bodies for Phase1Bodies<'_, '_> {
             }
             self.inbox.push(
                 running.id,
-                Record::Finished {
+                Record::Finished(Box::new(Finished {
                     running,
                     parts,
                     observations,
-                },
+                })),
             );
             return value;
         }
@@ -774,7 +774,8 @@ impl Bodies for Phase1Bodies<'_, '_> {
             let running = running.kept();
             self.inbox.keep_carry(running.id, &running.events);
             if self.on_pool() {
-                self.inbox.push(running.id, Record::Abandoned(running));
+                self.inbox
+                    .push(running.id, Record::Abandoned(Box::new(running)));
             } else {
                 self.coord().abandon_attempt(running);
             }
@@ -943,16 +944,19 @@ impl Running {
 /// A store update a pool attempt hands to the coordinator.
 pub(crate) type Deferred<'e> = Box<dyn FnOnce(&mut Coord<'e>) + Send + 'e>;
 
+/// A done pool attempt's record.
+struct Finished {
+    running: Running,
+    parts: FinishParts,
+    observations: Option<crate::observed_fs::Observations>,
+}
+
 /// What a pool attempt leaves for the coordinator's store (eval-round1:
 /// begin, finish and abandon take no lock on the pool).
 enum Record<'e> {
     Began(NodeId, NodeKey),
-    Finished {
-        running: Running,
-        parts: FinishParts,
-        observations: Option<crate::observed_fs::Observations>,
-    },
-    Abandoned(Running),
+    Finished(Box<Finished>),
+    Abandoned(Box<Running>),
     Apply(Deferred<'e>),
 }
 
@@ -1023,12 +1027,15 @@ impl<'e> Inbox<'e> {
             for record in records {
                 match record {
                     Record::Began(id, key) => coord.begin_attempt(id, &key),
-                    Record::Finished {
-                        running,
-                        parts,
-                        observations,
-                    } => apply_finish(coord, running, parts, observations),
-                    Record::Abandoned(running) => coord.abandon_attempt(running),
+                    Record::Finished(finished) => {
+                        let Finished {
+                            running,
+                            parts,
+                            observations,
+                        } = *finished;
+                        apply_finish(coord, running, parts, observations);
+                    }
+                    Record::Abandoned(running) => coord.abandon_attempt(*running),
                     Record::Apply(apply) => apply(coord),
                 }
             }
