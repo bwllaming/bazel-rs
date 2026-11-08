@@ -60,8 +60,8 @@ pub(crate) struct Coord<'e> {
 /// BAZEL_RS_EVAL_RESTARTS=<seed>: the restart test hook's seed.
 fn restarts_seed() -> Option<u64> {
     static SEED: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
-    // snapshot-unrecorded: a test hook; the analysis result must not change.
     *SEED.get_or_init(|| {
+        // snapshot-unrecorded: a test hook; the analysis result must not change.
         std::env::var("BAZEL_RS_EVAL_RESTARTS")
             .ok()
             .and_then(|seed| seed.parse().ok())
