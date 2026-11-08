@@ -80,6 +80,9 @@ impl Workspace {
             .env("HOME", &home)
             .env("TMPDIR", &tmp)
             .env("BAZEL_RS_SNAPSHOT", "off")
+            // Phase-1 prefetch is the walk's (the evaluator loads in its
+            // Pkg nodes; `assert_identical_recordings` checks it too).
+            .env("BAZEL_RS_ANALYSIS", "walk")
             .arg("--ignore_all_rc_files")
             .arg("--cache-dir=cache")
             .args(args)

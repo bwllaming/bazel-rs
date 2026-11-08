@@ -161,6 +161,13 @@ impl EvalShared {
                     .collect(),
                 probes: Mutex::new(std::mem::take(&mut engine.source_dir_probes)),
                 group_budget: Mutex::new(std::mem::take(&mut engine.group_budget)),
+                groups: Mutex::new(
+                    engine
+                        .group_nodes
+                        .iter()
+                        .map(|(label, group)| (label.clone(), Arc::clone(group)))
+                        .collect(),
+                ),
                 ..Default::default()
             },
         }
@@ -185,5 +192,12 @@ impl EvalShared {
             .group_budget
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (label, group) in loading
+            .groups
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            engine.group_nodes.entry(label).or_insert(group);
+        }
     }
 }

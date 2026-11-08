@@ -131,8 +131,6 @@ pub(crate) struct Store {
     /// Source-file lookups' missing inputs and source directories (Tgt
     /// nodes; order-free maps, published with the values).
     pub(crate) sources_side: Vec<crate::engine::SourceSide>,
-    /// Resolved package groups (Group nodes), published into the engine.
-    pub(crate) groups: Vec<(Label, Arc<crate::package_specification::GroupNode>)>,
 }
 
 impl Store {
@@ -659,9 +657,6 @@ impl Coord<'_> {
         }
         for side in std::mem::take(&mut self.store.sources_side) {
             side.apply(&mut engine.missing_sources, &mut engine.source_directories);
-        }
-        for (label, group) in std::mem::take(&mut self.store.groups) {
-            engine.group_nodes.entry(label).or_insert(group);
         }
         for published in &self.store.published[lin.published_memos..] {
             match published {

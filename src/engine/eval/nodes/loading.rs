@@ -64,6 +64,8 @@ pub(crate) struct Loading {
     /// repository, with the console writes the load made.
     pub(crate) lane_units:
         Mutex<FxHashMap<PackageId, (crate::package::LoadUnit, Vec<crate::ui::Deferred>)>>,
+    /// The package groups resolved so far (`Engine::group_nodes`).
+    pub(crate) groups: Mutex<FxHashMap<Label, Arc<crate::package_specification::GroupNode>>>,
     /// The module events of a Pkg node's attempts aborted on the pool.
     pub(crate) aborted_prints: Mutex<FxHashMap<PackageId, Vec<LoadPrintEvent>>>,
     /// The print events of the aspect definitions the evaluation loaded
@@ -332,26 +334,36 @@ pub(crate) fn source_visibility(pkg: &PkgValue, label: &Label) -> crate::visibil
         .clone()
 }
 
-/// The `Group` body (`Engine::resolve_group`): the includes are Group
-/// nodes (a cycle among them is a back edge: the include cycle error).
+/// The `Group` body (`Engine::resolve_group`): the include graph is
+/// resolved in the body as the walk resolves it (its active path decides
+/// a cycle and the depth limit), resolved groups shared through
+/// [`Loading::groups`].
 pub(crate) fn group_body(
     shared: &EvalShared,
     cx: &mut dyn Phase1Cx<'_>,
     label: &Label,
 ) -> Result<NodeValue, Missing> {
-    Ok(NodeValue::Group(group(shared, cx, label)?))
+    Ok(NodeValue::Group(resolve_group(
+        shared,
+        cx,
+        label,
+        &mut Vec::new(),
+    )?))
 }
 
-fn group(
+type GroupResult = Result<Arc<crate::package_specification::GroupNode>, String>;
+
+fn resolve_group(
     shared: &EvalShared,
     cx: &mut dyn Phase1Cx<'_>,
     label: &Label,
-) -> Result<Result<Arc<crate::package_specification::GroupNode>, String>, Missing> {
+    active: &mut Vec<Label>,
+) -> Result<GroupResult, Missing> {
     use crate::package::RuleKind;
     cx.emit(Event::ScopeEnter("resolve_group"));
     let result = (|| {
         let package = label.package_id();
-        let pkg = match pkg_lookup(cx, &package)? {
+        let pkg = match pkg_lookup(shared, cx, &package)? {
             Ok(pkg) => pkg,
             Err(error) => return Ok(Err(error)),
         };
@@ -369,7 +381,19 @@ fn group(
         if let Err(error) = check_macro_namespace(rule, label) {
             return Ok(Err(error));
         }
-        if cx.coord().group_depth() > 256 {
+        if let Some(node) = shared
+            .loading
+            .groups
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(label)
+        {
+            return Ok(Ok(Arc::clone(node)));
+        }
+        if active.contains(label) {
+            return Ok(Err(format!("package group include cycle at {label}")));
+        }
+        if active.len() >= 256 {
             return Ok(Err(
                 "package group DAG exceeds depth limit 256 path nodes".into()
             ));
@@ -397,32 +421,33 @@ fn group(
             return Ok(Err(error));
         }
         let definition = Arc::clone(definition);
-        let mut includes = Vec::with_capacity(definition.includes.len());
-        for edge in &definition.includes {
-            let key = NodeKey::Group(edge.clone());
-            let id = cx.id_of(&key);
-            cx.emit(Event::MemoUse(id));
-            match cx.need_one(key) {
-                Ok(value) => match value.as_ref() {
-                    NodeValue::Group(Ok(node)) => includes.push(Arc::clone(node)),
-                    NodeValue::Group(Err(error)) => return Ok(Err(error.clone())),
-                    _ => {
-                        return Ok(Err(
-                            "internal error: a Group key with another value".to_owned()
-                        ));
-                    }
-                },
-                Err(Missing::BackEdge(_)) => {
-                    return Ok(Err(format!("package group include cycle at {edge}")));
+        active.push(label.clone());
+        let resolved = (|| {
+            let mut includes = Vec::with_capacity(definition.includes.len());
+            for edge in &definition.includes {
+                match resolve_group(shared, cx, edge, active)? {
+                    Ok(node) => includes.push(node),
+                    Err(error) => return Ok(Err(error)),
                 }
-                Err(missing) => return Err(missing),
             }
-        }
-        Ok(crate::package_specification::GroupNode::new(
-            Arc::new(definition.own_specs.clone()),
-            includes,
-        )
-        .map(Arc::new))
+            let node = crate::package_specification::GroupNode::new(
+                Arc::new(definition.own_specs.clone()),
+                includes,
+            )
+            .map(Arc::new);
+            if let Ok(node) = &node {
+                shared
+                    .loading
+                    .groups
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .entry(label.clone())
+                    .or_insert_with(|| Arc::clone(node));
+            }
+            Ok(node)
+        })();
+        active.pop();
+        resolved
     })();
     cx.emit(Event::ScopeExit);
     result
@@ -431,12 +456,15 @@ fn group(
 /// A package lookup from a body: `MemoUse` of its Pkg node (its commit's
 /// effects at the first linearized use), then its value.
 pub(crate) fn pkg_lookup(
+    shared: &EvalShared,
     cx: &mut dyn Phase1Cx<'_>,
     package: &PackageId,
 ) -> Result<Result<Arc<PkgValue>, String>, Missing> {
     let key = NodeKey::Pkg(package.clone());
-    let id = cx.id_of(&key);
-    cx.emit(Event::MemoUse(id));
+    if !shared.loading.preloaded.contains_key(package) {
+        let id = cx.id_of(&key);
+        cx.emit(Event::MemoUse(id));
+    }
     let needed = cx.need_one(key)?;
     Ok(pkg_of(needed.as_ref()))
 }
@@ -444,16 +472,18 @@ pub(crate) fn pkg_lookup(
 /// A target lookup from a body (`Engine::target`): its `Access` (while
 /// tracking), its package's `MemoUse`, then the `Tgt` value.
 pub(crate) fn target_lookup(
-    _shared: &EvalShared,
+    shared: &EvalShared,
     cx: &mut dyn Phase1Cx<'_>,
     label: &Label,
 ) -> Result<Result<Target, String>, Missing> {
     if cx.coord().tracking {
         cx.emit(Event::Access(label.clone()));
     }
-    let package = NodeKey::Pkg(label.package_id());
-    let id = cx.id_of(&package);
-    cx.emit(Event::MemoUse(id));
+    let package = label.package_id();
+    if !shared.loading.preloaded.contains_key(&package) {
+        let id = cx.id_of(&NodeKey::Pkg(package));
+        cx.emit(Event::MemoUse(id));
+    }
     let value = cx.need_one(NodeKey::Tgt(label.clone()))?;
     Ok(match value.as_ref() {
         NodeValue::Tgt(result) => result.clone(),
