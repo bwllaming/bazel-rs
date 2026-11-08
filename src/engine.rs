@@ -3501,83 +3501,15 @@ impl Engine {
         if let Some(definition) = self.aspects.get(identity) {
             return Ok(Some(definition));
         }
-        // The native ValidateTarget (rules/core/ValidateTarget.java): a
-        // non-recursive aspect that promotes `_validation` outputs to
-        // `_validation_top_level`. Its application is computed natively;
-        // the implementation slot stays an unused marker.
-        if identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
-            let declaration = crate::rule_declarations::AspectDeclaration {
-                attr_aspects: Some(Vec::new()),
-                ..Default::default()
-            };
-            self.aspects.insert(crate::aspects::AspectDefinition {
-                identity: identity.to_owned(),
-                definition_label: crate::label::Label::parse_canonical("//:validate.bzl")
-                    .expect("static label parses"),
-                exported_name: identity.to_owned(),
-                declaration,
-                value: starlark::environment::Module::with_temp_heap(|module| {
-                    module.set("__impl", starlark::values::Value::new_none());
-                    module
-                        .freeze()
-                        .expect("None freezes")
-                        .get("__impl")
-                        .expect("__impl was set")
-                }),
-                parameters: BTreeMap::new(),
-                top_level: false,
-                descriptor: identity.to_owned(),
-                computed_attr_aspects: None,
-                computed_toolchains_aspects: None,
-            });
-            return Ok(self.aspects.get(identity));
+        let (loaded, prints) = load_aspect_definition(&self.repositories, identity, allow_private);
+        self.emit_load_prints(prints);
+        match loaded? {
+            Some(definition) => {
+                self.aspects.insert(definition);
+                Ok(self.aspects.get(identity))
+            }
+            None => Ok(None),
         }
-        // StarlarkAspectClass: `{extension label}%{exported name}`, split at
-        // the LAST '%' of the identity.
-        let Some((extension, name)) = identity.rsplit_once('%') else {
-            return Ok(None);
-        };
-        let label = self
-            .repositories
-            .parse(extension, "", "")
-            .map_err(|error| format!("Invalid aspect '{identity}': {error}"))?;
-        // A BUILD-phase load of the shared `.bzl` cache (its invariant, W6
-        // review F1): a phase-1 prefetch worker may have evaluated the
-        // module already, for a package the build may never commit. The
-        // load's print events replay here like a load unit's at its commit
-        // — the lines of a module it evaluated, or the stored lines of a
-        // cache hit not emitted yet — also when the load fails, so the
-        // lines print once, at this sequential point, whoever evaluated the
-        // module first.
-        let prints = crate::loading::LoadPrints::default();
-        let loaded = crate::loading::load_shared_definition_any_in(
-            self.repositories.clone(),
-            &label,
-            name,
-            &self.repositories.build_phase_globals().1,
-            !allow_private,
-            &prints,
-        );
-        self.emit_load_prints(prints.take());
-        let loaded = loaded?;
-        let Some(aspect) = crate::rule_declarations::Aspect::from_value(loaded.value.value())
-        else {
-            return Err(format!("{name} from {label} is not an aspect"));
-        };
-        let definition = crate::aspects::AspectDefinition {
-            identity: identity.to_owned(),
-            definition_label: label,
-            exported_name: name.to_owned(),
-            declaration: aspect.declaration.clone(),
-            value: loaded.value,
-            parameters: BTreeMap::new(),
-            top_level: false,
-            descriptor: identity.to_owned(),
-            computed_attr_aspects: None,
-            computed_toolchains_aspects: None,
-        };
-        self.aspects.insert(definition);
-        Ok(self.aspects.get(identity))
     }
 
     /// Analyze builds in `configuration` (default: the default configuration).
@@ -7339,28 +7271,12 @@ impl Engine {
     /// the test rules of its (loaded) package without the `manual` tag whose
     /// `tags` and `size` match the suite's tags, sorted; otherwise none.
     fn implicit_tests(&self, suite: &Rule) -> Vec<Label> {
-        use crate::test_command::{matches_filters, sort_tags_by_sense};
-        let Some(native) = &suite.native else {
-            return Vec::new();
-        };
-        if !native.labels("tests").is_empty() {
-            return Vec::new();
-        }
-        let Some(package) = self.packages.get(&suite.label.package_id()) else {
-            return Vec::new();
-        };
-        let (required, excluded) = sort_tags_by_sense(&native.tags);
-        let mut tests: Vec<Label> = package
-            .values()
-            .filter(|rule| !rule.is_manual())
-            .filter(|rule| {
-                test_suite_filter_tags(rule)
-                    .is_some_and(|tags| matches_filters(&tags, &required, &excluded, true))
-            })
-            .map(|rule| rule.label.clone())
-            .collect();
-        tests.sort();
-        tests
+        implicit_tests_in(
+            self.packages
+                .get(&suite.label.package_id())
+                .map(|package| &**package),
+            suite,
+        )
     }
 
     /// RunCommand.isExecutable of `label` (Runnable).
@@ -11393,7 +11309,8 @@ impl Engine {
         // requests the evaluator does not cover yet plan with the walk).
         let evaluate = mode == eval::AnalysisMode::Eval && self.eval_covers(checkpoint.is_some());
         let analyzed = if evaluate {
-            self.start_prefetch(labels);
+            // No phase-1 prefetch: the evaluator's Pkg nodes load the
+            // packages (S2).
             // M5 (plan_timings): phase 1 is one outermost analysis span,
             // as the walk's analyses are.
             let timing = crate::plan_timings::enabled();
@@ -18483,4 +18400,147 @@ fn package_registration_rules(package: &Package, kind: Registration) -> Vec<Labe
         })
         .map(|rule| rule.label.clone())
         .collect()
+}
+
+/// A test_suite's implicit tests (`Engine::implicit_tests`) in its loaded
+/// package.
+fn implicit_tests_in(package: Option<&Package>, suite: &Rule) -> Vec<Label> {
+    use crate::test_command::{matches_filters, sort_tags_by_sense};
+    let Some(native) = &suite.native else {
+        return Vec::new();
+    };
+    if !native.labels("tests").is_empty() {
+        return Vec::new();
+    }
+    let Some(package) = package else {
+        return Vec::new();
+    };
+    let (required, excluded) = sort_tags_by_sense(&native.tags);
+    let mut tests: Vec<Label> = package
+        .values()
+        .filter(|rule| !rule.is_manual())
+        .filter(|rule| {
+            test_suite_filter_tags(rule)
+                .is_some_and(|tags| matches_filters(&tags, &required, &excluded, true))
+        })
+        .map(|rule| rule.label.clone())
+        .collect();
+    tests.sort();
+    tests
+}
+
+/// The output checks of `Engine::commit_loaded_package`.
+fn validate_package_outputs(
+    repositories: &RepositorySet,
+    package: &PackageId,
+    rules: &Package,
+) -> Result<(), String> {
+    let ignored = repositories.ignored_subdirectories(&package.repository)?;
+    for rule in rules.values() {
+        for out in &rule.outs {
+            let root = repositories.root(&package.repository)?;
+            validate_output_directory_in(root, package, out, &ignored)?;
+            rule.label.with_name(out)?;
+        }
+    }
+    Ok(())
+}
+
+/// An aspect definition's load (`Engine::aspect_definition` on a registry
+/// miss): the definition (`None`: the identity resolves nothing) and the
+/// load's print events (emitted by the caller, also on failure).
+#[allow(clippy::type_complexity)]
+fn load_aspect_definition(
+    repositories: &Arc<RepositorySet>,
+    identity: &str,
+    allow_private: bool,
+) -> (
+    Result<Option<crate::aspects::AspectDefinition>, String>,
+    Vec<crate::loading::LoadPrintEvent>,
+) {
+    // The native ValidateTarget (rules/core/ValidateTarget.java): a
+    // non-recursive aspect that promotes `_validation` outputs to
+    // `_validation_top_level`. Its application is computed natively;
+    // the implementation slot stays an unused marker.
+    if identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
+        let declaration = crate::rule_declarations::AspectDeclaration {
+            attr_aspects: Some(Vec::new()),
+            ..Default::default()
+        };
+        return (
+            Ok(Some(crate::aspects::AspectDefinition {
+                identity: identity.to_owned(),
+                definition_label: crate::label::Label::parse_canonical("//:validate.bzl")
+                    .expect("static label parses"),
+                exported_name: identity.to_owned(),
+                declaration,
+                value: starlark::environment::Module::with_temp_heap(|module| {
+                    module.set("__impl", starlark::values::Value::new_none());
+                    module
+                        .freeze()
+                        .expect("None freezes")
+                        .get("__impl")
+                        .expect("__impl was set")
+                }),
+                parameters: BTreeMap::new(),
+                top_level: false,
+                descriptor: identity.to_owned(),
+                computed_attr_aspects: None,
+                computed_toolchains_aspects: None,
+            })),
+            Vec::new(),
+        );
+    }
+    // StarlarkAspectClass: `{extension label}%{exported name}`, split at
+    // the LAST '%' of the identity.
+    let Some((extension, name)) = identity.rsplit_once('%') else {
+        return (Ok(None), Vec::new());
+    };
+    let label = match repositories.parse(extension, "", "") {
+        Ok(label) => label,
+        Err(error) => {
+            return (
+                Err(format!("Invalid aspect '{identity}': {error}")),
+                Vec::new(),
+            );
+        }
+    };
+    // A BUILD-phase load of the shared `.bzl` cache (its invariant, W6
+    // review F1): a phase-1 prefetch worker may have evaluated the
+    // module already, for a package the build may never commit. The
+    // load's print events replay here like a load unit's at its commit
+    // — the lines of a module it evaluated, or the stored lines of a
+    // cache hit not emitted yet — also when the load fails, so the
+    // lines print once, at this sequential point, whoever evaluated the
+    // module first.
+    let prints = crate::loading::LoadPrints::default();
+    let loaded = crate::loading::load_shared_definition_any_in(
+        repositories.clone(),
+        &label,
+        name,
+        &repositories.build_phase_globals().1,
+        !allow_private,
+        &prints,
+    );
+    let prints = prints.take();
+    let loaded = match loaded {
+        Ok(loaded) => loaded,
+        Err(error) => return (Err(error), prints),
+    };
+    let Some(aspect) = crate::rule_declarations::Aspect::from_value(loaded.value.value()) else {
+        return (Err(format!("{name} from {label} is not an aspect")), prints);
+    };
+    let definition = crate::aspects::AspectDefinition {
+        identity: identity.to_owned(),
+        definition_label: label,
+        exported_name: name.to_owned(),
+        declaration: aspect.declaration.clone(),
+        value: loaded.value,
+        parameters: BTreeMap::new(),
+        top_level: false,
+        descriptor: identity.to_owned(),
+        computed_attr_aspects: None,
+        computed_toolchains_aspects: None,
+    };
+    (Ok(Some(definition)), prints)
 }

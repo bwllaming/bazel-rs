@@ -1295,7 +1295,7 @@ pub(crate) fn commit_speculative_definitions(
 pub(crate) struct LoadPrints(RefCell<Vec<LoadPrintEvent>>);
 
 /// One buffered output event of a [`LoadPrints`] sink.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum LoadPrintEvent {
     /// A BUILD-file `print()` line.
     Build(String),

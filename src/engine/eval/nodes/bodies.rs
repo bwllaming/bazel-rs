@@ -77,6 +77,14 @@ impl Coord<'_> {
         self.sources.contains(label)
     }
 
+    /// The package groups being resolved (`resolve_group`'s active path).
+    pub(crate) fn group_depth(&self) -> usize {
+        self.stack
+            .iter()
+            .filter(|running| matches!(running.key, NodeKey::Group(_)))
+            .count()
+    }
+
     pub(crate) fn in_progress(&self, key: &NodeKey) -> bool {
         self.stack.iter().any(|running| running.key == *key)
     }
@@ -262,6 +270,12 @@ impl Bodies for Phase1Bodies<'_, '_> {
             }
             (Some(NodeKey::Src(label)), NodeValue::Src(Ok(()))) => {
                 coord.sources.insert(label);
+            }
+            (Some(NodeKey::Pkg(package)), NodeValue::Pkg(result)) => {
+                coord.store.packages.insert(package, result.clone());
+            }
+            (Some(NodeKey::Group(label)), NodeValue::Group(Ok(group))) => {
+                coord.store.groups.push((label, Arc::clone(group)));
             }
             _ => {}
         }

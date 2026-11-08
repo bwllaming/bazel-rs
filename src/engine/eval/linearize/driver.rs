@@ -40,6 +40,7 @@ use super::super::super::{
 use super::super::key::{CtKey, NodeId, NodeKey};
 use super::super::nodes::bodies::{Coord, Phase1Bodies, Running};
 use super::super::nodes::eval_host::edge_ct_key;
+use super::super::nodes::loading::PkgValue;
 use super::super::scheduler::{EvalConfig, Evaluator, NoRepositories};
 use super::super::shared::EvalShared;
 use super::super::transcript::{Event, SegmentKind, TapeOp, Transcript};
@@ -124,9 +125,23 @@ pub(crate) struct Store {
     /// A rerun emitted other events than its abandoned attempt (an internal
     /// error: pass 1 may have replayed them).
     pub(crate) rerun_mismatch: Option<String>,
+    /// The packages the evaluation loaded (S2, the Pkg nodes): what the
+    /// tape's `PkgCommit` commits into the engine.
+    pub(crate) packages: FxHashMap<crate::label::PackageId, Result<Arc<PkgValue>, String>>,
+    /// Source-file lookups' missing inputs and source directories (Tgt
+    /// nodes; order-free maps, published with the values).
+    pub(crate) sources_side: Vec<crate::engine::SourceSide>,
+    /// Resolved package groups (Group nodes), published into the engine.
+    pub(crate) groups: Vec<(Label, Arc<crate::package_specification::GroupNode>)>,
 }
 
 impl Store {
+    /// Keep a console write; its [`Event::Console`] index.
+    pub(crate) fn console(&mut self, write: crate::ui::Deferred) -> u32 {
+        self.consoles.push(Some(write));
+        (self.consoles.len() - 1) as u32
+    }
+
     /// Free what pass 1 will not read again.
     fn release(&mut self, pass: &mut Pass1) {
         let (nodes, segments) = pass.take_released();
@@ -431,6 +446,11 @@ impl Coord<'_> {
                     self.engine.warnings.push(warning);
                     self.store.warnings_seen = self.engine.warnings.len();
                 }
+                TapeOp::Effect(Event::LoadPrints(prints)) => {
+                    let engine = &mut *self.engine;
+                    lin.direct(|_| engine.emit_load_prints(prints.to_vec()));
+                }
+                TapeOp::Effect(Event::PkgCommit(package, _)) => self.commit_package(&package),
                 TapeOp::Plan { key, .. } => {
                     let rule = self
                         .ct1_values
@@ -468,6 +488,36 @@ impl Coord<'_> {
             Some(error) => Err(error),
             None => Ok(()),
         }
+    }
+
+    /// A package the evaluation loaded commits into the engine here
+    /// (`Engine::commit_loaded_package`), unless the engine loaded it
+    /// itself meanwhile (a flush's phase 2).
+    fn commit_package(&mut self, package: &crate::label::PackageId) {
+        let engine = &mut *self.engine;
+        if engine.packages.contains_key(package) {
+            return;
+        }
+        crate::progress::package_loaded();
+        let Some(Ok(loaded)) = self.store.packages.get(package) else {
+            return;
+        };
+        let rules = &loaded.package;
+        for rule in rules.values() {
+            for out in &rule.outs {
+                if let Ok(output) = rule.label.with_name(out) {
+                    engine
+                        .generated
+                        .insert(output, (rule.label.clone(), out.clone()));
+                }
+            }
+        }
+        if let Some(custom) = rules.values().find_map(|rule| rule.custom.as_ref()) {
+            engine
+                .loaded_functions
+                .register(&custom.top_level_functions);
+        }
+        engine.packages.insert(package.clone(), Arc::clone(rules));
     }
 
     /// The walk's `plan_pending`: phase 2 of the plan so far, the engine
@@ -516,10 +566,16 @@ impl Coord<'_> {
             .configurations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut aspects = shared
+            .aspects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         std::mem::swap(&mut engine.configurations, &mut *configurations);
+        std::mem::swap(&mut engine.aspects, &mut *aspects);
         engine.incremental = lin.tracker.take();
         let result = lin.direct(|lin| f(engine, lin));
         lin.tracker = engine.incremental.take();
+        std::mem::swap(&mut engine.aspects, &mut *aspects);
         std::mem::swap(&mut engine.configurations, &mut *configurations);
         // What it reported is at its place already.
         self.store.warnings_seen = engine.warnings.len();
@@ -600,6 +656,12 @@ impl Coord<'_> {
                 .toolchain_implementations
                 .entry(implementation.clone())
                 .or_insert_with(|| platform.clone());
+        }
+        for side in std::mem::take(&mut self.store.sources_side) {
+            side.apply(&mut engine.missing_sources, &mut engine.source_directories);
+        }
+        for (label, group) in std::mem::take(&mut self.store.groups) {
+            engine.group_nodes.entry(label).or_insert(group);
         }
         for published in &self.store.published[lin.published_memos..] {
             match published {
@@ -991,13 +1053,34 @@ fn drive(
         .get(top)
         .native
         .no_config;
-    for (position, label) in labels.iter().enumerate() {
-        // Engine::analyze_requested: the test-trimmed top-level key.
-        let looked_up = {
+    // Engine::target at the top level: the lookup's `Access` (while
+    // tracking) and its package's commit (a `MemoUse` of its Pkg node) in
+    // the current segment, then the Tgt node.
+    let lookup = |label: &Label| -> Result<Target, String> {
+        {
             let mut coord = bodies.coord();
             coord.drain();
-            coord.engine.target(label)
-        };
+            if coord.tracking {
+                coord.push_event(Event::Access(label.clone()));
+            }
+            let package = label.package_id();
+            if !shared.loading.preloaded.contains_key(&package) {
+                let id = evaluator.graph().intern(&NodeKey::Pkg(package));
+                coord.push_event(Event::MemoUse(id));
+            }
+        }
+        let value = evaluate(&NodeKey::Tgt(label.clone()));
+        bodies.coord().drain();
+        match value.as_ref() {
+            NodeValue::Tgt(result) => result.clone(),
+            _ => Err(format!(
+                "internal error: BAZEL_RS_ANALYSIS=eval: the lookup of {label} did not finish"
+            )),
+        }
+    };
+    for (position, label) in labels.iter().enumerate() {
+        // Engine::analyze_requested: the test-trimmed top-level key.
+        let looked_up = lookup(label);
         let trimmed = match &looked_up {
             Ok(Target::Rule(rule))
                 if !forwards(rule) && !matches!(rule.kind, RuleKind::PackageGroup(_)) =>
@@ -1017,10 +1100,8 @@ fn drive(
         // The root edge (Engine::analyze → analyze_key_body): its lookup,
         // then the source file or the configured target.
         let root = {
+            let looked_up = lookup(label);
             let mut coord = bodies.coord();
-            // The lookup's `Access` is captured (Engine::target).
-            let looked_up = coord.engine.target(label);
-            coord.drain();
             match looked_up {
                 Err(error) => Err(error),
                 Ok(Target::Source(_)) => {

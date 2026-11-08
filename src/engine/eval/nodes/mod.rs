@@ -14,6 +14,7 @@
 pub(crate) mod bodies;
 pub(crate) mod eval_host;
 pub(crate) mod host;
+pub(crate) mod loading;
 pub(crate) mod phase1;
 pub(crate) mod verify_phase1;
 pub(crate) mod walk;

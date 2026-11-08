@@ -91,6 +91,9 @@ pub(crate) struct EvalShared {
     /// The `Transition` nodes' inputs (S2, worker C; written once per key
     /// by the first requester).
     pub(crate) transitions: TransitionInputs,
+    /// The loading nodes' state (S2 addition: the packages loaded before
+    /// phase 1, the source-directory probes, the package-group budget).
+    pub(crate) loading: super::nodes::loading::Loading,
 }
 
 /// The inputs of the `Transition` nodes, by cache key: the key names the
@@ -140,9 +143,9 @@ impl EvalShared {
             repositories: Arc::clone(&engine.repositories),
             options,
             configurations: Mutex::new(std::mem::take(&mut engine.configurations)),
-            // S1: aspect definitions are a coordinator service (the
-            // engine's registry, filled by `.bzl` loads).
-            aspects: Mutex::new(crate::aspects::AspectRegistry::default()),
+            // The engine's registry (the bodies load more definitions;
+            // given back by `restore`).
+            aspects: Mutex::new(engine.aspects.clone()),
             loaded_functions: Arc::clone(&engine.loaded_functions),
             client_environment: Arc::default(),
             input_groups: Arc::default(),
@@ -150,6 +153,16 @@ impl EvalShared {
             artifacts: Arc::default(),
             target_identities: Default::default(),
             transitions: Default::default(),
+            loading: super::nodes::loading::Loading {
+                preloaded: engine
+                    .packages
+                    .iter()
+                    .map(|(id, package)| (id.clone(), Arc::clone(package)))
+                    .collect(),
+                probes: Mutex::new(std::mem::take(&mut engine.source_dir_probes)),
+                group_budget: Mutex::new(std::mem::take(&mut engine.group_budget)),
+                ..Default::default()
+            },
         }
     }
 
@@ -157,6 +170,19 @@ impl EvalShared {
     pub(crate) fn restore(self, engine: &mut super::super::Engine) {
         engine.configurations = self
             .configurations
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        engine.aspects = self
+            .aspects
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let loading = self.loading;
+        engine.source_dir_probes = loading
+            .probes
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        engine.group_budget = loading
+            .group_budget
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
     }

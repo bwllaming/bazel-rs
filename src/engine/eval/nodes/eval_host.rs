@@ -82,6 +82,9 @@ pub(crate) struct EvalHost<'c, 'e> {
     /// The registration cycle reports a dependency's failure carried
     /// (rendered here: `take_*_cycle_report`), `true` for toolchains.
     cycle_reports: Vec<(bool, String)>,
+    /// The packages whose Pkg node this attempt used already (one
+    /// `MemoUse` each: pass 1 replays a memo at its first use).
+    used_packages: crate::fast_hash::FxHashSet<PackageId>,
 }
 
 impl<'c, 'e> EvalHost<'c, 'e> {
@@ -104,6 +107,27 @@ impl<'c, 'e> EvalHost<'c, 'e> {
             resolving_aspect_toolchains: false,
             fresh_chain: false,
             cycle_reports: Vec::new(),
+            used_packages: Default::default(),
+        }
+    }
+
+    /// The `MemoUse` of `package`'s Pkg node (its commit's effects at the
+    /// first linearized use; nothing for a package loaded before phase 1).
+    fn use_package(&mut self, package: &PackageId) {
+        if self.shared.loading.preloaded.contains_key(package)
+            || !self.used_packages.insert(package.clone())
+        {
+            return;
+        }
+        self.memo_use(&NodeKey::Pkg(package.clone()));
+    }
+
+    /// A loaded package (the walk's `load_package` + `packages[id]`).
+    fn package(&mut self, package: &PackageId) -> Result<Arc<super::loading::PkgValue>, String> {
+        self.use_package(package);
+        match self.need(NodeKey::Pkg(package.clone())) {
+            Ok(value) => super::loading::pkg_of(value.as_ref()),
+            Err(missing) => Err(self.stop(missing)),
         }
     }
 
@@ -433,6 +457,7 @@ impl Host for EvalHost<'_, '_> {
         if self.cx.coord().tracking {
             self.emit(Event::Access(label.clone()));
         }
+        self.use_package(&label.package_id());
         let key = NodeKey::Tgt(label.clone());
         match self.need(key.clone()) {
             Ok(value) => match value.as_ref() {
@@ -444,11 +469,14 @@ impl Host for EvalHost<'_, '_> {
     }
 
     fn load_package(&mut self, package: &PackageId) -> Result<(), String> {
-        self.cx.coord().engine.load_package(package)
+        self.package(package).map(|_| ())
     }
 
     fn source_visibility(&mut self, label: &Label) -> Visibility {
-        self.cx.coord().engine.source_visibility(label)
+        match self.package(&label.package_id()) {
+            Ok(pkg) => super::loading::source_visibility(&pkg, label),
+            Err(_) => Visibility::default(),
+        }
     }
 
     fn resolve_group(&mut self, label: &Label) -> Result<Arc<GroupNode>, String> {
@@ -465,11 +493,17 @@ impl Host for EvalHost<'_, '_> {
     }
 
     fn package_args(&mut self, package: &PackageId) -> crate::package::PackageArgs {
-        self.cx.coord().engine.packages[package].args.clone()
+        match self.package(package) {
+            Ok(pkg) => pkg.package.args.clone(),
+            Err(_) => Default::default(),
+        }
     }
 
     fn implicit_tests(&mut self, suite: &Rule) -> Vec<Label> {
-        self.cx.coord().engine.implicit_tests(suite)
+        match self.package(&suite.label.package_id()) {
+            Ok(pkg) => super::super::super::implicit_tests_in(Some(&pkg.package), suite),
+            Err(_) => super::super::super::implicit_tests_in(None, suite),
+        }
     }
 
     fn expand_registration_patterns(
@@ -477,10 +511,14 @@ impl Host for EvalHost<'_, '_> {
         patterns: &[(String, String)],
         kind: Registration,
     ) -> Result<Vec<Label>, ResolutionError> {
-        self.cx
-            .coord()
-            .engine
-            .expand_registration_patterns(patterns, kind)
+        self.emit(Event::ScopeEnter("expand_registration_patterns"));
+        let expanded = super::super::super::expand_registration_patterns_in(
+            &mut RegistrationHost(self),
+            patterns,
+            kind,
+        );
+        self.emit(Event::ScopeExit);
+        expanded
     }
 
     fn warm_toolchain_patterns(&mut self, patterns: &[(String, String)]) {
@@ -491,7 +529,10 @@ impl Host for EvalHost<'_, '_> {
         &mut self,
         resolve: bool,
     ) -> Result<Vec<(String, String)>, String> {
-        self.cx.coord().engine.module_execution_platforms(resolve)
+        self.emit(Event::ScopeEnter("module_execution_platforms"));
+        let found = super::loading::module_execution_platforms(self.shared, resolve);
+        self.emit(Event::ScopeExit);
+        found
     }
 
     fn attribute_aspects(
@@ -499,7 +540,21 @@ impl Host for EvalHost<'_, '_> {
         rule: &Rule,
         identities: &[String],
     ) -> Result<Vec<Arc<crate::aspects::AspectDefinition>>, String> {
-        self.cx.coord().engine.attribute_aspects(rule, identities)
+        let mut aspects = Vec::with_capacity(identities.len());
+        for identity in identities {
+            let (definition, prints) =
+                super::loading::aspect_definition(self.shared, identity, true);
+            if let Some(prints) = prints {
+                self.emit(Event::LoadPrints(prints));
+            }
+            let definition =
+                definition?.ok_or_else(|| format!("Aspect '{identity}' is unknown"))?;
+            aspects.push(match definition.for_attribute_of(rule) {
+                Some(parameterized) => Arc::new(parameterized),
+                None => definition,
+            });
+        }
+        Ok(aspects)
     }
 
     fn loaded_attribute_aspects(
@@ -507,10 +562,19 @@ impl Host for EvalHost<'_, '_> {
         rule: &Rule,
         identities: &[String],
     ) -> Vec<Arc<crate::aspects::AspectDefinition>> {
-        self.cx
-            .coord()
-            .engine
-            .loaded_attribute_aspects(rule, identities)
+        let registry = self
+            .shared
+            .aspects
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        identities
+            .iter()
+            .filter_map(|identity| registry.get(identity))
+            .map(|definition| match definition.for_attribute_of(rule) {
+                Some(parameterized) => Arc::new(parameterized),
+                None => definition,
+            })
+            .collect()
     }
 
     fn analyze(&mut self, label: &Label, config: ConfigId) -> Result<(), String> {
@@ -725,69 +789,25 @@ impl Host for EvalHost<'_, '_> {
         }
     }
 
-    // Phase-1 prefetch (crate::prefetch), fed as the walk feeds it (S1:
-    // a coordinator service; it also decides which repositories a
-    // speculation executes, which the incremental index records).
-    fn prefetch_rule(&mut self, rule: &Rule) {
-        self.cx.coord().engine.prefetch_rule(rule);
-    }
+    // Phase-1 prefetch (crate::prefetch) is the walk's: the evaluator's
+    // Pkg nodes load in parallel themselves.
+    fn prefetch_rule(&mut self, _rule: &Rule) {}
 
     fn prefetch_note_condition(
         &mut self,
-        text: &str,
-        matching: &crate::configured_attributes::ConfigMatching,
+        _text: &str,
+        _matching: &crate::configured_attributes::ConfigMatching,
     ) {
-        // Phase-1 prefetch: which select() branches the build certainly
-        // takes (crate::prefetch::certain_labels).
-        let coord = self.cx.coord();
-        if let Some(prefetch) = &coord.engine.prefetch
-            && let Ok(key) = Label::parse_canonical(text)
-        {
-            prefetch.note_condition(
-                &key,
-                match &matching.result {
-                    crate::configured_attributes::MatchResult::Match => Some(true),
-                    crate::configured_attributes::MatchResult::NoMatch(_) => Some(false),
-                    crate::configured_attributes::MatchResult::InError(_) => None,
-                },
-            );
-        }
     }
 
-    fn prefetch_platforms(&mut self, target: &Arc<PlatformInfo>, host: &Arc<PlatformInfo>) {
-        // Phase-1 prefetch: from here on, the implementation of every
-        // toolchain compatible with these platforms is queued as soon as
-        // the toolchain is analyzed (`prefetch_compatible_toolchain`).
-        let mut coord = self.cx.coord();
-        if coord.engine.prefetch.is_some() && coord.engine.prefetch_platforms.is_none() {
-            coord.engine.prefetch_platforms = Some((target.clone(), host.clone()));
-        }
-    }
+    fn prefetch_platforms(&mut self, _target: &Arc<PlatformInfo>, _host: &Arc<PlatformInfo>) {}
 
-    fn prefetch_resolved(&mut self, resolved: &UnloadedToolchainContext) {
-        // Phase-1 prefetch: the selected implementations are analyzed after
-        // the rule's attribute dependencies.
-        let mut coord = self.cx.coord();
-        let engine = &mut *coord.engine;
-        if engine.prefetch.is_some() {
-            for label in resolved.resolved_labels() {
-                if engine.prefetch_followed.insert(label.clone())
-                    && let Some(prefetch) = &engine.prefetch
-                {
-                    prefetch.submit_targets([(label.package_id(), Some(label.name))], 1, true);
-                }
-            }
-        }
-    }
+    fn prefetch_resolved(&mut self, _resolved: &UnloadedToolchainContext) {}
 
     fn prefetch_compatible_toolchain(
         &mut self,
-        declared: &crate::toolchains::DeclaredToolchainInfo,
+        _declared: &crate::toolchains::DeclaredToolchainInfo,
     ) {
-        self.cx
-            .coord()
-            .engine
-            .prefetch_compatible_toolchain(declared);
     }
 
     fn plan_len(&mut self) -> usize {
@@ -1267,10 +1287,9 @@ pub(crate) fn body(
     key: &NodeKey,
 ) -> Result<NodeValue, Missing> {
     match key {
-        NodeKey::Tgt(label) => Ok(NodeValue::Tgt(cx.coord().engine.target(label))),
-        NodeKey::Group(label) => Ok(NodeValue::Group(
-            cx.coord().engine.resolve_group(label, &mut Vec::new()),
-        )),
+        NodeKey::Pkg(package) => super::loading::package_body(shared, cx, package),
+        NodeKey::Tgt(label) => super::loading::target_body(shared, cx, label),
+        NodeKey::Group(label) => super::loading::group_body(shared, cx, label),
         NodeKey::Src(label) => {
             let mut host = EvalHost::new(shared, cx, None, false);
             let visibility = host.source_visibility(label);
@@ -1411,4 +1430,25 @@ pub(crate) fn exec_edges(rule: &Rule, edges: &[super::super::super::Edge]) -> bo
             && edges
                 .iter()
                 .any(|edge| matches!(edge.cfg, EdgeCfg::Exec(_))))
+}
+
+/// The evaluator's loading services for a registration pattern expansion.
+struct RegistrationHost<'h, 'c, 'e>(&'h mut EvalHost<'c, 'e>);
+
+impl super::super::super::RegistrationLoader for RegistrationHost<'_, '_, '_> {
+    fn repositories(&self) -> &Arc<RepositorySet> {
+        &self.0.shared.repositories
+    }
+
+    fn load(&mut self, package: &PackageId) -> Result<Arc<crate::package::Package>, String> {
+        self.0.package(package).map(|pkg| Arc::clone(&pkg.package))
+    }
+
+    fn lookup(&mut self, label: &Label) -> Result<(), String> {
+        Host::target(self.0, label).map(|_| ())
+    }
+
+    fn warn(&mut self, warning: String) {
+        self.0.emit(Event::Warn(warning));
+    }
 }

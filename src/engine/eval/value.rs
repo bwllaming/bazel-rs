@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::configuration::ConfigId;
-use crate::package::{Package, Rule};
+use crate::package::Rule;
 use crate::platforms::PlatformInfo;
 use crate::toolchains::{RegisteredToolchains, UnloadedToolchainContext};
 
@@ -27,7 +27,7 @@ use super::transcript::Transcript;
 pub(crate) enum NodeValue {
     /// A loaded package (its load prints are a `PkgCommit` effect of the
     /// first transcript that reaches it).
-    Pkg(Result<Arc<Package>, String>),
+    Pkg(Result<Arc<super::nodes::loading::PkgValue>, String>),
     /// A target lookup.
     Tgt(Result<Target, String>),
     /// A source file's analysis (visibility checked).

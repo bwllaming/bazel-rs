@@ -726,6 +726,7 @@ impl Pass1 {
             | Event::ScopeExit
             | Event::Continue(_)
             | Event::Info(_)
+            | Event::LoadPrints(_)
             | Event::Error(_) => sink.op(TapeOp::Effect(event)),
             Event::MemoBegin(_) | Event::MemoEnd(_) => unreachable!("handled above"),
         }

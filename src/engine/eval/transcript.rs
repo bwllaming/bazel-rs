@@ -101,6 +101,11 @@ pub(crate) enum Event {
     /// index of the write the evaluation captured (S1 interface addition:
     /// written once, at its linearized position).
     Console(u32),
+    /// A load's buffered print events (S2 addition: a `Pkg` node's
+    /// commit, an aspect definition's `.bzl` load), written where the
+    /// sequential engine emits them (`Engine::emit_load_prints`: a
+    /// module's lines once, at the first linearized emission).
+    LoadPrints(std::sync::Arc<[crate::loading::LoadPrintEvent]>),
 }
 
 /// [`Event::CqueryEdge`]'s payload.

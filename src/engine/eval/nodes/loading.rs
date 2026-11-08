@@ -1,0 +1,562 @@
+//! The loading nodes (S2, docs/EVALUATOR.md "Loading nodes"): `Pkg`,
+//! `Tgt`, `Src` and `Group` over [`EvalShared`] instead of the engine's
+//! coordinator services, plus the loading the phase-1 bodies do without a
+//! node of its own (registration patterns, aspect definitions, module
+//! execution platforms).
+//!
+//! - **Pkg**: a package the evaluation loads (one not loaded before
+//!   phase 1, [`Loading::preloaded`]) is loaded by its node; what the
+//!   sequential engine does at the commit is recorded in the node's
+//!   transcript in its order — [`Event::LoadPrints`] (the unit's buffered
+//!   print events, deduplicated against the emitted `.bzl` modules where
+//!   the tape writes them) and [`Event::PkgCommit`] (the tape commits the
+//!   package into the engine: `packages`, `generated`, the loaded
+//!   functions, progress) — and replayed by pass 1 at the node's first
+//!   linearized use ([`Event::MemoUse`] of the Pkg node by every lookup).
+//!   The unit's roots and observations are committed when it settles.
+//!   On the pool, the load runs under the no-demand guard; a unit that
+//!   needs a repository (the inline-rerun sentinel) asks the coordinator's
+//!   lane ([`Missing::Repo`] of [`lane_name`]) to load it where demand may
+//!   fetch, and takes that unit on its re-run.
+//! - **Tgt**: a lookup (rule, output file, declared source file) over its
+//!   package's value; a source file's missing-input and source-directory
+//!   records go to the store (order-free maps phase 2 reads).
+//! - **Src**: a source file's visibility check.
+//! - **Group**: a resolved package group; its includes are Group nodes (an
+//!   include cycle is a back edge).
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use crate::fast_hash::FxHashMap;
+use crate::label::{Label, PackageId};
+use crate::loading::LoadPrintEvent;
+use crate::package::{Package, Rule};
+use crate::repository_budget::HostBudget;
+
+use super::super::super::{
+    LoadStep, SourceDirProbe, SourceProbes, SourceSide, Target, check_macro_namespace,
+    load_package_attempt_in, no_such_target_in, package_input_labels_in, settle_load_unit,
+    source_target_in, validate_package_outputs,
+};
+use super::super::cx::Missing;
+use super::super::key::NodeKey;
+use super::super::shared::EvalShared;
+use super::super::transcript::Event;
+use super::super::value::NodeValue;
+use super::bodies::Phase1Cx;
+
+/// The evaluation's loading state (in [`EvalShared`]).
+#[derive(Default)]
+pub(crate) struct Loading {
+    /// The packages loaded before phase 1 (committed already; their nodes
+    /// record nothing).
+    pub(crate) preloaded: FxHashMap<PackageId, Arc<Package>>,
+    /// `Engine::source_dir_probes`, moved in for the evaluation.
+    pub(crate) probes: Mutex<std::collections::HashMap<PathBuf, SourceDirProbe>>,
+    /// `Engine::group_budget`, moved in for the evaluation.
+    pub(crate) group_budget: Mutex<HostBudget>,
+    /// Package loads run on pool threads (no repository demand: a unit
+    /// that needs one asks the coordinator's lane).
+    pub(crate) pooled: std::sync::atomic::AtomicBool,
+    /// Units the coordinator's lane loaded for a Pkg node that needed a
+    /// repository, with the console writes the load made.
+    pub(crate) lane_units:
+        Mutex<FxHashMap<PackageId, (crate::package::LoadUnit, Vec<crate::ui::Deferred>)>>,
+    /// The module events of a Pkg node's attempts aborted on the pool.
+    pub(crate) aborted_prints: Mutex<FxHashMap<PackageId, Vec<LoadPrintEvent>>>,
+    /// The print events of the aspect definitions the evaluation loaded
+    /// (every use writes them where the walk's load would, deduplicated).
+    pub(crate) aspect_prints: Mutex<FxHashMap<String, Arc<[LoadPrintEvent]>>>,
+    /// The module execution platforms (`Engine::module_execution_platforms`).
+    pub(crate) module_execution_platforms: Mutex<Option<Result<Vec<(String, String)>, String>>>,
+}
+
+/// A loaded package's value: the package and its lookup indexes.
+pub(crate) struct PkgValue {
+    pub(crate) package: Arc<Package>,
+    /// The output files of its rules (`Engine::generated`).
+    outputs: FxHashMap<Label, (Arc<Rule>, String)>,
+    /// The labels its rules name as inputs (`Engine::declared_inputs`).
+    declared: OnceLock<HashSet<Label>>,
+}
+
+impl PkgValue {
+    pub(crate) fn new(package: Arc<Package>) -> Self {
+        let mut outputs = FxHashMap::default();
+        for rule in package.values() {
+            for out in &rule.outs {
+                if let Ok(output) = rule.label.with_name(out) {
+                    outputs.insert(output, (Arc::clone(rule), out.clone()));
+                }
+            }
+        }
+        Self {
+            package,
+            outputs,
+            declared: OnceLock::new(),
+        }
+    }
+
+    /// `Engine::declared_source`.
+    fn declared_source(
+        &self,
+        repositories: &crate::repository::RepositorySet,
+        label: &Label,
+    ) -> bool {
+        if self.package.exports.contains_key(label) {
+            return true;
+        }
+        if self.package.macro_names.contains(&label.name) {
+            return false;
+        }
+        self.declared
+            .get_or_init(|| package_input_labels_in(repositories, &self.package))
+            .contains(label)
+    }
+}
+
+/// The lane name a Pkg node demands to have its package loaded by the
+/// coordinator (where demand may fetch).
+pub(crate) fn lane_name(package: &PackageId) -> String {
+    format!("\u{1}pkg:@@{}//{}", package.repository, package.package)
+}
+
+/// The package of a [`lane_name`].
+pub(crate) fn lane_package(name: &str) -> Option<PackageId> {
+    let rest = name.strip_prefix("\u{1}pkg:@@")?;
+    let (repository, package) = rest.split_once("//")?;
+    Some(PackageId {
+        repository: repository.to_owned(),
+        package: package.to_owned(),
+    })
+}
+
+/// The coordinator's lane for a Pkg node: load the package where demand
+/// may fetch (the walk's inline load), its console writes held for the
+/// node's transcript.
+pub(crate) fn lane_load(shared: &EvalShared, package: &PackageId) {
+    let console = crate::ui::DeferredConsole::start();
+    let unit = load_package_attempt_in(&shared.repositories, package);
+    let writes = console.finish();
+    shared
+        .loading
+        .lane_units
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(package.clone(), (unit, writes));
+}
+
+/// The `Pkg` body.
+pub(crate) fn package_body(
+    shared: &EvalShared,
+    cx: &mut dyn Phase1Cx<'_>,
+    id: &PackageId,
+) -> Result<NodeValue, Missing> {
+    // A label whose apparent repository the main repository does not see
+    // names no loadable package (Engine::load_package).
+    if let Some(message) = crate::label::unresolvable_package_message(id) {
+        return Ok(NodeValue::Pkg(Err(message)));
+    }
+    if let Some(package) = shared.loading.preloaded.get(id) {
+        return Ok(NodeValue::Pkg(Ok(Arc::new(PkgValue::new(Arc::clone(
+            package,
+        ))))));
+    }
+    let repositories = &shared.repositories;
+    let pooled = shared
+        .loading
+        .pooled
+        .load(std::sync::atomic::Ordering::Acquire);
+    let laned = shared
+        .loading
+        .lane_units
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(id);
+    let mut lane_writes = Vec::new();
+    let unit = match laned {
+        Some((unit, writes)) => {
+            lane_writes = writes;
+            unit
+        }
+        None if pooled => {
+            let guard = crate::repository_demand::no_demand();
+            let reuse = crate::repository_demand::reuse_only();
+            let committed = crate::repository_demand::committed_unit();
+            let unit = crate::package::evaluate_load_unit(Arc::clone(repositories), id);
+            drop(committed);
+            drop(reuse);
+            drop(guard);
+            if let Err(error) = &unit.result
+                && crate::repository_demand::is_inline_rerun_sentinel(error)
+            {
+                // What blocked it is fetched ahead; the coordinator loads
+                // it. The aborted attempt's module events print first
+                // (kept for the re-run).
+                repositories.fetch_blocked_ahead(error);
+                let module_events = unit
+                    .prints
+                    .into_iter()
+                    .filter(|event| !matches!(event, LoadPrintEvent::Build(_)));
+                shared
+                    .loading
+                    .aborted_prints
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .entry(id.clone())
+                    .or_default()
+                    .extend(module_events);
+                return Err(Missing::Repo(lane_name(id)));
+            }
+            unit
+        }
+        None => load_package_attempt_in(repositories, id),
+    };
+    // The module events of attempts aborted on the pool print first (as
+    // an aborted unit's before its inline re-run), then the lane's fetch
+    // output (where the walk's inline load wrote it).
+    let aborted = shared
+        .loading
+        .aborted_prints
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(id)
+        .unwrap_or_default();
+    if !aborted.is_empty() {
+        cx.emit(Event::LoadPrints(aborted.into()));
+    }
+    for write in lane_writes {
+        let index = cx.coord().store.console(write);
+        cx.emit(Event::Console(index));
+    }
+    let (steps, result) = settle_load_unit(repositories, id, unit, || {
+        load_package_attempt_in(repositories, id)
+    });
+    for step in steps {
+        match step {
+            LoadStep::Prints(prints) => {
+                if !prints.is_empty() {
+                    cx.emit(Event::LoadPrints(prints.into()));
+                }
+            }
+            LoadStep::Committed(printed) => cx.emit(Event::PkgCommit(id.clone(), printed)),
+        }
+    }
+    let value = result.and_then(|package| {
+        validate_package_outputs(repositories, id, &package)?;
+        Ok(Arc::new(PkgValue::new(Arc::new(package))))
+    });
+    Ok(NodeValue::Pkg(value))
+}
+
+/// The value of a needed `Pkg` node.
+pub(crate) fn pkg_of(value: &NodeValue) -> Result<Arc<PkgValue>, String> {
+    match value {
+        NodeValue::Pkg(result) => result.clone(),
+        _ => Err("internal error: a Pkg key with another value".to_owned()),
+    }
+}
+
+/// The shared probe cache, locked per access (no lock across a probe).
+struct SharedProbes<'a>(&'a Mutex<std::collections::HashMap<PathBuf, SourceDirProbe>>);
+
+impl SourceProbes for SharedProbes<'_> {
+    fn get(&self, path: &Path) -> Option<SourceDirProbe> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(path)
+            .cloned()
+    }
+
+    fn put(&mut self, path: PathBuf, probe: SourceDirProbe) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(path)
+            .or_insert(probe);
+    }
+}
+
+/// The `Tgt` body (`Engine::target` after the package is loaded).
+pub(crate) fn target_body(
+    shared: &EvalShared,
+    cx: &mut dyn Phase1Cx<'_>,
+    label: &Label,
+) -> Result<NodeValue, Missing> {
+    let package_id = label.package_id();
+    let needed = cx.need_one(NodeKey::Pkg(package_id.clone()))?;
+    let pkg = match pkg_of(needed.as_ref()) {
+        Ok(pkg) => pkg,
+        Err(error) => return Ok(NodeValue::Tgt(Err(error))),
+    };
+    if let Some(rule) = pkg.package.get(label) {
+        return Ok(NodeValue::Tgt(Ok(Target::Rule(Arc::clone(rule)))));
+    }
+    if let Some((rule, output)) = pkg.outputs.get(label) {
+        return Ok(NodeValue::Tgt(Ok(Target::Output(
+            Arc::clone(rule),
+            output.clone(),
+        ))));
+    }
+    let repositories = &shared.repositories;
+    if !pkg.declared_source(repositories, label) {
+        let error = match no_such_target_in(repositories, Some(&pkg.package), label) {
+            Ok(message) | Err(message) => message,
+        };
+        return Ok(NodeValue::Tgt(Err(error)));
+    }
+    let mut side = SourceSide::default();
+    let found = source_target_in(
+        repositories,
+        label,
+        &mut SharedProbes(&shared.loading.probes),
+        &mut side,
+    );
+    if !side.missing.is_empty() || !side.directories.is_empty() {
+        cx.coord().store.sources_side.push(side);
+    }
+    Ok(NodeValue::Tgt(found.map(|(path, _)| Target::Source(path))))
+}
+
+/// A source file's visibility (`Engine::source_visibility`) in its loaded
+/// package.
+pub(crate) fn source_visibility(pkg: &PkgValue, label: &Label) -> crate::visibility::Visibility {
+    pkg.package
+        .exports
+        .get(label)
+        .unwrap_or(&pkg.package.default_visibility)
+        .clone()
+}
+
+/// The `Group` body (`Engine::resolve_group`): the includes are Group
+/// nodes (a cycle among them is a back edge: the include cycle error).
+pub(crate) fn group_body(
+    shared: &EvalShared,
+    cx: &mut dyn Phase1Cx<'_>,
+    label: &Label,
+) -> Result<NodeValue, Missing> {
+    Ok(NodeValue::Group(group(shared, cx, label)?))
+}
+
+fn group(
+    shared: &EvalShared,
+    cx: &mut dyn Phase1Cx<'_>,
+    label: &Label,
+) -> Result<Result<Arc<crate::package_specification::GroupNode>, String>, Missing> {
+    use crate::package::RuleKind;
+    cx.emit(Event::ScopeEnter("resolve_group"));
+    let result = (|| {
+        let package = label.package_id();
+        let pkg = match pkg_lookup(cx, &package)? {
+            Ok(pkg) => pkg,
+            Err(error) => return Ok(Err(error)),
+        };
+        let Some(rule) = pkg.package.get(label) else {
+            // Preserve existing missing/source/output diagnostics, but never
+            // analyze a callback or fabricate a source from an include edge.
+            if let Err(error) = target_lookup(shared, cx, label)? {
+                return Ok(Err(error));
+            }
+            return Ok(Err(format!("{label} does not refer to a package group")));
+        };
+        let RuleKind::PackageGroup(definition) = &rule.kind else {
+            return Ok(Err(format!("{label} does not refer to a package group")));
+        };
+        if let Err(error) = check_macro_namespace(rule, label) {
+            return Ok(Err(error));
+        }
+        if cx.coord().group_depth() > 256 {
+            return Ok(Err(
+                "package group DAG exceeds depth limit 256 path nodes".into()
+            ));
+        }
+        let charged = (|| {
+            let mut budget = shared
+                .loading
+                .group_budget
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            budget.node()?;
+            definition.own_specs.charge(&mut budget)?;
+            for part in [&label.repository, &label.package, &label.name] {
+                budget.string(part)?;
+            }
+            for edge in &definition.includes {
+                budget.node()?;
+                for part in [&edge.repository, &edge.package, &edge.name] {
+                    budget.string(part)?;
+                }
+            }
+            Ok::<(), String>(())
+        })();
+        if let Err(error) = charged {
+            return Ok(Err(error));
+        }
+        let definition = Arc::clone(definition);
+        let mut includes = Vec::with_capacity(definition.includes.len());
+        for edge in &definition.includes {
+            let key = NodeKey::Group(edge.clone());
+            let id = cx.id_of(&key);
+            cx.emit(Event::MemoUse(id));
+            match cx.need_one(key) {
+                Ok(value) => match value.as_ref() {
+                    NodeValue::Group(Ok(node)) => includes.push(Arc::clone(node)),
+                    NodeValue::Group(Err(error)) => return Ok(Err(error.clone())),
+                    _ => {
+                        return Ok(Err(
+                            "internal error: a Group key with another value".to_owned()
+                        ));
+                    }
+                },
+                Err(Missing::BackEdge(_)) => {
+                    return Ok(Err(format!("package group include cycle at {edge}")));
+                }
+                Err(missing) => return Err(missing),
+            }
+        }
+        Ok(crate::package_specification::GroupNode::new(
+            Arc::new(definition.own_specs.clone()),
+            includes,
+        )
+        .map(Arc::new))
+    })();
+    cx.emit(Event::ScopeExit);
+    result
+}
+
+/// A package lookup from a body: `MemoUse` of its Pkg node (its commit's
+/// effects at the first linearized use), then its value.
+pub(crate) fn pkg_lookup(
+    cx: &mut dyn Phase1Cx<'_>,
+    package: &PackageId,
+) -> Result<Result<Arc<PkgValue>, String>, Missing> {
+    let key = NodeKey::Pkg(package.clone());
+    let id = cx.id_of(&key);
+    cx.emit(Event::MemoUse(id));
+    let needed = cx.need_one(key)?;
+    Ok(pkg_of(needed.as_ref()))
+}
+
+/// A target lookup from a body (`Engine::target`): its `Access` (while
+/// tracking), its package's `MemoUse`, then the `Tgt` value.
+pub(crate) fn target_lookup(
+    _shared: &EvalShared,
+    cx: &mut dyn Phase1Cx<'_>,
+    label: &Label,
+) -> Result<Result<Target, String>, Missing> {
+    if cx.coord().tracking {
+        cx.emit(Event::Access(label.clone()));
+    }
+    let package = NodeKey::Pkg(label.package_id());
+    let id = cx.id_of(&package);
+    cx.emit(Event::MemoUse(id));
+    let value = cx.need_one(NodeKey::Tgt(label.clone()))?;
+    Ok(match value.as_ref() {
+        NodeValue::Tgt(result) => result.clone(),
+        _ => Err("internal error: a Tgt key with another value".to_owned()),
+    })
+}
+
+/// `Engine::module_execution_platforms` over the shared view: computed
+/// once per build (an incomplete list is not kept).
+pub(crate) fn module_execution_platforms(
+    shared: &EvalShared,
+    resolve: bool,
+) -> Result<Vec<(String, String)>, String> {
+    let cache = &shared.loading.module_execution_platforms;
+    if let Some(found) = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+    {
+        return found.clone();
+    }
+    let flatten = |registrations: Vec<(String, Vec<String>)>| -> Vec<(String, String)> {
+        registrations
+            .into_iter()
+            .flat_map(|(repository, patterns)| {
+                patterns
+                    .into_iter()
+                    .map(move |pattern| (repository.clone(), pattern))
+            })
+            .collect()
+    };
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match shared
+        .repositories
+        .execution_platform_registrations(resolve)
+    {
+        Ok((registrations, complete)) => {
+            let found = flatten(registrations);
+            if complete {
+                *cache = Some(Ok(found.clone()));
+            }
+            Ok(found)
+        }
+        Err(error) => {
+            *cache = Some(Err(error.clone()));
+            Err(error)
+        }
+    }
+}
+
+/// `Engine::aspect_definition` over the shared registry: the definition
+/// and the print events of its load, which every use writes where the
+/// walk's load would (`None`: a definition loaded before phase 1).
+#[allow(clippy::type_complexity)]
+pub(crate) fn aspect_definition(
+    shared: &EvalShared,
+    identity: &str,
+    allow_private: bool,
+) -> (
+    Result<Option<Arc<crate::aspects::AspectDefinition>>, String>,
+    Option<Arc<[LoadPrintEvent]>>,
+) {
+    let prints_of = |identity: &str| {
+        shared
+            .loading
+            .aspect_prints
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(identity)
+            .cloned()
+    };
+    if let Some(definition) = shared
+        .aspects
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(identity)
+    {
+        return (Ok(Some(definition)), prints_of(identity));
+    }
+    let (loaded, prints) =
+        super::super::super::load_aspect_definition(&shared.repositories, identity, allow_private);
+    let prints: Arc<[LoadPrintEvent]> = prints.into();
+    let printed = (!prints.is_empty()).then(|| Arc::clone(&prints));
+    match loaded {
+        Ok(Some(definition)) => {
+            let mut registry = shared
+                .aspects
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if registry.get(identity).is_none() {
+                registry.insert(definition);
+                if let Some(prints) = &printed {
+                    shared
+                        .loading
+                        .aspect_prints
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(identity.to_owned(), Arc::clone(prints));
+                }
+            }
+            (Ok(registry.get(identity)), printed)
+        }
+        other => (other.map(|_| None), printed),
+    }
+}
