@@ -1,7 +1,7 @@
 //! The parallel analysis evaluator (docs/EVALUATOR.md): a restart-based,
 //! Skyframe-style evaluator replacing the sequential phase-1 walk and the
-//! P3/S1/S2 pipeline. S0 (this skeleton) freezes the interfaces the three
-//! S1 workers build on; nothing here runs in a build yet.
+//! P3/S1/S2 pipeline. S1: phase 1 under `BAZEL_RS_ANALYSIS=eval` runs the
+//! node bodies on the inline driver, linearized by pass 1.
 //!
 //! Files and owners (docs/EVALUATOR.md "Ownership"):
 //! - [`key`] NodeKey, CtKey, NodeId interning — worker A;
@@ -9,15 +9,17 @@
 //! - [`graph`], [`scheduler`], [`cycles`] node storage, the inline and pool
 //!   drivers, cycles at quiescence — worker A (S1);
 //! - [`value`] node values, [`shared`] the shared read view — worker B;
-//!   S1 adds the node bodies (`bodies/*.rs`, B);
-//! - [`transcript`] events and the tape, [`replay_bench`] — worker C;
-//!   S1 adds `pass1.rs`, S3 `pass2.rs` (C).
+//!   [`nodes`] the phase-1 bodies (B);
+//! - [`transcript`] events and the tape, [`linearize`] pass 1, the S1
+//!   driver, the cycle handler, [`verify`], [`replay_bench`] — worker C;
+//!   S3 adds pass 2.
 //!
 //! The switch: `BAZEL_RS_ANALYSIS=walk` (the default: today's walk) or
-//! `eval` (the evaluator; S0: an error naming the stage), and
-//! `BAZEL_RS_EVAL_VERIFY=1` (both engines, compared; S0: an error).
+//! `eval` (the evaluator), and `BAZEL_RS_EVAL_VERIFY=1` (both engines,
+//! compared).
 
-// S0: the interfaces are not wired into the walk yet (S1 is).
+// Interfaces of later stages (pool driver, CT2/Aspect values) are not all
+// wired yet.
 #![allow(dead_code)]
 
 pub(super) mod cx;
