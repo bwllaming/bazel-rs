@@ -41,6 +41,7 @@ mod genquery;
 mod incremental;
 mod keep_going;
 mod lowering;
+mod native_results;
 mod order_audit;
 mod parallel;
 mod pattern_pool;
@@ -969,8 +970,9 @@ impl ConcurrentArtifactIndex {
     ///
     /// T2: a merge's registration (`provisional` false) replaces a
     /// provisional entry (keeping a different one as `superseded`); a
-    /// provisional one (a prepare of a phase 2 run ahead of its merge, whose
-    /// dependency views read published results) keeps any entry.
+    /// prepare's on a worker (`provisional`: its dependency views read
+    /// published results) keeps a provisional entry as it is (a new one is
+    /// a source File's: no producer to choose).
     fn register(
         &self,
         hash: u64,
@@ -989,6 +991,7 @@ impl ConcurrentArtifactIndex {
             hashbrown::hash_table::Entry::Occupied(mut entry) => {
                 let entry = entry.get_mut();
                 if entry.provisional {
+                    // Only a merge's registration makes it canonical.
                     if !provisional {
                         if !same_artifact(&entry.artifact, artifact.borrow()) {
                             entry.superseded = Some(Box::new(std::mem::replace(
@@ -999,7 +1002,12 @@ impl ConcurrentArtifactIndex {
                         entry.provisional = false;
                         entry.stamp = entry.stamp.min(stamp);
                     } else if entry.stamp > reader {
-                        entry.stamp = entry.stamp.min(stamp);
+                        // A later entry's published registration of a File
+                        // this earlier prepare's view hands over (a source
+                        // File's: one artifact whoever registers it).
+                        entry.artifact = artifact.into_owned();
+                        entry.stamp = stamp;
+                        entry.provisional = false;
                     }
                 } else if entry.stamp <= reader {
                     if !entry
@@ -1009,10 +1017,6 @@ impl ConcurrentArtifactIndex {
                     {
                         check_reregistered(&entry.file, &entry.artifact, artifact.borrow());
                     }
-                } else if provisional && !same_artifact(&entry.artifact, artifact.borrow()) {
-                    entry.artifact = artifact.into_owned();
-                    entry.stamp = entry.stamp.min(stamp);
-                    entry.provisional = true;
                 } else {
                     entry.artifact = artifact.into_owned();
                     entry.stamp = entry.stamp.min(stamp);
@@ -1024,7 +1028,7 @@ impl ConcurrentArtifactIndex {
                     file: file.into_owned(),
                     artifact: artifact.into_owned(),
                     stamp,
-                    provisional,
+                    provisional: false,
                     superseded: None,
                 });
             }
@@ -5932,40 +5936,12 @@ impl Engine {
         built: &KeyMap<Artifacts>,
         declared: &Declared,
     ) -> Result<ResolvedInputs, String> {
-        let mut inputs = Vec::new();
-        // Lookups only: `inputs` keeps the declaration order.
-        let mut seen: HashMap<SharedPath, Artifact> = HashMap::new();
-        let mut locations = BTreeMap::new();
-        for src in &rule.srcs {
-            let label = self.resolve_rule_src(rule, src)?;
-            let artifacts = self.artifacts(&label, config, built, declared)?;
-            let paths = artifacts
-                .iter()
-                .map(|a| a.exec.to_path_buf())
-                .collect::<Vec<_>>();
-            locations.insert(label.to_string(), paths.clone());
-            locations.insert(src.clone(), paths);
-            for artifact in artifacts {
-                if let Some(previous) = seen.get(artifact.exec.as_path()) {
-                    // One artifact without its owner: a generated one is
-                    // identified by its producer (two targets' Artifacts of
-                    // a shared action's output are one input).
-                    if previous.real != artifact.real
-                        || previous.producer != artifact.producer
-                        || (artifact.producer.is_none() && previous.owner != artifact.owner)
-                    {
-                        return Err(format!(
-                            "different artifacts map to the same execution path: {}",
-                            artifact.exec.display()
-                        ));
-                    }
-                } else {
-                    seen.insert(artifact.exec.clone(), artifact.clone());
-                    inputs.push(artifact);
-                }
-            }
-        }
-        Ok((inputs, locations))
+        let reads = MapReads {
+            dry: Some(built),
+            declared: Some(declared),
+            ..MapReads::default()
+        };
+        Self::inputs_in(self, &reads, rule, config)
     }
 
     /// TargetPatternPhaseFunction.maybeReportDeprecation
@@ -6669,24 +6645,8 @@ impl Engine {
         }
     }
 
-    /// The transitive repositories of the dependency `label` in
-    /// `config` (a rule transition's delegated key included); a dependency
-    /// that was not planned (a file, a no-config edge) contributes its own
-    /// repository.
-    fn dependency_repositories(
-        &self,
-        repositories: &KeyMap<Arc<BTreeSet<String>>>,
-        label: Label,
-        config: Option<ConfigId>,
-    ) -> BTreeSet<String> {
-        let reads = MapReads {
-            repositories: Some(repositories),
-            ..MapReads::default()
-        };
-        self.dependency_repositories_in(&reads, label, config)
-    }
-
-    /// [`Self::dependency_repositories`] over [`PlanReads`].
+    /// The repositories of the packages dependency `label` transitively
+    /// depends on, over [`PlanReads`].
     fn dependency_repositories_in(
         &self,
         reads: &dyn PlanReads,
@@ -9350,27 +9310,11 @@ impl Engine {
             BTreeSet::new()
         };
         if !custom_rule && execution_plan {
-            let edge_exec = self.exec_configurations.get(key).copied();
-            for edge in &edges {
-                let Ok(label) = self.resolve_rule_src(rule, &edge.label) else {
-                    continue;
-                };
-                let edge_config = match &edge.cfg {
-                    EdgeCfg::Target => Some(key.config),
-                    EdgeCfg::Exec(None) => Some(edge_exec.unwrap_or(key.config)),
-                    EdgeCfg::Exec(Some(group)) => Some(
-                        self.group_exec_configurations
-                            .get(&(key.clone(), group.clone()))
-                            .copied()
-                            .unwrap_or(key.config),
-                    ),
-                    EdgeCfg::NoConfig => None,
-                    EdgeCfg::Starlark(_) => {
-                        unreachable!("native rules have no Starlark attribute transitions")
-                    }
-                };
-                transitive.extend(self.dependency_repositories(repositories, label, edge_config));
-            }
+            let reads = MapReads {
+                repositories: Some(&*repositories),
+                ..MapReads::default()
+            };
+            self.native_transitive_in(&reads, rule, key, &edges, &mut transitive);
         }
         let key = key.clone();
         let config = key.config;
@@ -10144,52 +10088,17 @@ impl Engine {
             ..
         } = state;
         let dependency_key = |label: Label| ConfiguredTargetKey::new(label, config);
-        // RuleConfiguredTargetBuilder.propagateTransitiveValidationOutputGroups
-        // (:175-176, 294-296, 360-430): the native-rule collection of this
-        // target's attribute prerequisites' `_validation` groups (the
-        // Starlark-rule path is analysis::transitive_validation), composed
-        // into one node of their sets (W1c). Implicit `$` attributes and tool
-        // dependencies (exec/no-config edges: genrule `tools`,
-        // `package_metadata`) never contribute; every dependency was planned
-        // before its dependent (analysis postorder).
-        {
-            let mut members = Vec::new();
-            let edges = self.rule_edges(rule, config);
-            // Rule-class attribute order (AbstractAttributeMapper.
-            // getAttributeNames over RuleClass.getAttributes): the built-in
-            // `toolchains` attribute before the rule's own `srcs`.
-            let mut ordered = edges
-                .iter()
-                .filter(|edge| edge.attribute == "toolchains")
-                .collect::<Vec<_>>();
-            ordered.extend(edges.iter().filter(|edge| edge.attribute != "toolchains"));
-            for edge in ordered {
-                if edge.attribute.starts_with('$')
-                    || edge.attribute.starts_with('_')
-                    || !matches!(edge.cfg, EdgeCfg::Target)
-                {
-                    continue;
-                }
-                let Ok(label) = self.resolve_rule_src(rule, &edge.label) else {
-                    continue;
-                };
-                // OutputGroupInfo.get(prerequisite): an output file answers
-                // with its generating rule's `_validation` group
-                // (OutputFileConfiguredTarget.java:109-118, as its
-                // dependency view does).
-                let dep_key = match self.target(&label) {
-                    Ok(Target::Output(generating, _)) => {
-                        ConfiguredTargetKey::new(generating.label.clone(), config)
-                    }
-                    _ => ConfiguredTargetKey::new(label, config),
-                };
-                if let Some(set) = self.planned_validation(custom_providers, validation, &dep_key) {
-                    members.push(set.node);
-                }
-            }
-            if let Some(set) = crate::output_group_info::compose_validation(members) {
-                validation.insert(key.clone(), set);
-            }
+        // The transitive `_validation` group (native_results).
+        let set = {
+            let reads = MapReads {
+                custom_providers: Some(&*custom_providers),
+                validation: Some(&*validation),
+                ..MapReads::default()
+            };
+            Self::native_validation_in(self, &reads, rule, config)
+        };
+        if let Some(set) = set {
+            validation.insert(key.clone(), set);
         }
         // A native rule's source inputs join the index here (W1b
         // registration invariant); generated ones are registered already.
@@ -10780,6 +10689,39 @@ impl Engine {
                 ),
             );
             dry.insert(key, Arc::new(vec![artifact]));
+        } else if native_results::plain(rule) {
+            // T2: the results a worker computes too (native_results).
+            let mut registered = Vec::new();
+            let plain = {
+                let reads = MapReads {
+                    dry: Some(&*dry),
+                    custom_providers: Some(&*custom_providers),
+                    runfiles_info: Some(&*runfiles_info),
+                    declared: Some(&*declared),
+                    ..MapReads::default()
+                };
+                Self::native_plain_in(
+                    self,
+                    &reads,
+                    configured,
+                    rule,
+                    &key,
+                    config,
+                    inputs,
+                    &mut |artifact| registered.push(artifact.clone()),
+                )
+            };
+            for artifact in &registered {
+                register_artifact(artifact_index, &artifact.file, artifact);
+            }
+            let plain = plain?;
+            if let Some(providers) = plain.providers {
+                custom_providers.insert(key.clone(), providers);
+            }
+            if let Some(runfiles) = plain.runfiles_info {
+                runfiles_info.insert(key.clone(), runfiles);
+            }
+            dry.insert(key, Arc::new(plain.dry));
         } else {
             restricted_to_error(rule)?;
             // The native platform providers, visible to Starlark as
@@ -10900,7 +10842,7 @@ impl Engine {
                     ));
                 }
                 if !output_group.is_empty() {
-                    let mut members = Vec::new();
+                    let mut selected_views = Vec::new();
                     for text in &rule.srcs {
                         let label = self.resolve_rule_src(rule, text)?;
                         let view = self.plan_dependency_view(
@@ -10918,19 +10860,9 @@ impl Engine {
                             &label,
                             config,
                         )?;
-                        if let Some(set) = view
-                            .providers
-                            .get(crate::output_group_info::PROVIDER_ID)
-                            .and_then(|info| crate::output_group_info::groups(info.value()))
-                            .and_then(|groups| groups.iter().find(|(name, _)| name == output_group))
-                            .map(|(_, set)| set)
-                        {
-                            members.push(Arc::clone(&set.node));
-                        }
+                        selected_views.push(view);
                     }
-                    let files = crate::output_group_info::compose_members(members)
-                        .map(|set| crate::output_group_info::depset_files(&set))
-                        .unwrap_or_default();
+                    let files = native_results::output_group_files(&selected_views, output_group);
                     let mut selected = Vec::with_capacity(files.len());
                     for file in &files {
                         let artifact = self

@@ -465,9 +465,9 @@ impl<'a> SharedPrepare<'a> {
                 stamp,
                 // Its views register what dependencies' dry hold: their
                 // generated outputs are registered (provisionally, if
-                // published) already, so a new entry is a source File
-                // (no producer to choose).
-                provisional: false,
+                // published) already and stay so; a new entry is a source
+                // File's (no producer to choose).
+                provisional: true,
             },
             record: SharedRecord::default(),
             capture: Vec::new(),
@@ -492,7 +492,7 @@ impl<'a> SharedPrepare<'a> {
 
     /// Engine::plan_dependency_view read-only: the planning state's memo,
     /// else the batch's (filled once).
-    fn plan_view(
+    pub(super) fn plan_view(
         &mut self,
         label: &Label,
         edge_config: ConfigId,

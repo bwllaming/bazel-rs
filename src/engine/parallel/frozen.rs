@@ -617,6 +617,355 @@ impl Engine {
     }
 }
 
+/// T2, `BAZEL_RS_TIMING`: when each phase-2 result of the frozen walks
+/// was published and its entry's turn came (µs since its walk started),
+/// by plan index: the Ct2 completion profile and the merge's lag.
+#[derive(Default)]
+pub(super) struct Ct2Profile {
+    started: Option<std::time::Instant>,
+    published: HashMap<usize, u64>,
+    /// (publication, turn) of the published entries whose turn came.
+    lags: Vec<(u64, u64)>,
+    /// Every turn of a frozen walk (µs), the walks' total.
+    turns: u64,
+    walked_us: u64,
+}
+
+pub(super) static CT2_PROFILE: std::sync::Mutex<Option<Ct2Profile>> = std::sync::Mutex::new(None);
+
+pub(super) fn profile(each: impl FnOnce(&mut Ct2Profile)) {
+    if crate::plan_timings::enabled() {
+        let mut profile = CT2_PROFILE.lock().unwrap_or_else(|e| e.into_inner());
+        each(profile.get_or_insert_with(Ct2Profile::default));
+    }
+}
+
+impl Ct2Profile {
+    fn now(&self) -> u64 {
+        self.started
+            .map_or(0, |started| started.elapsed().as_micros() as u64)
+    }
+
+    pub(super) fn walk_start(&mut self) {
+        self.started = Some(std::time::Instant::now());
+        self.published.clear();
+    }
+
+    pub(super) fn walk_end(&mut self) {
+        self.walked_us += self.now();
+        self.started = None;
+    }
+
+    pub(super) fn publish(&mut self, index: usize) {
+        if self.started.is_some() {
+            let now = self.now();
+            self.published.insert(index, now);
+        }
+    }
+
+    pub(super) fn turn(&mut self, index: usize) {
+        if self.started.is_none() {
+            return;
+        }
+        self.turns += 1;
+        if let Some(published) = self.published.remove(&index) {
+            let now = self.now();
+            self.lags.push((published, now));
+        }
+    }
+
+    /// The report line (`PERF-PARALLEL ct2`).
+    pub(super) fn line(&mut self) -> String {
+        let pct = |values: &mut Vec<u64>, p: usize| -> f64 {
+            if values.is_empty() {
+                return 0.0;
+            }
+            values.sort_unstable();
+            values[(values.len() - 1) * p / 100] as f64 / 1e6
+        };
+        let mut published: Vec<u64> = self.lags.iter().map(|(at, _)| *at).collect();
+        let mut turned: Vec<u64> = self.lags.iter().map(|(_, at)| *at).collect();
+        let mut lag: Vec<u64> = self
+            .lags
+            .iter()
+            .map(|(published, turn)| turn.saturating_sub(*published))
+            .collect();
+        format!(
+            "PERF-PARALLEL ct2 walks={:.3}s turns={} published={} published_at(p50/p90/p99/max)={:.3}/{:.3}/{:.3}/{:.3}s their_turn_at(p50/p90/max)={:.3}/{:.3}/{:.3}s merge_lag(p50/p90/max)={:.3}/{:.3}/{:.3}s",
+            self.walked_us as f64 / 1e6,
+            self.turns,
+            self.lags.len(),
+            pct(&mut published, 50),
+            pct(&mut published, 90),
+            pct(&mut published, 99),
+            pct(&mut published, 100),
+            pct(&mut turned, 50),
+            pct(&mut turned, 90),
+            pct(&mut turned, 100),
+            pct(&mut lag, 50),
+            pct(&mut lag, 90),
+            pct(&mut lag, 100),
+        )
+    }
+}
+
+/// T2: a native rule's results computed on a worker
+/// ([`Engine::dispatch_native`]): what its dependents read and what its
+/// commit registers in the index (published provisionally).
+pub(super) struct NativePublished {
+    results: KeyResults,
+    registered: Vec<Artifact>,
+}
+
+/// A native rule's results being computed on a worker (`None`: not
+/// computable there; its dependents wait for its commit).
+pub(super) type NativeJob = mpsc::Receiver<Option<Box<NativePublished>>>;
+
+/// T2: whether a frozen walk publishes `rule`'s results from a worker
+/// (`native_results::plain`, no coverage instrumentation, an execution
+/// plan).
+pub(super) fn publishes_native(engine: &Engine, rule: &Rule, config: ConfigId) -> bool {
+    publishes()
+        && (super::native_results::plain(rule)
+            || super::native_results::selected_output_group(rule).is_some())
+        && !engine.semantic_only()
+        && !engine
+            .configurations
+            .get(config)
+            .native
+            .collect_code_coverage
+}
+
+impl Engine {
+    /// T2: compute the results of the native rule at plan index `index` on
+    /// a worker over `frozen` (its dependencies' results published or
+    /// committed), as its commit would (`native_results`).
+    pub(super) fn dispatch_native(
+        &self,
+        frozen: &Arc<Frozen>,
+        index: usize,
+        key: ConfiguredTargetKey,
+        rule: Arc<Rule>,
+    ) -> NativeJob {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let frozen = Arc::clone(frozen);
+        let finished = self
+            .analysis_pool
+            .as_ref()
+            .map(|pool| pool.finished.0.clone());
+        let job: Job = Box::new(move || {
+            let published = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let isolation = Isolation::enter();
+                let engine = &frozen.engine;
+                let reads: &dyn PlanReads = &frozen.results;
+                let mut cx = prepare::SharedPrepare::frozen(&frozen, index);
+                let mut transitive = BTreeSet::from([rule.label.repository.clone()]);
+                let edges = engine.rule_edges(&rule, key.config);
+                engine.native_transitive_in(reads, &rule, &key, &edges, &mut transitive);
+                let validation = Engine::native_validation_in(&mut cx, reads, &rule, key.config);
+                let output_group = super::native_results::selected_output_group(&rule);
+                let plain =
+                    Engine::inputs_in(&mut cx, reads, &rule, key.config).and_then(|(inputs, _)| {
+                        let mut registered = inputs.clone();
+                        // A filegroup's output group: its `srcs`' views.
+                        let inputs = match &output_group {
+                            None => inputs,
+                            Some(group) => {
+                                let mut views = Vec::new();
+                                for text in &rule.srcs {
+                                    let label = engine.resolve_rule_src(&rule, text)?;
+                                    views.push(cx.plan_view(&label, key.config)?);
+                                }
+                                let reader = u32::try_from(index).unwrap_or(u32::MAX - 1);
+                                let mut selected = Vec::new();
+                                for file in super::native_results::output_group_files(&views, group)
+                                {
+                                    // A workspace status file is registered on
+                                    // first need, by its commit.
+                                    let (artifact, _) = frozen
+                                        .artifacts
+                                        .get_entry(&file, reader)
+                                        .ok_or_else(|| "unregistered".to_owned())?;
+                                    selected.push(artifact);
+                                }
+                                selected
+                            }
+                        };
+                        Engine::native_plain_in(
+                            &mut cx,
+                            reads,
+                            &frozen.configured,
+                            &rule,
+                            &key,
+                            key.config,
+                            inputs,
+                            &mut |artifact| registered.push(artifact.clone()),
+                        )
+                        .map(|plain| (plain, registered))
+                    });
+                let (effects, sentinel) = isolation.finish();
+                let quiet = effects.console.is_empty()
+                    && effects.observations.is_empty()
+                    && effects.roots.is_empty();
+                if sentinel || !quiet || cx.record.abort.is_some() {
+                    return None;
+                }
+                let (plain, registered) = plain.ok()?;
+                Some(Box::new(NativePublished {
+                    results: KeyResults {
+                        dry: Some(Arc::new(plain.dry)),
+                        providers: plain.providers,
+                        provider_keys: None,
+                        runfiles_info: plain.runfiles_info,
+                        validation,
+                        repositories: Some(Arc::new(transitive)),
+                    },
+                    registered,
+                }))
+            }))
+            .ok()
+            .flatten();
+            let _ = sender.send(published);
+            if let Some(finished) = finished {
+                let _ = finished.send((index, None, true, std::time::Instant::now()));
+            }
+        });
+        if let Some(pool) = &self.analysis_pool
+            && let Err(job) = pool.submit(index, job)
+        {
+            job();
+        }
+        receiver
+    }
+
+    /// T2: at the commit of native rule `key` whose results a worker
+    /// published, they are the committed ones (one function computes both,
+    /// `native_results`; its dependents' phase 2s read them). The Files,
+    /// not the Artifacts: a dependency's provisional producer is checked
+    /// by its readers' merges.
+    pub(super) fn check_published_native(&self, state: &ActionPlanning, key: &ConfiguredTargetKey) {
+        let Some(frozen) = self.frozen_walk.as_ref() else {
+            return;
+        };
+        let Some(published) = frozen.results.get(key) else {
+            return;
+        };
+        let fail = |what: &str| -> ! {
+            panic!(
+                "internal error: BAZEL_RS_ANALYSIS=eval: the {what} of native rule {} published ahead of its commit differ from the committed ones (BAZEL_RS_EVAL_NO_PUBLISH=1 waits for the commits)",
+                key.label
+            )
+        };
+        let files = |dry: Option<&Artifacts>| {
+            dry.map(|dry| dry.iter().map(Artifact::file).collect::<Vec<_>>())
+        };
+        if files(published.dry.as_ref()) != files(state.dry.get(key)) {
+            fail("files to build");
+        }
+        let same_providers = match (
+            published.providers.as_ref(),
+            state.custom_providers.get(key),
+        ) {
+            (None, None) => true,
+            (Some(published), Some(committed)) => {
+                published.len() == committed.len()
+                    && published
+                        .iter()
+                        .zip(committed)
+                        .all(|((id, value), (other_id, other))| {
+                            id == other_id
+                                && (value.value().ptr_eq(other.value())
+                                    || value.value().to_repr() == other.value().to_repr())
+                        })
+            }
+            _ => false,
+        };
+        if !same_providers {
+            fail("providers");
+        }
+        let runfiles = |info: Option<&Arc<crate::runfiles::TargetRunfiles>>| {
+            info.map(|info| {
+                (
+                    info.files(),
+                    info.files_to_run
+                        .as_ref()
+                        .map(|files_to_run| files_to_run.executable().cloned()),
+                )
+            })
+        };
+        if runfiles(published.runfiles_info.as_ref()) != runfiles(state.runfiles_info.get(key)) {
+            fail("runfiles");
+        }
+        if published.validation.is_some() != state.validation.contains_key(key) {
+            fail("validation group");
+        }
+        if published.repositories.as_deref() != state.repositories.get(key).map(|known| &**known) {
+            fail("transitive repositories");
+        }
+    }
+
+    /// T2: the results of native rule `key` (plan index `index`) computed
+    /// on a worker, published unless it committed meanwhile.
+    pub(super) fn publish_native(
+        &self,
+        state: &ActionPlanning,
+        pipe: &mut Pipeline,
+        index: usize,
+        key: &ConfiguredTargetKey,
+        published: NativePublished,
+    ) {
+        let Some(frozen) = self.frozen_walk.as_ref() else {
+            return;
+        };
+        if state.dry.contains_key(key) || pipe.published.contains_key(key) {
+            return;
+        }
+        let stamp = u32::try_from(index).unwrap_or(u32::MAX - 1);
+        let NativePublished {
+            results,
+            registered,
+        } = published;
+        for artifact in &registered {
+            frozen.artifacts.publish_provisional(
+                file_hash(&artifact.file),
+                &artifact.file,
+                artifact,
+                stamp,
+            );
+        }
+        frozen
+            .results
+            .key_shard(key)
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.clone(), Arc::new(results));
+        delta::provisional_bump(4);
+        pipe.published_native.insert(key.clone());
+        profile(|profile| profile.publish(index));
+        pipe.published.insert(key.clone(), index);
+        pipe.newly_published.push(key.clone());
+    }
+}
+
+/// T2: how far past the turn a frozen walk classifies, and how many
+/// entries it holds prepared ahead (computing or finished, not committed).
+pub(super) fn bounds() -> (usize, usize) {
+    static BOUNDS: std::sync::LazyLock<(usize, usize)> = std::sync::LazyLock::new(|| {
+        let get = |name: &str, default: usize| {
+            // snapshot-unrecorded: a scheduling bound; the output is the same either way.
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(default)
+        };
+        (
+            get("BAZEL_RS_T2_HORIZON", HORIZON),
+            get("BAZEL_RS_T2_HELD", 768),
+        )
+    });
+    *BOUNDS
+}
+
 /// T2: whether a frozen walk publishes the phase-2 results its workers
 /// built ahead of their merge (`BAZEL_RS_EVAL_NO_PUBLISH=1`: dependents
 /// wait for the merge, as before).
@@ -647,6 +996,8 @@ impl Engine {
         let Some(frozen) = self.frozen_walk.as_ref() else {
             return;
         };
+        // The Ct2 completion profile: when its worker finished.
+        profile(|profile| profile.publish(index));
         if !publishes()
             || worker.sentinel
             || !(platform_known || !worker.outcome.platform_read)

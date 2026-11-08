@@ -860,6 +860,15 @@ struct Pipeline {
     /// commits ahead of its turn only once they are merged: what its commit
     /// reads of them, and of their dependencies, is then canonical).
     early: HashMap<usize, Vec<ConfiguredTargetKey>>,
+    /// T2: the native rules whose results a worker computes once their
+    /// requirements are published or committed: waiting (by key, as
+    /// `waiting`), ready, computing.
+    native_waiting: HashMap<ConfiguredTargetKey, Vec<(usize, Vec<ConfiguredTargetKey>)>>,
+    native_publish_ready: Vec<usize>,
+    native_jobs: HashMap<usize, frozen::NativeJob>,
+    /// The native rules whose results were published from a worker
+    /// (checked at their commit, [`Engine::check_published_native`]).
+    published_native: std::collections::HashSet<ConfiguredTargetKey>,
 }
 
 impl Pipeline {
@@ -1279,9 +1288,17 @@ pub(super) fn report(workers: usize) {
         get(&frozen::FROZEN_STATS[2]),
         get(&frozen::FROZEN_STATS[3]) as f64 / 1e6,
     ));
+    if let Some(profile) = frozen::CT2_PROFILE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+    {
+        crate::snapshot::diag::line_fmt(format_args!("{}", profile.line()));
+    }
     crate::snapshot::diag::line_fmt(format_args!(
-        "PERF-PARALLEL provisional published={} stale_rebuilt={} with_reads={} memo_refilled={}",
+        "PERF-PARALLEL provisional published={} natives={} stale_rebuilt={} with_reads={} memo_refilled={}",
         get(&delta::PROVISIONAL_STATS[0]),
+        get(&delta::PROVISIONAL_STATS[4]),
         get(&delta::PROVISIONAL_STATS[1]),
         get(&delta::PROVISIONAL_STATS[2]),
         get(&delta::PROVISIONAL_STATS[3]),
@@ -1844,12 +1861,14 @@ impl Engine {
             crate::perf_mark("pass2.frozen");
             self.frozen_walk = Some(frozen);
             pipe.capacity = (frozen_workers(self.loading_phase_threads) * 2).max(2);
+            frozen::profile(frozen::Ct2Profile::walk_start);
         }
         let result = {
             let _split = frozen::Split::enter(0);
             self.plan_targets_pipelined(state, configured, &mut pipe)
         };
         if let Some(frozen) = self.frozen_walk.take() {
+            frozen::profile(frozen::Ct2Profile::walk_end);
             // The jobs still running hold it (a failing walk).
             pipe.ahead.clear();
             self.thaw(state, frozen);
@@ -1924,6 +1943,9 @@ impl Engine {
             }
             let index = state.done;
             state.done += 1;
+            if self.frozen_walk.is_some() {
+                frozen::profile(|profile| profile.turn(index));
+            }
             // Registrations made ahead of their turn become visible at it.
             state.artifact_index.at_turn(index);
             state.producers.set_stamp(Some(index));
@@ -1987,6 +2009,7 @@ impl Engine {
             }
             pipe.ready.remove(&index);
             pipe.early.remove(&index);
+            pipe.native_jobs.remove(&index);
             pipe.native_ready.remove(&index);
             pipe.finished.remove(&index);
             pipe.computed.remove(&index);
@@ -2000,13 +2023,6 @@ impl Engine {
                 self.keep_going_state.fail_propagated(&key);
                 continue;
             }
-            let ahead_kind = match &ahead {
-                Some(Ahead::Committed(_)) => "committed",
-                Some(Ahead::Computing { .. }) => "computing",
-                Some(Ahead::Failed { .. }) => "failed",
-                Some(Ahead::Preparing(_)) => "preparing",
-                None => "none",
-            };
             let result = {
                 let bucket = match &ahead {
                     Some(Ahead::Committed(_)) => 5,
@@ -2017,17 +2033,6 @@ impl Engine {
                 self.pipelined_turn(state, configured, pipe, &key, &rule, index, ahead)
             };
             pipe.note_committed(index, &key.label);
-            // snapshot-unrecorded: TEMPORARY T2 debugging.
-            if result.is_err() && std::env::var_os("BAZEL_RS_T2_DEBUG").is_some() {
-                eprintln!(
-                    "T2DEBUG failing {} at {index} ({ahead_kind}): last_try {:?} turn_reason {} early {:?}: {:?}",
-                    key.label,
-                    pipe.last_try.get(&index),
-                    pipe.turn_reason,
-                    pipe.early.get(&index).map(|keys| keys.len()),
-                    result.as_ref().err()
-                );
-            }
             if !self.keep_going {
                 result?;
             } else {
@@ -2148,11 +2153,65 @@ impl Engine {
         pipe.waking.clear();
     }
 
+    /// T2: wait for the first of `keys` neither committed nor published,
+    /// or mark the native rule `index` ready to have its results computed.
+    fn native_publish_wait(
+        state: &ActionPlanning,
+        pipe: &mut Pipeline,
+        index: usize,
+        mut keys: Vec<ConfiguredTargetKey>,
+    ) {
+        while let Some(key) = keys.pop() {
+            if !state.dry.contains_key(&key) && !pipe.published.contains_key(&key) {
+                pipe.native_waiting
+                    .entry(key)
+                    .or_default()
+                    .push((index, keys));
+                return;
+            }
+        }
+        pipe.native_publish_ready.push(index);
+    }
+
+    /// The native rules waiting for `key` (committed or published).
+    fn native_publish_wake(state: &ActionPlanning, pipe: &mut Pipeline, key: &ConfiguredTargetKey) {
+        if let Some(waiters) = pipe.native_waiting.remove(key) {
+            for (index, rest) in waiters {
+                if index >= state.done {
+                    Self::native_publish_wait(state, pipe, index, rest);
+                }
+            }
+        }
+    }
+
+    /// T2: compute the results of the ready native rules on the workers.
+    fn dispatch_natives(&mut self, pipe: &mut Pipeline, turn: usize) {
+        let Some(frozen) = self.frozen_walk.clone() else {
+            return;
+        };
+        for index in std::mem::take(&mut pipe.native_publish_ready) {
+            if index <= turn {
+                continue;
+            }
+            let Some((key, rule)) = self
+                .planning_plan
+                .as_ref()
+                .and_then(|plan| plan.get(index))
+                .cloned()
+            else {
+                continue;
+            };
+            let job = self.dispatch_native(&frozen, index, key, rule);
+            pipe.native_jobs.insert(index, job);
+        }
+    }
+
     /// T2: the Starlark entries waiting for the results published since
     /// (natives keep waiting for the merge); whether one woke.
     fn pipeline_published(&mut self, state: &ActionPlanning, pipe: &mut Pipeline) -> bool {
         let mut woke = false;
         for key in std::mem::take(&mut pipe.newly_published) {
+            Self::native_publish_wake(state, pipe, &key);
             let Some(waiters) = pipe.waiting.remove(&key) else {
                 continue;
             };
@@ -2174,7 +2233,7 @@ impl Engine {
             }
         }
         pipe.waking.clear();
-        woke
+        woke || !pipe.native_publish_ready.is_empty()
     }
 
     /// `key` is committed: recheck the entries waiting for it.
@@ -2185,9 +2244,13 @@ impl Engine {
         key: &ConfiguredTargetKey,
     ) {
         // S3: what the workers' prepares read of it, before they may run.
+        if pipe.published_native.remove(key) {
+            self.check_published_native(state, key);
+        }
         if let Some(frozen) = &self.frozen_walk {
             frozen.results.publish(key, state);
             frozen.results.publish_declared(state);
+            Self::native_publish_wake(state, pipe, key);
         }
         let Some(waiters) = pipe.waiting.remove(key) else {
             return;
@@ -2731,8 +2794,14 @@ impl Engine {
         pipe: &mut Pipeline,
         turn: usize,
     ) {
+        self.dispatch_natives(pipe, turn);
         let plan_len = self.planning_plan.as_ref().map_or(0, Vec::len);
-        let horizon = plan_len.min(turn + 1 + HORIZON);
+        let (horizon, held) = if self.frozen_walk.is_some() {
+            frozen::bounds()
+        } else {
+            (HORIZON, pipe.capacity * HELD_FACTOR)
+        };
+        let horizon = plan_len.min(turn + 1 + horizon);
         if pipe.scanned < turn + 1 {
             pipe.scanned = turn + 1;
         }
@@ -2741,13 +2810,13 @@ impl Engine {
         // finished ones waiting are bounded too (their snapshots and
         // results are held: memory).
         while pipe.ahead.len().saturating_sub(pipe.computed.len()) < pipe.capacity
-            && pipe.ahead.len() < pipe.capacity * HELD_FACTOR
+            && pipe.ahead.len() < held
         {
             // S2: the ready entries the pipeline has room for are prepared
             // together (Self::prepare_ahead_batch); more are classified
             // only when none is ready (the ready ones go first).
             let room = (pipe.capacity - pipe.ahead.len().saturating_sub(pipe.computed.len()))
-                .min(pipe.capacity * HELD_FACTOR - pipe.ahead.len());
+                .min(held - pipe.ahead.len());
             if pipe.ready.is_empty() && pipe.scanned < horizon {
                 let index = pipe.scanned;
                 pipe.scanned += 1;
@@ -2802,6 +2871,38 @@ impl Engine {
                     && !matches!(rule.kind, RuleKind::Custom)
                 {
                     pipe.natives.insert(index);
+                }
+                if self.frozen_walk.is_some()
+                    && !matches!(rule.kind, RuleKind::Custom)
+                    && configured
+                        .get(&key)
+                        .is_some_and(|node| node.incompatible.is_none())
+                    && frozen::publishes_native(self, &rule, key.config)
+                {
+                    // T2: its results computed on a worker once what it
+                    // reads is published (a native rule committed at its
+                    // turn too: a filegroup selecting an output group).
+                    let keys = match &classified {
+                        Classified::Waiting(keys) => Some(keys.clone()),
+                        Classified::Ready => Some(Vec::new()),
+                        Classified::Never if !verify_ahead() => {
+                            let mut lookups = Vec::new();
+                            let keys = match self.classify_native(state, &key, &rule, &mut lookups)
+                            {
+                                Classified::Waiting(keys) => Some(keys),
+                                Classified::Ready => Some(Vec::new()),
+                                Classified::Never => None,
+                            };
+                            if !lookups.is_empty() {
+                                pipe.stashed.entry(index).or_default().extend(lookups);
+                            }
+                            keys
+                        }
+                        Classified::Never => None,
+                    };
+                    if let Some(keys) = keys {
+                        Self::native_publish_wait(state, pipe, index, keys);
+                    }
                 }
                 match classified {
                     Classified::Never => {
@@ -3454,6 +3555,20 @@ impl Engine {
                 let entry = pipe.lat.entry(index).or_default();
                 entry[2] = Some(at);
                 entry[3] = Some(std::time::Instant::now());
+            }
+            if let Some(job) = pipe.native_jobs.remove(&index) {
+                // T2: a native rule's results.
+                if index > turn
+                    && let Ok(Some(published)) = job.recv()
+                    && let Some((key, _)) = self
+                        .planning_plan
+                        .as_ref()
+                        .and_then(|plan| plan.get(index))
+                        .cloned()
+                {
+                    self.publish_native(state, pipe, index, &key, *published);
+                }
+                continue;
             }
             if index <= turn {
                 continue;

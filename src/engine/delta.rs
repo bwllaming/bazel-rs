@@ -293,9 +293,10 @@ pub(super) fn check_reads(
 
 /// T2: BAZEL_RS_EVAL_STATS / BAZEL_RS_TIMING counters: results published
 /// ahead of their merge, deltas whose reads were stale at their merge
-/// (rebuilt there), deltas with provisional reads, memo entries refilled.
-pub(super) static PROVISIONAL_STATS: [std::sync::atomic::AtomicU64; 4] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+/// (rebuilt there), deltas with provisional reads, memo entries refilled,
+/// native rules' results published.
+pub(super) static PROVISIONAL_STATS: [std::sync::atomic::AtomicU64; 5] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 5];
 
 pub(super) fn provisional_bump(index: usize) {
     PROVISIONAL_STATS[index].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
