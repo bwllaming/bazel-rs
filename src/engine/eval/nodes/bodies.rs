@@ -512,10 +512,11 @@ impl Bodies for Phase1Bodies<'_, '_> {
             ));
         }
         if matches!(running.key, NodeKey::Tgt(_)) {
-            // A lookup's observations are order-free (probes of source
-            // files): the recording's now.
+            // A lookup's observations are its user's (the enclosing
+            // attempt's frame on this thread; a hinted lookup's own job:
+            // the recording's now).
             if let Some(observations) = observations {
-                crate::observed_fs::commit_to_recorder(observations);
+                crate::observed_fs::commit(observations);
             }
             // A lookup's events belong to its user (the walk looks
             // targets up inline).

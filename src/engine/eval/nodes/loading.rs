@@ -65,7 +65,9 @@ pub(crate) struct Loading {
     /// The module repository root each Pkg node waits for on the lane.
     pub(crate) pending_blockers: Mutex<FxHashMap<PackageId, String>>,
     /// What the lane wrote materializing a root, by blocker.
-    pub(crate) lane_writes: Mutex<FxHashMap<String, Vec<crate::ui::Deferred>>>,
+    #[allow(clippy::type_complexity)]
+    pub(crate) lane_writes:
+        Mutex<FxHashMap<String, (Vec<crate::ui::Deferred>, crate::observed_fs::Observations)>>,
     /// The module events of a Pkg node's attempts aborted on the pool.
     pub(crate) aborted_prints: Mutex<FxHashMap<PackageId, Vec<LoadPrintEvent>>>,
     /// The print events of the aspect definitions the evaluation loaded
@@ -156,11 +158,15 @@ pub(crate) fn lane_fetch(shared: &EvalShared, blocker: &str) {
     let Some(name) = blocker.split_once("repository @@").map(|(_, name)| name) else {
         return;
     };
+    // What it writes and observes is the re-run unit's (where the walk's
+    // inline load materializes the root).
     let console = crate::ui::DeferredConsole::start();
+    let scope = crate::observed_fs::unit_scope();
     let _ = shared.repositories.root(name);
+    let observations = scope.finish();
     let writes = console.finish();
-    if !writes.is_empty() {
-        lock(&shared.loading.lane_writes).insert(blocker.to_owned(), writes);
+    if !writes.is_empty() || !observations.is_empty() {
+        lock(&shared.loading.lane_writes).insert(blocker.to_owned(), (writes, observations));
     }
 }
 
@@ -265,9 +271,10 @@ pub(crate) fn package_body(
     // What the lane's materialization of a root it was blocked on wrote,
     // where the walk's inline load would have written it.
     let blocker = lock(&shared.loading.pending_blockers).remove(id);
-    if let Some(writes) =
+    if let Some((writes, observations)) =
         blocker.and_then(|blocker| lock(&shared.loading.lane_writes).remove(&blocker))
     {
+        crate::observed_fs::commit(observations);
         for write in writes {
             let index = cx.coord().store.console(write);
             cx.emit(Event::Console(index));
