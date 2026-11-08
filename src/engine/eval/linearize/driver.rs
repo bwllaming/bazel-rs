@@ -148,6 +148,8 @@ pub(crate) struct Linearizer {
     configured: ConfiguredNodes,
     plan: Plan,
     published_memos: usize,
+    /// Configured targets pass 1 decided whose value is not done yet.
+    unpublished: Vec<NodeId>,
     /// The evaluation's console (everything written during phase 1 is
     /// held; the tape's effects are written around it).
     console: Option<crate::ui::DeferredConsole>,
@@ -445,11 +447,15 @@ impl Coord<'_> {
         let engine = &mut *self.engine;
         // The configured targets pass 1 decided (the first variant reached
         // in DFS order), in its order.
-        for node in lin.pass.take_canonical() {
+        let mut canonical = std::mem::take(&mut lin.unpublished);
+        canonical.extend(lin.pass.take_canonical());
+        for node in canonical {
             let Some(NodeKey::Ct1(ct)) = self.store.keys.get(&node) else {
                 continue;
             };
             let Some(value) = self.ct1_values.get(ct) else {
+                // Its body is still running (past its `Done`).
+                lin.unpublished.push(node);
                 continue;
             };
             let Ok(ok) = &value.outcome else {
@@ -761,6 +767,7 @@ impl Engine {
             configured: std::mem::take(configured),
             plan: std::mem::take(plan),
             published_memos: 0,
+            unpublished: Vec::new(),
             console: Some(console),
         };
         let (result, lin) = {
