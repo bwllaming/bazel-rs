@@ -270,6 +270,65 @@ x = module_extension(implementation = _x_impl)
             "xz/BUILD.bazel",
             "load('@x_repo//:defs.bzl', 'XS')\nprint('xz sees ' + XS)\nfilegroup(name = 'xz')\n",
         );
+        // Phase 1's packages (docs/EVALUATOR.md "Extensions on the pool"):
+        // loaded by the evaluator's pool, on the speculative preparations
+        // of `gen` and `user` and on a local repository rule executed
+        // ahead (`plain`, no `execute()`), or by its sequential pass
+        // (`touch` calls `execute()`; `fails` has no lockfile entry).
+        fixture.write(
+            "MODULE.bazel",
+            &(fs::read_to_string(fixture.path().join("MODULE.bazel")).unwrap()
+                + "plain = use_repo_rule(\"//ext:plain.bzl\", \"plain\")\nplain(name = \"plain\")\n"),
+        );
+        fixture.write(
+            "ext/plain.bzl",
+            r#"def _plain_impl(rctx):
+    rctx.file("BUILD.bazel", "exports_files(['plain.txt'])\n")
+    rctx.file("plain.txt", "plain\n")
+    rctx.file("defs.bzl", "PLAIN = 'plain:' + %r\n" % rctx.os.name)
+
+plain = repository_rule(implementation = _plain_impl, local = True)
+"#,
+        );
+        let mut many = Vec::new();
+        for i in 0..12 {
+            let mut text = String::from("load('@gen_data//:defs.bzl', 'VALUE')\n");
+            if i % 3 == 0 {
+                text.push_str(&format!(
+                    "load('@user_repo//:defs.bzl', 'USER')\nprint('many/p{i} sees ' + USER)\n"
+                ));
+            }
+            if i % 4 == 1 {
+                text.push_str("load('@plain//:defs.bzl', 'PLAIN')\nprint(PLAIN)\n");
+            }
+            text.push_str(&format!(
+                "print('many/p{i} sees ' + VALUE)\nfilegroup(name = 't', srcs = ['@gen_data//:data.txt'{}], visibility = ['//visibility:public'])\n",
+                if i % 4 == 1 { ", '@plain//:plain.txt'" } else { "" }
+            ));
+            fixture.write(&format!("many/p{i}/BUILD.bazel"), &text);
+            many.push(format!("'//many/p{i}:t'"));
+        }
+        fixture.write(
+            "many/BUILD.bazel",
+            &format!(
+                "filegroup(name = 'all', srcs = [{}], visibility = ['//visibility:public'])\n",
+                many.join(", ")
+            ),
+        );
+        // `touch` runs in the target pattern phase (`//touched:t`'s
+        // package), before phase 1 loads `gen`'s users.
+        fixture.write(
+            "touched/BUILD.bazel",
+            "load('@touch//:defs.bzl', 'TOUCHED')\nfilegroup(name = 't', srcs = ['//many:all'])\n",
+        );
+        fixture.write(
+            "failmany/BUILD.bazel",
+            "filegroup(name = 'all', srcs = ['//many:all', '//failmany/bad:t'])\n",
+        );
+        fixture.write(
+            "failmany/bad/BUILD.bazel",
+            "load('@fail_repo//:defs.bzl', 'X')\nfilegroup(name = 't', visibility = ['//visibility:public'])\n",
+        );
         fixture.write(
             "chained/BUILD.bazel",
             "load('@touch//:defs.bzl', 'TOUCHED')\nload('@user_repo//:defs.bzl', 'USER')\nprint('chained sees ' + USER)\nfilegroup(name = 'chained')\n",
@@ -645,6 +704,131 @@ fn output_between_chained_groups_keeps_the_sequential_order() {
         assert_eq!(counter(run, "taken"), 2, "{}", run.timing);
         assert_eq!(counter(run, "chained"), 0, "{}", run.timing);
     }
+}
+
+/// `BAZEL_RS_ANALYSIS=eval` at 1, 2, 8 and 32 threads, with evaluator
+/// jitter and with attempts abandoned at random, against the walk at one
+/// thread (the sequential engine), each from `baseline`.
+fn compare_eval(fixture: &Fixture, baseline: &Baseline, snapshot: &str, patterns: &[&str]) -> Run {
+    baseline.restore(fixture);
+    let reference = fixture.build(1, snapshot, &[("BAZEL_RS_ANALYSIS", "walk")], patterns);
+    for (threads, extra) in [
+        (1, None),
+        (2, None),
+        (8, None),
+        (32, None),
+        (8, Some(("BAZEL_RS_EVAL_JITTER", "300"))),
+        (32, Some(("BAZEL_RS_EVAL_JITTER", "100"))),
+        (8, Some(("BAZEL_RS_EVAL_RESTARTS", "5"))),
+    ] {
+        baseline.restore(fixture);
+        let mut env = vec![("BAZEL_RS_ANALYSIS", "eval")];
+        env.extend(extra);
+        let run = fixture.build(threads, snapshot, &env, patterns);
+        assert_same(
+            &reference,
+            &run,
+            &format!("eval {patterns:?} snapshot={snapshot} threads={threads} {extra:?}"),
+        );
+    }
+    baseline.restore(fixture);
+    reference
+}
+
+/// The counter `name` of the evaluator's statistics line on the pool's use
+/// of speculative extension preparations (`BAZEL_RS_EVAL_STATS=1`).
+fn pool_counter(fixture: &Fixture, baseline: &Baseline, patterns: &[&str], name: &str) -> u64 {
+    baseline.restore(fixture);
+    let run = fixture.build(
+        8,
+        "off",
+        &[("BAZEL_RS_ANALYSIS", "eval"), ("BAZEL_RS_EVAL_STATS", "1")],
+        patterns,
+    );
+    baseline.restore(fixture);
+    let line = run
+        .stderr
+        .lines()
+        .find(|line| line.contains("speculative extension preparations on the pool"))
+        .unwrap_or_else(|| panic!("no statistics:\n{}", run.stderr))
+        .to_owned();
+    line.split(", ")
+        .find_map(|part| {
+            part.rsplit_once(' ')
+                .filter(|(label, _)| label.ends_with(name))
+                .and_then(|(_, value)| value.parse().ok())
+        })
+        .unwrap_or_else(|| panic!("{name} in {line}"))
+}
+
+/// Phase 1's packages loading the repositories of `gen` and `user` (both
+/// prepared ahead, `user` on `gen`'s speculative preparation) and of a
+/// local repository rule: the evaluator's pool loads them on the
+/// speculative preparations, committed where the walk prepares the groups
+/// (docs/EVALUATOR.md "Extensions on the pool"); stdout, stderr, the
+/// lockfiles and the snapshot recording are the walk's at every thread
+/// count.
+#[test]
+fn the_evaluators_pool_loads_packages_on_speculated_extensions() {
+    let fixture = Fixture::new();
+    let baseline = Baseline::new(&fixture);
+    for snapshot in ["off", "record"] {
+        let reference = compare_eval(&fixture, &baseline, snapshot, &["//many:all"]);
+        assert_eq!(reference.code, Some(0), "{}", reference.stderr);
+        assert!(
+            reference.stderr.contains("many/p11 sees data v0")
+                && reference.stderr.contains("many/p9 sees lib(user)")
+                && reference.stderr.contains("plain:")
+                && !reference.stderr.contains("evaluated"),
+            "{}",
+            reference.stderr
+        );
+    }
+    assert!(pool_counter(&fixture, &baseline, &["//many:all"], "used") > 0);
+    assert!(
+        pool_counter(
+            &fixture,
+            &baseline,
+            &["//many:all"],
+            "committed by the tape"
+        ) > 0
+    );
+}
+
+/// `touch` (a local rule) rewrites `gen`'s input in the target pattern
+/// phase, after `gen` was prepared ahead: the pool's check of the
+/// speculation's lockfile entry fails, so phase 1's packages wait for the
+/// sequential pass, which evaluates `gen` anew where the walk does.
+#[test]
+fn the_pool_does_not_use_an_extension_whose_input_changed() {
+    let fixture = Fixture::new();
+    let baseline = Baseline::new(&fixture);
+    let reference = compare_eval(&fixture, &baseline, "off", &["//touched:t"]);
+    assert_eq!(reference.code, Some(0), "{}", reference.stderr);
+    assert!(
+        reference.stderr.contains("gen evaluated with input v1")
+            && reference.stderr.contains("many/p0 sees data v1"),
+        "{}",
+        reference.stderr
+    );
+}
+
+/// An extension without a lockfile entry that fails (never prepared
+/// ahead): its user waits for the sequential pass, which fails as the walk
+/// does, beside packages the pool loaded on `gen`'s speculation.
+#[test]
+fn a_failing_extension_fails_on_the_pool_as_in_the_walk() {
+    let fixture = Fixture::new();
+    let baseline = Baseline::new(&fixture);
+    let reference = compare_eval(&fixture, &baseline, "off", &["//failmany:all"]);
+    assert_ne!(reference.code, Some(0), "{}", reference.stderr);
+    assert!(
+        reference
+            .stderr
+            .contains("the fails extension fails on purpose"),
+        "{}",
+        reference.stderr
+    );
 }
 
 /// A loopback HTTP server serving `body` for every request and recording
