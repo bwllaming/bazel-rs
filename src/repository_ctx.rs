@@ -3708,6 +3708,16 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<ExecResult> {
         exec_receiver(this)?;
+        // A local rule executed ahead for the evaluator's pool
+        // (crate::repository's `eval_local_blocker`): a subprocess may
+        // write anything, only the sequential execution may run it.
+        if crate::repository::eval_local_speculation() {
+            crate::repository_demand::note_order_dependent();
+            bail!(
+                "{}",
+                crate::repository_demand::order_dependent("a speculative local rule's execute()")
+            );
+        }
         let _span = crate::timeline::span("execute", || {
             format!("{arguments}").chars().take(200).collect()
         });

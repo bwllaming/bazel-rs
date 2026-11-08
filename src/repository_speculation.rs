@@ -366,6 +366,66 @@ impl Speculations {
         self.shared.changed.notify_all();
     }
 
+    /// Queue `canonical` again unless it is queued, running, finished
+    /// with an outcome, published or taken (the evaluator's pool asks for
+    /// a local rule once more: crate::repository's `wait_eval_local`).
+    pub(crate) fn request_again(&self, canonical: &str) {
+        {
+            let mut state = lock(&self.shared.state);
+            if state.width == 0 {
+                return;
+            }
+            match state.entries.get(canonical) {
+                None | Some(Entry::Failed) => {}
+                Some(Entry::Blocked { attempts, .. }) if *attempts < MAX_ATTEMPTS => {}
+                Some(_) => return,
+            }
+            let attempts = match state.entries.get(canonical) {
+                Some(Entry::Blocked { attempts, .. }) => *attempts,
+                _ => 0,
+            };
+            state.counts.requested += 1;
+            state
+                .entries
+                .insert(canonical.to_owned(), Entry::Queued { attempts });
+            state.queue.push_back(canonical.to_owned());
+        }
+        self.grow();
+        self.shared.changed.notify_all();
+    }
+
+    /// Wait (at most `timeout`) while the speculation of `canonical` is
+    /// queued or runs; the sentinel it is blocked on, if it is.
+    pub(crate) fn wait_settled(
+        &self,
+        canonical: &str,
+        timeout: std::time::Duration,
+    ) -> Option<String> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut state = lock(&self.shared.state);
+        while state.width > 0
+            && matches!(
+                state.entries.get(canonical),
+                Some(Entry::Queued { .. } | Entry::Running(_))
+            )
+        {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            state = self
+                .shared
+                .changed
+                .wait_timeout(state, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        match state.entries.get(canonical) {
+            Some(Entry::Blocked { error, .. }) => Some(error.clone()),
+            _ => None,
+        }
+    }
+
     /// Whether probes must not serve `canonical` (its speculation is
     /// executing, or holds an outcome only the coordinator may commit).
     pub(crate) fn hides(&self, canonical: &str) -> bool {

@@ -189,6 +189,29 @@ impl Drop for EvalAdoption {
     }
 }
 
+thread_local! {
+    /// A local repository rule executes speculatively on this thread for
+    /// the evaluator's pool ([`RepositorySet::eval_local_blocker`]): its
+    /// `execute()` aborts the speculation.
+    static EVAL_LOCAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether a local repository rule executes speculatively on this thread
+/// (crate::repository_ctx refuses its `execute()`: a subprocess may write
+/// anything, which only the rule's sequential execution may do).
+pub(crate) fn eval_local_speculation() -> bool {
+    EVAL_LOCAL.with(std::cell::Cell::get)
+}
+
+/// Restores [`EVAL_LOCAL`].
+struct EvalLocalGuard(bool);
+
+impl Drop for EvalLocalGuard {
+    fn drop(&mut self) {
+        EVAL_LOCAL.with(|local| local.set(self.0));
+    }
+}
+
 /// Whether a pool load on this thread may use speculative preparations
 /// ([`EvalAdoption`]).
 fn eval_adopting() -> bool {
@@ -413,6 +436,11 @@ struct RepositoryState {
     /// preparation must be that very one), and whether there are any.
     eval_used_groups: std::sync::Mutex<BTreeSet<String>>,
     eval_used: std::sync::atomic::AtomicBool,
+    /// The repositories an evaluator's pool load waits for, which
+    /// repository speculation may execute ahead on the finished
+    /// speculative preparation of their extension group, and execute even
+    /// when local ([`RepositorySet::eval_local_blocker`]).
+    eval_local: std::sync::Mutex<BTreeSet<String>>,
     /// The width extension speculations start with once the module graph
     /// is resolved (0: not armed; [`RepositorySet::start_extension_speculation`]).
     extension_speculation_armed: std::sync::atomic::AtomicUsize,
@@ -1273,6 +1301,7 @@ impl RepositorySet {
                 eval_adoptable: Default::default(),
                 eval_used_groups: Default::default(),
                 eval_used: Default::default(),
+                eval_local: Default::default(),
                 extension_speculation_armed: Default::default(),
             }),
         }
@@ -1463,7 +1492,7 @@ impl RepositorySet {
         // A speculative extension preparation's definition loads pin
         // nothing: its commit pins what they would have pinned
         // (crate::loading::commit_speculative_definitions).
-        if crate::extension_speculation::active() {
+        if crate::extension_speculation::active() || eval_local_speculation() {
             return None;
         }
         // Phase-1 prefetch runs beside the record mode's capture (W6R):
@@ -3656,6 +3685,56 @@ impl RepositorySet {
         pending.then_some(id)
     }
 
+    /// The repository whose root the no-demand sentinel `sentinel` of an
+    /// evaluator's pool load names, when repository speculation may
+    /// execute it ahead for the load (not while local executions are
+    /// captured for replay): a local rule, or a repository of a group the
+    /// pool uses speculatively. The pool's lane has it speculated
+    /// ([`Self::wait_eval_local`]) and the load runs again. Its execution
+    /// publishes the root only when it printed nothing (else the
+    /// sequential pass commits it at its demand, as any speculation's); a
+    /// local one that calls `execute()` is never speculated.
+    pub(crate) fn eval_local_blocker<'a>(&self, sentinel: &'a str) -> Option<&'a str> {
+        if self.state.replay.is_some() || !self.state.speculation.accepting() {
+            return None;
+        }
+        let canonical = sentinel_repository(sentinel)?;
+        let runtime = self.direct_runtime().ok()?;
+        let eligible = match runtime.catalog.repositories.get(canonical) {
+            Some(entry) => runtime
+                .groups
+                .get(&entry.group_id)
+                .and_then(DemandSlot::ready)
+                .is_some_and(|prepared| prepared.definition.local),
+            None => {
+                let (prefix, name) = canonical.rsplit_once('+')?;
+                let id = runtime.catalog.ordinary_routes.get(prefix)?;
+                match runtime.ordinary.get(id).and_then(DemandSlot::ready) {
+                    Some(prepared) => prepared.repositories.get(name)?.definition.local,
+                    // A repository of a group the pool uses speculatively:
+                    // its speculation may use the group too.
+                    None => self
+                        .speculated_group(id)
+                        .is_some_and(|prepared| prepared.repositories.contains_key(name)),
+                }
+            }
+        };
+        (eligible && !lock_ignoring_poison(&self.state.eval_local).contains(canonical))
+            .then_some(canonical)
+    }
+
+    /// The pool's lane: execute the repository `canonical` speculatively
+    /// ([`Self::eval_local_blocker`]), waiting (at most a few seconds) for
+    /// it. When it is blocked on a registry module's root, that root (to
+    /// materialize on the lane, then call again).
+    pub(crate) fn wait_eval_local(&self, canonical: &str) -> Option<String> {
+        lock_ignoring_poison(&self.state.eval_local).insert(canonical.to_owned());
+        self.state.speculation.request_again(canonical);
+        self.state
+            .speculation
+            .wait_settled(canonical, std::time::Duration::from_secs(10))
+    }
+
     /// The pool's lane: wait (at most a few seconds) for the speculative
     /// preparation of the group `id` an evaluator's pool load waits for.
     pub(crate) fn wait_eval_group(&self, id: &str) {
@@ -3996,6 +4075,13 @@ impl RepositorySet {
         let _guard = crate::repository_demand::no_demand();
         let _reuse = crate::repository_demand::reuse_only();
         let _ = crate::repository_demand::take_order_dependent();
+        // A repository an evaluator's pool load waits for may use the
+        // finished speculative preparation of its extension group, as the
+        // load does (crate::repository's `EvalAdoption`; the load's commit
+        // prepares the group before the root counts).
+        let adoption = lock_ignoring_poison(&self.state.eval_local)
+            .contains(canonical)
+            .then(EvalAdoption::start);
         let slot = match self.speculation_slot(canonical) {
             Ok(slot) if slot.ready().is_none() => slot,
             Ok(_) => return Finished::Failed,
@@ -4005,6 +4091,7 @@ impl RepositorySet {
             Err(_) => return Finished::Failed,
         };
         let (result, obtained) = UnitRoots::during(|| self.speculative_materialize(canonical));
+        drop(adoption);
         let order_dependent = crate::repository_demand::take_order_dependent();
         let root = match result {
             Err(error) if crate::repository_demand::is_needs_repository(&error) => {
@@ -4093,16 +4180,33 @@ impl RepositorySet {
         let runtime = self.direct_runtime()?;
         if let Some(entry) = runtime.catalog.repositories.get(canonical) {
             let prepared = self.prepare_direct_group(&entry.group_id)?;
-            if prepared.definition.local {
-                return Err("a local repository rule is never speculated".to_owned());
-            }
+            let _local = if prepared.definition.local {
+                Some(self.eval_local_scope(canonical)?)
+            } else {
+                None
+            };
             return self.materialize_direct(canonical, entry, prepared);
         }
         let (prepared, repository) = self.ordinary_repository(canonical)?;
-        if repository.definition.local {
+        let _local = if repository.definition.local {
+            Some(self.eval_local_scope(canonical)?)
+        } else {
+            None
+        };
+        self.materialize_ordinary(prepared, repository)
+    }
+
+    /// A local rule's speculative execution, only for an evaluator's pool
+    /// load waiting for it ([`Self::eval_local_blocker`]) and never while
+    /// local executions are captured for replay (crate::snapshot::replay):
+    /// [`EVAL_LOCAL`] while the guard lives.
+    fn eval_local_scope(&self, canonical: &str) -> Result<EvalLocalGuard, String> {
+        if self.state.replay.is_some()
+            || !lock_ignoring_poison(&self.state.eval_local).contains(canonical)
+        {
             return Err("a local repository rule is never speculated".to_owned());
         }
-        self.materialize_ordinary(prepared, repository)
+        Ok(EvalLocalGuard(EVAL_LOCAL.with(|local| local.replace(true))))
     }
 
     /// The coordinator demands a repository a speculation executed: what

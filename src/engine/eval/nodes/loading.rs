@@ -159,12 +159,31 @@ pub(crate) fn module_root_blocker(error: &str) -> Option<&str> {
 /// speculative preparation (crate::repository's `EvalAdoption`).
 const EXTENSION_BLOCKER: &str = "\u{2}extension:";
 
+/// The lane's blocker of a pool load waiting for a local repository rule's
+/// speculative execution (crate::repository's `eval_local_blocker`).
+const LOCAL_BLOCKER: &str = "\u{2}local:";
+
 /// The coordinator's lane: materialize the module repository root a
 /// pool unit was blocked on (where demand may fetch), its console writes
 /// kept for the unit's re-run.
 pub(crate) fn lane_fetch(shared: &EvalShared, blocker: &str) {
     if let Some(group) = blocker.strip_prefix(EXTENSION_BLOCKER) {
         shared.repositories.wait_eval_group(group);
+        return;
+    }
+    if let Some(canonical) = blocker.strip_prefix(LOCAL_BLOCKER) {
+        // Blocked on a registry module's root: materialized here (what it
+        // writes and observes is the waiting unit's), then once more.
+        if let Some(error) = shared.repositories.wait_eval_local(canonical)
+            && let Some(root) = module_root_blocker(&error)
+        {
+            let root = root.to_owned();
+            lane_fetch(shared, &root);
+            if let Some(written) = lock(&shared.loading.lane_writes).remove(&root) {
+                lock(&shared.loading.lane_writes).insert(blocker.to_owned(), written);
+            }
+            shared.repositories.wait_eval_local(canonical);
+        }
         return;
     }
     let Some(name) = blocker.split_once("repository @@").map(|(_, name)| name) else {
@@ -269,6 +288,17 @@ pub(crate) fn package_body(
                     sentinel.and_then(|error| repositories.eval_group_blocker(error))
                 {
                     return Err(Missing::Repo(format!("{EXTENSION_BLOCKER}{group}")));
+                }
+                // A local repository rule: the lane has it executed ahead.
+                if let Some(canonical) =
+                    sentinel.and_then(|error| repositories.eval_local_blocker(error))
+                {
+                    let blocker = format!("{LOCAL_BLOCKER}{canonical}");
+                    lock(&shared.loading.pending_blockers)
+                        .entry(id.clone())
+                        .or_default()
+                        .push(blocker.clone());
+                    return Err(Missing::Repo(blocker));
                 }
                 if let Some(blocker) = sentinel.and_then(|error| module_root_blocker(error)) {
                     lock(&shared.loading.pending_blockers)
