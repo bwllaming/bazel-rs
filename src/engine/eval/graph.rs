@@ -226,9 +226,18 @@ impl Graph {
         id
     }
 
-    /// The id of `key` if interned.
+    /// The id of `key` if interned (its entry exists once this returns:
+    /// another thread may be between interning the key and creating its
+    /// segment).
     pub(crate) fn get(&self, key: &NodeKey) -> Option<NodeId> {
-        self.interner.get(key)
+        let id = self.interner.get(key)?;
+        let (segment, _) = slot_of(id.0);
+        self.segments[segment].get_or_init(|| {
+            (0..FIRST_SEGMENT << segment)
+                .map(|_| Entry::default())
+                .collect()
+        });
+        Some(id)
     }
 
     /// The key of `id`.
