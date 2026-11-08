@@ -250,6 +250,7 @@ fn verify_with(
             threads: 1,
             keep_going: false,
             jitter_micros: 0,
+            ..EvalConfig::default()
         },
     );
     let evaluate = |key: &NodeKey| -> Arc<NodeValue> {

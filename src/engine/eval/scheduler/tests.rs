@@ -261,6 +261,7 @@ fn config(threads: usize) -> EvalConfig {
         threads,
         keep_going: true,
         jitter_micros: 0,
+        ..EvalConfig::default()
     }
 }
 
@@ -721,7 +722,7 @@ fn worker_threads_follow_cores_options_and_memory() {
 
 #[test]
 fn the_pool_has_big_stacks() {
-    let pool = build_pool(2);
+    let pool = build_pool(2, WORKER_STACK);
     let deep = pool.install(|| {
         fn recurse(depth: u32) -> u32 {
             let buffer = [depth as u8; 1024];

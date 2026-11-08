@@ -93,6 +93,20 @@ pub(crate) trait Cx {
     /// The id of `key` (interned on first sight): what events name a node
     /// by (`Reach`, `MemoUse`). Interface change (B, S1).
     fn id_of(&self, key: &NodeKey) -> NodeId;
+
+    /// Schedule `keys` now (a pool job each, nothing waits for them): the
+    /// body will need them soon, in order (S2 addition; the inline driver
+    /// ignores it).
+    fn hint(&mut self, keys: &[NodeKey]) {
+        let _ = keys;
+    }
+
+    /// The value of `key` if it is done already (no scheduling, no
+    /// dependency; S2 addition).
+    fn peek(&self, key: &NodeKey) -> Option<Arc<NodeValue>> {
+        let _ = key;
+        None
+    }
 }
 
 /// A node body.

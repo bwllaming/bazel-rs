@@ -927,6 +927,7 @@ impl Engine {
                     threads: 1,
                     keep_going: false,
                     jitter_micros: 0,
+                    ..EvalConfig::default()
                 },
             );
             let result = drive(&bodies, &evaluator, &shared, labels, top, target_platform);

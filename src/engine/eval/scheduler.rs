@@ -173,6 +173,25 @@ pub(crate) struct EvalConfig {
     pub(crate) keep_going: bool,
     /// The jitter bound (µs; pool driver only).
     pub(crate) jitter_micros: u64,
+    /// Pool driver: `need` of a node nobody runs yet claims and runs it in
+    /// place, depth first (as the inline driver), instead of parking (S2:
+    /// the phase-1 bodies restart only when a dependency runs on another
+    /// worker; [`Cx::hint`] spreads the work).
+    pub(crate) help_first: bool,
+    /// The pool's worker stack (bytes).
+    pub(crate) stack: usize,
+}
+
+impl Default for EvalConfig {
+    fn default() -> Self {
+        Self {
+            threads: 1,
+            keep_going: false,
+            jitter_micros: 0,
+            help_first: false,
+            stack: WORKER_STACK,
+        }
+    }
 }
 
 impl EvalConfig {
@@ -188,6 +207,7 @@ impl EvalConfig {
             threads: worker_threads(cores, loading_phase_threads, cap_mb),
             keep_going,
             jitter_micros: jitter_from_env(),
+            ..Self::default()
         }
     }
 }
@@ -195,11 +215,11 @@ impl EvalConfig {
 /// The analysis pool: 16 MiB stacks, workers allocating in the calling
 /// thread's jemalloc arena (what they make is kept and freed by the
 /// coordinator, src/alloc_arena.rs).
-pub(crate) fn build_pool(threads: usize) -> rayon_core::ThreadPool {
+pub(crate) fn build_pool(threads: usize, stack: usize) -> rayon_core::ThreadPool {
     let arena = crate::alloc_arena::current();
     rayon_core::ThreadPoolBuilder::new()
         .num_threads(threads)
-        .stack_size(WORKER_STACK)
+        .stack_size(stack)
         .thread_name(|index| format!("eval-{index}"))
         .start_handler(move |_| {
             if let Some(arena) = arena {
@@ -306,11 +326,14 @@ pub(crate) struct Evaluator<'b, B: Bodies> {
     /// Fetches completed (an attempt records it when it begins).
     repo_seq: AtomicU64,
     counters: Counters,
+    /// Evaluate with the inline driver even with a pool (S2: phase 1's
+    /// sequential pass after the pool's).
+    inline: AtomicBool,
 }
 
 impl<'b, B: Bodies> Evaluator<'b, B> {
     pub(crate) fn new(bodies: &'b B, config: EvalConfig) -> Self {
-        let pool = (config.threads > 1).then(|| build_pool(config.threads));
+        let pool = (config.threads > 1).then(|| build_pool(config.threads, config.stack));
         Self {
             graph: Graph::default(),
             bodies,
@@ -328,7 +351,19 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             repos: Tracked::default(),
             repo_seq: AtomicU64::new(0),
             counters: Counters::default(),
+            inline: AtomicBool::new(false),
         }
+    }
+
+    /// From now on, [`Self::evaluate`] uses the inline driver (`true`) or
+    /// the pool, if there is one (`false`).
+    pub(crate) fn set_inline(&self, inline: bool) {
+        self.inline.store(inline, Ordering::SeqCst);
+    }
+
+    /// Whether evaluations run on the pool.
+    pub(crate) fn pooled(&self) -> bool {
+        self.pool.is_some() && !self.inline.load(Ordering::SeqCst)
     }
 
     pub(crate) fn graph(&self) -> &Graph {
@@ -398,8 +433,10 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
     ) -> Outcome {
         let roots: Vec<NodeId> = roots.iter().map(|key| self.graph.intern(key)).collect();
         match &self.pool {
-            None => self.evaluate_inline(&roots, lane, cycles),
-            Some(pool) => pool.in_place_scope(|scope| self.coordinate(scope, &roots, lane, cycles)),
+            Some(pool) if !self.inline.load(Ordering::SeqCst) => {
+                pool.in_place_scope(|scope| self.coordinate(scope, &roots, lane, cycles))
+            }
+            _ => self.evaluate_inline(&roots, lane, cycles),
         }
     }
 
@@ -581,6 +618,8 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         let entry = self.graph.entry(id);
         let key = self.graph.key(id);
         loop {
+            // A node parked by the pool: its waiter registrations die.
+            entry.epoch.fetch_add(1, Ordering::AcqRel);
             entry.set_state(State::Running);
             entry.attempts.fetch_add(1, Ordering::Relaxed);
             let attempt_seq = self.repo_seq.load(Ordering::Acquire);
@@ -659,7 +698,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
     /// Schedule a node just made `Queued`: a pool job, or the
     /// coordinator's queue for a coordinator-only node or outside a job.
     fn schedule<'s>(&'s self, scope: Option<&Scope<'s>>, id: NodeId) {
-        if self.pool.is_none() {
+        if !self.pooled() {
             // The inline driver runs what it needs in place.
             return;
         }
@@ -785,6 +824,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         let attempt = self.bodies.begin(id, key);
         let mut cx = PoolCx {
             evaluator: self,
+            scope,
             id,
             events: Vec::new(),
         };
@@ -1069,14 +1109,33 @@ impl<B: Bodies> Cx for InlineCx<'_, '_, '_, B> {
     }
 }
 
-/// The pool driver's context: `need` answers from published values.
-struct PoolCx<'e, 'b, B: Bodies> {
-    evaluator: &'e Evaluator<'b, B>,
+/// The pool driver's context: `need` answers from published values (with
+/// `help_first`, it runs a node nobody runs yet in place first).
+struct PoolCx<'r, 's, 'b, B: Bodies> {
+    evaluator: &'s Evaluator<'b, B>,
+    scope: &'r Scope<'s>,
     id: NodeId,
     events: Vec<Event>,
 }
 
-impl<B: Bodies> Cx for PoolCx<'_, '_, B> {
+impl<'s, B: Bodies> PoolCx<'_, 's, '_, B> {
+    /// Claim `id` if nobody runs it and run it here (help first).
+    fn help(&self, id: NodeId) {
+        let evaluator = self.evaluator;
+        let entry = evaluator.graph.entry(id);
+        let claimed = entry.transition(State::Fresh, State::Queued)
+            || entry.state() == State::Queued
+            || (entry.state() == State::Deferred && {
+                evaluator.want(Some(self.scope), id);
+                entry.state() == State::Queued
+            });
+        if claimed && let Some(ready) = evaluator.run_one(self.scope, id) {
+            evaluator.schedule(Some(self.scope), ready);
+        }
+    }
+}
+
+impl<B: Bodies> Cx for PoolCx<'_, '_, '_, B> {
     fn need(&mut self, keys: &[NodeKey]) -> Result<Vals, Missing> {
         let evaluator = self.evaluator;
         let graph = &evaluator.graph;
@@ -1090,6 +1149,9 @@ impl<B: Bodies> Cx for PoolCx<'_, '_, B> {
                     return Err(Missing::BackEdge(id));
                 }
                 break;
+            }
+            if evaluator.config.help_first && missing.is_empty() && graph.value(id).is_none() {
+                self.help(id);
             }
             match graph.value(id) {
                 Some(value) => values.push(Arc::clone(value)),
@@ -1113,6 +1175,27 @@ impl<B: Bodies> Cx for PoolCx<'_, '_, B> {
 
     fn id_of(&self, key: &NodeKey) -> NodeId {
         self.evaluator.graph.intern(key)
+    }
+
+    fn hint(&mut self, keys: &[NodeKey]) {
+        let evaluator = self.evaluator;
+        let fresh: Vec<NodeId> = keys
+            .iter()
+            .map(|key| evaluator.graph.intern(key))
+            .filter(|&id| {
+                id != self.id
+                    && evaluator
+                        .graph
+                        .entry(id)
+                        .transition(State::Fresh, State::Queued)
+            })
+            .collect();
+        evaluator.schedule_many(self.scope, fresh);
+    }
+
+    fn peek(&self, key: &NodeKey) -> Option<Arc<NodeValue>> {
+        let graph = &self.evaluator.graph;
+        graph.get(key).and_then(|id| graph.value(id)).cloned()
     }
 }
 
