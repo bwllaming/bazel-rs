@@ -489,6 +489,74 @@ worker) into hash tables keyed by them; (c) presize from the CT2 count
 (index | producers + declared | per-key maps; order matters within a map
 only). (a)+(b)+(c) are estimated ~2× (≈240k/s), inside pass 2's 1.5 s.
 
+### Merge throughput after the fixes (branch eval-merge-throughput)
+
+Fixes (a)–(c) and two found by the per-operation profile, all in
+`delta.rs`/`engine.rs`; the merge's semantics and order are unchanged:
+
+- **Artifact registration**: the shards of `ConcurrentArtifactIndex` are
+  `hashbrown::HashTable`s hashed by the FxHash of the File's path (stored in
+  the entry: growth never rehashes); `register_artifact` is one hash, one
+  write lock and one probe (`ConcurrentArtifactIndex::register`: an entry
+  visible to the reader is kept and checked, one registered ahead of its
+  turn is replaced with the earlier stamp, else inserted). A delta's
+  `DeltaOp::Artifact` carries the hash (computed on the worker) and the
+  merge moves its File and Artifact in (no clone).
+- **Producers**: `DeltaOp::Output` carries a `HashedPath` — the path, its
+  `parallel::path_hash` and its proper ancestors' hashes, computed on the
+  worker. `Producers::insert_hashed` feeds them to `PathHashes`, to the
+  ancestor set (a `HashTable` of `(hash, path)`: an ancestor path is
+  allocated only when new, where it used to be allocated per ancestor
+  visited) and to the paths table (`HashTable<ProducerEntry>`).
+  `delta_meets_producers` uses them too (`meets_producer_hashed`).
+- **Declared outputs**: `Declared` is a `HashTable` keyed by `DeclaredKey`
+  (configuration, path, hash = path hash ^ the configuration digest's first
+  word); `Path`'s component-wise `Hash` of the old `(ConfigId, PathBuf)` key
+  was most of the cost. `DeltaOp::Declared` carries the key.
+- **Action executions**: an FxHashMap by action id (lookups only) instead of
+  a B-tree whose insert compared ~17 cold ids.
+- **Presizing**: phase 2 sizes `dry` (a plan entry each), `custom_providers`,
+  `provider_keys` and `runfiles_info` (a Starlark rule target each) from the
+  plan before it walks (`ActionPlanning::presize`; at most what growth
+  reaches). Presizing the artifact index, producers and declared from the
+  plan's size measured no gain and was dropped; so was a stored-hash table
+  for the action executions.
+
+Measured with the release build, ~/code `//src/... build --nobuild`,
+`BAZEL_RS_EVAL_REPLAY_BENCH=1`, three runs each (main ada4ba6d → branch):
+
+| | main | branch | |
+|---|---|---|---|
+| real `merge_delta` (38,757 merges) | 18.0–18.6 µs, 54–56k/s | 10.6 µs, 94–95k/s | 1.75× |
+| stub replay | 12.7–14.8 µs, 67–79k/s | 6.4–6.9 µs, 146–156k/s | 2.1× |
+| stub replay, presized | 11.7–12.0 µs, 84–86k/s | 5.5–6.0 µs, 168–183k/s | 2.0× |
+| extrapolated all-delta (timed per-op, noisy) | 132–145k/s | 179–259k/s | |
+
+Per operation now (timed replay, timing overhead ~0.1 µs/op included):
+artifact 0.60 µs × 4.0, output 0.63 µs × 2.8, declared 0.23 µs × 4.0,
+providers 1.2 µs, action execution 0.41 µs × 2.3, dry and runfiles info
+0.5 µs each. What remains is mostly cache misses on large cold tables
+(probe + entry write per map, and the configured-target key's clones for
+the four per-target maps). The real merge is slower than the replay
+because the coordinator's caches are cold between merges.
+
+**Splitting the merge across threads (d), not done.** The maps a merge
+writes are independent, and within each map only the order of the
+operations on one key matters: the artifact index per File (kept, replaced
+or inserted, and the re-registration check), producers per path (the last
+registration of a path wins; `first_below` takes the least path whatever
+the order), declared per key (replace vs keep), the per-target maps per
+key, the action executions per id; the planned nodes, lowerings and their
+console marks are one ordered sequence. So three threads — the artifact
+index | producers, `PathHashes` and declared | the per-target maps, nodes
+and the engine's tables — each applying its operations of the batch's
+deltas in merge order give the sequential result, as long as nothing reads
+those maps before the join. That holds for pass 2's batched merge at a
+`Flush` (S3), not for today's walk, which merges one delta at a time
+between reads (a thread hand-off costs as much as a merge). Expected from
+the per-op costs above: ~2.4 | ~2.8 | ~3.2 µs per merge plus partitioning
+the operations by kind, ~1.5–1.7× on a batch.
+
 ## 7. The phase-1 writes, classified
 
 Every `self.` write of the phase-1 region (`analyze` … `inputs`,
