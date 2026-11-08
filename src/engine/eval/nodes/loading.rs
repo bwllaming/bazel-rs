@@ -274,7 +274,9 @@ pub(crate) fn package_body(
     if let Some((writes, observations)) =
         blocker.and_then(|blocker| lock(&shared.loading.lane_writes).remove(&blocker))
     {
-        crate::observed_fs::commit(observations);
+        cx.coord()
+            .store
+            .defer_package_observations(id, observations);
         for write in writes {
             let index = cx.coord().store.console(write);
             cx.emit(Event::Console(index));

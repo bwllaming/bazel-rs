@@ -132,18 +132,45 @@ pub(crate) struct Store {
     /// What each done attempt observed (a pooled evaluation's frames),
     /// committed where the tape replays the node.
     pub(crate) observations: FxHashMap<NodeId, crate::observed_fs::Observations>,
+    /// What a package's lookups and its lane materialization observed (a
+    /// pooled evaluation), committed where the tape first uses its Pkg
+    /// node.
+    pub(crate) package_observations:
+        FxHashMap<crate::label::PackageId, crate::observed_fs::Observations>,
     /// The repository roots a pool attempt obtained before the sequential
     /// engine had them: they count from where the tape replays the node.
     pub(crate) roots: FxHashMap<NodeId, Vec<String>>,
     /// The nodes the tape replayed (entered or first used) already: what
     /// they observe once done is committed at once.
     pub(crate) replayed: FxHashSet<NodeId>,
+    /// The packages whose Pkg node the tape used already.
+    pub(crate) replayed_packages: FxHashSet<crate::label::PackageId>,
     /// Source-file lookups' missing inputs and source directories (Tgt
     /// nodes; order-free maps, published with the values).
     pub(crate) sources_side: Vec<crate::engine::SourceSide>,
 }
 
 impl Store {
+    /// Keep what a lookup in `package` observed for the tape's first use of
+    /// the package (now if it was used already).
+    pub(crate) fn defer_package_observations(
+        &mut self,
+        package: &crate::label::PackageId,
+        observations: crate::observed_fs::Observations,
+    ) {
+        if observations.is_empty() {
+            return;
+        }
+        if self.replayed_packages.contains(package) {
+            crate::observed_fs::commit_to_recorder(observations);
+        } else {
+            self.package_observations
+                .entry(package.clone())
+                .or_default()
+                .append(observations);
+        }
+    }
+
     /// Keep a console write; its [`Event::Console`] index.
     pub(crate) fn console(&mut self, write: crate::ui::Deferred) -> u32 {
         self.consoles.push(Some(write));
@@ -382,10 +409,18 @@ impl Coord<'_> {
                 | TapeOp::Effect(Event::MemoUse(node)) => {
                     self.store.replayed.insert(*node);
                     if let Some(roots) = self.store.roots.remove(node) {
-                        self.engine.repositories.note_committed_roots(&roots);
+                        commit_roots(&self.engine.repositories, &roots);
                     }
                     if let Some(observations) = self.store.observations.remove(node) {
                         crate::observed_fs::commit_to_recorder(observations);
+                    }
+                    if let Some(NodeKey::Pkg(package)) = self.store.keys.get(node) {
+                        let package = package.clone();
+                        self.store.replayed_packages.insert(package.clone());
+                        if let Some(observations) = self.store.package_observations.remove(&package)
+                        {
+                            crate::observed_fs::commit_to_recorder(observations);
+                        }
                     }
                 }
                 _ => {}
@@ -1018,6 +1053,15 @@ impl Engine {
         }
         Ok(())
     }
+}
+
+/// Roots a pool unit obtained begin to count here: what their probes
+/// observed is replayed into the recording itself (not into a frame some
+/// running attempt of this thread has open).
+pub(crate) fn commit_roots(repositories: &crate::repository::RepositorySet, roots: &[String]) {
+    let scope = crate::observed_fs::unit_scope();
+    repositories.note_committed_roots(roots);
+    crate::observed_fs::commit_to_recorder(scope.finish());
 }
 
 /// BAZEL_RS_EVAL_STATS=1.

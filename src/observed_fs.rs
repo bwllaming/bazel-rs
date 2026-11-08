@@ -1752,6 +1752,11 @@ impl Observations {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// Add `other`'s events after these.
+    pub fn append(&mut self, other: Observations) {
+        self.0.append(other.0);
+    }
 }
 
 thread_local! {

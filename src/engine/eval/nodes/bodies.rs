@@ -513,10 +513,26 @@ impl Bodies for Phase1Bodies<'_, '_> {
         }
         if matches!(running.key, NodeKey::Tgt(_)) {
             // A lookup's observations are its user's (the enclosing
-            // attempt's frame on this thread; a hinted lookup's own job:
-            // the recording's now).
+            // attempt's frame on this thread); a hinted lookup's own job's
+            // are its package's (where the tape first uses the package; a
+            // package loaded before phase 1: now).
             if let Some(observations) = observations {
-                crate::observed_fs::commit(observations);
+                let nested = with_running(|running| !running.is_empty());
+                match &running.key {
+                    NodeKey::Tgt(label)
+                        if !nested
+                            && !self
+                                .shared
+                                .loading
+                                .preloaded
+                                .contains_key(&label.package_id()) =>
+                    {
+                        self.coord()
+                            .store
+                            .defer_package_observations(&label.package_id(), observations);
+                    }
+                    _ => crate::observed_fs::commit(observations),
+                }
             }
             // A lookup's events belong to its user (the walk looks
             // targets up inline).
@@ -534,7 +550,7 @@ impl Bodies for Phase1Bodies<'_, '_> {
         if coord.store.replayed.contains(&running.id)
             && let Some(roots) = coord.store.roots.remove(&running.id)
         {
-            coord.engine.repositories.note_committed_roots(&roots);
+            super::super::linearize::driver::commit_roots(&coord.engine.repositories, &roots);
         }
         if let Some(observations) = observations.filter(|observations| !observations.is_empty()) {
             if coord.store.replayed.contains(&running.id) {
