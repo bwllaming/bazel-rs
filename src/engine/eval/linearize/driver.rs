@@ -461,8 +461,10 @@ impl Coord<'_> {
                     if let Some(roots) = self.store.roots.remove(node) {
                         // An extension group's commit among them writes
                         // its output here (eval-round1).
-                        let repositories = &self.engine.repositories;
-                        lin.direct(|_| commit_roots(repositories, &roots));
+                        let writes = commit_roots(&self.engine.repositories, &roots);
+                        if !writes.is_empty() {
+                            lin.direct(|_| crate::ui::replay(writes));
+                        }
                     }
                     if let Some(observations) = self.store.observations.remove(node) {
                         crate::observed_fs::commit_to_recorder(observations);
@@ -1881,10 +1883,18 @@ pub(in crate::engine) fn publish_memo(engine: &mut Engine, published: &Published
 /// Roots a pool unit obtained begin to count here: what their probes
 /// observed is replayed into the recording itself (not into a frame some
 /// running attempt of this thread has open).
-pub(crate) fn commit_roots(repositories: &crate::repository::RepositorySet, roots: &[String]) {
+/// Their console writes (an extension group's commit, eval-round1:
+/// `RepositorySet::note_committed_roots`) belong to this tape position.
+#[must_use]
+pub(crate) fn commit_roots(
+    repositories: &crate::repository::RepositorySet,
+    roots: &[String],
+) -> Vec<crate::ui::Deferred> {
+    let console = crate::ui::DeferredConsole::start();
     let scope = crate::observed_fs::unit_scope();
     repositories.note_committed_roots(roots);
     crate::observed_fs::commit_to_recorder(scope.finish());
+    console.finish()
 }
 
 /// BAZEL_RS_EVAL_PARKED_DEBUG: what the parked nodes wait for, by kind.

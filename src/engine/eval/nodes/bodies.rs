@@ -684,7 +684,11 @@ impl Bodies for Phase1Bodies<'_, '_> {
         if coord.store.replayed.contains(&running.id)
             && let Some(roots) = coord.store.roots.remove(&running.id)
         {
-            super::super::linearize::driver::commit_roots(&coord.engine.repositories, &roots);
+            // No extension group among them (a Pkg node's are committed
+            // at its first use, after it finished).
+            let writes =
+                super::super::linearize::driver::commit_roots(&coord.engine.repositories, &roots);
+            crate::ui::replay(writes);
         }
         if let Some(observations) = observations.filter(|observations| !observations.is_empty()) {
             if coord.store.replayed.contains(&running.id) {
