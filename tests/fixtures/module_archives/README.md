@@ -38,18 +38,50 @@ development host whose SHA-256 equals the registry SRI (no download).
 ## The test archive mirror (not vendored)
 
 The tests that resolve every registered toolchain of the full closure
-(attr_dicts_computed_defaults::skylib_unittest_loads_with_analysis_test_transition_and_fails_analysis_explicitly,
-execution_info's three, go_transitions::coverage_instrumentation_is_an_explicit_gap)
 also materialize apple_support 2.5.2, protobuf 33.4, rules_cc 0.2.17,
 rules_java 9.1.0, rules_kotlin 1.9.6 (23 MB), rules_shell 0.6.1 and
 rules_swift 3.1.2: about 30 MB, not vendored. `seed_module_archives` takes
 them from a shared mirror instead, `<target dir>/tmp/module-archive-mirror/<sha256>`
 (`CARGO_TARGET_TMPDIR`; `BAZEL_RS_TEST_ARCHIVE_MIRROR` names another
-directory): a missing blob is downloaded ONCE with curl from its source.json
-URL, verified against the pinned integrity and renamed into place; every use
-verifies it again and hard-links (or copies) it into the test's download
-cache, so bazel-rs never reaches the network in these tests. Offline with an
-empty mirror the test fails before bazel-rs runs, naming the archive, URL and
-sha256 to put there. Each new target directory (a worker's
-`CARGO_TARGET_DIR`) fills its mirror on its first full suite run (~30 MB);
-copy a filled mirror directory to skip that.
+directory): a missing blob is downloaded ONCE with curl, verified against the
+pinned integrity and renamed into place. The fill tries the source.json URL,
+then the BCR mirrors (`https://bcr.cloudflaremirrors.com/<url without
+scheme>`, `https://mirror.bazel.build/…`; GitHub's release downloads answer
+504 at times), three rounds with backoff, one download per blob under
+`<mirror>/<sha256>.lock` (concurrent test programs wait for it), and a test
+process whose fill failed fails its later uses at once. Each test process
+verifies a mirror blob once and hard-links (or copies) it into the test's
+download cache, so bazel-rs never reaches the network in these tests. Offline
+with an empty mirror the test fails before bazel-rs runs, naming the
+archive, every URL tried and the sha256 to put there. Each new target
+directory (a worker's `CARGO_TARGET_DIR`) fills its mirror on its first full
+suite run (~30 MB); copy a filled mirror directory to skip that.
+
+## No test reaches the network
+
+The default module profile injects `@bazel_tools` and its MODULE closure
+(platforms, rules_cc, rules_shell, rules_license, …), which resolve through
+the selected registries: without `--registry`, https://bcr.bazel.build/
+registry files and GitHub source archives on every run. Every test that
+builds with the built-in modules therefore uses the offline registry and a
+seeded download cache (`tests/support/module_archives.rs`):
+
+- `with_builtin_registry(args)` adds `--registry=file://…/builtin_modules/registry`
+  after the command word of `build`, `test`, `run`, `query`, `cquery`,
+  `aquery`, `mod`, `fetch` and `coverage` (not `help`, `version`, `info`,
+  `clean` or an unknown command, whose exit codes and texts stay the same);
+- `Command::seeded_archives()` (chained after `current_dir`, before
+  `.output()`) seeds every archive of the built-in closure
+  (`TOOLCHAIN_CLOSURE_ARCHIVES`) into the command's `--cache-dir` whenever
+  the command line selects that registry.
+
+Check: with the mirror filled, the full suite passes with the network blocked
+(`HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9
+NO_PROXY=127.0.0.1,localhost,::1` and the lowercase spellings; harnesses
+that clear the environment were checked with a logging build of
+`download_proxy::check`). Requests that remain by design: `rc_options`'
+proxy tests name `registry.n40.invalid` / `moved.n40.invalid` (RFC 2606
+names that never resolve; the requests go to loopback proxies or fail).
+The one test of the real BCR, `mod_command::mod_tidy_matches_genuine_bazel`
+(buildozer from the BCR and GitHub), is `#[ignore]`d: run it explicitly with
+`--ignored`.
