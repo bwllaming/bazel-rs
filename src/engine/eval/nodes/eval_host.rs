@@ -1109,7 +1109,7 @@ impl Host for EvalHost<'_, '_> {
             coord
                 .engine
                 .transition_cache
-                .entry(key.clone())
+                .entry(key)
                 .or_insert_with(|| value.clone());
         }
         coord.first.transition_cache.insert(key, value);
