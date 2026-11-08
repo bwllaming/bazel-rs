@@ -678,13 +678,15 @@ fn verify_artifacts() -> bool {
 
 /// The build's File -> Artifact resolver shared with the analysis workers
 /// (S1, docs/PARALLEL_ANALYSIS.md "S1"): looked up per input, never
-/// iterated, hashed by the File and sharded so that workers building a
-/// target's commit delta read it while the coordinator registers. Every
-/// entry carries the plan index from which it is visible (its stamp); a
-/// reader names its own plan index on every lookup ([`Self::get`]): a
-/// registration stamped later — made by a target ahead of its turn — is
-/// invisible to it, as it would not exist yet sequentially. There is no
-/// global turn: only the coordinator's cursor ([`ArtifactIndex`]) has one.
+/// iterated, hashed by the File's path ([`file_hash`], once per lookup or
+/// registration: a commit delta carries it) and sharded so that workers
+/// building a target's commit delta read it while the coordinator
+/// registers. Every entry carries the plan index from which it is visible
+/// (its stamp); a reader names its own plan index on every lookup
+/// ([`Self::get`]): a registration stamped later — made by a target ahead
+/// of its turn — is invisible to it, as it would not exist yet
+/// sequentially. There is no global turn: only the coordinator's cursor
+/// ([`ArtifactIndex`]) has one.
 struct ConcurrentArtifactIndex {
     shards: Box<[std::sync::RwLock<IndexShard>]>,
 }
@@ -810,8 +812,8 @@ impl ConcurrentArtifactIndex {
     }
 }
 
-/// A cheap 64-bit key of a File for sharding and filtering (equal Files
-/// have equal keys): its path's length and last 16 bytes, mixed.
+/// A cheap 64-bit key of a File for filtering (equal Files have equal
+/// keys): its path's length and last 16 bytes, mixed.
 fn quick_key(file: &File) -> u64 {
     let path = file.path.as_bytes();
     let mut tail = [0u8; 16];
@@ -927,6 +929,7 @@ fn register_artifact(index: &ArtifactIndex, file: &File, artifact: &Artifact) {
 /// and Artifact (the merge of a commit delta): nothing is hashed or cloned
 /// to register them.
 fn register_owned_artifact(index: &ArtifactIndex, hash: u64, file: File, artifact: Artifact) {
+    debug_assert_eq!(hash, file_hash(&file), "internal error: a stale File hash");
     index.register(hash, file, artifact);
 }
 
