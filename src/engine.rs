@@ -2670,7 +2670,7 @@ enum SourceDirProbe {
 
 pub struct Engine {
     repositories: Arc<RepositorySet>,
-    packages: BTreeMap<PackageId, Package>,
+    packages: BTreeMap<PackageId, Arc<Package>>,
     /// `--loading_phase_threads` (LoadingPhaseThreadsOption.java: "auto",
     /// which expands to the number of available processors; §3 P2 of the
     /// parallel-analysis review): the worker pool size for parallel
@@ -4035,7 +4035,7 @@ impl Engine {
         if let Some(prefetch) = &self.prefetch {
             prefetch.committed(package, &rules);
         }
-        self.packages.insert(package.to_owned(), rules);
+        self.packages.insert(package.to_owned(), Arc::new(rules));
         Ok(())
     }
 
@@ -4160,7 +4160,7 @@ impl Engine {
         self.source_targets.clear();
         self.rule_targets.clear();
         self.analyzed_sources.clear();
-        self.packages.get_mut(package).unwrap()
+        Arc::make_mut(self.packages.get_mut(package).unwrap())
     }
 
     fn target(&mut self, label: &Label) -> Result<Target, String> {
@@ -16448,7 +16448,8 @@ mod tests {
                     (rule.label.clone(), out.clone()),
                 );
             }
-            let package = engine.packages.entry(rule.label.package_id()).or_default();
+            let package =
+                Arc::make_mut(engine.packages.entry(rule.label.package_id()).or_default());
             if let Some(owner) = &rule.macro_owner {
                 package.macro_names.insert(owner.name.clone());
             }
@@ -16734,12 +16735,14 @@ mod tests {
                             group("//app:cycle", &[], &["//app:cycle"]),
                         ],
                     );
-                    engine
-                        .packages
-                        .get_mut(&test_label("//app:root").package_id())
-                        .unwrap()
-                        .exports
-                        .insert(test_label("//app:data"), visibility);
+                    Arc::make_mut(
+                        engine
+                            .packages
+                            .get_mut(&test_label("//app:root").package_id())
+                            .unwrap(),
+                    )
+                    .exports
+                    .insert(test_label("//app:data"), visibility);
                     let target = if incoming {
                         "//app:consumer"
                     } else if source {
@@ -16781,15 +16784,17 @@ mod tests {
                     f.0.clone(),
                     vec![producer, consumer, group("//g:allow", &[allowed], &[])],
                 );
-                engine
-                    .packages
-                    .get_mut(&test_label("//app:demo").package_id())
-                    .unwrap()
-                    .exports
-                    .insert(
-                        test_label("//app:data"),
-                        Visibility::from_labels(vec![test_label("//g:allow")]).unwrap(),
-                    );
+                Arc::make_mut(
+                    engine
+                        .packages
+                        .get_mut(&test_label("//app:demo").package_id())
+                        .unwrap(),
+                )
+                .exports
+                .insert(
+                    test_label("//app:data"),
+                    Visibility::from_labels(vec![test_label("//g:allow")]).unwrap(),
+                );
                 let result = analyze_roots(&mut engine, &["//app:demo"]);
                 assert_eq!(
                     result.is_ok(),
@@ -17527,10 +17532,7 @@ m = macro(implementation=emit)
         ordinary.srcs.push(":demo".into());
         let mut engine = test_engine(f.0.clone(), vec![ordinary]);
         let label = test_label("//app:demo");
-        engine
-            .packages
-            .get_mut(&label.package_id())
-            .unwrap()
+        Arc::make_mut(engine.packages.get_mut(&label.package_id()).unwrap())
             .macro_names
             .insert("demo".into());
         assert!(
@@ -17546,10 +17548,7 @@ m = macro(implementation=emit)
             .insert(label.clone(), Arc::new(rule));
         assert!(matches!(engine.target(&label), Ok(Target::Rule(_))));
         let output = test_label("//app:reserved_output");
-        engine
-            .packages
-            .get_mut(&label.package_id())
-            .unwrap()
+        Arc::make_mut(engine.packages.get_mut(&label.package_id()).unwrap())
             .macro_names
             .insert(output.name.clone());
         engine
@@ -17570,10 +17569,7 @@ m = macro(implementation=emit)
             let mut engine = test_engine(f.0.clone(), vec![consumer, ordinary]);
             let source = test_label("//app:data");
             if exported {
-                engine
-                    .packages
-                    .get_mut(&source.package_id())
-                    .unwrap()
+                Arc::make_mut(engine.packages.get_mut(&source.package_id()).unwrap())
                     .exports
                     .insert(source.clone(), Visibility::Private);
             }

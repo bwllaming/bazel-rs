@@ -875,7 +875,9 @@ impl Engine {
                 if !id.repository.is_empty() {
                     return None;
                 }
-                self.packages.get(id).map(|package| (index as u32, package))
+                self.packages
+                    .get(id)
+                    .map(|package| (index as u32, &**package))
             })
             .collect();
         let fingerprints = fingerprints(&main);
@@ -1362,7 +1364,7 @@ pub(crate) fn fingerprint(package: &Package) -> Fingerprint {
 /// The `.bzl` load graph of every loaded package, and the modules
 /// definition loads entered (crate::snapshot::incremental::ModuleGraph).
 fn module_graph(
-    packages: &BTreeMap<PackageId, Package>,
+    packages: &BTreeMap<PackageId, Arc<Package>>,
 ) -> crate::snapshot::incremental::ModuleGraph {
     let mut graph = crate::snapshot::incremental::ModuleGraph::default();
     let mut seen: HashSet<*const crate::loading::LoadGraph> = HashSet::new();
@@ -1385,7 +1387,7 @@ fn module_graph(
 /// The modules defining the rules of `keys` (loaded packages only): the
 /// `.bzl` that called `rule()` and the one being initialized then.
 fn rule_modules(
-    packages: &BTreeMap<PackageId, Package>,
+    packages: &BTreeMap<PackageId, Arc<Package>>,
     keys: &[(u32, Label)],
 ) -> Vec<(u32, Vec<Label>)> {
     keys.iter()
