@@ -87,6 +87,19 @@ pub(crate) enum Published {
         super::super::super::TransitionCacheKey,
         (super::super::super::TransitionConfigurations, Vec<String>),
     ),
+    AspectPredicate((Label, String), bool),
+    AspectAttrAspects(
+        (ConfiguredTargetKey, String),
+        super::super::value::AspectAttrAspects,
+    ),
+    AspectToolchains(
+        (ConfigId, String),
+        Arc<super::super::super::AspectToolchains>,
+    ),
+    AspectAttributeConfigs(
+        (ConfiguredTargetKey, String),
+        Arc<std::collections::BTreeMap<String, super::super::super::TransitionConfigurations>>,
+    ),
 }
 
 /// The finished transcripts, the segments and the captured console writes.
@@ -496,8 +509,6 @@ impl Coord<'_> {
                 .entry(implementation.clone())
                 .or_insert_with(|| platform.clone());
         }
-        // The aspect memos are written through to the engine
-        // as the bodies decide them (eval_host).
         for published in &self.store.published[lin.published_memos..] {
             match published {
                 Published::Platform(key, result) => {
@@ -539,6 +550,30 @@ impl Coord<'_> {
                 // StarlarkTransitionCache (a deferred platform's tree that
                 // phase 2 analyzes with the walk: a hit replays the prints
                 // a miss makes).
+                Published::AspectPredicate(memo, value) => {
+                    engine
+                        .aspect_predicates
+                        .entry(memo.clone())
+                        .or_insert(*value);
+                }
+                Published::AspectAttrAspects(memo, value) => {
+                    engine
+                        .aspect_attr_aspects
+                        .entry(memo.clone())
+                        .or_insert_with(|| value.clone());
+                }
+                Published::AspectToolchains(memo, value) => {
+                    engine
+                        .aspect_toolchains
+                        .entry(memo.clone())
+                        .or_insert_with(|| Arc::clone(value));
+                }
+                Published::AspectAttributeConfigs(memo, value) => {
+                    engine
+                        .aspect_attribute_configs
+                        .entry(memo.clone())
+                        .or_insert_with(|| Arc::clone(value));
+                }
                 Published::Transition(key, value) => {
                     engine
                         .transition_cache

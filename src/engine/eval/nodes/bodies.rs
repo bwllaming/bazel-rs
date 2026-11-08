@@ -22,7 +22,6 @@ use super::super::scheduler::Bodies;
 use super::super::shared::EvalShared;
 use super::super::transcript::Event;
 use super::super::value::{Ct1Value, NodeValue};
-use super::eval_host::FirstVisit;
 
 /// The S1 coordinator state the bodies share (one thread in S1).
 pub(crate) struct Coord<'e> {
@@ -30,7 +29,6 @@ pub(crate) struct Coord<'e> {
     /// package groups, aspect definitions, registration patterns):
     /// `Pkg`/`Tgt`/`Group` bodies over [`EvalShared`] in S2.
     pub(crate) engine: &'e mut Engine,
-    pub(crate) first: FirstVisit,
     /// Record `Access`/`Source` events (incremental tracking is on).
     pub(crate) tracking: bool,
     /// A `Flush` was emitted (a config_setting with Starlark flag_values
@@ -159,7 +157,6 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
             shared,
             coord: Mutex::new(Coord {
                 engine,
-                first: FirstVisit::default(),
                 tracking,
                 saw_flush: false,
                 stack: Vec::new(),

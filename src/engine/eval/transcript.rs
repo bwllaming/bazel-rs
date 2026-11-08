@@ -87,6 +87,15 @@ pub(crate) enum Event {
     /// at its first linearized occurrence of an identical text (the walk
     /// prints each once per build).
     Info(String),
+    /// A first-visit memo's computation begins (S2 addition: an aspect
+    /// memo, by a digest of its key): the walk computes it at its first
+    /// use only, the evaluator at every use; pass 1 replays the scope's
+    /// events at the first linearized use and skips the later ones.
+    MemoBegin(u64),
+    /// The innermost memo scope ends: its value's digest (a later use's
+    /// must equal the first's: a context divergence otherwise), `None`: it
+    /// failed (not memoized; the walk computes it again).
+    MemoEnd(Option<u64>),
     /// A console write a coordinator service made while the evaluator
     /// ran (a package's load prints, a repository's fetch output), the
     /// index of the write the evaluation captured (S1 interface addition:

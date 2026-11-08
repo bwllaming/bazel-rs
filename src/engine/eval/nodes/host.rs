@@ -289,6 +289,10 @@ pub(crate) trait Host {
         let _ = (toolchains, tail);
         None
     }
+    /// The computation of a first-visit memo (an aspect memo whose getter
+    /// returned `None`) failed: nothing is memoized (the evaluator closes
+    /// the memo's scope).
+    fn memo_failed(&mut self) {}
     /// StarlarkTransitionCache.
     fn transition_cache_get(
         &mut self,

@@ -1309,9 +1309,16 @@ pub(crate) trait Phase1: Host {
             if let Some(result) = self.aspect_predicate(&memo) {
                 return Ok(result);
             }
-            let result = crate::aspect_propagation::propagation_predicate(aspect, rule)?;
-            self.set_aspect_predicate(memo, result);
-            Ok(result)
+            match crate::aspect_propagation::propagation_predicate(aspect, rule) {
+                Ok(result) => {
+                    self.set_aspect_predicate(memo, result);
+                    Ok(result)
+                }
+                Err(error) => {
+                    self.memo_failed();
+                    Err(error)
+                }
+            }
         })
     }
 
@@ -1338,15 +1345,24 @@ pub(crate) trait Phase1: Host {
             let (attr_aspects, toolchains_aspects) = match self.aspect_attr_aspects(&memo) {
                 Some(computed) => computed,
                 None => {
-                    let attr_aspects =
-                        crate::aspect_propagation::computed_attr_aspects(aspect, rule)
-                            .map_err(|error| located(rule.location.as_deref(), error))?
-                            .map(Arc::from);
-                    let toolchains_aspects =
-                        crate::aspect_propagation::computed_toolchains_aspects(aspect, rule)
-                            .map_err(|error| located(rule.location.as_deref(), error))?
-                            .map(Arc::from);
-                    let computed = (attr_aspects, toolchains_aspects);
+                    let computed = (|| -> Result<_, String> {
+                        let attr_aspects =
+                            crate::aspect_propagation::computed_attr_aspects(aspect, rule)
+                                .map_err(|error| located(rule.location.as_deref(), error))?
+                                .map(Arc::from);
+                        let toolchains_aspects =
+                            crate::aspect_propagation::computed_toolchains_aspects(aspect, rule)
+                                .map_err(|error| located(rule.location.as_deref(), error))?
+                                .map(Arc::from);
+                        Ok((attr_aspects, toolchains_aspects))
+                    })();
+                    let computed = match computed {
+                        Ok(computed) => computed,
+                        Err(error) => {
+                            self.memo_failed();
+                            return Err(error);
+                        }
+                    };
                     self.set_aspect_attr_aspects(memo, computed.clone());
                     computed
                 }
@@ -1386,6 +1402,26 @@ pub(crate) trait Phase1: Host {
         if let Some(found) = self.aspect_toolchains(&memo) {
             return Ok(found);
         }
+        match self.compute_aspect_toolchains(base_rule, config, aspect) {
+            Ok(toolchains) => {
+                let toolchains = Arc::new(toolchains);
+                self.set_aspect_toolchains(memo, toolchains.clone());
+                Ok(toolchains)
+            }
+            Err(error) => {
+                self.memo_failed();
+                Err(error)
+            }
+        }
+    }
+
+    /// [`Self::aspect_toolchain_contexts`] computed.
+    fn compute_aspect_toolchains(
+        &mut self,
+        base_rule: &Rule,
+        config: ConfigId,
+        aspect: &crate::aspects::AspectDefinition,
+    ) -> Result<AspectToolchains, String> {
         let declaration = &aspect.declaration;
         let use_auto = match declaration
             .attrs
@@ -1526,8 +1562,6 @@ pub(crate) trait Phase1: Host {
                 self.analyze(&implementation, config)?;
             }
         }
-        let toolchains = Arc::new(toolchains);
-        self.set_aspect_toolchains(memo, toolchains.clone());
         Ok(toolchains)
     }
 
@@ -1558,11 +1592,33 @@ pub(crate) trait Phase1: Host {
         main: &crate::aspects::AspectDefinition,
         toolchains: &AspectToolchains,
     ) -> Result<Arc<BTreeMap<String, TransitionConfigurations>>, String> {
-        use crate::rule_declarations::Cfg;
         let memo = (base_key.clone(), aspect_attribute_memo_name(aspect, main));
         if let Some(configs) = self.aspect_attribute_configs(&memo) {
             return Ok(configs);
         }
+        match self.compute_aspect_attribute_configurations(base_rule, base_key, aspect, toolchains)
+        {
+            Ok(configs) => {
+                let configs = Arc::new(configs);
+                self.set_aspect_attribute_configs(memo, configs.clone());
+                Ok(configs)
+            }
+            Err(error) => {
+                self.memo_failed();
+                Err(error)
+            }
+        }
+    }
+
+    /// [`Self::aspect_attribute_configurations`] computed.
+    fn compute_aspect_attribute_configurations(
+        &mut self,
+        base_rule: &Rule,
+        base_key: &ConfiguredTargetKey,
+        aspect: &crate::aspects::AspectDefinition,
+        toolchains: &AspectToolchains,
+    ) -> Result<BTreeMap<String, TransitionConfigurations>, String> {
+        use crate::rule_declarations::Cfg;
         let config = base_key.config;
         let mut exec_config = None;
         let mut group_configs: BTreeMap<String, ConfigId> = BTreeMap::new();
@@ -1680,8 +1736,6 @@ pub(crate) trait Phase1: Host {
             };
             configs.insert(name.clone(), Arc::from([(String::new(), edge_config)]));
         }
-        let configs = Arc::new(configs);
-        self.set_aspect_attribute_configs(memo, configs.clone());
         Ok(configs)
     }
 

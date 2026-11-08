@@ -28,26 +28,13 @@ use super::super::super::{
 use super::super::cx::Missing;
 use super::super::key::{CtKey, NodeKey, Observes};
 use super::super::linearize::chains;
+use super::super::linearize::driver::Published;
 use super::super::shared::EvalShared;
 use super::super::transcript::{CqueryEdge, Event, ToolchainImpl, Transcript};
 use super::super::value::{Ct1Ok, Ct1Value, NodeValue, TransitionValue};
 use super::bodies::Phase1Cx;
 use super::host::Host;
 use super::phase1::Phase1;
-
-/// The first-visit state the bodies still share (S2: the CtKey variant
-/// of an edge and the toolchain implementation claims are pass 1's:
-/// docs/EVALUATOR.md "First-visit decisions").
-#[derive(Default)]
-pub(crate) struct FirstVisit {
-    pub(crate) aspect_predicates: BTreeMap<(Label, String), bool>,
-    #[allow(clippy::type_complexity)]
-    pub(crate) aspect_attr_aspects:
-        BTreeMap<(ConfiguredTargetKey, String), (Option<Arc<[String]>>, Option<Arc<[String]>>)>,
-    pub(crate) aspect_toolchains: BTreeMap<(ConfigId, String), Arc<AspectToolchains>>,
-    pub(crate) aspect_attribute_configs:
-        BTreeMap<(ConfiguredTargetKey, String), Arc<BTreeMap<String, TransitionConfigurations>>>,
-}
 
 /// The error text a body returns when an attempt stops at a [`Missing`]
 /// (the stashed reason wins over whatever the body made of the text).
@@ -332,6 +319,27 @@ impl<'c, 'e> EvalHost<'c, 'e> {
             .iter()
             .rposition(|(kind, _)| *kind == toolchains)?;
         Some(self.cycle_reports.remove(at).1)
+    }
+
+    /// A first-visit memo's computation begins (its scope, by a digest of
+    /// the memo's key).
+    fn memo_begin(&mut self, memo: &impl std::fmt::Debug) {
+        self.emit(Event::MemoBegin(digest(memo)));
+    }
+
+    /// The memo's computation ended with `value` (its digest: pass 1
+    /// compares a later use's with the first's).
+    fn memo_end(&mut self, value: &impl std::fmt::Debug) {
+        self.emit(Event::MemoEnd(Some(digest(value))));
+    }
+
+    /// A memo value the engine keeps (phase 2 reads it; equal values for
+    /// equal keys: first one wins).
+    fn publish(&mut self, published: Published) {
+        let mut coord = self.cx.coord();
+        if coord.lin.is_some() {
+            coord.store.published.push(published);
+        }
     }
 
     fn finish<T>(self, result: T) -> Result<T, Missing> {
@@ -1115,27 +1123,26 @@ impl Host for EvalHost<'_, '_> {
         self.resolving_aspect_toolchains = resolving;
     }
 
+    // The aspect memos (S2): first-visit in the walk, computed again by
+    // every attempt here; the computation's events form a scope that pass 1
+    // replays at the first linearized use only (later ones are the walk's
+    // memo hits; their values must equal the first's).
     fn aspect_predicate(&mut self, memo: &(Label, String)) -> Option<bool> {
-        self.cx.coord().first.aspect_predicates.get(memo).copied()
+        self.memo_begin(&("aspect predicate", memo));
+        None
     }
 
     fn set_aspect_predicate(&mut self, memo: (Label, String), value: bool) {
-        let mut coord = self.cx.coord();
-        if coord.lin.is_some() {
-            coord
-                .engine
-                .aspect_predicates
-                .entry(memo.clone())
-                .or_insert(value);
-        }
-        coord.first.aspect_predicates.insert(memo, value);
+        self.memo_end(&value);
+        self.publish(Published::AspectPredicate(memo, value));
     }
 
     fn aspect_attr_aspects(
         &mut self,
         memo: &(ConfiguredTargetKey, String),
     ) -> Option<(Option<Arc<[String]>>, Option<Arc<[String]>>)> {
-        self.cx.coord().first.aspect_attr_aspects.get(memo).cloned()
+        self.memo_begin(&("aspect attr_aspects", memo));
+        None
     }
 
     fn set_aspect_attr_aspects(
@@ -1143,43 +1150,26 @@ impl Host for EvalHost<'_, '_> {
         memo: (ConfiguredTargetKey, String),
         value: (Option<Arc<[String]>>, Option<Arc<[String]>>),
     ) {
-        let mut coord = self.cx.coord();
-        if coord.lin.is_some() {
-            coord
-                .engine
-                .aspect_attr_aspects
-                .entry(memo.clone())
-                .or_insert_with(|| value.clone());
-        }
-        coord.first.aspect_attr_aspects.insert(memo, value);
+        self.memo_end(&value);
+        self.publish(Published::AspectAttrAspects(memo, value));
     }
 
     fn aspect_toolchains(&mut self, memo: &(ConfigId, String)) -> Option<Arc<AspectToolchains>> {
-        self.cx.coord().first.aspect_toolchains.get(memo).cloned()
+        self.memo_begin(&("aspect toolchains", memo));
+        None
     }
 
     fn set_aspect_toolchains(&mut self, memo: (ConfigId, String), value: Arc<AspectToolchains>) {
-        let mut coord = self.cx.coord();
-        if coord.lin.is_some() {
-            coord
-                .engine
-                .aspect_toolchains
-                .entry(memo.clone())
-                .or_insert_with(|| Arc::clone(&value));
-        }
-        coord.first.aspect_toolchains.insert(memo, value);
+        self.memo_end(&value);
+        self.publish(Published::AspectToolchains(memo, value));
     }
 
     fn aspect_attribute_configs(
         &mut self,
         memo: &(ConfiguredTargetKey, String),
     ) -> Option<Arc<BTreeMap<String, TransitionConfigurations>>> {
-        self.cx
-            .coord()
-            .first
-            .aspect_attribute_configs
-            .get(memo)
-            .cloned()
+        self.memo_begin(&("aspect attribute configurations", memo));
+        None
     }
 
     fn set_aspect_attribute_configs(
@@ -1187,15 +1177,12 @@ impl Host for EvalHost<'_, '_> {
         memo: (ConfiguredTargetKey, String),
         value: Arc<BTreeMap<String, TransitionConfigurations>>,
     ) {
-        let mut coord = self.cx.coord();
-        if coord.lin.is_some() {
-            coord
-                .engine
-                .aspect_attribute_configs
-                .entry(memo.clone())
-                .or_insert_with(|| Arc::clone(&value));
-        }
-        coord.first.aspect_attribute_configs.insert(memo, value);
+        self.memo_end(&value);
+        self.publish(Published::AspectAttributeConfigs(memo, value));
+    }
+
+    fn memo_failed(&mut self) {
+        self.emit(Event::MemoEnd(None));
     }
 }
 
@@ -1224,6 +1211,12 @@ pub(crate) fn edge_ct_key(
         toolchain_resolution: uses_toolchain_resolution(rule),
         exec_edges: true,
     })
+}
+
+/// A digest of a value's Debug form (memo scopes).
+fn digest(value: &impl std::fmt::Debug) -> u64 {
+    use std::hash::BuildHasher;
+    crate::fast_hash::FxBuildHasher::default().hash_one(format!("{value:?}"))
 }
 
 /// The phase-1 node bodies: the value of `key` (S1: the coordinator's

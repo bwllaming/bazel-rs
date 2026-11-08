@@ -285,6 +285,12 @@ pub(crate) struct Pass1 {
     /// Nodes that became their key's configured target (first reach in
     /// DFS order, at their `Done`), since the last [`Pass1::take_canonical`].
     canonical: Vec<NodeId>,
+    /// The memo scopes open (`MemoBegin`): their memo and whether skipped.
+    scopes: Vec<(u64, bool)>,
+    /// Skipped scopes open (a later use of a computed memo).
+    skipping: usize,
+    /// The memos computed (first use), with their value digest.
+    memo_values: HashMap<u64, u64>,
 }
 
 /// Run pass 1 over finished `segments` (tests and complete sources).
@@ -363,6 +369,9 @@ impl Pass1 {
             released: Vec::new(),
             released_segments: Vec::new(),
             canonical: Vec::new(),
+            scopes: Vec::new(),
+            skipping: 0,
+            memo_values: HashMap::new(),
         }
     }
 
@@ -582,6 +591,37 @@ impl Pass1 {
         event: Event,
         complete: bool,
     ) -> Result<Option<Blocker>, String> {
+        // A memo scope (the walk computes the memo at its first use only).
+        match event {
+            Event::MemoBegin(memo) => {
+                let skip = self.skipping > 0 || self.memo_values.contains_key(&memo);
+                self.skipping += usize::from(skip);
+                self.scopes.push((memo, skip));
+                return Ok(None);
+            }
+            Event::MemoEnd(value) => {
+                let Some((memo, skipped)) = self.scopes.pop() else {
+                    return Err("internal error: pass 1: a memo scope ends unopened".to_owned());
+                };
+                if skipped {
+                    self.skipping -= 1;
+                    if self.skipping == 0
+                        && let Some(value) = value
+                        && self.memo_values.get(&memo) != Some(&value)
+                    {
+                        self.out.divergences.push(format!(
+                            "a first-visit memo (an aspect's, {memo:x}) computed again gives another value than at its first use"
+                        ));
+                    }
+                } else if let Some(value) = value {
+                    self.memo_values.entry(memo).or_insert(value);
+                }
+                return Ok(None);
+            }
+            // A later use: the walk's memo hit has none of the events.
+            _ if self.skipping > 0 => return Ok(None),
+            _ => {}
+        }
         match event {
             Event::Reach(node) => {
                 if let Some(blocker) = self.reach_blocker(source, node) {
@@ -682,6 +722,7 @@ impl Pass1 {
             | Event::Continue(_)
             | Event::Info(_)
             | Event::Error(_) => sink.op(TapeOp::Effect(event)),
+            Event::MemoBegin(_) | Event::MemoEnd(_) => unreachable!("handled above"),
         }
         Ok(None)
     }
@@ -1500,6 +1541,81 @@ pub(crate) mod tests {
         assert_eq!(effects, ["console 0", "t1", "t2", "t1", "t2"]);
     }
 
+    /// An aspect memo's computation is replayed at its first linearized
+    /// use only (the walk's later uses are memo hits); a later use with
+    /// another value is a divergence.
+    #[test]
+    fn a_memo_scope_is_replayed_at_its_first_use() {
+        let mut f = Fixture::default();
+        let c = f.body("c", vec![]);
+        let scope = |value: u64| {
+            vec![
+                Event::MemoBegin(9),
+                Event::Print("computed".into()),
+                Event::Reach(c),
+                Event::MemoEnd(Some(value)),
+            ]
+        };
+        let b = f.body("b", scope(1));
+        let mut events = scope(1);
+        events.push(Event::Reach(b));
+        let a = f.body("a", events);
+        let out = run(&f, &root(vec![Event::Reach(a)]), Options::default()).unwrap();
+        let prints = out
+            .tape
+            .ops
+            .iter()
+            .filter(|op| matches!(op, TapeOp::Effect(Event::Print(_))))
+            .count();
+        assert_eq!(prints, 1);
+        assert_eq!(names(&out.plan), ["c", "b", "a"]);
+        assert!(out.divergences.is_empty());
+        // A failed computation is not memoized.
+        let mut f = Fixture::default();
+        let failed = vec![
+            Event::MemoBegin(9),
+            Event::Print("computed".into()),
+            Event::MemoEnd(None),
+        ];
+        let b = f.body("b", scope_values(&failed, 2));
+        let a = f.body("a", [failed.clone(), vec![Event::Reach(b)]].concat());
+        let out = run(&f, &root(vec![Event::Reach(a)]), Options::default()).unwrap();
+        let prints = out
+            .tape
+            .ops
+            .iter()
+            .filter(|op| matches!(op, TapeOp::Effect(Event::Print(_))))
+            .count();
+        assert_eq!(prints, 3);
+        assert!(out.divergences.is_empty());
+        // Another value at a later use.
+        let mut f = Fixture::default();
+        let c = f.body("c", vec![]);
+        let _ = c;
+        let b = f.body("b", vec![Event::MemoBegin(9), Event::MemoEnd(Some(2))]);
+        let a = f.body(
+            "a",
+            vec![
+                Event::MemoBegin(9),
+                Event::MemoEnd(Some(1)),
+                Event::Reach(b),
+            ],
+        );
+        let out = run(&f, &root(vec![Event::Reach(a)]), Options::default()).unwrap();
+        assert_eq!(out.divergences.len(), 1);
+    }
+
+    /// `events` then a successful scope of value `value`.
+    fn scope_values(events: &[Event], value: u64) -> Vec<Event> {
+        let mut all = events.to_vec();
+        all.extend([
+            Event::MemoBegin(9),
+            Event::Print("computed".into()),
+            Event::MemoEnd(Some(value)),
+        ]);
+        all
+    }
+
     /// xorshift64* (reproducible orders without a dependency).
     pub(crate) struct Rng(pub(crate) u64);
 
@@ -1565,6 +1681,16 @@ pub(crate) mod tests {
                     }))),
                     _ => events.push(Event::Print(format!("p{i}"))),
                 }
+            }
+            if rng.below(3) == 0 {
+                // An aspect memo (a few keys; same value per key).
+                let memo = rng.below(4) as u64;
+                events.push(Event::MemoBegin(memo));
+                events.push(Event::Print(format!("memo {memo}")));
+                if i + 1 < N {
+                    events.push(Event::Reach(nodes[i + 1 + rng.below(N - i - 1)]));
+                }
+                events.push(Event::MemoEnd(Some(memo * 10)));
             }
             if rng.below(8) == 0 {
                 events.push(Event::Flush);
