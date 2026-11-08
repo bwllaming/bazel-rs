@@ -3,7 +3,7 @@
 //! errors propagated as values, repository demands, cycles answered by
 //! [`DfsCycles`], at 1 (inline), 2, 8, 32 and 64 threads, with jitter.
 
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
@@ -58,6 +58,12 @@ struct Spec {
     breaks_cycles: bool,
     /// Sleep in the body.
     sleep: Duration,
+    /// Needed before the batches for ordering only: their values (errors
+    /// too) do not count.
+    after: Vec<NodeKey>,
+    /// The body blocks until this node's [`Spec::after`] need has asked for
+    /// it (an explicit gate instead of a race between sleeps).
+    held_until_asked_by: Option<NodeKey>,
 }
 
 #[derive(Default)]
@@ -77,6 +83,9 @@ struct Toy {
     hooks: [AtomicU64; 3],
     /// (start of each attempt, end of the successful one) per key.
     times: Option<Mutex<FxHashMap<NodeKey, (Instant, Instant)>>>,
+    /// Nodes whose [`Spec::after`] need was missing (they parked on it),
+    /// with the condition variable [`Spec::held_until_asked_by`] waits on.
+    asked: (Mutex<FxHashSet<NodeKey>>, Condvar),
 }
 
 impl Toy {
@@ -189,6 +198,26 @@ impl Toy {
         let spec = self.specs.get(key).cloned().unwrap_or_default();
         if !spec.sleep.is_zero() {
             std::thread::sleep(spec.sleep);
+        }
+        if let Some(asker) = &spec.held_until_asked_by {
+            let (asked, changed) = &self.asked;
+            let (asked, timeout) = changed
+                .wait_timeout_while(asked.lock().unwrap(), Duration::from_secs(60), |asked| {
+                    !asked.contains(asker)
+                })
+                .unwrap();
+            assert!(
+                !timeout.timed_out() || asked.contains(asker),
+                "{key:?} waited 60 s for {asker:?} to need it"
+            );
+        }
+        if !spec.after.is_empty()
+            && let Err(missing) = cx.need(&spec.after)
+        {
+            let (asked, changed) = &self.asked;
+            asked.lock().unwrap().insert(key.clone());
+            changed.notify_all();
+            return Err(missing);
         }
         for repo in &spec.repos {
             if !self.published.lock().unwrap().contains(repo) {
@@ -571,10 +600,15 @@ fn the_first_error_without_keep_going_turns_frontier_only() {
     for threads in [2, 8, 32] {
         let mut toy = Toy::default();
         toy.spec(tgt(0)).batches = vec![vec![tgt(1), tgt(2)]];
+        // The failure is published only once tgt(2) waits for it: its
+        // publication wakes tgt(2) after the switch to frontier-only mode,
+        // so the chain below tgt(2) is set aside, whatever the timing (no
+        // race between sleeps).
         toy.spec(tgt(1)).fails = true;
+        toy.spec(tgt(1)).held_until_asked_by = Some(tgt(2));
+        toy.spec(tgt(2)).after = vec![tgt(1)];
         for i in 2..40 {
             toy.spec(tgt(i)).batches = vec![vec![tgt(i + 1)]];
-            toy.spec(tgt(i)).sleep = Duration::from_millis(1);
         }
         let config = EvalConfig {
             keep_going: false,
@@ -586,8 +620,17 @@ fn the_first_error_without_keep_going_turns_frontier_only() {
         assert!(!outcome.complete, "{outcome:?}");
         assert!(evaluator.frontier_only());
         assert_eq!(outcome.first_error, evaluator.graph().get(&tgt(1)));
-        assert_eq!(outcome.deferred.len(), 1, "{outcome:?}");
-        assert!(toy.runs(&tgt(39)) == 0, "the chain's end never ran");
+        assert_eq!(
+            outcome.deferred,
+            [evaluator.graph().get(&tgt(2)).unwrap()],
+            "{outcome:?}"
+        );
+        assert_eq!(
+            toy.runs(&tgt(3)),
+            0,
+            "the chain below the deferred node never ran"
+        );
+        assert_eq!(toy.runs(&tgt(39)), 0, "the chain's end never ran");
         // The linearizer wants the root: it and everything it waits for
         // run again.
         evaluator.boost(&tgt(0), 0);
