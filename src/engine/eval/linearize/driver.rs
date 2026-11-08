@@ -895,17 +895,28 @@ impl Engine {
             // run park); the walk's order then drives the inline pass over
             // the same graph.
             let pooled_at = std::time::Instant::now();
-            if evaluator.pooled() {
-                warm_up(&evaluator, &shared, labels, top, target_platform.clone());
+            let pool_roots = if evaluator.pooled() {
+                let roots = warm_up(&evaluator, &shared, labels, top, target_platform.clone());
                 evaluator.set_inline(true);
-            }
+                Some(roots)
+            } else {
+                None
+            };
             let pooled_for = pooled_at.elapsed();
             let pool_done = if stats_enabled() {
                 evaluator.stats().done
             } else {
                 0
             };
-            let result = drive(&bodies, &evaluator, &shared, labels, top, target_platform);
+            let result = drive(
+                &bodies,
+                &evaluator,
+                &shared,
+                labels,
+                top,
+                target_platform,
+                pool_roots.as_deref(),
+            );
             if stats_enabled() {
                 let stats = evaluator.stats();
                 crate::note!(
@@ -919,6 +930,16 @@ impl Engine {
                     stats.quiescences,
                     super::super::nodes::loading::POOL_INLINE_LOADS
                         .load(std::sync::atomic::Ordering::Relaxed)
+                );
+                let reasons = &super::super::nodes::bodies::INLINE_REASONS;
+                let reason =
+                    |index: usize| reasons[index].load(std::sync::atomic::Ordering::Relaxed);
+                crate::note!(
+                    "bazel-rs: eval phase 1: left to the sequential pass: flushes {}, repository sentinels {}, order-dependent {}, obtained roots {}",
+                    reason(0),
+                    reason(1),
+                    reason(2),
+                    reason(3)
                 );
             }
             let mut coord = bodies.coord();
@@ -1013,13 +1034,18 @@ fn phase1_config(loading_phase_threads: usize) -> EvalConfig {
     }
 }
 
-/// The repository lane of phase 1: nothing yet (S4). An attempt that
-/// needs a repository (fetched ahead by repository speculation) or only
-/// the sequential pass can run waits for that pass (`bodies::INLINE`).
-struct Lane;
+/// The repository lane of phase 1: a module repository's root a pool
+/// unit was blocked on, materialized on the coordinator. Any other
+/// repository (fetched ahead by repository speculation), or what only the
+/// sequential pass can run, waits for that pass (`bodies::INLINE`).
+struct Lane<'a> {
+    shared: &'a EvalShared,
+}
 
-impl RepoLane for Lane {
-    fn fetch(&mut self, _name: &str) {}
+impl RepoLane for Lane<'_> {
+    fn fetch(&mut self, name: &str) {
+        super::super::nodes::loading::lane_fetch(self.shared, name);
+    }
 }
 
 /// At quiescence on the pool: stop (the parked attempts are the
@@ -1036,23 +1062,24 @@ impl CycleHandler for StopCycles {
 /// target platform and the requested labels' lookups, then their
 /// configured targets (keys as their first edge makes them; nothing is
 /// decided first-visit here). Attempts only the sequential pass can run
-/// park; nothing is linearized.
+/// park; nothing is linearized. Returns the configured roots for the
+/// later rounds ([`pool_round`]).
 fn warm_up(
     evaluator: &Evaluator<'_, Phase1Bodies<'_, '_>>,
     shared: &EvalShared,
     labels: &[Label],
     top: ConfigId,
     target_platform: Option<Label>,
-) {
+) -> Vec<NodeKey> {
     let pooled = &shared.loading.pooled;
     pooled.store(true, std::sync::atomic::Ordering::Release);
-    let mut lane = Lane;
+    let mut lane = Lane { shared };
     let mut roots: Vec<NodeKey> = target_platform
         .map(|target| NodeKey::Platform(ConfiguredTargetKey::new(target, top)))
         .into_iter()
         .collect();
     roots.extend(labels.iter().map(|label| NodeKey::Tgt(label.clone())));
-    evaluator.evaluate(&roots, &mut lane, &mut StopCycles);
+    evaluator.evaluate_round(&roots, &mut lane);
     let no_config = shared
         .configurations
         .lock()
@@ -1075,9 +1102,31 @@ fn warm_up(
             }
         })
         .collect();
-    evaluator.evaluate(&roots, &mut lane, &mut StopCycles);
+    evaluator.evaluate_round(&roots, &mut lane);
+    pooled.store(false, std::sync::atomic::Ordering::Release);
+    roots
+}
+
+/// Another round of the pool over `roots` (S2): what the sequential pass
+/// unblocked since (an extension it prepared, a repository it fetched)
+/// runs in parallel again; then the sequential pass continues.
+fn pool_round(
+    evaluator: &Evaluator<'_, Phase1Bodies<'_, '_>>,
+    shared: &EvalShared,
+    roots: &[NodeKey],
+) {
+    let pooled = &shared.loading.pooled;
+    pooled.store(true, std::sync::atomic::Ordering::Release);
+    evaluator.set_inline(false);
+    evaluator.retry_unresolvable();
+    evaluator.evaluate_round(roots, &mut Lane { shared });
+    evaluator.set_inline(true);
     pooled.store(false, std::sync::atomic::Ordering::Release);
 }
+
+/// A requested target's sequential pass this long runs the pool again
+/// before the next one (S2).
+const POOL_ROUND_AFTER: std::time::Duration = std::time::Duration::from_millis(5);
 
 /// The walk's `plan_build` phase 1 over the evaluator: the explicit
 /// target platform, then each requested label (`analyze_requested`).
@@ -1088,11 +1137,15 @@ fn drive(
     labels: &[Label],
     top: ConfigId,
     target_platform: Option<Label>,
+    pool_roots: Option<&[NodeKey]>,
 ) -> Result<(), String> {
+    // S2: the pool runs again after a requested target's sequential pass
+    // did real work (it may have unblocked what the pool parked).
+    let mut last_inline = std::time::Duration::ZERO;
     let evaluate = |key: &NodeKey| -> Arc<NodeValue> {
         evaluator.evaluate(
             std::slice::from_ref(key),
-            &mut Lane,
+            &mut Lane { shared },
             &mut Pass1Cycles::default(),
         );
         evaluator.value(key).cloned().unwrap_or_else(|| {
@@ -1153,6 +1206,12 @@ fn drive(
         }
     };
     for (position, label) in labels.iter().enumerate() {
+        if let Some(roots) = pool_roots
+            && last_inline >= POOL_ROUND_AFTER
+        {
+            pool_round(evaluator, shared, roots);
+        }
+        let started = std::time::Instant::now();
         // Engine::analyze_requested: the test-trimmed top-level key.
         let looked_up = lookup(label);
         let trimmed = match &looked_up {
@@ -1235,6 +1294,7 @@ fn drive(
                 None => error,
             }
         })?;
+        last_inline = started.elapsed();
     }
     bodies.coord().begin_segment(SegmentKind::RootsDone);
     Ok(())

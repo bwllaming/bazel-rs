@@ -329,6 +329,12 @@ pub(crate) struct Evaluator<'b, B: Bodies> {
     /// Evaluate with the inline driver even with a pool (S2: phase 1's
     /// sequential pass after the pool's).
     inline: AtomicBool,
+    /// Nodes parked on a repository the lane fetched before their attempt
+    /// began (`Wait::Unresolvable`), for [`Self::retry_unresolvable`].
+    unresolvable: Tracked<Vec<NodeId>>,
+    /// The pool's evaluation stops at quiescence without the cycle
+    /// handler ([`Self::evaluate_round`]).
+    round: AtomicBool,
 }
 
 impl<'b, B: Bodies> Evaluator<'b, B> {
@@ -352,7 +358,36 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             repo_seq: AtomicU64::new(0),
             counters: Counters::default(),
             inline: AtomicBool::new(false),
+            unresolvable: Tracked::default(),
+            round: AtomicBool::new(false),
         }
+    }
+
+    /// Re-queue the nodes parked unresolvable (S2: what blocked them was
+    /// done by the sequential pass since); they run at the next
+    /// evaluation's start.
+    pub(crate) fn retry_unresolvable(&self) {
+        let parked = std::mem::take(&mut *self.unresolvable.lock());
+        for id in parked {
+            let entry = self.graph.entry(id);
+            if entry.state() != State::Waiting {
+                continue;
+            }
+            entry.epoch.fetch_add(1, Ordering::AcqRel);
+            entry.inner.lock().wait = Wait::None;
+            if entry.transition(State::Waiting, State::Queued) {
+                self.schedule(None, id);
+            }
+        }
+    }
+
+    /// [`Self::evaluate`] on the pool until quiescence (no cycle handler,
+    /// no wait graph: what is parked stays parked).
+    pub(crate) fn evaluate_round(&self, roots: &[NodeKey], lane: &mut dyn RepoLane) -> Outcome {
+        self.round.store(true, Ordering::SeqCst);
+        let outcome = self.evaluate(roots, lane, &mut super::cycles::DfsCycles::default());
+        self.round.store(false, Ordering::SeqCst);
+        outcome
     }
 
     /// From now on, [`Self::evaluate`] uses the inline driver (`true`) or
@@ -876,6 +911,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                     Some(seq) if seq <= attempt_seq => {
                         drop(repos);
                         entry.inner.lock().wait = Wait::Unresolvable(name);
+                        self.unresolvable.lock().push(id);
                         None
                     }
                     Some(_) => {
@@ -1027,7 +1063,9 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             }
             drop(coord);
             // Quiescent.
-            if roots.iter().all(|&id| self.graph.value(id).is_some()) {
+            if roots.iter().all(|&id| self.graph.value(id).is_some())
+                || self.round.load(Ordering::SeqCst)
+            {
                 break;
             }
             self.counters.quiescences.fetch_add(1, Ordering::Relaxed);
@@ -1038,6 +1076,13 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             for (parent, _) in pairs {
                 self.requeue(scope, parent);
             }
+        }
+        if self.round.load(Ordering::SeqCst) {
+            // No O(nodes) scan for a round.
+            return Outcome {
+                complete: roots.iter().all(|&id| self.graph.value(id).is_some()),
+                ..Outcome::default()
+            };
         }
         self.outcome(roots)
     }

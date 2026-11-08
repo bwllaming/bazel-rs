@@ -1018,6 +1018,7 @@ impl Host for EvalHost<'_, '_> {
     fn flush_pending(&mut self, _config_setting: &Rule) -> Result<(), String> {
         if self.pooled() {
             // The plan so far's phase 2: the sequential pass's.
+            super::bodies::INLINE_REASONS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Err(self.inline());
         }
         self.emit(Event::Flush);

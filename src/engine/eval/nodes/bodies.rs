@@ -301,6 +301,16 @@ impl<'e> Phase1Cx<'e> for BodyCx<'_, '_, 'e> {
     }
 }
 
+/// BAZEL_RS_EVAL_STATS: why pool attempts were left to the sequential
+/// pass (a flush, a repository sentinel, an order-dependent decision,
+/// obtained roots).
+pub(crate) static INLINE_REASONS: [std::sync::atomic::AtomicU64; 4] = [
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+];
+
 /// The marker of [`Missing::Repo`] for an attempt only the sequential
 /// pass can run (S2: on the pool, a flush or a repository demand): it
 /// parks until the inline pass.
@@ -445,9 +455,14 @@ impl Bodies for Phase1Bodies<'_, '_> {
         // Roots obtained before the sequential engine had them count from
         // the sequential point on: the attempt runs there.
         let obtained = !roots.finish().is_empty();
-        let raised = crate::repository_demand::sentinels_raised() != sentinels
-            || crate::repository_demand::take_order_dependent()
-            || obtained;
+        let sentinel = crate::repository_demand::sentinels_raised() != sentinels;
+        let order = crate::repository_demand::take_order_dependent();
+        for (counted, reason) in [(sentinel, 1), (order, 2), (obtained, 3)] {
+            if counted && result.is_ok() {
+                INLINE_REASONS[reason].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let raised = sentinel || order || obtained;
         crate::repository_demand::restore_order_dependent(order_dependent);
         match result {
             Ok(_) if raised && !matches!(key, NodeKey::Pkg(_)) => {

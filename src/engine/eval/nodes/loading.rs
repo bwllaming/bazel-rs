@@ -62,6 +62,10 @@ pub(crate) struct Loading {
     pub(crate) pooled: std::sync::atomic::AtomicBool,
     /// The package groups resolved so far (`Engine::group_nodes`).
     pub(crate) groups: Mutex<FxHashMap<Label, Arc<crate::package_specification::GroupNode>>>,
+    /// The module repository root each Pkg node waits for on the lane.
+    pub(crate) pending_blockers: Mutex<FxHashMap<PackageId, String>>,
+    /// What the lane wrote materializing a root, by blocker.
+    pub(crate) lane_writes: Mutex<FxHashMap<String, Vec<crate::ui::Deferred>>>,
     /// The module events of a Pkg node's attempts aborted on the pool.
     pub(crate) aborted_prints: Mutex<FxHashMap<PackageId, Vec<LoadPrintEvent>>>,
     /// The print events of the aspect definitions the evaluation loaded
@@ -122,6 +126,41 @@ impl PkgValue {
         self.declared
             .get_or_init(|| package_input_labels_in(repositories, &self.package))
             .contains(label)
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The demand of an inline-rerun sentinel when it is a module
+/// repository's root (`repository @@NAME is unfetched`): what the
+/// coordinator's lane materializes.
+pub(crate) fn module_root_blocker(error: &str) -> Option<&str> {
+    let start = error.find(crate::repository_demand::NEEDS_REPOSITORY)?;
+    let rest =
+        error[start + crate::repository_demand::NEEDS_REPOSITORY.len()..].strip_prefix(": ")?;
+    let (subject, _) = rest.split_once(" is unfetched")?;
+    subject.strip_prefix("repository @@")?;
+    Some(
+        &error[start..start + crate::repository_demand::NEEDS_REPOSITORY.len() + 2 + subject.len()],
+    )
+}
+
+/// The coordinator's lane: materialize the module repository root a
+/// pool unit was blocked on (where demand may fetch), its console writes
+/// kept for the unit's re-run.
+pub(crate) fn lane_fetch(shared: &EvalShared, blocker: &str) {
+    let Some(name) = blocker.split_once("repository @@").map(|(_, name)| name) else {
+        return;
+    };
+    let console = crate::ui::DeferredConsole::start();
+    let _ = shared.repositories.root(name);
+    let writes = console.finish();
+    if !writes.is_empty() {
+        lock(&shared.loading.lane_writes).insert(blocker.to_owned(), writes);
     }
 }
 
@@ -188,6 +227,14 @@ pub(crate) fn package_body(
                     .entry(id.clone())
                     .or_default()
                     .extend(module_events);
+                // A module repository's root: the coordinator's lane
+                // materializes it and the unit loads on the pool again.
+                if unit.roots.is_empty()
+                    && let Some(blocker) = sentinel.and_then(|error| module_root_blocker(error))
+                {
+                    lock(&shared.loading.pending_blockers).insert(id.clone(), blocker.to_owned());
+                    return Err(Missing::Repo(blocker.to_owned()));
+                }
                 return Err(Missing::Repo(super::bodies::INLINE.to_owned()));
             }
             unit
@@ -211,6 +258,17 @@ pub(crate) fn package_body(
         .unwrap_or_default();
     if !aborted.is_empty() {
         cx.emit(Event::LoadPrints(aborted.into()));
+    }
+    // What the lane's materialization of a root it was blocked on wrote,
+    // where the walk's inline load would have written it.
+    let blocker = lock(&shared.loading.pending_blockers).remove(id);
+    if let Some(writes) =
+        blocker.and_then(|blocker| lock(&shared.loading.lane_writes).remove(&blocker))
+    {
+        for write in writes {
+            let index = cx.coord().store.console(write);
+            cx.emit(Event::Console(index));
+        }
     }
     let (steps, result) = settle_load_unit(repositories, id, unit, || {
         load_package_attempt_in(repositories, id)
