@@ -607,21 +607,26 @@ runs ahead. Everything the preparation would make visible is held back:
 | console writes (definition `.bzl` prints, the use_repo fixup warning) | `ui::DeferredConsole` | written last, in order |
 | snapshot observations | detached capture | replayed |
 | direct / generated roots it obtained | `UnitRoots` | `note_committed_roots` |
-| registry module roots its loads read | warm store trees (`speculative_registry_root`, never the demand slot) | demanded in first-use order; the same tree, or the outcome is dropped |
+| registry module roots its loads read | warm store trees, offline only — already in the store, the download or repository cache, a local registry's files; never the network (`speculative_registry_root`, never the demand slot) | demanded in first-use order; the same tree, or the outcome is dropped |
 | definition `.bzl` cache entries, definition modules, main-repository module code | `loading::speculative_definitions` (thread overlay) | installed; in record mode their replay-capture lookups repeated in a replay scope |
 | hidden-lockfile consultation, lockfile record | not done | `extension_lock` + `reusable_lock_entry` again, then `record_extension_lock` |
 | ignored subdirectories it computed | not memoized | — (the sequential engine computes them) |
 
 The coordinator takes the outcome inside the group's demand slot (its
 first sequential demand, `Speculations`-style `take`: waiting while it
-runs) and commits it there: the registry roots first, then the groups whose
+runs, its transfers marked demanded) and commits it there: the registry roots first, then the groups whose
 speculative preparations it used (below), then the lockfile check against
 the inputs as they are now — the same entry still reusable, nothing
 printed — then the record, observations, roots, definitions and output.
 Any difference drops the outcome and the coordinator prepares the group
 itself; what the commit did up to there (silent root demands, other
 groups' commits, the check's observations and consultation) is what that
-preparation does first anyway. Outcomes nobody takes are dropped with the
+preparation does first anyway — or, when the drop comes from an edit made
+meanwhile (the group's `.bzl` graph now loads other modules), an
+over-approximation of it: roots and groups the new preparation may not
+demand were demanded. That is safe (demands are idempotent and silent,
+observations a set; the sequential engine of the edited workspace could
+not have printed differently), but it is not the exact sequential set. Outcomes nobody takes are dropped with the
 pool (`ExtensionSpeculationGuard`, end of the command); a running
 speculation is cancelled, not awaited.
 
@@ -633,8 +638,9 @@ uses that speculative preparation (`adopt_speculated_group`; the group
 slot holds an `Arc<PreparedOrdinary>` so the very preparation can be
 shared). Its commit prepares the used group on the coordinator first and
 keeps the outcome only if that is the same preparation (pointer
-equality); a speculation that wrote output before using another group is
-not kept (that output would precede the other group's).
+equality); a speculation that wrote output before using any other group
+(the first or a later one) is not kept: that output precedes the group's
+in the sequential order, its commit would write it after.
 
 **Blocked committed units wait for running speculations.** The
 `//src/website3` inline re-run was not a coordinator-only repository: its
@@ -642,7 +648,8 @@ re-runs on the workers each found the next `npm_website3__*` repository
 its loads reached executing on the fetch pool (requested by its own
 `warm_loads`), aborted, and re-ran from scratch once it was published. A
 committed unit's reuse-only probe now waits for that speculation
-(`Speculations::wait_running`, marking its transfers demanded) and serves
+(`Speculations::wait_running`, at most 3 s, marking its transfers demanded
+while it waits and speculative again after a timeout) and serves
 the root it published (one that printed stays the coordinator's).
 
 Invariants checked on ~/code `//src/...` (repositories fetched, LTO
