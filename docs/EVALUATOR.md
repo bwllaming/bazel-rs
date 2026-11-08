@@ -494,6 +494,25 @@ change announced to the other two workers; adding a helper is not.
   `engine::PlanReads` (new trait: what a prepare reads of the planned
   targets' results).
 
+- 2026-11-08 (eval-round1; announced to eval-s3, which owns `linearize/`):
+  - `bodies.rs` owns the attempt bookkeeping that lived in `driver.rs`:
+    `Coord::{begin_attempt, missing_here, finish_attempt, abandon_attempt}`
+    moved there (`finish_attempt` takes `FinishParts`, computed on the
+    attempt's thread); pool attempts hand them to an `Inbox` (records
+    sharded by node, applied whenever `Phase1Bodies::coord()` takes the
+    lock) instead of taking the coordinator's lock. Anything that reads the
+    store goes through `Phase1Bodies::coord()` (it does today).
+  - `Phase1Cx::{defer, missing_here}` (new): a store update without the
+    lock (`EvalHost::publish`, a Pkg node's roots, a lookup's source side);
+    a body's `Missing` without the lock on the pool.
+  - `driver::commit_roots` returns its console writes (an extension group's
+    commit among the roots, below): the tape writes them at that position
+    (S3: an effect at the node's position, like `Console`).
+  - `linearize_with` keeps a rerun/adoption mismatch in
+    `Store::rerun_mismatch` (sticky) and checks it again after applying the
+    tape (a caller that ignored its result lost it).
+  - `ROUNDS` (stats) carries each later round's start offset.
+
 ## 4. Stages and gates
 
 | Stage | Work | Gate |
@@ -1044,6 +1063,100 @@ committed budget and an unresolved platform. Raising the budget
    hold `&mut Engine` across rounds (eval-round1's coordinator-lock work).
 5. The lowering drain before an op (1.2 s): attribute a failed lowering to
    its plan entry instead.
+
+### S2, round 1 and the coordinator's lock (eval-round1)
+
+Branch `eval-round1` (main `dc344493`).
+
+**Extensions on the pool.** A pool package load (`Pkg` body,
+`crate::repository::EvalAdoption`) that needs an extension group the
+coordinator has not prepared uses the group's finished speculative
+preparation (docs/COLD_ANALYSIS.md "Module extensions prepared ahead"):
+`RepositorySet::eval_adopt_group`, through the existing chained-adoption
+hook (`adopt_speculated_group`, the generated repositories' roots,
+`note_obtained` for a `.bzl` cache hit in such a repository). Used only when
+the speculation finished and its lockfile entry is still reusable
+(`eval_adoption_check`: the commit's check without its effects, once per
+group; chained groups likewise). The load records the group as
+`EVAL_GROUP_KEY + id` first among its obtained roots; where the tape
+replays the node (`commit_roots` → `note_committed_roots`) the group is
+prepared — the speculation taken and committed, verified as today —
+before its repositories count, so the group's commit happens where the
+walk's load prepares it, and the order-dependent sets
+(`sequential_roots`) are the walk's. The prepared group must be the very
+preparation the pool used (`check_eval_group`, also when the sequential
+pass prepares it first): otherwise an internal error naming
+`BAZEL_RS_ANALYSIS=walk` (`EVAL_ADOPTION_MISMATCH`). The output-file
+checks of the package run under the same guards (a sentinel there leaked
+into the value before).
+
+**The lane resolves what such a load waits for** (`nodes::loading`,
+`lane_fetch`): a group whose speculation is running, queued, not
+requested (a group the root module does not use) or blocked
+(`\u{2}extension:` blocker: requested and waited for, at most 10 s; what
+it is blocked on is resolved — another group's speculation, a repository
+below, a registry module root materialized on the lane as `lane_fetch`
+does, its writes the waiting unit's), and a repository executed ahead by
+repository speculation for the load (`\u{2}local:` blocker,
+`eval_local_blocker`/`wait_eval_local`): a `local = True` rule (never
+speculated before) when it calls no `execute()` (`repository_ctx`
+refuses it there: a subprocess may write anything; it stays the
+sequential pass's), or a repository of a group the pool uses
+speculatively (its speculation adopts the group too). Its root is
+published as any speculation's (not when it printed), counting where the
+tape replays the load. Never while local executions are captured for
+replay (`BAZEL_RS_SNAPSHOT` on/record: `RepositorySet::state.replay`).
+
+**Single-flight snapshot verification** (`repository_store`,
+`verify_snapshot_shared`): with the loads on the pool, 47 threads'
+recorded-input checks nested-probed the Go SDK's root (17,377 files) at
+once (nested probes never wait for each other); a tree's verification now
+runs once and the others take its result (+60 s CPU, round 2 2.7 → 5 s
+before the fix).
+
+**The coordinator's lock out of begin/finish/abandon**: pool attempts
+push their records into the `Inbox` (64 shards by node; a node's records
+in order, its attempts never overlap); the carried events of an abandoned
+attempt are kept per node for its rerun (`take_carry`), the store gets
+them for pass 1 with the records; the done CT1 value is published to the
+sharded `Ct1Done` at once. The coordinator (any thread taking
+`Phase1Bodies::coord()`) applies the records first.
+
+**Residual (documented, tested)**: the files an adopted group's recorded
+inputs name must not change during the invocation before the group's
+commit — as for every warm-reuse probe (`sequential_roots`). A local rule
+whose `execute()` rewrites such a file in phase 1, after the pool's use
+and before the walk's first demand of the group, is the internal error
+(`an_input_rewritten_in_phase_one_after_the_pools_use_is_an_internal_error`);
+a rewrite before phase 1 (the target pattern phase) fails the use check
+and changes nothing.
+
+**Not done: overlapping the linearizer with the pool rounds** (item (4)
+of "What remains" above): it runs in `driver.rs` beside eval-s3's pass 2,
+which moves the flushes' phase 2 out of the coordinator's linearization
+(the overlap's only large part); left to S3.
+
+Results (2026-11-08, ~/code `80d6724f3a` private clone, release without
+LTO, warm repositories, `BAZEL_RS_SNAPSHOT=off`, `build --nobuild
+//src/...`, interleaved, host load 10–57):
+
+| | main (dc344493) | eval-round1 |
+|---|---|---|
+| pool round 1 | 14,106–14,129 nodes, 77–118 ms | 14,645–14,668 nodes, 0.29–0.59 s (the lane waits for speculations) |
+| round 2 | 295k nodes, 2.6–3.1 s | 306–308k nodes, 2.9–3.0 s, starts at +2.7–2.8 s |
+| coordinator lock (48 threads) | 615–631k uncontended, 344–360k contended, 42–55 s waited | 102–104k uncontended, 0.7–1.3k contended, 2.4–4.7 s waited |
+| coordinator lock (16 threads) | 257–271k contended, 15.7–16.3 s waited | 0.9k contended, 2.7–2.9 s waited |
+| plan.start → phase 1 done | 44.2 / 44.2 s | 41.2 / 42.3 s |
+| CPU (user+sys) | 199 / 201 s | 188 / 197 s |
+| max RSS | 9.71 / 9.72 GB | 9.71 / 9.72 GB |
+
+What still stops round 1 on ~/code: `rules_java++toolchains+local_jdk`, a
+local rule that calls `execute()` (the toolchain registrations' package:
+1,586 CT1 nodes wait for `RegToolchains`), so the first requested
+target's sequential pass still runs ~17k attempts (2.3–2.8 s) before round
+2. Making that rule's execution available ahead needs its `execute()` to
+be known side-effect free (e.g. a allow-list of read-only probes) — not
+done.
 
 **S1 results** (2026-11-08, ~/code `80d6724f3a`, LTO release binary
 sha256 `272b5f78…`, warm repositories, `BAZEL_RS_SNAPSHOT=off`, default
