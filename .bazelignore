@@ -117,6 +117,7 @@ tests/fixtures/py_singleton_depset_edges/workspace
 tests/fixtures/query_language/aspects
 tests/fixtures/query_language/ws
 tests/fixtures/query_outputs/ws
+tests/fixtures/registry_failure_exit_codes/workspace
 tests/fixtures/registry_lockfile/workspace
 tests/fixtures/repo_cache_friendly_paths/workspace
 tests/fixtures/repositories/p
