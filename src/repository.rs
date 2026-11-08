@@ -3738,43 +3738,41 @@ impl RepositorySet {
     /// The pool's lane: wait (at most a few seconds) for the speculative
     /// preparation of the group `id` an evaluator's pool load waits for.
     pub(crate) fn wait_eval_group(&self, id: &str) -> Option<String> {
+        let wait = std::time::Duration::from_secs(10);
         self.state.extension_speculation.request(id);
-        let _ = self.state.extension_speculation.finished_waiting(
-            id,
-            std::time::Duration::from_secs(10),
-            true,
-        );
-        // Blocked on another group's preparation: that one is prepared
-        // ahead too (and this one retried once it is).
-        let blocked = self.state.extension_speculation.blocked_on(id)?;
-        if let Some(other) = self.speculated_group_blocker(&blocked) {
-            let other = other.to_owned();
-            self.state.extension_speculation.request(&other);
-            let _ = self.state.extension_speculation.finished_waiting(
-                &other,
-                std::time::Duration::from_secs(10),
-                true,
-            );
+        for _ in 0..4 {
+            let _ = self
+                .state
+                .extension_speculation
+                .finished_waiting(id, wait, true);
+            let blocked = self.state.extension_speculation.blocked_on(id)?;
+            if let Some(other) = self.speculated_group_blocker(&blocked) {
+                // Another group's preparation: prepared ahead too.
+                let other = other.to_owned();
+                self.state.extension_speculation.request(&other);
+                let _ = self
+                    .state
+                    .extension_speculation
+                    .finished_waiting(&other, wait, true);
+            } else if let Some(canonical) = sentinel_repository(&blocked) {
+                // A local repository (or one of a group used
+                // speculatively): executed ahead as for a pool load.
+                let eligible = self.eval_local_blocker(&blocked).is_some()
+                    || lock_ignoring_poison(&self.state.eval_local).contains(canonical);
+                if !eligible {
+                    return None;
+                }
+                let canonical = canonical.to_owned();
+                if let Some(error) = self.wait_eval_local(&canonical) {
+                    return Some(error);
+                }
+            } else {
+                // A registry module's root: the lane materializes it.
+                return Some(blocked);
+            }
             self.retry_extension_speculations();
-            let _ = self.state.extension_speculation.finished_waiting(
-                id,
-                std::time::Duration::from_secs(10),
-                true,
-            );
-            return None;
         }
-        Some(blocked)
-    }
-
-    /// Queue again the extension speculations blocked on a demand the
-    /// pool's lane satisfied (a registry module's root).
-    pub(crate) fn retry_eval_group(&self, id: &str) {
-        self.retry_extension_speculations();
-        let _ = self.state.extension_speculation.finished_waiting(
-            id,
-            std::time::Duration::from_secs(10),
-            true,
-        );
+        None
     }
 
     /// Whether the finished speculation of the group `id` would commit as

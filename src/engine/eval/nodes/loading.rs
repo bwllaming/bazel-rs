@@ -170,30 +170,30 @@ pub(crate) fn lane_fetch(shared: &EvalShared, blocker: &str) {
     if let Some(group) = blocker.strip_prefix(EXTENSION_BLOCKER) {
         // Blocked on a registry module's root: materialized here (what it
         // writes and observes is the waiting unit's), then once more.
-        if let Some(error) = shared.repositories.wait_eval_group(group)
-            && let Some(root) = module_root_blocker(&error)
-        {
-            let root = root.to_owned();
-            lane_fetch(shared, &root);
-            if let Some(written) = lock(&shared.loading.lane_writes).remove(&root) {
-                lock(&shared.loading.lane_writes).insert(blocker.to_owned(), written);
-            }
-            shared.repositories.retry_eval_group(group);
+        for _ in 0..4 {
+            let Some(error) = shared.repositories.wait_eval_group(group) else {
+                break;
+            };
+            let Some(root) = module_root_blocker(&error) else {
+                break;
+            };
+            lane_root(shared, root, blocker);
+            shared.repositories.retry_speculations();
         }
         return;
     }
     if let Some(canonical) = blocker.strip_prefix(LOCAL_BLOCKER) {
         // Blocked on a registry module's root: materialized here (what it
         // writes and observes is the waiting unit's), then once more.
-        if let Some(error) = shared.repositories.wait_eval_local(canonical)
-            && let Some(root) = module_root_blocker(&error)
-        {
-            let root = root.to_owned();
-            lane_fetch(shared, &root);
-            if let Some(written) = lock(&shared.loading.lane_writes).remove(&root) {
-                lock(&shared.loading.lane_writes).insert(blocker.to_owned(), written);
-            }
-            shared.repositories.wait_eval_local(canonical);
+        for _ in 0..4 {
+            let Some(error) = shared.repositories.wait_eval_local(canonical) else {
+                break;
+            };
+            let Some(root) = module_root_blocker(&error) else {
+                break;
+            };
+            lane_root(shared, root, blocker);
+            shared.repositories.retry_speculations();
         }
         return;
     }
@@ -209,6 +209,21 @@ pub(crate) fn lane_fetch(shared: &EvalShared, blocker: &str) {
     let writes = console.finish();
     if !writes.is_empty() || !observations.is_empty() {
         lock(&shared.loading.lane_writes).insert(blocker.to_owned(), (writes, observations));
+    }
+}
+
+/// The lane materializes the registry module root `root` (its
+/// [`module_root_blocker`]) a speculation the pool waits for needs: what it
+/// writes and observes is the waiting unit's (`blocker`'s), as
+/// [`lane_fetch`]'s.
+fn lane_root(shared: &EvalShared, root: &str, blocker: &str) {
+    let root = root.to_owned();
+    lane_fetch(shared, &root);
+    if let Some((writes, observations)) = lock(&shared.loading.lane_writes).remove(&root) {
+        let mut lane = lock(&shared.loading.lane_writes);
+        let kept = lane.entry(blocker.to_owned()).or_default();
+        kept.0.extend(writes);
+        kept.1.append(observations);
     }
 }
 
