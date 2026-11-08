@@ -217,6 +217,10 @@ touch = repository_rule(implementation = _touch_impl, local = True)
             "changing/BUILD.bazel",
             "load('@touch//:defs.bzl', 'TOUCHED')\nload('@gen_data//:defs.bzl', 'VALUE')\nprint('changing sees ' + VALUE)\nfilegroup(name = 'changing')\n",
         );
+        fixture.write(
+            "chained/BUILD.bazel",
+            "load('@touch//:defs.bzl', 'TOUCHED')\nload('@user_repo//:defs.bzl', 'USER')\nprint('chained sees ' + USER)\nfilegroup(name = 'chained')\n",
+        );
         fixture
     }
 
@@ -325,10 +329,19 @@ fn assert_same(reference: &Run, other: &Run, what: &str) {
     assert_eq!(other.stderr, reference.stderr, "{what}: stderr");
     assert_eq!(other.lockfile, reference.lockfile, "{what}: lockfile");
     assert_eq!(other.hidden, reference.hidden, "{what}: hidden lockfile");
-    assert_eq!(
-        other.records, reference.records,
-        "{what}: snapshot recording"
-    );
+    if other.records != reference.records {
+        let only = |a: &[String], b: &[String]| {
+            a.iter()
+                .filter(|line| !b.contains(line))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        panic!(
+            "{what}: snapshot recording\nonly sequential: {:#?}\nonly this run: {:#?}",
+            only(&reference.records, &other.records),
+            only(&other.records, &reference.records)
+        );
+    }
 }
 
 /// The `PERF-EXTENSION` counter `name` of `run` (0 without the line).
@@ -493,6 +506,20 @@ fn an_input_changed_before_the_demand_drops_the_speculation() {
         );
         for run in &runs {
             assert_eq!(counter(run, "discarded"), 1, "{}", run.timing);
+        }
+        // `user` used `gen`'s speculative preparation, which the demand
+        // drops: `user`'s is dropped too, though its own entry is still
+        // reusable (it is reused, on the `gen` evaluated anew).
+        let (reference, runs) = baseline.compare(&fixture, snapshot, &["//chained"]);
+        assert_eq!(reference.code, Some(0), "{}", reference.stderr);
+        assert!(
+            reference.stderr.contains("gen evaluated with input v1")
+                && !reference.stderr.contains("user evaluated"),
+            "{}",
+            reference.stderr
+        );
+        for run in &runs {
+            assert_eq!(counter(run, "discarded"), 2, "{}", run.timing);
         }
     }
 }

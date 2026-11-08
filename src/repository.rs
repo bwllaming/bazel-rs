@@ -1554,6 +1554,12 @@ impl RepositorySet {
         let (computed, observations) = crate::observed_fs::capture(|| {
             crate::ignored::for_repository(&Arc::new(self.clone()), repository).map(Arc::new)
         });
+        // A speculative extension preparation may read a root its commit
+        // drops (another group's speculative preparation it used): what it
+        // computed is never shared.
+        if crate::extension_speculation::active() {
+            return computed;
+        }
         self.state
             .ignored
             .lock()
