@@ -278,6 +278,65 @@ impl<O: Send + 'static> Pool<O> {
         }
     }
 
+    /// Whether the speculation of `id` finished with an outcome nobody took
+    /// (`Some(true)`), or will never have one (`Some(false)`: failed, or
+    /// taken); `None` when it was never requested, is queued or blocked,
+    /// or still runs after waiting at most `wait` (the evaluator's
+    /// pool, crate::repository's `eval_adopt_group`).
+    pub(crate) fn finished(&self, id: &str, wait: std::time::Duration) -> Option<bool> {
+        self.finished_waiting(id, wait, false)
+    }
+
+    /// [`Self::finished`], also waiting while it is queued (`queued`).
+    pub(crate) fn finished_waiting(
+        &self,
+        id: &str,
+        wait: std::time::Duration,
+        queued: bool,
+    ) -> Option<bool> {
+        let deadline = std::time::Instant::now() + wait;
+        let mut state = lock(&self.shared.state);
+        loop {
+            match state.entries.get(id) {
+                Some(Entry::Done(_)) => return Some(true),
+                Some(Entry::Failed | Entry::Taken) => return Some(false),
+                Some(Entry::Running(_)) if state.width > 0 => {
+                    let now = std::time::Instant::now();
+                    if now >= deadline {
+                        return None;
+                    }
+                    state = self
+                        .shared
+                        .changed
+                        .wait_timeout(state, deadline - now)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0;
+                }
+                Some(Entry::Queued { .. }) if queued && state.width > 0 => {
+                    let now = std::time::Instant::now();
+                    if now >= deadline {
+                        return None;
+                    }
+                    state = self
+                        .shared
+                        .changed
+                        .wait_timeout(state, deadline - now)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0;
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// `f` of the finished outcome of `id` nobody took yet.
+    pub(crate) fn with_done<R>(&self, id: &str, f: impl FnOnce(&O) -> R) -> Option<R> {
+        match lock(&self.shared.state).entries.get(id) {
+            Some(Entry::Done(outcome)) => Some(f(outcome)),
+            _ => None,
+        }
+    }
+
     /// Queue again every blocked speculation whose blocking demand `ready`
     /// reports satisfied.
     pub(crate) fn retry(&self, ready: &dyn Fn(&str) -> bool) {

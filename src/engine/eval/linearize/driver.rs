@@ -459,7 +459,10 @@ impl Coord<'_> {
                 | TapeOp::Effect(Event::MemoUse(node)) => {
                     self.store.replayed.insert(*node);
                     if let Some(roots) = self.store.roots.remove(node) {
-                        commit_roots(&self.engine.repositories, &roots);
+                        // An extension group's commit among them writes
+                        // its output here (eval-round1).
+                        let repositories = &self.engine.repositories;
+                        lin.direct(|_| commit_roots(repositories, &roots));
                     }
                     if let Some(observations) = self.store.observations.remove(node) {
                         crate::observed_fs::commit_to_recorder(observations);
@@ -530,6 +533,13 @@ impl Coord<'_> {
             started.elapsed().as_micros() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
+        // What the tape's commits found (eval-round1: an extension group
+        // the pool used speculatively, prepared otherwise).
+        if let Some(mismatch) = super::super::nodes::bodies::rerun_mismatch() {
+            return Err(format!(
+                "internal error: BAZEL_RS_ANALYSIS=eval: {mismatch}; rerun with BAZEL_RS_ANALYSIS=walk"
+            ));
+        }
         match stopped {
             // The walk stops at pass 1's stop: the flushes before it ran.
             Some(error) => {
@@ -1565,6 +1575,15 @@ impl Engine {
                     reason(1),
                     reason(2),
                     reason(3)
+                );
+                let adoptions = &crate::repository::EVAL_ADOPTIONS;
+                let adoption =
+                    |index: usize| adoptions[index].load(std::sync::atomic::Ordering::Relaxed);
+                crate::note!(
+                    "bazel-rs: eval phase 1: speculative extension preparations on the pool: used {}, refused {}, committed by the tape {}",
+                    adoption(0),
+                    adoption(1),
+                    adoption(2)
                 );
                 let rounds = std::mem::take(
                     &mut *ROUNDS

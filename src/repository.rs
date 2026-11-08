@@ -134,6 +134,95 @@ impl Drop for UnitRoots {
     }
 }
 
+thread_local! {
+    /// The extension groups whose finished speculative preparation the
+    /// evaluator's pool load on this thread used ([`EvalAdoption`]), in
+    /// first-use order; `None`: not such a load.
+    static EVAL_GROUPS: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The key of an extension group a pool load used speculatively, among a
+/// node's obtained roots (docs/EVALUATOR.md "Extensions on the pool"):
+/// [`RepositorySet::note_committed_roots`] prepares the group there — the
+/// speculation's commit, where the sequential engine's load prepares it —
+/// before it notes the roots (some are the group's repositories). Sorts
+/// before every repository name.
+pub(crate) const EVAL_GROUP_KEY: &str = "\u{1}prepare:ordinary:";
+
+/// While it lives, a no-demand package load of the evaluator's pool on
+/// this thread may use the finished speculative preparation of an
+/// extension group the coordinator has not prepared yet
+/// ([`RepositorySet::eval_adopt_group`]) instead of stopping at the
+/// group's sentinel; [`Self::finish`] lists the groups it used, which the
+/// load's commit prepares first (the speculation's commit, verified there).
+pub(crate) struct EvalAdoption {
+    previous: Option<Option<Vec<String>>>,
+}
+
+impl EvalAdoption {
+    pub(crate) fn start() -> Self {
+        let previous = EVAL_GROUPS.with(|groups| groups.replace(Some(Vec::new())));
+        Self {
+            previous: Some(previous),
+        }
+    }
+
+    /// The groups the load used, as [`EVAL_GROUP_KEY`] keys in first-use
+    /// order.
+    pub(crate) fn finish(mut self) -> Vec<String> {
+        let previous = self.previous.take().flatten();
+        EVAL_GROUPS
+            .with(|groups| groups.replace(previous))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|id| format!("{EVAL_GROUP_KEY}{id}"))
+            .collect()
+    }
+}
+
+impl Drop for EvalAdoption {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            EVAL_GROUPS.with(|groups| *groups.borrow_mut() = previous);
+        }
+    }
+}
+
+/// Whether a pool load on this thread may use speculative preparations
+/// ([`EvalAdoption`]).
+fn eval_adopting() -> bool {
+    EVAL_GROUPS.with(|groups| groups.borrow().is_some())
+}
+
+/// Note a group the pool load on this thread used.
+fn note_eval_group(id: &str) {
+    EVAL_GROUPS.with(|groups| {
+        if let Some(groups) = groups.borrow_mut().as_mut()
+            && !groups.iter().any(|group| group == id)
+        {
+            groups.push(id.to_owned());
+        }
+    });
+}
+
+/// BAZEL_RS_EVAL_STATS: groups the pool used speculatively, uses refused
+/// (the speculation not finished, failed or its lockfile check failing),
+/// and the commits of a used group.
+pub(crate) static EVAL_ADOPTIONS: [AtomicU64; 3] =
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+
+/// A group the evaluator's pool used speculatively was prepared otherwise
+/// (its commit dropped the speculation): an internal error of
+/// `BAZEL_RS_ANALYSIS=eval` (what the pool loaded used the speculation's
+/// repositories). Taken by the evaluator's linearizer.
+static EVAL_ADOPTION_MISMATCH: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The first [`EVAL_ADOPTION_MISMATCH`], taken.
+pub(crate) fn take_eval_adoption_mismatch() -> Option<String> {
+    lock_ignoring_poison(&EVAL_ADOPTION_MISMATCH).take()
+}
+
 /// Stops a repository set's extension speculations when dropped
 /// ([`RepositorySet::start_extension_speculation`]).
 pub struct ExtensionSpeculationGuard(RepositorySet);
@@ -315,6 +404,15 @@ struct RepositoryState {
     /// id, for other speculative preparations that use their repositories
     /// ([`RepositorySet::adopt_speculated_group`]).
     speculative_groups: OnceLock<BTreeMap<String, OnceLock<Arc<PreparedOrdinary>>>>,
+    /// Whether the evaluator's pool may use a group's finished speculative
+    /// preparation ([`RepositorySet::eval_adopt_group`]), by group id: its
+    /// lockfile check passed again when first asked (`true`), or it failed,
+    /// the speculation failed or was taken (`false`).
+    eval_adoptable: std::sync::Mutex<BTreeMap<String, bool>>,
+    /// The groups the evaluator's pool used speculatively (their
+    /// preparation must be that very one), and whether there are any.
+    eval_used_groups: std::sync::Mutex<BTreeSet<String>>,
+    eval_used: std::sync::atomic::AtomicBool,
     /// The width extension speculations start with once the module graph
     /// is resolved (0: not armed; [`RepositorySet::start_extension_speculation`]).
     extension_speculation_armed: std::sync::atomic::AtomicUsize,
@@ -780,7 +878,7 @@ const INELIGIBLE: &str = "extension preparation not speculated";
 /// What the commit of a speculative extension preparation checks again
 /// (crate::extension_speculation): the lockfile entry the preparation
 /// reused, with what forms its lock key.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct SpeculatedLock {
     definition: crate::module_extension::ExtensionDefinition,
     factors: String,
@@ -1172,6 +1270,9 @@ impl RepositorySet {
                 extension_speculation: Default::default(),
                 speculative_registry_roots: OnceLock::new(),
                 speculative_groups: OnceLock::new(),
+                eval_adoptable: Default::default(),
+                eval_used_groups: Default::default(),
+                eval_used: Default::default(),
                 extension_speculation_armed: Default::default(),
             }),
         }
@@ -2953,6 +3054,15 @@ impl RepositorySet {
         if names.is_empty() {
             return;
         }
+        // The extension groups an evaluator's pool load used speculatively
+        // ([`EvalAdoption`]): prepared here first, where the sequential
+        // engine's load prepares them, before their repositories count.
+        for id in names
+            .iter()
+            .filter_map(|name| name.strip_prefix(EVAL_GROUP_KEY))
+        {
+            self.commit_eval_group(id);
+        }
         let Some(Ok(runtime)) = self.state.direct.get() else {
             return;
         };
@@ -2985,7 +3095,18 @@ impl RepositorySet {
         let Some(Ok(runtime)) = self.state.direct.get() else {
             return;
         };
-        let Some(slot) = runtime.root_slot(repository) else {
+        let slot = runtime.root_slot(repository).or_else(|| {
+            // A repository of a group the evaluator's pool load uses
+            // speculatively (its commit prepares the group first).
+            let (prefix, generated) = repository.rsplit_once('+')?;
+            let id = runtime.catalog.ordinary_routes.get(prefix)?;
+            let prepared = self.eval_adopt_group(id)?;
+            prepared
+                .repositories
+                .get(generated)
+                .map(|repository| &repository.root)
+        });
+        let Some(slot) = slot else {
             return;
         };
         // A root that counts already counts with what its probe obtained.
@@ -3409,7 +3530,7 @@ impl RepositorySet {
     /// is this very preparation). `None` elsewhere.
     fn adopt_speculated_group(&self, id: &str) -> Option<&PreparedOrdinary> {
         if !crate::extension_speculation::active() {
-            return None;
+            return self.eval_adopt_group(id).map(|prepared| &**prepared);
         }
         let prepared = self.speculated_group(id)?;
         ADOPTED.with(|adopted| {
@@ -3424,6 +3545,187 @@ impl RepositorySet {
             }
         });
         Some(prepared)
+    }
+
+    /// On a package load of the evaluator's pool ([`EvalAdoption`]): the
+    /// finished speculative preparation of the group `id`, which the
+    /// coordinator has not prepared yet, to use instead of stopping at the
+    /// group's sentinel (docs/EVALUATOR.md "Extensions on the pool"). The
+    /// group is noted for the load's commit, which prepares it where the
+    /// sequential engine's load does — taking and committing the
+    /// speculation there — and checks that it is this very preparation
+    /// ([`Self::note_committed_roots`]). Used only once the speculation
+    /// finished and its lockfile entry is still reusable (checked once per
+    /// group, as the commit checks it). `None` elsewhere.
+    fn eval_adopt_group(&self, id: &str) -> Option<&Arc<PreparedOrdinary>> {
+        if !eval_adopting() || !crate::repository_demand::no_demand_active() {
+            return None;
+        }
+        let verdict = lock_ignoring_poison(&self.state.eval_adoptable)
+            .get(id)
+            .copied();
+        let adoptable = match verdict {
+            Some(adoptable) => adoptable,
+            None => {
+                let finished = self
+                    .state
+                    .extension_speculation
+                    .finished(id, SPECULATION_WAIT);
+                let adoptable = match finished {
+                    // Requested now (a group the root module does not use),
+                    // running past the wait, or blocked: a later pool round.
+                    None => {
+                        self.state.extension_speculation.request(id);
+                        EVAL_ADOPTIONS[1].fetch_add(1, Ordering::Relaxed);
+                        return None;
+                    }
+                    Some(done) => done && self.eval_adoption_check(id, 0),
+                };
+                *lock_ignoring_poison(&self.state.eval_adoptable)
+                    .entry(id.to_owned())
+                    .or_insert(adoptable)
+            }
+        };
+        if !adoptable {
+            EVAL_ADOPTIONS[1].fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        let prepared = self.speculated_group(id)?;
+        note_eval_group(id);
+        if lock_ignoring_poison(&self.state.eval_used_groups).insert(id.to_owned()) {
+            self.state.eval_used.store(true, Ordering::SeqCst);
+        }
+        EVAL_ADOPTIONS[0].fetch_add(1, Ordering::Relaxed);
+        Some(prepared)
+    }
+
+    /// The group `id`, which an evaluator's pool load used speculatively,
+    /// is prepared here: where the sequential engine's load prepares it
+    /// ([`Self::note_committed_roots`]).
+    fn commit_eval_group(&self, id: &str) {
+        let Ok(runtime) = self.direct_runtime() else {
+            return;
+        };
+        if runtime
+            .ordinary
+            .get(id)
+            .and_then(DemandSlot::ready)
+            .is_none()
+        {
+            EVAL_ADOPTIONS[2].fetch_add(1, Ordering::Relaxed);
+        }
+        if let Err(error) = self.evaluate_ordinary_group(id) {
+            // evaluate_ordinary_group noted it (`check_eval_group`).
+            let _ = error;
+        }
+    }
+
+    /// The group `id` was prepared as `prepared` (`None`: it failed): when
+    /// the evaluator's pool used its speculative preparation, it must be
+    /// that very one ([`EVAL_ADOPTION_MISMATCH`] otherwise).
+    fn check_eval_group(&self, id: &str, prepared: Option<&PreparedOrdinary>) {
+        if !lock_ignoring_poison(&self.state.eval_used_groups).contains(id) {
+            return;
+        }
+        let same = prepared.is_some_and(|prepared| {
+            self.speculated_group(id)
+                .is_some_and(|used| std::ptr::eq(prepared, &**used))
+        });
+        if !same {
+            lock_ignoring_poison(&EVAL_ADOPTION_MISMATCH).get_or_insert_with(|| {
+                format!(
+                    "the module extension group {id} the pool loaded with its speculative preparation was prepared otherwise where the walk prepares it"
+                )
+            });
+        }
+    }
+
+    /// The extension group whose preparation the no-demand sentinel
+    /// `sentinel` of an evaluator's pool load names, when that group is
+    /// being prepared speculatively (requested by the load): the pool's
+    /// lane waits for it ([`Self::wait_eval_group`]) and the load runs
+    /// again.
+    pub(crate) fn eval_group_blocker<'a>(&self, sentinel: &'a str) -> Option<&'a str> {
+        let id = self.speculated_group_blocker(sentinel)?;
+        let pending = self
+            .state
+            .extension_speculation
+            .finished(id, std::time::Duration::ZERO)
+            .is_none()
+            && !lock_ignoring_poison(&self.state.eval_adoptable).contains_key(id);
+        pending.then_some(id)
+    }
+
+    /// The pool's lane: wait (at most a few seconds) for the speculative
+    /// preparation of the group `id` an evaluator's pool load waits for.
+    pub(crate) fn wait_eval_group(&self, id: &str) {
+        self.state.extension_speculation.request(id);
+        let _ = self.state.extension_speculation.finished_waiting(
+            id,
+            std::time::Duration::from_secs(10),
+            true,
+        );
+    }
+
+    /// Whether the finished speculation of the group `id` would commit as
+    /// it is ([`Self::commit_extension_speculation`]'s check, without its
+    /// effects: no hidden-lockfile consultation, nothing printed or
+    /// observed): its lockfile entry is still the reusable one it reused,
+    /// and the groups it used are prepared as that very preparation or can
+    /// be used the same way.
+    fn eval_adoption_check(&self, id: &str, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(runtime) = self.direct_runtime() else {
+            return false;
+        };
+        let (Some(group), Some(prepared)) = (
+            runtime.catalog.ordinary_groups.get(id),
+            self.speculated_group(id),
+        ) else {
+            return false;
+        };
+        let Some((lock, adopted)) = self.state.extension_speculation.with_done(id, |outcome| {
+            (outcome.lock.clone(), outcome.adopted.clone())
+        }) else {
+            return false;
+        };
+        for (used, preparation) in &adopted {
+            let ready = runtime.ordinary.get(used).and_then(DemandSlot::ready);
+            let same = match ready {
+                Some(ready) => Arc::ptr_eq(ready, preparation),
+                None => {
+                    self.speculated_group(used)
+                        .is_some_and(|speculated| Arc::ptr_eq(speculated, preparation))
+                        && self
+                            .state
+                            .extension_speculation
+                            .finished(used, SPECULATION_WAIT)
+                            == Some(true)
+                        && self.eval_adoption_check(used, depth + 1)
+                }
+            };
+            if !same {
+                return false;
+            }
+        }
+        let sentinels = crate::repository_demand::sentinels_raised();
+        let checked = {
+            let _active = crate::extension_speculation::enter();
+            let console = crate::ui::DeferredConsole::start();
+            let (checked, _) = crate::observed_fs::capture_detached(|| {
+                self.extension_lock(group, &lock.definition, &prepared.loaded, lock.factors.clone())
+                    .ok()
+                    .flatten()
+                    .is_some_and(|checked| {
+                        matches!(self.reusable_lock_entry(&checked), Ok(Some(entry)) if entry == lock.entry)
+                    })
+            });
+            checked && console.finish().is_empty()
+        };
+        SPECULATIVE_ROOTS.with(|roots| roots.borrow_mut().clear());
+        checked && crate::repository_demand::sentinels_raised() == sentinels
     }
 
     /// One speculative preparation of the extension group `id` on a worker
@@ -5023,6 +5325,13 @@ impl RepositorySet {
                     .map(Arc::new)
             },
         );
+        // A no-demand thread prepares nothing (the sentinel, or a ready
+        // group).
+        if self.state.eval_used.load(Ordering::Relaxed)
+            && !crate::repository_demand::no_demand_active()
+        {
+            self.check_eval_group(id, prepared.as_ref().ok().map(|prepared| &***prepared));
+        }
         if prepared.is_ok() {
             // The loads a file entered before this group was prepared
             // (`warm_loads`) can execute ahead now.

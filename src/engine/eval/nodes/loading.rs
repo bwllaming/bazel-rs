@@ -155,10 +155,18 @@ pub(crate) fn module_root_blocker(error: &str) -> Option<&str> {
     )
 }
 
+/// The lane's blocker of a pool load waiting for an extension group's
+/// speculative preparation (crate::repository's `EvalAdoption`).
+const EXTENSION_BLOCKER: &str = "\u{2}extension:";
+
 /// The coordinator's lane: materialize the module repository root a
 /// pool unit was blocked on (where demand may fetch), its console writes
 /// kept for the unit's re-run.
 pub(crate) fn lane_fetch(shared: &EvalShared, blocker: &str) {
+    if let Some(group) = blocker.strip_prefix(EXTENSION_BLOCKER) {
+        shared.repositories.wait_eval_group(group);
+        return;
+    }
     let Some(name) = blocker.split_once("repository @@").map(|(_, name)| name) else {
         return;
     };
@@ -204,7 +212,18 @@ pub(crate) fn package_body(
             let guard = crate::repository_demand::no_demand();
             let reuse = crate::repository_demand::reuse_only();
             let committed = crate::repository_demand::committed_unit();
+            // The finished speculative preparations of extension groups
+            // may serve it (committed where the tape replays the node).
+            let adoption = crate::repository::EvalAdoption::start();
             let unit = crate::package::evaluate_load_unit(Arc::clone(repositories), id);
+            // Its outputs' checks too (their repository's root and ignored
+            // subdirectories), under the same guards.
+            let validated = unit
+                .result
+                .as_ref()
+                .ok()
+                .map(|package| validate_package_outputs(repositories, id, package));
+            let groups = adoption.finish();
             drop(committed);
             drop(reuse);
             drop(guard);
@@ -212,6 +231,11 @@ pub(crate) fn package_body(
                 .result
                 .as_ref()
                 .err()
+                .or_else(|| {
+                    validated
+                        .as_ref()
+                        .and_then(|validated| validated.as_ref().err())
+                })
                 .filter(|error| crate::repository_demand::is_inline_rerun_sentinel(error));
             if sentinel.is_some() {
                 // What blocked it is fetched ahead. The aborted attempt's
@@ -239,6 +263,13 @@ pub(crate) fn package_body(
                     .extend(module_events);
                 // A module repository's root: the coordinator's lane
                 // materializes it and the unit loads on the pool again.
+                // An extension group being prepared speculatively: the
+                // lane waits for it and the unit loads on the pool again.
+                if let Some(group) =
+                    sentinel.and_then(|error| repositories.eval_group_blocker(error))
+                {
+                    return Err(Missing::Repo(format!("{EXTENSION_BLOCKER}{group}")));
+                }
                 if let Some(blocker) = sentinel.and_then(|error| module_root_blocker(error)) {
                     lock(&shared.loading.pending_blockers)
                         .entry(id.clone())
@@ -252,21 +283,25 @@ pub(crate) fn package_body(
             // count from its commit on (W6 review F2): where the tape
             // replays the node.
             let mut unit = unit;
-            let roots = std::mem::take(&mut unit.roots);
+            // The groups it used first: their commit precedes their
+            // repositories' (`RepositorySet::note_committed_roots`).
+            let mut roots = groups;
+            roots.append(&mut unit.roots);
             if !roots.is_empty() {
                 let current = cx.current();
                 cx.coord().store.roots.insert(current, roots);
             }
-            unit
+            (unit, validated)
         }
         () => {
             let unit = load_package_attempt_in(repositories, id);
             // An inline load may have prepared what the speculations were
             // blocked on (Engine::load_package's retry).
             repositories.retry_speculations();
-            unit
+            (unit, None)
         }
     };
+    let (unit, validated) = unit;
     // The module events of attempts aborted on the pool print first (as
     // an aborted unit's before its inline re-run).
     let aborted = shared
@@ -310,7 +345,10 @@ pub(crate) fn package_body(
         }
     }
     let value = result.and_then(|package| {
-        validate_package_outputs(repositories, id, &package)?;
+        match validated {
+            Some(validated) => validated?,
+            None => validate_package_outputs(repositories, id, &package)?,
+        }
         Ok(Arc::new(PkgValue::new(Arc::new(package))))
     });
     Ok(NodeValue::Pkg(value))
