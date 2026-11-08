@@ -17,7 +17,9 @@ Codes: 0 success (also `build` without targets: a warning, nothing built),
 1 build/analysis/loading failure, 2 command-line error (unknown option, bad
 option value, undefined `--config`, `run` of no/several/non-executable
 targets, query syntax, unknown command), 3 tests failed, 4 no test targets,
-7 query evaluation error, 34 remote error, 37 `mod`'s invalid subcommand.
+7 query evaluation error, 32 a registry module resolution could not read
+(tests/fixtures/registry_failure_exit_codes), 34 remote error, 37 `mod`'s
+invalid subcommand.
 Not in the matrix: 8 (interrupted: SIGINT, tests/process_cleanup.rs and
 tests/progress_ui.rs), 33 (out of memory, tests/memory_limit.rs), 36 (a
 sandbox setup failure, tests/sandbox.rs).

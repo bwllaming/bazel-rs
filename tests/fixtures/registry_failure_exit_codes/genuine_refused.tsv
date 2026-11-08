@@ -1,0 +1,1 @@
+build --nosuchflag //:a	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: Connection refused

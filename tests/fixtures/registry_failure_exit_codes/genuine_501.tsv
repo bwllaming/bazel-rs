@@ -1,0 +1,29 @@
+build //:a	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+build --nosuchflag //:a	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+build --jobs=abc //:a	2	ERROR: While parsing option --jobs=abc: Parameter 'abc' does not follow correct syntax. This flag takes an integer, or a keyword ("auto", "HOST_CPUS", "HOST_RAM"), optionally followed by an operation ([-|*]<float>) eg. "auto", "HOST_CPUS*.5".
+build --jobs=0 //:a	2	ERROR: While parsing option --jobs=0: Value '(0)' must be at least 1.
+build --jobs=6000 //:a	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+build --show_result=x //:a	2	ERROR: While parsing option --show_result=x: 'x' is not an int
+build //:a --define=x	2	ERROR: While parsing option --define=x: Variable definitions must be in the form of a 'name=value' assignment
+build --config=nosuch //:a	2	ERROR: Config value 'nosuch' is not defined in any .rc file
+build //:a:b	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+build --//:nosuch //:a	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+build --//:flag=x //:a	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+build --@nosuchrepo//:flag //:a	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+test --nosuchflag //:t	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+run --nosuchflag //:tool	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+cquery --nosuchflag //:a	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+aquery --nosuchflag //:a	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+query //:a	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+query --nosuchflag //:a	2	ERROR: --nosuchflag :: Unrecognized option: --nosuchflag
+query 'deps(//:a'	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+query //:a --output=nosuch	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+fetch //:a	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+fetch --nosuchflag //:a	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+fetch --repo=@rules_cc	32	ERROR: Error computing the main repository mapping: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+info --nosuchflag	2	ERROR: --nosuchflag :: Unrecognized option: --nosuchflag
+mod graph	37	ERROR: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
+mod graph --nosuchflag	2	ERROR: --nosuchflag :: Unrecognized option: --nosuchflag
+mod graph --depth=x	2	ERROR: While parsing option --depth=x: 'x' is not an int
+mod nosuchsubcommand	37	ERROR: Invalid subcommand, choose one from : (deps, graph, all_paths, path, explain, show_repo, show_extension, dump_repo_mapping, tidy).
+mod deps	37	ERROR: Error accessing registry <REGISTRY>: Failed to fetch registry file <REGISTRY>/modules/<M>/<V>/MODULE.bazel: GET returned 501 Not Implemented
