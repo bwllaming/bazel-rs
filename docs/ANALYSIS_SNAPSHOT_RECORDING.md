@@ -394,6 +394,14 @@ F2) already travels with.
   of planning (`RepositorySet::record_link_anchors`: every counting root,
   the store, the blocked prefixes; before `settle_plan_taints`, and before
   a query's window closes) — the set is the same at every thread count.
+  The store (`<cache>/repositories`) and so the cache root are created
+  before the window opens (`observed_fs::create_with_window`, registered
+  by the CLI; only a recording command creates them): a speculative
+  fetch, a module-root warm-up or a registry prefetch may create them at
+  any moment of the window, and their CANON records must not depend on
+  whether one came before the end of planning
+  (`BAZEL_RS_DEBUG_STORE_RACE=create` forces it,
+  tests/snapshot_prefetch.rs).
 * **One spelling per path**: `Path` equality ignores a trailing separator
   (`root.join("")` spells `root/`), so a recorder entry keeps the
   byte-wise smallest spelling seen, whatever order the observations come

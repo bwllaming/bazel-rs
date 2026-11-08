@@ -1971,9 +1971,40 @@ fn restat_manifest(record: &mut RepositoryRecord, window_start_ns: i64) {
 
 // ---- the window ------------------------------------------------------------
 
+/// The directories [`open_window`] creates ([`create_with_window`]).
+static WINDOW_DIRECTORIES: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Have [`open_window`] create `directories` (best effort, like
+/// `mkdir -p`) before it opens: the CLI's repository store
+/// (`<cache>/repositories`) and so the cache root. Planning records their
+/// CANON at its end (crate::repository::RepositorySet::record_link_anchors)
+/// while background workers — speculative fetches, module-root warm-ups,
+/// registry prefetches — may create them at any moment of the window: an
+/// outcome depending on which thread came first would make the recording
+/// nondeterministic (a verify-mode mismatch, a spurious miss). Created
+/// before the window opens, the recording always finds them (unless the
+/// cache cannot be written, when no worker can create them either).
+/// Only a recording command creates them: no window, no directories.
+pub fn create_with_window(directories: impl IntoIterator<Item = PathBuf>) {
+    WINDOW_DIRECTORIES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .extend(directories);
+}
+
 /// Open the process's recording window (once per process). Returns false
 /// when a window was already opened.
 pub fn open_window() -> bool {
+    // Before the window starts: a directory created here is no change
+    // inside the window (no racy stat key of its parent).
+    for directory in WINDOW_DIRECTORIES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+    {
+        // Not an observation: what the window's observations find in place.
+        let _ = fs::create_dir_all(directory);
+    }
     if RECORDER.set(Recorder::framed(now_ns())).is_err() {
         return false;
     }

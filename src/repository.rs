@@ -4606,6 +4606,17 @@ impl RepositorySet {
             paths.push(store.to_path_buf());
         }
         paths.extend(self.link_blocked_prefixes());
+        // A test hook (tests/snapshot_prefetch.rs): a background worker
+        // that created the store just before these records — the recording
+        // must be the one of a run whose workers never did
+        // (crate::observed_fs::create_with_window).
+        // snapshot-unrecorded: a debug hook (runs with one are never saved).
+        if std::env::var_os("BAZEL_RS_DEBUG_STORE_RACE").is_some_and(|value| value == "create")
+            && let Ok(store) = self.source_cache_path()
+        {
+            // snapshot-unrecorded: the hook's write, never an observation.
+            let _ = std::fs::create_dir_all(store);
+        }
         for path in paths {
             let _ = crate::observed_fs::canonicalize(&path);
         }

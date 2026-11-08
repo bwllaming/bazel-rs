@@ -1022,3 +1022,51 @@ fn snapshots_saved_at_one_thread_count_verify_and_hit_at_the_others() {
         assert_eq!(hit.stdout, off.stdout, "{threads}");
     }
 }
+
+/// The repository store (`<cache>/repositories`, and so the cache root)
+/// exists from the start of the recording window
+/// (crate::observed_fs::create_with_window): planning records its CANON at
+/// the end (RepositorySet::record_link_anchors), and a background worker —
+/// a speculative fetch, a module-root warm-up, a registry prefetch — may
+/// create it at any moment of the window. On a fresh cache whose store no
+/// sequential step creates, a run where such a worker created it first
+/// (`BAZEL_RS_DEBUG_STORE_RACE=create`, just before the records) records
+/// what a run without one does — in the walk and the evaluator. Before,
+/// the first recorded the store present and the second absent.
+#[test]
+fn a_store_a_background_worker_creates_first_records_the_same() {
+    for analysis in ["walk", "eval"] {
+        let ws = Workspace::new("module(name = 'm')\n");
+        ws.file(
+            "BUILD.bazel",
+            "genrule(name = 'g', outs = ['g.txt'], cmd = 'echo hi > $@')\n",
+        );
+        let fresh = |hook: Option<&str>| {
+            sealed_trees::remove_tree(ws.root.join("cache")).unwrap();
+            let mut extra = vec![("BAZEL_RS_ANALYSIS", analysis)];
+            if let Some(hook) = hook {
+                extra.push(("BAZEL_RS_DEBUG_STORE_RACE", hook));
+            }
+            record(&ws, 1, 0, &["//:g"], &extra)
+        };
+        let reference = fresh(None);
+        let raced = fresh(Some("create"));
+        for recorded in [&reference, &raced] {
+            assert_eq!(
+                recorded.output.status.code(),
+                Some(0),
+                "{analysis}: {}",
+                stderr(&recorded.output)
+            );
+        }
+        if let Some(difference) = raced.differs_from(&reference) {
+            panic!("{analysis}: {difference}");
+        }
+        let store = reference
+            .lines
+            .iter()
+            .find(|line| line.contains("/cache/repositories CANON "))
+            .unwrap_or_else(|| panic!("{analysis}: no store CANON: {:#?}", reference.lines));
+        assert!(store.contains(" CANON path:"), "{analysis}: {store}");
+    }
+}

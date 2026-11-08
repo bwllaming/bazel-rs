@@ -654,6 +654,12 @@ fn run() -> Result<(), String> {
     // its end under its options.
     bazel_rs::cache_gc::install(&cache);
     bazel_rs::cache_gc::record_workspace(&root);
+    // The repository store (and so the cache root) exists before a
+    // recording window opens: planning records its CANON at the end
+    // (RepositorySet::record_link_anchors), and background workers may
+    // create it at any moment of the window (crate::observed_fs::
+    // create_with_window). Commands that never record create nothing.
+    bazel_rs::observed_fs::create_with_window([cache.join("repositories")]);
     bazel_rs::cache_gc::set_options(&rc_options.gc);
     // --repository_cache, --repo_contents_cache and
     // --experimental_repository_cache_hardlinks (BazelRepositoryModule
