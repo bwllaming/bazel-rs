@@ -756,7 +756,15 @@ impl RegistrySession {
         if checksum.is_some_and(|wanted| wanted != actual) {
             return None;
         }
-        if self.mode != LockfileMode::Off {
+        // A local registry's file is never put into the content-addressed
+        // cache: [`Self::read`] reads it directly, so a warm-up must not
+        // either. The put would create the repository cache (`<cache>/
+        // repositories`) on a warm-up thread at a time no sequential step
+        // fixes, and planning's CANON of that store
+        // (RepositorySet::record_link_anchors) would record it absent or
+        // present by timing: a nondeterministic recording (a verify-mode
+        // mismatch, a spurious miss on the next hit).
+        if self.mode != LockfileMode::Off && registry.local_path().is_none() {
             self.cas_put(&actual, &fetched);
         }
         if checksum.is_some() {
@@ -1844,6 +1852,32 @@ mod tests {
         // A second warm-up finds everything cached or already read.
         session.warm_known_files(std::slice::from_ref(&registry));
         assert_eq!(server.total.load(Ordering::SeqCst), 22);
+    }
+
+    /// A warm-up's peek of a local registry's file reads it like the
+    /// sequential read does — directly — and creates no content-addressed
+    /// cache: the put created `<cache>/repositories` on a warm-up thread,
+    /// so planning's CANON of the store recorded it absent or present by
+    /// timing (tests/snapshot.rs
+    /// `verify_mode::local_override_and_file_registry_edits_miss`).
+    #[test]
+    fn peeking_a_local_registry_file_leaves_the_cache_untouched() {
+        let temp = tempfile::tempdir_in(crate::test_temp::root()).unwrap();
+        let root = temp.path().join("registry");
+        std::fs::create_dir_all(root.join("modules/m/1.0")).unwrap();
+        let source = br#"{"type": "local_path", "path": "src/m"}"#;
+        std::fs::write(root.join("modules/m/1.0/source.json"), source).unwrap();
+        let registry = Registry::parse(&format!("file://{}", root.display())).unwrap();
+        assert!(registry.local_path().is_some());
+        let session = session(temp.path(), LockfileMode::Update, None);
+        let relative = "modules/m/1.0/source.json";
+        for peeked in [
+            session.peek(&registry, relative),
+            session.peek_offline(&registry, relative),
+        ] {
+            assert_eq!(peeked.as_deref().map(Vec::as_slice), Some(&source[..]));
+        }
+        assert!(!temp.path().join("cache").exists());
     }
 
     #[test]
