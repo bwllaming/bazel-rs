@@ -1338,3 +1338,224 @@ aquery capture and `status` are linearizer-only; `views`,
 `target_identities`, `input_groups`, `input_memos` and the artifact index
 are shared single-flight; `view_accesses`, `view_artifacts` and the
 tracker's deferral are removed.
+
+## 8. T1: order coupling audit
+
+Branch `eval-t1-audit` (main `c4bcf177`). The plan "compute in any order,
+merge in plan order": a target's phase 2 (prepare + compute + delta) runs
+on the evaluator pool as soon as CT1(K) and the phase-2 results of its
+dependencies, toolchains and aspects exist — not gated on plan order or on
+commits — and a plan-ordered merge buffer applies the deltas in pass 1's
+order (first wins, conflict errors, console, tracker and dump unchanged).
+That is sound only if phase 2 reads nothing another target's **merge**
+writes, other than through its declared dependencies' values. T1 classifies
+every read of `prepare_custom`/`prepare_target`, `compute_target`,
+`DeltaBuilder::custom_target`, `commit_custom_target`,
+`commit_native_target` (+ `commit_native_instrumented`), the dependency
+views (`plan_dependency_view` → `dependency_view_in`), aspect applications
+(`plan_aspect_collection` → `plan_aspect_application`) and toolchain
+loading (`load_toolchain_context`): **(A)** a dependency's value (the
+dependency's, toolchain implementation's or aspect's phase-2 result, the
+target's own CT1, a phase-1 memo node) or **(B)** state another target's
+merge writes.
+
+### The reads
+
+(A), no change but the source: `PlanReads::{dry, providers, provider,
+provider_keys, runfiles_info, validation, repositories}` are keyed by the
+dependency's (or toolchain implementation's) configured target key
+(`shared_artifacts_in` for a rule target, `dependency_view_in`,
+`planned_validation_in`, `dependency_repositories_in`,
+`load_toolchain_context`, the template variables of `prepare_custom`, the
+natives' `artifacts`/`inputs`/`planned_validation`/`custom_providers`/
+`runfiles_info` reads, an alias's forwarded providers); the phase-1 maps
+(`configured`, `rule_delegations`, `configured_rules`, `toolchain_contexts`,
+`exec_group_contexts`, `exec_configurations`, `group_exec_configurations`,
+`edge_configs`, `aspect_attribute_configs`, `aspect_toolchains`,
+`empty_configuration_rules`, `toolchain_implementations`); packages and
+targets (`cx.target`, the transition allowlist's package group, genquery's
+scope, a test_suite's implicit tests, starlark_doc_extract's module); the
+configurations. Today they are read from the engine's published maps; under
+T2 they become need edges (`Ct2`, `Ct1`, `Pkg`/`Tgt`/`Group`, memo nodes).
+The last three phase-1 maps are pass-1 decisions (first visit): available
+once pass 1 has linearized K (or computed on the variant and checked with
+`same_observable` at the merge, as pass 1 does for CT1).
+
+(B):
+
+| # | Read (file: function) | What it reads | Differs with the merge order? | How it becomes (A) / where it goes |
+|---|---|---|---|---|
+| B1 | engine.rs `ConcurrentArtifactIndex::get` via `DeltaBuilder::{lookup, artifact}` (action inputs, DefaultInfo `defaults`, runfiles support entries and executable, `SharedInputs` and tool-runfiles group fills), `commit_native_target` (a genrule tool's executable), `indexed_artifact` (a filegroup's `output_group` files) | File → Artifact; visible by stamp (`turn`/`stamp_ahead`/`view_artifacts`) | **Producer only**: a shared output's Artifact names the first owner's action (`output_artifact`'s `first`); a different-label owner's File (a distinct entry) names the winner, a same-label cross-configuration File is one entry registered by the winner. Source Artifacts and every other field are functions of the File. Visibility is readiness, not value | An index without stamps filled when a phase-2 **result** is published (each File by its declaring owner, which is in the reader's closure: Files reach a target only through providers and views); provisional producer = the owner's own action; canonicalized at the merge (T3 alias map) |
+| B2 | engine.rs `shared_artifacts_in` (Output target) → `PlanReads::declared(config, path)` | the output-file label's Artifact in the generating rule's configuration (`rule_delegations`) | No in value (the generating rule predeclares it: `replace`; another writer of the path with `replace` is a conflict); its producer as B1 | Read the generating rule's `Ct2` value (its predeclared outputs) instead of the global map; the loser's `Declared { replace }` is decided at its merge |
+| B3 | engine.rs `check_output`/`register_output`, delta.rs `DeltaBuilder::register_output` (`Combined` over the build's producers), `delta_meets_producers`, `PathHashes::{meet, meet_earlier}`, parallel.rs `Pipeline::{unsettled, meets_known}` | the producers of output paths, written by earlier merges | **Yes**: who is first (New / Shared / conflict), the `Shared` ops, the dropped nodes, the conflict text | Merge-time only (T3): the merge checks every `Output` op against the producers; a loser's delta is rebuilt there; `PathHashes`, the unsettled-package rules and the commit-ahead barriers go away |
+| B4 | engine.rs `plan_aspect_collection` / `plan_aspect_application` (inside the first dependent's prepare), `aspect_providers`, `aspect_target_identities` | an aspect application computed — actions registered, console owner, prints — by whichever dependent prepares first | Value no (a function of the base target and its dependencies); **placement yes** (its actions, owner and prints land at the first preparer) | `Aspect(AspectApplicationKey)` nodes with their own delta, merged right before the first dependent in plan order (the walk's position) |
+| B5 | engine.rs `prepare_custom` (`custom.target_platform`, `ctx_surface`), `plan_aspect_application`, `commit_native_target` (genrule surface), delta.rs `Engine::remote_platforms`, parallel.rs `platform_resolved` | `Engine::platforms`: a deferred default target platform resolved by a phase-2 commit (`deferred_target_platform`), an execution platform analyzed yet | Value no (an implementation that asks gets NEEDS_TARGET_PLATFORM and is computed again with it; `remote_platforms` decides only where the delta is built); **placement yes**: the platform's tree is planned at the first asker's commit | `Platform` node edge for the value; the tree's plan entries at the first asker's merge (the ordered flush rule of S3 stays) |
+| B6 | engine.rs `ensure_workspace_status_with` (via `DeltaBuilder::ensure_status`, `indexed_artifact`, a stamped genrule), delta.rs `resolve_build_info` | the workspace status planned on first need | Value no (`Artifact::workspace_status`); placement of its nodes yes | Merge-time: the first merged delta that needs it plans it (workers fall back today: 12 deltas) |
+| B7 | delta.rs `SingleFlight` memos `input_groups` (tool runfiles trees), `input_memos` (memoized depset walks, keyed by the walk's address — kept alive by the process-wide flat memo) | Artifacts looked up by the first filler | Producer only (B1) | Keep (single-flight); fill from the provisional index; lowering of a contested reader at its merge |
+| B8 | engine.rs `views` (`DependencyViews`), `target_identities`, `native_output_groups` (and the frozen walk's `BatchMemos`) | memos keyed by the dependency's key, filled by the first consumer | No: functions of the dependency's values; a view keeps Files only (B1's Artifacts are converted with `Artifact::file`) | (A) memos; keep single-flight |
+| B9 | `console_owners`, `aquery_owner`, `note_analysis_print`, warnings, the tracker's accesses (`SharedRecord`) | writes | — | Merge-time, at the entry's position (as today) |
+| B10 | `compute_target`'s repository demand (NEEDS_REPOSITORY, re-run at the commit slot) | whether a repository is fetched | Placement only | `Missing::Repo` on the lane, as in phase 1 |
+
+**No producer choice reaches providers or views.** `Artifact` is private
+to `crate::engine`; providers are frozen Starlark values, `DependencyView`,
+`TargetRunfiles` and depsets are defined outside it and hold `File`s; a
+`File` has no producer (`starlark_types.rs` `FileData`: path, short path,
+owner, is_source, is_directory, is_symlink) and `Artifact::file` depends on
+the producer's presence, never its id. The tripwire test
+`engine::tests::file_names_no_producer` destructures `FileData` without
+`..` (a new field fails it) and checks that two owners' Artifacts of one
+shared output give the same File. The Starlark compute reads only its
+snapshot (views, rule, configuration): order-free.
+
+### Measured (`BAZEL_RS_ORDER_AUDIT=1`)
+
+`src/engine/order_audit.rs`: hooks at the merge (`DeltaOp::Shared`, the
+coordinator's `register_output`), `shared_artifacts_in`,
+`dependency_view_in`, the target-platform reads, `deferred_target_platform`,
+`ensure_workspace_status_with`, `plan_aspect_collection` and
+`commit_custom_target`, and a scan of the planning state at the end of phase
+2: a **contested reader** is a planned target (action owner) whose result
+names a shared action's winning id — its nodes' generated inputs, its
+shared input groups, its files to build (`dry`), its runfiles support's
+artifacts — the winner itself excepted (an upper bound: a reader through the
+winner's own chain is counted too). `BAZEL_RS_ORDER_AUDIT_LIST=1` lists the
+winners and readers. Off: the hooks are behind one `LazyLock` flag; dumps
+identical (below).
+
+~/code `80d6724f3a` private clone, `build --nobuild //src/...` (walk; `test
+--nobuild` gives the same numbers), fast release build:
+
+| | |
+|---|---|
+| plan entries | 133,156 |
+| shared output registrations (contested Files: a later owner's File whose Artifact names the winner) | 47,761 |
+| shared actions (winners) = contested paths | 12,958 |
+| owners that shared (losers) | 464 |
+| action / prefix conflicts | 0 |
+| **contested readers** | **836 (0.63%)**: 68 losers, 768 others |
+| — through their nodes' own inputs / shared input groups / `dry` / runfiles support | 215 / 26 / 621 / 117 (only through `dry`: 621, i.e. no action of theirs reads it) |
+| — references | node inputs 189,003, group inputs 2,544, dry 180,587, runfiles 73,508 |
+| winners reading their own shared outputs | 5 |
+| dependency views built from a contested Artifact (File kept only) | 180,824 of 1,234,986 |
+| output-file label resolutions (`declared`) | 440 (401 paths), contested 0 |
+| target-platform reads | 41,396 (1,363 deferred); platforms resolved by phase 2: 0 |
+| workspace status planned on first need | 1 (`--nobuild`: no status nodes, 0 readers) |
+| aspect applications planned inside a dependent's prepare / memo hits of other dependents | 1,777 / 64,793 |
+| Starlark deltas: worker / coordinator / rebuilt because an output met a producer / workspace status | 35,885 / 2,514 / 346 / 12 |
+| today's waits this removes (PERF-PARALLEL) | unsettled package 19,758, enclosing 461, enclosed 1,434, outputs 68; `Pipeline` parks ~21.7k |
+
+Every shared action is aspect_rules_js's: npm package stores of different
+packages (`.aspect_rules_js/node_modules/<pkg>`) sharing their dependencies'
+symlink/copy actions, and `copy_to_bin` of one source by many targets of a
+package (`//src/ts` 4,992 winners, `//src/website3` 4,523, `//src/ts/neui`
+1,608, `//src/vscode/beyondwork` 881, …). The readers are the stores'
+`node_modules/<pkg>` link targets (450, `dry` only), the stores (120), and
+the binaries/tests/`*_runfiles`/`*_js_info_files` above them.
+
+**Gate: met.** Contested readers 0.63% ≤ ~1%; no producer choice in
+providers or views (static: type privacy + tripwire; measured: the 180,824
+contested Artifacts views read reach them as Files). Every other (B) read is
+value-neutral (B4–B8) or merge-time already (B3, B9).
+
+Behaviour off: `BAZEL_RS_DUMP_ACTIONS=1` stderr (6,486,167 lines, the
+elapsed-time line dropped) identical for main's installed binary
+(`c4bcf177`), the branch with the audit off and on (the `ORDER-AUDIT`
+lines dropped).
+
+### T2: phase 2 as an order-free node
+
+`Ct2(CtKey)` runs prepare + compute + delta on the pool. Its needs:
+`Ct1(K)`; for every dependency edge (label, edge configuration) the `Ct2`
+of the dependency (after the alias chain and delegation, as
+`dependency_view_in` keys it); for an output-file edge the `Ct2` of the
+generating rule in its delegated configuration; the `Ct2` of each resolved
+toolchain implementation; the `Aspect` nodes of its edges' aspect
+collections; `Platform` of its target platform (value only); `Pkg`/`Tgt`/
+`Group` for its lookups; `Missing::Repo` for a repository. Its value: the
+results its dependents read (dry, providers + keys, runfiles info,
+validation, transitive repositories, the predeclared outputs' Artifacts)
+and the delta (ops + prints + console owner), plus `platform_read`.
+
+- **Reads → edges.** `PlanReads` gets a node-backed implementation (the
+  needed `Ct2` values; `PlannedResults` of the frozen walk is the shape);
+  `declared(config, path)` becomes the generating rule's value (B2); the
+  phase-1 maps become `Ct1`/memo node reads (the pass-1 decisions from pass
+  1's output, or checked at the merge).
+- **The artifact index** loses its stamps (`turn`, `stamp_ahead`,
+  `view_artifacts`, `ConcurrentArtifactIndex::register`'s replace-ahead):
+  a `Ct2` publishes its outputs' **provisional** Artifacts (producer = its
+  own action id) when its result is published; a same-label File registered
+  by two owners keeps either (both are canonicalized at the merge). Source
+  Artifacts are computed from the File; the status Artifacts are fixed values.
+- **Native rules as delta builders.** `commit_native_target` (genrule,
+  filegroup, alias, test_suite, genquery, starlark_doc_extract, platform
+  providers, java_plugins_flag_alias) and `commit_native_instrumented`
+  write the planning state directly; they become a
+  `DeltaBuilder::native_target` emitting `Providers`, `Dry`, `RunfilesInfo`,
+  a new `Validation` op, genrule/genquery/doc-extract `Output` (native
+  producer), `Artifact`, `Declared` and `Node` ops — the same order as
+  today's writes — so the 91k natives committed ahead on the coordinator
+  (~4 s) move to the pool. Their `inputs()` check ("different artifacts map
+  to the same execution path", comparing producers) runs on canonical
+  producers: in the delta build when no input is provisional-shared, else at
+  the merge.
+- **Aspects**: `plan_aspect_collection`'s applications become `Aspect`
+  nodes (their own prepare/compute/delta over the base target's `Ct2` and
+  their dependencies'); the dependent reads their providers (the merged
+  view is a function of node values).
+- **Stays merge-time**: output registration (B3), the workspace status (B6),
+  the deferred platform's tree (B5), console/owners/tracker (B9).
+
+### T3: the plan-ordered merge buffer
+
+Deltas land in a buffer by plan index in completion order; the cursor
+merges the next one as soon as it is present (`merge_ops`, batches split
+over 2–3 threads where nothing reads between, §6). At each merge:
+
+1. **Producers** (exact, as today): each `Output` op checked against the
+   build's producers. A conflict is the build's error at that position
+   (**fail-fast stop**: the evaluator switches to frontier-only — the
+   existing `first_error` mode —, the buffer beyond is dropped; with
+   `--keep_going` recorded and continued). A `Shared` registration makes the
+   delta a **loser**: it is rebuilt here from its kept `AnalysisResult`
+   (no Starlark re-run; today's `meets_producer` path recomputes, 346 on
+   ~/code, ~1 s): shared actions plan no node, its outputs' Artifacts name
+   the winner, `Declared` keeps the winner's entry unless predeclared; and
+   the **alias map** records `loser action id → winner id`.
+2. **Contested readers**: a delta lists the foreign action ids its
+   Artifacts name (built with it, a few per delta); if one is in the alias
+   map, its lowering and native input checks run here on canonical ids
+   (the delta is rebuilt from its kept result, or its `Node`/`Dry`/
+   `RunfilesNodes` ops rewritten through the map when it has no
+   producer-comparing check). **No cascade**: the rewrite changes only that
+   delta's Artifacts; its dependents computed from Files (providers, views)
+   are unaffected, and their own Artifacts are canonicalized at their own
+   merge — later in plan order (postorder), when every alias of their inputs
+   is known (the winner precedes the loser, the loser precedes its readers).
+   ~/code: ≤ 836 + 464 entries (≤ 1%).
+3. Effects at the position: prints, console owners, aquery owners, tracker,
+   the workspace status on first need, an aspect application's delta before
+   its first dependent, the deferred platform's tree.
+
+**Buffer cap and boost**: unmerged deltas ≤ 16,384 (§1); beyond it only the
+cursor's missing entries and what they need run (`Evaluator::boost` on the
+cursor's `Ct2` and, transitively, its waits; deferred nodes otherwise).
+
+### Effort
+
+| Step | Work | Estimate |
+|---|---|---|
+| T2a | `Ct2` body on the pool over node reads (`PlanReads` over needed values, output-file edges, phase-1 values from `Ct1`), the stamp-free provisional index | 1 week |
+| T2b | natives as delta builders (`DeltaBuilder::native_target`, `Validation` op), verified op-for-op with `BAZEL_RS_VERIFY_DELTA` | 1 week |
+| T2c | `Aspect` nodes from `plan_aspect_collection` (1,777 applications on ~/code) | 1 week |
+| T3 | merge buffer, alias map, loser rebuild without recompute, contested-reader canonicalization, fail-fast, cap, boost; delete `Pipeline` (unsettled, commit ahead, barriers), `PathHashes`, the artifact stamps | 1.5–2 weeks |
+| verify | thread matrix + jitter + `BAZEL_RS_EVAL_RESTARTS` on the suites, ~/code dumps, `BAZEL_RS_ORDER_AUDIT` as a regression report | 0.5–1 week |
+
+Risks: a File reaching a target outside its dependency closure (none found:
+Files flow through providers and views; a lookup that misses is today's
+"input has no declared artifact" error, then at the merge); the
+same-label cross-configuration File (one index entry for two owners: both
+ids canonical at the merge); memory of buffered results (cap); pass-1
+decisions (`empty_configuration_rules`, `forced_exec`) needed before a
+`Ct2` can start — pass 1 streams ahead of phase 2, or the merge checks the
+variant.
