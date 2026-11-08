@@ -478,6 +478,9 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
     /// with the running attempt's records (in its node's order).
     pub(crate) fn defer(&self, apply: Deferred<'e>) {
         if self.on_pool() {
+            // In the running attempt's shard, after its earlier records;
+            // without one (never on the pool: every body runs in an
+            // attempt) any shard does, the update is order-free.
             let id = with_running(|running| running.last().map(|running| running.id));
             self.inbox
                 .push(id.unwrap_or(NodeId(0)), Record::Apply(apply));

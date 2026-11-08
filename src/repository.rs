@@ -3739,7 +3739,7 @@ impl RepositorySet {
     /// sequential pass commits it at its demand, as any speculation's); a
     /// local one that calls `execute()` is never speculated.
     pub(crate) fn eval_local_blocker<'a>(&self, sentinel: &'a str) -> Option<&'a str> {
-        if self.state.replay.is_some() || !self.state.speculation.accepting() {
+        if self.replay_capturing() || !self.state.speculation.accepting() {
             return None;
         }
         let canonical = sentinel_repository(sentinel)?;
@@ -4320,6 +4320,14 @@ impl RepositorySet {
         self.materialize_ordinary(prepared, repository)
     }
 
+    /// Whether local executions are (or may be) captured for replay: this
+    /// set's capture, or the process-wide one installed after the set was
+    /// made (crate::snapshot::replay::install: no local rule runs ahead
+    /// then).
+    fn replay_capturing(&self) -> bool {
+        self.state.replay.is_some() || crate::snapshot::replay::global().is_some()
+    }
+
     /// Whether the pool's lane asked repository speculation for the local
     /// rule `canonical` ([`Self::wait_eval_local`]): the coordinator's own
     /// evaluation of its root then takes the speculation (waiting while it
@@ -4333,7 +4341,7 @@ impl RepositorySet {
     /// local executions are captured for replay (crate::snapshot::replay):
     /// [`EVAL_LOCAL`] while the guard lives.
     fn eval_local_scope(&self, canonical: &str) -> Result<EvalLocalGuard, String> {
-        if self.state.replay.is_some()
+        if self.replay_capturing()
             || !lock_ignoring_poison(&self.state.eval_local).contains(canonical)
         {
             return Err("a local repository rule is never speculated".to_owned());
