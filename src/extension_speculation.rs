@@ -48,6 +48,23 @@ const MAX_ATTEMPTS: u32 = 4;
 
 thread_local! {
     static ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The demanded flag of the speculation running on this thread
+    /// ([`Pool::take`] sets it while the coordinator waits for it).
+    static DEMANDED: std::cell::RefCell<Option<Arc<AtomicBool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether the speculation running on this thread is waited for by the
+/// coordinator: its transfers are demanded, not speculative
+/// (crate::repository_speculation::speculative; a speculation reads
+/// registry roots offline, so today it transfers nothing).
+pub(crate) fn demanded() -> bool {
+    DEMANDED.with(|demanded| {
+        demanded
+            .borrow()
+            .as_ref()
+            .is_some_and(|demanded| demanded.load(Ordering::Relaxed))
+    })
 }
 
 /// Whether this thread prepares an extension group speculatively.
@@ -86,7 +103,8 @@ enum Entry<O> {
     Queued {
         attempts: u32,
     },
-    Running,
+    /// Its demanded flag ([`demanded`]).
+    Running(Arc<AtomicBool>),
     Done(Box<O>),
     Blocked {
         error: String,
@@ -225,7 +243,8 @@ impl<O: Send + 'static> Pool<O> {
         let mut waited = None;
         loop {
             match state.entries.get(id) {
-                Some(Entry::Running) => {
+                Some(Entry::Running(demanded)) => {
+                    demanded.store(true, Ordering::Relaxed);
                     if waited.is_none() {
                         waited = Some(std::time::Instant::now());
                         state.counts.waited += 1;
@@ -317,7 +336,7 @@ impl<O: Send + 'static> Pool<O> {
             && state
                 .entries
                 .values()
-                .any(|entry| matches!(entry, Entry::Queued { .. } | Entry::Running))
+                .any(|entry| matches!(entry, Entry::Queued { .. } | Entry::Running(_)))
         {
             state = self
                 .shared
@@ -413,6 +432,7 @@ impl<O: Send + 'static> Pool<O> {
 
 fn worker<O>(shared: &Arc<Shared<O>>, index: u64) {
     loop {
+        let demanded = Arc::new(AtomicBool::new(false));
         let (id, attempts, job, jitter, sequence) = {
             let mut state = lock(&shared.state);
             loop {
@@ -427,7 +447,9 @@ fn worker<O>(shared: &Arc<Shared<O>>, index: u64) {
                     let Some(job) = state.job.clone() else {
                         return;
                     };
-                    state.entries.insert(id.clone(), Entry::Running);
+                    state
+                        .entries
+                        .insert(id.clone(), Entry::Running(demanded.clone()));
                     state.running += 1;
                     state.counts.started += 1;
                     state.next += 1;
@@ -448,8 +470,11 @@ fn worker<O>(shared: &Arc<Shared<O>>, index: u64) {
         let finished =
             crate::repository_speculation::with_cancel(Some(shared.cancel.clone()), || {
                 let _active = enter();
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&id)))
-                    .unwrap_or(Finished::Failed)
+                DEMANDED.with(|current| *current.borrow_mut() = Some(demanded.clone()));
+                let finished = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&id)))
+                    .unwrap_or(Finished::Failed);
+                DEMANDED.with(|current| *current.borrow_mut() = None);
+                finished
             });
         drop(job);
         {
@@ -498,10 +523,13 @@ mod tests {
         let started_tx = Mutex::new(started_tx);
         let job: Job<String> = Arc::new(move |id: &str| {
             assert!(active());
+            assert!(!demanded());
             lock(&started_tx).send(id.to_owned()).unwrap();
             lock(&release_rx)
                 .recv_timeout(Duration::from_secs(60))
                 .unwrap();
+            // "npm" is released while the coordinator waits for it.
+            assert_eq!(demanded(), id == "npm", "{id}");
             match id {
                 "blocked" => Finished::Blocked("needs other".to_owned()),
                 "failing" => Finished::Failed,

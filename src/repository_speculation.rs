@@ -116,7 +116,8 @@ pub(crate) fn speculative() -> bool {
             .borrow()
             .as_ref()
             .is_some_and(|current| !current.demanded.load(Ordering::Relaxed))
-    }) || ADOPTED.with(|adopted| adopted.borrow().is_some())
+    }) || (ADOPTED.with(|adopted| adopted.borrow().is_some())
+        && !crate::extension_speculation::demanded())
         || crate::module_root_warm::active()
 }
 
@@ -376,15 +377,26 @@ impl Speculations {
 
     /// Wait (at most `timeout`) while the speculation of `canonical` runs:
     /// a committed load demands it now (its transfers are demanded,
-    /// [`speculative`]).
-    pub(crate) fn wait_running(&self, canonical: &str, timeout: std::time::Duration) {
+    /// [`speculative`]). Whether it finished; after a timeout its transfers
+    /// are speculative again unless something else demanded them (the
+    /// coordinator's [`Self::take`] marks them again whenever it wakes).
+    pub(crate) fn wait_running(&self, canonical: &str, timeout: std::time::Duration) -> bool {
         let deadline = std::time::Instant::now() + timeout;
         let mut state = lock(&self.shared.state);
+        let mut marked: Option<Arc<AtomicBool>> = None;
         while let Some(Entry::Running(demanded)) = state.entries.get(canonical) {
-            demanded.store(true, Ordering::Relaxed);
+            if marked.is_none() && !demanded.swap(true, Ordering::Relaxed) {
+                marked = Some(demanded.clone());
+            }
             let now = std::time::Instant::now();
             if now >= deadline {
-                return;
+                if let Some(demanded) = marked {
+                    demanded.store(false, Ordering::Relaxed);
+                    drop(state);
+                    // A coordinator waiting in `take` marks it again.
+                    self.shared.changed.notify_all();
+                }
+                return false;
             }
             state = self
                 .shared
@@ -393,6 +405,7 @@ impl Speculations {
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         }
+        true
     }
 
     /// The coordinator demands `canonical`: the outcome of its speculation
@@ -858,18 +871,37 @@ mod tests {
         speculations.start(1, job, Arc::new(|| {}), 0);
         // Nothing runs: no wait.
         let started = std::time::Instant::now();
-        speculations.wait_running("idle", Duration::from_secs(60));
+        assert!(speculations.wait_running("idle", Duration::from_secs(60)));
         assert!(started.elapsed() < Duration::from_secs(30));
         speculations.request("r");
         started_rx.recv_timeout(Duration::from_secs(60)).unwrap();
-        // Bounded.
-        speculations.wait_running("r", Duration::from_millis(20));
+        // Bounded: after the timeout its transfers are speculative again.
+        assert!(!speculations.wait_running("r", Duration::from_millis(20)));
         assert!(speculations.hides("r"));
+        let Some(Entry::Running(demanded)) =
+            lock(&speculations.shared.state)
+                .entries
+                .get("r")
+                .map(|entry| match entry {
+                    Entry::Running(demanded) => Entry::Running(demanded.clone()),
+                    _ => Entry::Failed,
+                })
+        else {
+            panic!("running");
+        };
+        assert!(
+            !demanded.load(Ordering::Relaxed),
+            "not demanded after the timeout"
+        );
         std::thread::scope(|scope| {
             let waiter = scope.spawn(|| speculations.wait_running("r", Duration::from_secs(60)));
             std::thread::sleep(Duration::from_millis(50));
+            assert!(
+                demanded.load(Ordering::Relaxed),
+                "demanded while waited for"
+            );
             release_tx.send(()).unwrap();
-            waiter.join().unwrap();
+            assert!(waiter.join().unwrap());
         });
         assert!(!speculations.hides("r"));
         speculations.stop();

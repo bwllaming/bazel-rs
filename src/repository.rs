@@ -767,8 +767,11 @@ struct PreparedOrdinary {
 }
 
 /// How long a committed load's probe waits for the speculation executing
-/// the repository it demands ([`RepositorySet::published_after_speculation`]).
-const SPECULATION_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+/// the repository it demands ([`RepositorySet::published_after_speculation`]):
+/// a warm reuse takes milliseconds; a long execution (a download) is not
+/// worth a parked loading worker — the unit aborts as before and re-runs
+/// once the root is published, or inline at its slot.
+const SPECULATION_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The error of a speculative extension preparation that is not
 /// eligible (never shown: the coordinator prepares the group itself).
@@ -4435,7 +4438,12 @@ impl RepositorySet {
     /// names). The lookup itself (and what it notes for the snapshot) runs
     /// every time. The entries live in this set's write-once state (catalog,
     /// prepared groups, pinned tables) and are never freed or changed while
-    /// it lives, so an entry's address identifies its content.
+    /// it lives, so an entry's address identifies its content. That holds
+    /// for a speculative preparation too (crate::extension_speculation): a
+    /// speculation using another group's preparation resolves mappings
+    /// from it, and `speculative_groups` keeps every such preparation alive
+    /// for the set's lifetime, also one whose commit was dropped — its
+    /// address is never reused for another table.
     pub fn shared_mapping(
         &self,
         repository: &str,
@@ -4659,9 +4667,13 @@ impl RepositorySet {
         if !crate::repository_demand::committed_unit_active() {
             return None;
         }
-        self.state
+        if !self
+            .state
             .speculation
-            .wait_running(canonical, SPECULATION_WAIT);
+            .wait_running(canonical, SPECULATION_WAIT)
+        {
+            return None;
+        }
         let runtime = self.direct_runtime().ok()?;
         let slot = match runtime.roots.get(canonical) {
             Some(slot) => slot,
