@@ -365,6 +365,7 @@ pub(super) fn report(state: &ActionPlanning, plan: usize, top: ConfigId) {
         .collect::<Vec<_>>()
         .join(" ");
     line(format_args!("ORDER-AUDIT deltas {deltas}"));
+    // snapshot-unrecorded: a diagnostic switch; it never changes the plan.
     if std::env::var_os("BAZEL_RS_ORDER_AUDIT_LIST").is_some() {
         for (winner, owners) in &audit.winners {
             line(format_args!(
