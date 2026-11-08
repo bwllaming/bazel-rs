@@ -470,6 +470,16 @@ change announced to the other two workers; adding a helper is not.
   - `Coord::{begin_attempt, finish_attempt, abandon_attempt}` take/return
     the `Running` attempt (the thread-local stack is the bodies').
 
+- 2026-11-08 (eval-csmatch, the CsMatch split): `Phase1Cx::{scratch,
+  ct1_done}` (new): the speculative phase 2s' scratch engine and the done
+  CT1 values without the coordinator's lock; `Coord::ct1_done` is a
+  sharded `Ct1Done`. `NodeKey::Ct2` is no longer coordinator-only (a
+  pooled evaluation speculates it on the pool; the sequential pass runs
+  it inline as before). `Evaluator::evaluate_values` (new): `evaluate`
+  without the outcome's scan. `Pass1::take_flush_point` (new): where each
+  `Flush` of the tape happens. `progress::analysis_counts` includes the
+  configured-target count.
+
 ## 4. Stages and gates
 
 | Stage | Work | Gate |
@@ -540,7 +550,7 @@ cquery root checkpoint: S4).
 | toolchain / execution-platform cycle reports | the bodies; a memoized failure carrying a report from another registration's chain is reworded for the current chain (`EvalHost::reword_cycle_report`: the walk re-analyzes the failed target there) | built bottom-up (`linearize::chains`): created with no chain where detected (an in-progress check, or a back edge to the registration), each failing configured target adds itself, the registration renders it; dependency cycles likewise (rendered by the requested target's segment, with the test-trimmed root) |
 | aspect memos (predicate + prints, attr aspects, toolchains, attribute configurations) | `FirstVisit`, written through | memo **scopes**, not nodes: every attempt computes them, `MemoBegin`/`MemoEnd` delimit the computation's events, pass 1 replays them at the first linearized use and skips later uses (the walk's hits; a different value digest is a divergence) |
 | transition cache (+ prints) | `FirstVisit`, written through | `Transition` nodes (input registered in `EvalShared::transitions`); a failure is applied again by the requester (the walk does not memoize failures) |
-| Starlark `flag_values` (CsMatch after a flush) | the flush runs phase 2 of pass 1's plan prefix inside the body | the flush still runs at the config_setting's `Flush` (its errors are the walk's there); the FeatureFlagInfo is read through a `Ct2(flag)` node computed by today's phase-2 path on the coordinator; the matching stays in the config_setting's CT1 (the full split is open, see below) |
+| Starlark `flag_values` (CsMatch after a flush) | the flush runs phase 2 of pass 1's plan prefix inside the body | the flush still runs at the config_setting's `Flush` (its errors are the walk's there); the FeatureFlagInfo is read through a `Ct2(flag)` node computed by today's phase-2 path on the coordinator; the matching stays in the config_setting's CT1. **eval-csmatch** (below): on the pool the `Flush` is a marker the tape applies, the `Ct2(flag)` a speculative phase 2 off the sequential pass |
 | `--toolchain_resolution_debug` events | printed from resolution, deduplicated process-wide | `Event::Info` through the transcript, printed and deduplicated at the linearized position |
 
 - **Pass 1** (`pass1::Pass1`) replays transcripts depth first over the
@@ -652,7 +662,8 @@ order decides is pass 1's (the table above).
   to the attempt that first needed it (S1: "the walk looks targets up
   inline"); with parallel completion they belong at the first linearized
   use — make them a memo (`MemoUse`, or the `Pkg` node's transcript).
-- **Open** (not in this part): the CsMatch split proper (the matching as a
+- **Open** (not in this part; done in eval-csmatch below, with the
+  matching kept in the config_setting's CT1): the CsMatch split proper (the matching as a
   node of its own needing the flags' CT2, so that a config_setting's CT1
   does not wait for phase 2) needs the pool's partial transcripts
   (interface changes above) and moves the flush's error wording from the
@@ -765,6 +776,131 @@ later rounds help (75 → 59 s). **The S2 gate (phase 1 ≤ 2 s) needs the
 CsMatch split** (the flag's CT2 as a node, the matching without a
 flush), then the pool can take the subtrees below the config_settings.
 `EVAL_VERIFY` clean on `build`/`test --nobuild //src/...`.
+
+### S2, the CsMatch split (eval-csmatch)
+
+Branch `eval-csmatch` (main `08c7174b`). A config_setting with Starlark
+`flag_values` keys no longer waits for the sequential pass:
+
+- **The flush is a marker.** On the pool `EvalHost::flush_pending` emits
+  `Event::Flush` and continues (no linearization in the body). Pass 1
+  replays it where the walk flushes; the tape's `Flush` runs phase 2 of
+  the plan so far there (`Coord::flush`, unchanged), so the console order,
+  the flush's phase-2 work and its errors are the walk's. The inline
+  driver (one thread, and the sequential pass of a pooled evaluation)
+  flushes in the body as before (S1's baseline).
+- **The flag's `Ct2` off the sequential pass** (`nodes::speculate`,
+  `eval_host::flag_ct2`): the providers the planning state holds once a
+  flush planned the key; otherwise a **speculative phase 2**: the flag's
+  subtree as a fresh walk analyzes it (`Coord::subtree`: a pass 1 over
+  the subtree's transcripts with one `Reach` segment; what a flush or an
+  earlier speculation planned is imported instead of replayed — its
+  phase-2 entries (`dry`, providers, provider keys, runfiles, validation,
+  native output groups, transitive repositories) copied from the planning
+  state; the registration and platform memos' declarations are skipped),
+  its plan entries prepared, computed and committed on a **scratch
+  engine** (`Scratch`: `fork_for_verify` of the engine before the pool
+  runs, sequential planning, the subtree's CT1 values and the published
+  memo values and packages published into it, the configurations absorbed
+  from `EvalShared`). Only the providers are kept: console writes,
+  observations, captures, `--toolchain_resolution_debug` events and the
+  progress counters of the run are dropped (`speculate::isolated`,
+  `capture::isolated`); the workspace status is never computed there
+  (`speculate::speculating`). A run that cannot be speculated (a
+  transcript freed, a repository sentinel, a failure anywhere in the
+  subtree, `--profile`) leaves the `Ct2` to the sequential pass (the
+  `INLINE` marker), which flushes as the walk does. A failed run discards
+  the scratch engine (the next one forks anew).
+- **Verification.** The FeatureFlagInfo a config_setting read is compared
+  with the planned one by the flush that plans the key
+  (`Coord::verify_speculated`; at once if planned already): a difference
+  is an internal error naming `BAZEL_RS_ANALYSIS=walk`.
+- **Released transcripts** are freed only once a flush planned them
+  (`Store::delay_release`, a pooled evaluation): the subtree replay finds
+  a node either planned (imported) or with its transcript.
+- **A flush that fails in the tape** (`FlushFailure`, sticky: later
+  linearizations fail with it): when its config_setting runs in the
+  sequential pass, the body receives the error as in the walk
+  (`flush_failure_delivered`); when the pool finished it (it read its
+  flags speculatively), the driver asks the walk for the error text
+  (`Coord::flush_failure`): pass 1 records where each `Flush` happens
+  (`FlushPoint`: segment and chain), the walk re-analyzes the segment's
+  requested target on the published values, the chain's nodes left out
+  (its memos unpublished), and its `plan_pending` fails with the flush's
+  error at the config_setting (`Engine::eval_flush_failure`), so every
+  consumer on the chain words it as the walk does ("errors encountered
+  resolving select() keys for …"); its effects are dropped. A requested
+  target whose evaluation failed still linearizes first: a failing flush
+  earlier in the walk's order is the build's error. So the error wording
+  does not move: the matching stays in the config_setting's CT1.
+- **The driver.** The sequential pass evaluates requested targets with
+  `Evaluator::evaluate_values` (no O(nodes) outcome scan: 3 scans of
+  461k nodes per requested target were 7.6 s of ~/code's phase 1); the
+  pool runs again after a requested target whose sequential pass ran
+  attempts (`bodies::SEQUENTIAL_ATTEMPTS`; was: took ≥ 5 ms, which every
+  flush did). The done CT1 values (`Ct1Done`, 64 shards) are read without
+  the coordinator's lock (3.45 M → 1.0 M acquisitions on ~/code).
+- Tried and dropped: resolving the sequential pass's blockers one at a
+  time with a pool round after each (it ran the pool ahead of a failure —
+  `parallel_fetch`'s cancelled speculation — and loaded a blocked package
+  before its demander's rerun had observed its prefix —
+  `phase1_prefetch`'s obtained-root keys); the inline driver evaluating a
+  fresh CT1's subtree on the pool first (449 sequential CT1 attempts on
+  ~/code: no gain).
+
+Diagnostics: `BAZEL_RS_EVAL_STATS=1` adds the later pool rounds (nodes of
+the first 16, time), the driver's split, the coordinator lock's
+contention and the speculations; `BAZEL_RS_EVAL_SPECULATE_DEBUG=1` names
+each speculation (its time, plan entries, FeatureFlagInfo or why it was
+left); `BAZEL_RS_EVAL_PARKED_DEBUG=1` the parked nodes after the first
+round and the sequential attempts by kind.
+
+Tests: `tests/eval_csmatch.rs` (a transition setting the flags, select()
+on them, defaults, a FeatureFlagInfo flag, a flag derived from another
+through a select() — nested flushes in the speculated subtree —, a flag
+read by many config_settings in many packages, a toolchain's
+`target_settings` on a flag, the flag's implementation failing, an
+unrelated phase-2 failure planned before a flush) at 1/2/8/32 threads,
+with jitter and `BAZEL_RS_EVAL_RESTARTS`, stderr (with the action dump)
+and stdout byte-identical to the walk.
+
+**Results** (2026-11-08, ~/code `80d6724f3a` private clone, release
+without LTO, warm repositories, `BAZEL_RS_SNAPSHOT=off`, `build --nobuild
+//src/...`, 48 threads, two runs each, host load ~14):
+
+| | walk (main) | eval (main) | walk (branch) | eval (branch) |
+|---|---|---|---|---|
+| plan.start → phase 1 done | 36.4 / 36.1 s | 56.3 / 56.4 s | 35.7 / 35.2 s | 39.4 / 38.7 s |
+| wall | 47.1 / 46.4 s | 66.8 / 67.3 s | 46.0 / 45.3 s | 50.0 / 49.5 s |
+| max RSS | 8.96 / 8.97 GB | 9.65 / 9.61 GB | 8.97 / 9.04 GB | 9.72 / 9.81 GB |
+
+Nodes per pool round (eval, branch): the first round 14,126 of 461,579
+(75 ms), then #2 295,738 (2.4 s), #3 73,064, #4 7,532, #5 1,371, #6
+11,185; 450 loads, 449 CT1 and ~12k lookups left to the sequential pass;
+294 speculative phase 2s (383 scratch plan entries, 0 left to the
+sequential pass, 1.0 s, 0.8 s of it holding the coordinator's lock). On
+main: the first round 14,118, flushes 3,826 left to the sequential pass.
+Of the branch's 38.7 s: the linearizer 27.2 s (the flushes' phase 2
+23.5 s, pass 1 2.5 s, publication 0.66 s, tape 0.58 s), the pool rounds
+5.5 s, the sequential pass's own attempts ~5 s.
+
+**What remains for the S2 gate (phase 1 ≤ 2 s).** (1) The first round is
+no longer stopped by flushes but by packages that need a module
+extension's preparation or a direct repository (`prepare:ordinary` of
+rules_distroless `apt`, gazelle `go_deps`, aspect_rules_js `pnpm`,
+rules_rust, …: order-dependent recorded inputs, the sequential pass's);
+the root package `//:` itself needs `go_deps`, so the second round starts
+only after the first requested target's sequential pass. (2) The flushes'
+phase 2 (23.5 s) still runs inside phase 1 on the coordinator, as the
+walk's `pending_flush` does: it is phase-2 work the walk does there too;
+moving it out of phase 1 is S3's pass 2 (per-node deltas merged in plan
+order; the speculative phase 2's scratch engine then gives way to the
+flag's own CT2 delta merged at its plan position). (3) The pool scales
+poorly past ~16 threads: the coordinator's lock (begin/finish of every
+attempt: 0.36 M contended acquisitions, 47 s waited across threads) —
+the store's transcripts per thread would remove it. (4) The linearizer
+runs between rounds; overlapping it with the pool (the engine out of the
+coordinator's lock while a flush plans) would hide the rounds' 5.5 s.
 
 **S1 results** (2026-11-08, ~/code `80d6724f3a`, LTO release binary
 sha256 `272b5f78…`, warm repositories, `BAZEL_RS_SNAPSHOT=off`, default
