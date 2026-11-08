@@ -203,11 +203,7 @@ pub(crate) fn package_body(
                 .as_ref()
                 .err()
                 .filter(|error| crate::repository_demand::is_inline_rerun_sentinel(error));
-            // A unit that obtained repository roots before the sequential
-            // engine had them: they count from its commit on (W6 review
-            // F2), which only the sequential pass places (order-dependent
-            // recorded-input keys, link policies) — it loads there.
-            if sentinel.is_some() || !unit.roots.is_empty() {
+            if sentinel.is_some() {
                 // What blocked it is fetched ahead. The aborted attempt's
                 // module events print first (kept for the re-run).
                 if let Some(error) = sentinel {
@@ -229,13 +225,20 @@ pub(crate) fn package_body(
                     .extend(module_events);
                 // A module repository's root: the coordinator's lane
                 // materializes it and the unit loads on the pool again.
-                if unit.roots.is_empty()
-                    && let Some(blocker) = sentinel.and_then(|error| module_root_blocker(error))
-                {
+                if let Some(blocker) = sentinel.and_then(|error| module_root_blocker(error)) {
                     lock(&shared.loading.pending_blockers).insert(id.clone(), blocker.to_owned());
                     return Err(Missing::Repo(blocker.to_owned()));
                 }
                 return Err(Missing::Repo(super::bodies::INLINE.to_owned()));
+            }
+            // The roots it obtained before the sequential engine had them
+            // count from its commit on (W6 review F2): where the tape
+            // replays the node.
+            let mut unit = unit;
+            let roots = std::mem::take(&mut unit.roots);
+            if !roots.is_empty() {
+                let current = cx.current();
+                cx.coord().store.roots.insert(current, roots);
             }
             unit
         }

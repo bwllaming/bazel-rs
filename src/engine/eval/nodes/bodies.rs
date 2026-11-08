@@ -420,6 +420,12 @@ impl Bodies for Phase1Bodies<'_, '_> {
         self.drain_local();
         let events = {
             let mut coord = self.coord();
+            if self.framed && !self.pooled() {
+                // The sequential pass of a pooled evaluation: what the walk
+                // did before this point (the pool's packages committed,
+                // their roots counting) is applied first.
+                let _ = coord.linearize(self.shared);
+            }
             coord.drain();
             coord.begin_attempt(id, key)
         };
@@ -453,16 +459,23 @@ impl Bodies for Phase1Bodies<'_, '_> {
         drop(reuse);
         drop(no_demand);
         // Roots obtained before the sequential engine had them count from
-        // the sequential point on: the attempt runs there.
-        let obtained = !roots.finish().is_empty();
+        // where the tape replays the node.
+        let obtained = roots.finish();
+        if !obtained.is_empty() && result.is_ok() {
+            let current = cx.current();
+            let mut coord = self.coord();
+            let deferred = coord.store.roots.entry(current).or_default();
+            deferred.extend(obtained);
+            INLINE_REASONS[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let sentinel = crate::repository_demand::sentinels_raised() != sentinels;
         let order = crate::repository_demand::take_order_dependent();
-        for (counted, reason) in [(sentinel, 1), (order, 2), (obtained, 3)] {
+        for (counted, reason) in [(sentinel, 1), (order, 2)] {
             if counted && result.is_ok() {
                 INLINE_REASONS[reason].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
-        let raised = sentinel || order || obtained;
+        let raised = sentinel || order;
         crate::repository_demand::restore_order_dependent(order_dependent);
         match result {
             Ok(_) if raised && !matches!(key, NodeKey::Pkg(_)) => {
@@ -517,6 +530,11 @@ impl Bodies for Phase1Bodies<'_, '_> {
         }
         let mut coord = self.coord();
         coord.drain();
+        if coord.store.replayed.contains(&running.id)
+            && let Some(roots) = coord.store.roots.remove(&running.id)
+        {
+            coord.engine.repositories.note_committed_roots(&roots);
+        }
         if let Some(observations) = observations.filter(|observations| !observations.is_empty()) {
             if coord.store.replayed.contains(&running.id) {
                 crate::observed_fs::commit_to_recorder(observations);

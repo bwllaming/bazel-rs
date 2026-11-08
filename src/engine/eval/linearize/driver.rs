@@ -132,6 +132,9 @@ pub(crate) struct Store {
     /// What each done attempt observed (a pooled evaluation's frames),
     /// committed where the tape replays the node.
     pub(crate) observations: FxHashMap<NodeId, crate::observed_fs::Observations>,
+    /// The repository roots a pool attempt obtained before the sequential
+    /// engine had them: they count from where the tape replays the node.
+    pub(crate) roots: FxHashMap<NodeId, Vec<String>>,
     /// The nodes the tape replayed (entered or first used) already: what
     /// they observe once done is committed at once.
     pub(crate) replayed: FxHashSet<NodeId>,
@@ -378,6 +381,9 @@ impl Coord<'_> {
                 }
                 | TapeOp::Effect(Event::MemoUse(node)) => {
                     self.store.replayed.insert(*node);
+                    if let Some(roots) = self.store.roots.remove(node) {
+                        self.engine.repositories.note_committed_roots(&roots);
+                    }
                     if let Some(observations) = self.store.observations.remove(node) {
                         crate::observed_fs::commit_to_recorder(observations);
                     }
