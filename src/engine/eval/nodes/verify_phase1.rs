@@ -243,7 +243,7 @@ fn verify_with(
     walk_error: Option<&str>,
 ) -> Result<(usize, Diffs), String> {
     let mut diffs = Diffs::default();
-    let bodies = Phase1Bodies::new(shared, engine, false);
+    let bodies = Phase1Bodies::new(shared, engine, false, false);
     let evaluator = Evaluator::new(
         &bodies,
         EvalConfig {

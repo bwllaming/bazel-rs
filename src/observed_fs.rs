@@ -1871,6 +1871,20 @@ pub fn commit(observations: Observations) {
     }
 }
 
+/// Commit a finished evaluator attempt's observations into the recorder
+/// itself, whatever frames this thread has open (BAZEL_RS_ANALYSIS=eval on
+/// the pool: an attempt nested in another one's is done whatever becomes
+/// of the outer attempt; the recorder is a set, so the time of the commit
+/// does not matter).
+pub fn commit_to_recorder(observations: Observations) {
+    if observations.is_empty() {
+        return;
+    }
+    if let Some(recorder) = active() {
+        recorder.apply_events(observations.0);
+    }
+}
+
 /// Run `f` capturing what it observes (a memo's miss): the set is handed to
 /// the enclosing frame (or the recorder) when `f` returns, as if observed
 /// there, and returned for the memo entry, whose hits [`replay`] it.

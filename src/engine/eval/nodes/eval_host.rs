@@ -85,6 +85,8 @@ pub(crate) struct EvalHost<'c, 'e> {
     /// The packages whose Pkg node this attempt used already (one
     /// `MemoUse` each: pass 1 replays a memo at its first use).
     used_packages: crate::fast_hash::FxHashSet<PackageId>,
+    /// The CT1 keys this attempt hinted (on the pool).
+    hinted: Vec<NodeKey>,
 }
 
 impl<'c, 'e> EvalHost<'c, 'e> {
@@ -108,6 +110,7 @@ impl<'c, 'e> EvalHost<'c, 'e> {
             fresh_chain: false,
             cycle_reports: Vec::new(),
             used_packages: Default::default(),
+            hinted: Vec::new(),
         }
     }
 
@@ -134,7 +137,7 @@ impl<'c, 'e> EvalHost<'c, 'e> {
     fn emit(&mut self, event: Event) {
         // The value's copy of the transcript, unless the coordinator keeps
         // it (BAZEL_RS_ANALYSIS=eval).
-        if self.own.is_some() && self.cx.coord().lin.is_none() {
+        if self.own.is_some() && !self.cx.flags().linearized {
             self.events.push(event.clone());
         }
         self.cx.emit(event);
@@ -146,8 +149,35 @@ impl<'c, 'e> EvalHost<'c, 'e> {
     }
 
     fn stop(&mut self, missing: Missing) -> String {
+        let missing = match missing {
+            // On the pool, the attempt waits for every edge it hinted
+            // (one restart, not one per edge another worker runs).
+            Missing::Nodes(mut ids) if !self.hinted.is_empty() => {
+                for hinted in std::mem::take(&mut self.hinted) {
+                    let id = self.cx.id_of(&hinted);
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+                Missing::Nodes(ids)
+            }
+            missing => missing,
+        };
         self.missing.get_or_insert(missing);
         MISSING.to_owned()
+    }
+
+    /// Attempts run on the pool now (S2).
+    fn pooled(&self) -> bool {
+        self.shared
+            .loading
+            .pooled
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Stop: only the sequential pass runs this attempt (a flush; S2).
+    fn inline(&mut self) -> String {
+        self.stop(Missing::Repo(super::bodies::INLINE.to_owned()))
     }
 
     fn memo_use(&mut self, key: &NodeKey) {
@@ -203,7 +233,7 @@ impl<'c, 'e> EvalHost<'c, 'e> {
         let done = self.cx.coord().ct1(&key).is_some();
         if !done {
             // The walk's active chain checks (Engine::analyze_key_body).
-            let active = self.cx.coord().active_ct1();
+            let active = super::bodies::active_ct1();
             if active.contains(&key) {
                 return Err(self.open_cycle_error(rule, &key));
             }
@@ -454,7 +484,7 @@ impl Host for EvalHost<'_, '_> {
     }
 
     fn target(&mut self, label: &Label) -> Result<Target, String> {
-        if self.cx.coord().tracking {
+        if self.cx.flags().tracking {
             self.emit(Event::Access(label.clone()));
         }
         self.use_package(&label.package_id());
@@ -581,7 +611,7 @@ impl Host for EvalHost<'_, '_> {
         // The walk looks a source file up until its analysis succeeded
         // once (`analyzed_sources`: later visits only track it): the
         // lookup is a memo scope (S2: first-visit state is pass 1's).
-        let tracking = self.cx.coord().tracking;
+        let tracking = self.cx.flags().tracking;
         if tracking {
             self.memo_begin(&("source lookup", label));
         }
@@ -762,7 +792,7 @@ impl Host for EvalHost<'_, '_> {
     }
 
     fn active_keys(&mut self) -> Vec<ConfiguredTargetKey> {
-        self.cx.coord().active_ct1()
+        super::bodies::active_ct1()
     }
 
     fn ahead(&self) -> bool {
@@ -784,7 +814,7 @@ impl Host for EvalHost<'_, '_> {
     fn track_position(&mut self, _tracked: Option<u32>, _plan_len: usize) {}
 
     fn track_source(&mut self, label: &Label) {
-        if self.cx.coord().tracking {
+        if self.cx.flags().tracking {
             self.emit(Event::Source(label.clone()));
         }
     }
@@ -808,6 +838,64 @@ impl Host for EvalHost<'_, '_> {
         &mut self,
         _declared: &crate::toolchains::DeclaredToolchainInfo,
     ) {
+    }
+
+    fn hint_edges(&mut self, deps: &[(Label, ConfigId)]) {
+        if deps.is_empty() || !self.pooled() {
+            return;
+        }
+        let mut keys = Vec::new();
+        let mut rules = Vec::new();
+        for (label, config) in deps {
+            let rule = match self.cx.peek(&NodeKey::Tgt(label.clone())) {
+                Some(value) => match value.as_ref() {
+                    NodeValue::Tgt(Ok(Target::Rule(rule) | Target::Output(rule, _))) => {
+                        Some(Arc::clone(rule))
+                    }
+                    _ => None,
+                },
+                None => match self.cx.peek(&NodeKey::Pkg(label.package_id())) {
+                    Some(value) => super::loading::pkg_of(&value)
+                        .ok()
+                        .and_then(|pkg| pkg.rule_of(label)),
+                    None => {
+                        keys.push(NodeKey::Tgt(label.clone()));
+                        None
+                    }
+                },
+            };
+            if let Some(rule) = rule {
+                rules.push((rule, *config));
+            }
+        }
+        let mut no_config: Vec<(ConfigId, bool)> = Vec::new();
+        for (_, config) in &rules {
+            if !no_config.iter().any(|(known, _)| known == config) {
+                no_config.push((*config, self.configuration(*config).native.no_config));
+            }
+        }
+        let platform_tree = self.platform_tree;
+        let hinted: Vec<NodeKey> = rules
+            .iter()
+            .map(|(rule, config)| {
+                let no_config = no_config
+                    .iter()
+                    .find(|(known, _)| known == config)
+                    .is_some_and(|(_, no_config)| *no_config);
+                let key = ConfiguredTargetKey::new(rule.label.clone(), *config);
+                let forced_exec = self.forced_exec(&key);
+                NodeKey::Ct1(edge_ct_key(
+                    no_config,
+                    rule,
+                    key,
+                    platform_tree,
+                    forced_exec,
+                ))
+            })
+            .collect();
+        keys.extend(hinted.iter().cloned());
+        self.cx.hint(&keys);
+        self.hinted.extend(hinted);
     }
 
     fn plan_len(&mut self) -> usize {
@@ -928,6 +1016,10 @@ impl Host for EvalHost<'_, '_> {
     }
 
     fn flush_pending(&mut self, _config_setting: &Rule) -> Result<(), String> {
+        if self.pooled() {
+            // The plan so far's phase 2: the sequential pass's.
+            return Err(self.inline());
+        }
         self.emit(Event::Flush);
         // BAZEL_RS_ANALYSIS=eval: pass 1 up to here, then the flush's
         // phase 2 (the walk's `plan_pending`; worker C's driver).
@@ -1012,7 +1104,7 @@ impl Host for EvalHost<'_, '_> {
     }
 
     fn registered_toolchains_in_progress(&mut self, config: ConfigId) -> bool {
-        self.cx.coord().in_progress(&NodeKey::RegToolchains(config))
+        super::bodies::in_progress(&NodeKey::RegToolchains(config))
     }
 
     fn set_computing_toolchain(&mut self, _label: &Label) {}
@@ -1049,9 +1141,7 @@ impl Host for EvalHost<'_, '_> {
     }
 
     fn execution_platforms_in_progress(&mut self, config: ConfigId) -> bool {
-        self.cx
-            .coord()
-            .in_progress(&NodeKey::RegExecPlatforms(config))
+        super::bodies::in_progress(&NodeKey::RegExecPlatforms(config))
     }
 
     fn record_execution_platform_cycle_report(&mut self, _config: ConfigId, _report: String) {}

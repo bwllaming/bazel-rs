@@ -424,6 +424,19 @@ pub(crate) trait Phase1: Host {
         let mut group_configs: BTreeMap<String, ConfigId> = BTreeMap::new();
         let mut prerequisites = Vec::new();
         let mut incompatible_deps = compatibility.dependencies;
+        let hinted: Vec<(Label, ConfigId)> = edges
+            .iter()
+            .filter_map(|edge| {
+                let config = match &edge.cfg {
+                    EdgeCfg::Target => config,
+                    EdgeCfg::Exec(None) => exec_config,
+                    _ => return None,
+                };
+                let label = self.resolve_rule_src(&rule, &edge.label).ok()?;
+                Some((label, config))
+            })
+            .collect();
+        self.hint_edges(&hinted);
         for edge in edges {
             let dep_configs = match &edge.cfg {
                 EdgeCfg::Target => EdgeConfigurations::One(config),

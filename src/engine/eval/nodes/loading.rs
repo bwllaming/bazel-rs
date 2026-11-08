@@ -102,6 +102,15 @@ impl PkgValue {
         }
     }
 
+    /// The rule `label` names in this package (a rule, or an output
+    /// file's generating rule).
+    pub(crate) fn rule_of(&self, label: &Label) -> Option<Arc<Rule>> {
+        self.package
+            .get(label)
+            .or_else(|| self.outputs.get(label).map(|(rule, _)| rule))
+            .cloned()
+    }
+
     /// `Engine::declared_source`.
     fn declared_source(
         &self,
@@ -476,7 +485,7 @@ pub(crate) fn target_lookup(
     cx: &mut dyn Phase1Cx<'_>,
     label: &Label,
 ) -> Result<Result<Target, String>, Missing> {
-    if cx.coord().tracking {
+    if cx.flags().tracking {
         cx.emit(Event::Access(label.clone()));
     }
     let package = label.package_id();

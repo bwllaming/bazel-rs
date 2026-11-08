@@ -153,6 +153,11 @@ pub(crate) trait Host {
     fn track_position(&mut self, tracked: Option<u32>, plan_len: usize);
     fn track_source(&mut self, label: &Label);
     fn prefetch_rule(&mut self, rule: &Rule);
+    /// The dependencies a rule's edge loop analyzes next, in order (the
+    /// evaluator's pool schedules them; S2).
+    fn hint_edges(&mut self, deps: &[(Label, ConfigId)]) {
+        let _ = deps;
+    }
     fn prefetch_note_condition(
         &mut self,
         text: &str,

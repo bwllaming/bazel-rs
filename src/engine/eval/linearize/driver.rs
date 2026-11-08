@@ -37,11 +37,13 @@ use super::super::super::{
     ConfiguredNodes, ConfiguredTargetKey, Engine, ExecutionPlatforms, Plan, PlatformError,
     ResolutionError, RuleKind, Target, TransitionDetails, forwards,
 };
+use super::super::cycles::{CycleHandler, Resolution, WaitGraph};
 use super::super::key::{CtKey, NodeId, NodeKey};
-use super::super::nodes::bodies::{Coord, Phase1Bodies, Running};
+use super::super::nodes::bodies::{Coord, Phase1Bodies, Running, push_running, with_running};
 use super::super::nodes::eval_host::edge_ct_key;
 use super::super::nodes::loading::PkgValue;
-use super::super::scheduler::{EvalConfig, Evaluator, NoRepositories};
+use super::super::nodes::loading::{lane_load, lane_package};
+use super::super::scheduler::{EvalConfig, Evaluator, RepoLane};
 use super::super::shared::EvalShared;
 use super::super::transcript::{Event, SegmentKind, TapeOp, Transcript};
 use super::super::value::{Ct1Value, NodeValue};
@@ -203,111 +205,35 @@ impl Coord<'_> {
         }
     }
 
-    /// Record `event` in the running attempt (or the current segment). A
-    /// rerun re-emits its abandoned attempt's events, which stay in place
-    /// (pass 1 may have replayed them); the one-time effects of the engine's
-    /// services there (a package's load output and commit, its warnings)
-    /// are not re-emitted.
+    /// Record `event` in this thread's running attempt (or the current
+    /// segment). A rerun re-emits its abandoned attempt's events, which stay
+    /// in place (pass 1 may have replayed them; `bodies::push_running`).
     pub(crate) fn push_event(&mut self, event: Event) {
-        match self.stack.last_mut() {
-            Some(running) if running.cursor < running.replay => {
-                // The engine services' effects an attempt's first need of a
-                // `Tgt` node carries (S1 loading: a package's load output,
-                // commit, warnings, its lookups and scopes) happen once.
-                let one_time = |event: &Event| {
-                    matches!(
-                        event,
-                        Event::Console(_)
-                            | Event::PkgCommit(..)
-                            | Event::Warn(_)
-                            | Event::Access(_)
-                            | Event::ScopeEnter(_)
-                            | Event::ScopeExit
-                    )
-                };
-                while running.cursor < running.replay
-                    && running.events[running.cursor] != event
-                    && one_time(&running.events[running.cursor])
-                {
-                    running.cursor += 1;
-                }
-                if running.cursor < running.replay && running.events[running.cursor] == event {
-                    running.cursor += 1;
-                    return;
-                }
-                if running.cursor < running.replay {
-                    self.store.rerun_mismatch.get_or_insert_with(|| {
-                        format!(
-                            "{:?} re-emits {event:?} where its abandoned attempt emitted {:?}",
-                            running.key, running.events[running.cursor]
-                        )
-                    });
-                    running.events.truncate(running.cursor);
-                    running.replay = running.cursor;
-                }
-                running.events.push(event);
-            }
-            Some(running) => running.events.push(event),
-            None => {
-                if let Some((_, events)) = self.store.segments.last_mut() {
-                    events.push(event);
-                }
-            }
+        if let Err(event) = push_running(event)
+            && let Some((_, events)) = self.store.segments.last_mut()
+        {
+            events.push(event);
         }
     }
 
-    pub(crate) fn begin_attempt(&mut self, id: NodeId, key: NodeKey) {
+    /// An attempt of `id` begins: what an abandoned attempt of it kept.
+    pub(crate) fn begin_attempt(&mut self, id: NodeId, key: &NodeKey) -> Vec<Event> {
         self.store.keys.entry(id).or_insert_with(|| key.clone());
-        let events = self.store.carry.remove(&id).unwrap_or_default();
-        self.stack.push(Running {
-            id,
-            key,
-            replay: events.len(),
-            cursor: 0,
-            events,
-            missing_at: None,
-        });
+        self.store.carry.remove(&id).unwrap_or_default()
     }
 
     /// The running attempt received a `Missing`: it stops here.
     pub(crate) fn missing_here(&mut self) {
         self.drain();
-        if let Some(running) = self.stack.last_mut() {
-            running.missing_at.get_or_insert(running.events.len());
-        }
+        with_running(|running| {
+            if let Some(running) = running.last_mut() {
+                running.missing_at.get_or_insert(running.events.len());
+            }
+        });
     }
 
-    /// The attempt ends with `value`: its transcript is kept (a `Tgt`
-    /// lookup's goes to its user); returns its key.
-    pub(crate) fn finish_attempt(&mut self, value: &NodeValue) -> Option<NodeKey> {
-        let running = self.stack.pop()?;
-        if let Some(event) = running.events[running.cursor.min(running.replay)..running.replay]
-            .iter()
-            .find(|event| {
-                !matches!(
-                    event,
-                    Event::Console(_)
-                        | Event::PkgCommit(..)
-                        | Event::Warn(_)
-                        | Event::Access(_)
-                        | Event::ScopeEnter(_)
-                        | Event::ScopeExit
-                )
-            })
-        {
-            self.store.rerun_mismatch.get_or_insert_with(|| {
-                format!(
-                    "{:?} finished without re-emitting {event:?} of its abandoned attempt",
-                    running.key
-                )
-            });
-        }
-        if matches!(running.key, NodeKey::Tgt(_)) {
-            for event in running.events {
-                self.push_event(event);
-            }
-            return Some(running.key);
-        }
+    /// The attempt `running` ends with `value`: its transcript is kept.
+    pub(crate) fn finish_attempt(&mut self, running: Running, value: &NodeValue) {
         self.store
             .memo_ok
             .insert(running.id, value.error().is_none());
@@ -343,28 +269,41 @@ impl Coord<'_> {
             _ => None,
         };
         self.store.published.extend(published);
+        match (&running.key, value) {
+            (NodeKey::Ct1(ct), NodeValue::Ct1(ct1)) => {
+                self.ct1_done
+                    .entry(ct.key.clone())
+                    .or_insert_with(|| Arc::clone(ct1));
+                self.ct1_values.insert(ct.clone(), Arc::clone(ct1));
+            }
+            (NodeKey::Src(label), NodeValue::Src(Ok(()))) => {
+                self.sources.insert(label.clone());
+            }
+            (NodeKey::Pkg(package), NodeValue::Pkg(result)) => {
+                self.store.packages.insert(package.clone(), result.clone());
+            }
+            _ => {}
+        }
         self.store.transcripts.insert(
             running.id,
             Transcript {
                 events: running.events,
             },
         );
-        Some(running.key)
     }
 
-    /// The attempt stopped (`Missing`): it reruns from the start, its
-    /// events up to the `Missing` stay (pass 1 may have replayed them; the
-    /// rerun re-emits them, `push_event`), with what happened anyway.
-    pub(crate) fn abandon_attempt(&mut self) {
-        if let Some(mut running) = self.stack.pop() {
-            let keep = running
-                .missing_at
-                .unwrap_or(running.events.len())
-                .max(running.replay);
-            running.events.truncate(keep);
-            if !running.events.is_empty() {
-                self.store.carry.insert(running.id, running.events);
-            }
+    /// The attempt `running` stopped (`Missing`): it reruns from the
+    /// start, its events up to the `Missing` stay (pass 1 may have replayed
+    /// them; the rerun re-emits them, `bodies::push_running`), with what
+    /// happened anyway.
+    pub(crate) fn abandon_attempt(&mut self, mut running: Running) {
+        let keep = running
+            .missing_at
+            .unwrap_or(running.events.len())
+            .max(running.replay);
+        running.events.truncate(keep);
+        if !running.events.is_empty() {
+            self.store.carry.insert(running.id, running.events);
         }
     }
 
@@ -382,19 +321,20 @@ impl Coord<'_> {
     }
 
     fn linearize_with(&mut self, lin: &mut Linearizer, shared: &EvalShared) -> Result<(), String> {
-        if let Some(mismatch) = &self.store.rerun_mismatch {
+        let mismatch = super::super::nodes::bodies::rerun_mismatch();
+        if let Some(mismatch) = mismatch.or_else(|| self.store.rerun_mismatch.clone()) {
             return Err(format!(
                 "internal error: BAZEL_RS_ANALYSIS=eval: {mismatch}; rerun with BAZEL_RS_ANALYSIS=walk"
             ));
         }
-        {
+        with_running(|stack| {
             let view = View {
                 store: &self.store,
-                stack: &self.stack,
+                stack,
                 ct1_values: &self.ct1_values,
             };
-            stat(STAT_PASS1, || lin.pass.resume(&view, &mut lin.ops))?;
-        }
+            stat(STAT_PASS1, || lin.pass.resume(&view, &mut lin.ops))
+        })?;
         self.store.release(&mut lin.pass);
         // The walk fails at pass 1's stop: what precedes it is applied.
         let stopped = lin.pass.stopped().map(str::to_owned);
@@ -914,23 +854,38 @@ impl Engine {
             console: Some(console),
         };
         let (result, lin) = {
-            let bodies = Phase1Bodies::new(&shared, self, tracking);
+            let bodies = Phase1Bodies::new(&shared, self, tracking, true);
             {
                 let mut coord = bodies.coord();
                 coord.store.warnings_seen = coord.engine.warnings.len();
                 coord.lin = Some(Box::new(lin));
                 coord.begin_segment(SegmentKind::Setup);
             }
-            let evaluator = Evaluator::new(
-                &bodies,
-                EvalConfig {
-                    threads: 1,
-                    keep_going: false,
-                    jitter_micros: 0,
-                    ..EvalConfig::default()
-                },
-            );
+            let evaluator =
+                Evaluator::new(&bodies, phase1_config(shared.options.loading_phase_threads));
+            // S2: with more than one thread, the pool evaluates what the
+            // requests need first (attempts only the sequential pass can
+            // run park); the walk's order then drives the inline pass over
+            // the same graph.
+            let pooled_at = std::time::Instant::now();
+            if evaluator.pooled() {
+                warm_up(&evaluator, &shared, labels, top, target_platform.clone());
+                evaluator.set_inline(true);
+            }
+            let pooled_for = pooled_at.elapsed();
             let result = drive(&bodies, &evaluator, &shared, labels, top, target_platform);
+            if stats_enabled() {
+                let stats = evaluator.stats();
+                crate::note!(
+                    "bazel-rs: eval phase 1: threads {}, pool {} ms, nodes {}, runs {}, parks {}, quiescences {}",
+                    evaluator.config().threads,
+                    pooled_for.as_millis(),
+                    stats.done,
+                    stats.runs,
+                    stats.parks,
+                    stats.quiescences
+                );
+            }
             let mut coord = bodies.coord();
             coord.drain();
             coord.store.segments_done = true;
@@ -938,12 +893,15 @@ impl Engine {
             let mut lin = coord.lin.take().expect("the linearizer");
             coord.publish(&mut lin);
             let result = result.and(finished).and_then(|()| {
-                let view = View {
-                    store: &coord.store,
-                    stack: &coord.stack,
-                    ct1_values: &coord.ct1_values,
-                };
-                match lin.pass.resume(&view, &mut lin.ops)? {
+                let resumed = with_running(|stack| {
+                    let view = View {
+                        store: &coord.store,
+                        stack,
+                        ct1_values: &coord.ct1_values,
+                    };
+                    lin.pass.resume(&view, &mut lin.ops)
+                });
+                match resumed? {
                     Progress::Finished => Ok(()),
                     Progress::Stopped => Err(lin.pass.stopped().unwrap_or_default().to_owned()),
                     Progress::Blocked => Err(
@@ -980,8 +938,7 @@ impl Engine {
         crate::ui::replay(leftover);
         let linearized = pass.finish();
         crate::perf_mark("plan.eval_phase1_done");
-        // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
-        if std::env::var_os("BAZEL_RS_EVAL_STATS").is_some() {
+        if stats_enabled() {
             let ms = |index: usize| STATS[index].load(std::sync::atomic::Ordering::Relaxed) / 1000;
             crate::note!(
                 "bazel-rs: eval phase 1: pass 1 {} ms, tape application {} ms, publication {} ms, flush phase 2 {} ms",
@@ -1001,6 +958,98 @@ impl Engine {
     }
 }
 
+/// BAZEL_RS_EVAL_STATS=1.
+fn stats_enabled() -> bool {
+    // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
+    std::env::var_os("BAZEL_RS_EVAL_STATS").is_some()
+}
+
+/// The pool's worker stack in phase 1: attempts nest depth first on a
+/// worker (help-first needs), as deep as the walk's recursion.
+const PHASE1_STACK: usize = 512 << 20;
+
+/// How phase 1 evaluates: `--loading_phase_threads` workers (bounded by
+/// the cores; 1: the inline driver), help first, big stacks.
+fn phase1_config(loading_phase_threads: usize) -> EvalConfig {
+    EvalConfig {
+        help_first: true,
+        stack: PHASE1_STACK,
+        ..EvalConfig::for_build(loading_phase_threads, false, None)
+    }
+}
+
+/// The repository lane of phase 1: a Pkg node's load where demand may
+/// fetch (on the coordinator); an attempt only the sequential pass runs
+/// waits for it (`bodies::INLINE`).
+struct Lane<'a> {
+    shared: &'a EvalShared,
+}
+
+impl RepoLane for Lane<'_> {
+    fn fetch(&mut self, name: &str) {
+        if let Some(package) = lane_package(name) {
+            lane_load(self.shared, &package);
+        }
+    }
+}
+
+/// At quiescence on the pool: stop (the parked attempts are the
+/// sequential pass's).
+struct StopCycles;
+
+impl CycleHandler for StopCycles {
+    fn at_quiescence(&mut self, _graph: &WaitGraph<'_>) -> Resolution {
+        Resolution::Stop
+    }
+}
+
+/// The pool's evaluation of what the requests need (S2): the explicit
+/// target platform and the requested labels' lookups, then their
+/// configured targets (keys as their first edge makes them; nothing is
+/// decided first-visit here). Attempts only the sequential pass can run
+/// park; nothing is linearized.
+fn warm_up(
+    evaluator: &Evaluator<'_, Phase1Bodies<'_, '_>>,
+    shared: &EvalShared,
+    labels: &[Label],
+    top: ConfigId,
+    target_platform: Option<Label>,
+) {
+    let pooled = &shared.loading.pooled;
+    pooled.store(true, std::sync::atomic::Ordering::Release);
+    let mut lane = Lane { shared };
+    let mut roots: Vec<NodeKey> = target_platform
+        .map(|target| NodeKey::Platform(ConfiguredTargetKey::new(target, top)))
+        .into_iter()
+        .collect();
+    roots.extend(labels.iter().map(|label| NodeKey::Tgt(label.clone())));
+    evaluator.evaluate(&roots, &mut lane, &mut StopCycles);
+    let no_config = shared
+        .configurations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(top)
+        .native
+        .no_config;
+    let roots: Vec<NodeKey> = labels
+        .iter()
+        .filter_map(|label| {
+            let value = evaluator.value(&NodeKey::Tgt(label.clone()))?;
+            match value.as_ref() {
+                NodeValue::Tgt(Ok(Target::Source(_))) => Some(NodeKey::Src(label.clone())),
+                NodeValue::Tgt(Ok(Target::Rule(rule) | Target::Output(rule, _))) => {
+                    super::super::super::check_macro_namespace(rule, label).ok()?;
+                    let key = ConfiguredTargetKey::new(rule.label.clone(), top);
+                    Some(NodeKey::Ct1(edge_ct_key(no_config, rule, key, false, None)))
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    evaluator.evaluate(&roots, &mut lane, &mut StopCycles);
+    pooled.store(false, std::sync::atomic::Ordering::Release);
+}
+
 /// The walk's `plan_build` phase 1 over the evaluator: the explicit
 /// target platform, then each requested label (`analyze_requested`).
 fn drive(
@@ -1014,7 +1063,7 @@ fn drive(
     let evaluate = |key: &NodeKey| -> Arc<NodeValue> {
         evaluator.evaluate(
             std::slice::from_ref(key),
-            &mut NoRepositories,
+            &mut Lane { shared },
             &mut Pass1Cycles::default(),
         );
         evaluator.value(key).cloned().unwrap_or_else(|| {

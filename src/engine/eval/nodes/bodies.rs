@@ -8,6 +8,7 @@
 //!
 //! Owner: worker B.
 
+use std::cell::RefCell;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::configuration::ConfigId;
@@ -34,10 +35,6 @@ pub(crate) struct Coord<'e> {
     /// A `Flush` was emitted (a config_setting with Starlark flag_values
     /// keys: its CT2 dependencies are S2).
     pub(crate) saw_flush: bool,
-    /// The attempts running, outermost first, each with what it emitted
-    /// so far (worker C: the transcripts pass 1 replays, with what the
-    /// engine's services did in between, `Coord::drain`).
-    pub(crate) stack: Vec<Running>,
     /// The finished transcripts, the segments and the captured console
     /// writes (worker C).
     pub(crate) store: Store,
@@ -76,17 +73,107 @@ impl Coord<'_> {
     pub(crate) fn source_analyzed(&self, label: &Label) -> bool {
         self.sources.contains(label)
     }
+}
 
-    pub(crate) fn in_progress(&self, key: &NodeKey) -> bool {
-        self.stack.iter().any(|running| running.key == *key)
+thread_local! {
+    /// This thread's running attempts, outermost first, each with what it
+    /// emitted so far (worker C: the transcripts pass 1 replays). One
+    /// thread's attempts nest like the walk's (the inline driver; the
+    /// pool's help-first needs, S2).
+    static RUNNING: RefCell<Vec<Running>> = const { RefCell::new(Vec::new()) };
+    /// This thread runs pool attempts (S2).
+    static POOL_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` on this thread's running attempts.
+pub(crate) fn with_running<R>(f: impl FnOnce(&mut Vec<Running>) -> R) -> R {
+    RUNNING.with(|running| f(&mut running.borrow_mut()))
+}
+
+/// Record `event` in this thread's running attempt; `Err` (with it) when
+/// none runs. A rerun re-emits its abandoned attempt's events, which stay
+/// in place (pass 1 may have replayed them); the one-time effects of the
+/// services there (a package's load output and commit, its warnings, a
+/// lookup's access and scopes) are not re-emitted; another difference is
+/// an internal error ([`rerun_mismatch`]).
+pub(crate) fn push_running(event: Event) -> Result<(), Event> {
+    with_running(|running| match running.last_mut() {
+        Some(running) if running.cursor < running.replay => {
+            let one_time = |event: &Event| {
+                matches!(
+                    event,
+                    Event::Console(_)
+                        | Event::PkgCommit(..)
+                        | Event::LoadPrints(_)
+                        | Event::Warn(_)
+                        | Event::Access(_)
+                        | Event::ScopeEnter(_)
+                        | Event::ScopeExit
+                )
+            };
+            while running.cursor < running.replay
+                && running.events[running.cursor] != event
+                && one_time(&running.events[running.cursor])
+            {
+                running.cursor += 1;
+            }
+            if running.cursor < running.replay && running.events[running.cursor] == event {
+                running.cursor += 1;
+                return Ok(());
+            }
+            if running.cursor < running.replay {
+                note_mismatch(format!(
+                    "{:?} re-emits {event:?} where its abandoned attempt emitted {:?}",
+                    running.key, running.events[running.cursor]
+                ));
+                running.events.truncate(running.cursor);
+                running.replay = running.cursor;
+            }
+            running.events.push(event);
+            Ok(())
+        }
+        Some(top) => {
+            top.events.push(event);
+            Ok(())
+        }
+        None => Err(event),
+    })
+}
+
+static RERUN_MISMATCH: Mutex<Option<String>> = Mutex::new(None);
+
+fn note_mismatch(mismatch: String) {
+    RERUN_MISMATCH
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_or_insert(mismatch);
+}
+
+/// A rerun emitted other events than its abandoned attempt (an internal
+/// error: pass 1 may have replayed them); taken.
+pub(crate) fn rerun_mismatch() -> Option<String> {
+    RERUN_MISMATCH
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
+/// Whether `key` is running on this thread.
+pub(crate) fn in_progress(key: &NodeKey) -> bool {
+    with_running(|running| running.iter().any(|running| running.key == *key))
+}
+
+/// The configured targets being analyzed, outermost first, since the
+/// last detached analysis (a platform's tree, a registration: the walk's
+/// fresh `active`): the inline driver's chain; empty on a pool thread
+/// (cycles are back edges there, the depth limit is pass 1's).
+pub(crate) fn active_ct1() -> Vec<ConfiguredTargetKey> {
+    if POOL_THREAD.with(std::cell::Cell::get) {
+        return Vec::new();
     }
-
-    /// The configured targets being analyzed, outermost first, since the
-    /// last detached analysis (a platform's tree, a registration: the
-    /// walk's fresh `active`).
-    pub(crate) fn active_ct1(&self) -> Vec<ConfiguredTargetKey> {
+    with_running(|running| {
         let mut active = Vec::new();
-        for running in self.stack.iter().rev() {
+        for running in running.iter().rev() {
             match &running.key {
                 NodeKey::Ct1(ct) => active.push(ct.key.clone()),
                 NodeKey::Platform(_) | NodeKey::RegToolchains(_) | NodeKey::RegExecPlatforms(_) => {
@@ -97,7 +184,7 @@ impl Coord<'_> {
         }
         active.reverse();
         active
-    }
+    })
 }
 
 /// One running attempt.
@@ -117,18 +204,30 @@ pub(crate) struct Running {
     pub(crate) missing_at: Option<usize>,
 }
 
-/// What a phase-1 body needs of its context besides [`Cx`] in S1.
+/// What a phase-1 body needs of its context besides [`Cx`].
 pub(crate) trait Phase1Cx<'e>: Cx {
     fn coord(&self) -> MutexGuard<'_, Coord<'e>>;
+    /// The evaluation's fixed switches (S2: read without the
+    /// coordinator's lock).
+    fn flags(&self) -> Flags;
+}
+
+/// An evaluation's fixed switches.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Flags {
+    /// Record `Access`/`Source` events (incremental tracking is on).
+    pub(crate) tracking: bool,
+    /// `BAZEL_RS_ANALYSIS=eval`'s linearizer keeps the transcripts.
+    pub(crate) linearized: bool,
 }
 
 /// A body's context: A's `Cx` and the coordinator.
-struct BodyCx<'a, 'e> {
+struct BodyCx<'a, 's, 'e> {
     cx: &'a mut dyn Cx,
-    coord: &'a Mutex<Coord<'e>>,
+    bodies: &'a Phase1Bodies<'s, 'e>,
 }
 
-impl Cx for BodyCx<'_, '_> {
+impl Cx for BodyCx<'_, '_, '_> {
     fn need(&mut self, keys: &[NodeKey]) -> Result<Vals, Missing> {
         let vals = match self.cx.need(keys) {
             Ok(vals) => vals,
@@ -160,18 +259,17 @@ impl Cx for BodyCx<'_, '_> {
     }
 
     fn emit(&mut self, event: Event) {
-        let linearized = {
-            let mut coord = self.coord();
-            if event == Event::Flush {
-                coord.saw_flush = true;
-            }
-            coord.drain();
-            coord.push_event(event.clone());
-            coord.lin.is_some()
-        };
+        if event == Event::Flush {
+            self.coord().saw_flush = true;
+        }
+        self.bodies.drain_local();
         // Under BAZEL_RS_ANALYSIS=eval the coordinator's store is the
         // transcript of record (one copy: ~/code emits millions of events).
-        if !linearized {
+        let copy = (!self.bodies.flags.linearized).then(|| event.clone());
+        if let Err(event) = push_running(event) {
+            self.coord().push_event(event);
+        }
+        if let Some(event) = copy {
             self.cx.emit(event);
         }
     }
@@ -183,31 +281,55 @@ impl Cx for BodyCx<'_, '_> {
     fn id_of(&self, key: &NodeKey) -> NodeId {
         self.cx.id_of(key)
     }
-}
 
-impl<'e> Phase1Cx<'e> for BodyCx<'_, 'e> {
-    fn coord(&self) -> MutexGuard<'_, Coord<'e>> {
-        self.coord
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn hint(&mut self, keys: &[NodeKey]) {
+        self.cx.hint(keys);
+    }
+
+    fn peek(&self, key: &NodeKey) -> Option<Arc<NodeValue>> {
+        self.cx.peek(key)
     }
 }
+
+impl<'e> Phase1Cx<'e> for BodyCx<'_, '_, 'e> {
+    fn coord(&self) -> MutexGuard<'_, Coord<'e>> {
+        self.bodies.coord()
+    }
+
+    fn flags(&self) -> Flags {
+        self.bodies.flags
+    }
+}
+
+/// The marker of [`Missing::Repo`] for an attempt only the sequential
+/// pass can run (S2: on the pool, a flush or a repository demand): it
+/// parks until the inline pass.
+pub(crate) const INLINE: &str = "\u{1}inline";
 
 /// The phase-1 node bodies for A's evaluator.
 pub(crate) struct Phase1Bodies<'s, 'e> {
     pub(crate) shared: &'s EvalShared,
     pub(crate) coord: Mutex<Coord<'e>>,
+    pub(crate) flags: Flags,
 }
 
 impl<'s, 'e> Phase1Bodies<'s, 'e> {
-    pub(crate) fn new(shared: &'s EvalShared, engine: &'e mut Engine, tracking: bool) -> Self {
+    pub(crate) fn new(
+        shared: &'s EvalShared,
+        engine: &'e mut Engine,
+        tracking: bool,
+        linearized: bool,
+    ) -> Self {
         Self {
             shared,
+            flags: Flags {
+                tracking,
+                linearized,
+            },
             coord: Mutex::new(Coord {
                 engine,
                 tracking,
                 saw_flush: false,
-                stack: Vec::new(),
                 store: Store::default(),
                 lin: None,
                 ct1_done: FxHashMap::default(),
@@ -224,10 +346,46 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn pop(&self) {
-        let mut coord = self.coord();
-        coord.drain();
-        coord.abandon_attempt();
+    /// Whether attempts run on the pool now.
+    fn pooled(&self) -> bool {
+        self.shared
+            .loading
+            .pooled
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Move what this thread captured since the last call (tracker
+    /// scopes and lookups, console writes) into its running attempt.
+    fn drain_local(&self) {
+        let mut events = super::super::linearize::capture::take();
+        let writes = crate::ui::deferred_split();
+        if events.is_empty() && writes.is_empty() {
+            return;
+        }
+        if !writes.is_empty() {
+            let mut coord = self.coord();
+            for write in writes {
+                let index = coord.store.console(write);
+                events.push(Event::Console(index));
+            }
+        }
+        for event in events {
+            if let Err(event) = push_running(event) {
+                self.coord().push_event(event);
+            }
+        }
+    }
+}
+
+/// A pool thread's evaluation setup (once per thread): its console held
+/// and its tracker captures on, as the coordinator's.
+fn pool_thread_setup(tracking: bool) {
+    if !POOL_THREAD.with(|pool| pool.replace(true)) {
+        // Held for the thread's life (every write is drained into an
+        // attempt): never dropped, so no thread-local is touched at exit.
+        std::mem::forget(crate::ui::DeferredConsole::start());
+        crate::ui::set_count_deferred(true);
+        super::super::linearize::capture::start(tracking);
     }
 }
 
@@ -235,44 +393,113 @@ impl Bodies for Phase1Bodies<'_, '_> {
     type Attempt = ();
 
     fn begin(&self, id: NodeId, key: &NodeKey) {
-        let mut coord = self.coord();
-        coord.drain();
-        coord.begin_attempt(id, key.clone());
+        if self.pooled()
+            && std::thread::current()
+                .name()
+                .is_some_and(|name| name.starts_with("eval-"))
+        {
+            pool_thread_setup(self.flags.tracking);
+        }
+        self.drain_local();
+        let events = {
+            let mut coord = self.coord();
+            coord.drain();
+            coord.begin_attempt(id, key)
+        };
+        with_running(|running| {
+            running.push(Running {
+                id,
+                key: key.clone(),
+                replay: events.len(),
+                cursor: 0,
+                events,
+                missing_at: None,
+            })
+        });
     }
 
     fn run(&self, cx: &mut dyn Cx, key: &NodeKey) -> Result<NodeValue, Missing> {
-        let mut cx = BodyCx {
-            cx,
-            coord: &self.coord,
+        let mut cx = BodyCx { cx, bodies: self };
+        if !self.pooled() {
+            return super::eval_host::body(self.shared, &mut cx, key);
+        }
+        // On the pool: no repository demand (a repository a body needs, an
+        // order-dependent decision: the attempt runs in the sequential
+        // pass, where demand may fetch), what it observes in its own frame.
+        let sentinels = crate::repository_demand::sentinels_raised();
+        let order_dependent = crate::repository_demand::take_order_dependent();
+        let scope = crate::observed_fs::unit_scope();
+        let no_demand = crate::repository_demand::no_demand();
+        let reuse = crate::repository_demand::reuse_only();
+        let result = super::eval_host::body(self.shared, &mut cx, key);
+        drop(reuse);
+        drop(no_demand);
+        let raised = crate::repository_demand::sentinels_raised() != sentinels
+            || crate::repository_demand::take_order_dependent();
+        crate::repository_demand::restore_order_dependent(order_dependent);
+        let result = match result {
+            Ok(_) if raised && !matches!(key, NodeKey::Pkg(_)) => {
+                Err(Missing::Repo(INLINE.to_owned()))
+            }
+            result => result,
         };
-        super::eval_host::body(self.shared, &mut cx, key)
+        // What a done attempt observed reaches the recording (an abandoned
+        // attempt's re-run observes it again).
+        let observations = scope.finish();
+        if result.is_ok() {
+            crate::observed_fs::commit_to_recorder(observations);
+        }
+        result
     }
 
     fn finish(&self, _attempt: (), value: NodeValue) -> NodeValue {
+        self.drain_local();
+        let Some(running) = with_running(Vec::pop) else {
+            return value;
+        };
+        if let Some(event) = running.events[running.cursor.min(running.replay)..running.replay]
+            .iter()
+            .find(|event| {
+                !matches!(
+                    event,
+                    Event::Console(_)
+                        | Event::PkgCommit(..)
+                        | Event::LoadPrints(_)
+                        | Event::Warn(_)
+                        | Event::Access(_)
+                        | Event::ScopeEnter(_)
+                        | Event::ScopeExit
+                )
+            })
+        {
+            note_mismatch(format!(
+                "{:?} finished without re-emitting {event:?} of its abandoned attempt",
+                running.key
+            ));
+        }
+        if matches!(running.key, NodeKey::Tgt(_)) {
+            // A lookup's events belong to its user (the walk looks
+            // targets up inline).
+            for event in running.events {
+                if let Err(event) = push_running(event)
+                    && !self.pooled()
+                {
+                    self.coord().push_event(event);
+                }
+            }
+            return value;
+        }
         let mut coord = self.coord();
         coord.drain();
-        let key = coord.finish_attempt(&value);
-        match (key, &value) {
-            (Some(NodeKey::Ct1(ct)), NodeValue::Ct1(ct1)) => {
-                coord
-                    .ct1_done
-                    .entry(ct.key.clone())
-                    .or_insert_with(|| Arc::clone(ct1));
-                coord.ct1_values.insert(ct, Arc::clone(ct1));
-            }
-            (Some(NodeKey::Src(label)), NodeValue::Src(Ok(()))) => {
-                coord.sources.insert(label);
-            }
-            (Some(NodeKey::Pkg(package)), NodeValue::Pkg(result)) => {
-                coord.store.packages.insert(package, result.clone());
-            }
-            _ => {}
-        }
+        coord.finish_attempt(running, &value);
         value
     }
 
     fn abandon(&self, _attempt: ()) {
-        self.pop();
+        self.drain_local();
+        if let Some(running) = with_running(Vec::pop) {
+            self.coord().abandon_attempt(running);
+        }
     }
 
     fn target_platform(&self, config: ConfigId) -> NodeKey {
