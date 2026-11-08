@@ -1722,6 +1722,17 @@ impl Engine {
             // Place the lowerings done since (a failed one is the first
             // error), and keep the queue bounded.
             self.drain_lowerings(state, lowering::Drain::Bounded)?;
+            // S3 pass 2: what the tape applied before this turn, after
+            // everything before it is placed (a deferred flush's walk
+            // ended there: its failures are its own).
+            if self
+                .eval_pass2
+                .as_ref()
+                .is_some_and(|pending| pending.due(state.done))
+            {
+                self.drain_lowerings(state, lowering::Drain::All)?;
+                self.eval_pass2_turn(state.done);
+            }
             let index = state.done;
             state.done += 1;
             // Registrations made ahead of their turn become visible at it.

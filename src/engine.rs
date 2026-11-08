@@ -3011,6 +3011,10 @@ pub struct Engine {
     /// flush (`plan_pending`) fails with: the walk re-analyzing the chain
     /// of a flush that failed in the tape, for the walk's error text.
     eval_flush_failure: Option<String>,
+    /// BAZEL_RS_ANALYSIS=eval (S3, pass 2): the deferred flushes' tape
+    /// effects a walk applies at their plan positions
+    /// (eval::linearize::pass2).
+    eval_pass2: Option<Box<eval::linearize::pass2::Pending>>,
 }
 
 impl Engine {
@@ -3123,6 +3127,7 @@ impl Engine {
             eval_mode: None,
             eval_verifying: None,
             eval_flush_failure: None,
+            eval_pass2: None,
         }
     }
 
@@ -5290,6 +5295,10 @@ impl Engine {
             // Not inside phase 2's walk: there is no plan to extend.
             return self.target_platform(config, configured, &mut Vec::new());
         };
+        if let Err(error) = self.eval_pass2_resolves_platform() {
+            self.planning_plan = Some(plan);
+            return Err(error);
+        }
         let before = plan.len();
         let platform = self.target_platform(config, configured, &mut plan);
         if eval::nodes::verify_phase1::enabled() {
@@ -10762,6 +10771,8 @@ impl Engine {
             .cloned()
         {
             let (key, rule) = (&key, &rule);
+            // S3 pass 2: what the tape applied before this turn.
+            self.eval_pass2_turn(state.done);
             let index = state.done as u64;
             state.done += 1;
             crate::progress::analysis_configured(state.done);

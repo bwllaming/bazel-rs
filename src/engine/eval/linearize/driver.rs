@@ -74,7 +74,8 @@ fn stat<R>(index: usize, f: impl FnOnce() -> R) -> R {
 }
 
 /// A memo value the engine keeps (phase 2 reads it).
-pub(crate) enum Published {
+#[derive(Clone)]
+pub(in crate::engine) enum Published {
     Platform(
         ConfiguredTargetKey,
         Result<Arc<PlatformInfo>, PlatformError>,
@@ -227,6 +228,22 @@ pub(crate) struct Linearizer {
     /// A flush of the tape failed: the walk stops there (every later
     /// call fails with it; the driver reports it, [`Coord::flush_failure`]).
     failure: Option<FlushFailure>,
+    /// S3 pass 2 ([`super::pass2`]): flushes may be deferred (a pooled
+    /// evaluation without the tracker or the observation recording).
+    defer: bool,
+    /// The plan position the tape's effects apply at: the plan's length at
+    /// the last `Flush`.
+    position: usize,
+    /// The effects not applied yet (a deferred flush's walk is pending),
+    /// by position.
+    pending: std::collections::VecDeque<(usize, super::pass2::Op)>,
+    /// The flushes' plan segments not walked yet: `[start, end)` and
+    /// where the flush happened.
+    segments: std::collections::VecDeque<(usize, usize, Option<super::pass1::FlushPoint>)>,
+    /// The platforms published (applied or pending).
+    platforms: FxHashSet<ConfiguredTargetKey>,
+    /// The target platform of each configuration (the deferral check).
+    target_platforms: FxHashMap<ConfigId, ConfiguredTargetKey>,
 }
 
 /// A flush of the tape that failed.
@@ -457,10 +474,9 @@ impl Coord<'_> {
                 }
                 _ => {}
             }
+            use super::pass2::Op;
             match op {
-                TapeOp::Effect(Event::Print(line)) => {
-                    lin.direct(|_| crate::ui::note(&line));
-                }
+                TapeOp::Effect(Event::Print(line)) => self.effect(lin, Op::Print(line)),
                 TapeOp::Effect(Event::Console(index)) => {
                     if let Some(write) = self
                         .store
@@ -468,20 +484,16 @@ impl Coord<'_> {
                         .get_mut(index as usize)
                         .and_then(Option::take)
                     {
-                        lin.direct(|_| crate::ui::replay(vec![write]));
+                        self.effect(lin, Op::Console(write));
                     }
                 }
-                TapeOp::Effect(Event::Info(text)) => {
-                    lin.direct(|_| crate::toolchains::print_debug_event(text));
-                }
-                TapeOp::Effect(Event::Warn(warning)) => {
-                    self.engine.warnings.push(warning);
-                    self.store.warnings_seen = self.engine.warnings.len();
-                }
+                TapeOp::Effect(Event::Info(text)) => self.effect(lin, Op::Info(text)),
+                TapeOp::Effect(Event::Warn(warning)) => self.effect(lin, Op::Warn(warning)),
                 TapeOp::Effect(Event::LoadPrints(prints)) => {
-                    let engine = &mut *self.engine;
-                    lin.direct(|_| engine.emit_load_prints(prints.to_vec()));
+                    self.effect(lin, Op::LoadPrints(prints));
                 }
+                // The engine's packages at once (work ahead of its turn
+                // reads them; the walk loaded none of them itself).
                 TapeOp::Effect(Event::PkgCommit(package, _)) => self.commit_package(&package),
                 TapeOp::Plan { key, .. } => {
                     let rule = self
@@ -503,19 +515,12 @@ impl Coord<'_> {
                         std::sync::atomic::Ordering::Relaxed,
                     );
                     let point = lin.pass.take_flush_point();
-                    let flushed = self.flush(lin, shared);
+                    let flushed = self.flush(lin, shared, point);
                     STATS[STAT_APPLY].fetch_sub(
                         started.elapsed().as_micros() as u64,
                         std::sync::atomic::Ordering::Relaxed,
                     );
-                    if let Err(error) = flushed {
-                        lin.failure = Some(FlushFailure {
-                            error: error.clone(),
-                            point,
-                            delivered: false,
-                        });
-                        return Err(error);
-                    }
+                    flushed?;
                 }
                 _ => {}
             }
@@ -525,7 +530,193 @@ impl Coord<'_> {
             std::sync::atomic::Ordering::Relaxed,
         );
         match stopped {
-            Some(error) => Err(error),
+            // The walk stops at pass 1's stop: the flushes before it ran.
+            Some(error) => {
+                self.catch_up(lin, shared, lin.position)?;
+                Err(error)
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// Pass 1 as far as the transcripts go, its tape applied, and every
+    /// deferred flush's phase 2 run (what a body that needs the planning
+    /// state, a failure or the end of phase 1 sees: the ordered walk's).
+    pub(crate) fn linearize_all(&mut self, shared: &EvalShared) -> Result<(), String> {
+        self.linearize(shared)?;
+        let Some(mut lin) = self.lin.take() else {
+            return Ok(());
+        };
+        let result = match &lin.failure {
+            Some(failure) => Err(failure.error.clone()),
+            None => {
+                let position = lin.position;
+                if lin.segments.is_empty() && lin.pending.is_empty() {
+                    Ok(())
+                } else {
+                    super::pass2::bump(super::pass2::STAT_FORCED, 1);
+                    self.catch_up(&mut lin, shared, position)
+                }
+            }
+        };
+        self.lin = Some(lin);
+        result
+    }
+
+    /// Whether flushes may be deferred (S3, [`super::pass2`]): a flush is
+    /// then a marker in the sequential pass too.
+    pub(crate) fn defers(&self) -> bool {
+        self.lin.as_ref().is_some_and(|lin| lin.defer)
+    }
+
+    /// Apply an effect of the tape now, or keep it for the walk of the
+    /// deferred flushes before it (S3, [`super::pass2`]).
+    fn effect(&mut self, lin: &mut Linearizer, op: super::pass2::Op) {
+        if lin.pending.is_empty() && lin.segments.is_empty() {
+            let engine = &mut *self.engine;
+            lin.direct(|_| engine.apply_pass2_op(op));
+            self.store.warnings_seen = self.engine.warnings.len();
+        } else {
+            lin.pending.push_back((lin.position, op));
+        }
+    }
+
+    /// The phase 2 of the deferred flushes' segments up to plan position
+    /// `end` (one walk), each effect of the tape applied at its position
+    /// (S3, [`super::pass2`]). A failure is the flush's whose segment it
+    /// is in (`Linearizer::failure`).
+    fn catch_up(
+        &mut self,
+        lin: &mut Linearizer,
+        shared: &EvalShared,
+        end: usize,
+    ) -> Result<(), String> {
+        if let Some(failure) = &lin.failure {
+            return Err(failure.error.clone());
+        }
+        let walked = self
+            .engine
+            .action_planning
+            .as_ref()
+            .map_or(0, |state| state.done);
+        if walked < end {
+            super::pass2::bump(super::pass2::STAT_WALKS, 1);
+            super::pass2::bump(super::pass2::STAT_WALKED, (end - walked) as u64);
+            let last_segment = lin
+                .segments
+                .iter()
+                .rev()
+                .find(|(start, _, _)| *start < end)
+                .map_or(walked, |(start, _, _)| *start);
+            // The ops due before the walk's end move into the engine.
+            let mut due = std::collections::VecDeque::new();
+            while lin
+                .pending
+                .front()
+                .is_some_and(|(position, _)| *position < end)
+            {
+                due.extend(lin.pending.pop_front());
+            }
+            self.engine.eval_pass2 = Some(Box::new(super::pass2::Pending {
+                ops: due,
+                last_segment,
+                turn: walked,
+            }));
+            let rest = lin.plan.split_off(end);
+            let started = std::time::Instant::now();
+            let result = self.with_engine(lin, shared, |engine, lin| {
+                let Some(mut state) = engine.action_planning.take() else {
+                    return (
+                        Err("internal error: BAZEL_RS_ANALYSIS=eval: a flush without the planning state"
+                            .to_owned()),
+                        walked,
+                    );
+                };
+                let result =
+                    engine.plan_targets(&mut state, &mut lin.plan, &mut lin.configured, false);
+                let done = state.done;
+                engine.action_planning = Some(state);
+                (result, done)
+            });
+            STATS[STAT_PHASE2].fetch_add(
+                started.elapsed().as_micros() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            let pending = self.engine.eval_pass2.take();
+            let (result, done) = result;
+            // What the walk analyzed itself (a deferred target platform's
+            // tree, in the walk's last segment): complete for pass 1 from
+            // now on.
+            for (key, _) in &lin.plan[end..] {
+                lin.pass.external(key.clone(), super::pass1::EXTERNAL, true);
+            }
+            let added = lin.plan.len() - end;
+            lin.replay.planned_elsewhere(added);
+            lin.plan.extend(rest);
+            if let Err(error) = result {
+                // The flush whose segment holds the failing entry.
+                super::pass2::bump(super::pass2::STAT_FAILURES, 1);
+                let failing = done.saturating_sub(1).max(walked);
+                let point = lin
+                    .segments
+                    .iter()
+                    .find(|(start, end, _)| *start <= failing && failing < *end)
+                    .or_else(|| lin.segments.back())
+                    .and_then(|(_, _, point)| point.clone());
+                lin.pending.clear();
+                lin.segments.clear();
+                lin.failure = Some(FlushFailure {
+                    error: error.clone(),
+                    point,
+                    delivered: false,
+                });
+                return Err(error);
+            }
+            // Ops the walk did not reach (none: it ran to `end`).
+            if let Some(pending) = pending {
+                for op in pending.ops.into_iter().rev() {
+                    lin.pending.push_front(op);
+                }
+            }
+            while lin
+                .segments
+                .front()
+                .is_some_and(|(_, segment_end, _)| *segment_end <= end)
+            {
+                lin.segments.pop_front();
+            }
+            if lin.position < lin.plan.len() && added > 0 {
+                lin.position += added;
+            }
+        } else {
+            while lin
+                .segments
+                .front()
+                .is_some_and(|(_, segment_end, _)| *segment_end <= end)
+            {
+                lin.segments.pop_front();
+            }
+        }
+        // The effects after the walk's last flush.
+        while lin
+            .pending
+            .front()
+            .is_some_and(|(position, _)| *position <= end)
+        {
+            if let Some((_, op)) = lin.pending.pop_front() {
+                let engine = &mut *self.engine;
+                lin.direct(|_| engine.apply_pass2_op(op));
+            }
+        }
+        self.store.warnings_seen = self.engine.warnings.len();
+        self.store.free_released();
+        // The FeatureFlagInfo values speculated for config_settings (S2,
+        // the CsMatch split) against what the walk planned.
+        self.verify_speculated();
+        match self.store.rerun_mismatch.take() {
+            Some(mismatch) => Err(format!(
+                "internal error: BAZEL_RS_ANALYSIS=eval: {mismatch}; rerun with BAZEL_RS_ANALYSIS=walk"
+            )),
             None => Ok(()),
         }
     }
@@ -534,71 +725,101 @@ impl Coord<'_> {
     /// (`Engine::commit_loaded_package`), unless the engine loaded it
     /// itself meanwhile (a flush's phase 2).
     fn commit_package(&mut self, package: &crate::label::PackageId) {
-        let engine = &mut *self.engine;
-        if engine.packages.contains_key(package) {
-            return;
-        }
-        crate::progress::package_loaded();
-        let Some(Ok(loaded)) = self.store.packages.get(package) else {
-            return;
+        let loaded = match self.store.packages.get(package) {
+            Some(Ok(loaded)) => Some(Arc::clone(loaded)),
+            _ => None,
         };
-        let rules = &loaded.package;
-        for rule in rules.values() {
-            for out in &rule.outs {
-                if let Ok(output) = rule.label.with_name(out) {
-                    engine
-                        .generated
-                        .insert(output, (rule.label.clone(), out.clone()));
-                }
-            }
-        }
-        if let Some(custom) = rules.values().find_map(|rule| rule.custom.as_ref()) {
-            engine
-                .loaded_functions
-                .register(&custom.top_level_functions);
-        }
-        engine.packages.insert(package.clone(), Arc::clone(rules));
+        super::pass2::commit_package(self.engine, package, loaded.as_deref());
     }
 
-    /// The walk's `plan_pending`: phase 2 of the plan so far, the engine
-    /// holding the published values, the configurations and the tracker.
-    fn flush(&mut self, lin: &mut Linearizer, shared: &EvalShared) -> Result<(), String> {
-        stat(STAT_PUBLISH, || self.publish(lin));
-        let before = lin.plan.len();
-        let started = std::time::Instant::now();
-        let result = self.with_engine(lin, shared, |engine, lin| {
-            let Some(mut state) = engine.action_planning.take() else {
-                return Err(
-                    "internal error: BAZEL_RS_ANALYSIS=eval: a flush without the planning state"
-                        .to_owned(),
-                );
-            };
-            let result = engine.plan_targets(&mut state, &mut lin.plan, &mut lin.configured, false);
-            engine.action_planning = Some(state);
-            result
-        });
-        // What the flush's phase 2 analyzed itself (a deferred target
-        // platform's tree): complete for pass 1 from now on.
-        for (key, _) in &lin.plan[before..] {
-            lin.pass.external(key.clone(), super::pass1::EXTERNAL, true);
+    /// The walk's `plan_pending` at a `Flush` of the tape: the done values
+    /// published (the configured targets now, the memo values at the
+    /// flush's position), then phase 2 of the plan so far — now, or later
+    /// in one walk with the next flushes' (S3, [`super::pass2`]).
+    fn flush(
+        &mut self,
+        lin: &mut Linearizer,
+        shared: &EvalShared,
+        point: Option<super::pass1::FlushPoint>,
+    ) -> Result<(), String> {
+        use super::pass2::{Op, STAT_DEFERRED, STAT_NEW_PLATFORM, STAT_ORDERED_MODE, bump};
+        let memos = stat(STAT_PUBLISH, || self.publish_values(lin));
+        let mut new_platform = false;
+        for memo in memos {
+            if let Published::Platform(key, _) = &memo {
+                new_platform |= lin.platforms.insert(key.clone());
+            }
+            self.effect(lin, Op::Publish(memo));
         }
-        let added = lin.plan.len() - before;
-        lin.replay.planned_elsewhere(added);
-        STATS[STAT_PHASE2].fetch_add(
-            started.elapsed().as_micros() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        result?;
-        self.store.free_released();
-        // The FeatureFlagInfo values speculated for config_settings (S2,
-        // the CsMatch split) against what this flush planned.
-        self.verify_speculated();
-        match self.store.rerun_mismatch.take() {
-            Some(mismatch) => Err(format!(
-                "internal error: BAZEL_RS_ANALYSIS=eval: {mismatch}; rerun with BAZEL_RS_ANALYSIS=walk"
-            )),
-            None => Ok(()),
+        let start = lin.position;
+        let end = lin.plan.len();
+        lin.position = end;
+        lin.segments.push_back((start, end, point));
+        let reason = if !lin.defer {
+            Some(STAT_ORDERED_MODE)
+        } else if new_platform {
+            Some(STAT_NEW_PLATFORM)
+        } else if self.platform_unresolved(lin, shared, start, end) {
+            Some(super::pass2::STAT_PLATFORM_UNRESOLVED)
+        } else {
+            None
+        };
+        match reason {
+            None => {
+                bump(STAT_DEFERRED, 1);
+                Ok(())
+            }
+            Some(reason) => {
+                bump(reason, 1);
+                if new_platform {
+                    // The deferred segments first, without the platform
+                    // (the ordered walk planned them before it).
+                    self.catch_up(lin, shared, start)?;
+                }
+                self.catch_up(lin, shared, end)
+            }
         }
+    }
+
+    /// Whether the plan segment `[start, end)` holds a Starlark rule or a
+    /// genrule whose configuration's target platform is not resolved: its
+    /// phase 2 may resolve it (and plan the platform's tree at the flush).
+    fn platform_unresolved(
+        &self,
+        lin: &mut Linearizer,
+        shared: &EvalShared,
+        start: usize,
+        end: usize,
+    ) -> bool {
+        let Linearizer {
+            plan,
+            platforms,
+            target_platforms,
+            ..
+        } = lin;
+        for (key, rule) in &plan[start..end] {
+            if !matches!(rule.kind, RuleKind::Custom | RuleKind::Genrule) {
+                continue;
+            }
+            let platform = target_platforms.entry(key.config).or_insert_with(|| {
+                let configurations = shared
+                    .configurations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                ConfiguredTargetKey::new(
+                    configurations
+                        .get(key.config)
+                        .native
+                        .target_platform()
+                        .clone(),
+                    key.config,
+                )
+            });
+            if !platforms.contains(platform) && !self.engine.platforms.contains_key(platform) {
+                return true;
+            }
+        }
+        false
     }
 
     /// The providers the planning state holds for `key`, once a flush
@@ -794,8 +1015,9 @@ impl Coord<'_> {
     }
 
     /// Publish the done values into the engine's maps (the walk's writes
-    /// phase 2 reads).
-    fn publish(&mut self, lin: &mut Linearizer) {
+    /// phase 2 reads): the configured targets now; the memo values are
+    /// returned (they apply at the flush's plan position).
+    fn publish_values(&mut self, lin: &mut Linearizer) -> Vec<Published> {
         let engine = &mut *self.engine;
         // The configured targets pass 1 decided (the first variant reached
         // in DFS order), in its order.
@@ -825,10 +1047,20 @@ impl Coord<'_> {
         for side in std::mem::take(&mut self.store.sources_side) {
             side.apply(&mut engine.missing_sources, &mut engine.source_directories);
         }
-        for published in &self.store.published[lin.published_memos..] {
-            publish_memo(engine, published);
-        }
+        let memos = self.store.published[lin.published_memos..].to_vec();
         lin.published_memos = self.store.published.len();
+        memos
+    }
+
+    /// Publish everything done into the engine's maps (the end of phase
+    /// 1, the requested target's compatibility check).
+    fn publish(&mut self, lin: &mut Linearizer) {
+        for memo in self.publish_values(lin) {
+            if let Published::Platform(key, _) = &memo {
+                lin.platforms.insert(key.clone());
+            }
+            self.effect(lin, super::pass2::Op::Publish(memo));
+        }
     }
 
     /// The walk's phase 1 of `root` (a done CT1 node) on its own, as a
@@ -1196,7 +1428,7 @@ impl Engine {
         let console = crate::ui::DeferredConsole::start();
         crate::ui::set_count_deferred(true);
         let shared = EvalShared::from_engine(self);
-        let lin = Linearizer {
+        let mut lin = Linearizer {
             pass: Pass1::new(Options { warnings }),
             ops: Vec::new(),
             tracker,
@@ -1207,6 +1439,12 @@ impl Engine {
             unpublished: Vec::new(),
             console: Some(console),
             failure: None,
+            defer: false,
+            position: 0,
+            pending: Default::default(),
+            segments: Default::default(),
+            platforms: FxHashSet::default(),
+            target_platforms: FxHashMap::default(),
         };
         let (result, lin) = {
             let mut bodies = Phase1Bodies::new(&shared, self, tracking, true);
@@ -1215,6 +1453,15 @@ impl Engine {
                 let mut coord = bodies.coord();
                 coord.store.warnings_seen = coord.engine.warnings.len();
                 coord.store.delay_release = bodies.framed;
+                // S3 pass 2: a pooled evaluation defers flushes unless the
+                // tracker or the observation recording see phase 2 and the
+                // tape in their order (or --profile its spans).
+                lin.defer = bodies.framed
+                    && !tracking
+                    && !crate::observed_fs::recording()
+                    && !crate::profile::active()
+                    // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
+                    && std::env::var_os("BAZEL_RS_EVAL_NO_DEFER").is_none();
                 coord.lin = Some(Box::new(lin));
                 coord.begin_segment(SegmentKind::Setup);
             }
@@ -1339,6 +1586,20 @@ impl Engine {
                 );
                 let spec = &super::super::nodes::speculate::STATS;
                 let spec = |index: usize| spec[index].load(std::sync::atomic::Ordering::Relaxed);
+                let pass2 = |index: usize| {
+                    super::pass2::STATS[index].load(std::sync::atomic::Ordering::Relaxed)
+                };
+                crate::note!(
+                    "bazel-rs: eval pass 2: flushes deferred {}, walked at once: new platform {}, platform unresolved {}, ordered mode {}; forced walks {}; walks {} ({} entries), failures {}",
+                    pass2(super::pass2::STAT_DEFERRED),
+                    pass2(super::pass2::STAT_NEW_PLATFORM),
+                    pass2(super::pass2::STAT_PLATFORM_UNRESOLVED),
+                    pass2(super::pass2::STAT_ORDERED_MODE),
+                    pass2(super::pass2::STAT_FORCED),
+                    pass2(super::pass2::STAT_WALKS),
+                    pass2(super::pass2::STAT_WALKED),
+                    pass2(super::pass2::STAT_FAILURES)
+                );
                 crate::note!(
                     "bazel-rs: eval phase 1: speculative flag phase 2s {}, left {}, scratch entries planned {}, {} ms ({} ms holding the coordinator's lock)",
                     spec(0),
@@ -1351,7 +1612,15 @@ impl Engine {
             let mut coord = bodies.coord();
             coord.drain();
             coord.store.segments_done = true;
-            let finished = coord.linearize(&shared);
+            // The deferred flushes' phase 2 (S3, pass 2): a failure is the
+            // flush's, worded by the walk.
+            let finished = match coord.linearize_all(&shared) {
+                Err(error) if result.is_ok() => Err(coord
+                    .flush_failure(&shared, top)
+                    .map(|error| aborted_report(&coord, &error))
+                    .unwrap_or(error)),
+                finished => finished,
+            };
             let mut lin = coord.lin.take().expect("the linearizer");
             coord.publish(&mut lin);
             let result = result.and(finished).and_then(|()| {
@@ -1487,7 +1756,7 @@ pub(crate) fn publish_ct1(
 
 /// Publish a memo value into `engine`'s maps (first one wins: equal values
 /// per key).
-pub(crate) fn publish_memo(engine: &mut Engine, published: &Published) {
+pub(in crate::engine) fn publish_memo(engine: &mut Engine, published: &Published) {
     match published {
         Published::Platform(key, result) => {
             engine
@@ -1922,7 +2191,7 @@ fn drive(
         let analyzed = match analyzed {
             Err(error) => {
                 let mut coord = bodies.coord();
-                let _ = coord.linearize(shared);
+                let _ = coord.linearize_all(shared);
                 Err(coord.flush_failure(shared, top).unwrap_or(error))
             }
             ok => ok,
@@ -1971,6 +2240,29 @@ fn drive(
     }
     bodies.coord().begin_segment(SegmentKind::RootsDone);
     Ok(())
+}
+
+/// Engine::analyze_requested's report of an aborted analysis, for a
+/// flush failure found by the end of phase 1's walk (its requested
+/// target's).
+fn aborted_report(coord: &Coord<'_>, error: &str) -> String {
+    let label = coord.lin.as_ref().and_then(|lin| {
+        let point = lin.failure.as_ref()?.point.as_ref()?;
+        match point.kind.as_ref()? {
+            SegmentKind::Root { label, .. } => Some(label.clone()),
+            _ => None,
+        }
+    });
+    match (
+        error.split_once(super::super::super::ANALYSIS_ABORTED),
+        label,
+    ) {
+        (Some((_, message)), Some(label)) => format!(
+            "Analysis of target '{}' failed; build aborted: {message}",
+            crate::rule_declarations::canonical_form(&label)
+        ),
+        _ => error.to_owned(),
+    }
 }
 
 /// Render the chain errors of a requested target's failure

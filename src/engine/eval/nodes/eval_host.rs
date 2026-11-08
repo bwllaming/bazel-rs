@@ -1030,13 +1030,21 @@ impl Host for EvalHost<'_, '_> {
             self.emit(Event::Flush);
             return Ok(());
         }
+        if self.cx.flags().linearized && self.cx.coord().defers() {
+            // S3 pass 2: the sequential pass's flush is a marker too (its
+            // flags' FeatureFlagInfo speculated, its failure the walk's).
+            self.emit(Event::Flush);
+            return Ok(());
+        }
         self.emit(Event::Flush);
         // BAZEL_RS_ANALYSIS=eval: pass 1 up to here, then the flush's
         // phase 2 (the walk's `plan_pending`; worker C's driver).
         let shared = self.shared;
         let own = self.cx.current();
         let mut coord = self.cx.coord();
-        let result = coord.linearize(shared);
+        // The flag's providers are the planning state's: every deferred
+        // flush's phase 2 runs first (S3, pass 2).
+        let result = coord.linearize_all(shared);
         if result.is_err() {
             // This attempt reports the failure of its own flush (the walk's
             // `?`); another config_setting's is the driver's.
@@ -1446,11 +1454,12 @@ pub(crate) fn body(
             Ok(NodeValue::TransitionDetails(host.finish(result)?))
         }
         NodeKey::Ct2(ct)
-            if shared
-                .loading
-                .pooled
-                .load(std::sync::atomic::Ordering::Acquire)
-                && cx.flags().linearized =>
+            if cx.flags().linearized
+                && (shared
+                    .loading
+                    .pooled
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    || cx.coord().defers()) =>
         {
             flag_ct2(shared, cx, ct)
         }
@@ -1461,7 +1470,7 @@ pub(crate) fn body(
             // phase 2: today's path, on the coordinator); its providers. S3
             // makes CT2 a node of its own.
             let mut coord = cx.coord();
-            let error = coord.linearize(shared).err();
+            let error = coord.linearize_all(shared).err();
             let providers = coord
                 .engine
                 .action_planning
@@ -1555,6 +1564,29 @@ fn flag_ct2(
     // The flag's phase 1 is done (its consumer analyzed it first).
     cx.need_one(NodeKey::Ct1(ct.clone()))?;
     let Some(providers) = super::speculate::flag_providers(shared, cx, ct) else {
+        if !shared
+            .loading
+            .pooled
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            // The sequential pass (S3 pass 2 deferring): the ordered
+            // flushes' phase 2, then the planned providers.
+            let mut coord = cx.coord();
+            let error = coord.linearize_all(shared).err();
+            let providers = coord
+                .engine
+                .action_planning
+                .as_ref()
+                .and_then(|state| state.custom_providers.get(&ct.key).cloned());
+            return Ok(NodeValue::Ct2(Arc::new(super::super::value::Ct2Value {
+                reads: super::super::value::Ct2Reads {
+                    providers,
+                    ..Default::default()
+                },
+                delta: std::sync::Mutex::new(None),
+                error,
+            })));
+        }
         super::bodies::INLINE_REASONS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         cx.coord().missing_here();
         return Err(Missing::Repo(super::bodies::INLINE.to_owned()));

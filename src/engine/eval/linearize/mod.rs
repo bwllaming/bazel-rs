@@ -14,10 +14,12 @@
 //!   registration cycle reports), built bottom-up as they propagate.
 //! - [`cycles`]: the walk-order cycle handler at quiescence
 //!   (`Pass1Cycles`, replacing A's stand-in `DfsCycles`).
-//! - S3 adds `pass2.rs` (streaming the tape, merging CT2 deltas).
+//! - [`pass2`]: the deferred flushes' phase 2 (S3): their tape effects
+//!   applied at their plan positions by a later walk.
 
 pub(crate) mod capture;
 pub(crate) mod chains;
 pub(crate) mod cycles;
 pub(crate) mod driver;
 pub(crate) mod pass1;
+pub(crate) mod pass2;

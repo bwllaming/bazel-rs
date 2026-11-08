@@ -537,6 +537,7 @@ impl Engine {
             eval_mode: Some(AnalysisMode::Walk),
             eval_verifying: None,
             eval_flush_failure: None,
+            eval_pass2: None,
         }
     }
 }
