@@ -1434,6 +1434,7 @@ impl Engine {
             // run park); the walk's order then drives the inline pass over
             // the same graph.
             let pooled_at = std::time::Instant::now();
+            let _ = POOL_START.set(pooled_at);
             let pool_roots = if evaluator.pooled() {
                 let roots = warm_up(&evaluator, &shared, labels, top, target_platform.clone());
                 evaluator.set_inline(true);
@@ -1506,18 +1507,23 @@ impl Engine {
                 let big: Vec<String> = rounds
                     .iter()
                     .enumerate()
-                    .filter(|(_, (done, time))| *done >= 1000 || time.as_millis() >= 100)
-                    .map(|(index, (done, time))| {
-                        format!("#{} {done} in {} ms", index + 2, time.as_millis())
+                    .filter(|(_, (done, time, _))| *done >= 1000 || time.as_millis() >= 100)
+                    .map(|(index, (done, time, at))| {
+                        format!(
+                            "#{} {done} in {} ms at +{} ms",
+                            index + 2,
+                            time.as_millis(),
+                            at.as_millis()
+                        )
                     })
                     .collect();
                 crate::note!(
                     "bazel-rs: eval phase 1: later pool rounds {} ({} nodes in the first 16, {} ms); with >= 1000 nodes: {}",
                     rounds.len(),
-                    rounds.iter().map(|(done, _)| done).sum::<u64>(),
+                    rounds.iter().map(|(done, _, _)| done).sum::<u64>(),
                     rounds
                         .iter()
-                        .map(|(_, time)| time.as_millis())
+                        .map(|(_, time, _)| time.as_millis())
                         .sum::<u128>(),
                     big.join(", ")
                 );
@@ -1972,7 +1978,14 @@ fn pool_round(
         ROUNDS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((done, elapsed));
+            .push((
+                done,
+                elapsed,
+                POOL_START
+                    .get()
+                    .map(|at| started.duration_since(*at))
+                    .unwrap_or_default(),
+            ));
     }
     evaluator.set_inline(true);
     pooled.store(false, std::sync::atomic::Ordering::Release);
@@ -2003,8 +2016,11 @@ impl Drop for Timed<'_> {
 static LOOKUPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// BAZEL_RS_EVAL_STATS: the later pool rounds (nodes done, time).
-static ROUNDS: std::sync::Mutex<Vec<(u64, std::time::Duration)>> =
+static ROUNDS: std::sync::Mutex<Vec<(u64, std::time::Duration, std::time::Duration)>> =
     std::sync::Mutex::new(Vec::new());
+
+/// BAZEL_RS_EVAL_STATS: when the pool's first round began.
+static POOL_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 /// The sequential pass's attempts so far.
 fn sequential_attempts() -> u64 {
