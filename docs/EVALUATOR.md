@@ -981,6 +981,31 @@ identical on the suites (`tests/eval_pass2.rs`, `=all`: every walk) and
 prepares (~11 s of its CPU) leave it, but the walk is bound by its **turn
 chain** (below), and the fork costs ~0.4 s and ~0.5 GB.
 
+**Results** (2026-11-08, ~/code `80d6724f3a` private clone, LTO release,
+warm repositories, `BAZEL_RS_SNAPSHOT=off`, `build --nobuild //src/...`,
+48 threads, two runs each, alternating, host load 16–18):
+
+| | walk (main) | eval (main) | walk (branch) | eval (branch) | eval (branch, frozen prepares) |
+|---|---|---|---|---|---|
+| plan.start → phase 1 done | 37.4 / 35.3 s | 39.8 / 40.0 s | 36.3 / 37.7 s | 36.7 / 34.8 s | 37.5 s |
+| of it: the flushes' phase 2 (eval) | | 24.8 / 24.4 s | | 21.2 / 20.0 s (5 ordered walks + the deferred walk) | 20.6 s |
+| plan.start → phase 2 done | 43.1 / 41.9 s | 46.3 / 46.5 s | 42.4 / 43.6 s | 43.1 / 40.9 s | 45.3 s |
+| wall | 47.4 / 46.3 s | 50.7 / 50.9 s | 46.6 / 48.1 s | 47.4 / 45.2 s | 50.9 s |
+| max RSS | 8.93 / 8.90 GB | 9.75 / 9.72 GB | 8.95 / 8.97 GB | 9.69 / 9.64 GB | 10.47 GB |
+
+Phase 1 proper (the evaluation, before the deferred walk) is ~15 s; pass
+2 (~20 s plus the ~6 s tail) is one walk instead of ~3,800. Eval is 3–5 s
+faster than on main and on par with the walk: the walk's phase 2 is the
+same work in fewer walks. Byte-identical stderr with
+`BAZEL_RS_DUMP_ACTIONS=1` (6,486,167 lines) walk vs eval for `build` and
+`test --nobuild //src/...`; `BAZEL_RS_EVAL_VERIFY=1` clean on both and on
+`affected --base=HEAD^`. Suites (ptest): walk 3697/3697, eval
+(`BAZEL_RS_DEFAULT_ANALYSIS=eval`) 3697/3697; with frozen prepares on every
+walk (`BAZEL_RS_DEFAULT_EVAL_FROZEN_PREPARES=all`) 3695/3697 — the two are
+instrumentation expectations (`parallel_rule_implementations`
+`action_graph_and_prints_are_the_sequential_ones` asserts the batch
+prepares ran; `plan_timings` stage coverage), not output.
+
 **Where pass 2's time goes** (`BAZEL_RS_TIMING=1`, `PERF-PARALLEL
 coordinator split`, the one walk of ~110k entries, frozen prepares on):
 Starlark entries at their turn 14.5 s (~3,600 entries not committed
