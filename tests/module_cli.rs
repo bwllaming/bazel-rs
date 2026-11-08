@@ -756,7 +756,9 @@ fn http_dependency_free_commands_use_lockfile_modes_without_fetching() {
         fs::read_to_string(fixture.0.join("MODULE.bazel.lock")).unwrap(),
         "unchanged sentinel\n"
     );
-    assert!(!fixture.0.join("bazel-rs-out/repositories").exists());
+    assert!(store_holds_nothing(
+        &fixture.0.join("bazel-rs-out/repositories")
+    ));
 }
 
 #[test]
@@ -821,7 +823,7 @@ fn http_query_and_build_local_sources_keep_live_paths_and_absolute_bases() {
         assert!(PathBuf::from(output_path).starts_with(&custom_cache));
         assert_eq!(fs::read_to_string(output_path).unwrap(), contents);
     }
-    assert!(!custom_cache.join("repositories").exists());
+    assert!(store_holds_nothing(&custom_cache.join("repositories")));
     assert!(!fixture.0.join("bazel-rs-out").exists());
     server.set(
         "/bazel_registry.json",
@@ -876,4 +878,12 @@ fn http_selected_source_and_yanked_metadata_do_not_fall_back() {
             .all(|path| !path.starts_with("/second/"))
     );
     assert!(!fixture.0.join("bazel-rs-out").exists());
+}
+
+/// Whether the repository store at `store` holds nothing: absent, or the
+/// empty directory a recording command creates before its window opens
+/// (crate::observed_fs::create_with_window) — no repository fetched,
+/// materialized or downloaded.
+fn store_holds_nothing(store: &std::path::Path) -> bool {
+    std::fs::read_dir(store).map_or(true, |mut entries| entries.next().is_none())
 }

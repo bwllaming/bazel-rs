@@ -318,7 +318,9 @@ fn root_module_unused_extension_and_repo_rule_do_not_load_poisoned_definitions()
             "print('G_POISON_LOADED')\nfail('G_CALLBACK_RAN')\n",
         );
         ws.local_success();
-        assert!(!ws.path().join("private-cache/repositories").exists());
+        assert!(store_holds_nothing(
+            &ws.path().join("private-cache/repositories")
+        ));
     }
 }
 
@@ -488,4 +490,12 @@ fn root_module_mod_graph_still_evaluates_root_once_without_build_loading() {
     assert_eq!(graph["apparentName"], "self_alias");
     assert_eq!(stderr(&output).matches("G_ROOT_ONCE").count(), 1);
     ws.not_loaded(&output);
+}
+
+/// Whether the repository store at `store` holds nothing: absent, or the
+/// empty directory a recording command creates before its window opens
+/// (crate::observed_fs::create_with_window) — no repository fetched,
+/// materialized or downloaded.
+fn store_holds_nothing(store: &std::path::Path) -> bool {
+    std::fs::read_dir(store).map_or(true, |mut entries| entries.next().is_none())
 }
