@@ -627,6 +627,9 @@ impl<'a> DeltaBuilder<'a> {
             stamp: self.producers.stamp,
         };
         let checked = check_output(&combined, output, producer).inspect_err(|_| {
+            if order_audit::enabled() && matches!(self.hooks, Hooks::Coordinator { .. }) {
+                order_audit::note_conflict();
+            }
             // Its error names what it met: on a worker the build's own
             // registrations only, so the merge checks it against the rest.
             self.failed_output
@@ -1666,6 +1669,18 @@ pub(super) fn merge_op(
             state.producers.insert_hashed(path, producer);
         }
         DeltaOp::Shared(path, registered) => {
+            if order_audit::enabled() {
+                let winner = state
+                    .producers
+                    .get_indexed(&path)
+                    .and_then(|(producer, _)| producer.action.as_ref())
+                    .map(|(id, _)| id.clone());
+                order_audit::note_shared(
+                    &path,
+                    winner.as_deref(),
+                    order_audit::Sharer::Target(key.clone()),
+                );
+            }
             parallel::record_registered_output(&path);
             parallel::note_shared(state.producers.stamp, registered, state.producers.turn)
         }

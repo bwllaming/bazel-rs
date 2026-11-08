@@ -41,6 +41,7 @@ mod genquery;
 mod incremental;
 mod keep_going;
 mod lowering;
+mod order_audit;
 mod parallel;
 mod pattern_pool;
 mod prepare;
@@ -5456,6 +5457,16 @@ impl Engine {
         }
         let before = plan.len();
         let platform = self.target_platform(config, configured, &mut plan);
+        if order_audit::enabled() && platform.is_ok() {
+            order_audit::note_platform_resolved(ConfiguredTargetKey::new(
+                self.configurations
+                    .get(config)
+                    .native
+                    .target_platform()
+                    .clone(),
+                config,
+            ));
+        }
         if eval::nodes::verify_phase1::enabled() {
             // The walk's plan entries phase 2 analyzed (not phase 1's).
             self.phase2_analyzed
@@ -5777,6 +5788,9 @@ impl Engine {
                     .label
                     .with_name(&out)?
                     .generated_exec_path(&engine.configurations.output_root(config));
+                if order_audit::enabled() {
+                    order_audit::note_output_file(&exec);
+                }
                 reads
                     .declared(config, &exec)
                     .map(|artifact| Arc::new(vec![artifact]))
@@ -7708,6 +7722,9 @@ impl Engine {
             return Self::incompatible_dependency_view_in(cx, configured, label, edge_config);
         }
         let artifacts = Self::shared_artifacts_in(cx, label, edge_config, reads)?;
+        if order_audit::enabled() {
+            order_audit::note_view_artifacts(&artifacts);
+        }
         let files = artifacts.iter().map(Artifact::file).collect::<Vec<_>>();
         for artifact in artifacts.iter() {
             cx.register(&artifact.file, artifact);
@@ -7977,6 +7994,9 @@ impl Engine {
                 bases: bases.clone(),
             };
             self.track_aspect_application(&key);
+            if order_audit::enabled() {
+                order_audit::note_aspect(!state.aspect_providers.contains_key(&key));
+            }
             if state.aspect_providers.contains_key(&key) {
                 applications.push((
                     key.clone(),
@@ -8581,6 +8601,20 @@ impl Engine {
         let mut analyzed_rule = base_rule.clone();
         let mut native_base = None;
         if analyzed_rule.custom.is_some() || analyzed_rule.native.is_some() {
+            if order_audit::enabled() {
+                let key = ConfiguredTargetKey::new(
+                    self.configurations
+                        .get(base_key.config)
+                        .native
+                        .target_platform()
+                        .clone(),
+                    base_key.config,
+                );
+                order_audit::note_platform_read(
+                    &key,
+                    matches!(self.platforms.get(&key), Some(Ok(_))),
+                );
+            }
             let platform = match self.platforms.get(&ConfiguredTargetKey::new(
                 self.configurations
                     .get(base_key.config)
@@ -9392,6 +9426,12 @@ impl Engine {
             custom.cpp = crate::custom_rule::CppConfigurationView::of(
                 &engine.configurations.get(config).native,
             );
+            if order_audit::enabled() {
+                order_audit::note_platform_read(
+                    &target,
+                    matches!(engine.platforms.get(&target), Some(Ok(_))),
+                );
+            }
             custom.target_platform = match engine.platforms.get(&target) {
                 _ if !uses_toolchains => crate::platforms::TargetPlatform::Absent,
                 Some(Ok(platform)) => crate::platforms::TargetPlatform::Resolved(platform.clone()),
@@ -9921,6 +9961,9 @@ impl Engine {
         if let Some(snapshot) = snapshot {
             drop_elsewhere(snapshot);
         }
+        if order_audit::enabled() {
+            order_audit::note_delta(reason);
+        }
         let merged = self.merge_delta(state, &key, delta);
         if let Some(started) = started {
             parallel::note_delta(reason, started.elapsed());
@@ -10219,6 +10262,12 @@ impl Engine {
                     .target_platform()
                     .clone(),
             );
+            if order_audit::enabled() {
+                order_audit::note_platform_read(
+                    &platform_key,
+                    matches!(self.platforms.get(&platform_key), Some(Ok(_))),
+                );
+            }
             let mut surface = self.ctx_surface(
                 rule,
                 config,
@@ -11770,6 +11819,9 @@ impl Engine {
             ));
         }
         self.stop_analysis_pool();
+        if order_audit::enabled() {
+            order_audit::report(&state, plan.len(), top);
+        }
         crate::perf_mark("plan.phase2_actions_done");
         if eval::replay_bench::enabled() {
             eval::replay_bench::report(eval::replay_bench::Volume {
@@ -13825,7 +13877,19 @@ fn register_output(
     producer: &Arc<OutputProducer>,
 ) -> Result<Option<String>, String> {
     parallel::record_registered_output(output);
-    match check_output(producers, output, producer)? {
+    let checked = check_output(producers, output, producer);
+    if order_audit::enabled() {
+        match &checked {
+            Ok(OutputRegistration::Shared(id, _)) => order_audit::note_shared(
+                output,
+                Some(id),
+                order_audit::Sharer::Owner(producer.owner.clone()),
+            ),
+            Err(_) => order_audit::note_conflict(),
+            Ok(OutputRegistration::New) => {}
+        }
+    }
+    match checked? {
         OutputRegistration::New => {
             producers.insert(output.to_path_buf(), Arc::clone(producer));
             Ok(None)
@@ -14352,6 +14416,9 @@ impl Engine {
                 register_artifact(artifact_index, &artifact.file, artifact);
             }
             return Ok(artifacts);
+        }
+        if order_audit::enabled() && plan.is_none() {
+            order_audit::note_status_first_need();
         }
         if !self.execute_build {
             // --nobuild: no execution phase, no status action. Consumers
@@ -15458,6 +15525,57 @@ mod tests {
 
     /// W1b registration invariant: a File keeps its first registration; an
     /// equal re-registration is a no-op.
+    /// T1 (docs/EVALUATOR.md "T1: order coupling audit"): which action
+    /// produces a shared output (the first owner's in plan order) must not
+    /// reach providers or dependency views. They hold Files, never the
+    /// engine's private Artifact, and a File names no producer: this
+    /// destructures FileData without `..`, so a field added to it fails here
+    /// and asks for the audit again.
+    #[test]
+    fn file_names_no_producer() {
+        let file = File::new(crate::starlark_types::FileData {
+            path: "bazel-out/k8-fastbuild/bin/a/b".into(),
+            short_path: "a/b".into(),
+            owner: "//a:b".into(),
+            is_source: false,
+            is_directory: false,
+            is_symlink: false,
+        });
+        let crate::starlark_types::FileData {
+            path,
+            short_path,
+            owner,
+            is_source,
+            is_directory,
+            is_symlink,
+        } = &*file;
+        assert_eq!(
+            (path.as_str(), short_path.as_str(), owner.as_str()),
+            ("bazel-out/k8-fastbuild/bin/a/b", "a/b", "//a:b")
+        );
+        assert!(!is_source && !is_directory && !is_symlink);
+        // Two owners' Artifacts of one shared output differ in their
+        // producer only, and give the same File.
+        let exec = PathBuf::from("bazel-out/k8-fastbuild/bin/a/b");
+        let first = Artifact::new(
+            exec.clone(),
+            exec.clone(),
+            Some(("//a:b#0".into(), 0)),
+            "//a:b".into(),
+            false,
+            false,
+        );
+        let second = Artifact::new(
+            exec.clone(),
+            exec,
+            Some(("//a:b[0011aabb]#0".into(), 0)),
+            "//a:b".into(),
+            false,
+            false,
+        );
+        assert_eq!(first.file(), second.file());
+    }
+
     #[test]
     fn register_artifact_keeps_one_artifact_per_file() {
         let artifact = generated_out_txt();
