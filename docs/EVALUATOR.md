@@ -73,10 +73,13 @@ state** instead of from the key.
   `toolchain_context_key`).
 
 Normalization (`CtKey::normalized`, unit-tested): `platform_tree` is
-dropped in the no-config configuration and for rules that neither use
-toolchain resolution nor have exec edges (genrule, Starlark test rule,
-exec-transition attribute); `forced_exec` is dropped unless the rule uses
-toolchain resolution outside a platform tree. A requester needs `Tgt`
+dropped in the no-config configuration only — it is kept for every rule
+of a platform's tree, because the context propagates to the rule's
+dependencies (the earlier per-rule rule, "dropped for rules that neither
+use toolchain resolution nor have exec edges", was unsound: a filegroup's
+genrule dependency escaped the empty configuration; the bodies pass
+`exec_edges: true` for every rule); `forced_exec` is dropped unless the
+rule uses toolchain resolution outside a platform tree. A requester needs `Tgt`
 first (it already does: `self.target(&dependency)` precedes `analyze`),
 so it normalizes before needing `Ct1`.
 

@@ -35,11 +35,15 @@ use super::super::{ConfiguredTargetKey, TransitionCacheKey};
 /// target's analysis cannot observe them, so that the common case keeps
 /// one node per ConfiguredTargetKey:
 ///
-/// - `platform_tree` is kept only when the configuration is not the
-///   no-config configuration (which is empty anyway) and the rule
-///   observes the empty configuration: it uses toolchain resolution, or it
-///   is a genrule / Starlark test rule / rule with an exec-transition edge
-///   (the `expected a Starlark exec transition definition` check).
+/// - `platform_tree` is dropped in the no-config configuration (which is
+///   empty anyway). It must otherwise be kept for **every** rule of a
+///   platform's tree, not only for rules that observe the empty
+///   configuration themselves: the context propagates to the rule's
+///   dependencies (a filegroup's genrule dependency would otherwise escape
+///   the empty configuration). [`Observes::exec_edges`] = `true` keeps it;
+///   the S1 bodies pass that for every rule (`eval_host::edge_ct_key`). A
+///   rule-local rule would need the transitive closure of what observes
+///   it (S2 if the extra variants ever matter).
 /// - `forced_exec` is kept only when the rule uses toolchain resolution
 ///   (the only reader is the toolchain context key) and the target is not
 ///   in a platform tree.
