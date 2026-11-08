@@ -177,6 +177,7 @@ impl<'c, 'e> EvalHost<'c, 'e> {
 
     /// Stop: only the sequential pass runs this attempt (a flush; S2).
     fn inline(&mut self) -> String {
+        self.cx.coord().missing_here();
         self.stop(Missing::Repo(super::bodies::INLINE.to_owned()))
     }
 

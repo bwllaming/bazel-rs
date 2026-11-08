@@ -479,6 +479,13 @@ impl Bodies for Phase1Bodies<'_, '_> {
         crate::repository_demand::restore_order_dependent(order_dependent);
         match result {
             Ok(_) if raised && !matches!(key, NodeKey::Pkg(_)) => {
+                // What it emitted after the swallowed sentinel is not the
+                // sequential pass's: only a rerun's re-emitted prefix stays.
+                with_running(|running| {
+                    if let Some(top) = running.last_mut() {
+                        top.missing_at = Some(top.replay);
+                    }
+                });
                 Err(Missing::Repo(INLINE.to_owned()))
             }
             result => result,
