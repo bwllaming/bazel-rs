@@ -335,6 +335,9 @@ pub(crate) struct Evaluator<'b, B: Bodies> {
     /// The pool's evaluation stops at quiescence without the cycle
     /// handler ([`Self::evaluate_round`]).
     round: AtomicBool,
+    /// Pool waiters the inline driver's completions made ready (queued):
+    /// scheduled when the pool evaluates next.
+    woken: Tracked<Vec<NodeId>>,
 }
 
 impl<'b, B: Bodies> Evaluator<'b, B> {
@@ -360,6 +363,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             inline: AtomicBool::new(false),
             unresolvable: Tracked::default(),
             round: AtomicBool::new(false),
+            woken: Tracked::default(),
         }
     }
 
@@ -672,8 +676,12 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             let missing = match result {
                 Ok(value) => {
                     let value = self.bodies.finish(attempt, value);
-                    // Inline nodes have no registered waiters.
-                    let _ = self.publish(id, value, events);
+                    // Waiters are the pool's (parked before the inline
+                    // driver took over): they run at its next evaluation.
+                    let ready = self.publish(id, value, events);
+                    if !ready.is_empty() {
+                        self.woken.lock().extend(ready);
+                    }
                     return;
                 }
                 Err(missing) => {
@@ -1001,6 +1009,11 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         lane: &mut dyn RepoLane,
         cycles: &mut dyn CycleHandler,
     ) -> Outcome {
+        let woken: Vec<NodeId> = std::mem::take(&mut *self.woken.lock())
+            .into_iter()
+            .filter(|&id| self.graph.entry(id).state() == State::Queued)
+            .collect();
+        self.schedule_many(scope, woken);
         let mut fresh = Vec::new();
         for &root in roots {
             let entry = self.graph.entry(root);
