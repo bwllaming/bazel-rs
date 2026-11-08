@@ -18,10 +18,10 @@ use crate::label::Label;
 use super::super::super::{ConfiguredTargetKey, Engine};
 use super::super::cx::{Cx, Missing, Vals};
 use super::super::key::{CtKey, NodeId, NodeKey};
-use super::super::linearize::driver::{Linearizer, Store};
+use super::super::linearize::driver::{Linearizer, Published, Store};
 use super::super::scheduler::Bodies;
 use super::super::shared::EvalShared;
-use super::super::transcript::Event;
+use super::super::transcript::{Event, Transcript};
 use super::super::value::{Ct1Value, NodeValue};
 
 /// The S1 coordinator state the bodies share (one thread in S1).
@@ -268,6 +268,11 @@ pub(crate) trait Phase1Cx<'e>: Cx {
     /// The evaluation's fixed switches (S2: read without the
     /// coordinator's lock).
     fn flags(&self) -> Flags;
+    /// Hand a store update to the coordinator (on the pool: without its
+    /// lock, applied in this node's order before anybody reads the store).
+    fn defer(&self, apply: Deferred<'e>);
+    /// The running attempt received a `Missing` (it stops here).
+    fn missing_here(&self);
 }
 
 /// An evaluation's fixed switches.
@@ -290,7 +295,7 @@ impl Cx for BodyCx<'_, '_, '_> {
         let vals = match self.cx.need(keys) {
             Ok(vals) => vals,
             Err(missing) => {
-                self.coord().missing_here();
+                self.bodies.missing_here();
                 return Err(missing);
             }
         };
@@ -309,7 +314,7 @@ impl Cx for BodyCx<'_, '_, '_> {
             ));
             let fresh = self.coord().restarted.insert((current, ids.clone()));
             if fresh && roll % 4 == 0 {
-                self.coord().missing_here();
+                self.bodies.missing_here();
                 return Err(Missing::Nodes(ids));
             }
         }
@@ -365,6 +370,14 @@ impl<'e> Phase1Cx<'e> for BodyCx<'_, '_, 'e> {
     fn flags(&self) -> Flags {
         self.bodies.flags
     }
+
+    fn defer(&self, apply: Deferred<'e>) {
+        self.bodies.defer(apply);
+    }
+
+    fn missing_here(&self) {
+        self.bodies.missing_here();
+    }
 }
 
 /// BAZEL_RS_EVAL_STATS: why pool attempts were left to the sequential
@@ -416,6 +429,9 @@ pub(crate) struct Phase1Bodies<'s, 'e> {
     pub(crate) scratch: Mutex<Option<super::speculate::Scratch>>,
     /// `Coord::ct1_done`, shared.
     pub(crate) ct1_done: Arc<Ct1Done>,
+    /// What pool attempts leave for the store (eval-round1: no
+    /// coordinator lock in an attempt's begin, finish or abandon).
+    inbox: Inbox<'e>,
 }
 
 impl<'s, 'e> Phase1Bodies<'s, 'e> {
@@ -435,6 +451,7 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
             },
             framed: false,
             scratch: Mutex::new(None),
+            inbox: Inbox::default(),
             coord: Mutex::new(Coord {
                 engine,
                 tracking,
@@ -450,7 +467,41 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
         }
     }
 
+    /// The coordinator, the pool attempts' records applied to its store.
     pub(crate) fn coord(&self) -> MutexGuard<'_, Coord<'e>> {
+        let mut coord = self.lock_coord();
+        self.inbox.absorb(&mut coord);
+        coord
+    }
+
+    /// Hand `apply` to the coordinator's store: at once off the pool, else
+    /// with the running attempt's records (in its node's order).
+    pub(crate) fn defer(&self, apply: Deferred<'e>) {
+        if self.on_pool() {
+            let id = with_running(|running| running.last().map(|running| running.id));
+            self.inbox
+                .push(id.unwrap_or(NodeId(0)), Record::Apply(apply));
+        } else {
+            apply(&mut self.coord());
+        }
+    }
+
+    /// The running attempt received a `Missing`.
+    pub(crate) fn missing_here(&self) {
+        if self.on_pool() {
+            self.drain_local();
+            mark_missing();
+        } else {
+            self.coord().missing_here();
+        }
+    }
+
+    /// Whether this thread runs pool attempts now.
+    fn on_pool(&self) -> bool {
+        self.pooled() && POOL_THREAD.with(std::cell::Cell::get)
+    }
+
+    fn lock_coord(&self) -> MutexGuard<'_, Coord<'e>> {
         match self.coord.try_lock() {
             Ok(guard) => {
                 COORD_LOCKS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -531,7 +582,12 @@ impl Bodies for Phase1Bodies<'_, '_> {
             pool_thread_setup(self.flags.tracking);
         }
         self.drain_local();
-        let events = {
+        let events = if self.on_pool() {
+            // No coordinator lock on the pool: the store learns of the
+            // attempt with its next records.
+            self.inbox.push(id, Record::Began(id, key.clone()));
+            self.inbox.take_carry(id)
+        } else {
             let mut coord = self.coord();
             if self.framed && !self.pooled() {
                 SEQUENTIAL_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -554,7 +610,9 @@ impl Bodies for Phase1Bodies<'_, '_> {
                 );
             }
             coord.drain();
-            coord.begin_attempt(id, key)
+            coord.begin_attempt(id, key);
+            drop(coord);
+            self.inbox.take_carry(id)
         };
         with_running(|running| {
             running.push(Running {
@@ -590,9 +648,14 @@ impl Bodies for Phase1Bodies<'_, '_> {
         let obtained = roots.finish();
         if !obtained.is_empty() && result.is_ok() {
             let current = cx.current();
-            let mut coord = self.coord();
-            let deferred = coord.store.roots.entry(current).or_default();
-            deferred.extend(obtained);
+            self.defer(Box::new(move |coord: &mut Coord<'_>| {
+                coord
+                    .store
+                    .roots
+                    .entry(current)
+                    .or_default()
+                    .extend(obtained);
+            }));
             INLINE_REASONS[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         let sentinel = crate::repository_demand::sentinels_raised() != sentinels;
@@ -661,9 +724,12 @@ impl Bodies for Phase1Bodies<'_, '_> {
                                 .preloaded
                                 .contains_key(&label.package_id()) =>
                     {
-                        self.coord()
-                            .store
-                            .defer_package_observations(&label.package_id(), observations);
+                        let package = label.package_id();
+                        self.defer(Box::new(move |coord: &mut Coord<'_>| {
+                            coord
+                                .store
+                                .defer_package_observations(&package, observations);
+                        }));
                     }
                     _ => crate::observed_fs::commit(observations),
                 }
@@ -679,25 +745,25 @@ impl Bodies for Phase1Bodies<'_, '_> {
             }
             return value;
         }
+        let parts = FinishParts::of(&running.key, &value);
+        if self.on_pool() {
+            // Read by other bodies at once (no lock).
+            if let Some((ct, ct1)) = &parts.ct1 {
+                self.ct1_done.first(&ct.key, ct1);
+            }
+            self.inbox.push(
+                running.id,
+                Record::Finished {
+                    running,
+                    parts,
+                    observations,
+                },
+            );
+            return value;
+        }
         let mut coord = self.coord();
         coord.drain();
-        if coord.store.replayed.contains(&running.id)
-            && let Some(roots) = coord.store.roots.remove(&running.id)
-        {
-            // No extension group among them (a Pkg node's are committed
-            // at its first use, after it finished).
-            let writes =
-                super::super::linearize::driver::commit_roots(&coord.engine.repositories, &roots);
-            crate::ui::replay(writes);
-        }
-        if let Some(observations) = observations.filter(|observations| !observations.is_empty()) {
-            if coord.store.replayed.contains(&running.id) {
-                crate::observed_fs::commit_to_recorder(observations);
-            } else {
-                coord.store.observations.insert(running.id, observations);
-            }
-        }
-        coord.finish_attempt(running, &value);
+        apply_finish(&mut coord, running, parts, observations);
         value
     }
 
@@ -705,7 +771,13 @@ impl Bodies for Phase1Bodies<'_, '_> {
         drop(attempt.map(crate::observed_fs::UnitScope::finish));
         self.drain_local();
         if let Some(running) = with_running(Vec::pop) {
-            self.coord().abandon_attempt(running);
+            let running = running.kept();
+            self.inbox.keep_carry(running.id, &running.events);
+            if self.on_pool() {
+                self.inbox.push(running.id, Record::Abandoned(running));
+            } else {
+                self.coord().abandon_attempt(running);
+            }
         }
     }
 
@@ -721,4 +793,273 @@ impl Bodies for Phase1Bodies<'_, '_> {
             .clone();
         NodeKey::Platform(ConfiguredTargetKey::new(label, config))
     }
+}
+
+/// What a done attempt leaves in the coordinator's store, computed on its
+/// thread ([`Coord::finish_attempt`]).
+pub(crate) struct FinishParts {
+    memo_ok: bool,
+    published: Option<Published>,
+    ct1: Option<(CtKey, Arc<Ct1Value>)>,
+    source: Option<Label>,
+    package: Option<(
+        crate::label::PackageId,
+        Result<Arc<super::loading::PkgValue>, String>,
+    )>,
+}
+
+impl FinishParts {
+    /// The parts of `value`, the value of `key`'s attempt.
+    pub(crate) fn of(key: &NodeKey, value: &NodeValue) -> Self {
+        let published = match (key, value) {
+            (NodeKey::Platform(key), NodeValue::Platform(result)) => {
+                Some(Published::Platform(key.clone(), result.clone()))
+            }
+            (NodeKey::RegToolchains(config), NodeValue::RegToolchains(result)) => {
+                Some(Published::RegToolchains(*config, result.clone()))
+            }
+            (NodeKey::RegExecPlatforms(config), NodeValue::RegExecPlatforms(result)) => {
+                Some(Published::RegExecPlatforms(*config, result.clone()))
+            }
+            (NodeKey::ExecCfg(config, platform), NodeValue::ExecCfg(Ok(exec))) => {
+                Some(Published::ExecCfg(*config, platform.clone(), *exec))
+            }
+            (NodeKey::FlagScope(label), NodeValue::FlagScope(Ok(scoped))) => {
+                Some(Published::FlagScope(label.clone(), *scoped))
+            }
+            (NodeKey::TransitionDetails(settings), NodeValue::TransitionDetails(result)) => Some(
+                Published::TransitionDetails(settings.clone(), result.clone()),
+            ),
+            (NodeKey::Src(label), NodeValue::Src(Ok(()))) => Some(Published::Source(label.clone())),
+            (NodeKey::Transition(key), NodeValue::Transition(Ok(applied))) => {
+                Some(Published::Transition(
+                    *key,
+                    (
+                        Arc::clone(&applied.configurations),
+                        applied.printed.to_vec(),
+                    ),
+                ))
+            }
+            _ => None,
+        };
+        let mut parts = Self {
+            memo_ok: value.error().is_none(),
+            published,
+            ct1: None,
+            source: None,
+            package: None,
+        };
+        match (key, value) {
+            (NodeKey::Ct1(ct), NodeValue::Ct1(ct1)) => {
+                parts.ct1 = Some((ct.clone(), Arc::clone(ct1)))
+            }
+            (NodeKey::Src(label), NodeValue::Src(Ok(()))) => parts.source = Some(label.clone()),
+            (NodeKey::Pkg(package), NodeValue::Pkg(result)) => {
+                parts.package = Some((package.clone(), result.clone()));
+            }
+            _ => {}
+        }
+        parts
+    }
+}
+
+impl Coord<'_> {
+    /// An attempt of `id` begins: its key is known (its carried events
+    /// are the [`Inbox`]'s).
+    pub(crate) fn begin_attempt(&mut self, id: NodeId, key: &NodeKey) {
+        self.store.keys.entry(id).or_insert_with(|| key.clone());
+        self.store.carry.remove(&id);
+    }
+
+    /// The running attempt received a `Missing`: it stops here.
+    pub(crate) fn missing_here(&mut self) {
+        self.drain();
+        mark_missing();
+    }
+
+    /// The attempt `running` ends with a value whose parts are `parts`:
+    /// its transcript is kept.
+    pub(crate) fn finish_attempt(&mut self, running: Running, parts: FinishParts) {
+        let FinishParts {
+            memo_ok,
+            published,
+            ct1,
+            source,
+            package,
+        } = parts;
+        self.store.memo_ok.insert(running.id, memo_ok);
+        self.store.published.extend(published);
+        if let Some((ct, ct1)) = ct1 {
+            self.ct1_done.first(&ct.key, &ct1);
+            self.ct1_values.insert(ct, ct1);
+        }
+        if let Some(label) = source {
+            self.sources.insert(label);
+        }
+        if let Some((package, result)) = package {
+            self.store.packages.insert(package, result);
+        }
+        self.store.transcripts.insert(
+            running.id,
+            Transcript {
+                events: running.events,
+            },
+        );
+    }
+
+    /// The attempt `running` stopped (`Missing`; its events were cut to
+    /// what stays, [`Running::kept`]): they stay visible to pass 1 until
+    /// its rerun replaces them.
+    pub(crate) fn abandon_attempt(&mut self, running: Running) {
+        if !running.events.is_empty() {
+            self.store.carry.insert(running.id, running.events);
+        }
+    }
+}
+
+/// The running attempt on this thread received a `Missing`: what it
+/// emits from now on is not the rerun's.
+fn mark_missing() {
+    with_running(|running| {
+        if let Some(running) = running.last_mut() {
+            running.missing_at.get_or_insert(running.events.len());
+        }
+    });
+}
+
+impl Running {
+    /// What an abandoned attempt keeps: its events up to its `Missing`
+    /// (at least the rerun prefix), with what happened anyway.
+    fn kept(mut self) -> Self {
+        let keep = self
+            .missing_at
+            .unwrap_or(self.events.len())
+            .max(self.replay);
+        self.events.truncate(keep);
+        self
+    }
+}
+
+/// A store update a pool attempt hands to the coordinator.
+pub(crate) type Deferred<'e> = Box<dyn FnOnce(&mut Coord<'e>) + Send + 'e>;
+
+/// What a pool attempt leaves for the coordinator's store (eval-round1:
+/// begin, finish and abandon take no lock on the pool).
+enum Record<'e> {
+    Began(NodeId, NodeKey),
+    Finished {
+        running: Running,
+        parts: FinishParts,
+        observations: Option<crate::observed_fs::Observations>,
+    },
+    Abandoned(Running),
+    Apply(Deferred<'e>),
+}
+
+const INBOX_SHARDS: usize = 64;
+
+/// The pool attempts' records, sharded by node (one node's in its order:
+/// its attempts never overlap), applied to the store whenever the
+/// coordinator's lock is taken ([`Phase1Bodies::coord`]); and the events
+/// abandoned attempts keep for their reruns.
+pub(crate) struct Inbox<'e> {
+    shards: [Mutex<Vec<Record<'e>>>; INBOX_SHARDS],
+    pending: std::sync::atomic::AtomicUsize,
+    carry: [Mutex<FxHashMap<NodeId, Vec<Event>>>; INBOX_SHARDS],
+}
+
+impl Default for Inbox<'_> {
+    fn default() -> Self {
+        Self {
+            shards: std::array::from_fn(|_| Mutex::new(Vec::new())),
+            pending: std::sync::atomic::AtomicUsize::new(0),
+            carry: std::array::from_fn(|_| Mutex::new(FxHashMap::default())),
+        }
+    }
+}
+
+fn lock_shard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl<'e> Inbox<'e> {
+    fn shard(id: NodeId) -> usize {
+        (id.0 as usize).wrapping_mul(0x9E37_79B9) % INBOX_SHARDS
+    }
+
+    fn push(&self, id: NodeId, record: Record<'e>) {
+        self.pending
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        lock_shard(&self.shards[Self::shard(id)]).push(record);
+    }
+
+    /// The events an abandoned attempt of `id` kept (its rerun's prefix).
+    fn take_carry(&self, id: NodeId) -> Vec<Event> {
+        lock_shard(&self.carry[Self::shard(id)])
+            .remove(&id)
+            .unwrap_or_default()
+    }
+
+    fn keep_carry(&self, id: NodeId, events: &[Event]) {
+        let mut carry = lock_shard(&self.carry[Self::shard(id)]);
+        if events.is_empty() {
+            carry.remove(&id);
+        } else {
+            carry.insert(id, events.to_vec());
+        }
+    }
+
+    /// Apply every record to `coord`'s store.
+    fn absorb(&self, coord: &mut Coord<'e>) {
+        if self.pending.load(std::sync::atomic::Ordering::Acquire) == 0 {
+            return;
+        }
+        for shard in &self.shards {
+            let records = std::mem::take(&mut *lock_shard(shard));
+            self.pending
+                .fetch_sub(records.len(), std::sync::atomic::Ordering::AcqRel);
+            for record in records {
+                match record {
+                    Record::Began(id, key) => coord.begin_attempt(id, &key),
+                    Record::Finished {
+                        running,
+                        parts,
+                        observations,
+                    } => apply_finish(coord, running, parts, observations),
+                    Record::Abandoned(running) => coord.abandon_attempt(running),
+                    Record::Apply(apply) => apply(coord),
+                }
+            }
+        }
+    }
+}
+
+/// A done attempt's store updates: what it observed and the roots it
+/// obtained count now when the tape replayed it already, else where it
+/// does; its transcript and value parts are kept.
+fn apply_finish(
+    coord: &mut Coord<'_>,
+    running: Running,
+    parts: FinishParts,
+    observations: Option<crate::observed_fs::Observations>,
+) {
+    if coord.store.replayed.contains(&running.id)
+        && let Some(roots) = coord.store.roots.remove(&running.id)
+    {
+        // No extension group among them (a Pkg node's are committed at
+        // its first use, after it finished).
+        let writes =
+            super::super::linearize::driver::commit_roots(&coord.engine.repositories, &roots);
+        crate::ui::replay(writes);
+    }
+    if let Some(observations) = observations.filter(|observations| !observations.is_empty()) {
+        if coord.store.replayed.contains(&running.id) {
+            crate::observed_fs::commit_to_recorder(observations);
+        } else {
+            coord.store.observations.insert(running.id, observations);
+        }
+    }
+    coord.finish_attempt(running, parts);
 }

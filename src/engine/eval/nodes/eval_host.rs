@@ -177,7 +177,7 @@ impl<'c, 'e> EvalHost<'c, 'e> {
 
     /// Stop: only the sequential pass runs this attempt (a flush; S2).
     fn inline(&mut self) -> String {
-        self.cx.coord().missing_here();
+        self.cx.missing_here();
         self.stop(Missing::Repo(super::bodies::INLINE.to_owned()))
     }
 
@@ -391,10 +391,11 @@ impl<'c, 'e> EvalHost<'c, 'e> {
     /// A memo value the engine keeps (phase 2 reads it; equal values for
     /// equal keys: first one wins).
     fn publish(&mut self, published: Published) {
-        let mut coord = self.cx.coord();
-        if coord.lin.is_some() {
-            coord.store.published.push(published);
-        }
+        self.cx.defer(Box::new(move |coord| {
+            if coord.lin.is_some() {
+                coord.store.published.push(published);
+            }
+        }));
     }
 
     fn finish<T>(self, result: T) -> Result<T, Missing> {
@@ -1588,7 +1589,7 @@ fn flag_ct2(
             })));
         }
         super::bodies::INLINE_REASONS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        cx.coord().missing_here();
+        cx.missing_here();
         return Err(Missing::Repo(super::bodies::INLINE.to_owned()));
     };
     let flag = providers

@@ -289,7 +289,9 @@ pub(crate) fn package_body(
             roots.append(&mut unit.roots);
             if !roots.is_empty() {
                 let current = cx.current();
-                cx.coord().store.roots.insert(current, roots);
+                cx.defer(Box::new(move |coord| {
+                    coord.store.roots.insert(current, roots);
+                }));
             }
             (unit, validated)
         }
@@ -419,7 +421,7 @@ pub(crate) fn target_body(
         &mut side,
     );
     if !side.missing.is_empty() || !side.directories.is_empty() {
-        cx.coord().store.sources_side.push(side);
+        cx.defer(Box::new(move |coord| coord.store.sources_side.push(side)));
     }
     if let Ok((path, true)) = &found {
         shared
