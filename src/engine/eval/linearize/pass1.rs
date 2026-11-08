@@ -101,6 +101,17 @@ pub(crate) trait Transcripts {
     fn segment(&self, index: usize) -> Option<SegmentRecord<'_>>;
     /// No further segment will come.
     fn segments_complete(&self) -> bool;
+    /// The evaluation is over: a node without a transcript now never gets
+    /// one (before, pass 1 waits for it: nodes finish in any order).
+    fn evaluation_done(&self) -> bool {
+        self.segments_complete()
+    }
+    /// Whether `node`'s value is done (a memo hit of another variant
+    /// compares values: pass 1 waits for it).
+    fn ready(&self, node: NodeId) -> bool {
+        let _ = node;
+        true
+    }
     /// Whether the reached variant's observable value (providers,
     /// incompatibility) equals the canonical variant's; unknown: equal.
     fn same_observable(&self, canonical: NodeId, reached: NodeId) -> bool {
@@ -209,6 +220,16 @@ pub(crate) enum Progress {
     Blocked,
 }
 
+/// What [`Pass1::resume`] stopped at (the evaluator's frontier: the
+/// driver boosts it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Blocker {
+    /// The next top-level segment, or the current one's next event.
+    Segment,
+    /// A node still running, or not run yet.
+    Node(NodeId),
+}
+
 /// One replay in progress.
 enum Frame {
     Segment {
@@ -219,6 +240,8 @@ enum Frame {
         node: NodeId,
         ct: CtKey,
         pos: usize,
+        /// Its `Done` passed: never replayed again (its transcript can go).
+        done: bool,
     },
     Memo {
         node: NodeId,
@@ -245,6 +268,13 @@ pub(crate) struct Pass1 {
     trimmed_root: Option<ConfiguredTargetKey>,
     frames: Vec<Frame>,
     next_segment: usize,
+    /// Where the last [`Pass1::resume`] stopped.
+    blocked: Option<Blocker>,
+    /// Transcripts replayed for the last time (a body past its `Done`, a
+    /// memo): the source may free them ([`Pass1::take_released`]).
+    released: Vec<NodeId>,
+    /// Segments replayed to their end (likewise).
+    released_segments: Vec<usize>,
 }
 
 /// Run pass 1 over finished `segments` (tests and complete sources).
@@ -319,7 +349,25 @@ impl Pass1 {
             trimmed_root: None,
             frames: Vec::new(),
             next_segment: 0,
+            blocked: None,
+            released: Vec::new(),
+            released_segments: Vec::new(),
         }
+    }
+
+    /// What the last [`Pass1::resume`] is waiting for (`None`: finished
+    /// or not started).
+    pub(crate) fn blocked_on(&self) -> Option<Blocker> {
+        self.blocked
+    }
+
+    /// The nodes and segments whose transcripts pass 1 will not read
+    /// again, since the last call.
+    pub(crate) fn take_released(&mut self) -> (Vec<NodeId>, Vec<usize>) {
+        (
+            std::mem::take(&mut self.released),
+            std::mem::take(&mut self.released_segments),
+        )
     }
 
     /// The plan so far.
@@ -352,15 +400,16 @@ impl Pass1 {
         source: &T,
         sink: &mut dyn TapeSink,
     ) -> Result<Progress, String> {
+        self.blocked = None;
         loop {
             let Some(frame) = self.frames.last_mut() else {
                 // Between segments.
                 let Some(segment) = source.segment(self.next_segment) else {
-                    return Ok(if source.segments_complete() {
-                        Progress::Finished
-                    } else {
-                        Progress::Blocked
-                    });
+                    if source.segments_complete() {
+                        return Ok(Progress::Finished);
+                    }
+                    self.blocked = Some(Blocker::Segment);
+                    return Ok(Progress::Blocked);
                 };
                 sink.op(TapeOp::Segment(segment.kind.clone()));
                 self.trimmed_root = match segment.kind {
@@ -376,36 +425,60 @@ impl Pass1 {
                 continue;
             };
             // The next event of the innermost frame, or its end.
-            let (event, complete) = match frame {
+            let (event, complete, owner) = match frame {
                 Frame::Segment { index, pos } => {
                     let segment = source
                         .segment(*index)
                         .ok_or("internal error: pass 1: a segment vanished")?;
-                    let event = segment.events.get(*pos).cloned();
-                    *pos += usize::from(event.is_some());
-                    (event, segment.complete)
+                    (
+                        segment.events.get(*pos).cloned(),
+                        segment.complete,
+                        Blocker::Segment,
+                    )
                 }
                 Frame::Body { node, pos, .. } => {
                     let record = source
                         .ct1(*node)
                         .ok_or("internal error: pass 1: a body vanished")?;
-                    let event = record.events.get(*pos).cloned();
-                    *pos += usize::from(event.is_some());
-                    (event, record.complete)
+                    (
+                        record.events.get(*pos).cloned(),
+                        record.complete,
+                        Blocker::Node(*node),
+                    )
                 }
                 Frame::Memo { node, pos, .. } => match source.memo(*node) {
-                    Some(record) => {
-                        let event = record.events.get(*pos).cloned();
-                        *pos += usize::from(event.is_some());
-                        (event, record.complete)
-                    }
-                    None => (None, true),
+                    Some(record) => (
+                        record.events.get(*pos).cloned(),
+                        record.complete,
+                        Blocker::Node(*node),
+                    ),
+                    None => (None, true, Blocker::Node(*node)),
                 },
             };
+            let depth = self.frames.len() - 1;
             match event {
-                Some(event) => self.event(source, sink, event)?,
-                None if !complete => return Ok(Progress::Blocked),
+                Some(event) => match self.event(source, sink, event, complete)? {
+                    None => self.advance(depth),
+                    Some(blocker) => {
+                        self.blocked = Some(blocker);
+                        return Ok(Progress::Blocked);
+                    }
+                },
+                None if !complete => {
+                    self.blocked = Some(owner);
+                    return Ok(Progress::Blocked);
+                }
                 None => self.pop(source, sink),
+            }
+        }
+    }
+
+    /// The event at `frames[depth]`'s position was consumed (it may have
+    /// pushed a frame above it).
+    fn advance(&mut self, depth: usize) {
+        match &mut self.frames[depth] {
+            Frame::Segment { pos, .. } | Frame::Body { pos, .. } | Frame::Memo { pos, .. } => {
+                *pos += 1;
             }
         }
     }
@@ -413,16 +486,24 @@ impl Pass1 {
     /// The innermost frame's transcript is replayed to its end.
     fn pop<T: Transcripts + ?Sized>(&mut self, source: &T, sink: &mut dyn TapeSink) {
         match self.frames.pop().expect("a frame") {
-            Frame::Segment { .. } => {
+            Frame::Segment { index, .. } => {
                 self.out.segment_active.push(self.chains[0].len());
                 self.trimmed_root = None;
                 self.chains.clear();
+                self.released_segments.push(index);
             }
-            Frame::Body { node, ct, .. } => {
-                if let Some(record) = source.ct1(node)
-                    && record.empty_configuration
-                {
-                    self.out.empty_configuration.insert(ct.key);
+            Frame::Body { node, ct, done, .. } => {
+                if let Some(record) = source.ct1(node) {
+                    if record.empty_configuration {
+                        self.out.empty_configuration.insert(ct.key.clone());
+                    }
+                    // `rule_delegations` (the value is complete here).
+                    if done && let Some(delegate) = record.delegate {
+                        self.out.delegations.insert(ct.key, delegate.clone());
+                    }
+                }
+                if done {
+                    self.released.push(node);
                 }
                 sink.op(TapeOp::Leave);
             }
@@ -432,6 +513,7 @@ impl Pass1 {
                 platform,
                 ..
             } => {
+                self.released.push(node);
                 if fresh {
                     self.chains.pop();
                 }
@@ -458,14 +540,20 @@ impl Pass1 {
         matches!(self.frames.last(), Some(Frame::Memo { fresh: true, .. }))
     }
 
+    /// Replay `event` of the innermost frame (`complete`: its transcript
+    /// is complete); `Some`: not consumed, pass 1 waits for the blocker.
     fn event<T: Transcripts + ?Sized>(
         &mut self,
         source: &T,
         sink: &mut dyn TapeSink,
         event: Event,
-    ) -> Result<(), String> {
+        complete: bool,
+    ) -> Result<Option<Blocker>, String> {
         match event {
             Event::Reach(node) => {
+                if let Some(blocker) = self.reach_blocker(source, node) {
+                    return Ok(Some(blocker));
+                }
                 if self.in_fresh_memo() {
                     self.chain().clear();
                 }
@@ -481,7 +569,16 @@ impl Pass1 {
                     sink.op(TapeOp::Effect(event));
                 }
             }
-            Event::MemoUse(node) => self.memo_use(source, sink, node),
+            Event::MemoUse(node) => {
+                if !self.memos.contains(&node)
+                    && source.memo(node).is_none()
+                    && !source.evaluation_done()
+                {
+                    // Not run yet (nodes finish in any order).
+                    return Ok(Some(Blocker::Node(node)));
+                }
+                self.memo_use(source, sink, node);
+            }
             Event::Warn(ref warning) => {
                 if self.warned.insert(warning.clone()) {
                     self.out.warnings.push(warning.clone());
@@ -510,6 +607,10 @@ impl Pass1 {
                 let Some((node, ct)) = self.owner() else {
                     return Err("internal error: pass 1: a plan entry outside a body".to_owned());
                 };
+                if !complete {
+                    // The entry reads the finished value (its incompatibility).
+                    return Ok(Some(Blocker::Node(node)));
+                }
                 let incompatible = source.ct1(node).is_some_and(|record| record.incompatible);
                 self.out.plan.push(ct.clone());
                 sink.op(TapeOp::Plan {
@@ -522,11 +623,11 @@ impl Pass1 {
                     // The walk pops the top of the chain (the key's own
                     // entry unless a caught failure left more).
                     self.chain().pop();
-                    self.visited.insert(ct.key.clone(), node);
-                    if let Some(record) = source.ct1(node)
-                        && let Some(delegate) = record.delegate
-                    {
-                        self.out.delegations.insert(ct.key, delegate.clone());
+                    self.visited.insert(ct.key, node);
+                    // Its delegation is recorded when the frame ends (the
+                    // value is complete there).
+                    if let Some(Frame::Body { done, .. }) = self.frames.last_mut() {
+                        *done = true;
                     }
                 }
                 sink.op(TapeOp::Effect(Event::Done));
@@ -541,7 +642,30 @@ impl Pass1 {
             | Event::Continue(_)
             | Event::Error(_) => sink.op(TapeOp::Effect(event)),
         }
-        Ok(())
+        Ok(None)
+    }
+
+    /// What a reach of `node` must wait for before it is replayed: the
+    /// node's transcript when it is entered, its value when it is a memo
+    /// hit of another variant (the values are compared).
+    fn reach_blocker<T: Transcripts + ?Sized>(&self, source: &T, node: NodeId) -> Option<Blocker> {
+        if source.evaluation_done() {
+            return None;
+        }
+        let NodeKey::Ct1(ct) = source.key(node) else {
+            return None;
+        };
+        match self.visited.get(&ct.key) {
+            Some(&canonical) => {
+                (canonical != node && !source.ready(node)).then_some(Blocker::Node(node))
+            }
+            None => {
+                let chain = self.chains.last()?;
+                let fails = !self.in_fresh_memo()
+                    && (chain.contains(&ct.key) || chain.len() >= DEPTH_LIMIT);
+                (!fails && source.ct1(node).is_none()).then_some(Blocker::Node(node))
+            }
+        }
     }
 
     fn reach<T: Transcripts + ?Sized>(
@@ -622,7 +746,12 @@ impl Pass1 {
             ));
         }
         self.chain().push(key);
-        self.frames.push(Frame::Body { node, ct, pos: 0 });
+        self.frames.push(Frame::Body {
+            node,
+            ct,
+            pos: 0,
+            done: false,
+        });
         Ok(())
     }
 
@@ -679,6 +808,27 @@ pub(crate) mod tests {
         /// Segments for resumable runs.
         pub(crate) segments: Vec<Segment>,
         pub(crate) segments_done: bool,
+        /// Streaming runs: the nodes run so far and how much of each
+        /// transcript exists (`usize::MAX`: finished); others are hidden.
+        pub(crate) visible: Option<HashMap<NodeId, usize>>,
+        /// Transcripts pass 1 released (empty from then on).
+        pub(crate) released: HashSet<NodeId>,
+    }
+
+    impl Fixture {
+        /// `events` as far as visible, and whether complete.
+        fn visible<'a>(&self, node: NodeId, events: &'a [Event]) -> Option<(&'a [Event], bool)> {
+            if self.released.contains(&node) {
+                return Some((&[], true));
+            }
+            match &self.visible {
+                None => Some((events, true)),
+                Some(visible) => {
+                    let len = *visible.get(&node)?;
+                    Some((&events[..len.min(events.len())], len == usize::MAX))
+                }
+            }
+        }
     }
 
     impl Transcripts for Fixture {
@@ -687,20 +837,28 @@ pub(crate) mod tests {
         }
         fn ct1(&self, node: NodeId) -> Option<Ct1Record<'_>> {
             let (transcript, delegate, empty, incompatible) = self.bodies.get(&node)?.first()?;
+            let (events, complete) = self.visible(node, &transcript.events)?;
             Some(Ct1Record {
-                events: &transcript.events,
-                complete: !self.partial.contains(&node),
+                events,
+                complete: complete && !self.partial.contains(&node),
                 delegate: delegate.as_ref(),
                 empty_configuration: *empty,
                 incompatible: *incompatible,
             })
         }
         fn memo(&self, node: NodeId) -> Option<MemoRecord<'_>> {
-            self.memos.get(&node).map(|(transcript, ok)| MemoRecord {
-                events: &transcript.events,
-                complete: true,
+            let (transcript, ok) = self.memos.get(&node)?;
+            let (events, complete) = self.visible(node, &transcript.events)?;
+            Some(MemoRecord {
+                events,
+                complete,
                 ok: *ok,
             })
+        }
+        fn ready(&self, node: NodeId) -> bool {
+            self.visible
+                .as_ref()
+                .is_none_or(|visible| visible.get(&node) == Some(&usize::MAX))
         }
         fn segment(&self, index: usize) -> Option<SegmentRecord<'_>> {
             self.segments.get(index).map(|segment| SegmentRecord {
@@ -1234,5 +1392,197 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(plans, [false, true]);
         assert!(out.tape.ops.contains(&TapeOp::Flush));
+    }
+
+    /// xorshift64* (reproducible orders without a dependency).
+    pub(crate) struct Rng(pub(crate) u64);
+
+    impl Rng {
+        pub(crate) fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+
+        pub(crate) fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+
+        pub(crate) fn shuffle<T>(&mut self, items: &mut [T]) {
+            for i in (1..items.len()).rev() {
+                items.swap(i, self.below(i + 1));
+            }
+        }
+    }
+
+    /// A random phase 1: 40 configured targets (a DAG; some fail), memos
+    /// (platforms: a fresh chain each; exec configurations) reached from
+    /// the lower ones, warnings, prints, console writes, package commits,
+    /// toolchain implementations, flushes; four segments.
+    fn random_phase1(seed: u64) -> (Fixture, Vec<NodeId>) {
+        const N: usize = 40;
+        const HIGH: usize = 28;
+        let mut rng = Rng(seed | 1);
+        let mut f = Fixture::default();
+        let nodes: Vec<NodeId> = (0..N).map(|i| f.node(&format!("n{i}"))).collect();
+        let memos: Vec<NodeId> = (0..6)
+            .map(|i| {
+                let key = if i % 2 == 0 {
+                    NodeKey::Platform(ctk(&format!("plat{i}")))
+                } else {
+                    NodeKey::ExecCfg(ctk("x").config, ctk(&format!("exec{i}")).label)
+                };
+                f.interner.intern(&key)
+            })
+            .collect();
+        let package = |i: usize| {
+            Label::parse_canonical(&format!("//q{i}:x"))
+                .unwrap()
+                .package_id()
+        };
+        for (i, &node) in nodes.iter().enumerate() {
+            let mut events = Vec::new();
+            for _ in 0..rng.below(7) {
+                match rng.below(10) {
+                    0..=3 if i + 1 < N => {
+                        events.push(Event::Reach(nodes[i + 1 + rng.below(N - i - 1)]));
+                    }
+                    4 if i < HIGH => events.push(Event::MemoUse(memos[rng.below(memos.len())])),
+                    5 => events.push(Event::Warn(format!("w{}", rng.below(6)))),
+                    6 => events.push(Event::PkgCommit(package(rng.below(6)), rng.below(2) == 0)),
+                    7 => events.push(Event::Console(rng.below(12) as u32)),
+                    8 => events.push(Event::ToolchainImpl(Box::new(ToolchainImpl {
+                        implementation: ctk(&format!("impl{}", rng.below(3))),
+                        exec_platform: ctk(&format!("exec{}", rng.below(2))).label,
+                    }))),
+                    _ => events.push(Event::Print(format!("p{i}"))),
+                }
+            }
+            if rng.below(8) == 0 {
+                events.push(Event::Flush);
+            }
+            if rng.below(7) == 0 {
+                events.push(Event::Error(format!("n{i} failed")));
+            } else {
+                events.push(Event::Done);
+                events.push(Event::PlanPush);
+            }
+            let delegate = (rng.below(9) == 0).then(|| ctk("owner"));
+            f.bodies.insert(
+                node,
+                vec![(
+                    Transcript { events },
+                    delegate,
+                    rng.below(5) == 0,
+                    rng.below(6) == 0,
+                )],
+            );
+        }
+        for &memo in &memos {
+            let mut events = vec![Event::Print("memo".into())];
+            for _ in 0..rng.below(4) {
+                events.push(Event::Reach(nodes[HIGH + rng.below(N - HIGH)]));
+            }
+            f.memos
+                .insert(memo, (Transcript { events }, rng.below(3) != 0));
+        }
+        let mut segments = vec![Segment {
+            kind: SegmentKind::Setup,
+            transcript: Transcript {
+                events: vec![Event::MemoUse(memos[0])],
+            },
+        }];
+        for (position, root) in [0, 1, 5].into_iter().enumerate() {
+            segments.push(Segment {
+                kind: SegmentKind::Root {
+                    position,
+                    label: ctk(&format!("n{root}")).label,
+                    trimmed_root: None,
+                },
+                transcript: Transcript {
+                    events: vec![Event::Access(ctk("a").label), Event::Reach(nodes[root])],
+                },
+            });
+        }
+        segments.push(Segment {
+            kind: SegmentKind::RootsDone,
+            transcript: Transcript::default(),
+        });
+        f.segments = segments;
+        let mut all = nodes;
+        all.extend(memos);
+        (f, all)
+    }
+
+    fn outputs(out: &Linearized, ops: &[TapeOp]) -> String {
+        format!(
+            "{ops:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}",
+            out.plan,
+            out.delegations,
+            out.empty_configuration,
+            out.edges,
+            out.toolchain_implementations,
+            out.warnings,
+            out.failures,
+            out.segment_active,
+            out.first_toolchains,
+            out.divergences
+        )
+    }
+
+    /// The nodes finish in any order (the parallel evaluator), partly
+    /// visible while running; pass 1 is resumed after each step and its
+    /// released transcripts are emptied: the result is the sequential
+    /// one, whatever the order.
+    #[test]
+    fn any_completion_order_gives_the_sequential_result() {
+        for seed in 1..=60u64 {
+            let (mut f, all) = random_phase1(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+            let segments = std::mem::take(&mut f.segments);
+            let reference = run(&f, &segments, Options::default()).unwrap();
+            let expected = outputs(&reference, &reference.tape.ops);
+            let mut rng = Rng(seed ^ 0xdead_beef);
+            for _ in 0..4 {
+                let mut order = all.clone();
+                rng.shuffle(&mut order);
+                f.segments = segments.clone();
+                f.segments_done = false;
+                f.visible = Some(HashMap::new());
+                f.released.clear();
+                let mut pass = Pass1::new(Options::default());
+                let mut ops: Vec<TapeOp> = Vec::new();
+                let mut released = 0;
+                for &node in &order {
+                    let len = |f: &Fixture| {
+                        f.bodies
+                            .get(&node)
+                            .map(|bodies| bodies[0].0.events.len())
+                            .or_else(|| f.memos.get(&node).map(|memo| memo.0.events.len()))
+                            .unwrap()
+                    };
+                    // Running: a prefix of its transcript exists.
+                    let prefix = rng.below(len(&f) + 1);
+                    f.visible.as_mut().unwrap().insert(node, prefix);
+                    assert_eq!(pass.resume(&f, &mut ops).unwrap(), Progress::Blocked);
+                    f.visible.as_mut().unwrap().insert(node, usize::MAX);
+                    assert_eq!(pass.resume(&f, &mut ops).unwrap(), Progress::Blocked);
+                    assert!(pass.blocked_on().is_some());
+                    let (nodes, _) = pass.take_released();
+                    released += nodes.len();
+                    f.released.extend(nodes);
+                }
+                f.segments_done = true;
+                assert_eq!(pass.resume(&f, &mut ops).unwrap(), Progress::Finished);
+                assert_eq!(pass.blocked_on(), None);
+                let out = pass.finish();
+                assert_eq!(
+                    outputs(&out, &ops),
+                    expected,
+                    "seed {seed}, order {order:?}"
+                );
+                assert!(released > 0);
+            }
+        }
     }
 }

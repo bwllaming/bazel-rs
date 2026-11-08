@@ -27,7 +27,7 @@
 use std::sync::Arc;
 
 use crate::configuration::ConfigId;
-use crate::fast_hash::FxHashMap;
+use crate::fast_hash::{FxHashMap, FxHashSet};
 use crate::label::Label;
 use crate::platforms::PlatformInfo;
 use crate::toolchains::RegisteredToolchains;
@@ -45,7 +45,9 @@ use super::super::shared::EvalShared;
 use super::super::transcript::{Event, SegmentKind, TapeOp, Transcript};
 use super::super::value::{Ct1Value, NodeValue};
 use super::cycles::Pass1Cycles;
-use super::pass1::{Ct1Record, MemoRecord, Options, Pass1, Progress, SegmentRecord, Transcripts};
+use super::pass1::{
+    Blocker, Ct1Record, MemoRecord, Options, Pass1, Progress, SegmentRecord, Transcripts,
+};
 
 /// BAZEL_RS_EVAL_STATS=1: where the linearizer's time goes (µs).
 static STATS: [std::sync::atomic::AtomicU64; 4] = [
@@ -101,6 +103,25 @@ pub(crate) struct Store {
     pub(crate) published: Vec<Published>,
     /// Canonical CT1 values done since the last publication.
     pub(crate) fresh_ct1: Vec<ConfiguredTargetKey>,
+    /// Transcripts pass 1 has replayed for the last time, freed (eval's
+    /// memory stays near the walk's: ~/code emits millions of events).
+    pub(crate) released: FxHashSet<NodeId>,
+}
+
+impl Store {
+    /// Free what pass 1 will not read again.
+    fn release(&mut self, pass: &mut Pass1) {
+        let (nodes, segments) = pass.take_released();
+        for node in nodes {
+            self.transcripts.remove(&node);
+            self.released.insert(node);
+        }
+        for index in segments {
+            if let Some((_, events)) = self.segments.get_mut(index) {
+                *events = Vec::new();
+            }
+        }
+    }
 }
 
 /// The linearizer's state while the evaluator runs.
@@ -249,6 +270,7 @@ impl Coord<'_> {
             };
             stat(STAT_PASS1, || lin.pass.resume(&view, &mut lin.ops))?;
         }
+        self.store.release(&mut lin.pass);
         let started = std::time::Instant::now();
         let ops = std::mem::take(&mut lin.ops);
         // snapshot-unrecorded: a diagnostics dump of the tape; it changes nothing the analysis computes.
@@ -488,6 +510,19 @@ impl Coord<'_> {
         lin.published_memos = self.store.published.len();
     }
 
+    /// What pass 1 waits for (the evaluator's frontier: the pool boosts
+    /// it, lowest plan position first) and its priority.
+    pub(crate) fn frontier(&self) -> Option<(NodeKey, u64)> {
+        let lin = self.lin.as_ref()?;
+        match lin.pass.blocked_on()? {
+            Blocker::Node(node) => Some((
+                self.store.keys.get(&node)?.clone(),
+                lin.pass.plan().len() as u64,
+            )),
+            Blocker::Segment => None,
+        }
+    }
+
     /// A new top-level segment.
     fn begin_segment(&mut self, kind: SegmentKind) {
         self.drain();
@@ -507,6 +542,9 @@ impl View<'_> {
     fn events(&self, node: NodeId) -> Option<(&[Event], bool)> {
         if let Some(running) = self.stack.iter().rev().find(|running| running.id == node) {
             return Some((&running.events, false));
+        }
+        if self.store.released.contains(&node) {
+            return Some((&[], true));
         }
         self.store
             .transcripts
@@ -819,6 +857,12 @@ fn drive(
                 }
             }
         };
+        // The linearizer's frontier first (the pool: it runs before the
+        // evaluator's own work).
+        let frontier = bodies.coord().frontier();
+        if let Some((key, priority)) = frontier {
+            evaluator.boost(&key, priority);
+        }
         let analyzed = root.and_then(|root| match evaluate(&root).as_ref() {
             NodeValue::Src(result) => result.clone(),
             NodeValue::Ct1(value) => value.outcome.as_ref().map(|_| ()).map_err(Clone::clone),
