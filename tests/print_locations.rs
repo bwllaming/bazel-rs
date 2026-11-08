@@ -7,6 +7,8 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+include!("support/module_archives.rs");
+
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/print_locations"
@@ -42,10 +44,17 @@ fn prints_name_repository_files_by_path_and_map_each_prints_nothing() {
             "--cache-dir={}",
             temp.path().join("cache").display()
         ))
-        .args(["build", "//:m", "//:x", "--curses=no", "--color=no"])
+        .args(with_builtin_registry(&[
+            "build",
+            "//:m",
+            "//:x",
+            "--curses=no",
+            "--color=no",
+        ]))
         .current_dir(&ws)
         .env("BAZEL_RS_MAX_MEMORY_MB", "4096")
         .stdin(Stdio::null())
+        .seeded_archives()
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -55,10 +64,11 @@ fn prints_name_repository_files_by_path_and_map_each_prints_nothing() {
             "--cache-dir={}",
             temp.path().join("cache").display()
         ))
-        .args(["info", "output_base"])
+        .args(with_builtin_registry(&["info", "output_base"]))
         .current_dir(&ws)
         .env("BAZEL_RS_MAX_MEMORY_MB", "4096")
         .stdin(Stdio::null())
+        .seeded_archives()
         .output()
         .unwrap();
     let output_base = String::from_utf8_lossy(&info.stdout).trim().to_owned();

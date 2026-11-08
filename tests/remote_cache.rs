@@ -17,6 +17,7 @@ include!("support/executable_script.rs");
 include!("support/verify_env.rs");
 include!("support/explicit_modules.rs");
 include!("support/sealed_trees.rs");
+include!("support/module_archives.rs");
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -331,7 +332,11 @@ shell = rule(_shell, attrs = {"src": attr.label(allow_single_file = True)})
         if upload_opt_in {
             command.env("BAZEL_RS_ALLOW_REMOTE_UPLOAD", "1");
         }
-        command.explicit_modules().output().unwrap()
+        command
+            .seeded_archives()
+            .explicit_modules()
+            .output()
+            .unwrap()
     }
 
     fn ws(&self) -> PathBuf {
@@ -1973,7 +1978,11 @@ fn native_action_summary_needs_the_result_lines() {
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", ws.0.join("home"));
-    let output = command.explicit_modules().output().unwrap();
+    let output = command
+        .seeded_archives()
+        .explicit_modules()
+        .output()
+        .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(
         !stderr(&output).contains("actions executed"),

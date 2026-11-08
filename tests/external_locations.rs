@@ -12,6 +12,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+include!("support/module_archives.rs");
+
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/external_locations"
@@ -59,10 +61,11 @@ impl Workspace {
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--ignore_all_rc_files")
             .arg(format!("--cache-dir={}", self.cache.display()))
-            .args(args)
+            .args(with_builtin_registry(args))
             .current_dir(&self.ws)
             .env("BAZEL_RS_MAX_MEMORY_MB", "4096")
             .stdin(Stdio::null())
+            .seeded_archives()
             .output()
             .unwrap()
     }

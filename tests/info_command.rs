@@ -13,6 +13,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+include!("support/module_archives.rs");
+
 fn manifest() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
@@ -68,12 +70,13 @@ impl Workspace {
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(startup)
             .arg(format!("--cache-dir={}", self.cache.display()))
-            .args(arguments)
+            .args(with_builtin_registry(arguments))
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &self.home)
             .env("BAZEL_RS_MAX_MEMORY_MB", "4096")
             .current_dir(&self.root)
+            .seeded_archives()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out");

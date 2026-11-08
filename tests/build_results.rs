@@ -11,6 +11,8 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+include!("support/module_archives.rs");
+
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/build_results");
 
 fn copy(from: &Path, to: &Path) {
@@ -121,12 +123,15 @@ fn build_results_match_bazel() {
         let output = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--ignore_all_rc_files")
             .arg(format!("--cache-dir={}", cache.display()))
-            .args(command.split(' '))
+            .args(with_builtin_registry(
+                &command.split(' ').collect::<Vec<_>>(),
+            ))
             .args(["--curses=no", "--color=no"])
             .current_dir(&ws)
             .env("BAZEL_RS_MAX_MEMORY_MB", "4096")
             .env_remove("BAZEL_RS_RESULT_LINES")
             .stdin(Stdio::null())
+            .seeded_archives()
             .output()
             .unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -136,8 +141,9 @@ fn build_results_match_bazel() {
         let output_tree = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--ignore_all_rc_files")
             .arg(format!("--cache-dir={}", cache.display()))
-            .args(["info", "bazel-bin"])
+            .args(with_builtin_registry(&["info", "bazel-bin"]))
             .current_dir(&ws)
+            .seeded_archives()
             .output()
             .unwrap();
         let output_tree = format!("{}/", String::from_utf8_lossy(&output_tree.stdout).trim());
@@ -180,11 +186,12 @@ fn native_result_lines_are_opt_in() {
             "--cache-dir={}",
             temp.path().join("cache").display()
         ))
-        .args(["build", "//:a", "//:src"])
+        .args(with_builtin_registry(&["build", "//:a", "//:src"]))
         .current_dir(&ws)
         .env("BAZEL_RS_MAX_MEMORY_MB", "4096")
         .env("BAZEL_RS_RESULT_LINES", "1")
         .stdin(Stdio::null())
+        .seeded_archives()
         .output()
         .unwrap();
     assert!(output.status.success());

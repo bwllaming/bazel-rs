@@ -383,9 +383,12 @@ Done since the last increment recorded under "History", one line each:
       order of its evaluation and error maps, not reproducible).
 - [ ] Identical outputs share one inode in `bazel-bin` (not inside actions).
 - [x] Children no longer inherit ignored SIGINT/SIGQUIT/SIGHUP (src/signals.rs).
-- [x] Five network-dependent tests: their module archives come from a
-      sha256-verified test mirror under the target dir, filled once
-      (tests/fixtures/module_archives/README.md).
+- [x] No test reaches the network: the built-in closure resolves through the
+      offline registry fixture, its module archives come from a
+      sha256-verified test mirror under the target dir, filled once (with BCR
+      mirror fallbacks); the suite passes with the network blocked
+      (tests/fixtures/module_archives/README.md). Only the `#[ignore]`d
+      `mod_tidy_matches_genuine_bazel` uses the real BCR.
 - [ ] Sandbox is Landlock-only (no private `/tmp`, no namespaces);
       `--sandbox_add_mount_pair` with a real remount fails (genuine ignores it here).
 - [x] Exit codes like 9.3 (crate::exit_code, tests/fixtures/exit_codes):

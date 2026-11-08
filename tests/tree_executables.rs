@@ -163,6 +163,7 @@ impl Workspace {
             .args(["--ignore_all_rc_files", &format!("--cache-dir={cache}")])
             .args(args)
             .current_dir(self.path())
+            .seeded_archives()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");

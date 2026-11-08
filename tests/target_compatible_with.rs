@@ -27,6 +27,7 @@ use base64::Engine as _;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 include!("support/explicit_modules.rs");
+include!("support/module_archives.rs");
 
 fn manifest() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -122,6 +123,7 @@ impl Workspace {
             .args(["--experimental-builtin-modules", &registry])
             .args(&argv[1..])
             .current_dir(self.path())
+            .seeded_archives()
             .explicit_modules()
             .output()
             .unwrap();

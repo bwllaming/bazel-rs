@@ -6,6 +6,8 @@ include!("support/temp_root.rs");
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+include!("support/module_archives.rs");
+
 struct Workspace {
     _temp: tempfile::TempDir,
     root: PathBuf,
@@ -44,7 +46,7 @@ impl Workspace {
             .args(["--nosystem_rc", "--nohome_rc"])
             .arg(format!("--cache-dir={}", self.cache.display()))
             .args(startup)
-            .args(args)
+            .args(with_builtin_registry(args))
             .current_dir(&self.root)
             .env_clear()
             // The native result lines the harness reads (crate::build_results).
@@ -52,6 +54,7 @@ impl Workspace {
             .env("HOME", &self.home)
             .env("PATH", "/usr/bin:/bin")
             .env("BAZEL_RS_MAX_MEMORY_MB", "4096")
+            .seeded_archives()
             .output()
             .unwrap()
     }

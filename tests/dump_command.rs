@@ -56,6 +56,7 @@ impl Workspace {
             .args(["--ignore_all_rc_files", "--cache-dir=cache"])
             .args(&line)
             .current_dir(self.0.path())
+            .seeded_archives()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "timed out: {line:?}");

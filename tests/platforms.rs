@@ -13,6 +13,7 @@ use std::process::{Command, Output};
 
 use base64::Engine as _;
 include!("support/explicit_modules.rs");
+include!("support/module_archives.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -58,6 +59,7 @@ impl Workspace {
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])
             .args(args)
             .current_dir(self.path())
+            .seeded_archives()
             .explicit_modules()
             .output()
             .unwrap();
@@ -1164,6 +1166,7 @@ fn incremental_index_is_the_sequential_one_at_every_thread_count() {
                 if jitter > 0 { "4" } else { "0" },
             )
             .current_dir(ws.path())
+            .seeded_archives()
             .explicit_modules()
             .output()
             .unwrap();

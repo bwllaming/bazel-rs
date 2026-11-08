@@ -71,6 +71,7 @@ impl Workspace {
             .args(["--experimental-builtin-modules", registry.as_str()])
             .args(args)
             .current_dir(self.0.path())
+            .seeded_archives()
             .output()
             .unwrap();
         assert_ne!(

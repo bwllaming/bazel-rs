@@ -8,6 +8,8 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+include!("support/module_archives.rs");
+
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 fn copy(from: &Path, to: &Path) {
@@ -77,11 +79,12 @@ fn exit_codes_match_bazel() {
         let output = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--ignore_all_rc_files")
             .arg(format!("--cache-dir={}", cache.display()))
-            .args(words(args))
+            .args(with_builtin_registry(&words(args)))
             .args(["--curses=no", "--color=no"])
             .current_dir(&ws)
             .env("BAZEL_RS_MAX_MEMORY_MB", "4096")
             .stdin(Stdio::null())
+            .seeded_archives()
             .output()
             .unwrap();
         let code = output.status.code();
