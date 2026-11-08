@@ -67,7 +67,7 @@ pub(crate) struct EvalHost<'c, 'e> {
     acc: Ct1Acc,
     /// The CT1 values this attempt needed, by ConfiguredTargetKey (the
     /// variant it reached: its reads of a dependency's value).
-    reached: crate::fast_hash::FxHashMap<ConfiguredTargetKey, Arc<Ct1Value>>,
+    reached: crate::fast_hash::FxHashMap<ConfiguredTargetKey, (CtKey, Arc<Ct1Value>)>,
     /// The toolchain implementations this attempt claimed (the forced
     /// execution platform of its edge to each; pass 1 decides the first
     /// claim in DFS order, a conflict with another body's).
@@ -140,7 +140,7 @@ impl<'c, 'e> EvalHost<'c, 'e> {
     /// else the first one done (a key the attempt reads without reaching
     /// it: an alias's actual target).
     fn ct1_value(&self, key: &ConfiguredTargetKey) -> Option<Arc<super::super::value::Ct1Value>> {
-        if let Some(value) = self.reached.get(key) {
+        if let Some((_, value)) = self.reached.get(key) {
             return Some(Arc::clone(value));
         }
         self.cx.coord().ct1(key)
@@ -171,7 +171,7 @@ impl<'c, 'e> EvalHost<'c, 'e> {
         reach: bool,
     ) -> Result<(), String> {
         let ct = self.edge_key(rule, key.clone());
-        let node = NodeKey::Ct1(ct);
+        let node = NodeKey::Ct1(ct.clone());
         let id = self.cx.id_of(&node);
         if reach {
             self.emit(Event::Reach(id));
@@ -191,7 +191,7 @@ impl<'c, 'e> EvalHost<'c, 'e> {
             Ok(value) => match value.as_ref() {
                 NodeValue::Ct1(value) => match &value.outcome {
                     Ok(_) => {
-                        self.reached.insert(key, Arc::clone(value));
+                        self.reached.insert(key, (ct, Arc::clone(value)));
                         Ok(())
                     }
                     Err(error) => Err(self.chain_error(error.clone())),
@@ -900,9 +900,30 @@ impl Host for EvalHost<'_, '_> {
         &mut self,
         key: &ConfiguredTargetKey,
     ) -> Option<crate::feature_flags::FeatureFlagValue> {
-        // S1: the walk's planned providers when it ran first (S2: the
-        // CsMatch node needs the flag's CT2).
-        self.cx.coord().engine.planned_feature_flag(key)
+        // The flag's CT2 node (S2: its providers as the walk's flush
+        // planned them; the variant this attempt reached).
+        let ct = self
+            .reached
+            .get(key)
+            .map(|(ct, _)| ct.clone())
+            .unwrap_or_else(|| CtKey::plain(key.clone()));
+        let node = NodeKey::Ct2(ct);
+        self.memo_use(&node);
+        match self.need(node) {
+            Ok(value) => match value.as_ref() {
+                NodeValue::Ct2(value) => value
+                    .reads
+                    .providers
+                    .as_ref()?
+                    .get(crate::feature_flags::PROVIDER_ID)
+                    .and_then(|provider| crate::feature_flags::value_of(provider.value())),
+                _ => None,
+            },
+            Err(missing) => {
+                self.stop(missing);
+                None
+            }
+        }
     }
 
     fn platform_tree(&self) -> bool {
@@ -1277,6 +1298,28 @@ pub(crate) fn body(
             let mut host = EvalHost::new(shared, cx, None, false);
             let result = host.compute_transition_details(settings);
             Ok(NodeValue::TransitionDetails(host.finish(result)?))
+        }
+        NodeKey::Ct2(ct) => {
+            // S2: the phase 2 of a config_setting's Starlark flag_values key
+            // (its FeatureFlagInfo): the walk's flush at the config_setting's
+            // `Flush` planned it (pass 1 up to there, the plan so far's
+            // phase 2: today's path, on the coordinator); its providers. S3
+            // makes CT2 a node of its own.
+            let mut coord = cx.coord();
+            let error = coord.linearize(shared).err();
+            let providers = coord
+                .engine
+                .action_planning
+                .as_ref()
+                .and_then(|state| state.custom_providers.get(&ct.key).cloned());
+            Ok(NodeValue::Ct2(Arc::new(super::super::value::Ct2Value {
+                reads: super::super::value::Ct2Reads {
+                    providers,
+                    ..Default::default()
+                },
+                delta: std::sync::Mutex::new(None),
+                error,
+            })))
         }
         NodeKey::Transition(key) => {
             let input = shared

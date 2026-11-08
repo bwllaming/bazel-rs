@@ -686,14 +686,13 @@ impl Transcripts for View<'_> {
     }
 
     /// The consumer of another variant observed what the configured
-    /// target's consumers observe: its success, configured node (providers,
-    /// incompatibility) and rule.
+    /// target's consumers observe: its success and configured node
+    /// (providers, incompatibility).
     fn same_observable(&self, canonical: NodeId, reached: NodeId) -> bool {
         match (self.value(canonical), self.value(reached)) {
             (Some(canonical), Some(reached)) => match (&canonical.outcome, &reached.outcome) {
                 (Ok(canonical), Ok(reached)) => {
-                    Arc::ptr_eq(&canonical.rule, &reached.rule)
-                        && format!("{:?}", canonical.node) == format!("{:?}", reached.node)
+                    format!("{:?}", canonical.node) == format!("{:?}", reached.node)
                 }
                 (Err(canonical), Err(reached)) => canonical == reached,
                 _ => false,
