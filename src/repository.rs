@@ -3179,6 +3179,12 @@ impl RepositorySet {
     /// registry module's tree published into the store now (never filling
     /// its demand slot, never recording; crate::module_root_warm).
     pub(crate) fn warm_root(&self, repository: &str) -> Option<PathBuf> {
+        self.warm_root_with(repository, false)
+    }
+
+    /// [`Self::warm_root`]; `offline`: never over the network
+    /// (`warm_registry_source_root`).
+    fn warm_root_with(&self, repository: &str, offline: bool) -> Option<PathBuf> {
         if repository.is_empty() {
             return Some(self.state.root.clone());
         }
@@ -3214,6 +3220,7 @@ impl RepositorySet {
                         cache,
                         local_patches,
                         self.repository_downloads_enabled(),
+                        offline,
                     )
                 })
             }
@@ -3613,7 +3620,9 @@ impl RepositorySet {
             return Err(unfetched());
         };
         let root = slot
-            .get_or_init(|| self.warm_root(repository))
+            // Never over the network: the command may never need it
+            // (its preparation may not even be eligible).
+            .get_or_init(|| self.warm_root_with(repository, true))
             .as_deref()
             .ok_or_else(unfetched)?;
         SPECULATIVE_ROOTS.with(|roots| {
@@ -5889,6 +5898,11 @@ pub use crate::module_root_warm::Scope as RootWarmingScope;
 /// [`registry_source_root`] ahead of the demand (crate::module_root_warm):
 /// archive sources only, the registry files peeked (never recorded).
 #[allow(clippy::too_many_arguments)]
+///
+/// `offline` (a speculative extension preparation's root,
+/// `RepositorySet::speculative_registry_root`): never over the network —
+/// the registry files the session read already or a local registry's, the
+/// archive from the download or repository cache.
 fn warm_registry_source_root(
     access: &crate::registry_session::SessionHandle,
     registry: &Registry,
@@ -5898,14 +5912,22 @@ fn warm_registry_source_root(
     cache: &Path,
     local_patches: &LocalPatchPlan,
     downloads_enabled: bool,
+    offline: bool,
 ) -> Option<PathBuf> {
-    let source = access.peek_object(registry, &format!("modules/{name}/{version}/source.json"))?;
+    let peek = |relative: &str| {
+        if offline {
+            access.peek_object_offline(registry, relative)
+        } else {
+            access.peek_object(registry, relative)
+        }
+    };
+    let source = peek(&format!("modules/{name}/{version}/source.json"))?;
     match source.get("type") {
         None => {}
         Some(serde_json::Value::String(kind)) if kind == "archive" => {}
         Some(_) => return None,
     }
-    let config = access.peek_object(registry, "bazel_registry.json");
+    let config = peek("bazel_registry.json");
     crate::materializer::warm_with_registry_config(
         registry,
         name,
@@ -5914,7 +5936,7 @@ fn warm_registry_source_root(
         &source,
         cache,
         local_patches,
-        downloads_enabled,
+        downloads_enabled && !offline,
         config,
     )
     .ok()

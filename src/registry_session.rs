@@ -696,6 +696,22 @@ impl RegistrySession {
     /// a failure, a checksum the lockfile does not know in error mode):
     /// the warm-up gives up and the sequential read reports it.
     fn peek(&self, registry: &Registry, relative: &str) -> Option<Arc<Vec<u8>>> {
+        self.peek_with(registry, relative, true)
+    }
+
+    /// [`Self::peek`] that never transfers over the network: what the
+    /// session read already, the content-addressed cache, or a local
+    /// registry's file.
+    fn peek_offline(&self, registry: &Registry, relative: &str) -> Option<Arc<Vec<u8>>> {
+        self.peek_with(registry, relative, false)
+    }
+
+    fn peek_with(
+        &self,
+        registry: &Registry,
+        relative: &str,
+        network: bool,
+    ) -> Option<Arc<Vec<u8>>> {
         if self.proof_store.is_some() {
             return None;
         }
@@ -726,6 +742,9 @@ impl RegistrySession {
             && let Some(bytes) = self.cas_get(hash)
         {
             return Some(Arc::new(bytes));
+        }
+        if !network && registry.local_path().is_none() {
+            return None;
         }
         // Settled like [`Self::fetch`]'s: bytes the lockfile's checksum
         // names are what the sequential read takes from the cache.
@@ -1339,6 +1358,27 @@ impl SessionHandle {
     pub fn prefetch_fallbacks(&self, items: Vec<(Vec<Registry>, String)>) {
         if let Some(session) = &self.0 {
             session.prefetch_fallbacks(items);
+        }
+    }
+
+    /// [`Self::peek_object`] that never transfers over the network
+    /// ([`RegistrySession::peek_offline`]).
+    pub(crate) fn peek_object_offline(
+        &self,
+        registry: &Registry,
+        relative: &str,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let bytes = match &self.0 {
+            Some(session) => session.peek_offline(registry, relative)?,
+            None if registry.local_path().is_some() => match direct(registry, relative).ok()? {
+                Fetch::Found(bytes) => bytes,
+                Fetch::NotFound(_) => return None,
+            },
+            None => return None,
+        };
+        match serde_json::from_slice(&bytes).ok()? {
+            serde_json::Value::Object(object) => Some(object),
+            _ => None,
         }
     }
 

@@ -647,3 +647,130 @@ fn output_between_chained_groups_keeps_the_sequential_order() {
     }
 }
 
+/// A loopback HTTP server serving `body` for every request and recording
+/// the paths requested.
+struct ArchiveServer {
+    url: String,
+    paths: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ArchiveServer {
+    fn new(body: Vec<u8>) -> Self {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let paths = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (logged, stopped) = (paths.clone(), stop.clone());
+        let worker = std::thread::spawn(move || {
+            while !stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                let mut stream = match listener.accept() {
+                    Ok((stream, _)) => stream,
+                    Err(_) => {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                        continue;
+                    }
+                };
+                stream.set_nonblocking(false).unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0];
+                while !request.ends_with(b"\r\n\r\n") {
+                    if stream.read(&mut byte).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    request.push(byte[0]);
+                }
+                let request = String::from_utf8_lossy(&request).into_owned();
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_owned();
+                logged.lock().unwrap().push(path);
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        Self {
+            url,
+            paths,
+            stop,
+            worker: Some(worker),
+        }
+    }
+}
+
+impl Drop for ArchiveServer {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+/// On a cold cache a speculation never downloads a registry module's
+/// archive: `farmod`'s extension is the root module's, but the command
+/// never demands it, and its archive (served over HTTP) is never
+/// requested — the speculation reads registry roots offline only.
+#[test]
+fn a_speculation_never_downloads_registry_archives() {
+    let module = "module(name = 'farmod', version = '1')\n";
+    let bytes = archive(
+        "farmod",
+        &[
+            ("MODULE.bazel", module),
+            ("BUILD.bazel", ""),
+            (
+                "ext.bzl",
+                "def _impl(mctx):\n    pass\n\nfar = module_extension(implementation = _impl)\n",
+            ),
+        ],
+    );
+    let server = ArchiveServer::new(bytes.clone());
+    let fixture = Fixture(
+        tempfile::Builder::new()
+            .prefix("extension-speculation-offline-")
+            .tempdir_in(crate::test_temp::root())
+            .unwrap(),
+    );
+    fixture.write("registry/modules/farmod/1/MODULE.bazel", module);
+    let source = serde_json::json!({
+        "url": format!("{}/farmod-1.tar.gz", server.url),
+        "integrity": format!(
+            "sha256-{}",
+            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(&bytes))
+        ),
+        "strip_prefix": "farmod-1",
+    });
+    fixture.write("registry/modules/farmod/1/source.json", &source.to_string());
+    fixture.write(
+        "MODULE.bazel",
+        "module(name = 'main')\nbazel_dep(name = 'farmod', version = '1')\nfar = use_extension('@farmod//:ext.bzl', 'far')\n",
+    );
+    fixture.write("BUILD.bazel", "filegroup(name = 'c')\n");
+    let cold = |threads: usize| {
+        let _ = fs::remove_dir_all(fixture.path().join("cache"));
+        let _ = fs::remove_file(fixture.path().join("MODULE.bazel.lock"));
+        fixture.build(threads, "off", &[], &["//:c"])
+    };
+    let reference = cold(1);
+    assert_eq!(reference.code, Some(0), "{}", reference.stderr);
+    for threads in [8, 32] {
+        let run = cold(threads);
+        assert_same(&reference, &run, &format!("cold threads={threads}"));
+        assert!(counter(&run, "requested") > 0, "{}", run.timing);
+    }
+    assert!(
+        server.paths.lock().unwrap().is_empty(),
+        "{:?}",
+        server.paths.lock().unwrap()
+    );
+}
