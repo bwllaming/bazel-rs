@@ -232,8 +232,14 @@ fn note_eval_group(id: &str) {
 /// BAZEL_RS_EVAL_STATS: groups the pool used speculatively, uses refused
 /// (the speculation not finished, failed or its lockfile check failing),
 /// and the commits of a used group.
-pub(crate) static EVAL_ADOPTIONS: [AtomicU64; 3] =
-    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+/// The fourth: repositories the pool's lane had executed ahead
+/// ([`RepositorySet::wait_eval_local`]) that published their root.
+pub(crate) static EVAL_ADOPTIONS: [AtomicU64; 4] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
 
 /// A group the evaluator's pool used speculatively was prepared otherwise
 /// (its commit dropped the speculation): an internal error of
@@ -3730,9 +3736,17 @@ impl RepositorySet {
     pub(crate) fn wait_eval_local(&self, canonical: &str) -> Option<String> {
         lock_ignoring_poison(&self.state.eval_local).insert(canonical.to_owned());
         self.state.speculation.request_again(canonical);
-        self.state
+        let blocked = self
+            .state
             .speculation
-            .wait_settled(canonical, std::time::Duration::from_secs(10))
+            .wait_settled(canonical, std::time::Duration::from_secs(10));
+        if self
+            .speculation_slot(canonical)
+            .is_ok_and(|slot| slot.ready().is_some())
+        {
+            EVAL_ADOPTIONS[3].fetch_add(1, Ordering::Relaxed);
+        }
+        blocked
     }
 
     /// The pool's lane: wait (at most a few seconds) for the speculative

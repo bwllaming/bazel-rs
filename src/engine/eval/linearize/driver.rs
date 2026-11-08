@@ -1494,10 +1494,11 @@ impl Engine {
                 let adoption =
                     |index: usize| adoptions[index].load(std::sync::atomic::Ordering::Relaxed);
                 crate::note!(
-                    "bazel-rs: eval phase 1: speculative extension preparations on the pool: used {}, refused {}, committed by the tape {}",
+                    "bazel-rs: eval phase 1: speculative extension preparations on the pool: used {}, refused {}, committed by the tape {}, repositories executed ahead {}",
                     adoption(0),
                     adoption(1),
-                    adoption(2)
+                    adoption(2),
+                    adoption(3)
                 );
                 let rounds = std::mem::take(
                     &mut *ROUNDS

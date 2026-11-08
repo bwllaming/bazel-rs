@@ -40,17 +40,29 @@ def _simple_impl(rctx):
 
 simple = repository_rule(implementation = _simple_impl, attrs = {"content": attr.string()})
 
+def _plain_impl(rctx):
+    rctx.file("BUILD.bazel", "exports_files(['plain.txt'])\n")
+    rctx.file("plain.txt", "plain\n")
+    rctx.file("defs.bzl", "PLAIN = 'plain:' + %r\n" % rctx.os.name)
+
+plain = repository_rule(implementation = _plain_impl, local = True)
+
 def _gen_impl(mctx):
     text = mctx.read(mctx.path(Label("@@//:input.txt"))).strip()
     print("gen evaluated with input " + text)
     for module in mctx.modules:
         for repo in module.tags.repo:
             simple(name = repo.name, content = repo.content + " " + text)
+        for repo in module.tags.local:
+            plain(name = repo.name)
     return mctx.extension_metadata(root_module_direct_deps = "all", root_module_direct_dev_deps = [])
 
 gen = module_extension(
     implementation = _gen_impl,
-    tag_classes = {"repo": tag_class(attrs = {"name": attr.string(), "content": attr.string()})},
+    tag_classes = {
+        "repo": tag_class(attrs = {"name": attr.string(), "content": attr.string()}),
+        "local": tag_class(attrs = {"name": attr.string()}),
+    },
 )
 "#;
 
@@ -125,7 +137,8 @@ gen = use_extension("@extmod//:ext.bzl", "gen")
 gen.repo(name = "gen_lib", content = "lib")
 gen.repo(name = "gen_data", content = "data")
 gen.repo(name = "gen_unimported", content = "unimported")
-use_repo(gen, "gen_lib", "gen_data")
+gen.local(name = "gen_local")
+use_repo(gen, "gen_lib", "gen_data", "gen_local")
 user = use_extension("//ext:user.bzl", "user")
 use_repo(user, "user_repo")
 never = use_extension("//ext:never.bzl", "never")
@@ -273,23 +286,8 @@ x = module_extension(implementation = _x_impl)
         // Phase 1's packages (docs/EVALUATOR.md "Extensions on the pool"):
         // loaded by the evaluator's pool, on the speculative preparations
         // of `gen` and `user` and on a local repository rule executed
-        // ahead (`plain`, no `execute()`), or by its sequential pass
+        // ahead (`gen_local`, no `execute()`), or by its sequential pass
         // (`touch` calls `execute()`; `fails` has no lockfile entry).
-        fixture.write(
-            "MODULE.bazel",
-            &(fs::read_to_string(fixture.path().join("MODULE.bazel")).unwrap()
-                + "plain = use_repo_rule(\"//ext:plain.bzl\", \"plain\")\nplain(name = \"plain\")\n"),
-        );
-        fixture.write(
-            "ext/plain.bzl",
-            r#"def _plain_impl(rctx):
-    rctx.file("BUILD.bazel", "exports_files(['plain.txt'])\n")
-    rctx.file("plain.txt", "plain\n")
-    rctx.file("defs.bzl", "PLAIN = 'plain:' + %r\n" % rctx.os.name)
-
-plain = repository_rule(implementation = _plain_impl, local = True)
-"#,
-        );
         let mut many = Vec::new();
         for i in 0..12 {
             let mut text = String::from("load('@gen_data//:defs.bzl', 'VALUE')\n");
@@ -299,11 +297,11 @@ plain = repository_rule(implementation = _plain_impl, local = True)
                 ));
             }
             if i % 4 == 1 {
-                text.push_str("load('@plain//:defs.bzl', 'PLAIN')\nprint(PLAIN)\n");
+                text.push_str("load('@gen_local//:defs.bzl', 'PLAIN')\nprint(PLAIN)\n");
             }
             text.push_str(&format!(
                 "print('many/p{i} sees ' + VALUE)\nfilegroup(name = 't', srcs = ['@gen_data//:data.txt'{}], visibility = ['//visibility:public'])\n",
-                if i % 4 == 1 { ", '@plain//:plain.txt'" } else { "" }
+                if i % 4 == 1 { ", '@gen_local//:plain.txt'" } else { "" }
             ));
             fixture.write(&format!("many/p{i}/BUILD.bazel"), &text);
             many.push(format!("'//many/p{i}:t'"));
@@ -793,6 +791,8 @@ fn the_evaluators_pool_loads_packages_on_speculated_extensions() {
             "committed by the tape"
         ) > 0
     );
+    // `gen_local`, executed ahead for the pool.
+    assert!(pool_counter(&fixture, &baseline, &["//many:all"], "executed ahead") > 0);
 }
 
 /// `touch` (a local rule) rewrites `gen`'s input in the target pattern
