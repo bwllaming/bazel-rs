@@ -2240,7 +2240,12 @@ fn drive(
                 engine.check_requested_compatibility(&lin.configured, label, top)
             });
             coord.lin = Some(lin);
-            checked
+            // A deferred flush before it that fails is the walk's error
+            // (S3: its phase 2 runs first).
+            checked.map_err(|error| match coord.linearize_all(shared) {
+                Err(flushed) => coord.flush_failure(shared, top).unwrap_or(flushed),
+                Ok(()) => error,
+            })
         });
         DRIVE[3].fetch_add(
             linearizing.elapsed().as_micros() as u64,

@@ -480,6 +480,20 @@ change announced to the other two workers; adding a helper is not.
   `Flush` of the tape happens. `progress::analysis_counts` includes the
   configured-target count.
 
+- 2026-11-08 (eval-s3, S3 pass 2; announced to eval-round1): `Loading::
+  stable_sources` (new field, `nodes/loading.rs`): the `Tgt` body records
+  the source files it resolved to a memoizable path, which the linearizer
+  publishes into `Engine::source_targets` (as the walk's lookups memoize
+  them) when flushes are deferred. `EvalHost::flush_pending`: in an
+  evaluation that defers flushes the sequential pass's flush is a marker
+  too (as on the pool), and a flag's `Ct2` there is speculated
+  (`flag_ct2`), else every deferred flush runs first
+  (`Coord::linearize_all`, new). `Coord::defers` (new). Engine fields
+  `eval_pass2`, `eval_async_phase2`, `frozen_walk` (pass 2's ops, the
+  build's phase 2 after phase 1, the frozen view of a walk);
+  `engine::PlanReads` (new trait: what a prepare reads of the planned
+  targets' results).
+
 ## 4. Stages and gates
 
 | Stage | Work | Gate |
@@ -901,6 +915,110 @@ attempt: 0.36 M contended acquisitions, 47 s waited across threads) —
 the store's transcripts per thread would remove it. (4) The linearizer
 runs between rounds; overlapping it with the pool (the engine out of the
 coordinator's lock while a flush plans) would hide the rounds' 5.5 s.
+
+### S3, pass 2 (eval-s3)
+
+Branch `eval-s3` (main `dc344493`). Code: `eval/linearize/pass2.rs`,
+`eval/linearize/driver.rs` (`Coord::flush`, `catch_up`, `linearize_all`),
+`engine/parallel/frozen.rs`, `engine::PlanReads`.
+
+**Deferred flushes (on by default in a pooled evaluation).** A flush no
+longer runs phase 2 inside phase 1. At a `Flush` of the tape the
+configured targets pass 1 decided are published at once (phase 2 reads
+them by key, a dependency only after it was analyzed; the work ahead of
+its turn needs them); everything else the tape applies from there on —
+the memo values the flush publishes (platforms, registrations, exec
+transitions, sources, transitions, aspect memos), console writes,
+`print()` lines, warnings, `--toolchain_resolution_debug` events, load
+prints — is kept as a `pass2::Op` by the plan position before whose turn
+the ordered walk applies it: effects between flush k-1 and flush k come
+after the phase 2 of the plan up to flush k-1. Package commits stay
+eager (the engine's packages: work ahead of its turn reads them; phase 2
+loading a package itself is the case the walk already skips). Pass 2 is
+then one walk over many flushes' segments (`Coord::catch_up`), each op
+applied at its turn by `Engine::eval_pass2_turn` (the pipelined walk
+places every lowering before a due op: a deferred segment's failure is
+found in its segment). A failure inside a deferred segment is that
+flush's (`FlushFailure` with its `FlushPoint`, worded by the walk's
+re-analysis as before); the ops after it are dropped. What forces the
+deferred walks to run (`linearize_all`): a body that needs the planning
+state (a flag the sequential pass cannot speculate), a failure of a
+requested target (an earlier flush's failure comes first), pass 1's stop,
+the end of phase 1. The scratch-engine speculation of a flag's
+FeatureFlagInfo stays (verified against the planned value after the walk
+that plans it); the sequential pass speculates too.
+
+A flush stays **ordered** (its walk runs at once, after every deferred
+one) when the order would show (counted, `BAZEL_RS_EVAL_STATS`):
+
+| Reason | Why | ~/code `build //src/...` |
+|---|---|---|
+| it publishes a new platform | work ahead of its turn would see the platform deferred where the ordered walk sees it resolved (ctx surface, execution table); the deferred segments are walked before it is published | 5 (the first 22,397 plan entries) |
+| its segment holds a Starlark rule or genrule whose configuration's target platform is unresolved | its phase 2 may resolve the deferred platform, whose tree the ordered walk plans at the flush (`Engine::eval_pass2_resolves_platform`: an internal error if it happens in a deferred segment anyway); the no-config configuration's rules (licenses, package metadata) have none to resolve | 0 (68 before the no-config exception) |
+| the tracker or the observation recording is on, `--profile`, `BAZEL_RS_EVAL_NO_DEFER=1` | they record phase 2 and the tape in their order | 0 (snapshots off) |
+
+Memory: the transcripts are freed at the end of phase 1, before the
+deferred walk (they were held until a flush planned them: the
+speculations' subtree replays).
+
+**Prepares on the workers (`BAZEL_RS_EVAL_FROZEN_PREPARES=1`, off by
+default).** A pass-2 walk can prepare its Starlark entries on the
+analysis workers while the coordinator commits (`parallel::frozen`):
+the workers read a frozen view — the engine forked when the walk starts
+(phase 1 is complete), the configured nodes, the planning state's
+dependency views / `Target` identities / native output groups (moved in
+for the walk; the walk's fills are single-flight memos shared with the
+coordinator's own views, one value per key) and the committed targets'
+results (`PlannedResults`, the planning state's per-target entries copied
+when an entry commits, ahead of its turn or at it, before its dependents
+wake; `PlanReads` is the read interface of a prepare, over the planning
+state's maps or these). One job prepares, computes and builds the delta;
+a prepare that needs the coordinator (a package not loaded, an attribute
+aspect) aborts and the entry is prepared at its turn; the turn of an
+entry still on a worker commits others ahead while it waits. Output
+identical on the suites (`tests/eval_pass2.rs`, `=all`: every walk) and
+~/code. It is off because it does not pay on ~/code: the coordinator's
+prepares (~11 s of its CPU) leave it, but the walk is bound by its **turn
+chain** (below), and the fork costs ~0.4 s and ~0.5 GB.
+
+**Where pass 2's time goes** (`BAZEL_RS_TIMING=1`, `PERF-PARALLEL
+coordinator split`, the one walk of ~110k entries, frozen prepares on):
+Starlark entries at their turn 14.5 s (~3,600 entries not committed
+ahead: waiting for their worker 5 s, prepared at the turn 5 s, computed
+at the turn 4.5–5.5 s, their deltas built here 3 s), natives committed
+ahead 3.0 s, commits ahead 2.0–2.4 s, classification 1.7 s, the ops'
+turns 1.2–1.4 s (the lowering drains before them), natives at their turn
+0.9 s, the rest ~5 s. The entries at their turn are chains through the
+commit order: an entry is ready only when its requirements are
+**committed**, and a commit ahead of the turn waits for every earlier
+entry of a related package whose outputs are unknown (`unsettled
+package`: ~/code's `npm_package_store_internal` targets share one package
+and commit almost in plan order), behind attribute-aspect barriers, the
+committed budget and an unresolved platform. Raising the budget
+(`BAZEL_RS_COMMITTED_LIMIT=65536`) gains ~2 s.
+
+**What remains for S3** (in order of yield):
+
+1. Readiness on results, not commits: a dependent may prepare as soon as
+   its requirements' CT2 results exist (their worker finished), with
+   their artifacts registered at their stamp; the merge stays in plan
+   order. The hazard is a shared action or conflict with an earlier entry
+   whose outputs were unknown (the producer of the later one's artifacts
+   changes): its dependents' deltas (and the view memos built from it)
+   must be discarded and redone at the merge — the invalidation the
+   pipeline avoids today by waiting.
+2. Native rules as deltas on the workers (91k of ~/code's 133k entries
+   commit ahead on the coordinator: ~4 s; their prepares and views too):
+   `commit_native_target` writes the planning state directly.
+3. Then the coordinator only merges (~1.4 s at ~94k merges/s; the 2–3
+   thread split of a batched merge applies at a hook position, where
+   nothing reads the maps).
+4. Overlap pass 2 with phase 1's pool rounds: the pool's attempts barely
+   use the engine (warnings in `Coord::drain`, the speculation's planned
+   imports), so a walk could run while a round runs if `Coord` did not
+   hold `&mut Engine` across rounds (eval-round1's coordinator-lock work).
+5. The lowering drain before an op (1.2 s): attribute a failed lowering to
+   its plan entry instead.
 
 **S1 results** (2026-11-08, ~/code `80d6724f3a`, LTO release binary
 sha256 `272b5f78…`, warm repositories, `BAZEL_RS_SNAPSHOT=off`, default
