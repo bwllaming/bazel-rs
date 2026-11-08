@@ -70,6 +70,7 @@ pub(crate) struct Loading {
     /// (every use writes them where the walk's load would, deduplicated).
     pub(crate) aspect_prints: Mutex<FxHashMap<String, Arc<[LoadPrintEvent]>>>,
     /// The module execution platforms (`Engine::module_execution_platforms`).
+    #[allow(clippy::type_complexity)]
     pub(crate) module_execution_platforms: Mutex<Option<Result<Vec<(String, String)>, String>>>,
 }
 

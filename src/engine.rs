@@ -6580,9 +6580,6 @@ impl Engine {
         expand_registration_patterns_in(&mut EngineLoader(self), patterns, kind)
     }
 
-    /// The rules of a loaded package a registration wildcard keeps, by
-    /// name: `toolchain` rules, or those with PlatformInfo.
-
     /// The modules' execution platform registrations (patterns with the
     /// repository each is parsed in), computed once per build: the other
     /// modules' need the module graph, resolved when `resolve` (a rule that
@@ -18391,6 +18388,8 @@ fn expand_registration_patterns_in(
     Ok(labels)
 }
 
+/// The rules of a loaded package a registration wildcard keeps, by
+/// name: `toolchain` rules, or those with PlatformInfo.
 fn package_registration_rules(package: &Package, kind: Registration) -> Vec<Label> {
     package
         .values()
