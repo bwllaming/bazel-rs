@@ -375,10 +375,11 @@ impl Coord<'_> {
                     self.store.replayed.insert(*node);
                     if let Some(roots) = self.store.roots.remove(node) {
                         // An extension group's commit among them writes
-                        // its output here (eval-round1).
-                        let writes = commit_roots(&self.engine.repositories, &roots);
-                        if !writes.is_empty() {
-                            lin.direct(|_| crate::ui::replay(writes));
+                        // its output here (eval-round1), an effect at the
+                        // node's position (S3: after deferred flushes'
+                        // effects before it).
+                        for write in commit_roots(&self.engine.repositories, &roots) {
+                            self.effect(lin, super::pass2::Op::Console(write));
                         }
                     }
                     if let Some(observations) = self.store.observations.remove(node) {
