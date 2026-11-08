@@ -140,9 +140,7 @@ impl SeededArchives for std::process::Command {
         let builtin = args.iter().enumerate().any(|(index, arg)| {
             selects_builtin_registry(index.checked_sub(1).map(|at| args[at].as_str()), arg)
         });
-        let cache = args
-            .iter()
-            .find_map(|arg| arg.strip_prefix("--cache-dir="));
+        let cache = args.iter().find_map(|arg| arg.strip_prefix("--cache-dir="));
         if let (true, Some(cache)) = (builtin, cache) {
             let mut cache = std::path::PathBuf::from(cache);
             if cache.is_relative() {
@@ -332,7 +330,12 @@ fn mirrored_archive(module: &str, url: &str, digest: &[u8], hex: &str) -> std::p
     if VERIFIED.lock().unwrap().contains(&blob) {
         return blob;
     }
-    if let Some((_, message)) = FAILED.lock().unwrap().iter().find(|(failed, _)| failed == hex) {
+    if let Some((_, message)) = FAILED
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(failed, _)| failed == hex)
+    {
         panic!("{message}");
     }
     let verified = |path: &std::path::Path| file_has_sha256(path, digest, hex);
@@ -399,7 +402,10 @@ fn mirrored_archive(module: &str, url: &str, digest: &[u8], hex: &str) -> std::p
         mirror.display(),
         failures.join("\n  ")
     );
-    FAILED.lock().unwrap().push((hex.to_owned(), message.clone()));
+    FAILED
+        .lock()
+        .unwrap()
+        .push((hex.to_owned(), message.clone()));
     panic!("{message}")
 }
 
@@ -419,9 +425,13 @@ fn file_has_sha256(path: &std::path::Path, digest: &[u8], hex: &str) -> bool {
         .output()
     {
         Ok(output) if output.status.success() => {
-            String::from_utf8_lossy(&output.stdout).split_whitespace().next() == Some(hex)
+            String::from_utf8_lossy(&output.stdout)
+                .split_whitespace()
+                .next()
+                == Some(hex)
         }
-        _ => std::fs::read(path)
-            .is_ok_and(|bytes| sha2::Sha256::digest(&bytes).as_slice() == digest),
+        _ => {
+            std::fs::read(path).is_ok_and(|bytes| sha2::Sha256::digest(&bytes).as_slice() == digest)
+        }
     }
 }
