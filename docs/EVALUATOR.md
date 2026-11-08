@@ -513,6 +513,23 @@ change announced to the other two workers; adding a helper is not.
     tape (a caller that ignored its result lost it).
   - `ROUNDS` (stats) carries each later round's start offset.
 
+- 2026-11-09 (eval-t2, T2; no frozen interface changed; rebased on
+  eval-round1, which does not touch these files): the artifact index's
+  entries carry `provisional` (registered from a published phase-2 result,
+  `ConcurrentArtifactIndex::publish_provisional`) and `superseded`;
+  `ConcurrentArtifactIndex::register` takes whether the registration is a
+  worker prepare's (`provisional`: it never canonicalizes); `get_entry`
+  (the stamp of a provisional hit), `current`. `delta::ProvisionalRead`,
+  `delta::check_reads`, `TargetDelta::reads`; `SingleFlight::{peek,
+  remove}`; the memo values `ExpandedTree`/`SharedInputs` keep their fill's
+  provisional reads. `engine::native_results` (new module): a native rule's
+  own results as functions of a `prepare::Lookup` and `PlanReads`
+  (`native_validation_in`, `inputs_in`, `native_plain_in`,
+  `native_transitive_in`), called by `commit_native_target`/`prepare_target`
+  and by the frozen walk's workers. `PlannedResults::publish_delta`,
+  `Engine::{publish_ahead, dispatch_native, publish_native,
+  check_published_native}` (`parallel/frozen.rs`).
+
 ## 4. Stages and gates
 
 | Stage | Work | Gate |
@@ -1650,6 +1667,79 @@ and the delta (ops + prints + console owner), plus `platform_read`.
   view is a function of node values).
 - **Stays merge-time**: output registration (B3), the workspace status (B6),
   the deferred platform's tree (B5), console/owners/tracker (B9).
+
+### T2 as built (eval-t2)
+
+Branch `eval-t2` (main `2e929159`). Code: `parallel/frozen.rs`
+(publication, native jobs, the Ct2 profile), `native_results.rs` (new),
+`delta.rs` (`ProvisionalRead`, `check_reads`), `engine.rs` (the index's
+provisional entries, `commit_custom_target`'s check), `parallel.rs` (the
+pipeline's readiness on published results).
+
+**Where `Ct2` runs.** In this step `Ct2(K)` is the frozen walk's job
+(S3's `dispatch_frozen`: prepare + compute + delta on an analysis worker,
+`BAZEL_RS_EVAL_FROZEN_PREPARES=1`), not yet an evaluator node: its prepare
+reads `&Engine` (the published phase-1 maps), so it runs over the frozen
+view after phase 1, where every pass-1 decision it needs
+(`empty_configuration_rules`, `forced_exec`/`toolchain_implementations`,
+the canonical variant, `rule_delegations`) is published. Moving it into
+phase 1 needs the prepare's engine reads as node reads (a `PrepareCx` over
+`Ct1`/memo values; open). What changed is its gating:
+
+- **Readiness on results, not commits.** A Starlark entry is ready when
+  each requirement (`ahead_requirements`: dependency edges after the alias
+  chain / output-file generating rule, toolchain implementations) is
+  committed **or published**; a worker's finished job publishes its results
+  at once (`Engine::publish_ahead`): `PlannedResults::publish_delta` (the
+  delta's `Providers`, `Dry`, `RunfilesInfo`, `Declared`, the transitive
+  repositories) and its `Artifact` ops as **provisional** index entries
+  (B1, B2). Not published: a sentinel (B10), a failed compute or a delta
+  with an error, a delta not built (workspace status, B6; build-info; an
+  unknown execution platform), an implementation that asked for a deferred
+  target platform (B5). The merge republishes the planning state's entries
+  over the provisional ones.
+- **Native rules' results on the workers.** `native_results` splits the
+  part of `commit_native_target` that computes a native rule's own results
+  (the transitive `_validation` group, `inputs`, the platform / feature
+  flag / forwarded providers, filegroup and test_suite runfiles, the
+  transitive repositories) into functions of a `prepare::Lookup` and
+  `PlanReads`: the commit calls them over the planning state (its output
+  is unchanged: same code), a worker of the frozen walk over the published
+  results (`Engine::dispatch_native`, once the rule's requirements are
+  published or committed; a filegroup selecting an `output_group` reads its
+  `srcs`' views there). Its results and its `inputs`' registrations are
+  published like a Starlark rule's; its commit stays on the coordinator
+  (reading committed state only), where `check_published_native` checks
+  the published results against the committed ones (Files, provider ids —
+  their values under `BAZEL_RS_VERIFY_DELTA` and in debug builds —,
+  runfiles, validation, repositories; a difference is an internal error
+  naming `BAZEL_RS_EVAL_NO_PUBLISH=1`). Not on the workers: genrule,
+  genquery, starlark_doc_extract (outputs: their commit registers
+  producers), java_plugins_flag_alias, package_group, coverage, cquery;
+  their dependents wait for their commit.
+- **Provisional reads (B1, B7).** A provisional entry is visible to later
+  plan indices, not to its publisher's own builds (a rebuild registers it
+  again), and only a merge's registration replaces it (a different
+  canonical artifact — a shared output's loser naming the winner — is kept
+  as `superseded` for re-registrations of the stale copy). A worker's
+  delta records every read of a provisional entry and every generated File
+  it found unregistered (`TargetDelta::reads`); the tool runfiles groups
+  and shared input runs keep their fill's reads (users inherit them; a
+  value whose reads are stale is dropped and filled again). At the merge
+  `check_reads` compares them with the index: stale → the delta is rebuilt
+  there from a recompute (`provisional_stale`, the contested readers of
+  §8); a commit ahead of its turn waits until the publishers merged
+  (`provisional_pending`, parked on the publisher) and until what it became
+  ready on is committed (`provisional_dependency`), so a coordinator build
+  never reads a provisional entry. Producers stay merge-time (B3:
+  `delta_meets_producers` and the recompute, unchanged).
+- **Bounds.** The pipeline's horizon (4,096 entries past the turn) and
+  held bound (768 entries prepared ahead) stay the defaults (memory);
+  `BAZEL_RS_T2_HORIZON` / `BAZEL_RS_T2_HELD` (hidden) widen them.
+- `BAZEL_RS_TIMING=1`: `PERF-PARALLEL ct2` (the Ct2 completion profile:
+  when each job finished relative to its walk's start, when its turn came,
+  the lag), `PERF-PARALLEL provisional published= natives= stale_rebuilt=
+  with_reads= memo_refilled=`.
 
 ### T3: the plan-ordered merge buffer
 

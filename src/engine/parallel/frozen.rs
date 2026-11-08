@@ -873,8 +873,12 @@ impl Engine {
                         .iter()
                         .zip(committed)
                         .all(|((id, value), (other_id, other))| {
+                            // The values' contents in debug builds and under
+                            // BAZEL_RS_VERIFY_DELTA (a platform provider is
+                            // frozen again by each computation).
                             id == other_id
                                 && (value.value().ptr_eq(other.value())
+                                    || !(cfg!(debug_assertions) || delta::verify_delta())
                                     || value.value().to_repr() == other.value().to_repr())
                         })
             }
