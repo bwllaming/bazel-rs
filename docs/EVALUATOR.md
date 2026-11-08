@@ -681,7 +681,21 @@ limit: two engines). Test suite (ptest): walk 3679/3679, eval
 `BAZEL_RS_EVAL_RESTARTS=7` 3679/3679.
 ### S2, part 1 (eval-s2-load): loading nodes and the pool
 
-Branch `eval-s2-load` (on eval-s2-pass1 `3f9e1f76`, rebased on main).
+Branch `eval-s2-load` (rebased on main `f397e89a`, eval-s2-pass1 merged).
+
+- **Integration with pass 1's part 2**: the rerun prefix lives in the
+  per-thread running attempts (`bodies::push_running`: a rerun re-emits its
+  abandoned attempt's events in place, one-time effects excepted — now also
+  `LoadPrints`; a difference is the internal error, `bodies::rerun_mismatch`).
+  A parked attempt's events stay visible to pass 1 (`Store::carry`) until
+  its rerun replaces them; an attempt the pool leaves to the sequential
+  pass (a swallowed sentinel, a flush) keeps only its rerun prefix.
+  `active_ct1` is empty on pool threads. `Ct2` is coordinator-only
+  (help-first leaves such nodes to the coordinator); memo values are
+  published by the linearizer on the coordinator. Each pool round boosts
+  pass 1's frontier (`Coord::frontier`). A `Tgt` node emits nothing of its
+  own (its lookup's `Access` and its package's `MemoUse` are the user's),
+  so its effects are the `Pkg` memo's.
 
 - **Loading nodes** (`nodes/loading.rs`): `Pkg`, `Tgt`, `Src`, `Group`
   over `EvalShared` replace the engine's loading services (package
