@@ -319,6 +319,53 @@ x = module_extension(implementation = _x_impl)
             "touched/BUILD.bazel",
             "load('@touch//:defs.bzl', 'TOUCHED')\nfilegroup(name = 't', srcs = ['//many:all'])\n",
         );
+        // A local rule that calls `execute()` (the sequential pass's) and
+        // changes nothing; `//cached:all` reaches `q` (which needs it, then
+        // a module loading `gen_lib`) before `p`, which the pool loads on
+        // `gen`'s speculative preparation, caching that module.
+        fixture.write(
+            "MODULE.bazel",
+            &(fs::read_to_string(fixture.path().join("MODULE.bazel")).unwrap()
+                + "slow = use_repo_rule(\"//ext:slow.bzl\", \"slow\")\nslow(name = \"slow\")\n"),
+        );
+        fixture.write(
+            "ext/slow.bzl",
+            r#"def _slow_impl(rctx):
+    rctx.execute(["true"])
+    rctx.file("BUILD.bazel", "")
+    rctx.file("defs.bzl", "SLOW = 'slow'\n")
+
+slow = repository_rule(implementation = _slow_impl, local = True)
+"#,
+        );
+        fixture.write("shared/BUILD.bazel", "");
+        fixture.write(
+            "shared/defs.bzl",
+            "load('@gen_lib//:lib.bzl', 'lib')\nprint('shared/defs.bzl loaded')\nD = lib('d')\n",
+        );
+        fixture.write(
+            "cached/BUILD.bazel",
+            "filegroup(name = 'all', srcs = ['//cached/q:t', '//cached/p:t'])\n",
+        );
+        fixture.write(
+            "cached/q/BUILD.bazel",
+            "load('@slow//:defs.bzl', 'SLOW')\nload('//shared:defs.bzl', 'D')\nprint('q sees ' + D)\nfilegroup(name = 't', visibility = ['//visibility:public'])\n",
+        );
+        fixture.write(
+            "cached/p/BUILD.bazel",
+            "load('//shared:defs.bzl', 'D')\nprint('p sees ' + D)\nfilegroup(name = 't', visibility = ['//visibility:public'])\n",
+        );
+        // `touch` runs in phase 1, before the walk's (and the pool's
+        // kept attempts') demand of `gen`: the pool's attempt of `p2`
+        // used `gen`'s speculation, then stopped at `touch` (discarded).
+        fixture.write(
+            "dropped/BUILD.bazel",
+            "filegroup(name = 'all', srcs = ['//rewrite/a:t', '//dropped/p:t'])\n",
+        );
+        fixture.write(
+            "dropped/p/BUILD.bazel",
+            "load('@gen_data//:defs.bzl', 'VALUE')\nload('@touch//:defs.bzl', 'TOUCHED')\nprint('dropped sees ' + VALUE)\nfilegroup(name = 't', visibility = ['//visibility:public'])\n",
+        );
         // `touch` runs in phase 1, before the walk demands `gen`.
         fixture.write(
             "rewrite/BUILD.bazel",
@@ -873,6 +920,47 @@ fn an_input_rewritten_in_phase_one_after_the_pools_use_is_an_internal_error() {
         );
     }
     baseline.restore(&fixture);
+}
+
+/// A module the pool loaded through `gen`'s speculative preparation is in
+/// the shared `.bzl` cache when the sequential pass loads `q`, before `p`
+/// in the walk's order: `q`'s cache hit prepares `gen` there (its
+/// definition's prints and the use_repo warning where the walk writes
+/// them), not at `p`'s commit (review of eval-round1, blocker 1).
+#[test]
+fn a_cache_hit_on_a_speculatively_loaded_module_prepares_the_group_in_walk_order() {
+    let fixture = Fixture::new();
+    let baseline = Baseline::new(&fixture);
+    for snapshot in ["off", "record"] {
+        let reference = compare_eval(&fixture, &baseline, snapshot, &["//cached:all"]);
+        assert_eq!(reference.code, Some(0), "{}", reference.stderr);
+        let warning = reference
+            .stderr
+            .find("gen_unimported")
+            .expect("the fixup warning");
+        let q = reference.stderr.find("q sees lib(d)").expect("q");
+        let p = reference.stderr.find("p sees lib(d)").expect("p");
+        assert!(warning < q && q < p, "{}", reference.stderr);
+    }
+    assert!(pool_counter(&fixture, &baseline, &["//cached:all"], "used") > 0);
+}
+
+/// The pool's attempt of `dropped/p` used `gen`'s speculation and then
+/// stopped at `touch` (discarded); `touch` rewrites `gen`'s input before
+/// the walk's demand, which drops the speculation: no internal error, the
+/// walk's output (review of eval-round1, finding 2).
+#[test]
+fn a_discarded_attempts_use_of_a_speculation_is_no_mismatch() {
+    let fixture = Fixture::new();
+    let baseline = Baseline::new(&fixture);
+    let reference = compare_eval(&fixture, &baseline, "off", &["//dropped:all"]);
+    assert_eq!(reference.code, Some(0), "{}", reference.stderr);
+    assert!(
+        reference.stderr.contains("gen evaluated with input v1")
+            && reference.stderr.contains("dropped sees data v1"),
+        "{}",
+        reference.stderr
+    );
 }
 
 /// An extension without a lockfile entry that fails (never prepared

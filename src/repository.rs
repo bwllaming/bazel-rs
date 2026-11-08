@@ -3675,6 +3675,37 @@ impl RepositorySet {
         Some(prepared)
     }
 
+    /// The group `id` was prepared as `prepared` where the walk prepares
+    /// it: when the evaluator's pool used another (speculative)
+    /// preparation of it — an attempt discarded since, or one whose commit
+    /// is the mismatch ([`Self::check_eval_group`]) —, what the pool loaded
+    /// from that preparation's repositories leaves the shared caches (the
+    /// `.bzl` modules and their loaders, the ignored subdirectories): the
+    /// walk loads them from this one.
+    fn evict_dropped_group(&self, id: &str, prepared: &Arc<PreparedOrdinary>) {
+        if !self.state.eval_used.load(Ordering::Relaxed) {
+            return;
+        }
+        // Once (prepared now: a memo hit finds its root slot from here on).
+        if !lock_ignoring_poison(&self.state.eval_used_groups).remove(id) {
+            return;
+        }
+        let Some(used) = self.speculated_group(id) else {
+            return;
+        };
+        if Arc::ptr_eq(used, prepared) {
+            return;
+        }
+        let repositories: BTreeSet<String> = used
+            .repositories
+            .values()
+            .map(|repository| repository.canonical_name.clone())
+            .collect();
+        self.state.build_bzl.evict_repositories(&repositories);
+        lock_ignoring_poison(&self.state.ignored)
+            .retain(|repository, _| !repositories.contains(repository));
+    }
+
     /// The group `id`, which an evaluator's pool load used speculatively,
     /// is prepared here: where the sequential engine's load prepares it
     /// ([`Self::note_committed_roots`]).
@@ -5569,6 +5600,11 @@ impl RepositorySet {
                     .map(Arc::new)
             },
         );
+        if let Ok(prepared) = &prepared
+            && !crate::repository_demand::no_demand_active()
+        {
+            self.evict_dropped_group(id, prepared);
+        }
         if prepared.is_ok() {
             // The loads a file entered before this group was prepared
             // (`warm_loads`) can execute ahead now.

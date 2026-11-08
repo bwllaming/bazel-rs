@@ -1001,6 +1001,43 @@ impl BzlCache {
         Ok(())
     }
 
+    /// Drop the modules of `repositories` and every module that loads one
+    /// of them, transitively (the evaluator's pool loaded them from an
+    /// extension group's speculative preparation that its commit dropped:
+    /// crate::repository's `evict_dropped_group`), and the load-graph memo.
+    pub(crate) fn evict_repositories(&self, repositories: &std::collections::BTreeSet<String>) {
+        let Ok(mut modules) = self.modules.lock() else {
+            return;
+        };
+        let mut evicted: std::collections::HashSet<Label> = modules
+            .keys()
+            .filter(|label| repositories.contains(&label.repository))
+            .cloned()
+            .collect();
+        loop {
+            let more: Vec<Label> = modules
+                .iter()
+                .filter(|(label, result)| {
+                    !evicted.contains(*label)
+                        && match result {
+                            Ok(bzl) => bzl.loads.iter().any(|load| evicted.contains(load)),
+                            Err(failure) => failure.loads.iter().any(|load| evicted.contains(load)),
+                        }
+                })
+                .map(|(label, _)| label.clone())
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            evicted.extend(more);
+        }
+        modules.retain(|label, _| !evicted.contains(label));
+        drop(modules);
+        if let Ok(mut graphs) = self.load_graphs.lock() {
+            graphs.clear();
+        }
+    }
+
     /// The frozen module of `label` the invocation evaluated, if it did and
     /// its evaluation succeeded (crate::snapshot::mapper: the module a
     /// planned `map_each` function was created by).
@@ -1644,6 +1681,13 @@ impl<'a> Loader<'a> {
         if !self.shared {
             return Ok(false);
         }
+        if self.repositories.build_bzl_cache().get(label)?.is_none() {
+            return Ok(false);
+        }
+        // Noted first: an extension group the sequential engine prepares
+        // here may drop the entry (crate::repository's
+        // `evict_dropped_group`), a miss then.
+        self.repositories.note_obtained(&label.repository);
         let Some(cached) = self.repositories.build_bzl_cache().get(label)? else {
             return Ok(false);
         };
@@ -1653,7 +1697,6 @@ impl<'a> Loader<'a> {
         // whoever evaluated it may have been a worker (W6 review F2
         // follow-up). A success or a failure alike. Likewise what its
         // load observed for the analysis snapshot (W6R).
-        self.repositories.note_obtained(&label.repository);
         if crate::observed_fs::hook(crate::observed_fs::Hook::Bzl) {
             crate::observed_fs::replay_some(match &cached {
                 Ok(cached) => cached.observations.as_ref(),
@@ -1832,12 +1875,17 @@ impl<'a> Loader<'a> {
                         let mut guard: Option<BzlClaimGuard> = None;
                         loop {
                             if self.shared {
-                                let served = self.repositories.build_bzl_cache().get(&label)?;
+                                let mut served = self.repositories.build_bzl_cache().get(&label)?;
+                                if served.is_some() {
+                                    // Noted first (see `shared_cache_hit`):
+                                    // the entry may be dropped there.
+                                    self.repositories.note_obtained(&label.repository);
+                                    served = self.repositories.build_bzl_cache().get(&label)?;
+                                }
                                 if let Some(served) = &served {
                                     // Its root was demanded at the entry
                                     // already; noted like every hit, and
                                     // its observations replayed (W6R).
-                                    self.repositories.note_obtained(&label.repository);
                                     if crate::observed_fs::hook(crate::observed_fs::Hook::Bzl) {
                                         crate::observed_fs::replay_some(match served {
                                             Ok(cached) => cached.observations.as_ref(),
