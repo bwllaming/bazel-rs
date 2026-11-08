@@ -44,7 +44,7 @@ pub(crate) struct Coord<'e> {
     /// The CT1 value of each ConfiguredTargetKey's first variant done (in
     /// completion order: the bodies' reads of a key they did not reach,
     /// and whether a key was analyzed).
-    pub(crate) ct1_done: FxHashMap<ConfiguredTargetKey, Arc<Ct1Value>>,
+    pub(crate) ct1_done: Arc<Ct1Done>,
     /// Every done CT1 value, by variant (pass 1 decides which one is the
     /// configured target).
     pub(crate) ct1_values: FxHashMap<CtKey, Arc<Ct1Value>>,
@@ -74,11 +74,53 @@ fn restarts_seed() -> Option<u64> {
 
 impl Coord<'_> {
     pub(crate) fn ct1(&self, key: &ConfiguredTargetKey) -> Option<Arc<Ct1Value>> {
-        self.ct1_done.get(key).cloned()
+        self.ct1_done.get(key)
     }
 
     pub(crate) fn source_analyzed(&self, label: &Label) -> bool {
         self.sources.contains(label)
+    }
+}
+
+/// The CT1 value of each ConfiguredTargetKey's first variant done, read
+/// by the bodies without the coordinator's lock (sharded).
+pub(crate) struct Ct1Done {
+    shards: [std::sync::RwLock<FxHashMap<ConfiguredTargetKey, Arc<Ct1Value>>>; 64],
+}
+
+impl Default for Ct1Done {
+    fn default() -> Self {
+        Self {
+            shards: std::array::from_fn(|_| Default::default()),
+        }
+    }
+}
+
+impl Ct1Done {
+    fn shard(
+        &self,
+        key: &ConfiguredTargetKey,
+    ) -> &std::sync::RwLock<FxHashMap<ConfiguredTargetKey, Arc<Ct1Value>>> {
+        use std::hash::BuildHasher;
+        let hash = crate::fast_hash::FxBuildHasher::default().hash_one(key);
+        &self.shards[(hash >> 58) as usize]
+    }
+
+    pub(crate) fn get(&self, key: &ConfiguredTargetKey) -> Option<Arc<Ct1Value>> {
+        self.shard(key)
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
+    }
+
+    /// Keep `value` unless a variant of `key` was done first.
+    pub(crate) fn first(&self, key: &ConfiguredTargetKey, value: &Arc<Ct1Value>) {
+        self.shard(key)
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(key.clone())
+            .or_insert_with(|| Arc::clone(value));
     }
 }
 
@@ -214,6 +256,9 @@ pub(crate) struct Running {
 /// What a phase-1 body needs of its context besides [`Cx`].
 pub(crate) trait Phase1Cx<'e>: Cx {
     fn coord(&self) -> MutexGuard<'_, Coord<'e>>;
+    /// The CT1 value of `key`'s first variant done (without the
+    /// coordinator's lock).
+    fn ct1_done(&self, key: &ConfiguredTargetKey) -> Option<Arc<Ct1Value>>;
     /// The scratch engine of the speculative phase 2s (`nodes::speculate`;
     /// locked before the coordinator, never after it).
     fn scratch(&self) -> &Mutex<Option<super::speculate::Scratch>>;
@@ -310,6 +355,10 @@ impl<'e> Phase1Cx<'e> for BodyCx<'_, '_, 'e> {
         &self.bodies.scratch
     }
 
+    fn ct1_done(&self, key: &ConfiguredTargetKey) -> Option<Arc<Ct1Value>> {
+        self.bodies.ct1_done.get(key)
+    }
+
     fn flags(&self) -> Flags {
         self.bodies.flags
     }
@@ -329,6 +378,14 @@ pub(crate) static INLINE_REASONS: [std::sync::atomic::AtomicU64; 4] = [
 /// driver runs the pool again after it ran any).
 pub(crate) static SEQUENTIAL_ATTEMPTS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+
+/// BAZEL_RS_EVAL_STATS: the coordinator lock's uncontended and contended
+/// acquisitions, and the µs waited.
+pub(crate) static COORD_LOCKS: [std::sync::atomic::AtomicU64; 3] = [
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+];
 
 /// BAZEL_RS_EVAL_STATS: the µs the sequential pass's attempts spent
 /// applying the tape first.
@@ -354,6 +411,8 @@ pub(crate) struct Phase1Bodies<'s, 'e> {
     pub(crate) framed: bool,
     /// The speculative phase 2s' scratch engine (S2, the CsMatch split).
     pub(crate) scratch: Mutex<Option<super::speculate::Scratch>>,
+    /// `Coord::ct1_done`, shared.
+    pub(crate) ct1_done: Arc<Ct1Done>,
 }
 
 impl<'s, 'e> Phase1Bodies<'s, 'e> {
@@ -363,8 +422,10 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
         tracking: bool,
         linearized: bool,
     ) -> Self {
+        let ct1_done = Arc::new(Ct1Done::default());
         Self {
             shared,
+            ct1_done: Arc::clone(&ct1_done),
             flags: Flags {
                 tracking,
                 linearized,
@@ -377,7 +438,7 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
                 saw_flush: false,
                 store: Store::default(),
                 lin: None,
-                ct1_done: FxHashMap::default(),
+                ct1_done: Arc::clone(&ct1_done),
                 ct1_values: FxHashMap::default(),
                 sources: FxHashSet::default(),
                 restarted: FxHashSet::default(),
@@ -387,9 +448,26 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
     }
 
     pub(crate) fn coord(&self) -> MutexGuard<'_, Coord<'e>> {
-        self.coord
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        match self.coord.try_lock() {
+            Ok(guard) => {
+                COORD_LOCKS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                guard
+            }
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                let started = std::time::Instant::now();
+                let guard = self
+                    .coord
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                COORD_LOCKS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                COORD_LOCKS[2].fetch_add(
+                    started.elapsed().as_micros() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                guard
+            }
+        }
     }
 
     /// Whether attempts run on the pool now.
@@ -622,13 +700,6 @@ impl Bodies for Phase1Bodies<'_, '_> {
         if let Some(running) = with_running(Vec::pop) {
             self.coord().abandon_attempt(running);
         }
-    }
-
-    fn set_pooled(&self, pooled: bool) {
-        self.shared
-            .loading
-            .pooled
-            .store(pooled, std::sync::atomic::Ordering::Release);
     }
 
     fn target_platform(&self, config: ConfigId) -> NodeKey {

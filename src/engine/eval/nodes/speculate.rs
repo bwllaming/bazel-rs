@@ -42,7 +42,8 @@ pub(crate) type Providers = BTreeMap<String, starlark::values::OwnedFrozenValue>
 
 /// BAZEL_RS_EVAL_STATS: speculative phase 2s run, left to the sequential
 /// pass, the scratch plan entries, the µs spent.
-pub(crate) static STATS: [std::sync::atomic::AtomicU64; 4] = [
+pub(crate) static STATS: [std::sync::atomic::AtomicU64; 5] = [
+    std::sync::atomic::AtomicU64::new(0),
     std::sync::atomic::AtomicU64::new(0),
     std::sync::atomic::AtomicU64::new(0),
     std::sync::atomic::AtomicU64::new(0),
@@ -52,6 +53,7 @@ const STAT_RUNS: usize = 0;
 const STAT_LEFT: usize = 1;
 const STAT_ENTRIES: usize = 2;
 const STAT_MICROS: usize = 3;
+const STAT_COORD: usize = 4;
 
 fn bump(index: usize, by: u64) {
     STATS[index].fetch_add(by, std::sync::atomic::Ordering::Relaxed);
@@ -82,6 +84,32 @@ pub(crate) struct Scratch {
     memos: usize,
     /// The configurations it holds (their count when cloned).
     configurations: usize,
+}
+
+impl Scratch {
+    /// A fork of `engine` before planning (BAZEL_RS_EVAL_VERIFY's), with
+    /// the evaluation's configurations, planning sequentially.
+    pub(crate) fn new(engine: &Engine, shared: &EvalShared) -> Self {
+        let mut engine = Box::new(engine.fork_for_verify());
+        engine.loading_phase_threads = 1;
+        engine.action_planning = Some(Default::default());
+        // The evaluation holds the configurations (EvalShared).
+        engine.configurations = shared
+            .configurations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let configurations = engine.configurations.len();
+        Scratch {
+            engine,
+            configured: ConfiguredNodes::default(),
+            plan: Plan::new(),
+            planned: FxHashSet::default(),
+            packages: FxHashSet::default(),
+            memos: 0,
+            configurations,
+        }
+    }
 }
 
 /// Why a speculation did not give the providers (counted, then the
@@ -157,32 +185,15 @@ fn run(
     // order: the scratch, then the coordinator).
     {
         let coord = cx.coord();
+        let held = std::time::Instant::now();
+        let _held = Held(held);
         let subtree = {
             let planned = guard.as_ref().map(|scratch| &scratch.planned);
             coord.subtree(root, &|key| {
                 planned.is_some_and(|planned| planned.contains(key))
             })?
         };
-        let scratch = guard.get_or_insert_with(|| {
-            let mut engine = Box::new(coord.engine.fork_for_verify());
-            engine.loading_phase_threads = 1;
-            engine.action_planning = Some(Default::default());
-            // The evaluation holds the configurations (EvalShared).
-            engine.configurations = shared
-                .configurations
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
-            Scratch {
-                engine,
-                configured: ConfiguredNodes::default(),
-                plan: Plan::new(),
-                planned: FxHashSet::default(),
-                packages: FxHashSet::default(),
-                memos: 0,
-                configurations: usize::MAX,
-            }
-        });
+        let scratch = guard.get_or_insert_with(|| Scratch::new(coord.engine, shared));
         let engine = &mut *scratch.engine;
         for (package, loaded) in &coord.store.packages {
             if let Ok(loaded) = loaded
@@ -321,6 +332,15 @@ fn isolated<R>(f: impl FnOnce() -> R) -> R {
     drop(console.finish());
     crate::progress::restore_analysis_counts(counts);
     result
+}
+
+/// Counts the µs the coordinator's lock is held for a speculation.
+struct Held(std::time::Instant);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        bump(STAT_COORD, self.0.elapsed().as_micros() as u64);
+    }
 }
 
 /// A dependency's phase 2 as its consumers read it (the planning state's

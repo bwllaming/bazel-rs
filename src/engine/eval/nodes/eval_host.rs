@@ -198,7 +198,7 @@ impl<'c, 'e> EvalHost<'c, 'e> {
         if let Some((_, value)) = self.reached.get(key) {
             return Some(Arc::clone(value));
         }
-        self.cx.coord().ct1(key)
+        self.cx.ct1_done(key)
     }
 
     fn ct1_ok<T>(&self, key: &ConfiguredTargetKey, read: impl FnOnce(&Ct1Ok) -> T) -> Option<T> {
@@ -231,7 +231,7 @@ impl<'c, 'e> EvalHost<'c, 'e> {
         if reach {
             self.emit(Event::Reach(id));
         }
-        let done = self.cx.coord().ct1(&key).is_some();
+        let done = self.cx.ct1_done(&key).is_some();
         if !done {
             // The walk's active chain checks (Engine::analyze_key_body).
             let active = super::bodies::active_ct1();

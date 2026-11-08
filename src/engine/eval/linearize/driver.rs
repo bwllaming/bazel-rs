@@ -337,9 +337,7 @@ impl Coord<'_> {
         self.store.published.extend(published);
         match (&running.key, value) {
             (NodeKey::Ct1(ct), NodeValue::Ct1(ct1)) => {
-                self.ct1_done
-                    .entry(ct.key.clone())
-                    .or_insert_with(|| Arc::clone(ct1));
+                self.ct1_done.first(&ct.key, ct1);
                 self.ct1_values.insert(ct.clone(), Arc::clone(ct1));
             }
             (NodeKey::Src(label), NodeValue::Src(Ok(()))) => {
@@ -1220,6 +1218,16 @@ impl Engine {
                 coord.lin = Some(Box::new(lin));
                 coord.begin_segment(SegmentKind::Setup);
             }
+            if bodies.framed {
+                // The speculative phase 2s' scratch engine (S2, the CsMatch
+                // split), forked before the pool runs.
+                let scratch =
+                    super::super::nodes::speculate::Scratch::new(bodies.coord().engine, &shared);
+                *bodies
+                    .scratch
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(scratch);
+            }
             let evaluator =
                 Evaluator::new(&bodies, phase1_config(shared.options.loading_phase_threads));
             // S2: with more than one thread, the pool evaluates what the
@@ -1230,8 +1238,6 @@ impl Engine {
             let pool_roots = if evaluator.pooled() {
                 let roots = warm_up(&evaluator, &shared, labels, top, target_platform.clone());
                 evaluator.set_inline(true);
-                // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
-                evaluator.set_assist(std::env::var_os("BAZEL_RS_EVAL_NO_ASSIST").is_none());
                 Some(roots)
             } else {
                 None
@@ -1323,14 +1329,23 @@ impl Engine {
                         / 1000,
                     LOOKUPS.load(std::sync::atomic::Ordering::Relaxed) / 1000
                 );
+                let locks = &super::super::nodes::bodies::COORD_LOCKS;
+                let locks = |index: usize| locks[index].load(std::sync::atomic::Ordering::Relaxed);
+                crate::note!(
+                    "bazel-rs: eval phase 1: coordinator lock: {} uncontended, {} contended, {} ms waited",
+                    locks(0),
+                    locks(1),
+                    locks(2) / 1000
+                );
                 let spec = &super::super::nodes::speculate::STATS;
                 let spec = |index: usize| spec[index].load(std::sync::atomic::Ordering::Relaxed);
                 crate::note!(
-                    "bazel-rs: eval phase 1: speculative flag phase 2s {}, left {}, scratch entries planned {}, {} ms",
+                    "bazel-rs: eval phase 1: speculative flag phase 2s {}, left {}, scratch entries planned {}, {} ms ({} ms holding the coordinator's lock)",
                     spec(0),
                     spec(1),
                     spec(2),
-                    spec(3) / 1000
+                    spec(3) / 1000,
+                    spec(4) / 1000
                 );
             }
             let mut coord = bodies.coord();
