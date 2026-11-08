@@ -1464,7 +1464,10 @@ fn action_failures_save_and_analysis_failures_never_do() {
         "genrule(name = 'f', outs = ['f.txt'], cmd = 'echo failing >&2; exit 1')\ngenrule(name = 'ok', outs = ['ok.txt'], cmd = 'echo ok > $@')\ngenrule(name = 'broken', srcs = [':missing'], outs = ['b.txt'], cmd = 'touch $@')\n",
     );
     for args in [
-        &["build", "//fail:f", "//fail:ok"][..],
+        // `--jobs=1`: whether //fail:ok still runs after //fail:f failed is
+        // a race otherwise
+        // (`a_failing_build_stops_alike_with_and_without_the_snapshot`).
+        &["build", "--jobs=1", "//fail:f", "//fail:ok"][..],
         &["build", "--keep_going", "//fail:f", "//fail:ok"],
     ] {
         let failed = twin.same(args, &[]);
@@ -1509,6 +1512,36 @@ fn action_failures_save_and_analysis_failures_never_do() {
         .assert_success()
         .assert_miss("BUILD.bazel")
         .assert_saved();
+}
+
+/// The mutation fuzz's command 7 with its failing genrule (seeds
+/// 1794118356942128451, 1794021045692395369): without `--keep_going`, which
+/// independent actions still complete after the first failure is a race —
+/// here //race:m (and so //race:d) against the failing //race:l, in genuine
+/// Bazel (an in-flight action is interrupted: a slower //race:d is never
+/// built, a faster one is) as in bazel-rs (nothing is dispatched once the
+/// failure is published). With `--jobs=1` the ready actions run one at a
+/// time in action-id order: a hit runs exactly the actions the run without
+/// the snapshot runs, every time — each source edit re-executes the chain
+/// (without `--jobs=1` the 30 rounds differ at least once: 10 of 10 runs).
+#[test]
+fn a_failing_build_stops_alike_with_and_without_the_snapshot() {
+    let twin = fixture();
+    twin.write(
+        "race/BUILD.bazel",
+        "genrule(name = 'l', srcs = ['in.txt'], outs = ['l.txt'], cmd = 'exit 1')\ngenrule(name = 'm', srcs = ['in.txt'], outs = ['m.txt'], cmd = 'cat $(SRCS) > $@')\ngenrule(name = 'd', srcs = [':m'], outs = ['d.txt'], cmd = 'cat $(SRCS) > $@')\n",
+    );
+    let args = &["build", "--jobs=1", "//race:d", "//race:l"];
+    for round in 0..30 {
+        twin.write("race/in.txt", &format!("round {round}\n"));
+        let failed = twin.same(args, &[]);
+        assert!(!failed.on.status.success(), "round {round}");
+        if round == 0 {
+            failed.assert_saved();
+        } else {
+            failed.assert_hit();
+        }
+    }
 }
 
 const HOST_REPOS: &str = r#"def _jdk(ctx):
@@ -4333,7 +4366,20 @@ fn fuzz_command(
             args.push("//environ:g".into());
             args
         }
-        7 => vec!["build".into(), "//deps:d".into(), "//pkg:l".into()],
+        // `--jobs=1`: with the failing genrule (#46) and no `--keep_going`,
+        // which of the other actions still complete after //pkg:l fails is
+        // a race between independent actions — in genuine Bazel (in-flight
+        // actions are interrupted on the first failure) as in bazel-rs (no
+        // action is dispatched once a failure is published). One job runs
+        // the ready actions one at a time in action-id order: both sides run
+        // exactly the same actions, so the comparison stays byte-exact
+        // (`a_failing_build_stops_alike_with_and_without_the_snapshot`).
+        7 => vec![
+            "build".into(),
+            "--jobs=1".into(),
+            "//deps:d".into(),
+            "//pkg:l".into(),
+        ],
         TOOL_COMMAND => vec!["build".into(), "//:tooluse".into()],
         8 => {
             // From a subpackage, with a relative pattern (L2-W5g).
