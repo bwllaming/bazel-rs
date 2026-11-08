@@ -627,9 +627,10 @@ What would cut X (to ~1 s):
 1. ~~Bulk repository demand for pattern loading~~ (done in
    `pre-analysis-x`, as pipelined re-runs: 2.6 → 1.7 s; the batch shape
    is limited by the demands only the coordinator satisfies, in order).
-2. Evaluate the module extensions the lockfile names in parallel at
-   startup (npm 0.26, pip 0.15, crate 0.07, python 0.06 s … ≈0.6 s
-   sequential, ≈0.26 s critical), overlapped with the configuration step.
+2. ~~Evaluate the module extensions the lockfile names in parallel at
+   startup~~ (done in `parallel-extensions`: the root module's groups
+   are prepared ahead and committed at their demand; X median 2.30 →
+   1.96 s, docs/COLD_ANALYSIS.md "Module extensions prepared ahead").
 3. Overlap the Starlark-option package loads (0.2 s) with pattern
    discovery/loading.
 4. Pkg nodes (S2): pattern loading and phase 1 overlap; the coordinator
