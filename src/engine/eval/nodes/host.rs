@@ -25,6 +25,17 @@ use super::super::super::{
     TransitionConfigurations, TransitionDetails, cquery,
 };
 
+/// What one Starlark transition application reads (the `Transition`
+/// node's input, registered under its cache key by the first requester:
+/// every requester of one key gives an equal input).
+pub(crate) struct TransitionInput {
+    pub(crate) def: crate::starlark_transitions::TransitionDef,
+    pub(crate) kind: crate::starlark_transitions::Kind,
+    pub(crate) target: Label,
+    pub(crate) from: ConfigId,
+    pub(crate) attributes: crate::starlark_transitions::AttributeValues,
+}
+
 /// The primitives of a phase-1 body.
 pub(crate) trait Host {
     // ---- shared reads (EvalShared) -------------------------------------
@@ -255,6 +266,21 @@ pub(crate) trait Host {
     /// StarlarkBuildSettingsDetailsValue (`TransitionDetails` node).
     fn transition_details_for(&mut self, settings: Vec<Label>)
     -> Result<TransitionDetails, String>;
+    /// The application keyed `key` as a `Transition` node (the evaluator;
+    /// `input` registers it): its configurations when it succeeded — its
+    /// effects (the details' and flags' memos, the print() lines) are the
+    /// node's, replayed at its first linearized use, the lines again at
+    /// every later use (`Err`: the attempt stops). `None`: apply here (the walk; a failure, which the
+    /// walk does not memoize either).
+    #[allow(clippy::type_complexity)]
+    fn transition_node(
+        &mut self,
+        key: &TransitionCacheKey,
+        input: &dyn Fn() -> TransitionInput,
+    ) -> Option<Result<TransitionConfigurations, crate::starlark_transitions::Failure>> {
+        let _ = (key, input);
+        None
+    }
     /// StarlarkTransitionCache.
     fn transition_cache_get(
         &mut self,
@@ -272,6 +298,7 @@ pub(crate) trait Host {
         &mut self,
         key: ConfiguredTargetKey,
         exec_platform: &Label,
+        location: Option<&str>,
     ) -> Option<Label>;
     /// The execution platform a toolchain implementation's own resolution
     /// is forced to (`CtKey.forced_exec`).

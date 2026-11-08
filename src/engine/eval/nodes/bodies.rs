@@ -16,7 +16,7 @@ use crate::label::Label;
 
 use super::super::super::{ConfiguredTargetKey, Engine};
 use super::super::cx::{Cx, Missing, Vals};
-use super::super::key::{NodeId, NodeKey};
+use super::super::key::{CtKey, NodeId, NodeKey};
 use super::super::linearize::driver::{Linearizer, Store};
 use super::super::scheduler::Bodies;
 use super::super::shared::EvalShared;
@@ -46,8 +46,13 @@ pub(crate) struct Coord<'e> {
     /// `BAZEL_RS_ANALYSIS=eval`'s linearizer (pass 1 and the tape's
     /// application; `None` under BAZEL_RS_EVAL_VERIFY_PHASE1).
     pub(crate) lin: Option<Box<Linearizer>>,
-    /// The done CT1 value of each ConfiguredTargetKey's first variant.
+    /// The CT1 value of each ConfiguredTargetKey's first variant done (in
+    /// completion order: the bodies' reads of a key they did not reach,
+    /// and whether a key was analyzed).
     pub(crate) ct1_done: FxHashMap<ConfiguredTargetKey, Arc<Ct1Value>>,
+    /// Every done CT1 value, by variant (pass 1 decides which one is the
+    /// configured target).
+    pub(crate) ct1_values: FxHashMap<CtKey, Arc<Ct1Value>>,
     /// The source files whose analysis succeeded (`analyzed_sources`).
     pub(crate) sources: FxHashSet<Label>,
 }
@@ -161,6 +166,7 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
                 store: Store::default(),
                 lin: None,
                 ct1_done: FxHashMap::default(),
+                ct1_values: FxHashMap::default(),
                 sources: FxHashSet::default(),
             }),
         }
@@ -202,10 +208,11 @@ impl Bodies for Phase1Bodies<'_, '_> {
         let key = coord.finish_attempt(&value);
         match (key, &value) {
             (Some(NodeKey::Ct1(ct)), NodeValue::Ct1(ct1)) => {
-                if coord.first.canonical.get(&ct.key) == Some(&ct) {
-                    coord.ct1_done.insert(ct.key.clone(), Arc::clone(ct1));
-                    coord.store.fresh_ct1.push(ct.key.clone());
-                }
+                coord
+                    .ct1_done
+                    .entry(ct.key.clone())
+                    .or_insert_with(|| Arc::clone(ct1));
+                coord.ct1_values.insert(ct, Arc::clone(ct1));
             }
             (Some(NodeKey::Src(label)), NodeValue::Src(Ok(()))) => {
                 coord.sources.insert(label);

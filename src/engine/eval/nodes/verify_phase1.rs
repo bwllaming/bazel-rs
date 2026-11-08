@@ -47,6 +47,11 @@ struct Replay<'g> {
     visited: FxHashSet<NodeId>,
     plan: Vec<ConfiguredTargetKey>,
     empty: BTreeSet<ConfiguredTargetKey>,
+    /// The configured target of each key: the first variant reached that
+    /// succeeded (pass 1's first-visit rule).
+    canonical: BTreeMap<ConfiguredTargetKey, NodeId>,
+    /// The first claim of each toolchain implementation.
+    claims: BTreeMap<ConfiguredTargetKey, crate::label::Label>,
 }
 
 impl Replay<'_> {
@@ -55,16 +60,33 @@ impl Replay<'_> {
             match event {
                 Event::Reach(id) | Event::MemoUse(id) => self.node(*id),
                 Event::PlanPush => self.plan.extend(owner.cloned()),
+                Event::ToolchainImpl(claim) => {
+                    self.claims
+                        .entry(claim.implementation.clone())
+                        .or_insert_with(|| claim.exec_platform.clone());
+                }
                 _ => {}
             }
         }
     }
 
     fn node(&mut self, id: NodeId) {
+        let graph = self.graph;
+        if let NodeKey::Ct1(ct) = graph.key(id)
+            && self.canonical.contains_key(&ct.key)
+        {
+            return;
+        }
         if !self.visited.insert(id) {
             return;
         }
-        let graph = self.graph;
+        if let NodeKey::Ct1(ct) = graph.key(id)
+            && let Some(value) = graph.value(id)
+            && let NodeValue::Ct1(value) = value.as_ref()
+            && value.outcome.is_ok()
+        {
+            self.canonical.insert(ct.key.clone(), id);
+        }
         if let NodeKey::Ct1(ct) = graph.key(id)
             && let Some(value) = graph.value(id)
             && let NodeValue::Ct1(value) = value.as_ref()
@@ -292,13 +314,7 @@ fn verify_with(
                         .native
                         .no_config;
                     let key = ConfiguredTargetKey::new(rule.label.clone(), top);
-                    NodeKey::Ct1(edge_ct_key(
-                        &mut bodies.coord().first,
-                        no_config,
-                        &rule,
-                        key,
-                        false,
-                    ))
+                    NodeKey::Ct1(edge_ct_key(no_config, &rule, key, false, None))
                 })
             }
         };
@@ -372,10 +388,13 @@ fn verify_with(
         visited: FxHashSet::default(),
         plan: Vec::new(),
         empty: BTreeSet::new(),
+        canonical: BTreeMap::new(),
+        claims: BTreeMap::new(),
     };
     let roots = roots.into_iter().map(Event::Reach).collect::<Vec<_>>();
     replay.events(None, &roots);
-    let (eval_plan, eval_empty) = (replay.plan, replay.empty);
+    let (eval_plan, eval_empty, canonical, claims) =
+        (replay.plan, replay.empty, replay.canonical, replay.claims);
     // The plan, keys and order.
     // Entries a deferred target platform's analysis in phase 2 put into
     // the walk's plan (phase 2, S3) are compared as configured nodes only.
@@ -406,10 +425,7 @@ fn verify_with(
     }
     // The CT1 values by ConfiguredTargetKey (first variants).
     let mut eval_ok = BTreeMap::new();
-    for (key, ct) in &coord.first.canonical {
-        let Some(id) = graph.get(&NodeKey::Ct1(ct.clone())) else {
-            continue;
-        };
+    for (key, &id) in &canonical {
         if let Some(value) = graph.value(id)
             && let NodeValue::Ct1(value) = value.as_ref()
             && value.outcome.is_ok()
@@ -511,11 +527,11 @@ fn verify_with(
                 .collect::<Vec<_>>()
         ));
     }
-    if engine.toolchain_implementations != coord.first.claims {
+    if engine.toolchain_implementations != claims {
         diffs.push(format!(
             "toolchain implementations: walk {} / eval {}",
             engine.toolchain_implementations.len(),
-            coord.first.claims.len()
+            claims.len()
         ));
     }
     let nodes = graph.len();

@@ -545,6 +545,7 @@ pub(crate) trait Phase1: Host {
                     &implementation,
                     config,
                     &context.exec_platform.label,
+                    rule.location.as_deref(),
                 )
                 .map_err(|error| located(rule.location.as_deref(), error))?;
                 self.target(&implementation)
@@ -1513,8 +1514,13 @@ pub(crate) trait Phase1: Host {
                 })
                 .collect::<Vec<_>>();
             for (implementation, exec_platform) in implementations {
-                self.toolchain_implementation(&implementation, config, &exec_platform)
-                    .map_err(|error| located(base_rule.location.as_deref(), error))?;
+                self.toolchain_implementation(
+                    &implementation,
+                    config,
+                    &exec_platform,
+                    base_rule.location.as_deref(),
+                )
+                .map_err(|error| located(base_rule.location.as_deref(), error))?;
                 self.target(&implementation)
                     .map_err(|error| self.missing_edge_error(base_rule, &implementation, error))?;
                 self.analyze(&implementation, config)?;
@@ -1921,6 +1927,17 @@ pub(crate) trait Phase1: Host {
         )
         .into();
         let cache_key = (def.id, from, digest);
+        // The evaluator's `Transition` node (its prints are replayed as the
+        // cache below replays them).
+        if let Some(applied) = self.transition_node(&cache_key, &|| super::host::TransitionInput {
+            def: def.clone(),
+            kind,
+            target: target.clone(),
+            from,
+            attributes: attributes.clone(),
+        }) {
+            return applied;
+        }
         // StarlarkTransitionCache.computeIfAbsent (:128-185): a hit replays
         // the application's non-error events (print() output), so every
         // application prints, also the IdempotencyChecker's and a
@@ -1931,6 +1948,25 @@ pub(crate) trait Phase1: Host {
             }
             return Ok(id);
         }
+        let (id, printed) = self.compute_transition(def, kind, target, from, attributes)?;
+        self.transition_cache_put(cache_key, (Arc::clone(&id), printed));
+        Ok(id)
+    }
+
+    /// One Starlark transition application (a cache miss; the evaluator's
+    /// `Transition` node): its configurations and print() lines (printed).
+    fn compute_transition(
+        &mut self,
+        def: &crate::starlark_transitions::TransitionDef,
+        kind: crate::starlark_transitions::Kind,
+        target: &Label,
+        from: ConfigId,
+        attributes: &crate::starlark_transitions::AttributeValues,
+    ) -> Result<(TransitionConfigurations, Vec<String>), crate::starlark_transitions::Failure> {
+        let failure = |message: String| crate::starlark_transitions::Failure {
+            events: Vec::new(),
+            message,
+        };
         let configuration = self.configuration(from).clone();
         let mapped = def.with_flag_aliases(&configuration.native.flag_aliases);
         let def = &mapped;
@@ -1960,8 +1996,7 @@ pub(crate) trait Phase1: Host {
             })
             .collect::<Result<Vec<_>, _>>()?
             .into();
-        self.transition_cache_put(cache_key, (Arc::clone(&id), applied.printed));
-        Ok(id)
+        Ok((id, applied.printed))
     }
 
     /// RuleTransitionApplier (analysis/producers/RuleTransitionApplier.java:130-378):
@@ -2883,10 +2918,11 @@ pub(crate) trait Phase1: Host {
         implementation: &Label,
         config: ConfigId,
         exec_platform: &Label,
+        location: Option<&str>,
     ) -> Result<(), String> {
         let _shared = incremental::SharedScope::enter("toolchain_implementation");
         let key = ConfiguredTargetKey::new(implementation.clone(), config);
-        match self.claim_toolchain_implementation(key, exec_platform) {
+        match self.claim_toolchain_implementation(key, exec_platform, location) {
             Some(existing) if existing != *exec_platform => Err(format!(
                 "toolchain implementation {} is needed for the execution platforms {} and {} in one configuration: configured targets keyed by their execution platform (ConfiguredTargetKey.executionPlatformLabel) are not implemented in the native profile",
                 crate::rule_declarations::canonical_form(implementation),

@@ -88,7 +88,19 @@ pub(crate) struct EvalShared {
     /// single-flight cache (today `ActionPlanning::target_identities`).
     pub(crate) target_identities:
         super::super::delta::SingleFlight<TargetIdentityKey, crate::starlark_types::Target>,
+    /// The `Transition` nodes' inputs (S2, worker C; written once per key
+    /// by the first requester).
+    pub(crate) transitions: TransitionInputs,
 }
+
+/// The inputs of the `Transition` nodes, by cache key: the key names the
+/// definition by id; the node reads it here.
+pub(crate) type TransitionInputs = Mutex<
+    crate::fast_hash::FxHashMap<
+        super::super::TransitionCacheKey,
+        Arc<super::nodes::host::TransitionInput>,
+    >,
+>;
 
 /// Bodies run on pool threads with `&EvalShared` (compile-time check).
 #[allow(clippy::extra_unused_type_parameters)]
@@ -137,6 +149,7 @@ impl EvalShared {
             input_memos: Arc::default(),
             artifacts: Arc::default(),
             target_identities: Default::default(),
+            transitions: Default::default(),
         }
     }
 

@@ -27,7 +27,8 @@
 //!   otherwise). A reached variant's context facts are checked against pass
 //!   1's own state (inside a platform's tree; the first-visit forced
 //!   execution platform).
-//! - **MemoUse**: a memo node's transcript is replayed at its first use; a
+//! - **MemoUse**: a memo node's transcript is replayed at its first use
+//!   (a `Transition`'s print() lines again at every later use); a
 //!   platform/registration memo's reaches each start a fresh active chain
 //!   (the walk's `&mut Vec::new()` per registered target), a `Platform`
 //!   memo's inside a platform's tree.
@@ -172,6 +173,10 @@ pub(crate) struct Linearized {
     /// Context divergences: a body read a value or a context the
     /// sequential walk would not have served it (internal errors).
     pub(crate) divergences: Vec<String>,
+    /// The error the walk stops at, decided by pass 1 (a toolchain
+    /// implementation needed for two execution platforms: the walk's
+    /// second claim in DFS order fails); nothing after it is replayed.
+    pub(crate) stop: Option<String>,
 }
 
 /// The walk's conflict error of `toolchain_implementation`.
@@ -218,6 +223,8 @@ pub(crate) enum Progress {
     Finished,
     /// A transcript still being written ends here: resume later.
     Blocked,
+    /// The walk fails here ([`Linearized::stop`]): the replay ends.
+    Stopped,
 }
 
 /// What [`Pass1::resume`] stopped at (the evaluator's frontier: the
@@ -275,6 +282,9 @@ pub(crate) struct Pass1 {
     released: Vec<NodeId>,
     /// Segments replayed to their end (likewise).
     released_segments: Vec<usize>,
+    /// Nodes that became their key's configured target (first reach in
+    /// DFS order, at their `Done`), since the last [`Pass1::take_canonical`].
+    canonical: Vec<NodeId>,
 }
 
 /// Run pass 1 over finished `segments` (tests and complete sources).
@@ -325,7 +335,7 @@ pub(crate) fn run<T: Transcripts + ?Sized>(
     let mut pass = Pass1::new(options);
     let mut tape = Tape::default();
     match pass.resume(&source, &mut tape)? {
-        Progress::Finished => {}
+        Progress::Finished | Progress::Stopped => {}
         Progress::Blocked => {
             return Err("internal error: pass 1 blocked on a complete source".into());
         }
@@ -352,7 +362,24 @@ impl Pass1 {
             blocked: None,
             released: Vec::new(),
             released_segments: Vec::new(),
+            canonical: Vec::new(),
         }
+    }
+
+    /// The nodes that became configured targets since the last call (the
+    /// driver publishes their values), in DFS order.
+    pub(crate) fn take_canonical(&mut self) -> Vec<NodeId> {
+        std::mem::take(&mut self.canonical)
+    }
+
+    /// `toolchain_implementations` so far.
+    pub(crate) fn toolchain_implementations(&self) -> &BTreeMap<ConfiguredTargetKey, Label> {
+        &self.out.toolchain_implementations
+    }
+
+    /// The walk's error pass 1 stopped at.
+    pub(crate) fn stopped(&self) -> Option<&str> {
+        self.out.stop.as_deref()
     }
 
     /// What the last [`Pass1::resume`] is waiting for (`None`: finished
@@ -402,6 +429,9 @@ impl Pass1 {
     ) -> Result<Progress, String> {
         self.blocked = None;
         loop {
+            if self.out.stop.is_some() {
+                return Ok(Progress::Stopped);
+            }
             let Some(frame) = self.frames.last_mut() else {
                 // Between segments.
                 let Some(segment) = source.segment(self.next_segment) else {
@@ -513,7 +543,10 @@ impl Pass1 {
                 platform,
                 ..
             } => {
-                self.released.push(node);
+                // A transition's transcript prints again at every use.
+                if !matches!(source.key(node), NodeKey::Transition(_)) {
+                    self.released.push(node);
+                }
                 if fresh {
                     self.chains.pop();
                 }
@@ -590,9 +623,15 @@ impl Pass1 {
                     (&needed.implementation, &needed.exec_platform);
                 match self.out.toolchain_implementations.get(implementation) {
                     Some(existing) if existing != exec_platform => {
-                        let error =
-                            toolchain_conflict(&implementation.label, existing, exec_platform);
-                        self.out.failures.push(error);
+                        // The walk's `toolchain_implementation` fails here
+                        // (at the consumer's location) and the build stops.
+                        let error = super::super::super::located(
+                            needed.location.as_deref(),
+                            toolchain_conflict(&implementation.label, existing, exec_platform),
+                        );
+                        self.out.failures.push(error.clone());
+                        self.out.stop = Some(error);
+                        return Ok(None);
                     }
                     Some(_) => {}
                     None => {
@@ -624,6 +663,7 @@ impl Pass1 {
                     // entry unless a caught failure left more).
                     self.chain().pop();
                     self.visited.insert(ct.key, node);
+                    self.canonical.push(node);
                     // Its delegation is recorded when the frame ends (the
                     // value is complete there).
                     if let Some(Frame::Body { done, .. }) = self.frames.last_mut() {
@@ -762,6 +802,17 @@ impl Pass1 {
         node: NodeId,
     ) {
         if !self.memos.insert(node) {
+            // A Starlark transition applied again prints again (the walk's
+            // StarlarkTransitionCache replays a hit's print() lines).
+            if matches!(source.key(node), NodeKey::Transition(_))
+                && let Some(record) = source.memo(node)
+            {
+                for event in record.events {
+                    if let Event::Print(_) = event {
+                        sink.op(TapeOp::Effect(event.clone()));
+                    }
+                }
+            }
             return;
         }
         sink.op(TapeOp::Effect(Event::MemoUse(node)));
@@ -1322,11 +1373,13 @@ pub(crate) mod tests {
                 Event::ToolchainImpl(Box::new(ToolchainImpl {
                     implementation: ctk("impl"),
                     exec_platform: exec1.clone(),
+                    location: None,
                 })),
                 Event::Reach(implementation),
                 Event::ToolchainImpl(Box::new(ToolchainImpl {
                     implementation: ctk("impl"),
                     exec_platform: exec2.clone(),
+                    location: Some("BUILD:3:1".into()),
                 })),
             ],
         );
@@ -1336,10 +1389,13 @@ pub(crate) mod tests {
             out.toolchain_implementations.get(&ctk("impl")),
             Some(&exec1)
         );
-        assert_eq!(
-            out.failures,
-            [toolchain_conflict(&ctk("impl").label, &exec1, &exec2)]
+        let error = format!(
+            "BUILD:3:1: {}",
+            toolchain_conflict(&ctk("impl").label, &exec1, &exec2)
         );
+        assert_eq!(out.failures, std::slice::from_ref(&error));
+        // The walk stops there.
+        assert_eq!(out.stop, Some(error));
         assert!(out.divergences.is_empty(), "{:?}", out.divergences);
     }
 
@@ -1392,6 +1448,55 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(plans, [false, true]);
         assert!(out.tape.ops.contains(&TapeOp::Flush));
+    }
+
+    /// A transition's memo replays its effects at the first use and its
+    /// print() lines at every later one (StarlarkTransitionCache hits).
+    #[test]
+    fn a_transition_prints_at_every_use() {
+        let mut f = Fixture::default();
+        let details = f
+            .interner
+            .intern(&NodeKey::TransitionDetails(vec![ctk("flag").label]));
+        let transition = f
+            .interner
+            .intern(&NodeKey::Transition((7, ctk("x").config, [0; 32])));
+        f.memos.insert(
+            details,
+            (
+                Transcript {
+                    events: vec![Event::Console(0)],
+                },
+                true,
+            ),
+        );
+        f.memos.insert(
+            transition,
+            (
+                Transcript {
+                    events: vec![
+                        Event::MemoUse(details),
+                        Event::Print("t1".into()),
+                        Event::Print("t2".into()),
+                    ],
+                },
+                true,
+            ),
+        );
+        let b = f.body("b", vec![Event::MemoUse(transition)]);
+        let a = f.body("a", vec![Event::MemoUse(transition), Event::Reach(b)]);
+        let out = run(&f, &root(vec![Event::Reach(a)]), Options::default()).unwrap();
+        let effects: Vec<String> = out
+            .tape
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                TapeOp::Effect(Event::Print(line)) => Some(line.clone()),
+                TapeOp::Effect(Event::Console(index)) => Some(format!("console {index}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(effects, ["console 0", "t1", "t2", "t1", "t2"]);
     }
 
     /// xorshift64* (reproducible orders without a dependency).
@@ -1455,6 +1560,7 @@ pub(crate) mod tests {
                     8 => events.push(Event::ToolchainImpl(Box::new(ToolchainImpl {
                         implementation: ctk(&format!("impl{}", rng.below(3))),
                         exec_platform: ctk(&format!("exec{}", rng.below(2))).label,
+                        location: None,
                     }))),
                     _ => events.push(Event::Print(format!("p{i}"))),
                 }
@@ -1517,7 +1623,7 @@ pub(crate) mod tests {
 
     fn outputs(out: &Linearized, ops: &[TapeOp]) -> String {
         format!(
-            "{ops:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}",
+            "{ops:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}",
             out.plan,
             out.delegations,
             out.empty_configuration,
@@ -1527,7 +1633,8 @@ pub(crate) mod tests {
             out.failures,
             out.segment_active,
             out.first_toolchains,
-            out.divergences
+            out.divergences,
+            out.stop
         )
     }
 
@@ -1537,6 +1644,7 @@ pub(crate) mod tests {
     /// one, whatever the order.
     #[test]
     fn any_completion_order_gives_the_sequential_result() {
+        let mut stops = 0;
         for seed in 1..=60u64 {
             let (mut f, all) = random_phase1(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
             let segments = std::mem::take(&mut f.segments);
@@ -1564,25 +1672,36 @@ pub(crate) mod tests {
                     // Running: a prefix of its transcript exists.
                     let prefix = rng.below(len(&f) + 1);
                     f.visible.as_mut().unwrap().insert(node, prefix);
-                    assert_eq!(pass.resume(&f, &mut ops).unwrap(), Progress::Blocked);
+                    let progress = pass.resume(&f, &mut ops).unwrap();
+                    assert_ne!(progress, Progress::Finished);
                     f.visible.as_mut().unwrap().insert(node, usize::MAX);
-                    assert_eq!(pass.resume(&f, &mut ops).unwrap(), Progress::Blocked);
-                    assert!(pass.blocked_on().is_some());
+                    let progress = pass.resume(&f, &mut ops).unwrap();
+                    assert_ne!(progress, Progress::Finished);
+                    assert!(progress == Progress::Stopped || pass.blocked_on().is_some());
                     let (nodes, _) = pass.take_released();
                     released += nodes.len();
                     f.released.extend(nodes);
                 }
                 f.segments_done = true;
-                assert_eq!(pass.resume(&f, &mut ops).unwrap(), Progress::Finished);
+                let progress = pass.resume(&f, &mut ops).unwrap();
+                let finished = if reference.stop.is_some() {
+                    Progress::Stopped
+                } else {
+                    Progress::Finished
+                };
+                assert_eq!(progress, finished);
                 assert_eq!(pass.blocked_on(), None);
                 let out = pass.finish();
+                stops += usize::from(out.stop.is_some());
                 assert_eq!(
                     outputs(&out, &ops),
                     expected,
                     "seed {seed}, order {order:?}"
                 );
-                assert!(released > 0);
+                assert!(released > 0 || out.stop.is_some());
             }
         }
+        // Some of the random graphs stop at a conflict, most do not.
+        assert!(stops > 0 && stops < 200, "{stops}");
     }
 }

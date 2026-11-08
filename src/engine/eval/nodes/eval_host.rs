@@ -29,19 +29,16 @@ use super::super::cx::Missing;
 use super::super::key::{CtKey, NodeKey, Observes};
 use super::super::shared::EvalShared;
 use super::super::transcript::{CqueryEdge, Event, ToolchainImpl, Transcript};
-use super::super::value::{Ct1Ok, Ct1Value, NodeValue};
+use super::super::value::{Ct1Ok, Ct1Value, NodeValue, TransitionValue};
 use super::bodies::Phase1Cx;
 use super::host::Host;
 use super::phase1::Phase1;
 
-/// The S1 first-visit state (the inline DFS order = the walk's; pass 1
-/// decides it from S2 on).
+/// The first-visit state the bodies still share (S2: the CtKey variant
+/// of an edge and the toolchain implementation claims are pass 1's:
+/// docs/EVALUATOR.md "First-visit decisions").
 #[derive(Default)]
 pub(crate) struct FirstVisit {
-    /// The first `CtKey` variant of each ConfiguredTargetKey.
-    pub(crate) canonical: crate::fast_hash::FxHashMap<ConfiguredTargetKey, CtKey>,
-    /// `toolchain_implementations`.
-    pub(crate) claims: BTreeMap<ConfiguredTargetKey, Label>,
     pub(crate) toolchain_cycle_reports: BTreeMap<ConfigId, String>,
     pub(crate) execution_platform_cycle_reports: BTreeMap<ConfigId, String>,
     pub(crate) aspect_predicates: BTreeMap<(Label, String), bool>,
@@ -53,10 +50,6 @@ pub(crate) struct FirstVisit {
         BTreeMap<(ConfiguredTargetKey, String), Arc<BTreeMap<String, TransitionConfigurations>>>,
     /// The requested top-level rule being analyzed when test trimmed.
     pub(crate) requested_trimmed_root: Option<ConfiguredTargetKey>,
-    /// StarlarkTransitionCache (S1: a first-visit memo; S2: `Transition`
-    /// nodes keyed with their definition).
-    pub(crate) transition_cache:
-        crate::fast_hash::FxHashMap<TransitionCacheKey, (TransitionConfigurations, Vec<String>)>,
 }
 
 /// The error text a body returns when an attempt stops at a [`Missing`]
@@ -88,6 +81,13 @@ pub(crate) struct EvalHost<'c, 'e> {
     /// Inside a platform's tree (the empty configuration).
     platform_tree: bool,
     acc: Ct1Acc,
+    /// The CT1 values this attempt needed, by ConfiguredTargetKey (the
+    /// variant it reached: its reads of a dependency's value).
+    reached: crate::fast_hash::FxHashMap<ConfiguredTargetKey, Arc<Ct1Value>>,
+    /// The toolchain implementations this attempt claimed (the forced
+    /// execution platform of its edge to each; pass 1 decides the first
+    /// claim in DFS order, a conflict with another body's).
+    claimed: BTreeMap<ConfiguredTargetKey, Label>,
     /// A copy of the CT1 transcript (the value carries it).
     events: Vec<Event>,
     missing: Option<Missing>,
@@ -107,6 +107,8 @@ impl<'c, 'e> EvalHost<'c, 'e> {
             own,
             platform_tree,
             acc: Ct1Acc::default(),
+            reached: Default::default(),
+            claimed: BTreeMap::new(),
             events: Vec::new(),
             missing: None,
             resolving_aspect_toolchains: false,
@@ -141,9 +143,14 @@ impl<'c, 'e> EvalHost<'c, 'e> {
         self.own.as_ref().map(|own| &own.key)
     }
 
-    /// The done CT1 value of `key`'s first variant (the walk's
-    /// `configured` lookup: absent when not analyzed or failed).
+    /// The done CT1 value of `key` (the walk's `configured` lookup: absent
+    /// when not analyzed or failed): the variant this attempt reached,
+    /// else the first one done (a key the attempt reads without reaching
+    /// it: an alias's actual target).
     fn ct1_value(&self, key: &ConfiguredTargetKey) -> Option<Arc<super::super::value::Ct1Value>> {
+        if let Some(value) = self.reached.get(key) {
+            return Some(Arc::clone(value));
+        }
         self.cx.coord().ct1(key)
     }
 
@@ -152,18 +159,16 @@ impl<'c, 'e> EvalHost<'c, 'e> {
         value.outcome.as_ref().ok().map(read)
     }
 
-    /// The CtKey of an edge to `rule` in `config` from this attempt: the
-    /// first variant already analyzed, else this context's.
+    /// The CtKey of an edge to `rule` in `config` from this attempt: this
+    /// context's variant (inside a platform's tree or not, forced to the
+    /// execution platform this attempt claimed it for). Which variant is
+    /// the configured target is pass 1's decision (the first reached in
+    /// DFS order; a consumer of another variant must observe the same
+    /// value: its context-divergence check).
     fn edge_key(&mut self, rule: &Rule, key: ConfiguredTargetKey) -> CtKey {
         let no_config = self.configuration(key.config).native.no_config;
-        let platform_tree = self.platform_tree;
-        edge_ct_key(
-            &mut self.cx.coord().first,
-            no_config,
-            rule,
-            key,
-            platform_tree,
-        )
+        let forced_exec = self.claimed.get(&key).cloned();
+        edge_ct_key(no_config, rule, key, self.platform_tree, forced_exec)
     }
 
     /// Need the CT1 node of `rule`'s key (a dependency edge): its outcome.
@@ -193,7 +198,10 @@ impl<'c, 'e> EvalHost<'c, 'e> {
         match self.need(node) {
             Ok(value) => match value.as_ref() {
                 NodeValue::Ct1(value) => match &value.outcome {
-                    Ok(_) => Ok(()),
+                    Ok(_) => {
+                        self.reached.insert(key, Arc::clone(value));
+                        Ok(())
+                    }
                     Err(error) => Err(self.reword_cycle_report(error, &key)),
                 },
                 _ => Err("internal error: a CT1 key with another value".to_owned()),
@@ -1086,56 +1094,70 @@ impl Host for EvalHost<'_, '_> {
         }
     }
 
-    fn transition_cache_get(
+    fn transition_node(
         &mut self,
         key: &TransitionCacheKey,
+        input: &dyn Fn() -> super::host::TransitionInput,
+    ) -> Option<Result<TransitionConfigurations, crate::starlark_transitions::Failure>> {
+        self.shared
+            .transitions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(*key)
+            .or_insert_with(|| Arc::new(input()));
+        let node = NodeKey::Transition(*key);
+        match self.need(node.clone()) {
+            Ok(value) => match value.as_ref() {
+                NodeValue::Transition(Ok(applied)) => {
+                    // The walk's miss runs the application here (its memo
+                    // uses, prints): replayed at the first linearized use,
+                    // the prints again at every later one (pass 1).
+                    self.memo_use(&node);
+                    Some(Ok(Arc::clone(&applied.configurations)))
+                }
+                // A failure is not memoized: the requester applies it.
+                _ => None,
+            },
+            Err(missing) => Some(Err(crate::starlark_transitions::Failure {
+                events: Vec::new(),
+                message: self.stop(missing),
+            })),
+        }
+    }
+
+    fn transition_cache_get(
+        &mut self,
+        _key: &TransitionCacheKey,
     ) -> Option<(TransitionConfigurations, Vec<String>)> {
-        self.cx
-            .coord()
-            .first
-            .transition_cache
-            .get(key)
-            .map(|(id, printed)| (Arc::clone(id), printed.clone()))
+        // `Transition` nodes (a failure is applied again, as the walk does).
+        None
     }
 
     fn transition_cache_put(
         &mut self,
-        key: TransitionCacheKey,
-        value: (TransitionConfigurations, Vec<String>),
+        _key: TransitionCacheKey,
+        _value: (TransitionConfigurations, Vec<String>),
     ) {
-        let mut coord = self.cx.coord();
-        // BAZEL_RS_ANALYSIS=eval: the engine's map too (phase 2 reads it).
-        if coord.lin.is_some() {
-            coord
-                .engine
-                .transition_cache
-                .entry(key)
-                .or_insert_with(|| value.clone());
-        }
-        coord.first.transition_cache.insert(key, value);
     }
 
     fn claim_toolchain_implementation(
         &mut self,
         key: ConfiguredTargetKey,
         exec_platform: &Label,
+        location: Option<&str>,
     ) -> Option<Label> {
+        // Pass 1 decides the first claim in DFS order and a conflict with
+        // another body's (the walk's error there); the attempt knows its
+        // own claims only.
         self.emit(Event::ToolchainImpl(Box::new(ToolchainImpl {
             implementation: key.clone(),
             exec_platform: exec_platform.clone(),
+            location: location.map(str::to_owned),
         })));
-        let mut coord = self.cx.coord();
-        match coord.first.claims.get(&key) {
+        match self.claimed.get(&key) {
             Some(existing) => Some(existing.clone()),
             None => {
-                // BAZEL_RS_ANALYSIS=eval: the engine's map too.
-                if coord.lin.is_some() {
-                    coord
-                        .engine
-                        .toolchain_implementations
-                        .insert(key.clone(), exec_platform.clone());
-                }
-                coord.first.claims.insert(key, exec_platform.clone());
+                self.claimed.insert(key, exec_platform.clone());
                 None
             }
         }
@@ -1144,7 +1166,7 @@ impl Host for EvalHost<'_, '_> {
     fn forced_exec(&mut self, key: &ConfiguredTargetKey) -> Option<Label> {
         match &self.own {
             Some(own) if own.key == *key => own.forced_exec.clone(),
-            _ => self.cx.coord().first.claims.get(key).cloned(),
+            _ => self.claimed.get(key).cloned(),
         }
     }
 
@@ -1241,25 +1263,22 @@ impl Host for EvalHost<'_, '_> {
 }
 
 /// The CtKey of an edge to `rule`'s `key` from a context inside a
-/// platform's tree or not: the first variant already analyzed (the walk's
-/// first-visit memo), else this context's.
+/// platform's tree or not, forced to an execution platform or not,
+/// normalized (S2: the context's variant; pass 1 decides which variant is
+/// the configured target).
 pub(crate) fn edge_ct_key(
-    first: &mut FirstVisit,
     no_config: bool,
     rule: &Rule,
     key: ConfiguredTargetKey,
     platform_tree: bool,
+    forced_exec: Option<Label>,
 ) -> CtKey {
-    if let Some(found) = first.canonical.get(&key) {
-        return found.clone();
-    }
-    let forced_exec = first.claims.get(&key).cloned();
     // platform_tree is kept for every rule of a tree: the context
     // propagates to the rule's dependencies (CtKey::normalized's per-rule
     // rule would let a filegroup's genrule dependency escape the empty
     // configuration).
-    let ct = CtKey {
-        key: key.clone(),
+    CtKey {
+        key,
         platform_tree,
         forced_exec,
     }
@@ -1267,9 +1286,7 @@ pub(crate) fn edge_ct_key(
         no_config,
         toolchain_resolution: uses_toolchain_resolution(rule),
         exec_edges: true,
-    });
-    first.canonical.insert(key, ct.clone());
-    ct
+    })
 }
 
 /// The phase-1 node bodies: the value of `key` (S1: the coordinator's
@@ -1327,6 +1344,36 @@ pub(crate) fn body(
             let mut host = EvalHost::new(shared, cx, None, false);
             let result = host.compute_transition_details(settings);
             Ok(NodeValue::TransitionDetails(host.finish(result)?))
+        }
+        NodeKey::Transition(key) => {
+            let input = shared
+                .transitions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(key)
+                .cloned();
+            let Some(input) = input else {
+                return Ok(NodeValue::Transition(Err(
+                    "internal error: a Transition node without its input".to_owned(),
+                )));
+            };
+            let mut host = EvalHost::new(shared, cx, None, false);
+            let result = host.compute_transition(
+                &input.def,
+                input.kind,
+                &input.target,
+                input.from,
+                &input.attributes,
+            );
+            let result = host.finish(result)?;
+            Ok(NodeValue::Transition(
+                result
+                    .map(|(configurations, printed)| TransitionValue {
+                        configurations,
+                        printed: printed.into(),
+                    })
+                    .map_err(|failure| failure.message),
+            ))
         }
         NodeKey::CsMatch(ct) => {
             // S1: the matching is the config_setting's CT1 result (the

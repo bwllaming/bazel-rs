@@ -710,6 +710,7 @@ impl Host for Walk<'_> {
         &mut self,
         key: ConfiguredTargetKey,
         exec_platform: &Label,
+        _location: Option<&str>,
     ) -> Option<Label> {
         match self.engine.toolchain_implementations.get(&key) {
             Some(existing) => Some(existing.clone()),

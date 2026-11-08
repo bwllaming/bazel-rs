@@ -37,7 +37,7 @@ use super::super::super::{
     ConfiguredNodes, ConfiguredTargetKey, Engine, ExecutionPlatforms, Plan, PlatformError,
     ResolutionError, RuleKind, Target, TransitionDetails, forwards,
 };
-use super::super::key::{NodeId, NodeKey};
+use super::super::key::{CtKey, NodeId, NodeKey};
 use super::super::nodes::bodies::{Coord, Phase1Bodies, Running};
 use super::super::nodes::eval_host::edge_ct_key;
 use super::super::scheduler::{EvalConfig, Evaluator, NoRepositories};
@@ -83,6 +83,10 @@ pub(crate) enum Published {
     FlagScope(Label, bool),
     TransitionDetails(Vec<Label>, Result<TransitionDetails, String>),
     Source(Label),
+    Transition(
+        super::super::super::TransitionCacheKey,
+        (super::super::super::TransitionConfigurations, Vec<String>),
+    ),
 }
 
 /// The finished transcripts, the segments and the captured console writes.
@@ -101,8 +105,6 @@ pub(crate) struct Store {
     pub(crate) warnings_seen: usize,
     /// Memo values to publish, in completion order.
     pub(crate) published: Vec<Published>,
-    /// Canonical CT1 values done since the last publication.
-    pub(crate) fresh_ct1: Vec<ConfiguredTargetKey>,
     /// Transcripts pass 1 has replayed for the last time, freed (eval's
     /// memory stays near the walk's: ~/code emits millions of events).
     pub(crate) released: FxHashSet<NodeId>,
@@ -221,6 +223,15 @@ impl Coord<'_> {
                 Published::TransitionDetails(settings.clone(), result.clone()),
             ),
             (NodeKey::Src(label), NodeValue::Src(Ok(()))) => Some(Published::Source(label.clone())),
+            (NodeKey::Transition(key), NodeValue::Transition(Ok(applied))) => {
+                Some(Published::Transition(
+                    *key,
+                    (
+                        Arc::clone(&applied.configurations),
+                        applied.printed.to_vec(),
+                    ),
+                ))
+            }
             _ => None,
         };
         self.store.published.extend(published);
@@ -266,11 +277,13 @@ impl Coord<'_> {
             let view = View {
                 store: &self.store,
                 stack: &self.stack,
-                ct1_done: &self.ct1_done,
+                ct1_values: &self.ct1_values,
             };
             stat(STAT_PASS1, || lin.pass.resume(&view, &mut lin.ops))?;
         }
         self.store.release(&mut lin.pass);
+        // The walk fails at pass 1's stop: what precedes it is applied.
+        let stopped = lin.pass.stopped().map(str::to_owned);
         let started = std::time::Instant::now();
         let ops = std::mem::take(&mut lin.ops);
         // snapshot-unrecorded: a diagnostics dump of the tape; it changes nothing the analysis computes.
@@ -316,8 +329,8 @@ impl Coord<'_> {
                 }
                 TapeOp::Plan { key, .. } => {
                     let rule = self
-                        .ct1_done
-                        .get(&key.key)
+                        .ct1_values
+                        .get(&key)
                         .and_then(|value| value.outcome.as_ref().ok())
                         .map(|ok| Arc::clone(&ok.rule))
                         .ok_or_else(|| {
@@ -347,7 +360,10 @@ impl Coord<'_> {
             started.elapsed().as_micros() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
-        Ok(())
+        match stopped {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// The walk's `plan_pending`: phase 2 of the plan so far, the engine
@@ -411,13 +427,19 @@ impl Coord<'_> {
     /// phase 2 reads).
     fn publish(&mut self, lin: &mut Linearizer) {
         let engine = &mut *self.engine;
-        for key in std::mem::take(&mut self.store.fresh_ct1) {
-            let Some(value) = self.ct1_done.get(&key) else {
+        // The configured targets pass 1 decided (the first variant reached
+        // in DFS order), in its order.
+        for node in lin.pass.take_canonical() {
+            let Some(NodeKey::Ct1(ct)) = self.store.keys.get(&node) else {
+                continue;
+            };
+            let Some(value) = self.ct1_values.get(ct) else {
                 continue;
             };
             let Ok(ok) = &value.outcome else {
                 continue;
             };
+            let key = ct.key.clone();
             if lin.configured.contains_key(&key) {
                 continue;
             }
@@ -464,8 +486,14 @@ impl Coord<'_> {
                 engine.empty_configuration_rules.insert(key);
             }
         }
-        // The first-visit memos (toolchain implementation claims, aspect
-        // memos, the transition cache) are written through to the engine
+        // `toolchain_implementations`: pass 1's first claims in DFS order.
+        for (implementation, platform) in lin.pass.toolchain_implementations() {
+            engine
+                .toolchain_implementations
+                .entry(implementation.clone())
+                .or_insert_with(|| platform.clone());
+        }
+        // The aspect memos are written through to the engine
         // as the bodies decide them (eval_host).
         for published in &self.store.published[lin.published_memos..] {
             match published {
@@ -505,6 +533,15 @@ impl Coord<'_> {
                 Published::Source(label) => {
                     engine.analyzed_sources.insert(label.clone());
                 }
+                // StarlarkTransitionCache (a deferred platform's tree that
+                // phase 2 analyzes with the walk: a hit replays the prints
+                // a miss makes).
+                Published::Transition(key, value) => {
+                    engine
+                        .transition_cache
+                        .entry(*key)
+                        .or_insert_with(|| value.clone());
+                }
             }
         }
         lin.published_memos = self.store.published.len();
@@ -534,10 +571,18 @@ impl Coord<'_> {
 struct View<'a> {
     store: &'a Store,
     stack: &'a [Running],
-    ct1_done: &'a FxHashMap<ConfiguredTargetKey, Arc<Ct1Value>>,
+    ct1_values: &'a FxHashMap<CtKey, Arc<Ct1Value>>,
 }
 
 impl View<'_> {
+    /// A CT1 node's value.
+    fn value(&self, node: NodeId) -> Option<&Arc<Ct1Value>> {
+        match self.store.keys.get(&node)? {
+            NodeKey::Ct1(ct) => self.ct1_values.get(ct),
+            _ => None,
+        }
+    }
+
     /// A node's events so far, and whether it finished.
     fn events(&self, node: NodeId) -> Option<(&[Event], bool)> {
         if let Some(running) = self.stack.iter().rev().find(|running| running.id == node) {
@@ -564,13 +609,9 @@ impl Transcripts for View<'_> {
 
     fn ct1(&self, node: NodeId) -> Option<Ct1Record<'_>> {
         let (events, complete) = self.events(node)?;
-        let ok = match self.store.keys.get(&node) {
-            Some(NodeKey::Ct1(ct)) => self
-                .ct1_done
-                .get(&ct.key)
-                .and_then(|value| value.outcome.as_ref().ok()),
-            _ => None,
-        };
+        let ok = self
+            .value(node)
+            .and_then(|value| value.outcome.as_ref().ok());
         Some(Ct1Record {
             events,
             complete,
@@ -600,6 +641,27 @@ impl Transcripts for View<'_> {
 
     fn segments_complete(&self) -> bool {
         self.store.segments_done
+    }
+
+    fn ready(&self, node: NodeId) -> bool {
+        self.value(node).is_some()
+    }
+
+    /// The consumer of another variant observed what the configured
+    /// target's consumers observe: its success, configured node (providers,
+    /// incompatibility) and rule.
+    fn same_observable(&self, canonical: NodeId, reached: NodeId) -> bool {
+        match (self.value(canonical), self.value(reached)) {
+            (Some(canonical), Some(reached)) => match (&canonical.outcome, &reached.outcome) {
+                (Ok(canonical), Ok(reached)) => {
+                    Arc::ptr_eq(&canonical.rule, &reached.rule)
+                        && format!("{:?}", canonical.node) == format!("{:?}", reached.node)
+                }
+                (Err(canonical), Err(reached)) => canonical == reached,
+                _ => false,
+            },
+            _ => false,
+        }
     }
 
     fn cycle_error(
@@ -691,10 +753,11 @@ impl Engine {
                 let view = View {
                     store: &coord.store,
                     stack: &coord.stack,
-                    ct1_done: &coord.ct1_done,
+                    ct1_values: &coord.ct1_values,
                 };
                 match lin.pass.resume(&view, &mut lin.ops)? {
                     Progress::Finished => Ok(()),
+                    Progress::Stopped => Err(lin.pass.stopped().unwrap_or_default().to_owned()),
                     Progress::Blocked => Err(
                         "internal error: BAZEL_RS_ANALYSIS=eval: pass 1 did not reach the end of phase 1"
                             .to_owned(),
@@ -843,13 +906,7 @@ fn drive(
                 Ok(Target::Rule(rule) | Target::Output(rule, _)) => {
                     super::super::super::check_macro_namespace(&rule, label).map(|()| {
                         let key = ConfiguredTargetKey::new(rule.label.clone(), top);
-                        let key = NodeKey::Ct1(edge_ct_key(
-                            &mut coord.first,
-                            no_config,
-                            &rule,
-                            key,
-                            false,
-                        ));
+                        let key = NodeKey::Ct1(edge_ct_key(no_config, &rule, key, false, None));
                         let id = evaluator.graph().intern(&key);
                         coord.push_event(Event::Reach(id));
                         key

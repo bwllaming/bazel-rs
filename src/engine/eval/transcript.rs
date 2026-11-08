@@ -65,8 +65,9 @@ pub(crate) enum Event {
     /// The body continued after a CsMatch node (the flush it replaces).
     Continue(NodeId),
     /// A selected toolchain implementation needed for `exec_platform`
-    /// (`toolchain_implementation`): pass 1 checks conflicts and decides
-    /// `forced_exec` first-visit.
+    /// (`toolchain_implementation`): pass 1 decides the first claim in DFS
+    /// order (`toolchain_implementations`, the forced execution platform)
+    /// and a conflict (the walk's error there: the build stops).
     ToolchainImpl(Box<ToolchainImpl>),
     /// The body failed here (its value is the error).
     Error(String),
@@ -107,6 +108,9 @@ pub(crate) struct CqueryEdge {
 pub(crate) struct ToolchainImpl {
     pub(crate) implementation: ConfiguredTargetKey,
     pub(crate) exec_platform: Label,
+    /// Where a conflict is reported (the consumer's location; S2: pass 1
+    /// decides the conflict and words the walk's error).
+    pub(crate) location: Option<String>,
 }
 
 /// One node's events, in body order.
