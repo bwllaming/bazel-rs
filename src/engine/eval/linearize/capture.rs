@@ -26,12 +26,14 @@ pub(crate) fn start(tracking: bool) {
     EVENTS.with(|events| events.borrow_mut().clear());
     TRACKING.with(|cell| cell.set(tracking));
     ON.with(|on| on.set(true));
+    crate::toolchains::capture_debug_events(true);
 }
 
 pub(crate) fn stop() {
     ON.with(|on| on.set(false));
     PAUSED.with(|cell| cell.set(false));
     EVENTS.with(|events| events.borrow_mut().clear());
+    crate::toolchains::capture_debug_events(false);
 }
 
 thread_local! {
@@ -42,7 +44,18 @@ thread_local! {
 /// flush's phase 2), or take it up again (`false`); returns the previous
 /// setting.
 pub(crate) fn pause(paused: bool) -> bool {
-    PAUSED.with(|cell| cell.replace(paused))
+    let before = PAUSED.with(|cell| cell.replace(paused));
+    if before != paused && ON.with(Cell::get) {
+        // Captured before the pause stays with the running attempt.
+        let captured = crate::toolchains::take_debug_events();
+        EVENTS.with(|events| {
+            events
+                .borrow_mut()
+                .extend(captured.into_iter().map(Event::Info))
+        });
+        crate::toolchains::capture_debug_events(!paused);
+    }
+    before
 }
 
 fn push(event: impl FnOnce() -> Event) {
@@ -77,8 +90,19 @@ pub(crate) fn package(package: &crate::label::PackageId, printed: bool) {
 }
 
 /// What was captured since the last call.
+///
+/// `--toolchain_resolution_debug` INFO events (`toolchains::debug_event`)
+/// are captured as [`Event::Info`] (after the others of the batch): printed
+/// once per identical text at the first linearized occurrence, not where a
+/// body happens to run first.
 pub(crate) fn take() -> Vec<Event> {
-    EVENTS.with(|events| std::mem::take(&mut *events.borrow_mut()))
+    let mut events = EVENTS.with(|events| std::mem::take(&mut *events.borrow_mut()));
+    events.extend(
+        crate::toolchains::take_debug_events()
+            .into_iter()
+            .map(Event::Info),
+    );
+    events
 }
 
 #[cfg(test)]

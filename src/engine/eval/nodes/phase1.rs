@@ -3346,8 +3346,13 @@ pub(crate) trait Phase1: Host {
             if self.registered_toolchains_in_progress(config) {
                 return Err(self.toolchain_cycle(config, &key, &types[0].requirement.label));
             }
-            self.registered_toolchains(config)
-                .map_err(|error| self.resolution_error(rule, config, error))?
+            match self.registered_toolchains(config) {
+                // The evaluator: a back edge to the registration.
+                Err(ResolutionError::Propagated(text)) if text == REGISTRATION_IN_PROGRESS => {
+                    return Err(self.toolchain_cycle(config, &key, &types[0].requirement.label));
+                }
+                result => result.map_err(|error| self.resolution_error(rule, config, error))?,
+            }
         };
         // PlatformKeys.find (:230-245): the forced platform is the target
         // platform or one of the execution platforms.
@@ -3397,6 +3402,19 @@ pub(crate) trait Phase1: Host {
         first_type: &Label,
     ) -> String {
         let shown = crate::rule_declarations::canonical_form;
+        let tail = format!(
+            "\n|   toolchain types {}\n|   toolchain type {}\n`-- RegisteredToolchains",
+            key.types
+                .iter()
+                .map(|requirement| shown(&requirement.label))
+                .collect::<Vec<_>>()
+                .join(", "),
+            shown(first_type)
+        );
+        // The evaluator builds the chain bottom-up (linearize::chains).
+        if let Some(open) = self.open_cycle_report(true, &tail) {
+            return open;
+        }
         let active = self.active_keys();
         let head = active
             .first()
@@ -3409,15 +3427,7 @@ pub(crate) trait Phase1: Host {
             report.push_str("\n|   ");
             report.push_str(&shown(&element.label));
         }
-        report.push_str(&format!(
-            "\n|   toolchain types {}\n|   toolchain type {}\n`-- RegisteredToolchains",
-            key.types
-                .iter()
-                .map(|requirement| shown(&requirement.label))
-                .collect::<Vec<_>>()
-                .join(", "),
-            shown(first_type)
-        ));
+        report.push_str(&tail);
         self.record_toolchain_cycle_report(config, report.clone());
         report
     }
@@ -3521,8 +3531,13 @@ pub(crate) trait Phase1: Host {
         if self.execution_platforms_in_progress(config) {
             return Err(self.execution_platform_cycle(config, key));
         }
-        self.registered_execution_platforms(config, &rule.label)
-            .map_err(|error| self.resolution_error(rule, config, error))
+        match self.registered_execution_platforms(config, &rule.label) {
+            // The evaluator: a back edge to the registration.
+            Err(ResolutionError::Propagated(text)) if text == REGISTRATION_IN_PROGRESS => {
+                Err(self.execution_platform_cycle(config, key))
+            }
+            result => result.map_err(|error| self.resolution_error(rule, config, error)),
+        }
     }
 
     fn compute_execution_platforms(
@@ -3606,6 +3621,18 @@ pub(crate) trait Phase1: Host {
     /// without location.
     fn execution_platform_cycle(&mut self, config: ConfigId, key: &ToolchainContextKey) -> String {
         let shown = crate::rule_declarations::canonical_form;
+        let tail = format!(
+            "\n|   toolchain types {}\n`-- RegisteredExecutionPlatforms",
+            key.types
+                .iter()
+                .map(|requirement| shown(&requirement.label))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        // The evaluator builds the chain bottom-up (linearize::chains).
+        if let Some(open) = self.open_cycle_report(false, &tail) {
+            return open;
+        }
         let active = self.active_keys();
         let head = active
             .first()
@@ -3618,14 +3645,7 @@ pub(crate) trait Phase1: Host {
             report.push_str("\n|   ");
             report.push_str(&shown(&element.label));
         }
-        report.push_str(&format!(
-            "\n|   toolchain types {}\n`-- RegisteredExecutionPlatforms",
-            key.types
-                .iter()
-                .map(|requirement| shown(&requirement.label))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+        report.push_str(&tail);
         self.record_execution_platform_cycle_report(config, report.clone());
         report
     }
@@ -4877,3 +4897,8 @@ pub(crate) trait Phase1: Host {
 pub(crate) const EXEC_INTERN_ERROR: &str = "\u{1}exec-intern:";
 
 impl<T: Host + ?Sized> Phase1 for T {}
+
+/// The evaluator's answer to a need of the registered toolchains or
+/// execution platforms of a configuration while they are computed (a back
+/// edge: the walk's `computing_*` guard; the caller words the report).
+pub(crate) const REGISTRATION_IN_PROGRESS: &str = "\u{1}registration in progress";

@@ -10,11 +10,14 @@
 //! - [`driver`]: `BAZEL_RS_ANALYSIS=eval` phase 1 (S1): the node bodies on
 //!   the inline driver, pass 1, the tape applied to the engine (console,
 //!   warnings, tracker, plan; phase 2 at each flush).
+//! - [`chains`]: errors naming the walk's active chain (dependency cycles,
+//!   registration cycle reports), built bottom-up as they propagate.
 //! - [`cycles`]: the walk-order cycle handler at quiescence
 //!   (`Pass1Cycles`, replacing A's stand-in `DfsCycles`).
 //! - S3 adds `pass2.rs` (streaming the tape, merging CT2 deltas).
 
 pub(crate) mod capture;
+pub(crate) mod chains;
 pub(crate) mod cycles;
 pub(crate) mod driver;
 pub(crate) mod pass1;

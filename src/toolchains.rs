@@ -419,6 +419,45 @@ pub(crate) fn restore_printed_debug_events(printed: Option<std::collections::Has
 /// One INFO event (crate::ui notes), printed once per identical text:
 /// Bazel evaluates each resolution SkyKey once per build.
 fn debug_event(text: String) {
+    // The evaluator: through the transcript (printed at its linearized
+    // position, deduplicated there).
+    let text = DEBUG_CAPTURE.with(|capture| match capture.borrow_mut().as_mut() {
+        Some(captured) => {
+            captured.push(text);
+            None
+        }
+        None => Some(text),
+    });
+    if let Some(text) = text {
+        print_debug_event(text);
+    }
+}
+
+thread_local! {
+    /// The debug events captured on this thread (the evaluator's bodies).
+    static DEBUG_CAPTURE: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Capture this thread's debug events (`true`) instead of printing them,
+/// or print them again; what was captured and not taken is dropped.
+pub(crate) fn capture_debug_events(on: bool) {
+    DEBUG_CAPTURE.with(|capture| *capture.borrow_mut() = on.then(Vec::new));
+}
+
+/// The debug events captured since the last call.
+pub(crate) fn take_debug_events() -> Vec<String> {
+    DEBUG_CAPTURE.with(|capture| {
+        capture
+            .borrow_mut()
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    })
+}
+
+/// Print a debug event unless an identical one was printed.
+pub(crate) fn print_debug_event(text: String) {
     let mut printed = PRINTED.lock().unwrap_or_else(|error| error.into_inner());
     if printed
         .get_or_insert_with(Default::default)

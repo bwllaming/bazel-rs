@@ -323,6 +323,9 @@ impl Coord<'_> {
                         lin.direct(|_| crate::ui::replay(vec![write]));
                     }
                 }
+                TapeOp::Effect(Event::Info(text)) => {
+                    lin.direct(|_| crate::toolchains::print_debug_event(text));
+                }
                 TapeOp::Effect(Event::Warn(warning)) => {
                     self.engine.warnings.push(warning);
                     self.store.warnings_seen = self.engine.warnings.len();
@@ -851,7 +854,7 @@ fn drive(
             coord.push_event(Event::ScopeExit);
         }
         if let NodeValue::Platform(Err(error)) = value.as_ref() {
-            return Err(error.clone().target_text());
+            return Err(render_chains(shared, &error.clone().target_text(), None));
         }
     }
     let no_config = shared
@@ -883,7 +886,6 @@ fn drive(
                 label: label.clone(),
                 trimmed_root: trimmed.clone(),
             });
-            coord.first.requested_trimmed_root = trimmed;
         }
         // The root edge (Engine::analyze → analyze_key_body): its lookup,
         // then the source file or the configured target.
@@ -925,7 +927,8 @@ fn drive(
             NodeValue::Ct1(value) => value.outcome.as_ref().map(|_| ()).map_err(Clone::clone),
             _ => Err("internal error: a root with another value".to_owned()),
         });
-        bodies.coord().first.requested_trimmed_root = None;
+        // The requested target's segment renders the chain errors.
+        let analyzed = analyzed.map_err(|error| render_chains(shared, &error, trimmed.as_ref()));
         // The requested target's compatibility, on the published nodes.
         let analyzed = analyzed.and_then(|()| {
             let mut coord = bodies.coord();
@@ -953,4 +956,30 @@ fn drive(
     }
     bodies.coord().begin_segment(SegmentKind::RootsDone);
     Ok(())
+}
+
+/// Render the chain errors of a requested target's failure
+/// (linearize::chains), with its test-trimmed top-level key.
+pub(crate) fn render_chains(
+    shared: &EvalShared,
+    error: &str,
+    trimmed: Option<&ConfiguredTargetKey>,
+) -> String {
+    if !super::chains::is_open(error) {
+        return error.to_owned();
+    }
+    let root = trimmed.map(|key| super::chains::TrimmedRoot {
+        key: key.clone(),
+        untrimmed: format!(
+            "{} ({})",
+            crate::rule_declarations::canonical_form(&key.label),
+            shared
+                .configurations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(key.config)
+                .untrimmed_id()
+        ),
+    });
+    super::chains::close(error, root.as_ref()).0
 }

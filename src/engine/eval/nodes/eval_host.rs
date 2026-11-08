@@ -27,6 +27,7 @@ use super::super::super::{
 };
 use super::super::cx::Missing;
 use super::super::key::{CtKey, NodeKey, Observes};
+use super::super::linearize::chains;
 use super::super::shared::EvalShared;
 use super::super::transcript::{CqueryEdge, Event, ToolchainImpl, Transcript};
 use super::super::value::{Ct1Ok, Ct1Value, NodeValue, TransitionValue};
@@ -39,8 +40,6 @@ use super::phase1::Phase1;
 /// docs/EVALUATOR.md "First-visit decisions").
 #[derive(Default)]
 pub(crate) struct FirstVisit {
-    pub(crate) toolchain_cycle_reports: BTreeMap<ConfigId, String>,
-    pub(crate) execution_platform_cycle_reports: BTreeMap<ConfigId, String>,
     pub(crate) aspect_predicates: BTreeMap<(Label, String), bool>,
     #[allow(clippy::type_complexity)]
     pub(crate) aspect_attr_aspects:
@@ -48,8 +47,6 @@ pub(crate) struct FirstVisit {
     pub(crate) aspect_toolchains: BTreeMap<(ConfigId, String), Arc<AspectToolchains>>,
     pub(crate) aspect_attribute_configs:
         BTreeMap<(ConfiguredTargetKey, String), Arc<BTreeMap<String, TransitionConfigurations>>>,
-    /// The requested top-level rule being analyzed when test trimmed.
-    pub(crate) requested_trimmed_root: Option<ConfiguredTargetKey>,
 }
 
 /// The error text a body returns when an attempt stops at a [`Missing`]
@@ -92,6 +89,12 @@ pub(crate) struct EvalHost<'c, 'e> {
     events: Vec<Event>,
     missing: Option<Missing>,
     resolving_aspect_toolchains: bool,
+    /// The node starts a fresh active chain (a platform, the registered
+    /// toolchains or execution platforms).
+    fresh_chain: bool,
+    /// The registration cycle reports a dependency's failure carried
+    /// (rendered here: `take_*_cycle_report`), `true` for toolchains.
+    cycle_reports: Vec<(bool, String)>,
 }
 
 impl<'c, 'e> EvalHost<'c, 'e> {
@@ -112,6 +115,8 @@ impl<'c, 'e> EvalHost<'c, 'e> {
             events: Vec::new(),
             missing: None,
             resolving_aspect_toolchains: false,
+            fresh_chain: false,
+            cycle_reports: Vec::new(),
         }
     }
 
@@ -188,8 +193,8 @@ impl<'c, 'e> EvalHost<'c, 'e> {
         if !done {
             // The walk's active chain checks (Engine::analyze_key_body).
             let active = self.cx.coord().active_ct1();
-            if let Some(start) = active.iter().position(|active| *active == key) {
-                return Err(self.cycle_error(rule, &active[..start], &active[start..]));
+            if active.contains(&key) {
+                return Err(self.open_cycle_error(rule, &key));
             }
             if active.len() >= 256 {
                 return Err("native prototype dependency depth limit (256) exceeded".into());
@@ -202,113 +207,43 @@ impl<'c, 'e> EvalHost<'c, 'e> {
                         self.reached.insert(key, Arc::clone(value));
                         Ok(())
                     }
-                    Err(error) => Err(self.reword_cycle_report(error, &key)),
+                    Err(error) => Err(self.chain_error(error.clone())),
                 },
                 _ => Err("internal error: a CT1 key with another value".to_owned()),
             },
-            Err(Missing::BackEdge(_)) => {
-                // An ancestor outside the current detached segment: the
-                // whole chain names the cycle.
-                let active = self.cx.coord().active_ct1();
-                let start = active.iter().position(|active| *active == key).unwrap_or(0);
-                Err(self.cycle_error(rule, &active[..start], &active[start..]))
-            }
+            // The key is active (the pool: pass 1's cycle handler answered
+            // the walk-order back edge).
+            Err(Missing::BackEdge(_)) => Err(self.open_cycle_error(rule, &key)),
             Err(missing) => Err(self.stop(missing)),
         }
     }
 
-    /// A memoized failure of `reached` that is a registration cycle report
-    /// (`toolchain_cycle`, `execution_platform_cycle`) names the chain of
-    /// the registration that first analyzed it; the walk re-analyzes the
-    /// failed target in the current registration's chain and reports that
-    /// chain (S1, worker C: the inline driver's chain is the walk's; the
-    /// graph memoizes the failure). The report is reworded for the current
-    /// chain and recorded for the registration being computed.
-    fn reword_cycle_report(&mut self, error: &str, reached: &ConfiguredTargetKey) -> String {
-        let (toolchains, registration) = {
-            let coord = self.cx.coord();
-            let registration = coord
-                .stack
-                .iter()
-                .rev()
-                .find_map(|running| match running.key {
-                    NodeKey::RegToolchains(config) => Some((true, config)),
-                    NodeKey::RegExecPlatforms(config) => Some((false, config)),
-                    _ => None,
-                });
-            match registration {
-                Some((toolchains, config)) => (toolchains, config),
-                None => return error.to_owned(),
+    /// The walk's `cycle_error` for a reach of the active `key` (`rule`):
+    /// the message is built bottom-up (linearize::chains): this body and
+    /// the ones above it add themselves as it propagates.
+    fn open_cycle_error(&self, rule: &Rule, key: &ConfiguredTargetKey) -> String {
+        let self_edge = self.own_key() == Some(key);
+        super::super::super::located(
+            rule.location.as_deref(),
+            crate::rule_errors::RuleEvents {
+                rule_class: rule.rule_class_name(),
+                label: &crate::rule_declarations::canonical_form(&rule.label),
             }
-        };
-        let (prefix, end) = if toolchains {
-            ("Misconfigured toolchains: ", "`-- RegisteredToolchains")
-        } else {
-            (
-                "Misconfigured execution platforms: ",
-                "`-- RegisteredExecutionPlatforms",
-            )
-        };
-        let Some(start) = error.find(prefix) else {
-            return error.to_owned();
-        };
-        let Some(length) = error[start..].find(end).map(|at| at + end.len()) else {
-            return error.to_owned();
-        };
-        let report = &error[start..start + length];
-        let mut lines = report.lines();
-        let (Some(first), Some(arrow)) = (lines.next(), lines.next()) else {
-            return error.to_owned();
-        };
-        let rest: Vec<&str> = lines.collect();
-        let elements: Vec<&str> = rest
-            .iter()
-            .take_while(|line| !line.starts_with("|   toolchain type"))
-            .filter_map(|line| line.strip_prefix("|   "))
-            .collect();
-        let shown = crate::rule_declarations::canonical_form;
-        let reached = shown(&reached.label);
-        let Some(at) = elements.iter().position(|element| *element == reached) else {
-            return error.to_owned();
-        };
-        let mut chain: Vec<String> = self
-            .cx
-            .coord()
-            .active_ct1()
-            .iter()
-            .map(|key| shown(&key.label))
-            .collect();
-        chain.extend(elements[at..].iter().map(|element| (*element).to_owned()));
-        if chain
-            .iter()
-            .map(String::as_str)
-            .eq(elements.iter().copied())
-        {
-            return error.to_owned();
+            .rule_message(&chains::open_cycle(key, self_edge)),
+        )
+    }
+
+    /// A dependency's failure as this attempt receives it: a node starting
+    /// a fresh chain (a platform's resolution, a registration) renders the
+    /// chain errors (the walk's chain starts there) and keeps the
+    /// registration reports for `take_*_cycle_report`.
+    fn chain_error(&mut self, error: String) -> String {
+        if !self.fresh_chain || !chains::is_open(&error) {
+            return error;
         }
-        let Some(old_head) = elements.first() else {
-            return error.to_owned();
-        };
-        let first = first.replacen(
-            &format!("{prefix}{old_head}"),
-            &format!("{prefix}{}", chain[0]),
-            1,
-        );
-        let mut reworded = format!("{first}\n{arrow}");
-        for element in &chain {
-            reworded.push_str("\n|   ");
-            reworded.push_str(element);
-        }
-        for line in &rest[elements.len()..] {
-            reworded.push('\n');
-            reworded.push_str(line);
-        }
-        if toolchains {
-            self.record_toolchain_cycle_report(registration, reworded.clone());
-        } else {
-            self.record_execution_platform_cycle_report(registration, reworded.clone());
-        }
-        format!("{}{reworded}{}", &error[..start], &error[start + length..])
+        let (text, reports) = chains::close(&error, None);
+        self.cycle_reports.extend(reports);
+        text
     }
 
     /// Run the CT1 body for `key` (the evaluator's `analyze_key_body`
@@ -350,6 +285,12 @@ impl<'c, 'e> EvalHost<'c, 'e> {
         }
         let outcome = match result {
             Err(error) => {
+                // This configured target joins the chain of a chain error
+                // (linearize::chains).
+                let error = match &self.own {
+                    Some(own) => chains::on_ct1_failure(error, &own.key),
+                    None => error,
+                };
                 self.events.push(Event::Error(error.clone()));
                 self.cx.emit(Event::Error(error.clone()));
                 Err(error)
@@ -381,6 +322,16 @@ impl<'c, 'e> EvalHost<'c, 'e> {
                 events: std::mem::take(&mut self.events),
             },
         })))
+    }
+
+    /// The last registration cycle report (`toolchains` or the execution
+    /// platforms') a dependency's failure carried.
+    fn take_cycle_report(&mut self, toolchains: bool) -> Option<String> {
+        let at = self
+            .cycle_reports
+            .iter()
+            .rposition(|(kind, _)| *kind == toolchains)?;
+        Some(self.cycle_reports.remove(at).1)
     }
 
     fn finish<T>(self, result: T) -> Result<T, Missing> {
@@ -465,7 +416,9 @@ impl Host for EvalHost<'_, '_> {
     }
 
     fn requested_trimmed_root(&self) -> Option<ConfiguredTargetKey> {
-        self.cx.coord().first.requested_trimmed_root.clone()
+        // The evaluator renders the cycle at the requested target's
+        // segment (linearize::chains::close).
+        None
     }
 
     fn target(&mut self, label: &Label) -> Result<Target, String> {
@@ -984,7 +937,7 @@ impl Host for EvalHost<'_, '_> {
                 )),
             },
             Err(Missing::BackEdge(_)) => Err(ResolutionError::Propagated(
-                "internal error: registered toolchains needed while they are computed".to_owned(),
+                super::phase1::REGISTRATION_IN_PROGRESS.to_owned(),
             )),
             Err(missing) => Err(ResolutionError::Propagated(self.stop(missing))),
         }
@@ -996,20 +949,14 @@ impl Host for EvalHost<'_, '_> {
 
     fn set_computing_toolchain(&mut self, _label: &Label) {}
 
-    fn record_toolchain_cycle_report(&mut self, config: ConfigId, report: String) {
-        self.cx
-            .coord()
-            .first
-            .toolchain_cycle_reports
-            .insert(config, report);
+    fn record_toolchain_cycle_report(&mut self, _config: ConfigId, _report: String) {}
+
+    fn take_toolchain_cycle_report(&mut self, _config: ConfigId) -> Option<String> {
+        self.take_cycle_report(true)
     }
 
-    fn take_toolchain_cycle_report(&mut self, config: ConfigId) -> Option<String> {
-        self.cx
-            .coord()
-            .first
-            .toolchain_cycle_reports
-            .remove(&config)
+    fn open_cycle_report(&mut self, toolchains: bool, tail: &str) -> Option<String> {
+        Some(chains::open_report(toolchains, tail.to_owned()))
     }
 
     fn registered_execution_platforms(
@@ -1027,7 +974,7 @@ impl Host for EvalHost<'_, '_> {
                 )),
             },
             Err(Missing::BackEdge(_)) => Err(ResolutionError::Propagated(
-                "internal error: execution platforms needed while they are computed".to_owned(),
+                super::phase1::REGISTRATION_IN_PROGRESS.to_owned(),
             )),
             Err(missing) => Err(ResolutionError::Propagated(self.stop(missing))),
         }
@@ -1039,20 +986,10 @@ impl Host for EvalHost<'_, '_> {
             .in_progress(&NodeKey::RegExecPlatforms(config))
     }
 
-    fn record_execution_platform_cycle_report(&mut self, config: ConfigId, report: String) {
-        self.cx
-            .coord()
-            .first
-            .execution_platform_cycle_reports
-            .insert(config, report);
-    }
+    fn record_execution_platform_cycle_report(&mut self, _config: ConfigId, _report: String) {}
 
-    fn take_execution_platform_cycle_report(&mut self, config: ConfigId) -> Option<String> {
-        self.cx
-            .coord()
-            .first
-            .execution_platform_cycle_reports
-            .remove(&config)
+    fn take_execution_platform_cycle_report(&mut self, _config: ConfigId) -> Option<String> {
+        self.take_cycle_report(false)
     }
 
     fn exec_transition(&mut self, config: ConfigId, platform: &Label) -> Result<ConfigId, String> {
@@ -1317,16 +1254,19 @@ pub(crate) fn body(
         }
         NodeKey::Platform(platform) => {
             let mut host = EvalHost::new(shared, cx, None, true);
+            host.fresh_chain = true;
             let result = host.compute_platform_info(&platform.label, platform.config);
             Ok(NodeValue::Platform(host.finish(result)?))
         }
         NodeKey::RegToolchains(config) => {
             let mut host = EvalHost::new(shared, cx, None, false);
+            host.fresh_chain = true;
             let result = host.compute_registered_toolchains(*config);
             Ok(NodeValue::RegToolchains(host.finish(result)?))
         }
         NodeKey::RegExecPlatforms(config) => {
             let mut host = EvalHost::new(shared, cx, None, false);
+            host.fresh_chain = true;
             let result = host.compute_execution_platforms(*config);
             Ok(NodeValue::RegExecPlatforms(host.finish(result)?))
         }

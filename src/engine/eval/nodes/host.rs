@@ -281,6 +281,14 @@ pub(crate) trait Host {
         let _ = (key, input);
         None
     }
+    /// The evaluator's registration cycle report (`toolchains`: the
+    /// toolchains', else the execution platforms'), its chain built
+    /// bottom-up from here (linearize::chains); `None`: the walk words it
+    /// from its active chain.
+    fn open_cycle_report(&mut self, toolchains: bool, tail: &str) -> Option<String> {
+        let _ = (toolchains, tail);
+        None
+    }
     /// StarlarkTransitionCache.
     fn transition_cache_get(
         &mut self,

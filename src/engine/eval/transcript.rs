@@ -83,6 +83,10 @@ pub(crate) enum Event {
     /// parent). A failed body has no `Done` (it is re-entered on a revisit,
     /// as the walk re-runs it).
     Done,
+    /// A `--toolchain_resolution_debug` INFO event (S2 addition): printed
+    /// at its first linearized occurrence of an identical text (the walk
+    /// prints each once per build).
+    Info(String),
     /// A console write a coordinator service made while the evaluator
     /// ran (a package's load prints, a repository's fetch output), the
     /// index of the write the evaluation captured (S1 interface addition:

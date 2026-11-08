@@ -318,7 +318,6 @@ fn verify_with(
                 })
             }
         };
-        bodies.coord().first.requested_trimmed_root = trimmed;
         let analyzed = root.and_then(|root| {
             roots.push(evaluator.graph().intern(&root));
             let value = evaluate(&root);
@@ -328,7 +327,9 @@ fn verify_with(
                 _ => Err("internal error: a root with another value".to_owned()),
             }
         });
-        bodies.coord().first.requested_trimmed_root = None;
+        let analyzed = analyzed.map_err(|error| {
+            crate::engine::eval::linearize::driver::render_chains(shared, &error, trimmed.as_ref())
+        });
         // Engine::analyze_requested's report of an aborted analysis.
         let analyzed = analyzed.map_err(|error| {
             match error.split_once(super::super::super::ANALYSIS_ABORTED) {

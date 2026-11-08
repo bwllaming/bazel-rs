@@ -680,6 +680,7 @@ impl Pass1 {
             | Event::ScopeEnter(_)
             | Event::ScopeExit
             | Event::Continue(_)
+            | Event::Info(_)
             | Event::Error(_) => sink.op(TapeOp::Effect(event)),
         }
         Ok(None)
