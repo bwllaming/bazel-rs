@@ -486,7 +486,7 @@ fn warm_http_to(url: Url, writer: &mut dyn Write) -> Result<Option<u64>, String>
         let transport = slot.as_ref().expect("initialized");
         let mut request = transport
             .client
-            .get(url)
+            .get(url.as_str())
             .header(reqwest::header::ACCEPT_ENCODING, "identity");
         for (name, value) in headers {
             request = request.header(name, value);
@@ -502,8 +502,8 @@ fn warm_http_to(url: Url, writer: &mut dyn Write) -> Result<Option<u64>, String>
                 ))
                 .await?
                 .map_err(|_| "HTTP request timed out")?
-                .map_err(|_| "HTTP request failed (connection, TLS, or redirect error)")?;
-                if !check_response(response.status(), response.headers())? {
+                .map_err(|error| connection_error(&error, &url))?;
+                if !check_response(response.status(), response.headers(), response.extensions())? {
                     return Ok(None);
                 }
                 let mut total = 0;
@@ -574,20 +574,33 @@ fn open_http_with(
                 return Err(if error.is_timeout() {
                     "HTTP request timed out".to_owned()
                 } else {
-                    "HTTP request failed (connection, TLS, or redirect error)".to_owned()
+                    connection_error(&error, &url)
                 });
             }
         }
     };
-    if !check_response(response.status(), response.headers())? {
+    if !check_response(response.status(), response.headers(), response.extensions())? {
         return Ok(None);
     }
     Ok(Some(response))
 }
 
+/// The IOException message of a request that produced no response, as
+/// IndexRegistry.grabFile reports it after `Failed to fetch registry file
+/// URL: ` (HttpConnector: `Connection refused`, `Unknown host: HOST`,
+/// `Connect timed out`; crate::extension_download::connection_failure).
+/// Never the reqwest error itself: it may contain a redirect URL with
+/// secrets.
+fn connection_error(error: &reqwest::Error, url: &Url) -> String {
+    crate::extension_download::connection_failure(error, url)
+        .bazel
+        .message
+}
+
 fn check_response(
     status: reqwest::StatusCode,
     headers: &reqwest::header::HeaderMap,
+    extensions: &http::Extensions,
 ) -> Result<bool, String> {
     if matches!(
         status,
@@ -596,10 +609,14 @@ fn check_response(
         return Ok(false);
     }
     if status != reqwest::StatusCode::OK {
-        return Err(format!(
-            "HTTP request failed with status {}",
-            status.as_u16()
-        ));
+        // HttpConnector.describeHttpResponse (java:309-315): `GET returned
+        // STATUS REASON` with the server's reason phrase.
+        let reason = extensions
+            .get::<hyper::ext::ReasonPhrase>()
+            .map(|reason| String::from_utf8_lossy(reason.as_bytes()).into_owned())
+            .or_else(|| status.canonical_reason().map(str::to_owned))
+            .unwrap_or_default();
+        return Err(format!("GET returned {} {reason}", status.as_u16()));
     }
     for encoding in headers.get_all(reqwest::header::CONTENT_ENCODING) {
         if !encoding.to_str().is_ok_and(|value| {

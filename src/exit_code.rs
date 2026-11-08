@@ -10,16 +10,40 @@
 //! (interrupted, crate::signals; `fetch --repo` failures), 33 (out of
 //! memory, crate::memory_limit), 34 (a remote failure,
 //! crate::remote_cache::note_remote_failure), 36 (a sandbox setup failure,
-//! crate::sandbox), 37 (`mod`'s invalid subcommand). A recorded code wins
-//! over 34 and 36 (crate::main's failure_exit_code).
+//! crate::sandbox), 32 (a registry that module resolution could not read,
+//! [`main_repository_mapping_failure`]), 37 (`mod`'s invalid subcommand). A
+//! recorded code wins over 34 and 36 (crate::main's failure_exit_code).
 
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 /// ExitCode.COMMAND_LINE_ERROR: an option the command does not accept, an
 /// option value that does not parse, an undefined `--config`, a `run` target
 /// that cannot run.
 pub const COMMAND_LINE_ERROR: i32 = 2;
+/// ExitCode.REMOTE_ENVIRONMENTAL_ERROR: ExternalDeps.ERROR_ACCESSING_REGISTRY
+/// (a registry file that could not be fetched).
+pub const REMOTE_ENVIRONMENTAL_ERROR: i32 = 32;
 static RECORDED: AtomicI32 = AtomicI32::new(0);
+static REGISTRY_ACCESS_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// Module resolution could not fetch a registry file (ModuleFileFunction:
+/// `Error accessing registry REGISTRY: …`, ERROR_ACCESSING_REGISTRY).
+pub fn note_registry_access_failure() {
+    REGISTRY_ACCESS_FAILED.store(true, Ordering::Relaxed);
+}
+
+/// The ERROR message of a command that failed because module resolution
+/// could not access a registry: Bazel computes the main repository mapping
+/// before loading anything, so the failure surfaces as
+/// `Error computing the main repository mapping: Error accessing registry …`
+/// (RepositoryMappingValue.RepositoryMappingResolutionException), exit
+/// [`REMOTE_ENVIRONMENTAL_ERROR`]. `None` for any other failure (also one
+/// that only wraps such an error). The typed flag gates the text.
+pub fn main_repository_mapping_failure(error: &str) -> Option<String> {
+    (REGISTRY_ACCESS_FAILED.load(Ordering::Relaxed)
+        && error.starts_with("Error accessing registry "))
+    .then(|| format!("Error computing the main repository mapping: {error}"))
+}
 
 /// Record the exit code of this command's failure (the first one wins).
 pub fn record(code: i32) {

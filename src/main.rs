@@ -1202,8 +1202,12 @@ fn run() -> Result<(), String> {
     // in every command; the lockfile records that resolution's remote
     // registry files. With a lockfile and a remote --registry, resolve
     // eagerly like Bazel; otherwise keep the native lazy profile
-    // (NATIVE_BOUNDARY, docs/REGISTRY_LOCKFILE.md).
-    if lockfile_mode != bazel_rs::lockfile::LockfileMode::Off
+    // (NATIVE_BOUNDARY, docs/REGISTRY_LOCKFILE.md). Not `mod`: ModCommand
+    // computes no main repository mapping; it validates its subcommand and
+    // arguments first and resolves after (crate::mod_command, exit 37 for a
+    // resolution failure).
+    if command != "mod"
+        && lockfile_mode != bazel_rs::lockfile::LockfileMode::Off
         && raw_registries
             .iter()
             .any(|raw| raw.starts_with("http://") || raw.starts_with("https://"))
@@ -4775,27 +4779,38 @@ fn parse_memory_limit_mb(value: &str) -> Result<u64, String> {
     })
 }
 
-/// BuildRequestOptions.JobsConverter (a ResourceConverter.IntegerConverter,
-/// 1..=MAX_JOBS 5000): an integer, or `auto` (the default: `None`, the
-/// native default bound) or `HOST_CPUS`/`HOST_RAM` optionally followed by
-/// `-<float>`/`*<float>`, rounded.
+/// BuildRequestOptions.JobsConverter (a ResourceConverter.IntegerConverter):
+/// an integer, or `auto` (the default: `None`, the native default bound) or
+/// `HOST_CPUS`/`HOST_RAM` optionally followed by `-<float>`/`*<float>`,
+/// rounded; below 1 an error (`Value '(N)' must be at least 1.`), above
+/// MAX_JOBS 5000 limited to it.
 fn parse_jobs(value: &str) -> Result<Option<usize>, String> {
-    let bad = || format!("--jobs requires a positive integer, got {value:?}");
+    let wrap = |message: String| format!("While parsing option --jobs={value}: {message}");
+    let syntax = || {
+        wrap(format!(
+            "Parameter '{value}' does not follow correct syntax. This flag takes an integer, or a \
+             keyword (\"auto\", \"HOST_CPUS\", \"HOST_RAM\"), optionally followed by an \
+             operation ([-|*]<float>) eg. \"auto\", \"HOST_CPUS*.5\"."
+        ))
+    };
     if value == "auto" {
         return Ok(None);
     }
-    let jobs = if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
-        value.parse::<usize>().map_err(|_| bad())?
+    // Ints.tryParse: an optional `-` and decimal digits within int range.
+    let jobs = if !value.starts_with('+')
+        && let Ok(number) = value.parse::<i32>()
+    {
+        i64::from(number)
     } else if value.starts_with("HOST_") {
-        let number = bazel_rs::execution_options::resource_value(value).map_err(|_| bad())?;
-        number.round().max(0.0) as usize
+        let number = bazel_rs::execution_options::resource_value(value).map_err(|_| syntax())?;
+        number.round() as i64
     } else {
-        return Err(bad());
+        return Err(syntax());
     };
-    if jobs == 0 || jobs > 5000 {
-        return Err(bad());
+    if jobs < 1 {
+        return Err(wrap(format!("Value '({jobs})' must be at least 1.")));
     }
-    Ok(Some(jobs))
+    Ok(Some(jobs.min(5000) as usize))
 }
 
 /// One comma-separated strategy list value
@@ -5428,7 +5443,7 @@ impl NativeOptions {
         } else if builds(command) && arg == "--show_result" {
             let value = next.ok_or("--show_result requires a value")?;
             self.show_result = value.parse().map_err(|_| {
-                format!("While parsing option --show_result={value}: not an integer")
+                format!("While parsing option --show_result={value}: '{value}' is not an int")
             })?;
             true
         } else if let Some(value) = arg
@@ -5436,7 +5451,7 @@ impl NativeOptions {
             .filter(|_| builds(command))
         {
             self.show_result = value.parse().map_err(|_| {
-                format!("While parsing option --show_result={value}: not an integer")
+                format!("While parsing option --show_result={value}: '{value}' is not an int")
             })?;
             false
         } else if builds(command) && arg == "--aspects" {
@@ -6761,6 +6776,18 @@ fn main() {
         // the hit trusted heals (crate::snapshot::hit).
         bazel_rs::snapshot::hit::heal_after_failure(Some(&error));
         let error = located(&error);
+        // A module resolution that could not read a registry fails the main
+        // repository mapping before anything else (BlazeCommandDispatcher,
+        // RepositoryMappingResolutionException): ERROR_ACCESSING_REGISTRY,
+        // exit 32, also for `fetch`.
+        if let Some(message) = bazel_rs::exit_code::main_repository_mapping_failure(&error) {
+            eprintln!("ERROR: {message}");
+            let code = finish_reports(
+                bazel_rs::exit_code::REMOTE_ENVIRONMENTAL_ERROR,
+                Some(&message),
+            );
+            exit(code);
+        }
         // FetchCommand.fetchTarget: QUERY_EVALUATION_ERROR, exit 2.
         if FETCH_TARGETS.load(std::sync::atomic::Ordering::Relaxed) {
             eprintln!("ERROR: Fetching some target dependencies failed with errors: {error}");

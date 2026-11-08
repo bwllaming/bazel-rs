@@ -180,9 +180,11 @@ fn jobs_requires_a_positive_integer_and_is_only_a_build_option() {
     ] {
         let flag = format!("--jobs={value}");
         let result = ws.run(&["build", &flag, ":ok"]);
-        assert!(!result.status.success(), "accepted {flag}");
+        // JobsConverter: `Parameter 'V' does not follow correct syntax…` or
+        // `Value '(N)' must be at least 1.`, a command-line error.
+        assert_eq!(result.status.code(), Some(2), "accepted {flag}");
         assert!(
-            stderr(&result).contains("positive integer"),
+            stderr(&result).contains(&format!("While parsing option {flag}: ")),
             "{}",
             stderr(&result)
         );
@@ -202,6 +204,8 @@ fn jobs_requires_a_positive_integer_and_is_only_a_build_option() {
         assert!(result.stdout.is_empty());
     }
     assert!(ws.run(&["build", "--jobs=1000", ":ok"]).status.success());
+    // Above MAX_JOBS (5000) JobsConverter.checkAndLimit limits, no error.
+    assert!(ws.run(&["build", "--jobs=6000", ":ok"]).status.success());
     only_status_outputs(&ws);
     // No targets: Bazel 9.3 warns and builds nothing (BuildTool; genuine
     // capture tests/fixtures/cli_test_options, tpf_empty_build).

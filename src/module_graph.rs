@@ -1158,6 +1158,7 @@ impl Discovery<'_> {
                     {
                         error
                     } else {
+                        crate::exit_code::note_registry_access_failure();
                         format!(
                             "Error accessing registry {}: {error}",
                             self.options.registry_session.registry_display(registry)

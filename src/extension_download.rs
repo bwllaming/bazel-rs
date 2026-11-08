@@ -545,7 +545,7 @@ impl From<TypedIoError> for OpenFailure {
 /// `java.net.ConnectException`, unresolvable hosts `Unknown host: HOST`
 /// (unrecoverable) and connect timeouts an IOException `Connect timed out`.
 /// The native completion text keeps its stable prefix.
-fn connection_failure(error: &reqwest::Error, url: &Url) -> OpenFailure {
+pub(crate) fn connection_failure(error: &reqwest::Error, url: &Url) -> OpenFailure {
     let mut refused = false;
     let mut dns = false;
     let mut source: Option<&dyn std::error::Error> = Some(error);

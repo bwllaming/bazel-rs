@@ -442,7 +442,10 @@ fn root_module_cli_argument_errors_and_metadata_commands_precede_recording() {
             vec!["query", "--unsupported-root-module-option"],
             "--unsupported-root-module-option :: Unrecognized option: --unsupported-root-module-option",
         ),
-        (vec!["build", "--jobs=0", "//app:check"], "positive integer"),
+        (
+            vec!["build", "--jobs=0", "//app:check"],
+            "While parsing option --jobs=0: Value '(0)' must be at least 1.",
+        ),
     ] {
         let output = ws.run(&args);
         rejected(&output, diagnostic);

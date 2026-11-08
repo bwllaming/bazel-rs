@@ -302,7 +302,8 @@ fn native_control_remains_cli_only_and_preserves_rc_quiet_and_error_order() {
         &["build", "--native-lockfile=relative"],
     );
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("--jobs requires a positive integer"),
+        String::from_utf8_lossy(&out.stderr)
+            .contains("While parsing option --jobs=bad: Parameter 'bad'"),
         "{out:?}"
     );
     assert!(
