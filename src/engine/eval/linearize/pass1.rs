@@ -815,6 +815,9 @@ impl Pass1 {
             return Ok(());
         }
         if chain.len() >= DEPTH_LIMIT {
+            // The walk fails there (the pool's bodies do not know their
+            // depth): the build stops.
+            self.out.stop = Some(DEPTH_LIMIT_ERROR.to_owned());
             self.out.failures.push(DEPTH_LIMIT_ERROR.to_owned());
             sink.op(TapeOp::Fail(DEPTH_LIMIT_ERROR.to_owned()));
             sink.op(TapeOp::Leave);
@@ -1275,6 +1278,7 @@ pub(crate) mod tests {
                 .unwrap()
         });
         assert_eq!(out.failures, [DEPTH_LIMIT_ERROR]);
+        assert_eq!(out.stop.as_deref(), Some(DEPTH_LIMIT_ERROR));
     }
 
     #[test]

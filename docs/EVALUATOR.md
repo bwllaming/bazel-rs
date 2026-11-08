@@ -398,6 +398,46 @@ change announced to the other two workers; adding a helper is not.
   - Pass 1 is resumable (`Pass1::resume`, `Transcripts::segment`,
     records with a `complete` flag); a body's transcript is replayed again
     on each revisit of a failed key (no per-visit records).
+- 2026-11-08 (C, S2 part 2: the first-visit decisions out of the bodies;
+  announced to eval-s2-load and the extensions worker):
+  - `Event::Info(String)` (new): a `--toolchain_resolution_debug` INFO
+    event, captured instead of printed while the evaluator runs
+    (`toolchains::capture_debug_events`, drained with
+    `linearize::capture::take`); the tape application prints it at its
+    linearized position, deduplicated process-wide as before.
+  - `Event::MemoBegin(u64)` / `Event::MemoEnd(Option<u64>)` (new): a
+    first-visit memo's computation (the four aspect memos), by a digest of
+    its key; the end carries the value's digest (`None`: it failed, not
+    memoized).
+  - `ToolchainImpl.location` (new): where the walk reports a conflict.
+  - `TransitionValue` is now produced: `NodeKey::Transition(key)` has a body;
+    its input (`nodes::host::TransitionInput`: definition, kind, target,
+    configuration, attributes) is registered by the first requester in
+    `EvalShared::transitions` (new field, a mutex'd map by cache key).
+  - `NodeKey::Ct2(ct)` has an S2 body: the providers a flush planned (a
+    config_setting's Starlark flag_values key, `planned_feature_flag`).
+  - `Host` (B's trait) gains `transition_node`, `open_cycle_report`,
+    `memo_failed` (defaults: the walk's behaviour), and
+    `claim_toolchain_implementation` takes the consumer's location; `phase1`
+    splits `compute_transition`, `compute_aspect_toolchains`,
+    `compute_aspect_attribute_configurations` out of their memoizing
+    callers; `phase1::REGISTRATION_IN_PROGRESS` is the answer to a back edge
+    to `RegToolchains`/`RegExecPlatforms` (the body words the report).
+  - `FirstVisit` is gone; `Coord` keeps `ct1_done` (the first variant done
+    of each key: reads of a key a body did not reach) and `ct1_values`
+    (every variant, by CtKey); `edge_ct_key(no_config, rule, key,
+    platform_tree, forced_exec)` takes the context only.
+  - **What the pool driver must provide** (eval-s2-load): (1) a parked
+    attempt's events up to its `Missing` stay visible to pass 1 as a
+    partial transcript until the re-run replaces them (identical prefix;
+    pass 1 never consumed beyond it) — a config_setting's `Flush` and its
+    `Ct2` need are in one attempt; (2) `Coord::active_ct1` (the inline
+    driver's chain, used for the inline cycle and depth checks) must be
+    empty on pool threads: cycles then come from `Pass1Cycles` as
+    `Missing::BackEdge`, the depth limit from pass 1; (3) the `Ct2` S2 body
+    and the published memo values run on the coordinator (they hold the
+    engine); (4) call `Coord::frontier()` and `Evaluator::boost` whenever
+    pass 1 is blocked (the driver does it per segment today).
 
 ## 4. Stages and gates
 
@@ -462,14 +502,15 @@ cquery root checkpoint: S4).
   pass 1 checks or recomputes what it can. S2 (parallel CT1) must move
   them:
 
-| Decision | S1 | S2 |
+| Decision | S1 | S2 (as built, part 2; see "S2, worker C" below) |
 |---|---|---|
-| CtKey variant of a key (`canonical`) | first edge in DFS order (`edge_ct_key`); pass 1 checks `platform_tree`/`forced_exec` and `same_observable` (divergences are internal errors) | pass 1 decides; consumers of a non-canonical variant re-run |
-| toolchain implementation claims / `forced_exec` | `claims` at claim time, written through to `toolchain_implementations`; pass 1 recomputes them from `ToolchainImpl` (conflict error, forced check) | pass 1 decides, the bodies only emit |
-| toolchain / execution-platform cycle reports | the bodies; a memoized failure carrying a report from another registration's chain is reworded for the current chain (`EvalHost::reword_cycle_report`: the walk re-analyzes the failed target there) | `Pass1Cycles` at quiescence |
-| aspect memos (predicate + prints, attr aspects, toolchains, attribute configurations) | `FirstVisit`, written through | memo nodes (`AspectPred`, …) with `MemoUse` |
-| transition cache (+ prints) | `FirstVisit`, written through | `Transition` nodes keyed with their definition |
-| Starlark `flag_values` (CsMatch after a flush) | the flush runs phase 2 of pass 1's plan prefix inside the body | `CsMatch` with CT2 dependencies |
+| CtKey variant of a key (`canonical`) | first edge in DFS order (`edge_ct_key`); pass 1 checks `platform_tree`/`forced_exec` and `same_observable` (divergences are internal errors) | the body's context only (inside a platform tree, its own claim); pass 1 decides the configured target (first reach in DFS order) and publishes it; a consumer of another variant is compared (`same_observable`: success and configured node; a divergence stays an internal error, no re-run) |
+| toolchain implementation claims / `forced_exec` | `claims` at claim time, written through to `toolchain_implementations`; pass 1 recomputes them from `ToolchainImpl` (conflict error, forced check) | the body knows its own claims only; pass 1 decides the first claim in DFS order, publishes `toolchain_implementations`, and stops the build at a conflict with the walk's located error |
+| toolchain / execution-platform cycle reports | the bodies; a memoized failure carrying a report from another registration's chain is reworded for the current chain (`EvalHost::reword_cycle_report`: the walk re-analyzes the failed target there) | built bottom-up (`linearize::chains`): created with no chain where detected (an in-progress check, or a back edge to the registration), each failing configured target adds itself, the registration renders it; dependency cycles likewise (rendered by the requested target's segment, with the test-trimmed root) |
+| aspect memos (predicate + prints, attr aspects, toolchains, attribute configurations) | `FirstVisit`, written through | memo **scopes**, not nodes: every attempt computes them, `MemoBegin`/`MemoEnd` delimit the computation's events, pass 1 replays them at the first linearized use and skips later uses (the walk's hits; a different value digest is a divergence) |
+| transition cache (+ prints) | `FirstVisit`, written through | `Transition` nodes (input registered in `EvalShared::transitions`); a failure is applied again by the requester (the walk does not memoize failures) |
+| Starlark `flag_values` (CsMatch after a flush) | the flush runs phase 2 of pass 1's plan prefix inside the body | the flush still runs at the config_setting's `Flush` (its errors are the walk's there); the FeatureFlagInfo is read through a `Ct2(flag)` node computed by today's phase-2 path on the coordinator; the matching stays in the config_setting's CT1 (the full split is open, see below) |
+| `--toolchain_resolution_debug` events | printed from resolution, deduplicated process-wide | `Event::Info` through the transcript, printed and deduplicated at the linearized position |
 
 - **Pass 1** (`pass1::Pass1`) replays transcripts depth first over the
   top-level segments (`SegmentKind`: `Setup` — the explicit
@@ -529,6 +570,50 @@ cquery root checkpoint: S4).
   (held/deferred like every console write; unit test). Under the
   evaluator's deferred console, held writes count as prints and private
   notes are swallowed before deferral (module extension re-probes).
+
+### S2, worker C (part 2): pass 1 over out-of-order completions
+
+Branch `eval-s2-pass1`. The bodies keep no first-visit state (`FirstVisit`
+is gone) and write nothing order-dependent to the engine; what the walk's
+order decides is pass 1's (the table above).
+
+- **Streaming pass 1**: nodes finish in any order. A reach of a node that
+  has not run, a memo use of an unrun memo, a plan entry of a body still
+  running, and a memo hit of another variant whose value is not done wait
+  (`Blocker`; nothing is consumed: the replay resumes at the same event);
+  the delegation is recorded when the body's frame ends. `Pass1::blocked_on`
+  / `Coord::frontier()` name the frontier for `Evaluator::boost` (lowest
+  plan length first). A transcript pass 1 will not read again (a body past
+  its `Done`, a memo other than a transition, a finished segment) is
+  released and freed by the driver (`Store::release`). Random-order unit
+  test: 60 random phase 1s × 4 completion orders with partial transcripts
+  and released transcripts emptied give the sequential result
+  (`any_completion_order_gives_the_sequential_result`).
+- **Stops**: a toolchain implementation conflict and the depth limit are
+  pass 1's (`Linearized::stop`, `Progress::Stopped`): the tape before them
+  is applied and the build fails with the walk's text.
+- **Publication** follows pass 1: the configured targets it decided
+  (`take_canonical`, published once their value is done), its
+  `toolchain_implementations`; the memo values (platforms, registrations,
+  exec configurations, flag scopes, transition details, sources,
+  transitions, aspect memos) from the store, first one wins (equal values
+  per key).
+- **Order-independent chain errors** (`linearize::chains`): a node's error
+  text depends on its subtree only. Caveat: a memoized failure reached
+  later from another chain keeps its subtree's text; in fail-fast mode the
+  first error in DFS order is the build's, so this only differs from the
+  walk where S1 already did (a target reached outside a registration after
+  failing inside it).
+- **Test hook** `BAZEL_RS_EVAL_RESTARTS=<seed>`: a node's first need of a
+  key is answered `Missing` at random (one in four): attempts are abandoned
+  and re-run as in the pool; the output must not change.
+- **Open** (not in this part): the CsMatch split proper (the matching as a
+  node of its own needing the flags' CT2, so that a config_setting's CT1
+  does not wait for phase 2) needs the pool's partial transcripts
+  (interface changes above) and moves the flush's error wording from the
+  config_setting to its consumers; parallel-order testing end to end
+  (pre-evaluating roots out of order) is blocked on it (a flush inside a
+  pre-evaluated body has no plan prefix yet).
 
 **S1 results** (2026-11-08, ~/code `80d6724f3a`, LTO release binary
 sha256 `272b5f78…`, warm repositories, `BAZEL_RS_SNAPSHOT=off`, default
