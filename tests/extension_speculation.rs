@@ -256,20 +256,33 @@ touch = repository_rule(implementation = _touch_impl, local = True)
         env: &[(&str, &str)],
         patterns: &[&str],
     ) -> Run {
+        self.command("build", threads, snapshot, env, patterns)
+    }
+
+    /// `bazel-rs <command> <patterns>` (`build` with `--nobuild`).
+    fn command(
+        &self,
+        command_word: &str,
+        threads: usize,
+        snapshot: &str,
+        env: &[(&str, &str)],
+        patterns: &[&str],
+    ) -> Run {
         let dump = self.path().join("dump.txt");
         let _ = fs::remove_file(&dump);
-        let mut command = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
+        let mut command = Command::new("timeout");
         command
+            .args(["--kill-after=5s", "300s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
             .arg("--cache-dir=cache")
-            .arg("build")
+            .arg(command_word)
             .arg(format!(
                 "--registry=file://{}",
                 self.path().join("registry").display()
             ))
             .arg(format!("--loading_phase_threads={threads}"))
             .arg("--lockfile_mode=update")
-            .arg("--nobuild")
+            .args((command_word == "build").then_some("--nobuild"))
             .args(patterns)
             .current_dir(self.path())
             .env_remove("BAZEL_RS_TIMING_TIMELINE")
@@ -286,6 +299,7 @@ touch = repository_rule(implementation = _touch_impl, local = True)
             command.env(key, value);
         }
         let output = command.explicit_modules().output().unwrap();
+        assert_ne!(output.status.code(), Some(124), "timed out: {patterns:?}");
         let text = String::from_utf8_lossy(&output.stderr).into_owned();
         let (timing, stderr): (Vec<&str>, Vec<&str>) = text
             .split_inclusive('\n')
@@ -520,6 +534,37 @@ fn an_input_changed_before_the_demand_drops_the_speculation() {
         );
         for run in &runs {
             assert_eq!(counter(run, "discarded"), 2, "{}", run.timing);
+        }
+    }
+}
+
+/// `query` resolves the module graph lazily from inside the extension
+/// catalog's construction: the speculations start once the catalog exists
+/// (never inside its initializer, which they read), and the answer is the
+/// sequential engine's.
+#[test]
+fn query_with_speculation_matches_the_sequential_engine() {
+    let fixture = Fixture::new();
+    let baseline = Baseline::new(&fixture);
+    baseline.restore(&fixture);
+    let reference = fixture.command("query", 1, "off", &[], &["deps(//a:all) + //b:all"]);
+    assert_eq!(reference.code, Some(0), "{}", reference.stderr);
+    for (threads, jitter) in THREADED {
+        baseline.restore(&fixture);
+        let run = fixture.command(
+            "query",
+            threads,
+            "off",
+            &env(jitter),
+            &["deps(//a:all) + //b:all"],
+        );
+        assert_same(
+            &reference,
+            &run,
+            &format!("query threads={threads} jitter={jitter}"),
+        );
+        if jitter != "off" {
+            assert!(counter(&run, "requested") > 0, "{}", run.timing);
         }
     }
 }

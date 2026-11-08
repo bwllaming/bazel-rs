@@ -2114,8 +2114,7 @@ impl RepositorySet {
         if self.pinned_tables().is_some() {
             return Err(format!("the module graph is {NOT_PINNED}"));
         }
-        let resolved = self
-            .state
+        self.state
             .resolved
             .get_or_init(|| {
                 let _span = crate::timeline::span("resolve", || "module graph".to_owned());
@@ -2127,18 +2126,7 @@ impl RepositorySet {
                 )
             })
             .as_ref()
-            .map_err(Clone::clone);
-        if resolved.is_ok()
-            && self
-                .state
-                .extension_speculation_armed
-                .load(Ordering::Relaxed)
-                > 0
-            && !crate::repository_demand::no_demand_active()
-        {
-            self.launch_extension_speculation();
-        }
-        resolved
+            .map_err(Clone::clone)
     }
 
     /// `fetch --repo` (RepositoryFetcher.getRepositoryName): the canonical
@@ -3289,13 +3277,13 @@ impl RepositorySet {
         {
             return guard;
         }
-        // Started once the module graph is resolved (now, or at its lazy
-        // resolution: `resolve_graph`).
+        // Started once the module graph is resolved and the extension
+        // catalog built (now, or at its lazy construction: `direct_runtime`).
         self.state
             .extension_speculation_armed
             .store(width, Ordering::SeqCst);
         if self.state.resolved.get().is_some_and(Result::is_ok) {
-            self.launch_extension_speculation();
+            let _ = self.direct_runtime();
         }
         guard
     }
@@ -4513,7 +4501,8 @@ impl RepositorySet {
         if self.pinned_tables().is_some() {
             return Err(format!("the repository catalog is {NOT_PINNED}"));
         }
-        self.state
+        let runtime = self
+            .state
             .direct
             .get_or_init(|| {
                 let catalog = repository_catalog::build(
@@ -4543,7 +4532,20 @@ impl RepositorySet {
                 })
             })
             .as_ref()
-            .map_err(Clone::clone)
+            .map_err(Clone::clone);
+        // Armed extension speculations start once the catalog exists (here,
+        // never inside its initializer: they read it).
+        if runtime.is_ok()
+            && self
+                .state
+                .extension_speculation_armed
+                .load(Ordering::Relaxed)
+                > 0
+            && !crate::repository_demand::no_demand_active()
+        {
+            self.launch_extension_speculation();
+        }
+        runtime
     }
 
     fn prepare_direct_group(&self, id: &str) -> Result<&PreparedGroup, String> {
