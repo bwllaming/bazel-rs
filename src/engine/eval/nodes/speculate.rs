@@ -86,12 +86,16 @@ pub(crate) struct Scratch {
 
 /// Why a speculation did not give the providers (counted, then the
 /// sequential pass flushes).
-struct Left;
+struct Left(String);
 
 impl From<String> for Left {
-    fn from(_: String) -> Self {
-        Left
+    fn from(reason: String) -> Self {
+        Left(reason)
     }
+}
+
+fn left(reason: &str) -> Left {
+    Left(reason.to_owned())
 }
 
 /// The providers of `ct`'s phase 2, planned speculatively (see the module
@@ -107,10 +111,29 @@ pub(crate) fn flag_providers(
     match result {
         Ok(providers) => {
             bump(STAT_RUNS, 1);
+            // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
+            if std::env::var_os("BAZEL_RS_EVAL_SPECULATE_DEBUG").is_some() {
+                eprintln!(
+                    "bazel-rs: speculative phase 2 of {}: {} µs, flag {:?}",
+                    ct.key,
+                    started.elapsed().as_micros(),
+                    providers
+                        .as_ref()
+                        .and_then(|providers| providers.get(crate::feature_flags::PROVIDER_ID))
+                        .and_then(|provider| crate::feature_flags::value_of(provider.value()))
+                );
+            }
             Some(providers)
         }
-        Err(Left) => {
+        Err(Left(reason)) => {
             bump(STAT_LEFT, 1);
+            // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
+            if std::env::var_os("BAZEL_RS_EVAL_SPECULATE_DEBUG").is_some() {
+                eprintln!(
+                    "bazel-rs: speculative phase 2 of {}: left: {reason}",
+                    ct.key
+                );
+            }
             None
         }
     }
@@ -123,7 +146,7 @@ fn run(
 ) -> Result<Option<Providers>, Left> {
     // --profile spans and the like would show the speculative work.
     if crate::profile::active() {
-        return Err(Left);
+        return Err(left("--profile"));
     }
     let root = cx.id_of(&NodeKey::Ct1(ct.clone()));
     let mut guard = cx
@@ -134,7 +157,12 @@ fn run(
     // order: the scratch, then the coordinator).
     {
         let coord = cx.coord();
-        let subtree = coord.subtree(root)?;
+        let subtree = {
+            let planned = guard.as_ref().map(|scratch| &scratch.planned);
+            coord.subtree(root, &|key| {
+                planned.is_some_and(|planned| planned.contains(key))
+            })?
+        };
         let scratch = guard.get_or_insert_with(|| {
             let mut engine = Box::new(coord.engine.fork_for_verify());
             engine.loading_phase_threads = 1;
@@ -170,7 +198,7 @@ fn run(
         scratch.memos = coord.store.published.len();
         for key in &subtree.canonical {
             let Some(value) = coord.ct1_values.get(key) else {
-                return Err(Left);
+                return Err(left("a configured target's value is not done"));
             };
             if let Ok(ok) = &value.outcome {
                 publish_ct1(engine, &mut scratch.configured, key.key.clone(), ok);
@@ -182,17 +210,29 @@ fn run(
                 .entry(implementation)
                 .or_insert(platform);
         }
+        // What a flush planned already: the planning state's phase 2.
+        let Some(real) = coord.engine.action_planning.as_ref() else {
+            return Err(left("no planning state"));
+        };
+        let state = engine
+            .action_planning
+            .as_mut()
+            .ok_or_else(|| left("no scratch planning state"))?;
+        for key in subtree.imported {
+            import(state, real, &key);
+            scratch.planned.insert(key);
+        }
         for key in subtree.plan {
             if !scratch.planned.insert(key.key.clone()) {
                 continue;
             }
             let Some(Ok(ok)) = coord.ct1_values.get(&key).map(|value| &value.outcome) else {
-                return Err(Left);
+                return Err(left("a plan entry without its configured rule"));
             };
             scratch.plan.push((key.key, Arc::clone(&ok.rule)));
         }
     }
-    let scratch = guard.as_mut().ok_or(Left)?;
+    let scratch = guard.as_mut().ok_or_else(|| left("no scratch engine"))?;
     // The configurations and aspect definitions the pool interned and
     // loaded since (content-addressed: a superset reads the same).
     {
@@ -222,22 +262,47 @@ fn run(
             false,
         );
         bump(STAT_ENTRIES, state.done.saturating_sub(before) as u64);
+        // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
+        if std::env::var_os("BAZEL_RS_EVAL_SPECULATE_DEBUG").is_some() {
+            let mut packages: BTreeMap<String, usize> = BTreeMap::new();
+            for (key, _) in &scratch.plan[before..] {
+                *packages
+                    .entry(format!("{}//{}", key.label.repository, key.label.package))
+                    .or_default() += 1;
+            }
+            let mut packages: Vec<_> = packages.into_iter().collect();
+            packages.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+            packages.truncate(8);
+            eprintln!(
+                "bazel-rs: speculative phase 2 of {}: {} entries {packages:?}",
+                ct.key,
+                state.done.saturating_sub(before)
+            );
+        }
         engine.action_planning = Some(state);
         result
     });
     // A failure (the tape's flush reports the walk's), or a repository
     // the pool may not fetch (a sentinel, even one swallowed): what the
     // scratch engine planned may be partial.
-    if planned.is_err() || crate::repository_demand::sentinels_raised() != sentinels {
+    let sentinel = crate::repository_demand::sentinels_raised() != sentinels;
+    if planned.is_err() || sentinel {
         *guard = None;
-        return Err(Left);
+        return Err(Left(match planned {
+            Err(error) => format!("phase 2 failed: {error}"),
+            Ok(()) => "a repository sentinel".to_owned(),
+        }));
     }
     for (key, _) in &scratch.plan {
         scratch.planned.insert(key.clone());
     }
-    let state = scratch.engine.action_planning.as_ref().ok_or(Left)?;
+    let state = scratch
+        .engine
+        .action_planning
+        .as_ref()
+        .ok_or_else(|| left("no planning state"))?;
     if !state.dry.contains_key(&ct.key) {
-        return Err(Left);
+        return Err(left("the flag was not planned"));
     }
     Ok(state.custom_providers.get(&ct.key).cloned())
 }
@@ -256,6 +321,60 @@ fn isolated<R>(f: impl FnOnce() -> R) -> R {
     drop(console.finish());
     crate::progress::restore_analysis_counts(counts);
     result
+}
+
+/// A dependency's phase 2 as its consumers read it (the planning state's
+/// per-key entries a dependency view reads), copied from the build's
+/// planning state into the scratch engine's.
+fn import(
+    scratch: &mut super::super::super::ActionPlanning,
+    real: &super::super::super::ActionPlanning,
+    key: &ConfiguredTargetKey,
+) {
+    fn copy<V: Clone, M>(into: &mut M, from: &M, key: &ConfiguredTargetKey)
+    where
+        M: MapLike<V>,
+    {
+        if let Some(value) = from.get_value(key) {
+            into.put(key.clone(), value.clone());
+        }
+    }
+    copy(&mut scratch.dry, &real.dry, key);
+    copy(&mut scratch.custom_providers, &real.custom_providers, key);
+    copy(&mut scratch.provider_keys, &real.provider_keys, key);
+    copy(&mut scratch.runfiles_info, &real.runfiles_info, key);
+    copy(&mut scratch.repositories, &real.repositories, key);
+    copy(&mut scratch.validation, &real.validation, key);
+    copy(
+        &mut scratch.native_output_groups,
+        &real.native_output_groups,
+        key,
+    );
+    copy(&mut scratch.runfiles_nodes, &real.runfiles_nodes, key);
+}
+
+/// The planning state's per-key maps (hash and B-tree maps).
+trait MapLike<V> {
+    fn get_value(&self, key: &ConfiguredTargetKey) -> Option<&V>;
+    fn put(&mut self, key: ConfiguredTargetKey, value: V);
+}
+
+impl<V> MapLike<V> for crate::fast_hash::FxHashMap<ConfiguredTargetKey, V> {
+    fn get_value(&self, key: &ConfiguredTargetKey) -> Option<&V> {
+        self.get(key)
+    }
+    fn put(&mut self, key: ConfiguredTargetKey, value: V) {
+        self.insert(key, value);
+    }
+}
+
+impl<V> MapLike<V> for BTreeMap<ConfiguredTargetKey, V> {
+    fn get_value(&self, key: &ConfiguredTargetKey) -> Option<&V> {
+        self.get(key)
+    }
+    fn put(&mut self, key: ConfiguredTargetKey, value: V) {
+        self.insert(key, value);
+    }
 }
 
 /// `Engine::commit_loaded_package` of a package the evaluation loaded,

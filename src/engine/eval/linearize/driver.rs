@@ -148,6 +148,10 @@ pub(crate) struct Store {
     /// Source-file lookups' missing inputs and source directories (Tgt
     /// nodes; order-free maps, published with the values).
     pub(crate) sources_side: Vec<crate::engine::SourceSide>,
+    /// Keep released transcripts until a flush planned them (a pooled
+    /// evaluation: [`Coord::subtree`]).
+    pub(crate) delay_release: bool,
+    pub(crate) release_pending: Vec<NodeId>,
 }
 
 impl Store {
@@ -177,17 +181,31 @@ impl Store {
         (self.consoles.len() - 1) as u32
     }
 
-    /// Free what pass 1 will not read again.
+    /// Free what pass 1 will not read again: on the pool, a node's
+    /// transcript only once a flush planned it (a speculative phase 2 of a
+    /// flag replays the subtrees not planned yet, `Coord::subtree`).
     fn release(&mut self, pass: &mut Pass1) {
         let (nodes, segments) = pass.take_released();
-        for node in nodes {
-            self.transcripts.remove(&node);
-            self.released.insert(node);
+        if self.delay_release {
+            self.release_pending.extend(nodes);
+        } else {
+            for node in nodes {
+                self.transcripts.remove(&node);
+                self.released.insert(node);
+            }
         }
         for index in segments {
             if let Some((_, events)) = self.segments.get_mut(index) {
                 *events = Vec::new();
             }
+        }
+    }
+
+    /// Free the transcripts released before a flush (it planned them).
+    fn free_released(&mut self) {
+        for node in std::mem::take(&mut self.release_pending) {
+            self.transcripts.remove(&node);
+            self.released.insert(node);
         }
     }
 }
@@ -573,6 +591,7 @@ impl Coord<'_> {
             std::sync::atomic::Ordering::Relaxed,
         );
         result?;
+        self.store.free_released();
         // The FeatureFlagInfo values speculated for config_settings (S2,
         // the CsMatch split) against what this flush planned.
         self.verify_speculated();
@@ -820,18 +839,32 @@ impl Coord<'_> {
     /// phase 2 of a config_setting's Starlark flag plans). `Err`: the
     /// subtree cannot be replayed now (a transcript not complete or freed,
     /// a cycle, a divergence).
-    pub(crate) fn subtree(&self, root: NodeId) -> Result<Subtree, String> {
+    pub(crate) fn subtree(
+        &self,
+        root: NodeId,
+        known: &dyn Fn(&ConfiguredTargetKey) -> bool,
+    ) -> Result<Subtree, String> {
         with_running(|stack| {
             let view = View {
                 store: &self.store,
                 stack,
                 ct1_values: &self.ct1_values,
             };
+            let planned = |key: &ConfiguredTargetKey| {
+                known(key)
+                    || self
+                        .engine
+                        .action_planning
+                        .as_ref()
+                        .is_some_and(|state| state.dry.contains_key(key))
+            };
             let source = SubtreeSource {
                 view: &view,
                 kind: SegmentKind::Setup,
                 events: vec![Event::Reach(root)],
                 freed: std::cell::Cell::new(false),
+                planned: &planned,
+                imported: std::cell::RefCell::new(Vec::new()),
             };
             let mut pass = Pass1::new(Options::default());
             let mut ops = Vec::new();
@@ -861,9 +894,16 @@ impl Coord<'_> {
             if let Some(divergence) = out.divergences.first() {
                 return Err(divergence.clone());
             }
+            let imported = source
+                .imported
+                .into_inner()
+                .into_iter()
+                .filter(|key| !known(key))
+                .collect();
             Ok(Subtree {
                 plan,
                 canonical,
+                imported,
                 toolchain_implementations: out.toolchain_implementations,
             })
         })
@@ -896,6 +936,9 @@ pub(crate) struct Subtree {
     pub(crate) plan: Vec<CtKey>,
     /// The configured targets (the variant reached first).
     pub(crate) canonical: Vec<CtKey>,
+    /// The configured targets a flush planned already (their phase 2 is
+    /// the planning state's): not replayed, not in `plan`.
+    pub(crate) imported: Vec<ConfiguredTargetKey>,
     /// The first-visit forced execution platforms.
     pub(crate) toolchain_implementations: std::collections::BTreeMap<ConfiguredTargetKey, Label>,
 }
@@ -907,15 +950,14 @@ struct SubtreeSource<'a, 'v> {
     kind: SegmentKind,
     events: Vec<Event>,
     freed: std::cell::Cell<bool>,
+    /// Planned already (by a flush, or by the scratch engine before): its
+    /// subtree is not replayed.
+    planned: &'a dyn Fn(&ConfiguredTargetKey) -> bool,
+    imported: std::cell::RefCell<Vec<ConfiguredTargetKey>>,
 }
 
-impl SubtreeSource<'_, '_> {
-    fn note(&self, node: NodeId) {
-        if self.view.store.released.contains(&node) {
-            self.freed.set(true);
-        }
-    }
-}
+/// A planned configured target's transcript for a subtree's pass 1: done.
+const PLANNED: &[Event] = &[Event::Done];
 
 impl Transcripts for SubtreeSource<'_, '_> {
     fn key(&self, node: NodeId) -> NodeKey {
@@ -923,13 +965,42 @@ impl Transcripts for SubtreeSource<'_, '_> {
     }
 
     fn ct1(&self, node: NodeId) -> Option<Ct1Record<'_>> {
-        self.note(node);
-        self.view.ct1(node)
+        let record = self.view.ct1(node)?;
+        if let NodeKey::Ct1(ct) = self.view.key(node)
+            && (self.planned)(&ct.key)
+            && record.complete
+        {
+            let mut imported = self.imported.borrow_mut();
+            if !imported.contains(&ct.key) {
+                imported.push(ct.key);
+            }
+            return Some(Ct1Record {
+                events: PLANNED,
+                ..record
+            });
+        }
+        if self.view.store.released.contains(&node) {
+            self.freed.set(true);
+        }
+        Some(record)
     }
 
     fn memo(&self, node: NodeId) -> Option<MemoRecord<'_>> {
-        self.note(node);
-        self.view.memo(node)
+        let record = self.view.memo(node)?;
+        // The registrations and platforms analyze declarations (toolchain
+        // rules, platforms, constraints) whose phase 2 nothing in the
+        // subtree reads: their memo values were published already.
+        if matches!(
+            self.view.key(node),
+            NodeKey::RegToolchains(_) | NodeKey::RegExecPlatforms(_) | NodeKey::Platform(_)
+        ) && record.complete
+        {
+            return Some(MemoRecord {
+                events: &[],
+                ..record
+            });
+        }
+        Some(record)
     }
 
     fn segment(&self, index: usize) -> Option<SegmentRecord<'_>> {
@@ -1145,6 +1216,7 @@ impl Engine {
             {
                 let mut coord = bodies.coord();
                 coord.store.warnings_seen = coord.engine.warnings.len();
+                coord.store.delay_release = bodies.framed;
                 coord.lin = Some(Box::new(lin));
                 coord.begin_segment(SegmentKind::Setup);
             }
@@ -1163,6 +1235,10 @@ impl Engine {
                 None
             };
             let pooled_for = pooled_at.elapsed();
+            // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
+            if std::env::var_os("BAZEL_RS_EVAL_PARKED_DEBUG").is_some() {
+                parked_histogram(&evaluator);
+            }
             let pool_done = if stats_enabled() {
                 evaluator.stats().done
             } else {
@@ -1200,6 +1276,45 @@ impl Engine {
                     reason(1),
                     reason(2),
                     reason(3)
+                );
+                let rounds = std::mem::take(
+                    &mut *ROUNDS
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
+                let big: Vec<String> = rounds
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (done, time))| *done >= 1000 || time.as_millis() >= 100)
+                    .map(|(index, (done, time))| {
+                        format!("#{} {done} in {} ms", index + 2, time.as_millis())
+                    })
+                    .collect();
+                crate::note!(
+                    "bazel-rs: eval phase 1: later pool rounds {} ({} nodes in the first 16, {} ms); with >= 1000 nodes: {}",
+                    rounds.len(),
+                    rounds.iter().map(|(done, _)| done).sum::<u64>(),
+                    rounds
+                        .iter()
+                        .map(|(_, time)| time.as_millis())
+                        .sum::<u128>(),
+                    big.join(", ")
+                );
+                let drive =
+                    |index: usize| DRIVE[index].load(std::sync::atomic::Ordering::Relaxed) / 1000;
+                crate::note!(
+                    "bazel-rs: eval phase 1: driver: pool rounds {} ms, requested targets' lookups and evaluations {} ms (the linearizer's flushes included)",
+                    drive(0),
+                    drive(1)
+                );
+                let spec = &super::super::nodes::speculate::STATS;
+                let spec = |index: usize| spec[index].load(std::sync::atomic::Ordering::Relaxed);
+                crate::note!(
+                    "bazel-rs: eval phase 1: speculative flag phase 2s {}, left {}, scratch entries planned {}, {} ms",
+                    spec(0),
+                    spec(1),
+                    spec(2),
+                    spec(3) / 1000
                 );
             }
             let mut coord = bodies.coord();
@@ -1415,6 +1530,74 @@ pub(crate) fn commit_roots(repositories: &crate::repository::RepositorySet, root
     crate::observed_fs::commit_to_recorder(scope.finish());
 }
 
+/// The first node below `root`, in the walk's order (a depth-first walk
+/// of the parked nodes in need order), that waits for the sequential pass
+/// (`bodies::INLINE`).
+fn first_inline_blocker(
+    evaluator: &Evaluator<'_, Phase1Bodies<'_, '_>>,
+    root: NodeId,
+) -> Option<NodeId> {
+    use super::super::graph::{State, Wait};
+    use super::super::nodes::bodies::INLINE;
+    let graph = evaluator.graph();
+    let mut seen = FxHashSet::default();
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let entry = graph.entry(id);
+        if entry.state() != State::Waiting {
+            continue;
+        }
+        let wait = entry.inner.lock().wait.clone();
+        match wait {
+            Wait::Repo(name) | Wait::Unresolvable(name) if name == INLINE => return Some(id),
+            Wait::Nodes(nodes) => stack.extend(nodes.into_iter().rev()),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// BAZEL_RS_EVAL_PARKED_DEBUG: what the parked nodes wait for, by kind.
+fn parked_histogram(evaluator: &Evaluator<'_, Phase1Bodies<'_, '_>>) {
+    use super::super::graph::{State, Wait};
+    let graph = evaluator.graph();
+    let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+    for id in graph.ids() {
+        let entry = graph.entry(id);
+        if entry.state() != State::Waiting {
+            continue;
+        }
+        let wait = entry.inner.lock().wait.clone();
+        let what = match &wait {
+            Wait::Nodes(nodes) => {
+                let waiting: Vec<_> = nodes
+                    .iter()
+                    .filter(|node| graph.entry(**node).state() != State::Done)
+                    .map(|node| {
+                        let state = graph.entry(*node).state();
+                        format!("{}:{state:?}", graph.key(*node).kind())
+                    })
+                    .collect();
+                format!("nodes {}", waiting.first().cloned().unwrap_or_default())
+            }
+            Wait::Repo(name) => format!("repo {}", name.escape_debug()),
+            other => format!("{other:?} {:?}", graph.key(id))
+                .chars()
+                .take(160)
+                .collect(),
+        };
+        *counts
+            .entry(format!("{} on {what}", graph.key(id).kind()))
+            .or_default() += 1;
+    }
+    for (what, count) in counts {
+        crate::note!("bazel-rs: parked after the first round: {count} {what}");
+    }
+}
+
 /// BAZEL_RS_EVAL_STATS=1.
 fn stats_enabled() -> bool {
     // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
@@ -1525,14 +1708,43 @@ fn pool_round(
     pooled.store(true, std::sync::atomic::Ordering::Release);
     evaluator.set_inline(false);
     evaluator.retry_unresolvable();
+    let started = std::time::Instant::now();
+    // The node counts of the first rounds only (an O(nodes) scan).
+    let counted = stats_enabled()
+        && ROUNDS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+            < 200;
+    let before = counted.then(|| evaluator.stats().done);
     evaluator.evaluate_round(roots, &mut Lane { shared });
+    if stats_enabled() {
+        let elapsed = started.elapsed();
+        let done = before.map_or(0, |before| evaluator.stats().done - before);
+        ROUNDS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((done, elapsed));
+    }
     evaluator.set_inline(true);
     pooled.store(false, std::sync::atomic::Ordering::Release);
 }
 
-/// A requested target's sequential pass this long runs the pool again
-/// before the next one (S2).
-const POOL_ROUND_AFTER: std::time::Duration = std::time::Duration::from_millis(5);
+/// BAZEL_RS_EVAL_STATS: the sequential driver's time (µs) in the later
+/// pool rounds, and in the requested targets' lookups and evaluations.
+static DRIVE: [std::sync::atomic::AtomicU64; 2] = [
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+];
+
+/// BAZEL_RS_EVAL_STATS: the later pool rounds (nodes done, time).
+static ROUNDS: std::sync::Mutex<Vec<(u64, std::time::Duration)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The sequential pass's attempts so far.
+fn sequential_attempts() -> u64 {
+    super::super::nodes::bodies::SEQUENTIAL_ATTEMPTS.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// The walk's `plan_build` phase 1 over the evaluator: the explicit
 /// target platform, then each requested label (`analyze_requested`).
@@ -1547,7 +1759,7 @@ fn drive(
 ) -> Result<(), String> {
     // S2: the pool runs again after a requested target's sequential pass
     // did real work (it may have unblocked what the pool parked).
-    let mut last_inline = std::time::Duration::ZERO;
+    let mut ran = sequential_attempts();
     let evaluate = |key: &NodeKey| -> Arc<NodeValue> {
         evaluator.evaluate(
             std::slice::from_ref(key),
@@ -1612,11 +1824,6 @@ fn drive(
         }
     };
     for (position, label) in labels.iter().enumerate() {
-        if let Some(roots) = pool_roots
-            && last_inline >= POOL_ROUND_AFTER
-        {
-            pool_round(bodies, evaluator, shared, roots);
-        }
         let started = std::time::Instant::now();
         // Engine::analyze_requested: the test-trimmed top-level key.
         let looked_up = lookup(label);
@@ -1663,6 +1870,31 @@ fn drive(
                 }
             }
         };
+        let resolving = std::time::Instant::now();
+        // What only the sequential pass can run (a package blocked on an
+        // extension's preparation, a flag left to its flush), one at a
+        // time in the walk's order, each followed by the pool on what it
+        // unblocked (S2): the sequential pass then finds the rest done.
+        if pool_roots.is_some()
+            && let Ok(root) = &root
+        {
+            let round = std::time::Instant::now();
+            let root_id = evaluator.graph().intern(root);
+            while let Some(blocker) = first_inline_blocker(evaluator, root_id) {
+                let key = evaluator.graph().key(blocker).clone();
+                evaluate(&key);
+                if evaluator.graph().value(blocker).is_none() {
+                    // It waits for more (the sequential pass below runs it).
+                    break;
+                }
+                pool_round(bodies, evaluator, shared, std::slice::from_ref(root));
+            }
+            DRIVE[0].fetch_add(
+                round.elapsed().as_micros() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+        let resolved = resolving.elapsed();
         // The linearizer's frontier first (the pool: it runs before the
         // evaluator's own work).
         let frontier = bodies.coord().frontier();
@@ -1674,6 +1906,10 @@ fn drive(
             NodeValue::Ct1(value) => value.outcome.as_ref().map(|_| ()).map_err(Clone::clone),
             _ => Err("internal error: a root with another value".to_owned()),
         });
+        DRIVE[1].fetch_add(
+            started.elapsed().saturating_sub(resolved).as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         // The requested target's segment renders the chain errors.
         let analyzed = analyzed.map_err(|error| render_chains(shared, &error, trimmed.as_ref()));
         // A flush of this segment that failed where the walk would have
@@ -1713,7 +1949,16 @@ fn drive(
                 None => error,
             }
         })?;
-        last_inline = started.elapsed();
+        if pool_roots.is_some() && sequential_attempts() != ran {
+            // What it ran may have unblocked more for the pool.
+            let round = std::time::Instant::now();
+            pool_round(bodies, evaluator, shared, pool_roots.unwrap_or_default());
+            DRIVE[0].fetch_add(
+                round.elapsed().as_micros() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+        ran = sequential_attempts();
     }
     bodies.coord().begin_segment(SegmentKind::RootsDone);
     Ok(())

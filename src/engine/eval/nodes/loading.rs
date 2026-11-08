@@ -216,6 +216,10 @@ pub(crate) fn package_body(
                     repositories.fetch_blocked_ahead(error);
                 }
                 POOL_INLINE_LOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
+                if std::env::var_os("BAZEL_RS_EVAL_PARKED_DEBUG").is_some() {
+                    eprintln!("bazel-rs: pool load of {id:?} left: {:?}", sentinel);
+                }
 
                 let module_events = unit
                     .prints

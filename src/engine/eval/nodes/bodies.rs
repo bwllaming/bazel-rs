@@ -325,6 +325,11 @@ pub(crate) static INLINE_REASONS: [std::sync::atomic::AtomicU64; 4] = [
     std::sync::atomic::AtomicU64::new(0),
 ];
 
+/// The attempts the sequential pass of a pooled evaluation ran (S2: the
+/// driver runs the pool again after it ran any).
+pub(crate) static SEQUENTIAL_ATTEMPTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// The marker of [`Missing::Repo`] for an attempt only the sequential
 /// pass can run (S2: on the pool, a flush or a repository demand): it
 /// parks until the inline pass.
@@ -439,6 +444,7 @@ impl Bodies for Phase1Bodies<'_, '_> {
         let events = {
             let mut coord = self.coord();
             if self.framed && !self.pooled() {
+                SEQUENTIAL_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 // The sequential pass of a pooled evaluation: what the walk
                 // did before this point (the pool's packages committed,
                 // their roots counting) is applied first.
