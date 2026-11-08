@@ -311,6 +311,8 @@ impl Coord<'_> {
         for (key, _) in &lin.plan[before..] {
             lin.pass.external(key.clone(), NodeId(u32::MAX), true);
         }
+        let added = lin.plan.len() - before;
+        lin.replay.planned_elsewhere(added);
         result
     }
 
@@ -714,8 +716,19 @@ fn drive(
     if let Some(target) = target_platform {
         let key = NodeKey::Platform(ConfiguredTargetKey::new(target, top));
         let id = evaluator.graph().intern(&key);
-        bodies.coord().push_event(Event::MemoUse(id));
-        if let NodeValue::Platform(Err(error)) = evaluate(&key).as_ref() {
+        // Engine::platform_info: its shared scope around the memo.
+        {
+            let mut coord = bodies.coord();
+            coord.push_event(Event::ScopeEnter("platform_info"));
+            coord.push_event(Event::MemoUse(id));
+        }
+        let value = evaluate(&key);
+        {
+            let mut coord = bodies.coord();
+            coord.drain();
+            coord.push_event(Event::ScopeExit);
+        }
+        if let NodeValue::Platform(Err(error)) = value.as_ref() {
             return Err(error.clone().target_text());
         }
     }

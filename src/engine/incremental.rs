@@ -411,6 +411,12 @@ impl TapeReplay {
         }
     }
 
+    /// `count` plan entries were made off the tape (a flush's phase 2
+    /// analyzed a deferred platform's tree as the walk does).
+    pub(super) fn planned_elsewhere(&mut self, count: usize) {
+        self.plan_len += count as u32;
+    }
+
     /// The scope context the tape is in.
     fn context(&self) -> ScopeContext {
         let shared: Vec<&'static str> = self

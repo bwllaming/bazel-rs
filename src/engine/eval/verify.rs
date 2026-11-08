@@ -117,8 +117,17 @@ fn text_difference(what: &str, walk: &str, eval: &str) -> Option<String> {
         .zip(&eval_lines)
         .position(|(walk, eval)| walk != eval)
         .unwrap_or(walk_lines.len().min(eval_lines.len()));
+    // The section of a Debug dump the line is in (`    name: [`).
+    let section = walk_lines[..index.min(walk_lines.len())]
+        .iter()
+        .rev()
+        .find(|line| {
+            line.starts_with("    ") && !line.starts_with("     ") && line.ends_with(": [")
+        })
+        .map(|line| line.trim())
+        .unwrap_or("");
     Some(format!(
-        "{what} differ at line {} ({}/{} lines):\n    walk: {:?}\n    eval: {:?}",
+        "{what} differ at line {} {section}({}/{} lines):\n    walk: {:?}\n    eval: {:?}",
         index + 1,
         walk_lines.len(),
         eval_lines.len(),
@@ -224,32 +233,8 @@ impl Engine {
         }
     }
 
-    fn verify_difference(
-        &mut self,
-        walk: &mut Engine,
-        labels: &[crate::label::Label],
-        walk_result: &Result<root_checkpoint::Outcome<BuildPlan>, String>,
-        result: &Result<root_checkpoint::Outcome<BuildPlan>, String>,
-        walk_console: &[crate::ui::Deferred],
-        eval_console: &[crate::ui::Deferred],
-    ) -> Option<(Compared, String)> {
-        // A cquery root checkpoint (the evaluator's only) ends planning
-        // early: nothing comparable.
-        if let Ok(root_checkpoint::Outcome::AcceptedQuery(_)) = result {
-            return None;
-        }
-        // One failed where the other did not: the failure first.
-        if walk_result.is_err() != result.is_err() {
-            let error = |result: &Result<_, String>| result.as_ref().err().cloned();
-            return Some((
-                Compared::Actions,
-                format!(
-                    "the planning outcome differs: walk {:?}, eval {:?}",
-                    error(walk_result),
-                    error(result)
-                ),
-            ));
-        }
+    /// The phase-1 state of a successful analysis compared.
+    fn state_difference(&mut self, walk: &mut Engine) -> Option<(Compared, String)> {
         let (walk_observed, eval_observed) = (
             walk.eval_verifying.take().unwrap_or_default(),
             self.eval_verifying.take().unwrap_or_default(),
@@ -327,6 +312,42 @@ impl Engine {
                 "the configured rules differ".to_owned(),
             ));
         }
+        None
+    }
+
+    fn verify_difference(
+        &mut self,
+        walk: &mut Engine,
+        labels: &[crate::label::Label],
+        walk_result: &Result<root_checkpoint::Outcome<BuildPlan>, String>,
+        result: &Result<root_checkpoint::Outcome<BuildPlan>, String>,
+        walk_console: &[crate::ui::Deferred],
+        eval_console: &[crate::ui::Deferred],
+    ) -> Option<(Compared, String)> {
+        // A cquery root checkpoint (the evaluator's only) ends planning
+        // early: nothing comparable.
+        if let Ok(root_checkpoint::Outcome::AcceptedQuery(_)) = result {
+            return None;
+        }
+        // One failed where the other did not: the failure first.
+        if walk_result.is_err() != result.is_err() {
+            let error = |result: &Result<_, String>| result.as_ref().err().cloned();
+            return Some((
+                Compared::Actions,
+                format!(
+                    "the planning outcome differs: walk {:?}, eval {:?}",
+                    error(walk_result),
+                    error(result)
+                ),
+            ));
+        }
+        // A failed analysis leaves partial state the build never reads
+        // (the walk's maps keep what a failed body wrote before failing):
+        // only its error, warnings and console are compared.
+        let failed = walk_result.is_err();
+        if !failed && let Some(difference) = self.state_difference(walk) {
+            return Some(difference);
+        }
         let outcome = |result: &Result<root_checkpoint::Outcome<BuildPlan>, String>| match result {
             Err(error) => format!("error: {error}\n"),
             Ok(root_checkpoint::Outcome::AcceptedQuery(_)) => "accepted query\n".to_owned(),
@@ -375,7 +396,7 @@ impl Engine {
         {
             return Some((Compared::Stderr, difference));
         }
-        if self.tracking() {
+        if !failed && self.tracking() {
             let index = |engine: &mut Engine| {
                 engine.incremental_index(labels).map(|mut index| {
                     index.costs.clear();

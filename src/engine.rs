@@ -11799,7 +11799,7 @@ impl Engine {
             Some(mode) => mode,
             None => eval::check_mode()?,
         };
-        if self.eval_verifying.is_none() && eval::verify::enabled() {
+        if self.eval_verifying.is_none() && self.eval_mode.is_none() && eval::verify::enabled() {
             return self.plan_build_verified(labels, checkpoint);
         }
         crate::progress::analysis_targets(labels.len());
