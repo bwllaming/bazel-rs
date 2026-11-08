@@ -110,6 +110,17 @@ impl Workspace {
     }
 
     fn build(&self, mode: &str, threads: usize, jitter: u64, args: &[&str]) -> Output {
+        self.build_env(mode, threads, jitter, &[], args)
+    }
+
+    fn build_env(
+        &self,
+        mode: &str,
+        threads: usize,
+        jitter: u64,
+        env: &[(&str, &str)],
+        args: &[&str],
+    ) -> Output {
         // A fresh cache per run: every package loads (and prints) again.
         let _ = fs::remove_dir_all(self.path().join("cache"));
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
@@ -133,6 +144,7 @@ impl Workspace {
             ])
             .arg(format!("--loading_phase_threads={threads}"))
             .args(args)
+            .envs(env.iter().copied())
             .output()
             .unwrap()
     }
@@ -182,5 +194,9 @@ fn the_pool_gives_the_walks_output_at_every_thread_count() {
             assert_eq!(stable(&eval), text, "{what}");
             assert_eq!(eval.stdout, walk.stdout, "{what}");
         }
+        // Attempts abandoned at random (pass 1's restart hook) on the pool.
+        let eval = ws.build_env("eval", 8, 0, &[("BAZEL_RS_EVAL_RESTARTS", "5")], args);
+        assert_eq!(eval.status.code(), walk.status.code(), "{args:?} restarts");
+        assert_eq!(stable(&eval), text, "{args:?} restarts");
     }
 }

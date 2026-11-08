@@ -63,7 +63,7 @@ pub(crate) struct Loading {
     /// The package groups resolved so far (`Engine::group_nodes`).
     pub(crate) groups: Mutex<FxHashMap<Label, Arc<crate::package_specification::GroupNode>>>,
     /// The module repository root each Pkg node waits for on the lane.
-    pub(crate) pending_blockers: Mutex<FxHashMap<PackageId, String>>,
+    pub(crate) pending_blockers: Mutex<FxHashMap<PackageId, Vec<String>>>,
     /// What the lane wrote materializing a root, by blocker.
     #[allow(clippy::type_complexity)]
     pub(crate) lane_writes:
@@ -232,7 +232,10 @@ pub(crate) fn package_body(
                 // A module repository's root: the coordinator's lane
                 // materializes it and the unit loads on the pool again.
                 if let Some(blocker) = sentinel.and_then(|error| module_root_blocker(error)) {
-                    lock(&shared.loading.pending_blockers).insert(id.clone(), blocker.to_owned());
+                    lock(&shared.loading.pending_blockers)
+                        .entry(id.clone())
+                        .or_default()
+                        .push(blocker.to_owned());
                     return Err(Missing::Repo(blocker.to_owned()));
                 }
                 return Err(Missing::Repo(super::bodies::INLINE.to_owned()));
@@ -270,9 +273,12 @@ pub(crate) fn package_body(
     }
     // What the lane's materialization of a root it was blocked on wrote,
     // where the walk's inline load would have written it.
-    let blocker = lock(&shared.loading.pending_blockers).remove(id);
-    if let Some((writes, observations)) =
-        blocker.and_then(|blocker| lock(&shared.loading.lane_writes).remove(&blocker))
+    let blockers = lock(&shared.loading.pending_blockers)
+        .remove(id)
+        .unwrap_or_default();
+    for (writes, observations) in blockers
+        .iter()
+        .filter_map(|blocker| lock(&shared.loading.lane_writes).remove(blocker))
     {
         cx.coord()
             .store
