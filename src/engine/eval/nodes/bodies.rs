@@ -53,6 +53,19 @@ pub(crate) struct Coord<'e> {
     pub(crate) ct1_values: FxHashMap<CtKey, Arc<Ct1Value>>,
     /// The source files whose analysis succeeded (`analyzed_sources`).
     pub(crate) sources: FxHashSet<Label>,
+    /// BAZEL_RS_EVAL_RESTARTS: the needs answered `Missing` once.
+    pub(crate) restarted: FxHashSet<(NodeId, Vec<NodeId>)>,
+}
+
+/// BAZEL_RS_EVAL_RESTARTS=<seed>: the restart test hook's seed.
+fn restarts_seed() -> Option<u64> {
+    static SEED: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    // snapshot-unrecorded: a test hook; the analysis result must not change.
+    *SEED.get_or_init(|| {
+        std::env::var("BAZEL_RS_EVAL_RESTARTS")
+            .ok()
+            .and_then(|seed| seed.parse().ok())
+    })
 }
 
 impl Coord<'_> {
@@ -108,7 +121,26 @@ struct BodyCx<'a, 'e> {
 
 impl Cx for BodyCx<'_, '_> {
     fn need(&mut self, keys: &[NodeKey]) -> Result<Vals, Missing> {
-        self.cx.need(keys)
+        let vals = self.cx.need(keys)?;
+        // BAZEL_RS_EVAL_RESTARTS=<seed> (a test hook): the first need of a
+        // key by a node is answered `Missing` at random (one in four), as
+        // a parallel evaluation parks an attempt: the attempt is abandoned
+        // and the node runs again (its transcript must not change).
+        if let Some(seed) = restarts_seed() {
+            let current = self.cx.current();
+            let ids: Vec<NodeId> = keys.iter().map(|key| self.cx.id_of(key)).collect();
+            use std::hash::BuildHasher;
+            let roll = crate::fast_hash::FxBuildHasher::default().hash_one((
+                seed,
+                current,
+                format!("{keys:?}"),
+            ));
+            let fresh = self.coord().restarted.insert((current, ids.clone()));
+            if fresh && roll % 4 == 0 {
+                return Err(Missing::Nodes(ids));
+            }
+        }
+        Ok(vals)
     }
 
     fn emit(&mut self, event: Event) {
@@ -165,6 +197,7 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
                 ct1_done: FxHashMap::default(),
                 ct1_values: FxHashMap::default(),
                 sources: FxHashSet::default(),
+                restarted: FxHashSet::default(),
             }),
         }
     }
