@@ -76,6 +76,10 @@ pub(crate) struct Loading {
     /// The module execution platforms (`Engine::module_execution_platforms`).
     #[allow(clippy::type_complexity)]
     pub(crate) module_execution_platforms: Mutex<Option<Result<Vec<(String, String)>, String>>>,
+    /// The source files resolved to a path the engine memoizes
+    /// (`Engine::source_targets`; S3: published for phase 2's prepares
+    /// off the coordinator).
+    pub(crate) stable_sources: Mutex<Vec<(Label, PathBuf)>>,
 }
 
 /// A loaded package's value: the package and its lookup indexes.
@@ -378,6 +382,14 @@ pub(crate) fn target_body(
     );
     if !side.missing.is_empty() || !side.directories.is_empty() {
         cx.coord().store.sources_side.push(side);
+    }
+    if let Ok((path, true)) = &found {
+        shared
+            .loading
+            .stable_sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((label.clone(), path.clone()));
     }
     Ok(NodeValue::Tgt(found.map(|(path, _)| Target::Source(path))))
 }

@@ -548,6 +548,14 @@ impl Coord<'_> {
         let Some(mut lin) = self.lin.take() else {
             return Ok(());
         };
+        // The end of phase 1 (pass 1 is through every segment, no flag is
+        // speculated any more): the transcripts are not read again, freed
+        // before the deferred flushes' walk (memory).
+        if self.store.segments_done && lin.pass.blocked_on().is_none() && lin.defer {
+            self.store.transcripts = FxHashMap::default();
+            self.store.release_pending = Vec::new();
+            self.store.carry = FxHashMap::default();
+        }
         let result = match &lin.failure {
             Some(failure) => Err(failure.error.clone()),
             None => {
@@ -744,7 +752,7 @@ impl Coord<'_> {
         point: Option<super::pass1::FlushPoint>,
     ) -> Result<(), String> {
         use super::pass2::{Op, STAT_DEFERRED, STAT_NEW_PLATFORM, STAT_ORDERED_MODE, bump};
-        let memos = stat(STAT_PUBLISH, || self.publish_values(lin));
+        let memos = stat(STAT_PUBLISH, || self.publish_values(lin, shared));
         let mut new_platform = false;
         for memo in memos {
             if let Published::Platform(key, _) = &memo {
@@ -1019,7 +1027,7 @@ impl Coord<'_> {
     /// Publish the done values into the engine's maps (the walk's writes
     /// phase 2 reads): the configured targets now; the memo values are
     /// returned (they apply at the flush's plan position).
-    fn publish_values(&mut self, lin: &mut Linearizer) -> Vec<Published> {
+    fn publish_values(&mut self, lin: &mut Linearizer, shared: &EvalShared) -> Vec<Published> {
         let engine = &mut *self.engine;
         // The configured targets pass 1 decided (the first variant reached
         // in DFS order), in its order.
@@ -1049,6 +1057,22 @@ impl Coord<'_> {
         for side in std::mem::take(&mut self.store.sources_side) {
             side.apply(&mut engine.missing_sources, &mut engine.source_directories);
         }
+        // S3: the source files the evaluation resolved, as the walk's
+        // lookups memoize them (phase 2's prepares off the coordinator read
+        // them; no recording when flushes are deferred: a hit observes as
+        // much as the lookup).
+        if lin.defer {
+            let sources = std::mem::take(
+                &mut *shared
+                    .loading
+                    .stable_sources
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            for (label, path) in sources {
+                engine.source_targets.entry(label).or_insert(path);
+            }
+        }
         let memos = self.store.published[lin.published_memos..].to_vec();
         lin.published_memos = self.store.published.len();
         memos
@@ -1056,8 +1080,8 @@ impl Coord<'_> {
 
     /// Publish everything done into the engine's maps (the end of phase
     /// 1, the requested target's compatibility check).
-    fn publish(&mut self, lin: &mut Linearizer) {
-        for memo in self.publish_values(lin) {
+    fn publish(&mut self, lin: &mut Linearizer, shared: &EvalShared) {
+        for memo in self.publish_values(lin, shared) {
             if let Published::Platform(key, _) = &memo {
                 lin.platforms.insert(key.clone());
             }
@@ -1464,6 +1488,9 @@ impl Engine {
                     && !crate::profile::active()
                     // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
                     && std::env::var_os("BAZEL_RS_EVAL_NO_DEFER").is_none();
+                // Its phase 2 then prepares on the workers (S3,
+                // parallel::frozen).
+                coord.engine.eval_async_phase2 = lin.defer;
                 coord.lin = Some(Box::new(lin));
                 coord.begin_segment(SegmentKind::Setup);
             }
@@ -1624,7 +1651,7 @@ impl Engine {
                 finished => finished,
             };
             let mut lin = coord.lin.take().expect("the linearizer");
-            coord.publish(&mut lin);
+            coord.publish(&mut lin, &shared);
             let result = result.and(finished).and_then(|()| {
                 let resumed = with_running(|stack| {
                     let view = View {
@@ -2208,7 +2235,7 @@ fn drive(
             let Some(mut lin) = coord.lin.take() else {
                 return Ok(());
             };
-            coord.publish(&mut lin);
+            coord.publish(&mut lin, shared);
             let checked = coord.with_engine(&mut lin, shared, |engine, lin| {
                 engine.check_requested_compatibility(&lin.configured, label, top)
             });

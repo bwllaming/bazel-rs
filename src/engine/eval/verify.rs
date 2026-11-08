@@ -538,6 +538,8 @@ impl Engine {
             eval_verifying: None,
             eval_flush_failure: None,
             eval_pass2: None,
+            eval_async_phase2: false,
+            frozen_walk: None,
         }
     }
 }

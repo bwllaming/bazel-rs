@@ -166,6 +166,19 @@ impl ViewCx for CoordViews<'_> {
         key: &ConfiguredTargetKey,
         fill: &mut dyn FnMut(&Engine) -> Result<starlark::values::OwnedFrozenValue, String>,
     ) -> Result<starlark::values::OwnedFrozenValue, String> {
+        if let Some(frozen) = self.engine.frozen_walk.clone() {
+            // S3: shared with the workers' prepares.
+            if let Some(value) = frozen.output_groups.get(key) {
+                return Ok(value.clone());
+            }
+            let engine = &*self.engine;
+            return frozen
+                .memos
+                .output_groups
+                .get_or_fill(key, || fill(engine).map(Some))?
+                .map(|value| (*value).clone())
+                .ok_or_else(|| "internal error: an output group was not filled".to_owned());
+        }
         if let Some(value) = self.native_output_groups.get(key) {
             return Ok(value.clone());
         }
@@ -179,6 +192,20 @@ impl ViewCx for CoordViews<'_> {
         key: TargetIdentityKey,
         fill: &mut dyn FnMut() -> Arc<crate::starlark_types::Target>,
     ) -> Arc<crate::starlark_types::Target> {
+        if let Some(frozen) = self.engine.frozen_walk.clone() {
+            // S3: shared with the workers' prepares.
+            if let Some(identity) = frozen.identities.get(&key) {
+                return identity.clone();
+            }
+            return match frozen
+                .memos
+                .identities
+                .get_or_fill(&key, || Ok::<_, std::convert::Infallible>(Some(fill())))
+            {
+                Ok(Some(identity)) => (*identity).clone(),
+                _ => fill(),
+            };
+        }
         self.target_identities
             .entry(key)
             .or_insert_with(fill)
@@ -336,18 +363,20 @@ impl PrepareCx for CoordPrepare<'_> {
 /// made (Engine::view_artifacts, Engine::view_accesses).
 #[derive(Clone)]
 pub(super) struct ViewFill {
-    view: DependencyTarget,
-    artifacts: Option<Artifacts>,
-    accesses: Option<Arc<[Label]>>,
+    pub(super) view: DependencyTarget,
+    pub(super) artifacts: Option<Artifacts>,
+    pub(super) accesses: Option<Arc<[Label]>>,
 }
 
 /// The memos the prepares of one batch fill (single-flight), moved into
 /// the planning state after it ([`Engine::apply_batch_memos`]).
 #[derive(Default)]
 pub(super) struct BatchMemos {
-    views: delta::SingleFlight<ConfiguredTargetKey, ViewFill>,
-    identities: delta::SingleFlight<TargetIdentityKey, Arc<crate::starlark_types::Target>>,
-    output_groups: delta::SingleFlight<ConfiguredTargetKey, starlark::values::OwnedFrozenValue>,
+    pub(super) views: delta::SingleFlight<ConfiguredTargetKey, ViewFill>,
+    pub(super) identities:
+        delta::SingleFlight<TargetIdentityKey, Arc<crate::starlark_types::Target>>,
+    pub(super) output_groups:
+        delta::SingleFlight<ConfiguredTargetKey, starlark::values::OwnedFrozenValue>,
 }
 
 /// Marker of a prepare off the coordinator that needs the coordinator
@@ -366,10 +395,17 @@ pub(super) struct SharedRecord {
     pub(super) abort: Option<&'static str>,
 }
 
-/// A prepare on a prepare thread ([`Engine::prepare_batch`]).
+/// A prepare on a prepare thread ([`Engine::prepare_batch`]), or (S3,
+/// eval pass 2) on an analysis worker while the coordinator commits
+/// ([`parallel::Frozen`]).
 pub(super) struct SharedPrepare<'a> {
     pub(super) engine: &'a Engine,
-    pub(super) state: &'a ActionPlanning,
+    /// The planned targets' results.
+    reads: &'a dyn PlanReads,
+    /// The memos filled before (the planning state's).
+    views: &'a DependencyViews,
+    identities: &'a BTreeMap<TargetIdentityKey, Arc<crate::starlark_types::Target>>,
+    output_groups: &'a BTreeMap<ConfiguredTargetKey, starlark::values::OwnedFrozenValue>,
     pub(super) configured: &'a ConfiguredNodes,
     pub(super) memos: &'a BatchMemos,
     /// The artifact index read and stamped at the entry's plan index.
@@ -392,11 +428,38 @@ impl<'a> SharedPrepare<'a> {
         let stamp = u32::try_from(index).unwrap_or(u32::MAX - 1);
         Self {
             engine,
-            state,
+            reads: state,
+            views: &state.views,
+            identities: &state.target_identities,
+            output_groups: &state.native_output_groups,
             configured,
             memos,
             index: ArtifactIndex {
                 shared: Arc::clone(&state.artifact_index.shared),
+                turn: stamp,
+                stamp,
+            },
+            record: SharedRecord::default(),
+            capture: Vec::new(),
+            view_artifacts: None,
+        }
+    }
+
+    /// A prepare of plan entry `index` on an analysis worker (S3, eval
+    /// pass 2): what it reads is the walk's frozen engine and the results
+    /// committed so far.
+    pub(super) fn frozen(frozen: &'a parallel::Frozen, index: usize) -> Self {
+        let stamp = u32::try_from(index).unwrap_or(u32::MAX - 1);
+        Self {
+            engine: &frozen.engine,
+            reads: &frozen.results,
+            views: &frozen.views,
+            identities: &frozen.identities,
+            output_groups: &frozen.output_groups,
+            configured: &frozen.configured,
+            memos: &frozen.memos,
+            index: ArtifactIndex {
+                shared: Arc::clone(&frozen.artifacts),
                 turn: stamp,
                 stamp,
             },
@@ -430,12 +493,11 @@ impl<'a> SharedPrepare<'a> {
     ) -> Result<DependencyTarget, String> {
         let key = ConfiguredTargetKey::new(label.clone(), edge_config);
         let engine = self.engine;
-        let state = self.state;
         let reads = ViewReads {
             configured: self.configured,
-            reads: state,
+            reads: self.reads,
         };
-        let hit = self.state.views.get(&key).map(|view| ViewFill {
+        let hit = self.views.get(&key).map(|view| ViewFill {
             view: view.clone(),
             artifacts: engine.view_artifacts.get(&key).cloned(),
             accesses: engine.view_accesses.get(&key).cloned(),
@@ -552,7 +614,7 @@ impl ViewCx for SharedPrepare<'_> {
         key: &ConfiguredTargetKey,
         fill: &mut dyn FnMut(&Engine) -> Result<starlark::values::OwnedFrozenValue, String>,
     ) -> Result<starlark::values::OwnedFrozenValue, String> {
-        if let Some(value) = self.state.native_output_groups.get(key) {
+        if let Some(value) = self.output_groups.get(key) {
             return Ok(value.clone());
         }
         let engine = self.engine;
@@ -568,7 +630,7 @@ impl ViewCx for SharedPrepare<'_> {
         key: TargetIdentityKey,
         fill: &mut dyn FnMut() -> Arc<crate::starlark_types::Target>,
     ) -> Arc<crate::starlark_types::Target> {
-        if let Some(identity) = self.state.target_identities.get(&key) {
+        if let Some(identity) = self.identities.get(&key) {
             return identity.clone();
         }
         match self
@@ -595,7 +657,7 @@ impl PrepareCx for SharedPrepare<'_> {
     }
 
     fn reads(&self) -> &dyn PlanReads {
-        self.state
+        self.reads
     }
 
     fn note_owner(

@@ -266,6 +266,9 @@ type ClientEnvironment = std::sync::OnceLock<Arc<BTreeMap<String, std::ffi::OsSt
 struct Declared {
     /// Hashed by [`DeclaredKey::new`] (lookups only, never iterated).
     entries: hashbrown::HashTable<(DeclaredKey, Artifact)>,
+    /// The keys declared since the last drain (S3, eval pass 2: the
+    /// results read off the coordinator mirror them).
+    journal: Option<std::sync::Mutex<Vec<DeclaredKey>>>,
 }
 
 /// A key of [`Declared`]: a configuration and an execution path, with its
@@ -328,6 +331,12 @@ impl Declared {
     /// Declare `artifact` at `key` (`replace`: replacing a declaration,
     /// else kept when present).
     fn put(&mut self, key: DeclaredKey, artifact: Artifact, replace: bool) {
+        if let Some(journal) = &mut self.journal {
+            journal
+                .get_mut()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(key.clone());
+        }
         match self.entries.entry(
             key.hash,
             |(known, _)| known.matches(key.config, &key.path),
@@ -3151,6 +3160,14 @@ pub struct Engine {
     /// effects a walk applies at their plan positions
     /// (eval::linearize::pass2).
     eval_pass2: Option<Box<eval::linearize::pass2::Pending>>,
+    /// BAZEL_RS_ANALYSIS=eval (S3): this build's phase 2 runs after phase 1
+    /// (flushes deferred): its walks prepare on the workers
+    /// (parallel::frozen).
+    eval_async_phase2: bool,
+    /// S3: the frozen view of the walk running (parallel::frozen): the
+    /// planning state's `views`, `target_identities` and
+    /// `native_output_groups` are in it meanwhile.
+    frozen_walk: Option<Arc<parallel::Frozen>>,
 }
 
 impl Engine {
@@ -3264,6 +3281,8 @@ impl Engine {
             eval_verifying: None,
             eval_flush_failure: None,
             eval_pass2: None,
+            eval_async_phase2: false,
+            frozen_walk: None,
         }
     }
 
@@ -7522,6 +7541,24 @@ impl Engine {
         edge_config: ConfigId,
     ) -> Result<DependencyTarget, String> {
         let key = ConfiguredTargetKey::new(label.clone(), edge_config);
+        if let Some(frozen) = self.frozen_walk.clone() {
+            // S3: the walk's memos are shared with the workers' prepares.
+            return self.frozen_dependency_view(
+                &frozen,
+                configured,
+                dry,
+                custom_providers,
+                provider_keys,
+                runfiles_info,
+                artifact_index,
+                declared,
+                native_output_groups,
+                validation,
+                target_identities,
+                label,
+                edge_config,
+            );
+        }
         if let Some(view) = views.get(&key).cloned() {
             // W0-A view counters: the W1a memo answered, nothing was built.
             crate::plan_timings::note_dependency_view(&(label, edge_config), false);
@@ -11437,6 +11474,7 @@ impl Engine {
         // likewise dropped so its OnceLocks (client env) re-read.
         self.workspace_status_once = std::sync::OnceLock::new();
         self.action_planning = None;
+        self.eval_async_phase2 = false;
         self.view_accesses.clear();
         self.view_artifacts.clear();
         self.build_info_actions.clear();

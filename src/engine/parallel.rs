@@ -33,6 +33,9 @@
 //! is the sequential engine.
 
 use super::*;
+
+mod frozen;
+pub(super) use frozen::Frozen;
 use std::collections::BTreeSet as OrderedSet;
 use std::sync::mpsc;
 
@@ -46,6 +49,17 @@ const HELD_FACTOR: usize = 8;
 
 /// How many plan entries past the turn the coordinator classifies.
 const HORIZON: usize = 4096;
+
+/// S3 (eval pass 2): the shortest walk that prepares on the workers (the
+/// frozen view costs a fork of the engine).
+const FROZEN_WALK_MIN: usize = 2048;
+
+/// S3: the analysis workers of an evaluated build (they prepare too):
+/// `--loading_phase_threads`, bounded by the cores.
+fn frozen_workers(loading_phase_threads: usize) -> usize {
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    loading_phase_threads.min(cores).max(2)
+}
 
 type Job = Box<dyn FnOnce() + Send>;
 
@@ -484,6 +498,120 @@ impl Isolation {
     }
 }
 
+/// A worker's compute of a prepared target (P3), with the pure parts of
+/// its commit: the repo mapping manifests, the declared outputs' check,
+/// the runfiles support, the outputs it registers and (S1) its commit as a
+/// delta, in an [`Isolation`] of its own; the summary is `None` after a
+/// sentinel.
+#[allow(clippy::too_many_arguments)]
+fn run_compute(
+    snapshot: ComputeSnapshot,
+    transitive: &BTreeSet<String>,
+    index: usize,
+    class: u32,
+    delta: Option<Box<delta::DeltaInputs>>,
+    compact_repo_mapping: bool,
+    verify_summary: bool,
+) -> (WorkerOutcome, Option<Arc<OutputSummary>>) {
+    let isolation = Isolation::enter();
+    let started = std::time::Instant::now();
+    let timer = crate::plan_timings::StageTimer::start(
+        crate::plan_timings::PlanStage::Compute,
+        index as u64,
+        class,
+    );
+    let (snapshot, mut outcome) = Engine::compute_target(snapshot);
+    timer.finish();
+    // The pure part of the runfiles support too (commit's
+    // plan_runfiles_support uses it), unless it would demand.
+    // P4: the repo mapping manifests its actions write
+    // (py_internal.create_repo_mapping_manifest), as the commit
+    // would (Engine::resolve_repo_mapping), unless that demands.
+    if let Ok(analyzed) = &mut outcome.analyzed {
+        for registered in &mut analyzed.actions {
+            let (Some(runfiles), Some(_)) = (&registered.repo_mapping, &registered.action.write)
+            else {
+                continue;
+            };
+            let sentinels = crate::repository_demand::sentinels_raised();
+            let repositories = &snapshot.repositories;
+            let content = crate::runfiles_tree::repo_mapping_manifest(
+                runfiles,
+                transitive,
+                &|repository: &str| repositories.mapping(repository),
+                compact_repo_mapping,
+            );
+            if let Ok(content) = content
+                && crate::repository_demand::sentinels_raised() == sentinels
+                && let Some(write) = registered.action.write.as_mut()
+            {
+                write.content = content;
+                registered.repo_mapping = None;
+            }
+        }
+    }
+    // Plan B: the commit's check of the declared outputs too
+    // (validate_declared_outputs), unless it would demand. Its
+    // lookups are the commit's (Engine::ignored is this
+    // RepositorySet's ignored_subdirectories: the first fill
+    // captures its observations and every hit replays them and
+    // notes the root obtained), recorded in this isolation and
+    // applied at the target's turn.
+    if let Ok(analyzed) = &outcome.analyzed {
+        let sentinels = crate::repository_demand::sentinels_raised();
+        let label = &snapshot.rule.label;
+        let repositories = &snapshot.repositories;
+        let checked =
+            validate_declared_outputs(label, &snapshot.output_root, &analyzed.declared, &|| {
+                Ok((
+                    repositories.root(&label.repository)?.to_path_buf(),
+                    repositories.ignored_subdirectories(&label.repository)?,
+                ))
+            });
+        if crate::repository_demand::sentinels_raised() == sentinels {
+            outcome.outputs_checked = Some(checked);
+        }
+    }
+    if let Ok(analyzed) = &outcome.analyzed {
+        let sentinels = crate::repository_demand::sentinels_raised();
+        let precomputed = RunfilesPrecomputed::compute(
+            &analyzed.runfiles,
+            transitive,
+            &snapshot.repositories,
+            &snapshot.runfiles,
+        );
+        if crate::repository_demand::sentinels_raised() == sentinels {
+            outcome.runfiles = precomputed;
+        }
+    }
+    // What its commit registers (unless it runs again inline).
+    let registers = match &outcome.analyzed {
+        Ok(analyzed) => OutputSummary::of(analyzed),
+        // Its commit reports the error and registers nothing.
+        Err(_) => OutputSummary::default(),
+    };
+    // S1: its commit, as a delta merged by the coordinator.
+    if let Some(inputs) = delta
+        && outcome.analyzed.is_ok()
+    {
+        let built = inputs.build(&snapshot, &mut outcome, index, verify_summary, &registers);
+        outcome.delta = Some(Box::new(built));
+    }
+    let elapsed = started.elapsed();
+    let (effects, sentinel) = isolation.finish();
+    let summary = (!sentinel).then(|| Arc::new(registers));
+    (
+        WorkerOutcome {
+            snapshot,
+            outcome,
+            effects,
+            sentinel,
+            elapsed,
+        },
+        summary,
+    )
+}
+
 /// A compute's result from a worker.
 struct WorkerOutcome {
     snapshot: ComputeSnapshot,
@@ -575,6 +703,9 @@ impl PreparedParts {
 
 /// A plan entry prepared ahead of its turn.
 enum Ahead {
+    /// S3 (eval pass 2): prepared and computed on a worker
+    /// ([`frozen::Frozen`]), not reported yet.
+    Preparing(frozen::Preparing),
     /// Prepared; its compute runs on a worker.
     Computing {
         parts: Box<PreparedParts>,
@@ -1126,6 +1257,22 @@ pub(super) fn report(workers: usize) {
         get(&stats.lost_notes),
         get(&stats.verified),
     ));
+    crate::snapshot::diag::line_fmt(format_args!(
+        "PERF-PARALLEL coordinator split {}",
+        frozen::SPLIT_NAMES
+            .iter()
+            .zip(&frozen::SPLIT)
+            .map(|(name, us)| format!("{name}={:.3}s", get(us) as f64 / 1e6))
+            .collect::<Vec<_>>()
+            .join(" ")
+    ));
+    crate::snapshot::diag::line_fmt(format_args!(
+        "PERF-PARALLEL frozen prepared={} aborted={} failed={} turn_wait={:.3}s",
+        get(&frozen::FROZEN_STATS[0]),
+        get(&frozen::FROZEN_STATS[1]),
+        get(&frozen::FROZEN_STATS[2]),
+        get(&frozen::FROZEN_STATS[3]) as f64 / 1e6,
+    ));
     let buckets = (0..4)
         .map(|bucket| {
             format!(
@@ -1609,6 +1756,11 @@ impl Engine {
     /// phase 2 on ~/code).
     fn analysis_workers(&self) -> usize {
         // snapshot-unrecorded: a diagnostics override of the scheduling only; the output is the same either way.
+        let overridden = std::env::var_os("BAZEL_RS_ANALYSIS_WORKERS").is_some();
+        if self.eval_async_phase2 && !overridden && frozen::enabled() {
+            return frozen_workers(self.loading_phase_threads);
+        }
+        // snapshot-unrecorded: a diagnostics override of the scheduling only; the output is the same either way.
         std::env::var("BAZEL_RS_ANALYSIS_WORKERS")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
@@ -1668,7 +1820,27 @@ impl Engine {
                 .turn_compute_us
                 .load(std::sync::atomic::Ordering::Relaxed),
         );
-        let result = self.plan_targets_pipelined(state, configured, &mut pipe);
+        // S3 (eval pass 2): a walk long enough prepares on the workers.
+        let remaining = self
+            .planning_plan
+            .as_ref()
+            .map_or(0, |plan| plan.len().saturating_sub(state.done));
+        if remaining >= FROZEN_WALK_MIN && self.frozen_prepares(state) {
+            crate::perf_mark("pass2.freeze");
+            let frozen = self.freeze(state, configured);
+            crate::perf_mark("pass2.frozen");
+            self.frozen_walk = Some(frozen);
+            pipe.capacity = (frozen_workers(self.loading_phase_threads) * 2).max(2);
+        }
+        let result = {
+            let _split = frozen::Split::enter(0);
+            self.plan_targets_pipelined(state, configured, &mut pipe)
+        };
+        if let Some(frozen) = self.frozen_walk.take() {
+            // The jobs still running hold it (a failing walk).
+            pipe.ahead.clear();
+            self.thaw(state, frozen);
+        }
         if crate::plan_timings::enabled() {
             let entries = state.done - walk_start;
             let bucket = match entries {
@@ -1721,7 +1893,10 @@ impl Engine {
         {
             // Place the lowerings done since (a failed one is the first
             // error), and keep the queue bounded.
-            self.drain_lowerings(state, lowering::Drain::Bounded)?;
+            {
+                let _split = frozen::Split::enter(1);
+                self.drain_lowerings(state, lowering::Drain::Bounded)?;
+            }
             // S3 pass 2: what the tape applied before this turn, after
             // everything before it is placed (a deferred flush's walk
             // ended there: its failures are its own).
@@ -1730,6 +1905,7 @@ impl Engine {
                 .as_ref()
                 .is_some_and(|pending| pending.due(state.done))
             {
+                let _split = frozen::Split::enter(2);
                 self.drain_lowerings(state, lowering::Drain::All)?;
                 self.eval_pass2_turn(state.done);
             }
@@ -1740,14 +1916,29 @@ impl Engine {
             state.producers.set_stamp(Some(index));
             state.producers.turn = state.producers.stamp;
             crate::progress::analysis_configured(state.done);
-            self.flush_delegations(state);
-            self.pipeline_wake(state, pipe);
-            self.commit_finished_ahead(state, configured, pipe, index, false);
+            {
+                let _split = frozen::Split::enter(3);
+                self.flush_delegations(state);
+                self.pipeline_wake(state, pipe);
+            }
+            {
+                let _split = frozen::Split::enter(4);
+                self.commit_finished_ahead(state, configured, pipe, index, false);
+            }
             let classified = index < pipe.scanned;
             let ahead = pipe
                 .ahead
                 .remove(&index)
                 .or_else(|| pipe.committed.remove(&index).map(Ahead::Committed));
+            // S3: a worker still preparing it (its turn waits for it, the
+            // coordinator committing others ahead meanwhile).
+            let ahead = match ahead {
+                Some(Ahead::Preparing(preparing)) => {
+                    pipe.computed.insert(index);
+                    self.frozen_at_turn(state, configured, pipe, index, preparing)
+                }
+                ahead => ahead,
+            };
             let was_ready = pipe.ready.contains(&index);
             if crate::plan_timings::enabled() {
                 pipe.turn_reason = self.note_turn_fallback(
@@ -1795,7 +1986,15 @@ impl Engine {
                 self.keep_going_state.fail_propagated(&key);
                 continue;
             }
-            let result = self.pipelined_turn(state, configured, pipe, &key, &rule, index, ahead);
+            let result = {
+                let bucket = match &ahead {
+                    Some(Ahead::Committed(_)) => 5,
+                    _ if !matches!(rule.kind, RuleKind::Custom) => 6,
+                    _ => 7,
+                };
+                let _split = frozen::Split::enter(bucket);
+                self.pipelined_turn(state, configured, pipe, &key, &rule, index, ahead)
+            };
             pipe.note_committed(index, &key.label);
             if !self.keep_going {
                 result?;
@@ -1818,7 +2017,10 @@ impl Engine {
                     RuleKind::PackageGroup(_) => "package_group".to_owned(),
                 };
             }
-            self.pipeline_committed(state, pipe, &key);
+            {
+                let _split = frozen::Split::enter(11);
+                self.pipeline_committed(state, pipe, &key);
+            }
             pipe.waking.clear();
         }
         self.flush_delegations(state);
@@ -1845,6 +2047,7 @@ impl Engine {
             }
             Some(Ahead::Committed(_)) => "committed_ahead",
             Some(Ahead::Failed { .. }) => "prepare_failed",
+            Some(Ahead::Preparing(_)) => "preparing",
             Some(Ahead::Computing { .. }) if !self.commits_ahead(state) => "commit_ahead_off",
             Some(Ahead::Computing { .. }) => match pipe.last_try.get(&index).copied() {
                 Some(reason) => reason,
@@ -1920,6 +2123,11 @@ impl Engine {
         pipe: &mut Pipeline,
         key: &ConfiguredTargetKey,
     ) {
+        // S3: what the workers' prepares read of it, before they may run.
+        if let Some(frozen) = &self.frozen_walk {
+            frozen.results.publish(key, state);
+            frozen.results.publish_declared(state);
+        }
         let Some(waiters) = pipe.waiting.remove(key) else {
             return;
         };
@@ -2109,7 +2317,10 @@ impl Engine {
                 drop(pending);
                 self.prepare_at_turn(state, configured, key, rule, index, class)?
             }
-            None => self.prepare_at_turn(state, configured, key, rule, index, class)?,
+            // Reported before its turn (Self::plan_targets_pipelined).
+            Some(Ahead::Preparing(_)) | None => {
+                self.prepare_at_turn(state, configured, key, rule, index, class)?
+            }
         };
         // Prepare others ahead while this one computes.
         self.fill_lookahead(state, configured, pipe, index);
@@ -2370,106 +2581,17 @@ impl Engine {
                         std::thread::sleep(std::time::Duration::from_millis(5));
                     }
                 }
-                let isolation = Isolation::enter();
-                let started = std::time::Instant::now();
-                let timer = crate::plan_timings::StageTimer::start(
-                    crate::plan_timings::PlanStage::Compute,
-                    index as u64,
-                    class,
-                );
-                let (snapshot, mut outcome) = Engine::compute_target(snapshot);
-                timer.finish();
-                // The pure part of the runfiles support too (commit's
-                // plan_runfiles_support uses it), unless it would demand.
-                // P4: the repo mapping manifests its actions write
-                // (py_internal.create_repo_mapping_manifest), as the commit
-                // would (Engine::resolve_repo_mapping), unless that demands.
-                if let Ok(analyzed) = &mut outcome.analyzed {
-                    for registered in &mut analyzed.actions {
-                        let (Some(runfiles), Some(_)) =
-                            (&registered.repo_mapping, &registered.action.write)
-                        else {
-                            continue;
-                        };
-                        let sentinels = crate::repository_demand::sentinels_raised();
-                        let repositories = &snapshot.repositories;
-                        let content = crate::runfiles_tree::repo_mapping_manifest(
-                            runfiles,
-                            &transitive,
-                            &|repository: &str| repositories.mapping(repository),
-                            compact_repo_mapping,
-                        );
-                        if let Ok(content) = content
-                            && crate::repository_demand::sentinels_raised() == sentinels
-                            && let Some(write) = registered.action.write.as_mut()
-                        {
-                            write.content = content;
-                            registered.repo_mapping = None;
-                        }
-                    }
-                }
-                // Plan B: the commit's check of the declared outputs too
-                // (validate_declared_outputs), unless it would demand. Its
-                // lookups are the commit's (Engine::ignored is this
-                // RepositorySet's ignored_subdirectories: the first fill
-                // captures its observations and every hit replays them and
-                // notes the root obtained), recorded in this isolation and
-                // applied at the target's turn.
-                if let Ok(analyzed) = &outcome.analyzed {
-                    let sentinels = crate::repository_demand::sentinels_raised();
-                    let label = &snapshot.rule.label;
-                    let repositories = &snapshot.repositories;
-                    let checked = validate_declared_outputs(
-                        label,
-                        &snapshot.output_root,
-                        &analyzed.declared,
-                        &|| {
-                            Ok((
-                                repositories.root(&label.repository)?.to_path_buf(),
-                                repositories.ignored_subdirectories(&label.repository)?,
-                            ))
-                        },
-                    );
-                    if crate::repository_demand::sentinels_raised() == sentinels {
-                        outcome.outputs_checked = Some(checked);
-                    }
-                }
-                if let Ok(analyzed) = &outcome.analyzed {
-                    let sentinels = crate::repository_demand::sentinels_raised();
-                    let precomputed = RunfilesPrecomputed::compute(
-                        &analyzed.runfiles,
-                        &transitive,
-                        &snapshot.repositories,
-                        &snapshot.runfiles,
-                    );
-                    if crate::repository_demand::sentinels_raised() == sentinels {
-                        outcome.runfiles = precomputed;
-                    }
-                }
-                // What its commit registers (unless it runs again inline).
-                let registers = match &outcome.analyzed {
-                    Ok(analyzed) => OutputSummary::of(analyzed),
-                    // Its commit reports the error and registers nothing.
-                    Err(_) => OutputSummary::default(),
-                };
-                // S1: its commit, as a delta merged by the coordinator.
-                if let Some(inputs) = delta
-                    && outcome.analyzed.is_ok()
-                {
-                    let built =
-                        inputs.build(&snapshot, &mut outcome, index, verify_summary, &registers);
-                    outcome.delta = Some(Box::new(built));
-                }
-                let elapsed = started.elapsed();
-                let (effects, sentinel) = isolation.finish();
-                *summary = (!sentinel).then(|| Arc::new(registers));
-                WorkerOutcome {
+                let (worker, registers) = run_compute(
                     snapshot,
-                    outcome,
-                    effects,
-                    sentinel,
-                    elapsed,
-                }
+                    &transitive,
+                    index,
+                    class,
+                    delta,
+                    compact_repo_mapping,
+                    verify_summary,
+                );
+                *summary = registers;
+                worker
             }));
             let result = result.map_err(|_| {
                 WORKER_PANIC
@@ -2570,7 +2692,10 @@ impl Engine {
                     break;
                 };
                 let mut stash = Vec::new();
-                let classified = self.classify(state, configured, &key, &rule, &mut stash);
+                let classified = {
+                    let _split = frozen::Split::enter(8);
+                    self.classify(state, configured, &key, &rule, &mut stash)
+                };
                 if crate::plan_timings::enabled() {
                     // The walk's chains: an entry's depth is its deepest
                     // requirement's plus one for a Starlark implementation.
@@ -2642,6 +2767,18 @@ impl Engine {
             if batch.is_empty() {
                 if pipe.ready.is_empty() {
                     break;
+                }
+                continue;
+            }
+            if let Some(frozen) = self.frozen_walk.clone() {
+                // S3: prepared and computed on the workers.
+                let _split = frozen::Split::enter(10);
+                for (index, key, rule) in batch {
+                    if crate::plan_timings::enabled() {
+                        pipe.lat.entry(index).or_default()[1] = Some(std::time::Instant::now());
+                    }
+                    let preparing = self.dispatch_frozen(&frozen, index, key, rule);
+                    pipe.ahead.insert(index, Ahead::Preparing(preparing));
                 }
                 continue;
             }
@@ -3051,6 +3188,7 @@ impl Engine {
             if index <= turn {
                 continue;
             }
+            let _split = frozen::Split::enter(9);
             self.commit_native_ahead(state, configured, pipe, index);
         }
     }
@@ -3250,6 +3388,17 @@ impl Engine {
             }
             if index <= turn {
                 continue;
+            }
+            // S3: the worker prepared it too.
+            if let Some(Ahead::Preparing(_)) = pipe.ahead.get(&index)
+                && let Some(Ahead::Preparing(preparing)) = pipe.ahead.remove(&index)
+            {
+                match self.frozen_prepared(pipe, index, preparing) {
+                    Some(ahead) => {
+                        pipe.ahead.insert(index, ahead);
+                    }
+                    None => continue,
+                }
             }
             pipe.finished.insert(index);
             pipe.computed.insert(index);

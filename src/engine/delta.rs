@@ -296,6 +296,7 @@ const _: () = {
 };
 
 /// The owned parts of an [`EngineView`] a worker job holds.
+#[derive(Clone)]
 pub(super) struct SharedView {
     semantic_only: bool,
     compact_repo_mapping: bool,
