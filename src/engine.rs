@@ -833,6 +833,14 @@ fn verify_artifacts() -> bool {
 /// of its turn — is invisible to it, as it would not exist yet
 /// sequentially. There is no global turn: only the coordinator's cursor
 /// ([`ArtifactIndex`]) has one.
+///
+/// T2 (docs/EVALUATOR.md §8, B1): a phase-2 result published before its
+/// merge ([`Self::publish_provisional`]) registers its outputs'
+/// **provisional** artifacts (producer: its own action), which its
+/// dependents' phase 2s read ahead of the merge; the merge's registration
+/// replaces them with the canonical ones (a shared output's loser names the
+/// winner), and every read of a provisional entry is recorded by the
+/// reading delta ([`delta::ProvisionalRead`]) and checked at its own merge.
 struct ConcurrentArtifactIndex {
     shards: Box<[std::sync::RwLock<IndexShard>]>,
 }
@@ -845,6 +853,12 @@ struct IndexEntry {
     file: File,
     artifact: Artifact,
     stamp: u32,
+    /// T2: registered from a published phase-2 result, not merged yet.
+    provisional: bool,
+    /// T2: the provisional artifact a merge replaced with a different one
+    /// (a stale copy registered again — a dependency view memo built from
+    /// the provisional result — is not the invariant's violation).
+    superseded: Option<Box<Artifact>>,
 }
 
 /// One shard of [`ConcurrentArtifactIndex`]: File -> (artifact, stamp),
@@ -895,12 +909,55 @@ impl ConcurrentArtifactIndex {
     /// The registered artifact of `file` visible to the reader at plan
     /// index `reader` (`u32::MAX`: everything).
     fn get(&self, file: &File, reader: u32) -> Option<Artifact> {
+        self.get_entry(file, reader).map(|(artifact, _)| artifact)
+    }
+
+    /// [`Self::get`] with the stamp of a provisional entry (T2: `Some`
+    /// when the artifact comes from a published result not merged yet).
+    fn get_entry(&self, file: &File, reader: u32) -> Option<(Artifact, Option<u32>)> {
         let hash = file_hash(file);
         let shard = self.shard(hash).read().unwrap_or_else(|e| e.into_inner());
         shard
             .find(hash, |entry| entry.file == *file)
-            .filter(|entry| entry.stamp <= reader)
-            .map(|entry| entry.artifact.clone())
+            // Its own provisional registrations are not the reader's (a
+            // build of the publishing entry again registers them).
+            .filter(|entry| entry.stamp < reader || (entry.stamp == reader && !entry.provisional))
+            .map(|entry| {
+                (
+                    entry.artifact.clone(),
+                    entry.provisional.then_some(entry.stamp),
+                )
+            })
+    }
+
+    /// T2: the entry of `file` now, whatever its stamp: its artifact and
+    /// whether it is still provisional (the check of a provisional read at
+    /// the reader's merge).
+    fn current(&self, file: &File) -> Option<(Artifact, bool, u32)> {
+        let hash = file_hash(file);
+        let shard = self.shard(hash).read().unwrap_or_else(|e| e.into_inner());
+        shard
+            .find(hash, |entry| entry.file == *file)
+            .map(|entry| (entry.artifact.clone(), entry.provisional, entry.stamp))
+    }
+
+    /// T2: register `artifact` of `file` (hashed `hash`) provisionally,
+    /// visible from `stamp` (the publishing result's plan index), unless
+    /// `file` has an entry.
+    fn publish_provisional(&self, hash: u64, file: &File, artifact: &Artifact, stamp: u32) {
+        let mut shard = self.shard(hash).write().unwrap_or_else(|e| e.into_inner());
+        if let hashbrown::hash_table::Entry::Vacant(entry) =
+            shard.entry(hash, |entry| entry.file == *file, |entry| entry.hash)
+        {
+            entry.insert(IndexEntry {
+                hash,
+                file: file.clone(),
+                artifact: artifact.clone(),
+                stamp,
+                provisional: true,
+                superseded: None,
+            });
+        }
     }
 
     /// [`register_artifact`]'s lookup and registration under one hash and
@@ -909,6 +966,11 @@ impl ConcurrentArtifactIndex {
     /// against `artifact`, [`check_reregistered`]); otherwise `artifact` is
     /// registered, visible from `stamp` (replacing a registration made
     /// ahead of its turn, which becomes visible from the earlier stamp).
+    ///
+    /// T2: a merge's registration (`provisional` false) replaces a
+    /// provisional entry (keeping a different one as `superseded`); a
+    /// provisional one (a prepare of a phase 2 run ahead of its merge, whose
+    /// dependency views read published results) keeps any entry.
     fn register(
         &self,
         hash: u64,
@@ -916,6 +978,7 @@ impl ConcurrentArtifactIndex {
         artifact: impl IntoOwned<Artifact>,
         reader: u32,
         stamp: u32,
+        provisional: bool,
     ) {
         let mut shard = self.shard(hash).write().unwrap_or_else(|e| e.into_inner());
         match shard.entry(
@@ -925,8 +988,31 @@ impl ConcurrentArtifactIndex {
         ) {
             hashbrown::hash_table::Entry::Occupied(mut entry) => {
                 let entry = entry.get_mut();
-                if entry.stamp <= reader {
-                    check_reregistered(&entry.file, &entry.artifact, artifact.borrow());
+                if entry.provisional {
+                    if !provisional {
+                        if !same_artifact(&entry.artifact, artifact.borrow()) {
+                            entry.superseded = Some(Box::new(std::mem::replace(
+                                &mut entry.artifact,
+                                artifact.into_owned(),
+                            )));
+                        }
+                        entry.provisional = false;
+                        entry.stamp = entry.stamp.min(stamp);
+                    } else if entry.stamp > reader {
+                        entry.stamp = entry.stamp.min(stamp);
+                    }
+                } else if entry.stamp <= reader {
+                    if !entry
+                        .superseded
+                        .as_deref()
+                        .is_some_and(|stale| same_artifact(stale, artifact.borrow()))
+                    {
+                        check_reregistered(&entry.file, &entry.artifact, artifact.borrow());
+                    }
+                } else if provisional && !same_artifact(&entry.artifact, artifact.borrow()) {
+                    entry.artifact = artifact.into_owned();
+                    entry.stamp = entry.stamp.min(stamp);
+                    entry.provisional = true;
                 } else {
                     entry.artifact = artifact.into_owned();
                     entry.stamp = entry.stamp.min(stamp);
@@ -938,6 +1024,8 @@ impl ConcurrentArtifactIndex {
                     file: file.into_owned(),
                     artifact: artifact.into_owned(),
                     stamp,
+                    provisional,
+                    superseded: None,
                 });
             }
         }
@@ -985,6 +1073,9 @@ struct ArtifactIndex {
     /// The stamp of new registrations: the turn, or the plan index of the
     /// target prepared or committed ahead (Self::stamp_ahead).
     stamp: u32,
+    /// T2: its registrations are provisional (a prepare on a worker reading
+    /// published results, [`prepare::SharedPrepare::frozen`]).
+    provisional: bool,
 }
 
 impl Default for ArtifactIndex {
@@ -993,6 +1084,7 @@ impl Default for ArtifactIndex {
             shared: Default::default(),
             turn: u32::MAX,
             stamp: 0,
+            provisional: false,
         }
     }
 }
@@ -1008,8 +1100,14 @@ impl ArtifactIndex {
     /// registration made ahead of its turn, which becomes visible from now
     /// on).
     fn register(&self, hash: u64, file: impl IntoOwned<File>, artifact: impl IntoOwned<Artifact>) {
-        self.shared
-            .register(hash, file, artifact, self.turn, self.stamp);
+        self.shared.register(
+            hash,
+            file,
+            artifact,
+            self.turn,
+            self.stamp,
+            self.provisional,
+        );
     }
 
     fn len(&self) -> usize {
@@ -9902,7 +10000,28 @@ impl Engine {
             again
         };
         let mut snapshot = Some(snapshot);
+        // T2: a delta built ahead of its merge over provisional results
+        // whose reads are stale now (a shared output's winner is another
+        // target) is rebuilt here, like one meeting a producer.
+        let stale = |built: &delta::TargetDelta| {
+            if built.reads.is_empty() {
+                return false;
+            }
+            let reader = state.artifact_index.turn;
+            let merging = (reader as usize) < state.done;
+            let check =
+                delta::check_reads(&state.artifact_index.shared, &built.reads, reader, merging);
+            check != delta::ReadsCheck::Valid
+        };
         let (worker_delta, reason) = match worker.map(|worker| worker.built) {
+            Some(delta::Built::Delta(built)) if stale(&built) => {
+                delta::provisional_bump(1);
+                drop(built);
+                let again = recompute(&mut snapshot);
+                analyzed = again.analyzed?;
+                (precomputed, outputs_checked) = (None, None);
+                (None, "provisional_stale")
+            }
             Some(delta::Built::Delta(built)) if !Self::delta_meets_producers(state, &built) => {
                 (Some(built), "worker")
             }
@@ -14132,6 +14251,8 @@ struct SourceInputs {
 struct ExpandedTree {
     tree: Arc<crate::analysis_runtime::ToolRunfilesTree>,
     group: Arc<scheduler::InputGroup>,
+    /// T2: the provisional index reads of its fill ([`delta::ProvisionalRead`]).
+    reads: Box<[delta::ProvisionalRead]>,
 }
 
 impl SourceInputs {
@@ -15017,6 +15138,8 @@ struct SharedInputs {
     /// Whether no shared execution path is, contains or lies below a
     /// group root ([`scheduler::groups_apart`]), by root.
     apart: std::sync::Mutex<HashMap<PathBuf, bool>>,
+    /// T2: the provisional index reads of its fill ([`delta::ProvisionalRead`]).
+    reads: Box<[delta::ProvisionalRead]>,
 }
 
 impl SharedInputs {
@@ -15070,6 +15193,7 @@ impl SharedInputs {
             occurrences,
             first,
             apart: Default::default(),
+            reads: Box::default(),
         })
     }
 
@@ -15521,6 +15645,85 @@ mod tests {
         index.restore_stamp(saved);
         index.walk_done();
         assert!(index.get(&file).is_some());
+    }
+
+    /// T2 (docs/EVALUATOR.md §8, B1): a published result's provisional
+    /// artifact is visible to later readers (recorded), not to its own
+    /// entry's builds; the merge replaces it (a shared output's loser names
+    /// the winner) and a read of the provisional one is then stale.
+    #[test]
+    fn provisional_artifacts_are_replaced_at_the_merge() {
+        let canonical = generated_out_txt();
+        let file = canonical.file.clone();
+        let provisional = Artifact::new(
+            canonical.real.to_path_buf(),
+            canonical.exec.to_path_buf(),
+            Some(("//pkg:loser#genrule".into(), 0)),
+            "//pkg:gen".into(),
+            false,
+            false,
+        );
+        let index = ConcurrentArtifactIndex::default();
+        index.publish_provisional(file_hash(&file), &file, &provisional, 5);
+        assert!(index.get(&file, 4).is_none(), "before its publisher");
+        assert!(index.get(&file, 5).is_none(), "its own builds register it");
+        let (read, stamp) = index.get_entry(&file, 9).expect("visible after it");
+        assert_eq!(stamp, Some(5));
+        let reads = vec![delta::ProvisionalRead {
+            file: file.clone(),
+            artifact: Some(read),
+            stamp: 5,
+        }];
+        assert_eq!(
+            delta::check_reads(&index, &reads, 9, false),
+            delta::ReadsCheck::Pending(5)
+        );
+        assert_eq!(
+            delta::check_reads(&index, &reads, 9, true),
+            delta::ReadsCheck::Valid
+        );
+        // The publisher's merge (at its turn) registers the winner's.
+        index.register(file_hash(&file), &file, &canonical, 5, 5, false);
+        let (now, stamp) = index.get_entry(&file, 9).expect("canonical");
+        assert!(same_artifact(&now, &canonical) && stamp.is_none());
+        assert_eq!(
+            delta::check_reads(&index, &reads, 9, false),
+            delta::ReadsCheck::Stale
+        );
+        // A stale copy registered again (a view memo) is no violation.
+        index.register(file_hash(&file), &file, &provisional, 9, 9, false);
+        assert!(same_artifact(&index.get(&file, 9).unwrap(), &canonical));
+        // A generated File read as missing is stale once an earlier entry
+        // registers it.
+        let other = Artifact::new(
+            PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/other.txt"),
+            PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/other.txt"),
+            Some(("//pkg:other#genrule".into(), 0)),
+            "//pkg:other".into(),
+            false,
+            false,
+        );
+        let missing = vec![delta::ProvisionalRead {
+            file: other.file.clone(),
+            artifact: None,
+            stamp: u32::MAX,
+        }];
+        assert_eq!(
+            delta::check_reads(&index, &missing, 9, true),
+            delta::ReadsCheck::Valid
+        );
+        index.register(file_hash(&other.file), &other.file, &other, 7, 7, false);
+        assert_eq!(
+            delta::check_reads(&index, &missing, 9, true),
+            delta::ReadsCheck::Stale
+        );
+        // Registered by the reader itself (its own stamp): not a read.
+        let index = ConcurrentArtifactIndex::default();
+        index.register(file_hash(&other.file), &other.file, &other, 9, 9, false);
+        assert_eq!(
+            delta::check_reads(&index, &missing, 9, true),
+            delta::ReadsCheck::Valid
+        );
     }
 
     /// W1b registration invariant: a File keeps its first registration; an

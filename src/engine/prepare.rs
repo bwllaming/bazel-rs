@@ -438,6 +438,7 @@ impl<'a> SharedPrepare<'a> {
                 shared: Arc::clone(&state.artifact_index.shared),
                 turn: stamp,
                 stamp,
+                provisional: false,
             },
             record: SharedRecord::default(),
             capture: Vec::new(),
@@ -462,6 +463,11 @@ impl<'a> SharedPrepare<'a> {
                 shared: Arc::clone(&frozen.artifacts),
                 turn: stamp,
                 stamp,
+                // Its views register what dependencies' dry hold: their
+                // generated outputs are registered (provisionally, if
+                // published) already, so a new entry is a source File
+                // (no producer to choose).
+                provisional: false,
             },
             record: SharedRecord::default(),
             capture: Vec::new(),

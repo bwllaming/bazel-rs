@@ -133,6 +133,56 @@ impl PlannedResults {
             .insert(key.clone(), Arc::new(results));
     }
 
+    /// T2 (docs/EVALUATOR.md §8): the results of `key`'s phase 2 built on
+    /// a worker ahead of its merge — what its dependents' prepares read
+    /// (`transitive`: its transitive repositories, the commit's first
+    /// write) —, its declarations and its registrations (provisional in
+    /// `artifacts`, visible from its plan index `stamp`). The merge
+    /// publishes the planning state's entries over them ([`Self::publish`]).
+    pub(in crate::engine) fn publish_delta(
+        &self,
+        key: &ConfiguredTargetKey,
+        delta: &delta::TargetDelta,
+        transitive: &BTreeSet<String>,
+        artifacts: &ConcurrentArtifactIndex,
+        stamp: u32,
+    ) {
+        let mut results = KeyResults {
+            repositories: Some(Arc::new(transitive.clone())),
+            ..KeyResults::default()
+        };
+        for op in &delta.ops {
+            match op {
+                delta::DeltaOp::Providers(providers, keys) => {
+                    results.providers = Some(providers.clone());
+                    results.provider_keys = Some(keys.clone());
+                }
+                delta::DeltaOp::Dry(dry) => results.dry = Some(Arc::clone(dry)),
+                delta::DeltaOp::RunfilesInfo(runfiles) => {
+                    results.runfiles_info = Some(Arc::clone(runfiles));
+                }
+                delta::DeltaOp::Declared {
+                    key,
+                    artifact,
+                    replace,
+                } => {
+                    self.declared_shard(key.hash)
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .put(key.clone(), artifact.clone(), *replace);
+                }
+                delta::DeltaOp::Artifact(file, artifact, hash) => {
+                    artifacts.publish_provisional(*hash, file, artifact, stamp);
+                }
+                _ => {}
+            }
+        }
+        self.key_shard(key)
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.clone(), Arc::new(results));
+    }
+
     /// Copy the declarations made since the last call.
     pub(in crate::engine) fn publish_declared(&self, state: &ActionPlanning) {
         let Some(journal) = state.declared.journal.as_ref() else {
@@ -546,6 +596,9 @@ impl Engine {
             (Ok(Some(parts)), Some(worker)) => {
                 bump(&stats().ahead, 1);
                 note_effects("prepare", &effects);
+                if let Ok(worker) = &worker {
+                    self.publish_ahead(pipe, index, &parts, worker, platform_known);
+                }
                 Some(Ahead::Computing {
                     parts,
                     effects,
@@ -564,7 +617,67 @@ impl Engine {
     }
 }
 
+/// T2: whether a frozen walk publishes the phase-2 results its workers
+/// built ahead of their merge (`BAZEL_RS_EVAL_NO_PUBLISH=1`: dependents
+/// wait for the merge, as before).
+fn publishes() -> bool {
+    static PUBLISH: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling switch; the output is the same either way.
+        std::env::var_os("BAZEL_RS_EVAL_NO_PUBLISH").is_none()
+    });
+    *PUBLISH
+}
+
 impl Engine {
+    /// T2 (docs/EVALUATOR.md §8): entry `index`'s phase 2 finished on a
+    /// worker with a delta: its results are published for its dependents'
+    /// prepares (Starlark rules: they become ready on it, not on its
+    /// merge), its outputs' artifacts provisionally in the index. Not
+    /// published: a compute that raised a sentinel or failed, a delta not
+    /// built or carrying an error, a prepare whose deferred target platform
+    /// the implementation asked for (it is computed again at its turn).
+    fn publish_ahead(
+        &self,
+        pipe: &mut Pipeline,
+        index: usize,
+        parts: &PreparedParts,
+        worker: &WorkerOutcome,
+        platform_known: bool,
+    ) {
+        let Some(frozen) = self.frozen_walk.as_ref() else {
+            return;
+        };
+        if !publishes()
+            || worker.sentinel
+            || !(platform_known || !worker.outcome.platform_read)
+            || worker.outcome.analyzed.is_err()
+        {
+            return;
+        }
+        let Some(delta::Built::Delta(built)) =
+            worker.outcome.delta.as_ref().map(|delta| &delta.built)
+        else {
+            return;
+        };
+        if built.error.is_some() || built.failed_output.is_some() {
+            return;
+        }
+        let stamp = u32::try_from(index).unwrap_or(u32::MAX - 1);
+        frozen.results.publish_delta(
+            &parts.key,
+            built,
+            &parts.transitive,
+            &frozen.artifacts,
+            stamp,
+        );
+        delta::provisional_bump(0);
+        if !built.reads.is_empty() {
+            delta::provisional_bump(2);
+        }
+        pipe.published.insert(parts.key.clone(), index);
+        pipe.newly_published.push(parts.key.clone());
+    }
+
     /// [`Engine::plan_dependency_view`] during a frozen walk: the memos
     /// before the walk (as the planning state's), else the walk's,
     /// single-flight with the workers' prepares (one view, one `Target`

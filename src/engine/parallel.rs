@@ -850,6 +850,16 @@ struct Pipeline {
     /// and the walk's deepest.
     depth: HashMap<ConfiguredTargetKey, u32>,
     max_depth: u32,
+    /// T2 (a frozen walk): the keys whose phase-2 results a worker
+    /// published ahead of their merge, with their plan index (a Starlark
+    /// entry waiting for one is ready on it, [`Engine::wait_or_ready`]), and
+    /// those not woken yet.
+    published: HashMap<ConfiguredTargetKey, usize>,
+    newly_published: Vec<ConfiguredTargetKey>,
+    /// T2: the keys each entry became ready on before their merge (it
+    /// commits ahead of its turn only once they are merged: what its commit
+    /// reads of them, and of their dependencies, is then canonical).
+    early: HashMap<usize, Vec<ConfiguredTargetKey>>,
 }
 
 impl Pipeline {
@@ -1268,6 +1278,13 @@ pub(super) fn report(workers: usize) {
         get(&frozen::FROZEN_STATS[1]),
         get(&frozen::FROZEN_STATS[2]),
         get(&frozen::FROZEN_STATS[3]) as f64 / 1e6,
+    ));
+    crate::snapshot::diag::line_fmt(format_args!(
+        "PERF-PARALLEL provisional published={} stale_rebuilt={} with_reads={} memo_refilled={}",
+        get(&delta::PROVISIONAL_STATS[0]),
+        get(&delta::PROVISIONAL_STATS[1]),
+        get(&delta::PROVISIONAL_STATS[2]),
+        get(&delta::PROVISIONAL_STATS[3]),
     ));
     let buckets = (0..4)
         .map(|bucket| {
@@ -1969,6 +1986,7 @@ impl Engine {
                 }
             }
             pipe.ready.remove(&index);
+            pipe.early.remove(&index);
             pipe.native_ready.remove(&index);
             pipe.finished.remove(&index);
             pipe.computed.remove(&index);
@@ -1982,6 +2000,13 @@ impl Engine {
                 self.keep_going_state.fail_propagated(&key);
                 continue;
             }
+            let ahead_kind = match &ahead {
+                Some(Ahead::Committed(_)) => "committed",
+                Some(Ahead::Computing { .. }) => "computing",
+                Some(Ahead::Failed { .. }) => "failed",
+                Some(Ahead::Preparing(_)) => "preparing",
+                None => "none",
+            };
             let result = {
                 let bucket = match &ahead {
                     Some(Ahead::Committed(_)) => 5,
@@ -1992,6 +2017,17 @@ impl Engine {
                 self.pipelined_turn(state, configured, pipe, &key, &rule, index, ahead)
             };
             pipe.note_committed(index, &key.label);
+            // snapshot-unrecorded: TEMPORARY T2 debugging.
+            if result.is_err() && std::env::var_os("BAZEL_RS_T2_DEBUG").is_some() {
+                eprintln!(
+                    "T2DEBUG failing {} at {index} ({ahead_kind}): last_try {:?} turn_reason {} early {:?}: {:?}",
+                    key.label,
+                    pipe.last_try.get(&index),
+                    pipe.turn_reason,
+                    pipe.early.get(&index).map(|keys| keys.len()),
+                    result.as_ref().err()
+                );
+            }
             if !self.keep_going {
                 result?;
             } else {
@@ -2112,6 +2148,35 @@ impl Engine {
         pipe.waking.clear();
     }
 
+    /// T2: the Starlark entries waiting for the results published since
+    /// (natives keep waiting for the merge); whether one woke.
+    fn pipeline_published(&mut self, state: &ActionPlanning, pipe: &mut Pipeline) -> bool {
+        let mut woke = false;
+        for key in std::mem::take(&mut pipe.newly_published) {
+            let Some(waiters) = pipe.waiting.remove(&key) else {
+                continue;
+            };
+            let mut natives = Vec::new();
+            for (index, rest) in waiters {
+                if index < state.done {
+                    continue;
+                }
+                if pipe.natives.contains(&index) {
+                    natives.push((index, rest));
+                    continue;
+                }
+                woke = true;
+                pipe.set_waking("published");
+                Self::wait_or_ready(state, pipe, index, rest);
+            }
+            if !natives.is_empty() {
+                pipe.waiting.entry(key).or_default().extend(natives);
+            }
+        }
+        pipe.waking.clear();
+        woke
+    }
+
     /// `key` is committed: recheck the entries waiting for it.
     fn pipeline_committed(
         &mut self,
@@ -2142,8 +2207,15 @@ impl Engine {
         index: usize,
         mut keys: Vec<ConfiguredTargetKey>,
     ) {
+        // T2: a Starlark rule's prepare (on a worker) reads published
+        // results; a native rule's commit reads the planning state.
+        let starlark = !pipe.natives.contains(&index);
         while let Some(key) = keys.pop() {
             if !state.dry.contains_key(&key) {
+                if starlark && pipe.published.contains_key(&key) {
+                    pipe.early.entry(index).or_default().push(key);
+                    continue;
+                }
                 pipe.waiting.entry(key).or_default().push((index, keys));
                 return;
             }
@@ -3375,6 +3447,7 @@ impl Engine {
             received.push(finished);
         }
         drop(finished);
+        let woke = self.pipeline_published(state, pipe);
 
         for (index, summary, platform_read, at) in received {
             if crate::plan_timings::enabled() {
@@ -3434,7 +3507,8 @@ impl Engine {
                 }
             }
         }
-        if committed {
+        let woke = woke | self.pipeline_published(state, pipe);
+        if committed || woke {
             self.fill_lookahead(state, configured, pipe, turn);
         }
         true
@@ -3476,6 +3550,27 @@ impl Engine {
             bump(&stats().ahead_budget, 1);
             pipe.last_try.insert(index, "budget");
             return Retry::Later;
+        }
+        // T2: what it became ready on is merged (its closure's artifacts
+        // are canonical).
+        if let Some(early) = pipe.early.get_mut(&index) {
+            early.retain(|key| !state.dry.contains_key(key));
+            if let Some(blocker) = early
+                .first()
+                .and_then(|key| pipe.published.get(key))
+                .copied()
+                && blocker < index
+            {
+                pipe.last_try.insert(index, "provisional_dependency");
+                pipe.park(index, blocker);
+                return Retry::Later;
+            }
+            if early.is_empty() {
+                pipe.early.remove(&index);
+            } else {
+                pipe.last_try.insert(index, "provisional_dependency");
+                return Retry::Done(false);
+            }
         }
         let Some(summary) = pipe.known.get(&index).cloned() else {
             // Its outputs are not known (a sentinel): at its turn.
@@ -3571,6 +3666,46 @@ impl Engine {
                     refilled(Ok(worker)),
                 );
                 pipe.last_try.insert(index, "platform_unknown");
+                return retry;
+            }
+        }
+        // T2: a delta built over provisional results commits ahead once
+        // their publishers merged (parked on the last one) and its reads are
+        // the canonical artifacts; a stale one is rebuilt at its turn.
+        if let Some(delta::Built::Delta(built)) =
+            worker.outcome.delta.as_ref().map(|worker| &worker.built)
+            && !built.reads.is_empty()
+        {
+            let check = delta::check_reads(
+                &state.artifact_index.shared,
+                &built.reads,
+                u32::try_from(index).unwrap_or(u32::MAX - 1),
+                false,
+            );
+            let retry = match check {
+                delta::ReadsCheck::Valid => None,
+                delta::ReadsCheck::Pending(at) if (at as usize) < index => {
+                    pipe.park(index, at as usize);
+                    pipe.last_try.insert(index, "provisional_pending");
+                    Some(Retry::Later)
+                }
+                delta::ReadsCheck::Pending(_) => {
+                    pipe.last_try.insert(index, "provisional_unknown");
+                    Some(Retry::Done(false))
+                }
+                delta::ReadsCheck::Stale => {
+                    pipe.last_try.insert(index, "provisional_stale");
+                    Some(Retry::Done(false))
+                }
+            };
+            if let Some(retry) = retry {
+                put_back(
+                    pipe,
+                    parts,
+                    prepare_effects,
+                    prepare_track,
+                    refilled(Ok(worker)),
+                );
                 return retry;
             }
         }

@@ -70,6 +70,7 @@ pub(in crate::engine) fn record(key: &ConfiguredTargetKey, delta: &TargetDelta) 
         unchecked: delta.unchecked,
         uses: delta.uses.clone(),
         failed_output: delta.failed_output.clone(),
+        reads: Vec::new(),
     };
     BENCH.with(|bench| {
         let mut bench = bench.borrow_mut();
@@ -185,6 +186,7 @@ fn copies(recorded: &[Recorded]) -> Vec<Recorded> {
                 unchecked: delta.unchecked,
                 uses: delta.uses.clone(),
                 failed_output: delta.failed_output.clone(),
+                reads: Vec::new(),
             },
         })
         .collect()

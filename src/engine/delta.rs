@@ -58,6 +58,24 @@ impl<K: std::hash::Hash + Eq + Clone, V> SingleFlight<K, V> {
         Arc::clone(shard.entry(key.clone()).or_default())
     }
 
+    /// The value of `key` if it is filled (no wait for a fill in progress).
+    pub(super) fn peek(&self, key: &K) -> Option<Arc<V>> {
+        let slot = {
+            let shard = self.shard(key).lock().unwrap_or_else(|e| e.into_inner());
+            Arc::clone(shard.get(key)?)
+        };
+        slot.try_lock().ok().and_then(|value| value.clone())
+    }
+
+    /// T2: drop `key`'s entry (its value was filled from reads that are
+    /// stale now): the next use fills it again.
+    pub(super) fn remove(&self, key: &K) {
+        self.shard(key)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(key);
+    }
+
     /// Whether `key` is filled (no wait for a fill in progress: `false`).
     pub(super) fn is_filled(&self, key: &K) -> bool {
         let slot = {
@@ -208,6 +226,81 @@ pub(super) type InputGroups = SingleFlight<u64, ExpandedTree>;
 /// address ([`SharedInputs`], ActionPlanning::input_memos).
 pub(super) type InputMemos = SingleFlight<usize, SharedInputs>;
 
+/// T2 (docs/EVALUATOR.md §8, B1): a read of the artifact index a delta
+/// built ahead of its merge depends on — a provisional entry (a published
+/// phase-2 result not merged yet: `artifact` with the publishing entry's
+/// plan index `stamp`), or a generated File not registered at all
+/// (`artifact` `None`). The delta is used at its merge only if every read
+/// is what the index holds then ([`check_reads`]); else it is rebuilt there
+/// (a contested reader: the shared output's winner is another target).
+#[derive(Clone, Debug)]
+pub(super) struct ProvisionalRead {
+    pub(super) file: File,
+    pub(super) artifact: Option<Artifact>,
+    pub(super) stamp: u32,
+}
+
+/// What [`check_reads`] found.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ReadsCheck {
+    /// Every read is the canonical entry.
+    Valid,
+    /// A read entry is still provisional: its publisher (plan index) has
+    /// not merged (`u32::MAX`: not known).
+    Pending(u32),
+    /// A read differs from the index now: rebuilt at the merge.
+    Stale,
+}
+
+/// Check `reads` (of the delta of plan entry `reader`) against `index`.
+/// `merging`: at the reader's merge, every earlier entry merged (a read
+/// still provisional is then the canonical value, registered by no merge).
+pub(super) fn check_reads(
+    index: &ConcurrentArtifactIndex,
+    reads: &[ProvisionalRead],
+    reader: u32,
+    merging: bool,
+) -> ReadsCheck {
+    let mut pending = None;
+    for read in reads {
+        match &read.artifact {
+            Some(artifact) => match index.current(&read.file) {
+                Some((now, provisional, _)) if same_artifact(&now, artifact) => {
+                    if provisional && !merging {
+                        pending = Some(pending.map_or(read.stamp, |at: u32| at.max(read.stamp)));
+                    }
+                }
+                _ => return ReadsCheck::Stale,
+            },
+            None => {
+                // Not registered when it was built: still not visible
+                // before the reader (its own registrations are stamped
+                // with its index).
+                if reader > 0 && index.get(&read.file, reader - 1).is_some() {
+                    return ReadsCheck::Stale;
+                }
+                if !merging {
+                    pending = Some(u32::MAX);
+                }
+            }
+        }
+    }
+    match pending {
+        Some(at) => ReadsCheck::Pending(at),
+        None => ReadsCheck::Valid,
+    }
+}
+
+/// T2: BAZEL_RS_EVAL_STATS / BAZEL_RS_TIMING counters: results published
+/// ahead of their merge, deltas whose reads were stale at their merge
+/// (rebuilt there), deltas with provisional reads, memo entries refilled.
+pub(super) static PROVISIONAL_STATS: [std::sync::atomic::AtomicU64; 4] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+
+pub(super) fn provisional_bump(index: usize) {
+    PROVISIONAL_STATS[index].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// A memo a delta used, in the order of its first use (FirstUse).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum MemoUse {
@@ -269,6 +362,9 @@ pub(super) struct TargetDelta {
     /// worker against the delta's own registrations only, is checked at
     /// the merge like its registered paths).
     pub(super) failed_output: Option<PathBuf>,
+    /// T2: the index reads it depends on (a worker's build,
+    /// [`ProvisionalRead`]).
+    pub(super) reads: Vec<ProvisionalRead>,
 }
 
 /// What a delta build reads of the engine and the planning state: shared
@@ -510,6 +606,8 @@ pub(super) struct DeltaBuilder<'a> {
     spent: Vec<Vec<File>>,
     /// The output path whose registration failed, if any.
     failed_output: Option<PathBuf>,
+    /// T2: the index reads the build depends on (a worker's build only).
+    reads: std::cell::RefCell<Vec<ProvisionalRead>>,
 }
 
 impl<'a> DeltaBuilder<'a> {
@@ -526,6 +624,7 @@ impl<'a> DeltaBuilder<'a> {
             fallback: None,
             spent: Vec::new(),
             failed_output: None,
+            reads: Default::default(),
         }
     }
 
@@ -536,12 +635,16 @@ impl<'a> DeltaBuilder<'a> {
             return Err(reason);
         }
         drop_elsewhere(self.spent);
+        // A File it looked up before registering it itself is its own.
+        let mut reads = self.reads.into_inner();
+        reads.retain(|read| read.artifact.is_some() || !self.index.contains_key(&read.file));
         Ok(TargetDelta {
             unchecked: matches!(self.hooks, Hooks::Worker),
             ops: self.ops,
             error: result.err(),
             uses: self.uses,
             failed_output: self.failed_output,
+            reads,
         })
     }
 
@@ -570,7 +673,67 @@ impl<'a> DeltaBuilder<'a> {
         {
             return Some(artifact.clone());
         }
-        self.view.artifacts.get(file, self.view.reader)
+        if !matches!(self.hooks, Hooks::Worker) {
+            return self.view.artifacts.get(file, self.view.reader);
+        }
+        // T2: what a worker's build reads ahead of its merge.
+        match self.view.artifacts.get_entry(file, self.view.reader) {
+            Some((artifact, None)) => Some(artifact),
+            Some((artifact, Some(stamp))) => {
+                self.reads.borrow_mut().push(ProvisionalRead {
+                    file: file.clone(),
+                    artifact: Some(artifact.clone()),
+                    stamp,
+                });
+                Some(artifact)
+            }
+            None => {
+                if !file.is_source {
+                    self.reads.borrow_mut().push(ProvisionalRead {
+                        file: file.clone(),
+                        artifact: None,
+                        stamp: u32::MAX,
+                    });
+                }
+                None
+            }
+        }
+    }
+
+    /// The reads recorded so far (a memo fill's start).
+    fn reads_mark(&self) -> usize {
+        self.reads.borrow().len()
+    }
+
+    /// The reads recorded since `mark` (a memo fill's own).
+    fn reads_since(&self, mark: usize) -> Box<[ProvisionalRead]> {
+        self.reads.borrow()[mark..].to_vec().into_boxed_slice()
+    }
+
+    /// T2: a memo value filled from reads that are stale now (a
+    /// provisional result replaced at its merge) is dropped and filled
+    /// again; `reads` of a value used are this build's reads too.
+    fn memo_reads<K: std::hash::Hash + Eq + Clone, V>(
+        &self,
+        memo: &SingleFlight<K, V>,
+        key: &K,
+        reads: impl Fn(&V) -> &[ProvisionalRead],
+    ) {
+        if let Some(value) = memo.peek(key)
+            && !reads(&value).is_empty()
+            && check_reads(self.view.artifacts, reads(&value), self.view.reader, true)
+                == ReadsCheck::Stale
+        {
+            memo.remove(key);
+            provisional_bump(3);
+        }
+    }
+
+    /// The reads of a memo value used (filled here or before).
+    fn note_memo_reads(&self, filled_here: bool, reads: &[ProvisionalRead]) {
+        if !filled_here && !reads.is_empty() && matches!(self.hooks, Hooks::Worker) {
+            self.reads.borrow_mut().extend(reads.iter().cloned());
+        }
     }
 
     /// [`Engine::indexed_artifact`]: the artifact of `file`, a workspace
@@ -729,10 +892,23 @@ impl<'a> DeltaBuilder<'a> {
         let address = Arc::as_ptr(files) as usize;
         self.note_use(MemoUse::Inputs(address));
         let memo: &InputMemos = self.view.input_memos;
-        memo.get_or_fill(&address, || {
-            Ok::<_, std::convert::Infallible>(SharedInputs::of(&|file| self.lookup(file), files))
-        })
-        .unwrap_or_else(|never| match never {})
+        self.memo_reads(memo, &address, |value| &value.reads);
+        let mut filled_here = false;
+        let value = memo
+            .get_or_fill(&address, || {
+                filled_here = true;
+                let mark = self.reads_mark();
+                let mut filled = SharedInputs::of(&|file| self.lookup(file), files);
+                if let Some(filled) = filled.as_mut() {
+                    filled.reads = self.reads_since(mark);
+                }
+                Ok::<_, std::convert::Infallible>(filled)
+            })
+            .unwrap_or_else(|never| match never {});
+        if let Some(value) = &value {
+            self.note_memo_reads(filled_here, &value.reads);
+        }
+        value
     }
 
     /// The node of one registered Starlark action ([`Engine::commit_action`]
@@ -768,8 +944,12 @@ impl<'a> DeltaBuilder<'a> {
         for tree in runfiles_trees {
             self.note_use(MemoUse::Group(tree.identity()));
             let memo: &InputGroups = self.view.input_groups;
+            self.memo_reads(memo, &tree.identity(), |value| &value.reads);
+            let mut filled_here = false;
             let expanded = memo
                 .get_or_fill(&tree.identity(), || {
+                    filled_here = true;
+                    let mark = self.reads_mark();
                     let (artifacts, empty_files) =
                         runfiles_tree_entries(tree, owner, &mut |file| self.artifact(file))?;
                     Ok::<_, String>(Some(ExpandedTree {
@@ -780,9 +960,11 @@ impl<'a> DeltaBuilder<'a> {
                             empty_files,
                             main_ignored,
                         )),
+                        reads: self.reads_since(mark),
                     }))
                 })?
                 .expect("a runfiles group fill returns one");
+            self.note_memo_reads(filled_here, &expanded.reads);
             // One identity is one content
             // (crate::analysis_runtime::ToolRunfilesTree).
             debug_assert!(
