@@ -777,6 +777,11 @@ impl View<'_> {
         if let Some(running) = self.stack.iter().rev().find(|running| running.id == node) {
             return Some((&running.events, false));
         }
+        // A parked attempt's events up to its `Missing`: partial until its
+        // rerun replaces them (it re-emits them first).
+        if let Some(events) = self.store.carry.get(&node) {
+            return Some((events, false));
+        }
         if self.store.released.contains(&node) {
             return Some((&[], true));
         }
@@ -1161,10 +1166,15 @@ fn warm_up(
 /// unblocked since (an extension it prepared, a repository it fetched)
 /// runs in parallel again; then the sequential pass continues.
 fn pool_round(
+    bodies: &Phase1Bodies<'_, '_>,
     evaluator: &Evaluator<'_, Phase1Bodies<'_, '_>>,
     shared: &EvalShared,
     roots: &[NodeKey],
 ) {
+    // What pass 1 waits for first.
+    if let Some((key, priority)) = bodies.coord().frontier() {
+        evaluator.boost(&key, priority);
+    }
     let pooled = &shared.loading.pooled;
     pooled.store(true, std::sync::atomic::Ordering::Release);
     evaluator.set_inline(false);
@@ -1259,7 +1269,7 @@ fn drive(
         if let Some(roots) = pool_roots
             && last_inline >= POOL_ROUND_AFTER
         {
-            pool_round(evaluator, shared, roots);
+            pool_round(bodies, evaluator, shared, roots);
         }
         let started = std::time::Instant::now();
         // Engine::analyze_requested: the test-trimmed top-level key.

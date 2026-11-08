@@ -1180,6 +1180,10 @@ impl<'s, B: Bodies> PoolCx<'_, 's, '_, B> {
     /// Claim `id` if nobody runs it and run it here (help first).
     fn help(&self, id: NodeId) {
         let evaluator = self.evaluator;
+        if evaluator.graph.key(id).coordinator_only() {
+            // Parked for: it runs on the coordinator.
+            return;
+        }
         let entry = evaluator.graph.entry(id);
         let claimed = entry.transition(State::Fresh, State::Queued)
             || entry.state() == State::Queued

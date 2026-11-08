@@ -178,9 +178,13 @@ impl NodeKey {
     }
 
     /// Whether the node runs on the coordinator only (repository work,
-    /// the workspace status script): never on a pool thread.
+    /// the workspace status script, a flag's CT2 on the engine): never on a
+    /// pool thread.
     pub(crate) fn coordinator_only(&self) -> bool {
-        matches!(self, NodeKey::Status | NodeKey::ModuleExecPlatforms)
+        matches!(
+            self,
+            NodeKey::Status | NodeKey::ModuleExecPlatforms | NodeKey::Ct2(_)
+        )
     }
 }
 
