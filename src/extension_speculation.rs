@@ -329,6 +329,29 @@ impl<O: Send + 'static> Pool<O> {
         }
     }
 
+    /// Queue the speculation of `id` again when it is blocked, whatever
+    /// its attempts (the evaluator's pool satisfied what it waits for:
+    /// crate::repository's `wait_eval_group`).
+    pub(crate) fn retry_blocked(&self, id: &str) {
+        {
+            let mut state = lock(&self.shared.state);
+            if state.width == 0 {
+                return;
+            }
+            let Some(Entry::Blocked { attempts, .. }) = state.entries.get(id) else {
+                return;
+            };
+            let attempts = attempts.saturating_sub(1);
+            state.counts.retried += 1;
+            state
+                .entries
+                .insert(id.to_owned(), Entry::Queued { attempts });
+            state.queue.push_back(id.to_owned());
+        }
+        self.grow();
+        self.shared.changed.notify_all();
+    }
+
     /// The sentinel the speculation of `id` is blocked on, if it is.
     pub(crate) fn blocked_on(&self, id: &str) -> Option<String> {
         match lock(&self.shared.state).entries.get(id) {

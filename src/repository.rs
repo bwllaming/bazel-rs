@@ -3771,6 +3771,7 @@ impl RepositorySet {
                 return Some(blocked);
             }
             self.retry_extension_speculations();
+            self.state.extension_speculation.retry_blocked(id);
         }
         None
     }
