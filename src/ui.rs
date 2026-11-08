@@ -379,6 +379,17 @@ pub(crate) fn deferred_split() -> Vec<Deferred> {
     })
 }
 
+/// Whether the open [`DeferredConsole`] holds a write (left in place,
+/// unlike [`deferred_split`]).
+pub(crate) fn deferred_pending() -> bool {
+    DEFERRED.with(|deferred| {
+        deferred
+            .borrow()
+            .as_ref()
+            .is_some_and(|held| !held.is_empty())
+    })
+}
+
 /// Stop holding; returns what was held.
 pub(crate) fn hold_stop() -> Vec<Deferred> {
     HELD.with(|held| held.take()).unwrap_or_default()

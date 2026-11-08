@@ -818,7 +818,7 @@ thread_local! {
     /// The other groups' speculative preparations the speculative
     /// extension preparation on this thread used
     /// ([`ExtensionOutcome::adopted`]), and whether it had written to the
-    /// console before it used the first one.
+    /// console before it used one of them.
     static ADOPTED: std::cell::RefCell<(Adopted, bool)> =
         const { std::cell::RefCell::new((Vec::new(), false)) };
 }
@@ -3405,11 +3405,11 @@ impl RepositorySet {
         ADOPTED.with(|adopted| {
             let mut adopted = adopted.borrow_mut();
             if !adopted.0.iter().any(|(adopted, _)| adopted == id) {
-                if adopted.0.is_empty() {
-                    // Its writes so far would precede the adopted group's
-                    // preparation in the sequential order.
-                    adopted.1 = !crate::ui::deferred_split().is_empty();
-                }
+                // Its writes so far precede this group's preparation in
+                // the sequential order, but its commit writes them after
+                // every used group's: at any group, not just the first, a
+                // write held already makes the outcome unusable.
+                adopted.1 |= crate::ui::deferred_pending();
                 adopted.0.push((id.to_owned(), prepared.clone()));
             }
         });

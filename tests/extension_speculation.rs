@@ -134,6 +134,12 @@ fails = use_extension("//ext:fails.bzl", "fails")
 use_repo(fails, "fail_repo")
 touch = use_repo_rule("//ext:touch.bzl", "touch")
 touch(name = "touch")
+y = use_extension("//ext:yz.bzl", "y")
+use_repo(y, "y_repo")
+z = use_extension("//ext:yz.bzl", "z")
+use_repo(z, "z_repo")
+x = use_extension("//ext:x.bzl", "x")
+use_repo(x, "x_repo")
 "#,
         );
         fixture.write("input.txt", "v0\n");
@@ -216,6 +222,53 @@ touch = repository_rule(implementation = _touch_impl, local = True)
         fixture.write(
             "changing/BUILD.bazel",
             "load('@touch//:defs.bzl', 'TOUCHED')\nload('@gen_data//:defs.bzl', 'VALUE')\nprint('changing sees ' + VALUE)\nfilegroup(name = 'changing')\n",
+        );
+        // Two chained groups with a print between their uses: `x`'s
+        // definition loads `y`'s repository, then a module that prints,
+        // then `z`'s repository (`y` and `z` print when prepared).
+        fixture.write(
+            "ext/yz.bzl",
+            r#"print("yz.bzl loaded")
+
+def _lib_impl(rctx):
+    rctx.file("BUILD.bazel", "")
+    rctx.file("lib.bzl", "NAME = %r\n" % rctx.attr.name)
+
+lib_repo = repository_rule(implementation = _lib_impl)
+
+def _y_impl(mctx):
+    lib_repo(name = "y_repo")
+
+y = module_extension(implementation = _y_impl)
+
+def _z_impl(mctx):
+    lib_repo(name = "z_repo")
+
+z = module_extension(implementation = _z_impl)
+"#,
+        );
+        fixture.write("ext/mid.bzl", "print('between y and z')\nMID = 'mid'\n");
+        fixture.write(
+            "ext/x.bzl",
+            r#"load("@y_repo//:lib.bzl", Y = "NAME")
+load("//ext:mid.bzl", "MID")
+load("@z_repo//:lib.bzl", Z = "NAME")
+
+def _x_repo_impl(rctx):
+    rctx.file("BUILD.bazel", "")
+    rctx.file("defs.bzl", "XS = %r\n" % rctx.attr.text)
+
+x_repo = repository_rule(implementation = _x_repo_impl, attrs = {"text": attr.string()})
+
+def _x_impl(mctx):
+    x_repo(name = "x_repo", text = Y + MID + Z)
+
+x = module_extension(implementation = _x_impl)
+"#,
+        );
+        fixture.write(
+            "xz/BUILD.bazel",
+            "load('@x_repo//:defs.bzl', 'XS')\nprint('xz sees ' + XS)\nfilegroup(name = 'xz')\n",
         );
         fixture.write(
             "chained/BUILD.bazel",
@@ -392,7 +445,7 @@ struct Baseline {
 
 impl Baseline {
     fn new(fixture: &Fixture) -> Self {
-        let first = fixture.build(1, "off", &[], &["//a", "//b", "//c", "//never"]);
+        let first = fixture.build(1, "off", &[], &["//a", "//b", "//c", "//never", "//xz"]);
         assert_eq!(first.code, Some(0), "{}", first.stderr);
         for line in [
             "gen evaluated with input v0",
@@ -476,7 +529,9 @@ fn speculated_extensions_change_nothing_the_build_shows() {
             assert_eq!(counter(run, "taken"), 2, "{}", run.timing);
             assert_eq!(counter(run, "discarded"), 0, "{}", run.timing);
             assert_eq!(counter(run, "chained"), 1, "{}", run.timing);
-            assert_eq!(counter(run, "unused"), 1, "{}", run.timing);
+            // never, y and z were prepared and dropped (x is not kept:
+            // it prints between y and z).
+            assert_eq!(counter(run, "unused"), 3, "{}", run.timing);
         }
     }
 }
@@ -568,3 +623,27 @@ fn query_with_speculation_matches_the_sequential_engine() {
         }
     }
 }
+
+/// A speculation that wrote output between two groups' speculative
+/// preparations it used is never kept: its commit would write it after
+/// both groups' output, the sequential engine between them (`x` prints
+/// `between y and z` after `y` was prepared and before `z` was).
+#[test]
+fn output_between_chained_groups_keeps_the_sequential_order() {
+    let fixture = Fixture::new();
+    let baseline = Baseline::new(&fixture);
+    let (reference, runs) = baseline.compare(&fixture, "off", &["//xz"]);
+    assert_eq!(reference.code, Some(0), "{}", reference.stderr);
+    let y = reference.stderr.find("yz.bzl loaded").expect("y prepared");
+    let mid = reference.stderr.find("between y and z").expect("mid");
+    let z = reference.stderr[mid..]
+        .find("yz.bzl loaded")
+        .expect("z prepared after mid");
+    assert!(y < mid && z > 0, "{}", reference.stderr);
+    for run in &runs {
+        // y and z were committed (each its own speculation), x was not.
+        assert_eq!(counter(run, "taken"), 2, "{}", run.timing);
+        assert_eq!(counter(run, "chained"), 0, "{}", run.timing);
+    }
+}
+
