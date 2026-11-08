@@ -438,6 +438,37 @@ change announced to the other two workers; adding a helper is not.
     and the published memo values run on the coordinator (they hold the
     engine); (4) call `Coord::frontier()` and `Evaluator::boost` whenever
     pass 1 is blocked (the driver does it per segment today).
+- 2026-11-08 (eval-s2-load, S2 part 1: loading nodes and the pool;
+  announced to eval-s2-pass1; branch based on eval-s2-pass1):
+  - `NodeValue::Pkg(Result<Arc<nodes::loading::PkgValue>, String>)` (was
+    `Arc<Package>`): the package with its output-file and declared-input
+    indexes. `EvalShared::loading` (new field, `nodes::loading::Loading`):
+    the packages loaded before phase 1, the source-directory probes and
+    the package-group budget (moved in from the engine and back), the
+    resolved groups, the lane's units, the aspect definitions' prints;
+    `EvalShared::aspects` is the engine's registry (moved in and back).
+  - `Event::LoadPrints(Arc<[LoadPrintEvent]>)` (new): a load's buffered
+    print events, written by the tape where the walk's
+    `Engine::emit_load_prints` writes them (a module's lines once). A Pkg
+    node's transcript is its commit: `LoadPrints`/`PkgCommit` in the
+    engine's order; the tape's `PkgCommit` commits the package into the
+    engine (`packages`, `generated`, loaded functions, progress) unless
+    the engine loaded it itself meanwhile (a flush's phase 2). Every
+    lookup `MemoUse`s its package's Pkg node (once per attempt; not for a
+    package loaded before phase 1).
+  - `Cx::hint(keys)` and `Cx::peek(key)` (new, default no-ops): schedule
+    nodes a body needs soon / read a done value without depending on it.
+    `EvalConfig::{help_first, stack}` (new), `Evaluator::set_inline`,
+    `Evaluator::pooled`, `build_pool(threads, stack)`.
+  - `Phase1Cx::flags()` (new; `nodes::bodies::Flags`): tracking and
+    linearized, read without the coordinator's lock. The running attempts
+    are per thread (`nodes::bodies::{with_running, push_running,
+    active_ct1, in_progress}`, no longer `Coord::stack`); `active_ct1` is
+    empty on a pool thread (requirement (2) above).
+  - `Host::hint_edges(deps)` (new, default no-op): the edge loop's
+    dependencies, hinted to the pool.
+  - `Coord::{begin_attempt, finish_attempt, abandon_attempt}` take/return
+    the `Running` attempt (the thread-local stack is the bodies').
 
 ## 4. Stages and gates
 
