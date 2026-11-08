@@ -319,6 +319,15 @@ x = module_extension(implementation = _x_impl)
             "touched/BUILD.bazel",
             "load('@touch//:defs.bzl', 'TOUCHED')\nfilegroup(name = 't', srcs = ['//many:all'])\n",
         );
+        // `touch` runs in phase 1, before the walk demands `gen`.
+        fixture.write(
+            "rewrite/BUILD.bazel",
+            "filegroup(name = 'all', srcs = ['//rewrite/a:t', '//many/p2:t'])\n",
+        );
+        fixture.write(
+            "rewrite/a/BUILD.bazel",
+            "load('@touch//:defs.bzl', 'TOUCHED')\nfilegroup(name = 't', visibility = ['//visibility:public'])\n",
+        );
         fixture.write(
             "failmany/BUILD.bazel",
             "filegroup(name = 'all', srcs = ['//many:all', '//failmany/bad:t'])\n",
@@ -811,6 +820,59 @@ fn the_pool_does_not_use_an_extension_whose_input_changed() {
         "{}",
         reference.stderr
     );
+}
+
+/// `touch` rewrites `gen`'s input in phase 1, before the walk's first
+/// demand of `gen`, after the pool loaded `gen`'s user on the speculative
+/// preparation (its lockfile entry was still reusable then): the files a
+/// repository's or an extension's recorded inputs name must not change
+/// during the invocation (as for every warm-reuse probe), and the
+/// commit's check is the safety net — an internal error naming
+/// `BAZEL_RS_ANALYSIS=walk`, never a different result.
+#[test]
+fn an_input_rewritten_in_phase_one_after_the_pools_use_is_an_internal_error() {
+    let fixture = Fixture::new();
+    let baseline = Baseline::new(&fixture);
+    baseline.restore(&fixture);
+    let walk = fixture.build(
+        1,
+        "off",
+        &[("BAZEL_RS_ANALYSIS", "walk")],
+        &["//rewrite:all"],
+    );
+    assert_eq!(walk.code, Some(0), "{}", walk.stderr);
+    assert!(
+        walk.stderr.contains("gen evaluated with input v1"),
+        "{}",
+        walk.stderr
+    );
+    baseline.restore(&fixture);
+    let eval = fixture.build(
+        1,
+        "off",
+        &[("BAZEL_RS_ANALYSIS", "eval")],
+        &["//rewrite:all"],
+    );
+    assert_same(&walk, &eval, "eval at one thread");
+    for threads in [2, 8] {
+        baseline.restore(&fixture);
+        let eval = fixture.build(
+            threads,
+            "off",
+            &[("BAZEL_RS_ANALYSIS", "eval")],
+            &["//rewrite:all"],
+        );
+        assert!(
+            eval.code != Some(0)
+                && eval
+                    .stderr
+                    .contains("internal error: BAZEL_RS_ANALYSIS=eval: the module extension group")
+                && eval.stderr.contains("rerun with BAZEL_RS_ANALYSIS=walk"),
+            "{threads} threads:\n{}",
+            eval.stderr
+        );
+    }
+    baseline.restore(&fixture);
 }
 
 /// An extension without a lockfile entry that fails (never prepared

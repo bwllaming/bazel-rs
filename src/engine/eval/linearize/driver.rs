@@ -317,8 +317,12 @@ impl Coord<'_> {
         if let Some(failure) = &lin.failure {
             return Err(failure.error.clone());
         }
-        let mismatch = super::super::nodes::bodies::rerun_mismatch();
-        if let Some(mismatch) = mismatch.or_else(|| self.store.rerun_mismatch.clone()) {
+        // Sticky (eval-round1): a caller that ignores this result must not
+        // lose it.
+        if let Some(mismatch) = super::super::nodes::bodies::rerun_mismatch() {
+            self.store.rerun_mismatch.get_or_insert(mismatch);
+        }
+        if let Some(mismatch) = self.store.rerun_mismatch.clone() {
             return Err(format!(
                 "internal error: BAZEL_RS_ANALYSIS=eval: {mismatch}; rerun with BAZEL_RS_ANALYSIS=walk"
             ));
@@ -449,6 +453,7 @@ impl Coord<'_> {
         // What the tape's commits found (eval-round1: an extension group
         // the pool used speculatively, prepared otherwise).
         if let Some(mismatch) = super::super::nodes::bodies::rerun_mismatch() {
+            self.store.rerun_mismatch.get_or_insert(mismatch.clone());
             return Err(format!(
                 "internal error: BAZEL_RS_ANALYSIS=eval: {mismatch}; rerun with BAZEL_RS_ANALYSIS=walk"
             ));
