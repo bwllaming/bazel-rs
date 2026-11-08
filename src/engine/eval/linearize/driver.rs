@@ -404,7 +404,7 @@ impl Coord<'_> {
         // What the flush's phase 2 analyzed itself (a deferred target
         // platform's tree): complete for pass 1 from now on.
         for (key, _) in &lin.plan[before..] {
-            lin.pass.external(key.clone(), NodeId(u32::MAX), true);
+            lin.pass.external(key.clone(), super::pass1::EXTERNAL, true);
         }
         let added = lin.plan.len() - before;
         lin.replay.planned_elsewhere(added);

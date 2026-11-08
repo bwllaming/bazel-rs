@@ -56,6 +56,11 @@ use super::super::transcript::{Event, SegmentKind, Tape, TapeOp, Transcript};
 /// The walk's dependency depth limit error (`analyze_key_body`).
 pub(crate) const DEPTH_LIMIT_ERROR: &str = "native prototype dependency depth limit (256) exceeded";
 
+/// The node of a configured target analyzed outside the transcripts (a
+/// deferred target platform's tree that a flush's phase 2 analyzed with
+/// the walk): its consumers read the walk's value.
+pub(crate) const EXTERNAL: NodeId = NodeId(u32::MAX);
+
 /// The walk's active-chain depth limit.
 const DEPTH_LIMIT: usize = 256;
 
@@ -738,9 +743,8 @@ impl Pass1 {
             return None;
         };
         match self.visited.get(&ct.key) {
-            Some(&canonical) => {
-                (canonical != node && !source.ready(node)).then_some(Blocker::Node(node))
-            }
+            Some(&canonical) => (canonical != node && canonical != EXTERNAL && !source.ready(node))
+                .then_some(Blocker::Node(node)),
             None => {
                 let chain = self.chains.last()?;
                 let fails = !self.in_fresh_memo()
@@ -773,7 +777,10 @@ impl Pass1 {
         });
         self.out.edges.push((parent, key.clone()));
         if let Some(canonical) = canonical {
-            if canonical != node && !source.same_observable(canonical, node) {
+            if canonical != node
+                && canonical != EXTERNAL
+                && !source.same_observable(canonical, node)
+            {
                 self.out.divergences.push(format!(
                     "{key}: a consumer read the variant {ct:?}, the sequential walk serves the first-visited {:?}",
                     source.key(canonical)
