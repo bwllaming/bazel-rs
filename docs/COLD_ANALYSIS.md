@@ -590,8 +590,10 @@ wave of units only takes 0.05 s); reusing the resolved module graph
 
 ## Module extensions prepared ahead (branch `parallel-extensions`)
 
-Once the module graph is resolved (at startup, or at its lazy resolution),
-the extension groups the root module uses are prepared on up to 8
+Once the module graph is resolved and the extension catalog built (at
+startup, or right after the catalog's lazy construction — never inside its
+initializer, which the speculations read), the extension groups the root
+module uses are prepared on up to 8
 background workers (`crate::extension_speculation`, scheduling;
 `RepositorySet::extension_speculation_job`, the preparation) while the
 coordinator configures and loads. A speculation is the coordinator's own
