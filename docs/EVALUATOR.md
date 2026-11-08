@@ -679,6 +679,78 @@ hook re-runs bodies quadratically). `BAZEL_RS_EVAL_VERIFY=1` clean on
 limit: two engines). Test suite (ptest): walk 3679/3679, eval
 (`BAZEL_RS_DEFAULT_ANALYSIS=eval`) 3679/3679, eval with
 `BAZEL_RS_EVAL_RESTARTS=7` 3679/3679.
+### S2, part 1 (eval-s2-load): loading nodes and the pool
+
+Branch `eval-s2-load` (on eval-s2-pass1 `3f9e1f76`, rebased on main).
+
+- **Loading nodes** (`nodes/loading.rs`): `Pkg`, `Tgt`, `Src`, `Group`
+  over `EvalShared` replace the engine's loading services (package
+  loading, target lookups, package groups, source visibility, package
+  args, implicit tests, registration pattern expansion, aspect
+  definitions, module execution platforms); the engine's helpers became
+  free functions over the repository set (`settle_load_unit`,
+  `source_target_in`, `expand_registration_patterns_in`,
+  `load_aspect_definition`, …) so the walk is unchanged. A Pkg node's
+  transcript is its commit (`LoadPrints`, `PkgCommit` in the engine's
+  order); every lookup `MemoUse`s its package (once per attempt, never for
+  a package loaded before phase 1); the tape's `PkgCommit` commits the
+  package into the engine, its `LoadPrints` are written with the walk's
+  `.bzl` deduplication. A package group's include graph is resolved in its
+  Group body (the walk's recursion). Phase-1 prefetch is the walk's only.
+- **The pool** (threads = `--loading_phase_threads` bounded by the cores,
+  > 1): `EvalConfig::help_first` — a `need` of a node nobody runs claims
+  and runs it in place, depth first (a restart only when a dependency runs
+  on another worker); `Cx::hint` (the edge loop's dependencies,
+  `Host::hint_edges`) spreads the work; an attempt that parks waits for
+  everything it hinted. 512 MiB worker stacks, arena binding (A's
+  `build_pool`). Running attempts are per thread (help-first nesting);
+  `active_ct1` is empty on a pool thread.
+- **Two passes**: the pool evaluates what the requests need
+  (`warm_up`: the lookups, then the configured roots); what only the
+  sequential order can do parks on the `INLINE` marker (`Missing::Repo`,
+  the lane does nothing for it): a flush (a config_setting with Starlark
+  `flag_values`), a repository sentinel (the repository is fetched ahead
+  by repository speculation), an order-dependent decision; cycles and
+  back edges park too. Then the walk's order drives the inline driver over
+  the same graph (`drive`), which runs what is parked and finds the rest
+  done; after a requested target whose sequential pass did work, the pool
+  runs again (`pool_round`: unresolvable nodes retried, waiters an inline
+  completion woke scheduled).
+- **Repositories**: the lane materializes a module repository's root a
+  unit was blocked on (`lane_fetch`; what it writes and observes is the
+  re-run unit's); extension preparation and direct repositories go to the
+  sequential pass (their recorded-input keys depend on the order:
+  `phase1_prefetch`'s recorded-input tests), with speculation started for
+  the pool. Roots a pool unit obtained count from where the tape replays
+  the node; the sequential pass of a pooled evaluation applies the tape
+  before each attempt (the roots, commits and observations the walk would
+  have by then).
+- **Observations**: in a pooled evaluation every attempt observes in its
+  own `observed_fs` frame (`Bodies::Attempt`), committed where the tape
+  replays the node (entered, first used); an abandoned attempt's frame is
+  dropped.
+
+Results (2026-11-08, ~/code `80d6724f3a`, LTO release binary, warm
+repositories, `BAZEL_RS_SNAPSHOT=off`, `build --nobuild //src/...`, one run
+each, the host loaded by other work; action dump, stdout and stderr
+identical in all four):
+
+| | walk, default threads | eval, default threads (48) | eval, 1 thread | walk, 1 thread |
+|---|---|---|---|---|
+| plan.start → phase 1 done | 36.6 s | 58.9 s | 75.1 s | 57.5 s |
+| wall | 54.2 s | 76.6 s | 102.6 s | 83.6 s |
+| CPU (user+sys) | 139 s | 191 s | 105 s | 86 s |
+| maxrss (with the action dump) | 11.1 GB | 11.2 GB | 11.5 GB | 11.2 GB |
+
+Of eval's 58.9 s: the flushes' phase 2 23.4 s, pass 1 1.9 s, publication
+0.6 s, the tape 0.5 s. The pool alone does little on ~/code: its first
+round completes 14k of 462k nodes in 0.1 s, then the roots wait for
+config_settings with Starlark `flag_values` (their flush is the
+sequential pass's) and the sequential pass runs most of the graph; the
+later rounds help (75 → 59 s). **The S2 gate (phase 1 ≤ 2 s) needs the
+CsMatch split** (the flag's CT2 as a node, the matching without a
+flush), then the pool can take the subtrees below the config_settings.
+`EVAL_VERIFY` clean on `build`/`test --nobuild //src/...`.
 
 **S1 results** (2026-11-08, ~/code `80d6724f3a`, LTO release binary
 sha256 `272b5f78…`, warm repositories, `BAZEL_RS_SNAPSHOT=off`, default
