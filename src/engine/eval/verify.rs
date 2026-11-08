@@ -536,6 +536,7 @@ impl Engine {
             phase2_analyzed: std::collections::BTreeSet::new(),
             eval_mode: Some(AnalysisMode::Walk),
             eval_verifying: None,
+            eval_flush_failure: None,
         }
     }
 }

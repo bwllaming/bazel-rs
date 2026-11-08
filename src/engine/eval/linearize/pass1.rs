@@ -296,6 +296,18 @@ pub(crate) struct Pass1 {
     skipping: usize,
     /// The memos computed (first use), with their value digest.
     memo_values: HashMap<u64, u64>,
+    /// Where each `Flush` of the tape not taken yet happens
+    /// ([`Pass1::take_flush_point`]).
+    flush_points: std::collections::VecDeque<FlushPoint>,
+}
+
+/// Where a `Flush` happens in the walk: its segment and the replayed
+/// chain (configured targets and memos, outermost first; the last one
+/// emitted it).
+#[derive(Clone, Debug)]
+pub(crate) struct FlushPoint {
+    pub(crate) kind: Option<SegmentKind>,
+    pub(crate) chain: Vec<NodeId>,
 }
 
 /// Run pass 1 over finished `segments` (tests and complete sources).
@@ -377,7 +389,13 @@ impl Pass1 {
             scopes: Vec::new(),
             skipping: 0,
             memo_values: HashMap::new(),
+            flush_points: std::collections::VecDeque::new(),
         }
+    }
+
+    /// Where the tape's next `Flush` (in order) happens.
+    pub(crate) fn take_flush_point(&mut self) -> Option<FlushPoint> {
+        self.flush_points.pop_front()
     }
 
     /// The nodes that became configured targets since the last call (the
@@ -717,7 +735,26 @@ impl Pass1 {
                 }
                 sink.op(TapeOp::Effect(Event::Done));
             }
-            Event::Flush => sink.op(TapeOp::Flush),
+            Event::Flush => {
+                // Where the walk's flush runs (its failure is reported up
+                // this chain: the driver's, S2's CsMatch split).
+                let kind = self.frames.iter().find_map(|frame| match frame {
+                    Frame::Segment { index, .. } => {
+                        source.segment(*index).map(|segment| segment.kind.clone())
+                    }
+                    _ => None,
+                });
+                let chain = self
+                    .frames
+                    .iter()
+                    .filter_map(|frame| match frame {
+                        Frame::Body { node, .. } | Frame::Memo { node, .. } => Some(*node),
+                        Frame::Segment { .. } => None,
+                    })
+                    .collect();
+                self.flush_points.push_back(FlushPoint { kind, chain });
+                sink.op(TapeOp::Flush)
+            }
             Event::Access(_)
             | Event::Source(_)
             | Event::Print(_)

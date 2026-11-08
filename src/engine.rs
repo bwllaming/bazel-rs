@@ -3007,6 +3007,10 @@ pub struct Engine {
     /// Inside BAZEL_RS_EVAL_VERIFY's comparison (no nested verification),
     /// with what the comparison reads of phase 1 (eval::verify).
     eval_verifying: Option<Box<eval::verify::Observed>>,
+    /// BAZEL_RS_ANALYSIS=eval (S2, the CsMatch split): the error the next
+    /// flush (`plan_pending`) fails with: the walk re-analyzing the chain
+    /// of a flush that failed in the tape, for the walk's error text.
+    eval_flush_failure: Option<String>,
 }
 
 impl Engine {
@@ -3118,6 +3122,7 @@ impl Engine {
             phase2_analyzed: BTreeSet::new(),
             eval_mode: None,
             eval_verifying: None,
+            eval_flush_failure: None,
         }
     }
 
@@ -3258,6 +3263,15 @@ impl Engine {
         client_env: &BTreeMap<String, std::ffi::OsString>,
     ) -> &crate::workspace_status::ComputedWorkspaceStatus {
         self.workspace_status_once.get_or_init(|| {
+            // A speculative phase 2 (eval::nodes::speculate) never runs the
+            // status command: it fails, and the sequential pass flushes.
+            if eval::nodes::speculate::speculating() {
+                return crate::workspace_status::ComputedWorkspaceStatus::Failed(
+                    crate::workspace_status::WorkspaceStatusError(
+                        "the workspace status is not computed by a speculative phase 2".to_owned(),
+                    ),
+                );
+            }
             match crate::workspace_status::compute(
                 &self.workspace_status,
                 self.repositories.main_root(),
@@ -10896,6 +10910,9 @@ impl Engine {
         plan: &mut Plan,
         configured: &mut ConfiguredNodes,
     ) -> Result<(), String> {
+        if let Some(error) = self.eval_flush_failure.take() {
+            return Err(error);
+        }
         let Some(mut state) = self.action_planning.take() else {
             return Err(format!(
                 "config_setting {}: the implementation of a Starlark flag_values key is needed during action planning (a nested flush of pending targets); this is not implemented in the native profile",

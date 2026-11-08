@@ -89,6 +89,18 @@ pub(crate) fn package(package: &crate::label::PackageId, printed: bool) {
     }
 }
 
+/// Run `f` with what it would capture on this thread dropped (and its
+/// `--toolchain_resolution_debug` events neither captured nor printed): a
+/// speculative phase 2 (`nodes::speculate`). What was captured before stays.
+pub(crate) fn isolated<R>(f: impl FnOnce() -> R) -> R {
+    let events = EVENTS.with(|events| std::mem::take(&mut *events.borrow_mut()));
+    let debug = crate::toolchains::swap_debug_capture(Some(Vec::new()));
+    let result = f();
+    crate::toolchains::swap_debug_capture(debug);
+    EVENTS.with(|cell| *cell.borrow_mut() = events);
+    result
+}
+
 /// What was captured since the last call.
 ///
 /// `--toolchain_resolution_debug` INFO events (`toolchains::debug_event`)

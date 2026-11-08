@@ -123,6 +123,27 @@ impl Configurations {
         configurations
     }
 
+    /// How many configurations are interned.
+    pub(crate) fn len(&self) -> usize {
+        self.by_id.len()
+    }
+
+    /// Intern what `other` interned and this registry did not (ids are
+    /// content digests: a configuration and its mnemonic are the same in
+    /// both).
+    pub(crate) fn absorb(&mut self, other: &Configurations) {
+        for (id, configuration) in &other.by_id {
+            self.by_id
+                .entry(*id)
+                .or_insert_with(|| Arc::clone(configuration));
+        }
+        for (id, mnemonic) in &other.mnemonics {
+            self.mnemonics
+                .entry(*id)
+                .or_insert_with(|| mnemonic.clone());
+        }
+    }
+
     /// The top-level configuration's identity.
     pub fn top(&self) -> ConfigId {
         self.top

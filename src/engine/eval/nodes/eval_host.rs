@@ -1018,15 +1018,31 @@ impl Host for EvalHost<'_, '_> {
 
     fn flush_pending(&mut self, _config_setting: &Rule) -> Result<(), String> {
         if self.pooled() {
-            // The plan so far's phase 2: the sequential pass's.
-            super::bodies::INLINE_REASONS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            return Err(self.inline());
+            if !self.cx.flags().linearized {
+                // BAZEL_RS_EVAL_VERIFY_PHASE1: the sequential pass's.
+                super::bodies::INLINE_REASONS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return Err(self.inline());
+            }
+            // S2, the CsMatch split: the flush is a marker the tape applies
+            // at its position (the plan so far's phase 2, its errors there:
+            // `linearize::driver`); the flags' FeatureFlagInfo comes from
+            // their Ct2 nodes (`planned_feature_flag`).
+            self.emit(Event::Flush);
+            return Ok(());
         }
         self.emit(Event::Flush);
         // BAZEL_RS_ANALYSIS=eval: pass 1 up to here, then the flush's
         // phase 2 (the walk's `plan_pending`; worker C's driver).
         let shared = self.shared;
-        self.cx.coord().linearize(shared)
+        let own = self.cx.current();
+        let mut coord = self.cx.coord();
+        let result = coord.linearize(shared);
+        if result.is_err() {
+            // This attempt reports the failure of its own flush (the walk's
+            // `?`); another config_setting's is the driver's.
+            coord.flush_failure_delivered(own);
+        }
+        result
     }
 
     fn planned_feature_flag(
@@ -1429,6 +1445,15 @@ pub(crate) fn body(
             let result = host.compute_transition_details(settings);
             Ok(NodeValue::TransitionDetails(host.finish(result)?))
         }
+        NodeKey::Ct2(ct)
+            if shared
+                .loading
+                .pooled
+                .load(std::sync::atomic::Ordering::Acquire)
+                && cx.flags().linearized =>
+        {
+            flag_ct2(shared, cx, ct)
+        }
         NodeKey::Ct2(ct) => {
             // S2: the phase 2 of a config_setting's Starlark flag_values key
             // (its FeatureFlagInfo): the walk's flush at the config_setting's
@@ -1502,6 +1527,44 @@ pub(crate) fn body(
             other.kind()
         )))),
     }
+}
+
+/// A Starlark flag's phase 2 on the pool (S2, the CsMatch split): the
+/// providers the tape's flush planned, if it ran already, else a
+/// speculative phase 2 of the flag's subtree (`speculate`), whose
+/// FeatureFlagInfo is compared with the planned one at the flush. What
+/// cannot be speculated waits for the sequential pass (its flush).
+fn flag_ct2(
+    shared: &EvalShared,
+    cx: &mut dyn Phase1Cx<'_>,
+    ct: &CtKey,
+) -> Result<NodeValue, Missing> {
+    let value = |providers| {
+        Ok(NodeValue::Ct2(Arc::new(super::super::value::Ct2Value {
+            reads: super::super::value::Ct2Reads {
+                providers,
+                ..Default::default()
+            },
+            delta: std::sync::Mutex::new(None),
+            error: None,
+        })))
+    };
+    if let Some(planned) = cx.coord().planned_providers(&ct.key) {
+        return value(planned);
+    }
+    // The flag's phase 1 is done (its consumer analyzed it first).
+    cx.need_one(NodeKey::Ct1(ct.clone()))?;
+    let Some(providers) = super::speculate::flag_providers(shared, cx, ct) else {
+        super::bodies::INLINE_REASONS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        cx.coord().missing_here();
+        return Err(Missing::Repo(super::bodies::INLINE.to_owned()));
+    };
+    let flag = providers
+        .as_ref()
+        .and_then(|providers| providers.get(crate::feature_flags::PROVIDER_ID))
+        .and_then(|provider| crate::feature_flags::value_of(provider.value()));
+    cx.coord().speculated_flag(ct.key.clone(), flag);
+    value(providers)
 }
 
 /// Whether an edge to `rule` observes an empty configuration (kept for

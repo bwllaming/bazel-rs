@@ -52,6 +52,13 @@ pub(crate) struct Coord<'e> {
     pub(crate) sources: FxHashSet<Label>,
     /// BAZEL_RS_EVAL_RESTARTS: the needs answered `Missing` once.
     pub(crate) restarted: FxHashSet<(NodeId, Vec<NodeId>)>,
+    /// The FeatureFlagInfo values speculative phase 2s gave config_settings
+    /// (`nodes::speculate`), compared with the planned ones once a flush
+    /// planned their key.
+    pub(crate) speculated: Vec<(
+        ConfiguredTargetKey,
+        Option<crate::feature_flags::FeatureFlagValue>,
+    )>,
 }
 
 /// BAZEL_RS_EVAL_RESTARTS=<seed>: the restart test hook's seed.
@@ -207,6 +214,9 @@ pub(crate) struct Running {
 /// What a phase-1 body needs of its context besides [`Cx`].
 pub(crate) trait Phase1Cx<'e>: Cx {
     fn coord(&self) -> MutexGuard<'_, Coord<'e>>;
+    /// The scratch engine of the speculative phase 2s (`nodes::speculate`;
+    /// locked before the coordinator, never after it).
+    fn scratch(&self) -> &Mutex<Option<super::speculate::Scratch>>;
     /// The evaluation's fixed switches (S2: read without the
     /// coordinator's lock).
     fn flags(&self) -> Flags;
@@ -296,6 +306,10 @@ impl<'e> Phase1Cx<'e> for BodyCx<'_, '_, 'e> {
         self.bodies.coord()
     }
 
+    fn scratch(&self) -> &Mutex<Option<super::speculate::Scratch>> {
+        &self.bodies.scratch
+    }
+
     fn flags(&self) -> Flags {
         self.bodies.flags
     }
@@ -324,6 +338,8 @@ pub(crate) struct Phase1Bodies<'s, 'e> {
     /// Attempts observe in frames committed in the tape's order (S2: a
     /// pooled evaluation; the inline driver alone observes in order).
     pub(crate) framed: bool,
+    /// The speculative phase 2s' scratch engine (S2, the CsMatch split).
+    pub(crate) scratch: Mutex<Option<super::speculate::Scratch>>,
 }
 
 impl<'s, 'e> Phase1Bodies<'s, 'e> {
@@ -340,6 +356,7 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
                 linearized,
             },
             framed: false,
+            scratch: Mutex::new(None),
             coord: Mutex::new(Coord {
                 engine,
                 tracking,
@@ -350,6 +367,7 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
                 ct1_values: FxHashMap::default(),
                 sources: FxHashSet::default(),
                 restarted: FxHashSet::default(),
+                speculated: Vec::new(),
             }),
         }
     }

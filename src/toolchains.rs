@@ -445,6 +445,12 @@ pub(crate) fn capture_debug_events(on: bool) {
     DEBUG_CAPTURE.with(|capture| *capture.borrow_mut() = on.then(Vec::new));
 }
 
+/// Replace this thread's debug event capture (`None`: print); the
+/// previous one.
+pub(crate) fn swap_debug_capture(capture: Option<Vec<String>>) -> Option<Vec<String>> {
+    DEBUG_CAPTURE.with(|cell| std::mem::replace(&mut *cell.borrow_mut(), capture))
+}
+
 /// The debug events captured since the last call.
 pub(crate) fn take_debug_events() -> Vec<String> {
     DEBUG_CAPTURE.with(|capture| {

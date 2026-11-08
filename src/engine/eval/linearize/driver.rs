@@ -45,7 +45,7 @@ use super::super::nodes::loading::PkgValue;
 use super::super::scheduler::{EvalConfig, Evaluator, RepoLane};
 use super::super::shared::EvalShared;
 use super::super::transcript::{Event, SegmentKind, TapeOp, Transcript};
-use super::super::value::{Ct1Value, NodeValue};
+use super::super::value::{Ct1Ok, Ct1Value, NodeValue};
 use super::cycles::Pass1Cycles;
 use super::pass1::{
     Blocker, Ct1Record, MemoRecord, Options, Pass1, Progress, SegmentRecord, Transcripts,
@@ -206,6 +206,19 @@ pub(crate) struct Linearizer {
     /// The evaluation's console (everything written during phase 1 is
     /// held; the tape's effects are written around it).
     console: Option<crate::ui::DeferredConsole>,
+    /// A flush of the tape failed: the walk stops there (every later
+    /// call fails with it; the driver reports it, [`Coord::flush_failure`]).
+    failure: Option<FlushFailure>,
+}
+
+/// A flush of the tape that failed.
+#[derive(Clone, Debug)]
+pub(crate) struct FlushFailure {
+    error: String,
+    point: Option<super::pass1::FlushPoint>,
+    /// The config_setting that emitted it received the error itself (it
+    /// ran in the sequential pass: the walk's propagation).
+    delivered: bool,
 }
 
 impl Linearizer {
@@ -356,6 +369,9 @@ impl Coord<'_> {
     }
 
     fn linearize_with(&mut self, lin: &mut Linearizer, shared: &EvalShared) -> Result<(), String> {
+        if let Some(failure) = &lin.failure {
+            return Err(failure.error.clone());
+        }
         let mismatch = super::super::nodes::bodies::rerun_mismatch();
         if let Some(mismatch) = mismatch.or_else(|| self.store.rerun_mismatch.clone()) {
             return Err(format!(
@@ -470,12 +486,20 @@ impl Coord<'_> {
                         started.elapsed().as_micros() as u64,
                         std::sync::atomic::Ordering::Relaxed,
                     );
+                    let point = lin.pass.take_flush_point();
                     let flushed = self.flush(lin, shared);
                     STATS[STAT_APPLY].fetch_sub(
                         started.elapsed().as_micros() as u64,
                         std::sync::atomic::Ordering::Relaxed,
                     );
-                    flushed?
+                    if let Err(error) = flushed {
+                        lin.failure = Some(FlushFailure {
+                            error: error.clone(),
+                            point,
+                            delivered: false,
+                        });
+                        return Err(error);
+                    }
                 }
                 _ => {}
             }
@@ -548,7 +572,176 @@ impl Coord<'_> {
             started.elapsed().as_micros() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
-        result
+        result?;
+        // The FeatureFlagInfo values speculated for config_settings (S2,
+        // the CsMatch split) against what this flush planned.
+        self.verify_speculated();
+        match self.store.rerun_mismatch.take() {
+            Some(mismatch) => Err(format!(
+                "internal error: BAZEL_RS_ANALYSIS=eval: {mismatch}; rerun with BAZEL_RS_ANALYSIS=walk"
+            )),
+            None => Ok(()),
+        }
+    }
+
+    /// The providers the planning state holds for `key`, once a flush
+    /// planned it (`None`: not planned yet).
+    pub(crate) fn planned_providers(
+        &self,
+        key: &ConfiguredTargetKey,
+    ) -> Option<Option<super::super::nodes::speculate::Providers>> {
+        let state = self.engine.action_planning.as_ref()?;
+        state
+            .dry
+            .contains_key(key)
+            .then(|| state.custom_providers.get(key).cloned())
+    }
+
+    fn planned_flag(
+        &self,
+        key: &ConfiguredTargetKey,
+    ) -> Option<Option<crate::feature_flags::FeatureFlagValue>> {
+        self.planned_providers(key).map(|providers| {
+            providers
+                .as_ref()
+                .and_then(|providers| providers.get(crate::feature_flags::PROVIDER_ID))
+                .and_then(|provider| crate::feature_flags::value_of(provider.value()))
+        })
+    }
+
+    /// A config_setting read `flag` as `key`'s FeatureFlagInfo, planned
+    /// speculatively: compared with the planned one now or at the flush
+    /// that plans it.
+    pub(crate) fn speculated_flag(
+        &mut self,
+        key: ConfiguredTargetKey,
+        flag: Option<crate::feature_flags::FeatureFlagValue>,
+    ) {
+        match self.planned_flag(&key) {
+            Some(planned) => self.check_flag(&key, &flag, &planned),
+            None => self.speculated.push((key, flag)),
+        }
+    }
+
+    fn check_flag(
+        &mut self,
+        key: &ConfiguredTargetKey,
+        speculated: &Option<crate::feature_flags::FeatureFlagValue>,
+        planned: &Option<crate::feature_flags::FeatureFlagValue>,
+    ) {
+        if speculated != planned {
+            self.store.rerun_mismatch.get_or_insert(format!(
+                "the FeatureFlagInfo of {key} planned speculatively ({speculated:?}) differs from the flush's ({planned:?})"
+            ));
+        }
+    }
+
+    fn verify_speculated(&mut self) {
+        for (key, flag) in std::mem::take(&mut self.speculated) {
+            match self.planned_flag(&key) {
+                Some(planned) => self.check_flag(&key, &flag, &planned),
+                None => self.speculated.push((key, flag)),
+            }
+        }
+    }
+
+    /// The running config_setting `own` received the failure of a flush
+    /// (from its own `flush_pending`): when the flush was its own, the
+    /// error propagates as the walk's.
+    pub(crate) fn flush_failure_delivered(&mut self, own: NodeId) {
+        if let Some(failure) = self.lin.as_mut().and_then(|lin| lin.failure.as_mut())
+            && failure
+                .point
+                .as_ref()
+                .is_some_and(|point| point.chain.last() == Some(&own))
+        {
+            failure.delivered = true;
+        }
+    }
+
+    /// The walk's error for a flush of the tape that failed in a
+    /// config_setting the pool analyzed (S2, the CsMatch split: it read
+    /// its flags speculatively and finished): the walk re-analyzes the
+    /// requested target of the flush's segment on the published values,
+    /// the chain's nodes left out, and its `plan_pending` fails with the
+    /// flush's error there, so every consumer on the chain words it as the
+    /// walk does. Its effects are dropped (the tape wrote them already).
+    /// `None`: no such failure, or reported already.
+    pub(crate) fn flush_failure(&mut self, shared: &EvalShared, top: ConfigId) -> Option<String> {
+        let mut lin = self.lin.take()?;
+        let failure = match lin.failure.as_mut() {
+            Some(failure) if !failure.delivered => {
+                failure.delivered = true;
+                failure.clone()
+            }
+            _ => {
+                self.lin = Some(lin);
+                return None;
+            }
+        };
+        let text = self.walk_failure(&mut lin, shared, &failure, top);
+        self.lin = Some(lin);
+        Some(text)
+    }
+
+    fn walk_failure(
+        &mut self,
+        lin: &mut Linearizer,
+        shared: &EvalShared,
+        failure: &FlushFailure,
+        top: ConfigId,
+    ) -> String {
+        let Some(point) = &failure.point else {
+            return failure.error.clone();
+        };
+        let Some(SegmentKind::Root {
+            label,
+            trimmed_root,
+            ..
+        }) = &point.kind
+        else {
+            return failure.error.clone();
+        };
+        // The chain is being analyzed in the walk: none of it is a memo hit.
+        for node in &point.chain {
+            match self.store.keys.get(node) {
+                Some(NodeKey::Ct1(ct)) => {
+                    lin.configured.remove(&ct.key);
+                }
+                Some(NodeKey::Platform(key)) => {
+                    self.engine.platforms.remove(key);
+                }
+                Some(NodeKey::RegToolchains(config)) => {
+                    self.engine.registered_toolchains.remove(config);
+                }
+                Some(NodeKey::RegExecPlatforms(config)) => {
+                    self.engine.registered_execution_platforms.remove(config);
+                }
+                _ => {}
+            }
+        }
+        let tracker = lin.tracker.take();
+        let warnings = self.engine.warnings.len();
+        let counts = crate::progress::analysis_counts();
+        self.engine.eval_flush_failure = Some(failure.error.clone());
+        let result = self.with_engine(lin, shared, |engine, lin| {
+            let console = crate::ui::DeferredConsole::start();
+            let scope = crate::observed_fs::unit_scope();
+            engine.requested_trimmed_root = trimmed_root.clone();
+            let mut active = Vec::new();
+            let mut plan = Plan::new();
+            let result = engine.analyze(label, top, &mut active, &mut lin.configured, &mut plan);
+            engine.requested_trimmed_root = None;
+            drop(scope);
+            drop(console.finish());
+            result
+        });
+        self.engine.eval_flush_failure = None;
+        self.engine.warnings.truncate(warnings);
+        self.store.warnings_seen = self.engine.warnings.len();
+        crate::progress::restore_analysis_counts(counts);
+        lin.tracker = tracker;
+        result.err().unwrap_or_else(|| failure.error.clone())
     }
 
     /// Run `f` with the engine as the walk has it: the configurations
@@ -603,52 +796,7 @@ impl Coord<'_> {
             let Ok(ok) = &value.outcome else {
                 continue;
             };
-            let key = ct.key.clone();
-            if lin.configured.contains_key(&key) {
-                continue;
-            }
-            lin.configured.insert(key.clone(), ok.node.clone());
-            if let Some(context) = &ok.toolchain_context {
-                engine
-                    .toolchain_contexts
-                    .insert(key.clone(), context.clone());
-            }
-            if let Some(groups) = &ok.exec_groups {
-                engine
-                    .exec_group_contexts
-                    .insert(key.clone(), groups.clone());
-            }
-            if let Some(config) = ok.exec_config {
-                engine.exec_configurations.insert(key.clone(), config);
-            }
-            for (group, config) in &ok.group_exec_configs {
-                engine
-                    .group_exec_configurations
-                    .insert((key.clone(), group.clone()), *config);
-            }
-            if let Some(configs) = &ok.edge_configs {
-                engine.edge_configs.insert(key.clone(), configs.clone());
-            }
-            if let Some(errors) = &ok.deferred_duplicates {
-                engine
-                    .deferred_duplicates
-                    .insert(key.clone(), errors.clone());
-            }
-            match &ok.delegate {
-                Some(owner) => {
-                    engine.rule_delegations.insert(key.clone(), owner.clone());
-                }
-                None => {
-                    if ok.rule.custom.is_some() || ok.node.incompatible.is_some() {
-                        engine
-                            .configured_rules
-                            .insert(key.clone(), Arc::clone(&ok.rule));
-                    }
-                }
-            }
-            if ok.empty_configuration {
-                engine.empty_configuration_rules.insert(key);
-            }
+            publish_ct1(engine, &mut lin.configured, ct.key.clone(), ok);
         }
         // `toolchain_implementations`: pass 1's first claims in DFS order.
         for (implementation, platform) in lin.pass.toolchain_implementations() {
@@ -661,79 +809,64 @@ impl Coord<'_> {
             side.apply(&mut engine.missing_sources, &mut engine.source_directories);
         }
         for published in &self.store.published[lin.published_memos..] {
-            match published {
-                Published::Platform(key, result) => {
-                    engine
-                        .platforms
-                        .entry(key.clone())
-                        .or_insert_with(|| result.clone());
-                }
-                Published::RegToolchains(config, result) => {
-                    engine
-                        .registered_toolchains
-                        .entry(*config)
-                        .or_insert_with(|| result.clone());
-                }
-                Published::RegExecPlatforms(config, result) => {
-                    engine
-                        .registered_execution_platforms
-                        .entry(*config)
-                        .or_insert_with(|| result.clone());
-                }
-                Published::ExecCfg(config, platform, exec) => {
-                    engine
-                        .exec_transitions
-                        .entry((*config, platform.clone()))
-                        .or_insert(*exec);
-                }
-                Published::FlagScope(label, scoped) => {
-                    engine.flag_scopes.entry(label.clone()).or_insert(*scoped);
-                }
-                Published::TransitionDetails(settings, result) => {
-                    engine
-                        .transition_details
-                        .entry(settings.clone())
-                        .or_insert_with(|| result.clone());
-                }
-                Published::Source(label) => {
-                    engine.analyzed_sources.insert(label.clone());
-                }
-                // StarlarkTransitionCache (a deferred platform's tree that
-                // phase 2 analyzes with the walk: a hit replays the prints
-                // a miss makes).
-                Published::AspectPredicate(memo, value) => {
-                    engine
-                        .aspect_predicates
-                        .entry(memo.clone())
-                        .or_insert(*value);
-                }
-                Published::AspectAttrAspects(memo, value) => {
-                    engine
-                        .aspect_attr_aspects
-                        .entry(memo.clone())
-                        .or_insert_with(|| value.clone());
-                }
-                Published::AspectToolchains(memo, value) => {
-                    engine
-                        .aspect_toolchains
-                        .entry(memo.clone())
-                        .or_insert_with(|| Arc::clone(value));
-                }
-                Published::AspectAttributeConfigs(memo, value) => {
-                    engine
-                        .aspect_attribute_configs
-                        .entry(memo.clone())
-                        .or_insert_with(|| Arc::clone(value));
-                }
-                Published::Transition(key, value) => {
-                    engine
-                        .transition_cache
-                        .entry(*key)
-                        .or_insert_with(|| value.clone());
-                }
-            }
+            publish_memo(engine, published);
         }
         lin.published_memos = self.store.published.len();
+    }
+
+    /// The walk's phase 1 of `root` (a done CT1 node) on its own, as a
+    /// requested target in a fresh walk would run it: a pass 1 over the
+    /// subtree's transcripts (S2, the CsMatch split: what a speculative
+    /// phase 2 of a config_setting's Starlark flag plans). `Err`: the
+    /// subtree cannot be replayed now (a transcript not complete or freed,
+    /// a cycle, a divergence).
+    pub(crate) fn subtree(&self, root: NodeId) -> Result<Subtree, String> {
+        with_running(|stack| {
+            let view = View {
+                store: &self.store,
+                stack,
+                ct1_values: &self.ct1_values,
+            };
+            let source = SubtreeSource {
+                view: &view,
+                kind: SegmentKind::Setup,
+                events: vec![Event::Reach(root)],
+                freed: std::cell::Cell::new(false),
+            };
+            let mut pass = Pass1::new(Options::default());
+            let mut ops = Vec::new();
+            let progress = pass.resume(&source, &mut ops)?;
+            if progress != Progress::Finished {
+                return Err(format!("the subtree's replay {progress:?}"));
+            }
+            if source.freed.get() {
+                return Err("a transcript of the subtree was freed".to_owned());
+            }
+            let mut canonical = Vec::new();
+            for node in pass.take_canonical() {
+                match self.store.keys.get(&node) {
+                    Some(NodeKey::Ct1(ct)) => canonical.push(ct.clone()),
+                    _ => return Err("a configured target without its key".to_owned()),
+                }
+            }
+            let mut plan = Vec::new();
+            for op in ops {
+                match op {
+                    TapeOp::Plan { key, .. } => plan.push(key),
+                    TapeOp::Fail(error) => return Err(error),
+                    _ => {}
+                }
+            }
+            let out = pass.finish();
+            if let Some(divergence) = out.divergences.first() {
+                return Err(divergence.clone());
+            }
+            Ok(Subtree {
+                plan,
+                canonical,
+                toolchain_implementations: out.toolchain_implementations,
+            })
+        })
     }
 
     /// What pass 1 waits for (the evaluator's frontier: the pool boosts
@@ -753,6 +886,86 @@ impl Coord<'_> {
     fn begin_segment(&mut self, kind: SegmentKind) {
         self.drain();
         self.store.segments.push((kind, Vec::new()));
+    }
+}
+
+/// A configured target's subtree as a fresh walk analyzes it
+/// ([`Coord::subtree`]).
+pub(crate) struct Subtree {
+    /// The plan entries, in the walk's order.
+    pub(crate) plan: Vec<CtKey>,
+    /// The configured targets (the variant reached first).
+    pub(crate) canonical: Vec<CtKey>,
+    /// The first-visit forced execution platforms.
+    pub(crate) toolchain_implementations: std::collections::BTreeMap<ConfiguredTargetKey, Label>,
+}
+
+/// The store as the source of a subtree's pass 1: one segment reaching
+/// the root; a freed transcript is noted (its replay would be empty).
+struct SubtreeSource<'a, 'v> {
+    view: &'a View<'v>,
+    kind: SegmentKind,
+    events: Vec<Event>,
+    freed: std::cell::Cell<bool>,
+}
+
+impl SubtreeSource<'_, '_> {
+    fn note(&self, node: NodeId) {
+        if self.view.store.released.contains(&node) {
+            self.freed.set(true);
+        }
+    }
+}
+
+impl Transcripts for SubtreeSource<'_, '_> {
+    fn key(&self, node: NodeId) -> NodeKey {
+        self.view.key(node)
+    }
+
+    fn ct1(&self, node: NodeId) -> Option<Ct1Record<'_>> {
+        self.note(node);
+        self.view.ct1(node)
+    }
+
+    fn memo(&self, node: NodeId) -> Option<MemoRecord<'_>> {
+        self.note(node);
+        self.view.memo(node)
+    }
+
+    fn segment(&self, index: usize) -> Option<SegmentRecord<'_>> {
+        (index == 0).then(|| SegmentRecord {
+            kind: &self.kind,
+            events: &self.events,
+            complete: true,
+        })
+    }
+
+    fn segments_complete(&self) -> bool {
+        true
+    }
+
+    fn evaluation_done(&self) -> bool {
+        // A node without a transcript may still get one: blocked, not an
+        // internal error.
+        false
+    }
+
+    fn ready(&self, node: NodeId) -> bool {
+        self.view.ready(node)
+    }
+
+    fn same_observable(&self, canonical: NodeId, reached: NodeId) -> bool {
+        self.view.same_observable(canonical, reached)
+    }
+
+    fn cycle_error(
+        &self,
+        head: &ConfiguredTargetKey,
+        path: &[ConfiguredTargetKey],
+        cycle: &[ConfiguredTargetKey],
+        trimmed_root: Option<&ConfiguredTargetKey>,
+    ) -> String {
+        self.view.cycle_error(head, path, cycle, trimmed_root)
     }
 }
 
@@ -924,6 +1137,7 @@ impl Engine {
             published_memos: 0,
             unpublished: Vec::new(),
             console: Some(console),
+            failure: None,
         };
         let (result, lin) = {
             let mut bodies = Phase1Bodies::new(&shared, self, tracking, true);
@@ -1057,6 +1271,138 @@ impl Engine {
             ));
         }
         Ok(())
+    }
+}
+
+/// Publish a configured target's phase-1 value into `engine`'s maps (the
+/// walk's writes phase 2 reads); `false` when `key` was published already.
+pub(crate) fn publish_ct1(
+    engine: &mut Engine,
+    configured: &mut ConfiguredNodes,
+    key: ConfiguredTargetKey,
+    ok: &Ct1Ok,
+) -> bool {
+    if configured.contains_key(&key) {
+        return false;
+    }
+    configured.insert(key.clone(), ok.node.clone());
+    if let Some(context) = &ok.toolchain_context {
+        engine
+            .toolchain_contexts
+            .insert(key.clone(), context.clone());
+    }
+    if let Some(groups) = &ok.exec_groups {
+        engine
+            .exec_group_contexts
+            .insert(key.clone(), groups.clone());
+    }
+    if let Some(config) = ok.exec_config {
+        engine.exec_configurations.insert(key.clone(), config);
+    }
+    for (group, config) in &ok.group_exec_configs {
+        engine
+            .group_exec_configurations
+            .insert((key.clone(), group.clone()), *config);
+    }
+    if let Some(configs) = &ok.edge_configs {
+        engine.edge_configs.insert(key.clone(), configs.clone());
+    }
+    if let Some(errors) = &ok.deferred_duplicates {
+        engine
+            .deferred_duplicates
+            .insert(key.clone(), errors.clone());
+    }
+    match &ok.delegate {
+        Some(owner) => {
+            engine.rule_delegations.insert(key.clone(), owner.clone());
+        }
+        None => {
+            if ok.rule.custom.is_some() || ok.node.incompatible.is_some() {
+                engine
+                    .configured_rules
+                    .insert(key.clone(), Arc::clone(&ok.rule));
+            }
+        }
+    }
+    if ok.empty_configuration {
+        engine.empty_configuration_rules.insert(key);
+    }
+    true
+}
+
+/// Publish a memo value into `engine`'s maps (first one wins: equal values
+/// per key).
+pub(crate) fn publish_memo(engine: &mut Engine, published: &Published) {
+    match published {
+        Published::Platform(key, result) => {
+            engine
+                .platforms
+                .entry(key.clone())
+                .or_insert_with(|| result.clone());
+        }
+        Published::RegToolchains(config, result) => {
+            engine
+                .registered_toolchains
+                .entry(*config)
+                .or_insert_with(|| result.clone());
+        }
+        Published::RegExecPlatforms(config, result) => {
+            engine
+                .registered_execution_platforms
+                .entry(*config)
+                .or_insert_with(|| result.clone());
+        }
+        Published::ExecCfg(config, platform, exec) => {
+            engine
+                .exec_transitions
+                .entry((*config, platform.clone()))
+                .or_insert(*exec);
+        }
+        Published::FlagScope(label, scoped) => {
+            engine.flag_scopes.entry(label.clone()).or_insert(*scoped);
+        }
+        Published::TransitionDetails(settings, result) => {
+            engine
+                .transition_details
+                .entry(settings.clone())
+                .or_insert_with(|| result.clone());
+        }
+        Published::Source(label) => {
+            engine.analyzed_sources.insert(label.clone());
+        }
+        // StarlarkTransitionCache (a deferred platform's tree that
+        // phase 2 analyzes with the walk: a hit replays the prints
+        // a miss makes).
+        Published::AspectPredicate(memo, value) => {
+            engine
+                .aspect_predicates
+                .entry(memo.clone())
+                .or_insert(*value);
+        }
+        Published::AspectAttrAspects(memo, value) => {
+            engine
+                .aspect_attr_aspects
+                .entry(memo.clone())
+                .or_insert_with(|| value.clone());
+        }
+        Published::AspectToolchains(memo, value) => {
+            engine
+                .aspect_toolchains
+                .entry(memo.clone())
+                .or_insert_with(|| Arc::clone(value));
+        }
+        Published::AspectAttributeConfigs(memo, value) => {
+            engine
+                .aspect_attribute_configs
+                .entry(memo.clone())
+                .or_insert_with(|| Arc::clone(value));
+        }
+        Published::Transition(key, value) => {
+            engine
+                .transition_cache
+                .entry(*key)
+                .or_insert_with(|| value.clone());
+        }
     }
 }
 
@@ -1330,10 +1676,23 @@ fn drive(
         });
         // The requested target's segment renders the chain errors.
         let analyzed = analyzed.map_err(|error| render_chains(shared, &error, trimmed.as_ref()));
+        // A flush of this segment that failed where the walk would have
+        // run it comes first (S2, the CsMatch split: the pool analyzed past
+        // it), worded by the walk's chain.
+        let analyzed = match analyzed {
+            Err(error) => {
+                let mut coord = bodies.coord();
+                let _ = coord.linearize(shared);
+                Err(coord.flush_failure(shared, top).unwrap_or(error))
+            }
+            ok => ok,
+        };
         // The requested target's compatibility, on the published nodes.
         let analyzed = analyzed.and_then(|()| {
             let mut coord = bodies.coord();
-            coord.linearize(shared)?;
+            if let Err(error) = coord.linearize(shared) {
+                return Err(coord.flush_failure(shared, top).unwrap_or(error));
+            }
             let Some(mut lin) = coord.lin.take() else {
                 return Ok(());
             };
