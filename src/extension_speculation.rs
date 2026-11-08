@@ -329,6 +329,14 @@ impl<O: Send + 'static> Pool<O> {
         }
     }
 
+    /// The sentinel the speculation of `id` is blocked on, if it is.
+    pub(crate) fn blocked_on(&self, id: &str) -> Option<String> {
+        match lock(&self.shared.state).entries.get(id) {
+            Some(Entry::Blocked { error, .. }) => Some(error.clone()),
+            _ => None,
+        }
+    }
+
     /// `f` of the finished outcome of `id` nobody took yet.
     pub(crate) fn with_done<R>(&self, id: &str, f: impl FnOnce(&O) -> R) -> Option<R> {
         match lock(&self.shared.state).entries.get(id) {

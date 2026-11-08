@@ -168,7 +168,18 @@ const LOCAL_BLOCKER: &str = "\u{2}local:";
 /// kept for the unit's re-run.
 pub(crate) fn lane_fetch(shared: &EvalShared, blocker: &str) {
     if let Some(group) = blocker.strip_prefix(EXTENSION_BLOCKER) {
-        shared.repositories.wait_eval_group(group);
+        // Blocked on a registry module's root: materialized here (what it
+        // writes and observes is the waiting unit's), then once more.
+        if let Some(error) = shared.repositories.wait_eval_group(group)
+            && let Some(root) = module_root_blocker(&error)
+        {
+            let root = root.to_owned();
+            lane_fetch(shared, &root);
+            if let Some(written) = lock(&shared.loading.lane_writes).remove(&root) {
+                lock(&shared.loading.lane_writes).insert(blocker.to_owned(), written);
+            }
+            shared.repositories.retry_eval_group(group);
+        }
         return;
     }
     if let Some(canonical) = blocker.strip_prefix(LOCAL_BLOCKER) {
@@ -287,7 +298,12 @@ pub(crate) fn package_body(
                 if let Some(group) =
                     sentinel.and_then(|error| repositories.eval_group_blocker(error))
                 {
-                    return Err(Missing::Repo(format!("{EXTENSION_BLOCKER}{group}")));
+                    let blocker = format!("{EXTENSION_BLOCKER}{group}");
+                    lock(&shared.loading.pending_blockers)
+                        .entry(id.clone())
+                        .or_default()
+                        .push(blocker.clone());
+                    return Err(Missing::Repo(blocker));
                 }
                 // A local repository rule: the lane has it executed ahead.
                 if let Some(canonical) =

@@ -3737,8 +3737,39 @@ impl RepositorySet {
 
     /// The pool's lane: wait (at most a few seconds) for the speculative
     /// preparation of the group `id` an evaluator's pool load waits for.
-    pub(crate) fn wait_eval_group(&self, id: &str) {
+    pub(crate) fn wait_eval_group(&self, id: &str) -> Option<String> {
         self.state.extension_speculation.request(id);
+        let _ = self.state.extension_speculation.finished_waiting(
+            id,
+            std::time::Duration::from_secs(10),
+            true,
+        );
+        // Blocked on another group's preparation: that one is prepared
+        // ahead too (and this one retried once it is).
+        let blocked = self.state.extension_speculation.blocked_on(id)?;
+        if let Some(other) = self.speculated_group_blocker(&blocked) {
+            let other = other.to_owned();
+            self.state.extension_speculation.request(&other);
+            let _ = self.state.extension_speculation.finished_waiting(
+                &other,
+                std::time::Duration::from_secs(10),
+                true,
+            );
+            self.retry_extension_speculations();
+            let _ = self.state.extension_speculation.finished_waiting(
+                id,
+                std::time::Duration::from_secs(10),
+                true,
+            );
+            return None;
+        }
+        Some(blocked)
+    }
+
+    /// Queue again the extension speculations blocked on a demand the
+    /// pool's lane satisfied (a registry module's root).
+    pub(crate) fn retry_eval_group(&self, id: &str) {
+        self.retry_extension_speculations();
         let _ = self.state.extension_speculation.finished_waiting(
             id,
             std::time::Duration::from_secs(10),
