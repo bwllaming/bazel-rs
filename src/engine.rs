@@ -3689,83 +3689,17 @@ impl Engine {
         package: &PackageId,
         unit: package::LoadUnit,
     ) -> Result<(), String> {
-        let package::LoadUnit {
-            result,
-            prints: unit_prints,
-            roots,
-            observations,
-        } = unit;
-        // The roots this load obtained on a worker count as materialized
-        // from its commit on, as at the sequential engine's load (W6
-        // review F2), and what it observed reaches the analysis snapshot's
-        // recording here (W6R); an aborted unit's are the inline re-run's
-        // to note and observe.
-        if !result
-            .as_ref()
-            .is_err_and(|error| crate::repository_demand::is_inline_rerun_sentinel(error))
-        {
-            self.repositories.note_committed_roots(&roots);
-            crate::observed_fs::commit(observations);
-        }
-        let (rules, prints) = match result {
-            Ok(rules) => (rules, unit_prints),
-            Err(error) => {
-                if crate::repository_demand::is_inline_rerun_sentinel(&error) {
-                    // An inline-rerun sentinel: the no-demand guard (a
-                    // worker, review §1.2) or a parallel `.bzl` wait-cycle
-                    // abort (N62). The module events (evaluated lines and
-                    // cache-hit markers) are emitted now — the modules are
-                    // cached and never evaluate again — while the BUILD
-                    // lines are dropped with the aborted evaluation; the
-                    // inline re-run reproduces the sequential output, fetch
-                    // output and genuine cycle messages included.
-                    let module_events = unit_prints
-                        .into_iter()
-                        .filter(|event| !matches!(event, crate::loading::LoadPrintEvent::Build(_)))
-                        .collect();
-                    self.emit_load_prints(module_events);
-                    let mut retried = self.load_package_attempt(package);
-                    self.repositories.note_committed_roots(&retried.roots);
-                    crate::observed_fs::commit(std::mem::take(&mut retried.observations));
-                    return match retried.result {
-                        Ok(rules) => {
-                            let printed = retried.prints.iter().any(|event| {
-                                matches!(event, crate::loading::LoadPrintEvent::Build(_))
-                            });
-                            self.track_package_printed(package, printed);
-                            self.emit_load_prints(retried.prints);
-                            self.commit_loaded_package(package, rules)
-                        }
-                        Err(error) => {
-                            self.emit_load_prints(retried.prints);
-                            // A wait-cycle abort on the inline re-run is
-                            // not spurious: nothing is left to wait for,
-                            // so the demand is a genuine cycle (an
-                            // extension loading the very module being
-                            // evaluated). Report it as the load cycle it
-                            // is — the raw sentinel never reaches the
-                            // user (N62 follow-up).
-                            Err(if crate::repository_demand::is_parallel_bzl_cycle(&error) {
-                                format!(
-                                    "load cycle: //{} (a module demanded while already being evaluated)",
-                                    package.package
-                                )
-                            } else {
-                                error
-                            })
-                        }
-                    };
-                }
-                self.emit_load_prints(unit_prints);
-                return Err(error);
+        let repositories = Arc::clone(&self.repositories);
+        let (steps, result) = settle_load_unit(&repositories, package, unit, || {
+            load_package_attempt_in(&repositories, package)
+        });
+        for step in steps {
+            match step {
+                LoadStep::Prints(prints) => self.emit_load_prints(prints),
+                LoadStep::Committed(printed) => self.track_package_printed(package, printed),
             }
-        };
-        let printed = prints
-            .iter()
-            .any(|event| matches!(event, crate::loading::LoadPrintEvent::Build(_)));
-        self.track_package_printed(package, printed);
-        self.emit_load_prints(prints);
-        self.commit_loaded_package(package, rules)
+        }
+        self.commit_loaded_package(package, result?)
     }
 
     /// Load the packages of one `//dir/...` pattern expansion (P2,
@@ -4005,12 +3939,7 @@ impl Engine {
     /// no-demand guard, exercising the inline fallback a P2 worker
     /// exercises; a warm load demands nothing and is unaffected.
     fn load_package_attempt(&mut self, package: &PackageId) -> package::LoadUnit {
-        let guard = std::env::var_os("BAZEL_RS_LOADING_NO_DEMAND")
-            .is_some()
-            .then(crate::repository_demand::no_demand);
-        let unit = package::evaluate_load_unit(self.repositories.clone(), package);
-        drop(guard);
-        unit
+        load_package_attempt_in(&self.repositories, package)
     }
 
     /// Commit a loaded package (P2's commit order):
@@ -6716,154 +6645,11 @@ impl Engine {
         kind: Registration,
     ) -> Result<Vec<Label>, ResolutionError> {
         let _shared = incremental::SharedScope::enter("expand_registration_patterns");
-        let mut labels: Vec<Label> = Vec::new();
-        // The labels already in `labels`: first-copy dedupe in O(1) per
-        // label (a linear `labels.contains` was quadratic in the number of
-        // registered toolchains).
-        let mut seen: HashSet<Label> = HashSet::new();
-        for (repository, pattern) in patterns {
-            let invalid = |message: String| {
-                ResolutionError::Toolchain(match kind {
-                    Registration::Toolchain => {
-                        crate::toolchains::invalid_registered_toolchain(pattern, &message)
-                    }
-                    // InvalidExecutionPlatformLabelException (:262-275).
-                    Registration::ExecutionPlatform => {
-                        format!("invalid registered execution platform '{pattern}': {message}")
-                    }
-                })
-            };
-            if pattern.starts_with('-') {
-                return Err(ResolutionError::Propagated(format!(
-                    "negative {} registration pattern {pattern:?} is not implemented in the native profile",
-                    kind.noun()
-                )));
-            }
-            // An unknown apparent repository fails the whole analysis, not
-            // the toolchain resolution (paired capture
-            // B1/extra_extra_toolchains_nope_x): `Analysis of target 'L'
-            // failed; build aborted: No repository visible as '@R' from main
-            // repository` (RepositoryFetchFunction.java:149-153,
-            // RepositoryName.getContextRepoDisplayString, :251-258).
-            let parse = |this: &Self, text: &str| {
-                this.repositories
-                    .parse(text, repository, "")
-                    .map_err(
-                        |error| match unknown_apparent_repository(text, repository, &error) {
-                            Some(message) => ResolutionError::Aborted(message),
-                            None => invalid(error),
-                        },
-                    )
-            };
-            let (base, wildcard) = match pattern.rsplit_once(':') {
-                Some((base, "all")) => (base, true),
-                // HAS_PLATFORM_INFO reads the associated rule null-safely:
-                // file targets are dropped like any non-platform target.
-                Some((base, "*" | "all-targets")) if kind == Registration::ExecutionPlatform => {
-                    (base, true)
-                }
-                // FilteringPolicies.RuleTypeFilter.shouldRetain
-                // (pkgcache/FilteringPolicies.java:120) dereferences the
-                // associated rule of every target, so Bazel 9.3 crashes with
-                // a NullPointerException on the package's file targets (paired
-                // capture B1/extra_extra_toolchains_names, exit 37).
-                Some((_, kind @ ("*" | "all-targets"))) => {
-                    return Err(ResolutionError::Propagated(format!(
-                        "toolchain registration pattern '{pattern}' (the :{kind} wildcard) is not implemented in the native profile: Bazel 9.3 crashes expanding it (NullPointerException in FilteringPolicies.RuleTypeFilter.shouldRetain, pkgcache/FilteringPolicies.java:120)"
-                    )));
-                }
-                _ => (pattern.as_str(), false),
-            };
-            let found = if base == "..." || base.ends_with("/...") {
-                // TargetPattern.TargetsBelowDirectory: `//...` and `@r//...`
-                // keep their `//`, other directories drop the trailing `/`
-                // (as select_filtered).
-                let prefix = base.strip_suffix("...").unwrap_or_default();
-                let directory = if prefix.is_empty() || prefix.ends_with("//") {
-                    prefix
-                } else {
-                    prefix.strip_suffix('/').unwrap_or(prefix)
-                };
-                let context = parse(self, &format!("{directory}:__pattern__"))?;
-                let ignored = self.ignored(&context.repository).map_err(invalid)?;
-                // A directory inside an ignored directory warns and yields no
-                // targets (TargetPattern.TargetsBelowDirectory.eval; the
-                // warning of select_filtered, docs/IGNORED_DIRECTORIES.md).
-                if let Some(entry) = ignored.matching_entry(&context.package) {
-                    self.warnings.push(format!(
-                        "Pattern '{pattern}' was filtered out by ignored directory '{entry}'"
-                    ));
-                    continue;
-                }
-                let ignored = ignored.filter_for_directory(&context.package);
-                let root = self
-                    .repositories
-                    .root(&context.repository)
-                    .map_err(invalid)?
-                    .to_path_buf();
-                let mut packages = if crate::observed_fs::is_dir(root.join(&context.package)) {
-                    workspace::discover_packages_skipping(
-                        &root,
-                        &context.package,
-                        &ignored,
-                        &self.repositories.link_policy(&context.repository).blocked,
-                    )
-                    .map_err(invalid)?
-                } else {
-                    Vec::new()
-                };
-                // RecursivePackageProviderBackedTargetPatternResolver.java:326-329.
-                if packages.is_empty() {
-                    return Err(invalid(format!(
-                        "no targets found beneath '{}'",
-                        context.package
-                    )));
-                }
-                packages.sort_by(|a, b| subpackages_first(a, b));
-                let mut found = Vec::new();
-                for package in packages {
-                    let id = PackageId {
-                        repository: context.repository.clone(),
-                        package,
-                    };
-                    self.load_package(&id).map_err(invalid)?;
-                    found.extend(self.package_registration_rules(&id, kind));
-                }
-                found
-            } else if wildcard {
-                let id = parse(self, &format!("{base}:all"))?.package_id();
-                // TargetPatternResolverUtil.getParsingErrorMessage
-                // (pkgcache/TargetPatternResolverUtil.java:33-39).
-                self.load_package(&id)
-                    .map_err(|error| invalid(format!("while parsing '{pattern}': {error}")))?;
-                self.package_registration_rules(&id, kind)
-            } else {
-                let label = parse(self, pattern)?;
-                self.target(&label).map_err(invalid)?;
-                vec![label]
-            };
-            for label in found {
-                if !seen.contains(&label) {
-                    seen.insert(label.clone());
-                    labels.push(label);
-                }
-            }
-        }
-        Ok(labels)
+        expand_registration_patterns_in(&mut EngineLoader(self), patterns, kind)
     }
 
     /// The rules of a loaded package a registration wildcard keeps, by
     /// name: `toolchain` rules, or those with PlatformInfo.
-    fn package_registration_rules(&self, id: &PackageId, kind: Registration) -> Vec<Label> {
-        self.packages[id]
-            .values()
-            .filter(|rule| match kind {
-                Registration::Toolchain => matches!(rule.kind, RuleKind::Native("toolchain")),
-                Registration::ExecutionPlatform => has_platform_info(rule),
-            })
-            .map(|rule| rule.label.clone())
-            .collect()
-    }
 
     /// The modules' execution platform registrations (patterns with the
     /// repository each is parsed in), computed once per build: the other
@@ -18392,4 +18178,309 @@ impl SourceProbes for HashMap<PathBuf, SourceDirProbe> {
     fn put(&mut self, path: PathBuf, probe: SourceDirProbe) {
         self.insert(path, probe);
     }
+}
+
+/// One package load attempt (`Engine::load_package_attempt`).
+pub(crate) fn load_package_attempt_in(
+    repositories: &Arc<RepositorySet>,
+    package: &PackageId,
+) -> package::LoadUnit {
+    let guard = std::env::var_os("BAZEL_RS_LOADING_NO_DEMAND")
+        .is_some()
+        .then(crate::repository_demand::no_demand);
+    let unit = package::evaluate_load_unit(repositories.clone(), package);
+    drop(guard);
+    unit
+}
+
+/// What committing a load unit does besides the engine's maps, in order
+/// (`settle_load_unit`).
+pub(crate) enum LoadStep {
+    /// Emit these print events (`Engine::emit_load_prints`).
+    Prints(Vec<crate::loading::LoadPrintEvent>),
+    /// The package is committed (`track_package_printed`; `true`: its
+    /// BUILD file printed).
+    Committed(bool),
+}
+
+/// [`Engine::commit_load_unit`] without the engine's writes: the unit's
+/// roots and observations are committed, an inline-rerun sentinel re-runs
+/// the load through `rerun` (where demand may fetch), and the print and
+/// commit steps come back in the sequential engine's order with the
+/// loaded package (to validate and commit) or the error.
+pub(crate) fn settle_load_unit(
+    repositories: &Arc<RepositorySet>,
+    package: &PackageId,
+    unit: package::LoadUnit,
+    rerun: impl FnOnce() -> package::LoadUnit,
+) -> (Vec<LoadStep>, Result<Package, String>) {
+    let package::LoadUnit {
+        result,
+        prints: unit_prints,
+        roots,
+        observations,
+    } = unit;
+    let mut steps = Vec::new();
+    // The roots this load obtained on a worker count as materialized
+    // from its commit on, as at the sequential engine's load (W6
+    // review F2), and what it observed reaches the analysis snapshot's
+    // recording here (W6R); an aborted unit's are the inline re-run's
+    // to note and observe.
+    if !result
+        .as_ref()
+        .is_err_and(|error| crate::repository_demand::is_inline_rerun_sentinel(error))
+    {
+        repositories.note_committed_roots(&roots);
+        crate::observed_fs::commit(observations);
+    }
+    let printed = |prints: &[crate::loading::LoadPrintEvent]| {
+        prints
+            .iter()
+            .any(|event| matches!(event, crate::loading::LoadPrintEvent::Build(_)))
+    };
+    let (rules, prints) = match result {
+        Ok(rules) => (rules, unit_prints),
+        Err(error) => {
+            if crate::repository_demand::is_inline_rerun_sentinel(&error) {
+                // An inline-rerun sentinel: the no-demand guard (a
+                // worker, review §1.2) or a parallel `.bzl` wait-cycle
+                // abort (N62). The module events (evaluated lines and
+                // cache-hit markers) are emitted now — the modules are
+                // cached and never evaluate again — while the BUILD
+                // lines are dropped with the aborted evaluation; the
+                // inline re-run reproduces the sequential output, fetch
+                // output and genuine cycle messages included.
+                let module_events = unit_prints
+                    .into_iter()
+                    .filter(|event| !matches!(event, crate::loading::LoadPrintEvent::Build(_)))
+                    .collect();
+                steps.push(LoadStep::Prints(module_events));
+                let mut retried = rerun();
+                repositories.note_committed_roots(&retried.roots);
+                crate::observed_fs::commit(std::mem::take(&mut retried.observations));
+                return match retried.result {
+                    Ok(rules) => {
+                        steps.push(LoadStep::Committed(printed(&retried.prints)));
+                        steps.push(LoadStep::Prints(retried.prints));
+                        (steps, Ok(rules))
+                    }
+                    Err(error) => {
+                        steps.push(LoadStep::Prints(retried.prints));
+                        // A wait-cycle abort on the inline re-run is
+                        // not spurious: nothing is left to wait for,
+                        // so the demand is a genuine cycle (an
+                        // extension loading the very module being
+                        // evaluated). Report it as the load cycle it
+                        // is — the raw sentinel never reaches the
+                        // user (N62 follow-up).
+                        let error = if crate::repository_demand::is_parallel_bzl_cycle(&error) {
+                            format!(
+                                "load cycle: //{} (a module demanded while already being evaluated)",
+                                package.package
+                            )
+                        } else {
+                            error
+                        };
+                        (steps, Err(error))
+                    }
+                };
+            }
+            steps.push(LoadStep::Prints(unit_prints));
+            return (steps, Err(error));
+        }
+    };
+    steps.push(LoadStep::Committed(printed(&prints)));
+    steps.push(LoadStep::Prints(prints));
+    (steps, Ok(rules))
+}
+
+/// The loading services a registration pattern expansion uses
+/// (`Engine::expand_registration_patterns`; the evaluator's nodes).
+trait RegistrationLoader {
+    fn repositories(&self) -> &Arc<RepositorySet>;
+    /// Load (commit) a package.
+    fn load(&mut self, package: &PackageId) -> Result<Arc<Package>, String>;
+    /// Look a target up (its existence).
+    fn lookup(&mut self, label: &Label) -> Result<(), String>;
+    fn warn(&mut self, warning: String);
+}
+
+struct EngineLoader<'a>(&'a mut Engine);
+
+impl RegistrationLoader for EngineLoader<'_> {
+    fn repositories(&self) -> &Arc<RepositorySet> {
+        &self.0.repositories
+    }
+    fn load(&mut self, package: &PackageId) -> Result<Arc<Package>, String> {
+        self.0.load_package(package)?;
+        Ok(Arc::clone(&self.0.packages[package]))
+    }
+    fn lookup(&mut self, label: &Label) -> Result<(), String> {
+        self.0.target(label).map(|_| ())
+    }
+    fn warn(&mut self, warning: String) {
+        self.0.warnings.push(warning);
+    }
+}
+
+/// TargetPatternUtil.expandTargetPatterns of registrations
+/// (`Engine::expand_registration_patterns`) over `loader`.
+fn expand_registration_patterns_in(
+    loader: &mut dyn RegistrationLoader,
+    patterns: &[(String, String)],
+    kind: Registration,
+) -> Result<Vec<Label>, ResolutionError> {
+    let mut labels: Vec<Label> = Vec::new();
+    // The labels already in `labels`: first-copy dedupe in O(1) per
+    // label (a linear `labels.contains` was quadratic in the number of
+    // registered toolchains).
+    let mut seen: HashSet<Label> = HashSet::new();
+    for (repository, pattern) in patterns {
+        let invalid = |message: String| {
+            ResolutionError::Toolchain(match kind {
+                Registration::Toolchain => {
+                    crate::toolchains::invalid_registered_toolchain(pattern, &message)
+                }
+                // InvalidExecutionPlatformLabelException (:262-275).
+                Registration::ExecutionPlatform => {
+                    format!("invalid registered execution platform '{pattern}': {message}")
+                }
+            })
+        };
+        if pattern.starts_with('-') {
+            return Err(ResolutionError::Propagated(format!(
+                "negative {} registration pattern {pattern:?} is not implemented in the native profile",
+                kind.noun()
+            )));
+        }
+        // An unknown apparent repository fails the whole analysis, not
+        // the toolchain resolution (paired capture
+        // B1/extra_extra_toolchains_nope_x): `Analysis of target 'L'
+        // failed; build aborted: No repository visible as '@R' from main
+        // repository` (RepositoryFetchFunction.java:149-153,
+        // RepositoryName.getContextRepoDisplayString, :251-258).
+        let parse = |loader: &dyn RegistrationLoader, text: &str| {
+            loader
+                .repositories()
+                .parse(text, repository, "")
+                .map_err(
+                    |error| match unknown_apparent_repository(text, repository, &error) {
+                        Some(message) => ResolutionError::Aborted(message),
+                        None => invalid(error),
+                    },
+                )
+        };
+        let (base, wildcard) = match pattern.rsplit_once(':') {
+            Some((base, "all")) => (base, true),
+            // HAS_PLATFORM_INFO reads the associated rule null-safely:
+            // file targets are dropped like any non-platform target.
+            Some((base, "*" | "all-targets")) if kind == Registration::ExecutionPlatform => {
+                (base, true)
+            }
+            // FilteringPolicies.RuleTypeFilter.shouldRetain
+            // (pkgcache/FilteringPolicies.java:120) dereferences the
+            // associated rule of every target, so Bazel 9.3 crashes with
+            // a NullPointerException on the package's file targets (paired
+            // capture B1/extra_extra_toolchains_names, exit 37).
+            Some((_, kind @ ("*" | "all-targets"))) => {
+                return Err(ResolutionError::Propagated(format!(
+                    "toolchain registration pattern '{pattern}' (the :{kind} wildcard) is not implemented in the native profile: Bazel 9.3 crashes expanding it (NullPointerException in FilteringPolicies.RuleTypeFilter.shouldRetain, pkgcache/FilteringPolicies.java:120)"
+                )));
+            }
+            _ => (pattern.as_str(), false),
+        };
+        let found = if base == "..." || base.ends_with("/...") {
+            // TargetPattern.TargetsBelowDirectory: `//...` and `@r//...`
+            // keep their `//`, other directories drop the trailing `/`
+            // (as select_filtered).
+            let prefix = base.strip_suffix("...").unwrap_or_default();
+            let directory = if prefix.is_empty() || prefix.ends_with("//") {
+                prefix
+            } else {
+                prefix.strip_suffix('/').unwrap_or(prefix)
+            };
+            let context = parse(loader, &format!("{directory}:__pattern__"))?;
+            let ignored = loader
+                .repositories()
+                .ignored_subdirectories(&context.repository)
+                .map_err(invalid)?;
+            // A directory inside an ignored directory warns and yields no
+            // targets (TargetPattern.TargetsBelowDirectory.eval; the
+            // warning of select_filtered, docs/IGNORED_DIRECTORIES.md).
+            if let Some(entry) = ignored.matching_entry(&context.package) {
+                loader.warn(format!(
+                    "Pattern '{pattern}' was filtered out by ignored directory '{entry}'"
+                ));
+                continue;
+            }
+            let ignored = ignored.filter_for_directory(&context.package);
+            let root = loader
+                .repositories()
+                .root(&context.repository)
+                .map_err(invalid)?
+                .to_path_buf();
+            let mut packages = if crate::observed_fs::is_dir(root.join(&context.package)) {
+                workspace::discover_packages_skipping(
+                    &root,
+                    &context.package,
+                    &ignored,
+                    &loader
+                        .repositories()
+                        .link_policy(&context.repository)
+                        .blocked,
+                )
+                .map_err(invalid)?
+            } else {
+                Vec::new()
+            };
+            // RecursivePackageProviderBackedTargetPatternResolver.java:326-329.
+            if packages.is_empty() {
+                return Err(invalid(format!(
+                    "no targets found beneath '{}'",
+                    context.package
+                )));
+            }
+            packages.sort_by(|a, b| subpackages_first(a, b));
+            let mut found = Vec::new();
+            for package in packages {
+                let id = PackageId {
+                    repository: context.repository.clone(),
+                    package,
+                };
+                let package = loader.load(&id).map_err(invalid)?;
+                found.extend(package_registration_rules(&package, kind));
+            }
+            found
+        } else if wildcard {
+            let id = parse(loader, &format!("{base}:all"))?.package_id();
+            // TargetPatternResolverUtil.getParsingErrorMessage
+            // (pkgcache/TargetPatternResolverUtil.java:33-39).
+            let package = loader
+                .load(&id)
+                .map_err(|error| invalid(format!("while parsing '{pattern}': {error}")))?;
+            package_registration_rules(&package, kind)
+        } else {
+            let label = parse(loader, pattern)?;
+            loader.lookup(&label).map_err(invalid)?;
+            vec![label]
+        };
+        for label in found {
+            if !seen.contains(&label) {
+                seen.insert(label.clone());
+                labels.push(label);
+            }
+        }
+    }
+    Ok(labels)
+}
+
+fn package_registration_rules(package: &Package, kind: Registration) -> Vec<Label> {
+    package
+        .values()
+        .filter(|rule| match kind {
+            Registration::Toolchain => matches!(rule.kind, RuleKind::Native("toolchain")),
+            Registration::ExecutionPlatform => has_platform_info(rule),
+        })
+        .map(|rule| rule.label.clone())
+        .collect()
 }
