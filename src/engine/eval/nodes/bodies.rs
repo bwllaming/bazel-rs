@@ -620,20 +620,6 @@ impl Bodies for Phase1Bodies<'_, '_> {
     }
 
     fn finish(&self, attempt: Self::Attempt, value: NodeValue) -> NodeValue {
-        if std::env::var_os("ER_DEBUG").is_some()
-            && value
-                .error()
-                .is_some_and(|error| error.contains(crate::repository_demand::NEEDS_REPOSITORY))
-        {
-            eprintln!(
-                "ER_DEBUG sentinel value {:?} pooled={} thread={:?} nodemand={} : {:?}",
-                with_running(|r| r.last().map(|r| r.key.clone())),
-                self.pooled(),
-                std::thread::current().name(),
-                crate::repository_demand::no_demand_active(),
-                value.error()
-            );
-        }
         let observations = attempt.map(crate::observed_fs::UnitScope::finish);
         self.drain_local();
         let Some(running) = with_running(Vec::pop) else {
