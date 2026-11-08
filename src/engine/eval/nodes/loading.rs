@@ -125,6 +125,10 @@ impl PkgValue {
     }
 }
 
+/// BAZEL_RS_EVAL_STATS: the pool's loads left to the sequential pass.
+pub(crate) static POOL_INLINE_LOADS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// The `Pkg` body.
 pub(crate) fn package_body(
     shared: &EvalShared,
@@ -155,13 +159,23 @@ pub(crate) fn package_body(
             drop(committed);
             drop(reuse);
             drop(guard);
-            if let Err(error) = &unit.result
-                && crate::repository_demand::is_inline_rerun_sentinel(error)
-            {
-                // What blocked it is fetched ahead; the coordinator loads
-                // it. The aborted attempt's module events print first
-                // (kept for the re-run).
-                repositories.fetch_blocked_ahead(error);
+            let sentinel = unit
+                .result
+                .as_ref()
+                .err()
+                .filter(|error| crate::repository_demand::is_inline_rerun_sentinel(error));
+            // A unit that obtained repository roots before the sequential
+            // engine had them: they count from its commit on (W6 review
+            // F2), which only the sequential pass places (order-dependent
+            // recorded-input keys, link policies) — it loads there.
+            if sentinel.is_some() || !unit.roots.is_empty() {
+                // What blocked it is fetched ahead. The aborted attempt's
+                // module events print first (kept for the re-run).
+                if let Some(error) = sentinel {
+                    repositories.fetch_blocked_ahead(error);
+                }
+                POOL_INLINE_LOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
                 let module_events = unit
                     .prints
                     .into_iter()
@@ -178,7 +192,13 @@ pub(crate) fn package_body(
             }
             unit
         }
-        () => load_package_attempt_in(repositories, id),
+        () => {
+            let unit = load_package_attempt_in(repositories, id);
+            // An inline load may have prepared what the speculations were
+            // blocked on (Engine::load_package's retry).
+            repositories.retry_speculations();
+            unit
+        }
     };
     // The module events of attempts aborted on the pool print first (as
     // an aborted unit's before its inline re-run).

@@ -436,13 +436,18 @@ impl Bodies for Phase1Bodies<'_, '_> {
         // pass, where demand may fetch), what it observes in its own frame.
         let sentinels = crate::repository_demand::sentinels_raised();
         let order_dependent = crate::repository_demand::take_order_dependent();
+        let roots = crate::repository::UnitRoots::record();
         let no_demand = crate::repository_demand::no_demand();
         let reuse = crate::repository_demand::reuse_only();
         let result = super::eval_host::body(self.shared, &mut cx, key);
         drop(reuse);
         drop(no_demand);
+        // Roots obtained before the sequential engine had them count from
+        // the sequential point on: the attempt runs there.
+        let obtained = !roots.finish().is_empty();
         let raised = crate::repository_demand::sentinels_raised() != sentinels
-            || crate::repository_demand::take_order_dependent();
+            || crate::repository_demand::take_order_dependent()
+            || obtained;
         crate::repository_demand::restore_order_dependent(order_dependent);
         match result {
             Ok(_) if raised && !matches!(key, NodeKey::Pkg(_)) => {

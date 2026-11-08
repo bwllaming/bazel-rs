@@ -900,17 +900,25 @@ impl Engine {
                 evaluator.set_inline(true);
             }
             let pooled_for = pooled_at.elapsed();
+            let pool_done = if stats_enabled() {
+                evaluator.stats().done
+            } else {
+                0
+            };
             let result = drive(&bodies, &evaluator, &shared, labels, top, target_platform);
             if stats_enabled() {
                 let stats = evaluator.stats();
                 crate::note!(
-                    "bazel-rs: eval phase 1: threads {}, pool {} ms, nodes {}, runs {}, parks {}, quiescences {}",
+                    "bazel-rs: eval phase 1: threads {}, pool {} ms ({} nodes done), nodes {}, runs {}, parks {}, quiescences {}, loads left to the sequential pass {}",
                     evaluator.config().threads,
                     pooled_for.as_millis(),
+                    pool_done,
                     stats.done,
                     stats.runs,
                     stats.parks,
-                    stats.quiescences
+                    stats.quiescences,
+                    super::super::nodes::loading::POOL_INLINE_LOADS
+                        .load(std::sync::atomic::Ordering::Relaxed)
                 );
             }
             let mut coord = bodies.coord();
