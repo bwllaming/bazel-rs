@@ -198,10 +198,18 @@ impl Coord<'_> {
     pub(crate) fn push_event(&mut self, event: Event) {
         match self.stack.last_mut() {
             Some(running) if running.cursor < running.replay => {
+                // The engine services' effects an attempt's first need of a
+                // `Tgt` node carries (S1 loading: a package's load output,
+                // commit, warnings, its lookups and scopes) happen once.
                 let one_time = |event: &Event| {
                     matches!(
                         event,
-                        Event::Console(_) | Event::PkgCommit(..) | Event::Warn(_)
+                        Event::Console(_)
+                            | Event::PkgCommit(..)
+                            | Event::Warn(_)
+                            | Event::Access(_)
+                            | Event::ScopeEnter(_)
+                            | Event::ScopeExit
                     )
                 };
                 while running.cursor < running.replay
@@ -265,7 +273,12 @@ impl Coord<'_> {
             .find(|event| {
                 !matches!(
                     event,
-                    Event::Console(_) | Event::PkgCommit(..) | Event::Warn(_)
+                    Event::Console(_)
+                        | Event::PkgCommit(..)
+                        | Event::Warn(_)
+                        | Event::Access(_)
+                        | Event::ScopeEnter(_)
+                        | Event::ScopeExit
                 )
             })
         {

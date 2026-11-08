@@ -514,33 +514,52 @@ impl Host for EvalHost<'_, '_> {
     }
 
     fn analyze(&mut self, label: &Label, config: ConfigId) -> Result<(), String> {
-        // A source file analyzed before (Engine::analyzed_sources): no
-        // lookup.
-        let source = NodeKey::Src(label.clone());
-        if self.cx.coord().source_analyzed(label) {
-            if self.cx.coord().tracking {
-                self.emit(Event::Source(label.clone()));
-            }
-            return Ok(());
+        // The walk looks a source file up until its analysis succeeded
+        // once (`analyzed_sources`: later visits only track it): the
+        // lookup is a memo scope (S2: first-visit state is pass 1's).
+        let tracking = self.cx.coord().tracking;
+        if tracking {
+            self.memo_begin(&("source lookup", label));
         }
-        let rule = match self.target(label)? {
-            Target::Source(_) => {
-                if self.cx.coord().tracking {
-                    self.emit(Event::Source(label.clone()));
+        let looked_up = self.target(label);
+        let rule = match looked_up {
+            Err(error) => {
+                if tracking {
+                    self.memo_failed();
                 }
+                return Err(error);
+            }
+            Ok(Target::Source(_)) => {
                 // The visibility check runs once (`analyzed_sources`),
                 // inside the first user.
-                self.memo_use(&source);
-                return match self.need(source) {
+                let source = NodeKey::Src(label.clone());
+                let result = match self.need(source.clone()) {
                     Ok(value) => match value.as_ref() {
                         NodeValue::Src(result) => result.clone(),
                         _ => Err("internal error: a Src key with another value".to_owned()),
                     },
                     Err(missing) => Err(self.stop(missing)),
                 };
+                if tracking {
+                    match result {
+                        Ok(()) => self.memo_end(&()),
+                        Err(_) => self.memo_failed(),
+                    }
+                    self.emit(Event::Source(label.clone()));
+                }
+                self.memo_use(&source);
+                return result;
             }
-            Target::Rule(rule) => rule,
-            Target::Output(rule, _) => {
+            Ok(Target::Rule(rule)) => {
+                if tracking {
+                    self.memo_failed();
+                }
+                rule
+            }
+            Ok(Target::Output(rule, _)) => {
+                if tracking {
+                    self.memo_failed();
+                }
                 check_macro_namespace(&rule, label)?;
                 rule
             }
