@@ -11318,9 +11318,15 @@ impl Engine {
                 0,
                 timing,
             );
+            // The pool's units blocked on a repository have it fetched
+            // ahead (crate::repository_speculation), as phase-1 prefetch's.
+            let speculating = self.eval_pooled() && self.start_pattern_speculation();
             let analyzed = self
                 .eval_phase1(labels, top, &mut configured, &mut plan)
                 .map(root_checkpoint::Outcome::Continue);
+            if speculating {
+                self.repositories.stop_speculation();
+            }
             timer.finish();
             self.analyze_depth -= usize::from(timing);
             self.stop_prefetch();

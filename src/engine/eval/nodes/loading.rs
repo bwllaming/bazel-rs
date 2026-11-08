@@ -15,9 +15,9 @@
 //!   linearized use ([`Event::MemoUse`] of the Pkg node by every lookup).
 //!   The unit's roots and observations are committed when it settles.
 //!   On the pool, the load runs under the no-demand guard; a unit that
-//!   needs a repository (the inline-rerun sentinel) asks the coordinator's
-//!   lane ([`Missing::Repo`] of [`lane_name`]) to load it where demand may
-//!   fetch, and takes that unit on its re-run.
+//!   needs a repository (the inline-rerun sentinel) has it fetched ahead
+//!   (repository speculation) and parks for the sequential pass, which
+//!   loads it where demand may fetch (the walk's inline load).
 //! - **Tgt**: a lookup (rule, output file, declared source file) over its
 //!   package's value; a source file's missing-input and source-directory
 //!   records go to the store (order-free maps phase 2 reads).
@@ -60,10 +60,6 @@ pub(crate) struct Loading {
     /// Package loads run on pool threads (no repository demand: a unit
     /// that needs one asks the coordinator's lane).
     pub(crate) pooled: std::sync::atomic::AtomicBool,
-    /// Units the coordinator's lane loaded for a Pkg node that needed a
-    /// repository, with the console writes the load made.
-    pub(crate) lane_units:
-        Mutex<FxHashMap<PackageId, (crate::package::LoadUnit, Vec<crate::ui::Deferred>)>>,
     /// The package groups resolved so far (`Engine::group_nodes`).
     pub(crate) groups: Mutex<FxHashMap<Label, Arc<crate::package_specification::GroupNode>>>,
     /// The module events of a Pkg node's attempts aborted on the pool.
@@ -129,37 +125,6 @@ impl PkgValue {
     }
 }
 
-/// The lane name a Pkg node demands to have its package loaded by the
-/// coordinator (where demand may fetch).
-pub(crate) fn lane_name(package: &PackageId) -> String {
-    format!("\u{1}pkg:@@{}//{}", package.repository, package.package)
-}
-
-/// The package of a [`lane_name`].
-pub(crate) fn lane_package(name: &str) -> Option<PackageId> {
-    let rest = name.strip_prefix("\u{1}pkg:@@")?;
-    let (repository, package) = rest.split_once("//")?;
-    Some(PackageId {
-        repository: repository.to_owned(),
-        package: package.to_owned(),
-    })
-}
-
-/// The coordinator's lane for a Pkg node: load the package where demand
-/// may fetch (the walk's inline load), its console writes held for the
-/// node's transcript.
-pub(crate) fn lane_load(shared: &EvalShared, package: &PackageId) {
-    let console = crate::ui::DeferredConsole::start();
-    let unit = load_package_attempt_in(&shared.repositories, package);
-    let writes = console.finish();
-    shared
-        .loading
-        .lane_units
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(package.clone(), (unit, writes));
-}
-
 /// The `Pkg` body.
 pub(crate) fn package_body(
     shared: &EvalShared,
@@ -181,19 +146,8 @@ pub(crate) fn package_body(
         .loading
         .pooled
         .load(std::sync::atomic::Ordering::Acquire);
-    let laned = shared
-        .loading
-        .lane_units
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(id);
-    let mut lane_writes = Vec::new();
-    let unit = match laned {
-        Some((unit, writes)) => {
-            lane_writes = writes;
-            unit
-        }
-        None if pooled => {
+    let unit = match () {
+        () if pooled => {
             let guard = crate::repository_demand::no_demand();
             let reuse = crate::repository_demand::reuse_only();
             let committed = crate::repository_demand::committed_unit();
@@ -220,15 +174,14 @@ pub(crate) fn package_body(
                     .entry(id.clone())
                     .or_default()
                     .extend(module_events);
-                return Err(Missing::Repo(lane_name(id)));
+                return Err(Missing::Repo(super::bodies::INLINE.to_owned()));
             }
             unit
         }
-        None => load_package_attempt_in(repositories, id),
+        () => load_package_attempt_in(repositories, id),
     };
     // The module events of attempts aborted on the pool print first (as
-    // an aborted unit's before its inline re-run), then the lane's fetch
-    // output (where the walk's inline load wrote it).
+    // an aborted unit's before its inline re-run).
     let aborted = shared
         .loading
         .aborted_prints
@@ -238,10 +191,6 @@ pub(crate) fn package_body(
         .unwrap_or_default();
     if !aborted.is_empty() {
         cx.emit(Event::LoadPrints(aborted.into()));
-    }
-    for write in lane_writes {
-        let index = cx.coord().store.console(write);
-        cx.emit(Event::Console(index));
     }
     let (steps, result) = settle_load_unit(repositories, id, unit, || {
         load_package_attempt_in(repositories, id)

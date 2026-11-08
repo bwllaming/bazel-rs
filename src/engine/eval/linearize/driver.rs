@@ -42,7 +42,6 @@ use super::super::key::{CtKey, NodeId, NodeKey};
 use super::super::nodes::bodies::{Coord, Phase1Bodies, Running, push_running, with_running};
 use super::super::nodes::eval_host::edge_ct_key;
 use super::super::nodes::loading::PkgValue;
-use super::super::nodes::loading::{lane_load, lane_package};
 use super::super::scheduler::{EvalConfig, Evaluator, RepoLane};
 use super::super::shared::EvalShared;
 use super::super::transcript::{Event, SegmentKind, TapeOp, Transcript};
@@ -130,6 +129,12 @@ pub(crate) struct Store {
     /// The packages the evaluation loaded (S2, the Pkg nodes): what the
     /// tape's `PkgCommit` commits into the engine.
     pub(crate) packages: FxHashMap<crate::label::PackageId, Result<Arc<PkgValue>, String>>,
+    /// What each done attempt observed (a pooled evaluation's frames),
+    /// committed where the tape replays the node.
+    pub(crate) observations: FxHashMap<NodeId, crate::observed_fs::Observations>,
+    /// The nodes the tape replayed (entered or first used) already: what
+    /// they observe once done is committed at once.
+    pub(crate) replayed: FxHashSet<NodeId>,
     /// Source-file lookups' missing inputs and source directories (Tgt
     /// nodes; order-free maps, published with the values).
     pub(crate) sources_side: Vec<crate::engine::SourceSide>,
@@ -362,6 +367,22 @@ impl Coord<'_> {
         for op in ops {
             if let Some(tracker) = lin.tracker.as_deref_mut() {
                 lin.replay.apply(tracker, &op);
+            }
+            // What a node observed reaches the recording where the walk
+            // runs it (S2, a pooled evaluation's attempt frames): a
+            // configured target where it is entered, a memo at its first
+            // use.
+            match &op {
+                TapeOp::Reach {
+                    node, enter: true, ..
+                }
+                | TapeOp::Effect(Event::MemoUse(node)) => {
+                    self.store.replayed.insert(*node);
+                    if let Some(observations) = self.store.observations.remove(node) {
+                        crate::observed_fs::commit_to_recorder(observations);
+                    }
+                }
+                _ => {}
             }
             match op {
                 TapeOp::Effect(Event::Print(line)) => {
@@ -818,6 +839,11 @@ impl Engine {
             && self.requested_aspects.is_empty()
     }
 
+    /// Whether phase 1 runs on a pool (S2: more than one thread).
+    pub(in crate::engine) fn eval_pooled(&self) -> bool {
+        phase1_config(self.loading_phase_threads).threads > 1
+    }
+
     /// Phase 1 of `labels` in `top` by the evaluator (see the module
     /// documentation): `configured` and `plan` as the walk's
     /// `analyze_requested` leaves them.
@@ -854,7 +880,8 @@ impl Engine {
             console: Some(console),
         };
         let (result, lin) = {
-            let bodies = Phase1Bodies::new(&shared, self, tracking, true);
+            let mut bodies = Phase1Bodies::new(&shared, self, tracking, true);
+            bodies.framed = phase1_config(shared.options.loading_phase_threads).threads > 1;
             {
                 let mut coord = bodies.coord();
                 coord.store.warnings_seen = coord.engine.warnings.len();
@@ -978,19 +1005,13 @@ fn phase1_config(loading_phase_threads: usize) -> EvalConfig {
     }
 }
 
-/// The repository lane of phase 1: a Pkg node's load where demand may
-/// fetch (on the coordinator); an attempt only the sequential pass runs
-/// waits for it (`bodies::INLINE`).
-struct Lane<'a> {
-    shared: &'a EvalShared,
-}
+/// The repository lane of phase 1: nothing yet (S4). An attempt that
+/// needs a repository (fetched ahead by repository speculation) or only
+/// the sequential pass can run waits for that pass (`bodies::INLINE`).
+struct Lane;
 
-impl RepoLane for Lane<'_> {
-    fn fetch(&mut self, name: &str) {
-        if let Some(package) = lane_package(name) {
-            lane_load(self.shared, &package);
-        }
-    }
+impl RepoLane for Lane {
+    fn fetch(&mut self, _name: &str) {}
 }
 
 /// At quiescence on the pool: stop (the parked attempts are the
@@ -1017,7 +1038,7 @@ fn warm_up(
 ) {
     let pooled = &shared.loading.pooled;
     pooled.store(true, std::sync::atomic::Ordering::Release);
-    let mut lane = Lane { shared };
+    let mut lane = Lane;
     let mut roots: Vec<NodeKey> = target_platform
         .map(|target| NodeKey::Platform(ConfiguredTargetKey::new(target, top)))
         .into_iter()
@@ -1063,7 +1084,7 @@ fn drive(
     let evaluate = |key: &NodeKey| -> Arc<NodeValue> {
         evaluator.evaluate(
             std::slice::from_ref(key),
-            &mut Lane { shared },
+            &mut Lane,
             &mut Pass1Cycles::default(),
         );
         evaluator.value(key).cloned().unwrap_or_else(|| {

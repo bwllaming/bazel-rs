@@ -311,6 +311,9 @@ pub(crate) struct Phase1Bodies<'s, 'e> {
     pub(crate) shared: &'s EvalShared,
     pub(crate) coord: Mutex<Coord<'e>>,
     pub(crate) flags: Flags,
+    /// Attempts observe in frames committed in the tape's order (S2: a
+    /// pooled evaluation; the inline driver alone observes in order).
+    pub(crate) framed: bool,
 }
 
 impl<'s, 'e> Phase1Bodies<'s, 'e> {
@@ -326,6 +329,7 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
                 tracking,
                 linearized,
             },
+            framed: false,
             coord: Mutex::new(Coord {
                 engine,
                 tracking,
@@ -390,9 +394,12 @@ fn pool_thread_setup(tracking: bool) {
 }
 
 impl Bodies for Phase1Bodies<'_, '_> {
-    type Attempt = ();
+    /// A pooled evaluation's attempt observes in its own frame (committed
+    /// where the tape replays the node; an abandoned attempt's is dropped:
+    /// its re-run observes again).
+    type Attempt = Option<crate::observed_fs::UnitScope>;
 
-    fn begin(&self, id: NodeId, key: &NodeKey) {
+    fn begin(&self, id: NodeId, key: &NodeKey) -> Self::Attempt {
         if self.pooled()
             && std::thread::current()
                 .name()
@@ -416,6 +423,7 @@ impl Bodies for Phase1Bodies<'_, '_> {
                 missing_at: None,
             })
         });
+        self.framed.then(crate::observed_fs::unit_scope)
     }
 
     fn run(&self, cx: &mut dyn Cx, key: &NodeKey) -> Result<NodeValue, Missing> {
@@ -428,7 +436,6 @@ impl Bodies for Phase1Bodies<'_, '_> {
         // pass, where demand may fetch), what it observes in its own frame.
         let sentinels = crate::repository_demand::sentinels_raised();
         let order_dependent = crate::repository_demand::take_order_dependent();
-        let scope = crate::observed_fs::unit_scope();
         let no_demand = crate::repository_demand::no_demand();
         let reuse = crate::repository_demand::reuse_only();
         let result = super::eval_host::body(self.shared, &mut cx, key);
@@ -437,22 +444,16 @@ impl Bodies for Phase1Bodies<'_, '_> {
         let raised = crate::repository_demand::sentinels_raised() != sentinels
             || crate::repository_demand::take_order_dependent();
         crate::repository_demand::restore_order_dependent(order_dependent);
-        let result = match result {
+        match result {
             Ok(_) if raised && !matches!(key, NodeKey::Pkg(_)) => {
                 Err(Missing::Repo(INLINE.to_owned()))
             }
             result => result,
-        };
-        // What a done attempt observed reaches the recording (an abandoned
-        // attempt's re-run observes it again).
-        let observations = scope.finish();
-        if result.is_ok() {
-            crate::observed_fs::commit_to_recorder(observations);
         }
-        result
     }
 
-    fn finish(&self, _attempt: (), value: NodeValue) -> NodeValue {
+    fn finish(&self, attempt: Self::Attempt, value: NodeValue) -> NodeValue {
+        let observations = attempt.map(crate::observed_fs::UnitScope::finish);
         self.drain_local();
         let Some(running) = with_running(Vec::pop) else {
             return value;
@@ -478,6 +479,11 @@ impl Bodies for Phase1Bodies<'_, '_> {
             ));
         }
         if matches!(running.key, NodeKey::Tgt(_)) {
+            // A lookup's observations are order-free (probes of source
+            // files): the recording's now.
+            if let Some(observations) = observations {
+                crate::observed_fs::commit_to_recorder(observations);
+            }
             // A lookup's events belong to its user (the walk looks
             // targets up inline).
             for event in running.events {
@@ -491,11 +497,19 @@ impl Bodies for Phase1Bodies<'_, '_> {
         }
         let mut coord = self.coord();
         coord.drain();
+        if let Some(observations) = observations.filter(|observations| !observations.is_empty()) {
+            if coord.store.replayed.contains(&running.id) {
+                crate::observed_fs::commit_to_recorder(observations);
+            } else {
+                coord.store.observations.insert(running.id, observations);
+            }
+        }
         coord.finish_attempt(running, &value);
         value
     }
 
-    fn abandon(&self, _attempt: ()) {
+    fn abandon(&self, attempt: Self::Attempt) {
+        drop(attempt.map(crate::observed_fs::UnitScope::finish));
         self.drain_local();
         if let Some(running) = with_running(Vec::pop) {
             self.coord().abandon_attempt(running);
