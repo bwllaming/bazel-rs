@@ -606,7 +606,21 @@ order decides is pass 1's (the table above).
   failing inside it).
 - **Test hook** `BAZEL_RS_EVAL_RESTARTS=<seed>`: a node's first need of a
   key is answered `Missing` at random (one in four): attempts are abandoned
-  and re-run as in the pool; the output must not change.
+  and re-run as in the pool; the output must not change. It found two
+  order dependences, fixed: (1) an abandoned attempt whose partial
+  transcript pass 1 had replayed (a flush inside a child) lost those
+  events — now its events up to the `Missing` stay as the rerun's prefix,
+  which the rerun re-emits in place (`Coord::push_event`; the one-time
+  effects of the engine's services there — a package's load output and
+  commit, its warnings, a `Tgt` node's lookups and scopes — are not
+  re-emitted; any other difference is an internal error); (2) the walk's
+  `analyzed_sources` shortcut read completion-order state — a source
+  file's lookup is now a memo scope (replayed at the first successful
+  linearized use).
+- **`Tgt` events** (for eval-s2-load): a `Tgt` node's captured effects go
+  to the attempt that first needed it (S1: "the walk looks targets up
+  inline"); with parallel completion they belong at the first linearized
+  use — make them a memo (`MemoUse`, or the `Pkg` node's transcript).
 - **Open** (not in this part): the CsMatch split proper (the matching as a
   node of its own needing the flags' CT2, so that a config_setting's CT1
   does not wait for phase 2) needs the pool's partial transcripts
@@ -614,6 +628,26 @@ order decides is pass 1's (the table above).
   config_setting to its consumers; parallel-order testing end to end
   (pre-evaluating roots out of order) is blocked on it (a flush inside a
   pre-evaluated body has no plan prefix yet).
+
+**S2 part 2 results** (2026-11-08, ~/code `80d6724f3a` private clone,
+release build without LTO, warm repositories, `BAZEL_RS_SNAPSHOT=off`, the
+evaluator on the inline driver; host load 14–17):
+
+| `build --nobuild //src/...` | walk | eval |
+|---|---|---|
+| wall | 43.9 / 48.0 s | 57.6 / 55.5 s |
+| plan.start-relative phase 1 done | 35.8 / 39.6 s | 49.2 / 47.4 s |
+| max RSS (process) | 8.87 / 8.89 GB | 9.30 / 9.32 GB (+4.8%; S1: +6.7%) |
+| eval phase 1 (`BAZEL_RS_EVAL_STATS`) | | pass 1 2.1–2.2 s, tape application 0.17–0.19 s, publication 0.53–0.65 s, flushes' phase 2 21.8–23.1 s |
+
+Byte-identical stderr with `BAZEL_RS_DUMP_ACTIONS=1` (6,485,168 lines)
+walk vs eval, and vs eval under `BAZEL_RS_EVAL_RESTARTS=3` (2,037 s: the
+hook re-runs bodies quadratically). `BAZEL_RS_EVAL_VERIFY=1` clean on
+`build --nobuild //src/...`, `test --nobuild //src/...`,
+`cquery 'deps(//src/rust/...)'`, `affected --base=HEAD^` (32 GB memory
+limit: two engines). Test suite (ptest): walk 3679/3679, eval
+(`BAZEL_RS_DEFAULT_ANALYSIS=eval`) 3679/3679, eval with
+`BAZEL_RS_EVAL_RESTARTS=7` 3679/3679.
 
 **S1 results** (2026-11-08, ~/code `80d6724f3a`, LTO release binary
 sha256 `272b5f78…`, warm repositories, `BAZEL_RS_SNAPSHOT=off`, default
