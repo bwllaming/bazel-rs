@@ -424,13 +424,6 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         }
     }
 
-    /// Serving: start `keys` on the pool ahead of everything else.
-    pub(crate) fn start_first(&self, keys: &[NodeKey]) {
-        for key in keys {
-            self.boost(key, 0);
-        }
-    }
-
     /// Whether the pool serves now.
     pub(crate) fn serving(&self) -> bool {
         self.serving.load(Ordering::SeqCst)
@@ -620,14 +613,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             self.schedule(None, id);
         }
         let mut boosted: Option<std::time::Instant> = None;
-        let waiting = std::time::Instant::now();
         loop {
-            if waiting.elapsed() > std::time::Duration::from_secs(120) {
-                panic!(
-                    "internal error: BAZEL_RS_ANALYSIS=eval: the sequential pass waited 120 s for {key:?} ({:?}); rerun with BAZEL_RS_EVAL_NO_SERVE=1",
-                    entry.state()
-                );
-            }
             let state = entry.state();
             let wait = match state {
                 State::Done => return false,

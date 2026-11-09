@@ -1520,14 +1520,7 @@ impl Engine {
             let _ = POOL_START.set(pooled_at);
             let serve = evaluator.pooled() && *SERVE;
             let pool_roots = if evaluator.pooled() {
-                let roots = warm_up(
-                    &evaluator,
-                    &shared,
-                    labels,
-                    top,
-                    target_platform.clone(),
-                    serve,
-                );
+                let roots = warm_up(&evaluator, &shared, labels, top, target_platform.clone());
                 evaluator.set_inline(true);
                 // The sequential pass hands what the pool can run to it.
                 // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
@@ -2125,7 +2118,6 @@ fn warm_up(
     labels: &[Label],
     top: ConfigId,
     target_platform: Option<Label>,
-    serve: bool,
 ) -> Vec<NodeKey> {
     let pooled = &shared.loading.pooled;
     pooled.store(true, std::sync::atomic::Ordering::Release);
@@ -2160,11 +2152,6 @@ fn warm_up(
             }
         })
         .collect();
-    if serve {
-        // The registrations' packages ahead of the roots (every toolchain
-        // resolution waits for them).
-        evaluator.start_first(&registration_packages(shared));
-    }
     evaluator.evaluate_round(&roots, &mut lane);
     super::super::timeline::mark(|| {
         format!(
@@ -2175,44 +2162,6 @@ fn warm_up(
     });
     pooled.store(false, std::sync::atomic::Ordering::Release);
     roots
-}
-
-/// The packages the module graph registers toolchains and execution
-/// platforms in (explicit labels and `:all` patterns; not recursive ones):
-/// every toolchain resolution waits for their loads.
-fn registration_packages(shared: &EvalShared) -> Vec<NodeKey> {
-    // A hint only: nothing demanded (an extension's repository mapping is
-    // not prepared here, where the walk would not), nothing observed.
-    crate::observed_fs::discard(|| {
-        let _no_demand = crate::repository_demand::no_demand();
-        registration_packages_in(shared)
-    })
-}
-
-fn registration_packages_in(shared: &EvalShared) -> Vec<NodeKey> {
-    let repositories = &shared.repositories;
-    let mut patterns = repositories.toolchain_registrations().unwrap_or_default();
-    if let Ok((platforms, _)) = repositories.execution_platform_registrations(false) {
-        patterns.extend(platforms);
-    }
-    let mut packages: Vec<NodeKey> = Vec::new();
-    for (repository, patterns) in patterns {
-        for pattern in patterns {
-            let text = pattern.trim_start_matches('-');
-            if text.ends_with("...") {
-                continue;
-            }
-            let base = text.rsplit_once(':').map_or(text, |(base, _)| base);
-            let Ok(label) = repositories.parse(&format!("{base}:BUILD"), &repository, "") else {
-                continue;
-            };
-            let package = NodeKey::Pkg(label.package_id());
-            if !packages.contains(&package) {
-                packages.push(package);
-            }
-        }
-    }
-    packages
 }
 
 /// Another round of the pool over `roots` (S2): what the sequential pass
