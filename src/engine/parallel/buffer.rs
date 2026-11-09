@@ -545,6 +545,26 @@ impl Board {
                         self.mark(key);
                     }
                 }
+                // A delta sharing an output with an earlier entry is rebuilt
+                // at its merge: once published, only what the rebuild needs
+                // is kept (the analysis result, the runfiles support, the
+                // outputs check), not the delta too (memory).
+                let mut result = result;
+                if let Ok(outcome) = &mut result
+                    && let Some(Ok(worker)) = &mut outcome.worker
+                    && let Some(delta) = worker.outcome.delta.as_mut()
+                    && let Some(kept) = delta.kept.take()
+                {
+                    let (analyzed, runfiles, outputs_checked) = *kept;
+                    let built = std::mem::replace(
+                        &mut delta.built,
+                        delta::Built::Fallback("delta_meets_producer"),
+                    );
+                    super::super::drop_elsewhere(built);
+                    worker.outcome.analyzed = Ok(analyzed);
+                    worker.outcome.runfiles = runfiles;
+                    worker.outcome.outputs_checked = outputs_checked;
+                }
                 Finished::Starlark {
                     outcome: Box::new(result),
                     published,

@@ -245,11 +245,18 @@ impl PlannedResults {
         let keys = std::mem::take(&mut *journal.lock().unwrap_or_else(|e| e.into_inner()));
         for key in keys {
             if let Some(artifact) = state.declared.get(key.config, &key.path) {
-                let predeclared = predeclared(engine, &key, artifact);
-                self.declared_shard(key.hash)
+                let mut shard = self
+                    .declared_shard(key.hash)
                     .write()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .put(key, artifact.clone(), predeclared);
+                    .unwrap_or_else(|e| e.into_inner());
+                // Absent, or the same owner's: put either way; another
+                // owner's is replaced only by an output-file target's.
+                let replace = match shard.get(key.config, &key.path) {
+                    None => true,
+                    Some(known) if known.owner == artifact.owner => true,
+                    Some(_) => predeclared(engine, &key, artifact),
+                };
+                shard.put(key, artifact.clone(), replace);
             }
         }
     }

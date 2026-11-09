@@ -10125,7 +10125,7 @@ impl Engine {
         let (worker_delta, reason) = match built {
             Some(delta::Built::Delta(built)) if stale(&built) => {
                 delta::provisional_bump(1);
-                drop(built);
+                drop_elsewhere(built);
                 match kept.take() {
                     Some(kept) => {
                         (analyzed, precomputed, outputs_checked) = *kept;
@@ -10141,7 +10141,7 @@ impl Engine {
                 (Some(built), "worker")
             }
             Some(delta::Built::Delta(built)) => {
-                drop(built);
+                drop_elsewhere(built);
                 let reason = if kept.is_some() {
                     "meets_producer_kept"
                 } else {
