@@ -567,11 +567,14 @@ pub(crate) mod tests {
         let root = tempfile::tempdir().unwrap();
         let script = root.path().join("helper");
         let pid_path = root.path().join("pid");
+        // The pid file appears only complete (renamed into place): `echo >
+        // pid` creates it before writing, and an empty read would check
+        // "/proc/", which always exists.
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\necho $$ > '{}'\nexec /bin/sleep 30\n",
-                pid_path.display()
+                "#!/bin/sh\necho $$ > '{pid}.tmp'\nmv '{pid}.tmp' '{pid}'\nexec /bin/sleep 30\n",
+                pid = pid_path.display()
             ),
         )
         .unwrap();
@@ -611,13 +614,17 @@ pub(crate) mod tests {
         while !pid_path.exists() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
-        let pid = std::fs::read_to_string(pid_path).unwrap();
+        let pid: u32 = std::fs::read_to_string(pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
         let start = Instant::now();
         drop(scope);
         finished.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(start.elapsed() < Duration::from_secs(2));
         assert!(
-            !std::path::Path::new(&format!("/proc/{}", pid.trim())).exists(),
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
             "helper survived shutdown"
         );
     }

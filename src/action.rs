@@ -8485,6 +8485,8 @@ mod tests {
         let stamped = tree_stamps::COUNTS[0].load(Ordering::Relaxed);
         assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
         assert!(tree_stamps::COUNTS[0].load(Ordering::Relaxed) > stamped);
+        // The change falls after the stamped times, as settled ones are.
+        wait_past_directory_times(&fixture.0, &tree);
         fs::write(tree.join("_main/pkg/extra"), b"").unwrap();
         assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
         assert!(!tree.join("_main/pkg/extra").exists());
@@ -10230,6 +10232,45 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
             .collect()
     }
 
+    /// Wait until the filesystem clock (a probe file's change time in
+    /// `scratch`, on the filesystem of `tree`) is past the modification and
+    /// change times of every directory of `tree`: any later change of a
+    /// directory then shows in its stamp, as it does for the settled
+    /// directories the product stamps.
+    fn wait_past_directory_times(scratch: &Path, tree: &Path) {
+        use std::os::unix::fs::MetadataExt;
+        let mut latest = (i64::MIN, i64::MIN);
+        let mut pending = vec![tree.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            let metadata = fs::symlink_metadata(&directory).unwrap();
+            latest = latest
+                .max((metadata.mtime(), metadata.mtime_nsec()))
+                .max((metadata.ctime(), metadata.ctime_nsec()));
+            for entry in fs::read_dir(&directory).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    pending.push(entry.path());
+                }
+            }
+        }
+        let probe = scratch.join("clock-probe");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            // Created afresh: its change time is the clock's now.
+            fs::write(&probe, b"").unwrap();
+            let metadata = fs::metadata(&probe).unwrap();
+            fs::remove_file(&probe).unwrap();
+            if (metadata.ctime(), metadata.ctime_nsec()) > latest {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "filesystem clock stalled"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     /// docs/HARDLINK_STAGING.md, "Cache checks of published trees": a
     /// valid tree's settled directories are stamped next to its manifest;
     /// later checks inspect only the directories (no walk), take the files
@@ -10295,6 +10336,12 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
             }),
         ];
         for (directory, damage) in damage {
+            // SETTLE_ALL stands in for the racy margin the product requires
+            // (crate::dir_stamps::DirectoryStamp::settled): a stamped
+            // directory's times are older than any later change. Without
+            // it a change in the same filesystem clock tick as the stamp
+            // leaves the directory's times unchanged.
+            wait_past_directory_times(&fixture.0, &tree);
             let directory = tree.join(directory);
             fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
             damage(&directory);
