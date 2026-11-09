@@ -152,7 +152,7 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
     let walk = ws.build("walk", 1, &[], args);
     let text = stable(&walk);
     check(walk.status.success(), &text);
-    let runs: [(usize, &[(&str, &str)]); 8] = [
+    let runs: [(usize, &[(&str, &str)]); 9] = [
         (2, &[FROZEN]),
         (8, &[FROZEN]),
         (32, &[FROZEN]),
@@ -160,6 +160,8 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
         (8, &[FROZEN, ("BAZEL_RS_EVAL_JITTER", "300")]),
         (8, &[FROZEN, ("BAZEL_RS_EVAL_RESTARTS", "5")]),
         (8, &[FROZEN, ("BAZEL_RS_T3_WINDOW", "3")]),
+        // The cursor meets entries still being classified.
+        (32, &[FROZEN, ("BAZEL_RS_T3_CLASSIFY_JITTER", "20000")]),
         (8, &[FROZEN, ("BAZEL_RS_VERIFY_DELTA", "1")]),
     ];
     for (threads, env) in runs {

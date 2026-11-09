@@ -175,4 +175,6 @@ sites! {
     frozen_drop: "frozen", "drop:1";
     frozen_loading_worker: "frozen", "loading-worker:5";
     frozen_evaluator: "frozen", "evaluator:5";
+    frozen_buffer_classify: "frozen", "t3-classify:7";
+    frozen_buffer_publish: "frozen", "t3-publish:7";
 }
