@@ -1,0 +1,276 @@
+//! BAZEL_RS_ANALYSIS=eval, T3 (docs/EVALUATOR.md "T3 as built"): a frozen
+//! walk computes phase 2 in dependency order on the workers and merges in
+//! plan order. The output must be the walk's byte for byte (stderr with the
+//! action dump, stdout, exit code) whatever finishes first: an output
+//! shared by two targets of a package (and a conflicting one) where the
+//! loser — later in plan order — finishes long before the winner, with a
+//! reader of the loser's output; a failure in the middle of the plan while
+//! the targets after it have finished (their prints and actions dropped,
+//! fail fast); prints of many targets across buffered merges.
+#![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/temp_root.rs");
+include!("support/module_archives.rs");
+use std::{
+    fs,
+    path::Path,
+    process::{Command, Output},
+};
+
+const RULES_BZL: &str = r#"
+def _w_impl(ctx):
+    print("w %s" % ctx.label)
+    total = 0
+    for i in range(ctx.attr.work):
+        total += i * i
+    if ctx.attr.fail:
+        fail("the implementation of %s failed" % ctx.label.name)
+    out = ctx.actions.declare_file(ctx.attr.out or ctx.label.name + ".txt")
+    ctx.actions.write(out, ctx.attr.content)
+    files = depset([out], transitive = [dep[DefaultInfo].files for dep in ctx.attr.deps])
+    summary = ctx.actions.declare_file(ctx.label.name + ".sum")
+    ctx.actions.run_shell(
+        inputs = files,
+        outputs = [summary],
+        command = "cat $@ > /dev/null; echo %d > %s" % (total % 7, summary.path),
+    )
+    return [DefaultInfo(files = depset([summary], transitive = [files]))]
+
+w = rule(
+    implementation = _w_impl,
+    attrs = {
+        "out": attr.string(),
+        "content": attr.string(default = "x"),
+        "deps": attr.label_list(),
+        "work": attr.int(default = 10),
+        "fail": attr.bool(),
+    },
+)
+"#;
+
+struct Workspace(tempfile::TempDir);
+
+impl Workspace {
+    fn new(files: &[(&str, String)]) -> Self {
+        let workspace = Self(tempfile::tempdir_in(test_temp::root()).unwrap());
+        let mut all = vec![
+            ("MODULE.bazel", String::new()),
+            ("rules/BUILD.bazel", String::new()),
+            ("rules/defs.bzl", RULES_BZL.to_owned()),
+        ];
+        all.extend(files.iter().cloned());
+        for (path, text) in all {
+            let path = workspace.0.path().join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        for directory in ["home", "tmp"] {
+            fs::create_dir(workspace.0.path().join(directory)).unwrap();
+        }
+        workspace
+    }
+
+    fn path(&self) -> &Path {
+        self.0.path()
+    }
+
+    fn build(&self, mode: &str, threads: usize, env: &[(&str, &str)], args: &[&str]) -> Output {
+        let _ = fs::remove_dir_all(self.path().join("cache"));
+        Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
+            .current_dir(self.path())
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", self.path().join("home"))
+            .env("TMPDIR", self.path().join("tmp"))
+            .env("BAZEL_RS_CACHE_GC", "off")
+            .env("BAZEL_RS_SNAPSHOT", "off")
+            .env("BAZEL_RS_ANALYSIS", mode)
+            .env("BAZEL_RS_DUMP_ACTIONS", "1")
+            .args(with_builtin_registry(
+                &[
+                    "--ignore_all_rc_files",
+                    "--cache-dir=cache",
+                    "build",
+                    "--experimental-builtin-modules=false",
+                    "--lockfile_mode=off",
+                    "--memory-limit=2048",
+                    "--nobuild",
+                ]
+                .into_iter()
+                .map(str::to_owned)
+                .chain([format!("--loading_phase_threads={threads}")])
+                .chain(args.iter().map(|arg| (*arg).to_owned()))
+                .collect::<Vec<_>>(),
+            ))
+            .envs(env.iter().copied())
+            .seeded_archives()
+            .output()
+            .unwrap()
+    }
+}
+
+/// stderr without the timing and memory lines.
+fn stable(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .filter(|line| {
+            !line.starts_with("INFO: Elapsed time")
+                && !line.starts_with("bazel-rs: memory limit")
+                && !line.starts_with("PERF")
+                && !line.starts_with("bazel-rs: peak RSS")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+const FROZEN: (&str, &str) = ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all");
+
+/// The walk's output, then the buffered evaluation's at several thread
+/// counts, with jitter, restarts and a tiny window, compared byte for byte;
+/// one timed run checks the merge buffer walked.
+fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
+    let walk = ws.build("walk", 1, &[], args);
+    let text = stable(&walk);
+    check(walk.status.success(), &text);
+    let runs: [(usize, &[(&str, &str)]); 8] = [
+        (2, &[FROZEN]),
+        (8, &[FROZEN]),
+        (32, &[FROZEN]),
+        (32, &[FROZEN, ("BAZEL_RS_ANALYSIS_JITTER", "5")]),
+        (8, &[FROZEN, ("BAZEL_RS_EVAL_JITTER", "300")]),
+        (8, &[FROZEN, ("BAZEL_RS_EVAL_RESTARTS", "5")]),
+        (8, &[FROZEN, ("BAZEL_RS_T3_WINDOW", "3")]),
+        (8, &[FROZEN, ("BAZEL_RS_VERIFY_DELTA", "1")]),
+    ];
+    for (threads, env) in runs {
+        let eval = ws.build("eval", threads, env, args);
+        let what = format!("{args:?} at {threads} threads, {env:?}");
+        assert_eq!(
+            eval.status.code(),
+            walk.status.code(),
+            "{what}: {}",
+            stable(&eval)
+        );
+        assert_eq!(stable(&eval), text, "{what}");
+        assert_eq!(eval.stdout, walk.stdout, "{what}");
+    }
+    let timed = ws.build("eval", 8, &[FROZEN, ("BAZEL_RS_TIMING", "1")], args);
+    let timed = String::from_utf8_lossy(&timed.stderr);
+    assert!(
+        timed
+            .lines()
+            .any(|line| line.starts_with("PERF-PARALLEL buffer ") && !line.contains(" walks=0")),
+        "the merge buffer walked: {timed}"
+    );
+}
+
+/// The winner of a shared output (first in plan order) computes for long,
+/// the loser and its reader finish first; with different contents the two
+/// conflict. The action dump names the winner's action for the shared
+/// output, and the reader's inputs name it too.
+#[test]
+fn shared_outputs_and_conflicts_where_the_loser_finishes_first() {
+    for content in ["same", "other"] {
+        let ws = Workspace::new(&[(
+            "sh/BUILD.bazel",
+            format!(
+                r#"load("//rules:defs.bzl", "w")
+w(name = "a", out = "shared.txt", content = "same", work = 400000)
+w(name = "b", out = "shared.txt", content = "{content}")
+w(name = "r", deps = [":b"])
+w(name = "z", deps = [":r", ":a"])
+"#
+            ),
+        )]);
+        compare(&ws, &["//sh:z", "//sh:b", "//sh:a"], |success, text| {
+            if content == "same" {
+                assert!(success, "{text}");
+                assert_eq!(
+                    text.lines()
+                        .filter(
+                            |line| line.starts_with("  output ") && line.ends_with("sh/shared.txt")
+                        )
+                        .count(),
+                    1,
+                    "one action produces the shared output: {text}"
+                );
+            } else {
+                assert!(!success, "{text}");
+                assert!(text.contains("conflicting actions"), "{text}");
+            }
+        });
+    }
+}
+
+/// A target in the middle of the plan fails; the targets after it (not
+/// depending on it) finish on the workers first. Fail fast: the error is
+/// the walk's, and nothing of the later targets — prints, actions — shows.
+#[test]
+fn a_failure_in_the_middle_of_the_plan_drops_the_later_buffered_results() {
+    let mut build = String::from("load(\"//rules:defs.bzl\", \"w\")\n");
+    let mut roots = Vec::new();
+    for index in 0..24 {
+        let (work, fail) = if index == 8 {
+            (300000, "True")
+        } else {
+            (10, "False")
+        };
+        build.push_str(&format!(
+            "w(name = \"t{index:02}\", work = {work}, fail = {fail})\n"
+        ));
+        roots.push(format!("//f:t{index:02}"));
+    }
+    let ws = Workspace::new(&[("f/BUILD.bazel", build)]);
+    let roots: Vec<&str> = roots.iter().map(String::as_str).collect();
+    compare(&ws, &roots, |success, text| {
+        assert!(!success, "{text}");
+        assert!(text.contains("the implementation of t08 failed"), "{text}");
+    });
+}
+
+/// Many printing targets over several packages, their implementations
+/// taking varying time: the prints keep the plan's order across the
+/// buffered merges.
+#[test]
+fn prints_keep_the_plan_order_across_buffered_merges() {
+    let mut files = Vec::new();
+    for (package, path) in [
+        "p0/BUILD.bazel",
+        "p1/BUILD.bazel",
+        "p2/BUILD.bazel",
+        "p3/BUILD.bazel",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut build = String::from(
+            "load(\"//rules:defs.bzl\", \"w\")\npackage(default_visibility = [\"//visibility:public\"])\n",
+        );
+        for index in 0..16 {
+            let work = 10 + (package * 16 + index) * 7919 % 40000;
+            let deps = if index > 0 {
+                format!("[\":t{}\"]", index - 1)
+            } else if package > 0 {
+                format!("[\"//p{}:t15\"]", package - 1)
+            } else {
+                "[]".to_owned()
+            };
+            build.push_str(&format!(
+                "w(name = \"t{index}\", work = {work}, deps = {deps})\n"
+            ));
+            build.push_str(&format!(
+                "w(name = \"s{index}\", work = {})\n",
+                40000 - work.min(39990)
+            ));
+        }
+        files.push((path, build));
+    }
+    let ws = Workspace::new(&files);
+    compare(
+        &ws,
+        &["//p0:all", "//p1:all", "//p2:all", "//p3:all"],
+        |success, text| {
+            assert!(success, "{text}");
+            assert!(text.contains("w @@//p3:t15"), "{text}");
+        },
+    );
+}
