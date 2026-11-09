@@ -71,6 +71,19 @@ fn classify_jitter() -> u64 {
     *JITTER
 }
 
+/// `BAZEL_RS_T3_CHAIN_WEIGHT=<entries>`: how much earlier in the queue a
+/// job runs per Starlark implementation in its chain of dependents.
+fn chain_weight() -> usize {
+    static WEIGHT: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling bound; the output is the same either way.
+        std::env::var("BAZEL_RS_T3_CHAIN_WEIGHT")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(256)
+    });
+    *WEIGHT
+}
+
 /// How long the cursor waits for one entry before it names it on stderr.
 const WATCHDOG: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -89,6 +102,9 @@ const CLAIMED: u8 = 5;
 const KIND_TURN: u8 = 0;
 const KIND_STARLARK: u8 = 1;
 const KIND_NATIVE: u8 = 2;
+/// Not classified yet (the cursor classifies it itself when it gets there
+/// first).
+const KIND_UNCLASSIFIED: u8 = 3;
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL buffer`).
 static STATS: [AtomicU64; STAT_NAMES.len()] = [const { AtomicU64::new(0) }; STAT_NAMES.len()];
@@ -291,6 +307,20 @@ struct Board {
     index_of: HashMap<ConfiguredTargetKey, usize>,
     /// Classifications that panicked (their text), raised at the turn.
     panics: std::sync::Mutex<HashMap<usize, String>>,
+    /// The requirement edges found so far (requirement's slot, entry's
+    /// slot) and the classification jobs still to finish: the last one
+    /// computes each entry's downstream chain ([`Board::chains`]).
+    edges: std::sync::Mutex<Vec<(u32, u32)>>,
+    chunks_left: std::sync::atomic::AtomicUsize,
+    /// Each entry's longest chain of Starlark implementations through its
+    /// dependents (itself included), once every entry is classified: its
+    /// job runs ahead of entries this many links earlier in plan order.
+    chain: std::sync::OnceLock<Box<[u32]>>,
+    /// The cursor's plan index, and the ready entries beyond its window
+    /// (dispatched as it advances).
+    cursor: std::sync::atomic::AtomicUsize,
+    window: usize,
+    parked: std::sync::Mutex<std::collections::BinaryHeap<std::cmp::Reverse<usize>>>,
 }
 
 impl Board {
@@ -348,10 +378,6 @@ impl Board {
             .filter(|slot| *slot < self.plan.len())
     }
 
-    fn end(&self) -> usize {
-        self.start + self.plan.len()
-    }
-
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed) || self.cancelled.load(Ordering::Relaxed)
     }
@@ -367,14 +393,32 @@ impl Board {
             if self.stopped() {
                 return;
             }
+            self.classify_entry(index);
+        }
+        if self.chunks_left.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.chains();
+        }
+    }
+
+    /// Classify entry `index` (a worker's chunk, or the cursor meeting it
+    /// unclassified) and dispatch it if ready.
+    fn classify_entry(self: &Arc<Self>, index: usize) {
+        {
             let Some(slot) = self.slot(index) else {
-                continue;
+                return;
             };
-            if self.stage[slot]
-                .compare_exchange(IDLE, CLASSIFYING, Ordering::AcqRel, Ordering::Acquire)
-                .is_err()
+            if self.kind[slot].load(Ordering::Acquire) != KIND_UNCLASSIFIED
+                || self.stage[slot]
+                    .compare_exchange(IDLE, CLASSIFYING, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
             {
-                continue;
+                return;
+            }
+            // Classified meanwhile (its kind is stored before it is
+            // released): once only.
+            if self.kind[slot].load(Ordering::Acquire) != KIND_UNCLASSIFIED {
+                self.stage[slot].store(IDLE, Ordering::Release);
+                return;
             }
             let (key, rule) = &self.plan[slot];
             // A panic is raised at the entry's turn, by the cursor (the
@@ -434,7 +478,15 @@ impl Board {
             self.kind[slot].store(kind, Ordering::Release);
             if kind == KIND_TURN {
                 self.stage[slot].store(IDLE, Ordering::Release);
-                continue;
+                return;
+            }
+            {
+                let mut edges = self.edges.lock().unwrap_or_else(|e| e.into_inner());
+                for key in &keys {
+                    if let Some(at) = self.index_of.get(key) {
+                        edges.push(((at - self.start) as u32, slot as u32));
+                    }
+                }
             }
             // Registered and released under the lock: a publication after
             // it finds the entry waiting (it readies it), one before it is
@@ -461,11 +513,22 @@ impl Board {
         }
     }
 
-    /// Queue entry `index`'s job (unless the cursor claimed it).
+    /// Queue entry `index`'s job (unless the cursor claimed it), or park
+    /// it until the cursor's window reaches it (the results waiting for
+    /// their merge are bounded).
     fn dispatch(self: &Arc<Self>, index: usize) {
         let Some(slot) = self.slot(index) else {
             return;
         };
+        if index >= self.cursor.load(Ordering::Acquire) + self.window {
+            self.parked
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(std::cmp::Reverse(index));
+            // The cursor may have moved past the check: release again.
+            self.release();
+            return;
+        }
         if self.stage[slot]
             .compare_exchange(IDLE, QUEUED, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
@@ -475,7 +538,7 @@ impl Board {
         stat(S_DISPATCHED, 1);
         let board = Arc::clone(self);
         self.submit(
-            index,
+            self.priority(index),
             Box::new(move || {
                 if board.stopped()
                     || board.stage[slot]
@@ -571,6 +634,62 @@ impl Board {
                 }
             }
         }
+    }
+
+    /// The queue's key of entry `index`'s job (the lowest first): its plan
+    /// index, earlier by `BAZEL_RS_T3_CHAIN_WEIGHT` (256) entries per
+    /// Starlark implementation in its longest chain of dependents (a long
+    /// chain starts early, its links then run one after the other).
+    fn priority(&self, index: usize) -> usize {
+        let chain = self
+            .chain
+            .get()
+            .and_then(|chain| chain.get(index - self.start).copied())
+            .unwrap_or(0) as usize;
+        index.saturating_sub(chain.saturating_mul(chain_weight()))
+    }
+
+    /// Dispatch the parked entries the cursor's window reaches now.
+    fn release(self: &Arc<Self>) {
+        let limit = self.cursor.load(Ordering::Acquire) + self.window;
+        let released: Vec<usize> = {
+            let mut parked = self.parked.lock().unwrap_or_else(|e| e.into_inner());
+            let mut released = Vec::new();
+            while let Some(std::cmp::Reverse(index)) = parked.peek().copied() {
+                if index >= limit {
+                    break;
+                }
+                parked.pop();
+                released.push(index);
+            }
+            released
+        };
+        for index in released {
+            self.dispatch(index);
+        }
+    }
+
+    /// Every entry classified: each one's longest chain of Starlark
+    /// implementations through its dependents (a reverse sweep: the plan
+    /// is a post-order, a dependent comes after its requirements).
+    fn chains(&self) {
+        let len = self.plan.len();
+        let mut edges = std::mem::take(&mut *self.edges.lock().unwrap_or_else(|e| e.into_inner()));
+        edges.sort_unstable();
+        let mut chain = vec![0u32; len];
+        let mut next = edges.len();
+        for slot in (0..len).rev() {
+            let own = u32::from(matches!(self.plan[slot].1.kind, RuleKind::Custom));
+            let mut longest = 0;
+            while next > 0 && edges[next - 1].0 as usize == slot {
+                next -= 1;
+                longest = longest.max(chain[edges[next].1 as usize]);
+            }
+            // Edges of later requirements were consumed above (sorted by
+            // requirement): a slot's edges are contiguous.
+            chain[slot] = own + longest;
+        }
+        let _ = self.chain.set(chain.into_boxed_slice());
     }
 
     /// `key`'s results exist (published or committed): dispatch the
@@ -878,7 +997,7 @@ impl Engine {
             plan,
             start,
             stage: (0..len).map(|_| AtomicU8::new(IDLE)).collect(),
-            kind: (0..len).map(|_| AtomicU8::new(KIND_TURN)).collect(),
+            kind: (0..len).map(|_| AtomicU8::new(KIND_UNCLASSIFIED)).collect(),
             sched: Default::default(),
             finished: Default::default(),
             finished_cv: Default::default(),
@@ -892,7 +1011,20 @@ impl Engine {
             slow: Default::default(),
             index_of,
             panics: Default::default(),
+            edges: Default::default(),
+            chunks_left: std::sync::atomic::AtomicUsize::new(len.div_ceil(CHUNK)),
+            chain: std::sync::OnceLock::new(),
+            cursor: std::sync::atomic::AtomicUsize::new(start),
+            window: window(),
+            parked: Default::default(),
         });
+        // Every entry is classified at once, ahead of every job (cheap:
+        // lookups; what is ready beyond the window waits, parked): the
+        // chains of dependents decide the jobs' order.
+        for from in (start..start + len).step_by(CHUNK) {
+            let (to, chunk) = ((from + CHUNK).min(start + len), Arc::clone(&board));
+            board.submit(0, Box::new(move || chunk.classify_chunk(from, to)));
+        }
         stat(S_WALKS, 1);
         let started = std::time::Instant::now();
         let mut progress = Vec::new();
@@ -947,8 +1079,6 @@ impl Engine {
         started: std::time::Instant,
         progress: &mut Vec<String>,
     ) -> Result<(), String> {
-        let window = window();
-        let mut classified = board.start;
         let tenth = board.plan.len().div_ceil(10).max(1);
         while let Some((key, rule)) = self
             .planning_plan
@@ -992,14 +1122,12 @@ impl Engine {
                     board.mark(&delegated);
                 }
             }
-            // Classify the window ahead of the cursor.
-            let upto = (index + 1 + window).min(board.end());
-            while classified < upto {
-                let to = (classified + CHUNK).min(upto);
-                let (from, chunk) = (classified, Arc::clone(board));
-                board.submit(from, Box::new(move || chunk.classify_chunk(from, to)));
-                classified = to;
-            }
+            // The window follows the cursor.
+            board.cursor.store(index, Ordering::Release);
+            board.release();
+            // An entry not classified yet: classified here (its job, if
+            // ready, is then the cursor's own).
+            board.classify_entry(index);
             let mut fast = false;
             let claimed = {
                 let _split = frozen::Split::enter(12);
