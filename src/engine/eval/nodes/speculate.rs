@@ -140,10 +140,10 @@ fn lock_scratch(
             Err(std::sync::TryLockError::WouldBlock) => {}
         }
     }
-    use std::hash::{BuildHasher, Hash, Hasher};
-    let mut hasher = crate::fast_hash::FxBuildHasher::default().build_hasher();
-    std::thread::current().id().hash(&mut hasher);
-    let index = (hasher.finish() as usize) % slots.len();
+    use std::hash::BuildHasher;
+    let index = (crate::fast_hash::FxBuildHasher::default().hash_one(std::thread::current().id())
+        as usize)
+        % slots.len();
     let _blocked = super::super::timeline::blocked_on(|| format!("scratch engine {index}"));
     slots[index]
         .lock()
