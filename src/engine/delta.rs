@@ -303,8 +303,8 @@ pub(super) fn check_reads(
 /// ahead of their merge, deltas whose reads were stale at their merge
 /// (rebuilt there), deltas with provisional reads, memo entries refilled,
 /// native rules' results published.
-pub(super) static PROVISIONAL_STATS: [std::sync::atomic::AtomicU64; 5] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 5];
+pub(super) static PROVISIONAL_STATS: [std::sync::atomic::AtomicU64; 7] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 7];
 
 pub(super) fn provisional_bump(index: usize) {
     PROVISIONAL_STATS[index].fetch_add(1, std::sync::atomic::Ordering::Relaxed);

@@ -1301,12 +1301,14 @@ pub(super) fn report(workers: usize) {
         crate::snapshot::diag::line_fmt(format_args!("{}", profile.line()));
     }
     crate::snapshot::diag::line_fmt(format_args!(
-        "PERF-PARALLEL provisional published={} natives={} stale_rebuilt={} with_reads={} memo_refilled={}",
+        "PERF-PARALLEL provisional published={} natives={} stale_rebuilt={} with_reads={} memo_refilled={} shared_published={} shared_unpublished={}",
         get(&delta::PROVISIONAL_STATS[0]),
         get(&delta::PROVISIONAL_STATS[4]),
         get(&delta::PROVISIONAL_STATS[1]),
         get(&delta::PROVISIONAL_STATS[2]),
         get(&delta::PROVISIONAL_STATS[3]),
+        get(&delta::PROVISIONAL_STATS[5]),
+        get(&delta::PROVISIONAL_STATS[6]),
     ));
     let buckets = (0..4)
         .map(|bucket| {

@@ -166,10 +166,11 @@ impl PlannedResults {
     /// publishes the planning state's entries over them ([`Self::publish`])
     /// unless they are the very same (T3: a delta merged as built).
     ///
-    /// T3: the Files in `shared` are shared with earlier entries — their
-    /// artifacts (the index's, by File) replace the delta's own in what is
-    /// published, and the delta registers none of them provisionally (its
-    /// merge decides, rebuilding it).
+    /// T3: the Files in `shared` are outputs shared with earlier entries:
+    /// their artifacts there (naming the earlier entry's action, as the
+    /// merge will) replace the delta's own in what is published, provisional
+    /// registrations included (a read of them is checked at the reader's
+    /// merge, as any provisional read).
     pub(in crate::engine) fn publish_shared(
         &self,
         key: &ConfiguredTargetKey,
@@ -219,8 +220,8 @@ impl PlannedResults {
                         .unwrap_or_else(|e| e.into_inner())
                         .put(key.clone(), resolve(artifact), true);
                 }
-                delta::DeltaOp::Artifact(file, artifact, hash) if !shared.contains_key(file) => {
-                    artifacts.publish_provisional(*hash, file, artifact, stamp);
+                delta::DeltaOp::Artifact(file, artifact, hash) => {
+                    artifacts.publish_provisional(*hash, file, &resolve(artifact), stamp);
                 }
                 _ => {}
             }
@@ -976,20 +977,37 @@ pub(super) fn publish_starlark_results(
             if !view.meets_earlier(path.hash(), stamp) {
                 continue;
             }
-            let Some(file) = built.ops.iter().find_map(|op| match op {
-                delta::DeltaOp::Artifact(file, artifact, _) if artifact.exec == *path.path() => {
-                    Some(file.clone())
+            // Its own artifact of the path (its registration, declaration
+            // or files), and the earlier entry's (its own File: another
+            // owner's is a distinct entry): the merge names that one's
+            // action as the producer (output_artifact's `first`).
+            let Some(own) = built.ops.iter().find_map(|op| match op {
+                delta::DeltaOp::Artifact(_, artifact, _)
+                | delta::DeltaOp::Declared { artifact, .. }
+                    if artifact.exec == *path.path() =>
+                {
+                    Some(artifact.clone())
                 }
+                delta::DeltaOp::Dry(dry) => dry
+                    .iter()
+                    .find(|artifact| artifact.exec == *path.path())
+                    .cloned(),
                 _ => None,
             }) else {
+                delta::provisional_bump(6);
                 return false;
             };
-            let Some((artifact, _)) = frozen.artifacts.get_entry(&file, stamp) else {
+            let winner = frozen
+                .artifacts
+                .entry_at(&own.file.path, stamp)
+                .and_then(|(_, artifact)| artifact.producer.clone());
+            let Some((id, _)) = winner else {
+                delta::provisional_bump(6);
                 return false;
             };
-            shared.insert(file, artifact);
+            shared.insert(own.file.clone(), own.with_producer_id(&id));
         }
-        delta::provisional_bump(4);
+        delta::provisional_bump(5);
     }
     frozen.results.publish_shared(
         &parts.key,

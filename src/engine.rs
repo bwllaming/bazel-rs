@@ -234,6 +234,17 @@ impl Artifact {
         self.file.clone()
     }
 
+    /// The artifact with its producer's action `id` (the output index
+    /// kept): a shared output's loser's artifact names the winner's action
+    /// (output_artifact's `first`).
+    fn with_producer_id(&self, id: &str) -> Self {
+        let mut artifact = self.clone();
+        if let Some((producer, _)) = artifact.make_mut().producer.as_mut() {
+            *producer = id.to_owned();
+        }
+        artifact
+    }
+
     /// This artifact's data, to change (copied first when shared).
     fn make_mut(&mut self) -> &mut ArtifactData {
         Arc::make_mut(&mut self.0)
@@ -944,6 +955,18 @@ impl ConcurrentArtifactIndex {
         shard
             .find(hash, |entry| entry.file == *file)
             .map(|entry| (entry.artifact.clone(), entry.provisional, entry.stamp))
+    }
+
+    /// T3: the entry of the File at `path`, whatever its kind (a delta's
+    /// shared output found by its path).
+    fn entry_at(&self, path: &str, reader: u32) -> Option<(File, Artifact)> {
+        use std::hash::BuildHasher;
+        let hash = crate::fast_hash::FxBuildHasher::default().hash_one(path.as_bytes());
+        let shard = self.shard(hash).read().unwrap_or_else(|e| e.into_inner());
+        shard
+            .find(hash, |entry| entry.file.path == path)
+            .filter(|entry| entry.stamp < reader)
+            .map(|entry| (entry.file.clone(), entry.artifact.clone()))
     }
 
     /// T2: register `artifact` of `file` (hashed `hash`) provisionally,
