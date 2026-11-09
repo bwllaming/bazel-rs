@@ -453,7 +453,7 @@ impl<'a> SharedPrepare<'a> {
         let stamp = u32::try_from(index).unwrap_or(u32::MAX - 1);
         Self {
             engine: &frozen.engine,
-            reads: &frozen.results,
+            reads: &*frozen.results,
             views: &frozen.views,
             identities: &frozen.identities,
             output_groups: &frozen.output_groups,
@@ -721,6 +721,19 @@ impl Engine {
     /// Move a batch's memo fills into the planning state (every one a key
     /// the planning state did not hold: the batch filled only misses).
     pub(super) fn apply_batch_memos(&mut self, state: &mut ActionPlanning, memos: BatchMemos) {
+        self.apply_memos(state, memos, true);
+    }
+
+    /// [`Self::apply_batch_memos`]; `ahead`: the fills were made ahead of
+    /// their turn within a walk that goes on (their artifacts are
+    /// registered again by a hit at an earlier index); a frozen walk that
+    /// ended merged every entry: they are registered for good.
+    pub(super) fn apply_memos(
+        &mut self,
+        state: &mut ActionPlanning,
+        memos: BatchMemos,
+        ahead: bool,
+    ) {
         let BatchMemos {
             views,
             identities,
@@ -733,7 +746,7 @@ impl Engine {
                 artifacts,
                 accesses,
             } = (*fill).clone();
-            if let Some(artifacts) = artifacts {
+            if ahead && let Some(artifacts) = artifacts {
                 self.view_artifacts.insert(key.clone(), artifacts);
             }
             if tracking && let Some(accesses) = accesses {

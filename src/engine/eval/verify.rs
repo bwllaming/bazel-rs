@@ -432,6 +432,18 @@ impl Engine {
     /// Per-build state is fresh; the capture switches (cquery/aquery) are
     /// set the same way, empty.
     pub(in crate::engine) fn fork_for_verify(&self) -> Engine {
+        self.fork_with(true)
+    }
+
+    /// T3: the engine a frozen walk's workers read: the phase-1 tables
+    /// shared (`Shared`, no copy), without phase 2's own tables, which no
+    /// worker reads (console owners, action executions, warnings, errors,
+    /// BEP groups, run plans).
+    pub(in crate::engine) fn fork_frozen(&self) -> Engine {
+        self.fork_with(false)
+    }
+
+    fn fork_with(&self, phase2_tables: bool) -> Engine {
         Engine {
             repositories: self.repositories.clone(),
             packages: self.packages.clone(),
@@ -447,7 +459,11 @@ impl Engine {
             cquery_transitions: self.cquery_transitions,
             cquery_fragments: self.cquery_fragments,
             aquery_capture: self.aquery_capture.as_ref().map(|_| Default::default()),
-            console_owners: self.console_owners.clone(),
+            console_owners: if phase2_tables {
+                self.console_owners.clone()
+            } else {
+                Default::default()
+            },
             emitted_bzl_prints: self.emitted_bzl_prints.clone(),
             declared_inputs: self.declared_inputs.clone(),
             source_targets: self.source_targets.clone(),
@@ -459,7 +475,11 @@ impl Engine {
             group_budget: self.group_budget.clone(),
             configurations: self.configurations.clone(),
             missing_sources: self.missing_sources.clone(),
-            warnings: self.warnings.clone(),
+            warnings: if phase2_tables {
+                self.warnings.clone()
+            } else {
+                Default::default()
+            },
             platforms: self.platforms.clone(),
             resolving_platforms: self.resolving_platforms.clone(),
             module_execution_platforms: self.module_execution_platforms.clone(),
@@ -482,7 +502,11 @@ impl Engine {
             toolchain_contexts: self.toolchain_contexts.clone(),
             exec_group_contexts: self.exec_group_contexts.clone(),
             group_exec_configurations: self.group_exec_configurations.clone(),
-            action_executions: self.action_executions.clone(),
+            action_executions: if phase2_tables {
+                self.action_executions.clone()
+            } else {
+                Default::default()
+            },
             action_planning: None,
             planning_plan: None,
             ahead: self.ahead,
@@ -507,14 +531,26 @@ impl Engine {
             aspect_toolchains: self.aspect_toolchains.clone(),
             resolving_aspect_toolchains: self.resolving_aspect_toolchains,
             tests_requested: self.tests_requested,
-            bep_groups: self.bep_groups.clone(),
+            bep_groups: if phase2_tables {
+                self.bep_groups.clone()
+            } else {
+                Default::default()
+            },
             run_requests: self.run_requests.clone(),
             run_trees: self.run_trees,
-            run_plans: self.run_plans.clone(),
+            run_plans: if phase2_tables {
+                self.run_plans.clone()
+            } else {
+                Default::default()
+            },
             derive_recording: self.derive_recording,
             derive_roots: None,
             build_info_actions: self.build_info_actions.clone(),
-            errors: self.errors.clone(),
+            errors: if phase2_tables {
+                self.errors.clone()
+            } else {
+                Default::default()
+            },
             workspace_status: self.workspace_status.clone(),
             workspace_status_once: std::sync::OnceLock::new(),
             execute_build: self.execute_build,

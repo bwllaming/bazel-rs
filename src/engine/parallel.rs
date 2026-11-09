@@ -36,7 +36,7 @@ use super::*;
 
 mod buffer;
 mod frozen;
-pub(super) use frozen::Frozen;
+pub(super) use frozen::{Frozen, PlannedResults};
 use std::collections::BTreeSet as OrderedSet;
 use std::sync::mpsc;
 
@@ -54,8 +54,11 @@ const HORIZON: usize = 4096;
 /// S3: the analysis workers of an evaluated build (they prepare too):
 /// `--loading_phase_threads`, bounded by the cores.
 fn frozen_workers(loading_phase_threads: usize) -> usize {
+    // T3: the cursor's merges bound a frozen walk, not the workers; more
+    // than 8 at once only raise the peak memory of their computes (~/code:
+    // 48 workers 10.3 GB, 8 workers 9.95 GB, the same walk time).
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
-    loading_phase_threads.min(cores).max(2)
+    loading_phase_threads.min(cores).clamp(2, 8)
 }
 
 type Job = Box<dyn FnOnce() + Send>;
@@ -1776,6 +1779,12 @@ impl Engine {
         AHEAD_ABORT.to_owned()
     }
 
+    /// Whether this build's eval pass-2 walks may be frozen (prepares on
+    /// the workers, the merge buffer).
+    pub(super) fn frozen_walks(&self) -> bool {
+        self.eval_async_phase2 && frozen::enabled()
+    }
+
     /// Whether phase 2 runs rule implementations on workers.
     fn pipelining(&self) -> bool {
         self.loading_phase_threads > 1
@@ -1867,6 +1876,12 @@ impl Engine {
         }
         let result = {
             let _split = frozen::Split::enter(0);
+            if crate::plan_timings::enabled() {
+                super::IN_FROZEN_WALK.store(
+                    self.frozen_walk.is_some(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
             if self.frozen_walk.is_some() && buffer::enabled() {
                 // T3: the plan-ordered merge buffer.
                 self.plan_targets_buffered(state, configured)

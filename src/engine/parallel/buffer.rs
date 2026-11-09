@@ -76,7 +76,7 @@ const KIND_NATIVE: u8 = 2;
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL buffer`).
 static STATS: [AtomicU64; STAT_NAMES.len()] = [const { AtomicU64::new(0) }; STAT_NAMES.len()];
-const STAT_NAMES: [&str; 12] = [
+const STAT_NAMES: [&str; 13] = [
     "starlark",
     "native",
     "turn",
@@ -89,6 +89,7 @@ const STAT_NAMES: [&str; 12] = [
     "invalidated",
     "walks",
     "native_unpublished",
+    "fast_native",
 ];
 const S_STARLARK: usize = 0;
 const S_NATIVE: usize = 1;
@@ -102,6 +103,19 @@ const S_ABORTED: usize = 8;
 const S_INVALIDATED: usize = 9;
 const S_WALKS: usize = 10;
 const S_NATIVE_UNPUBLISHED: usize = 11;
+const S_FAST_NATIVE: usize = 12;
+
+/// Whether a plain native rule whose results a worker published merges
+/// them ([`Engine::merge_published_native`]) instead of committing again
+/// (`BAZEL_RS_VERIFY_DELTA=1`, `BAZEL_RS_VERIFY_AHEAD=1`, `--profile` and
+/// `BAZEL_RS_T3_NATIVE_COMMIT=1` commit, checking the published results).
+fn fast_natives() -> bool {
+    static FAST: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling switch; the output is the same either way.
+        std::env::var_os("BAZEL_RS_T3_NATIVE_COMMIT").is_none()
+    });
+    *FAST && !delta::verify_delta() && !verify_ahead() && !crate::profile::active()
+}
 
 fn stat(index: usize, by: u64) {
     STATS[index].fetch_add(by, Ordering::Relaxed);
@@ -129,6 +143,7 @@ fn note_at_turn(why: &str, rule: &Rule, elapsed: std::time::Duration) {
 
 /// The `PERF-PARALLEL buffer` lines.
 pub(super) fn report() {
+    super::super::report_shared_copies();
     let get = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
     if get(&STATS[S_WALKS]) == 0 {
         return;
@@ -186,7 +201,8 @@ fn debug() -> bool {
 /// A finished job.
 enum Finished {
     Starlark(Box<Result<frozen::FrozenOutcome, String>>),
-    Native,
+    /// What its commit registers, when its results were published.
+    Native(Option<Vec<Artifact>>),
 }
 
 /// What the cursor found for its entry.
@@ -194,7 +210,7 @@ enum Claimed {
     /// No job: prepared (and computed) at its turn.
     Turn,
     Starlark(Box<Result<frozen::FrozenOutcome, String>>),
-    Native,
+    Native(Option<Vec<Artifact>>),
 }
 
 /// Which entries wait for which keys' results.
@@ -399,16 +415,17 @@ impl Board {
         let (key, rule) = &self.plan[slot];
         let frozen = &self.frozen;
         match self.kind[slot].load(Ordering::Acquire) {
-            KIND_NATIVE => {
-                match frozen::run_native(frozen, index, key, rule) {
-                    Some(published) => {
-                        frozen::publish_native_results(frozen, index, key, *published);
-                        self.mark(key);
-                    }
-                    None => stat(S_NATIVE_UNPUBLISHED, 1),
+            KIND_NATIVE => match frozen::run_native(frozen, index, key, rule) {
+                Some(published) => {
+                    let registered = frozen::publish_native_results(frozen, index, key, *published);
+                    self.mark(key);
+                    Finished::Native(Some(registered))
                 }
-                Finished::Native
-            }
+                None => {
+                    stat(S_NATIVE_UNPUBLISHED, 1);
+                    Finished::Native(None)
+                }
+            },
             _ => {
                 let stopped = || self.stopped();
                 let (result, _, _) = frozen::run_frozen(
@@ -488,7 +505,7 @@ impl Board {
                     {
                         stat(S_STOLEN, 1);
                         return match self.run(index) {
-                            Finished::Native => Claimed::Native,
+                            Finished::Native(registered) => Claimed::Native(registered),
                             Finished::Starlark(outcome) => Claimed::Starlark(outcome),
                         };
                     }
@@ -515,7 +532,7 @@ impl Board {
                     }
                     self.stage[slot].store(CLAIMED, Ordering::Release);
                     return match finished {
-                        Finished::Native => Claimed::Native,
+                        Finished::Native(registered) => Claimed::Native(registered),
                         Finished::Starlark(outcome) => Claimed::Starlark(outcome),
                     };
                 }
@@ -817,6 +834,7 @@ impl Engine {
                 && (index - board.start + 1).is_multiple_of(tenth)
             {
                 progress.push(format!("{:.2}", started.elapsed().as_secs_f64()));
+                crate::perf_mark("pass2.cursor");
             }
             state.artifact_index.at_turn(index);
             state.producers.set_stamp(Some(index));
@@ -842,6 +860,7 @@ impl Engine {
                 effects.apply(self, false);
             }
             let published = board.frozen.results.get(&key).is_some();
+            let mut fast = false;
             let claimed = {
                 let _split = frozen::Split::enter(12);
                 board.claim(index)
@@ -863,9 +882,42 @@ impl Engine {
                     board.note_slow(index, why, turn_started.elapsed());
                     result
                 }
-                Claimed::Native => {
+                Claimed::Native(registered) => {
                     let _split = frozen::Split::enter(14);
-                    self.plan_one_target(state, &key, &rule, configured, index as u64)
+                    match registered {
+                        Some(registered)
+                            if fast_natives()
+                                && native_results::plain(&rule)
+                                && !forwards(&rule) =>
+                        {
+                            stat(S_FAST_NATIVE, 1);
+                            fast = true;
+                            let _split = frozen::Split::enter(16);
+                            self.merge_published_native(
+                                state,
+                                &board.frozen,
+                                &key,
+                                &rule,
+                                registered,
+                            );
+                            Ok(())
+                        }
+                        registered => {
+                            let started = std::time::Instant::now();
+                            let result =
+                                self.plan_one_target(state, &key, &rule, configured, index as u64);
+                            note_at_turn(
+                                if registered.is_some() {
+                                    "native_commit"
+                                } else {
+                                    "native_unpublished"
+                                },
+                                &rule,
+                                started.elapsed(),
+                            );
+                            result
+                        }
+                    }
                 }
                 Claimed::Starlark(outcome) => {
                     let _split = frozen::Split::enter(13);
@@ -877,12 +929,16 @@ impl Engine {
             result?;
             {
                 let _split = frozen::Split::enter(11);
-                if published {
+                if published && !fast {
+                    // Its dependents read what a worker published: checked
+                    // against the commit, and kept (the same Files and
+                    // values; artifacts resolve through the index).
                     self.check_published(state, &key, &rule);
+                } else {
+                    board.frozen.results.publish(&key, state);
+                    board.mark(&key);
                 }
-                board.frozen.results.publish(&key, state);
                 board.frozen.results.publish_declared(state);
-                board.mark(&key);
             }
         }
         self.flush_delegations(state);
@@ -1033,5 +1089,87 @@ impl Engine {
         self.commit_turn(
             state, configured, key, rule, index, class, *parts, snapshot, outcome, profiled,
         )
+    }
+}
+
+impl Engine {
+    /// The commit of a plain native rule (`Engine::commit_native_target`'s
+    /// `native_results::plain` branch, with `prepare_target`'s console
+    /// owner) from the results a worker published (the same function of
+    /// the same dependencies' results, `native_results`): its artifacts
+    /// resolved through the index now (every earlier entry merged: the
+    /// canonical producers), the rest as published.
+    fn merge_published_native(
+        &mut self,
+        state: &mut ActionPlanning,
+        frozen: &Frozen,
+        key: &ConfiguredTargetKey,
+        rule: &Rule,
+        registered: Vec<Artifact>,
+    ) {
+        let results = frozen
+            .results
+            .get(key)
+            .expect("a published native rule's results");
+        let config = key.config;
+        let action_owner = key.action_owner(self.configurations.top());
+        self.console_owners.insert(
+            action_owner.clone(),
+            crate::action_console::owner(&crate::action_console::OwnerParts {
+                label: &key.label.to_string(),
+                location: rule.location.as_deref(),
+                target_kind: &format!("{} rule", rule.rule_class_name()),
+                aspects: &[],
+                tool: self.configurations.get(config).native.is_exec,
+                configuration: &config.to_string(),
+            }),
+        );
+        self.aquery_owner(&action_owner, key, Vec::new);
+        let (dry, providers, runfiles, validation, repositories) = results.parts();
+        if let Some(repositories) = repositories {
+            state.repositories.insert(key.clone(), repositories);
+        }
+        if let Some(validation) = validation {
+            state.validation.insert(key.clone(), validation);
+        }
+        let canonical = |index: &ArtifactIndex, artifact: &Artifact| {
+            if artifact.producer.is_none() {
+                return artifact.clone();
+            }
+            index
+                .get(&artifact.file)
+                .unwrap_or_else(|| artifact.clone())
+        };
+        for artifact in &registered {
+            let artifact = canonical(&state.artifact_index, artifact);
+            register_artifact(&state.artifact_index, &artifact.file, &artifact);
+        }
+        if let Some(providers) = providers {
+            state.custom_providers.insert(key.clone(), providers);
+        }
+        if let Some(runfiles) = runfiles {
+            state.runfiles_info.insert(key.clone(), runfiles);
+        }
+        // The published files to build, unless a producer changed (one
+        // value for both: memory).
+        let dry = match dry {
+            None => Arc::new(Vec::new()),
+            Some(dry) => {
+                let resolved: Vec<Artifact> = dry
+                    .iter()
+                    .map(|artifact| canonical(&state.artifact_index, artifact))
+                    .collect();
+                if resolved
+                    .iter()
+                    .zip(dry.iter())
+                    .all(|(now, published)| same_artifact(now, published))
+                {
+                    dry
+                } else {
+                    Arc::new(resolved)
+                }
+            }
+        };
+        state.dry.insert(key.clone(), dry);
     }
 }

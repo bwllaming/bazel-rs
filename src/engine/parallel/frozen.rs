@@ -31,24 +31,26 @@
 
 use super::*;
 
-/// `BAZEL_RS_EVAL_FROZEN_PREPARES=1` (`all`: every walk, the tests').
+/// Frozen walks (an evaluated build's pass-2 walks, T3: through the merge
+/// buffer) are on unless `BAZEL_RS_EVAL_FROZEN_PREPARES=0` (`all`: every
+/// walk, the tests').
 pub(super) fn enabled() -> bool {
     walk_min().is_some()
 }
 
-/// The shortest walk that prepares on the workers (the frozen view costs
-/// a fork of the engine), `None`: off.
+/// The shortest walk that prepares on the workers (shorter ones walk with
+/// the pipeline), `None`: off.
 pub(super) fn walk_min() -> Option<usize> {
     // snapshot-unrecorded: a scheduling switch; the output is the same either way.
     let value = std::env::var("BAZEL_RS_EVAL_FROZEN_PREPARES")
         .ok()
         // A binary built with it (the test suites' mode, like
         // BAZEL_RS_DEFAULT_ANALYSIS).
-        .or(option_env!("BAZEL_RS_DEFAULT_EVAL_FROZEN_PREPARES").map(str::to_owned))?;
-    match value.as_str() {
-        "1" => Some(2048),
-        "all" => Some(0),
-        _ => None,
+        .or(option_env!("BAZEL_RS_DEFAULT_EVAL_FROZEN_PREPARES").map(str::to_owned));
+    match value.as_deref() {
+        Some("0" | "off") => None,
+        Some("all") => Some(0),
+        _ => Some(2048),
     }
 }
 
@@ -61,7 +63,7 @@ pub(in crate::engine) struct Frozen {
         BTreeMap<TargetIdentityKey, Arc<crate::starlark_types::Target>>,
     pub(in crate::engine) output_groups:
         BTreeMap<ConfiguredTargetKey, starlark::values::OwnedFrozenValue>,
-    pub(in crate::engine) results: PlannedResults,
+    pub(in crate::engine) results: Arc<PlannedResults>,
     pub(in crate::engine) memos: prepare::BatchMemos,
     pub(in crate::engine) artifacts: Arc<ConcurrentArtifactIndex>,
     /// What a delta built on a worker reads (`None`: deltas are built on
@@ -89,6 +91,29 @@ pub(super) struct KeyResults {
 pub(in crate::engine) struct PlannedResults {
     keys: Box<[std::sync::RwLock<KeyMap<Arc<KeyResults>>>]>,
     declared: Box<[std::sync::RwLock<Declared>]>,
+}
+
+impl KeyResults {
+    /// Its files to build, providers, runfiles, validation group and
+    /// transitive repositories.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn parts(
+        &self,
+    ) -> (
+        Option<Artifacts>,
+        Option<BTreeMap<String, starlark::values::OwnedFrozenValue>>,
+        Option<Arc<crate::runfiles::TargetRunfiles>>,
+        Option<crate::starlark_types::Depset>,
+        Option<Arc<BTreeSet<String>>>,
+    ) {
+        (
+            self.dry.clone(),
+            self.providers.clone(),
+            self.runfiles_info.clone(),
+            self.validation.clone(),
+            self.repositories.clone(),
+        )
+    }
 }
 
 impl PlannedResults {
@@ -202,6 +227,17 @@ impl PlannedResults {
                     .put(key, artifact.clone(), true);
             }
         }
+    }
+
+    /// The results committed since the last walk (`state.dry` only grows;
+    /// the declarations by their journal).
+    fn catch_up(&self, state: &ActionPlanning) {
+        for key in state.dry.keys() {
+            if self.get(key).is_none() {
+                self.publish(key, state);
+            }
+        }
+        self.publish_declared(state);
     }
 
     /// Every result of `state` (the targets committed before the walk).
@@ -321,13 +357,26 @@ impl Engine {
         let view = (!self.semantic_only() && self.aquery_capture.is_none() && worker_deltas())
             .then(|| delta::SharedView::new(self, state));
         state.declared.journal = Some(Default::default());
+        let engine = self.fork_frozen();
+        crate::perf_mark("pass2.freeze.engine");
+        let configured = configured.clone();
+        crate::perf_mark("pass2.freeze.configured");
+        let results = match state.walk_results.take() {
+            // What was committed since the last frozen walk.
+            Some(results) => {
+                results.catch_up(state);
+                results
+            }
+            None => Arc::new(PlannedResults::seed(state)),
+        };
+        crate::perf_mark("pass2.freeze.results");
         Arc::new(Frozen {
-            engine: self.fork_for_verify(),
-            configured: configured.clone(),
+            engine,
+            configured,
             views: std::mem::take(&mut state.views),
             identities: std::mem::take(&mut state.target_identities),
             output_groups: std::mem::take(&mut state.native_output_groups),
-            results: PlannedResults::seed(state),
+            results,
             memos: prepare::BatchMemos::default(),
             artifacts: Arc::clone(&state.artifact_index.shared),
             view,
@@ -338,7 +387,9 @@ impl Engine {
     /// The walk ended: the memos back into the planning state, with what
     /// the walk filled.
     pub(super) fn thaw(&mut self, state: &mut ActionPlanning, frozen: Arc<Frozen>) {
-        state.declared.journal = None;
+        // The journal stays on: the next frozen walk's results catch up
+        // with what is declared until then.
+        state.walk_results = Some(Arc::clone(&frozen.results));
         let Frozen {
             views,
             identities,
@@ -359,7 +410,7 @@ impl Engine {
         state.views = views;
         state.target_identities = identities;
         state.native_output_groups = output_groups;
-        self.apply_batch_memos(state, memos);
+        self.apply_memos(state, memos, false);
     }
 
     /// Prepare, compute and build the delta of entry `index` on a worker
@@ -657,7 +708,7 @@ pub(super) fn run_native(
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let isolation = Isolation::enter();
         let engine = &frozen.engine;
-        let reads: &dyn PlanReads = &frozen.results;
+        let reads: &dyn PlanReads = &*frozen.results;
         let mut cx = prepare::SharedPrepare::frozen(frozen, index);
         let mut transitive = BTreeSet::from([rule.label.repository.clone()]);
         let edges = engine.rule_edges(rule, key.config);
@@ -772,13 +823,13 @@ pub(super) fn run_native(
 
 /// Publish a native rule's results computed on a worker (plan index
 /// `index`): its results for its dependents, its inputs' registrations
-/// provisionally.
+/// provisionally (returned: what its commit registers).
 pub(super) fn publish_native_results(
     frozen: &Frozen,
     index: usize,
     key: &ConfiguredTargetKey,
     published: NativePublished,
-) {
+) -> Vec<Artifact> {
     let stamp = u32::try_from(index).unwrap_or(u32::MAX - 1);
     let NativePublished {
         results,
@@ -810,6 +861,7 @@ pub(super) fn publish_native_results(
         .insert(key.clone(), Arc::new(results));
     delta::provisional_bump(4);
     profile(|profile| profile.publish(index));
+    registered
 }
 
 /// Publish entry `index`'s phase-2 results from its worker's delta
@@ -1288,7 +1340,7 @@ impl Engine {
 /// exclusive of nested buckets).
 pub(super) static SPLIT: [AtomicU64; SPLIT_NAMES.len()] =
     [const { AtomicU64::new(0) }; SPLIT_NAMES.len()];
-pub(super) const SPLIT_NAMES: [&str; 16] = [
+pub(super) const SPLIT_NAMES: [&str; 17] = [
     "other",
     "drain_lowerings",
     "hooks",
@@ -1305,6 +1357,7 @@ pub(super) const SPLIT_NAMES: [&str; 16] = [
     "merge_starlark",
     "merge_native",
     "at_turn",
+    "fast_native",
 ];
 
 thread_local! {

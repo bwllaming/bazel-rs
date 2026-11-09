@@ -812,6 +812,12 @@ impl<T: Footprint> Footprint for Arc<T> {
     }
 }
 
+impl<T: Footprint> Footprint for super::Shared<T> {
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        self.0.heap(walker)
+    }
+}
+
 impl<T: Footprint> Footprint for Arc<[T]> {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
         let items: &[T] = self;

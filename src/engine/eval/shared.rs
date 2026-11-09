@@ -187,7 +187,8 @@ impl EvalShared {
         engine.source_dir_probes = loading
             .probes
             .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .into();
         engine.group_budget = loading
             .group_budget
             .into_inner()

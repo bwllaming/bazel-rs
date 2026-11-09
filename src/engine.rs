@@ -398,6 +398,10 @@ enum Target {
 /// actions. `done` counts the planned entries of the build's plan.
 #[derive(Default)]
 struct ActionPlanning {
+    /// T3: the committed targets' results the frozen walks read, kept
+    /// from one walk to the next (each walk adds what was committed since,
+    /// instead of copying every result again).
+    walk_results: Option<Arc<parallel::PlannedResults>>,
     dry: KeyMap<Artifacts>,
     custom_providers: KeyMap<BTreeMap<String, starlark::values::OwnedFrozenValue>>,
     /// Returned declared-provider names per analyzed rule (Target debugPrint).
@@ -1998,8 +2002,9 @@ fn no_files_error_for(
 /// The configured targets of one plan, by key. Only looked up (never
 /// iterated into output), so hashed: a `BTreeMap` compared three label
 /// strings per tree level on ~663k lookups of `//src/beyondwork.ai/...`.
+/// Shared (T3): a frozen walk's view holds them without a copy.
 type ConfiguredNodes =
-    HashMap<ConfiguredTargetKey, ConfiguredNode, crate::fast_hash::FxBuildHasher>;
+    Shared<HashMap<ConfiguredTargetKey, ConfiguredNode, crate::fast_hash::FxBuildHasher>>;
 
 /// The transition of a dependency edge.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2967,9 +2972,103 @@ pub(crate) enum SourceDirProbe {
     Dir { symlink: bool, boundary: bool },
 }
 
+/// The aspect attribute configurations per (target, aspect).
+type AspectAttributeConfigs =
+    BTreeMap<(ConfiguredTargetKey, String), Arc<BTreeMap<String, TransitionConfigurations>>>;
+
+/// A table phase 1 fills and phase 2 reads (T3, docs/EVALUATOR.md): cloned
+/// by reference, so a frozen walk's view of the engine shares it instead
+/// of copying it; the first write after a clone copies it
+/// (`Arc::make_mut`).
+#[derive(Default)]
+struct Shared<T>(Arc<T>);
+
+impl<T> std::ops::Deref for Shared<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: Clone> std::ops::DerefMut for Shared<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        if Arc::strong_count(&self.0) > 1 && crate::plan_timings::enabled() {
+            note_shared_copy(std::any::type_name::<T>());
+        }
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+/// BAZEL_RS_TIMING: the [`Shared`] tables copied by a write while shared
+/// (`PERF-SHARED copies`).
+static SHARED_COPIES: std::sync::Mutex<BTreeMap<&'static str, u64>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+/// BAZEL_RS_TIMING: a frozen walk runs (its copies are counted apart).
+static IN_FROZEN_WALK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn note_shared_copy(table: &'static str) {
+    let walk = IN_FROZEN_WALK.load(std::sync::atomic::Ordering::Relaxed);
+    let table: &'static str = if walk {
+        Box::leak(format!("walk:{table}").into_boxed_str())
+    } else {
+        table
+    };
+    *SHARED_COPIES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(table)
+        .or_default() += 1;
+}
+
+/// The `PERF-SHARED copies` line.
+pub(crate) fn report_shared_copies() {
+    let copies = SHARED_COPIES.lock().unwrap_or_else(|e| e.into_inner());
+    if !copies.is_empty() {
+        crate::snapshot::diag::line_fmt(format_args!(
+            "PERF-SHARED copies {}",
+            copies
+                .iter()
+                .map(|(table, count)| format!("{table}={count}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
+}
+
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Shared<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<T: PartialEq> PartialEq for Shared<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || *self.0 == *other.0
+    }
+}
+
+impl<T: PartialEq> PartialEq<T> for Shared<T> {
+    fn eq(&self, other: &T) -> bool {
+        *self.0 == *other
+    }
+}
+
+impl<T> From<T> for Shared<T> {
+    fn from(value: T) -> Self {
+        Self(Arc::new(value))
+    }
+}
+
 pub struct Engine {
     repositories: Arc<RepositorySet>,
-    packages: BTreeMap<PackageId, Arc<Package>>,
+    packages: Shared<BTreeMap<PackageId, Arc<Package>>>,
     /// `--loading_phase_threads` (LoadingPhaseThreadsOption.java: "auto",
     /// which expands to the number of available processors; §3 P2 of the
     /// parallel-analysis review): the worker pool size for parallel
@@ -3023,26 +3122,26 @@ pub struct Engine {
     /// input (Package.java:893-920's assumed input files), built on the
     /// first source-file lookup in the package. Loaded packages never
     /// change, so the index never goes stale (lookups only; no order).
-    declared_inputs: HashMap<PackageId, HashSet<Label>>,
+    declared_inputs: Shared<HashMap<PackageId, HashSet<Label>>>,
     /// Source-file targets already resolved: label -> path. A pure memo of
     /// [`Self::target`]; its filesystem side effects are recorded once
     /// (lookups only).
-    source_targets: HashMap<Label, PathBuf>,
+    source_targets: Shared<HashMap<Label, PathBuf>>,
     /// Rule targets already resolved, by the label's hash: a pure memo of
     /// [`Self::target`] (loaded packages never change), whose entry serves
     /// a label equal to its rule's (a hash collision takes the lookup).
-    rule_targets: crate::fast_hash::FxHashMap<u64, Arc<Rule>>,
+    rule_targets: Shared<crate::fast_hash::FxHashMap<u64, Arc<Rule>>>,
     /// Source-file targets analyzed: their analysis (the target and its
     /// visibility's package groups) does not depend on the configuration or
     /// the consumer, so it runs once per label (a ConfiguredTargetKey of an
     /// input file has no configuration), not once per dependency edge
     /// (lookups only).
-    analyzed_sources: HashSet<Label>,
+    analyzed_sources: Shared<HashSet<Label>>,
     /// Top-level functions of every loaded package (Args `map_each`,
     /// crate::analysis_runtime::LoadedFunctions).
     loaded_functions: Arc<crate::analysis_runtime::LoadedFunctions>,
-    generated: BTreeMap<Label, (Label, String)>,
-    group_nodes: BTreeMap<Label, Arc<GroupNode>>,
+    generated: Shared<BTreeMap<Label, (Label, String)>>,
+    group_nodes: Shared<BTreeMap<Label, Arc<GroupNode>>>,
     group_budget: HostBudget,
     /// The configurations of the build: requested targets are analyzed in
     /// the top-level one; dependency edges keep their parent's configuration
@@ -3050,13 +3149,13 @@ pub struct Engine {
     /// transitions (docs/CONFIGURATION.md).
     configurations: Configurations,
     /// Declared source files that do not exist (path -> label).
-    missing_sources: BTreeMap<PathBuf, Label>,
+    missing_sources: Shared<BTreeMap<PathBuf, Label>>,
     /// Warnings in emission order, without Bazel's `WARNING: ` prefix (added
     /// by the CLI): filtered target patterns and analysis warnings.
     warnings: Vec<String>,
     /// PlatformValue per platform label and configuration
     /// (PlatformFunction, analysis/platform/PlatformFunction.java:57-126).
-    platforms: BTreeMap<ConfiguredTargetKey, Result<Arc<PlatformInfo>, PlatformError>>,
+    platforms: Shared<BTreeMap<ConfiguredTargetKey, Result<Arc<PlatformInfo>, PlatformError>>>,
     /// Platforms being resolved (reentrancy guard).
     resolving_platforms: Vec<ConfiguredTargetKey>,
     /// The modules' `register_execution_platforms` patterns with the
@@ -3064,7 +3163,7 @@ pub struct Engine {
     /// execution_platform_registrations), once per build.
     module_execution_platforms: Option<Result<Vec<(String, String)>, String>>,
     /// Rules analyzed while resolving a platform (no toolchain context).
-    empty_configuration_rules: BTreeSet<ConfiguredTargetKey>,
+    empty_configuration_rules: Shared<BTreeSet<ConfiguredTargetKey>>,
     /// RegisteredToolchainsValue per configuration, computed when a rule
     /// first requests a toolchain type
     /// (skyframe/toolchains/RegisteredToolchainsFunction.java:64-147).
@@ -3095,10 +3194,10 @@ pub struct Engine {
     /// The exec configuration of each analyzed target's default exec group
     /// (its parent configuration when the exec transition is a no-op), for
     /// targets with exec-transition dependency edges.
-    exec_configurations: KeyMap<ConfigId>,
+    exec_configurations: Shared<KeyMap<ConfigId>>,
     /// Whether a Starlark flag's rule explicitly sets `scope = "target"`
     /// (reset by the exec transition), per flag (computed on first use).
-    flag_scopes: BTreeMap<Label, bool>,
+    flag_scopes: Shared<BTreeMap<Label, bool>>,
     /// The interned exec configuration of each (parent configuration,
     /// execution platform) (Self::exec_configuration): the exec transition
     /// is a function of the parent's interned configuration (never replaced
@@ -3108,34 +3207,34 @@ pub struct Engine {
     /// entries, fixed once recorded), so it is computed once per pair.
     /// Only successes are memoized; cleared with `configurations` and
     /// `flag_scopes` (Self::set_configuration).
-    exec_transitions: HashMap<(ConfigId, Label), ConfigId>,
+    exec_transitions: Shared<HashMap<(ConfigId, Label), ConfigId>>,
     /// Applied Starlark transitions: the resulting configuration
     /// (StarlarkTransitionCache; failures are not cached).
-    transition_cache: BTreeMap<TransitionCacheKey, (TransitionConfigurations, Vec<String>)>,
+    transition_cache: Shared<BTreeMap<TransitionCacheKey, (TransitionConfigurations, Vec<String>)>>,
     /// StarlarkBuildSettingsDetailsValue per referenced setting label.
-    transition_details: BTreeMap<Vec<Label>, Result<TransitionDetails, String>>,
+    transition_details: Shared<BTreeMap<Vec<Label>, Result<TransitionDetails, String>>>,
     /// The configuration of each Starlark-transition attribute of each
     /// analyzed target (read by the build loop).
-    edge_configs: KeyMap<BTreeMap<String, TransitionConfigurations>>,
+    edge_configs: Shared<KeyMap<BTreeMap<String, TransitionConfigurations>>>,
     /// A target requested with a rule transition that changed its
     /// configuration delegates to the key it was analyzed under
     /// (RuleTransitionApplier, analysis/producers/RuleTransitionApplier.java:69-110,
     /// 340-378): requested key -> analyzed key.
-    rule_delegations: BTreeMap<ConfiguredTargetKey, ConfiguredTargetKey>,
+    rule_delegations: Shared<BTreeMap<ConfiguredTargetKey, ConfiguredTargetKey>>,
     /// The requested top-level rule being analyzed when its rule is test
     /// trimmed (not alias-like): its top-level key precedes it in cycle paths
     /// (Self::cycle_error).
     requested_trimmed_root: Option<ConfiguredTargetKey>,
     /// The resolved toolchain context of each toolchain-resolving rule of
     /// the build (UnloadedToolchainContext), read by the build loop.
-    toolchain_contexts: KeyMap<UnloadedToolchainContext>,
+    toolchain_contexts: Shared<KeyMap<UnloadedToolchainContext>>,
     /// The other exec groups of each toolchain-resolving rule's
     /// ToolchainCollection (docs/EXEC_GROUPS.md; the default `test` group of
     /// a Starlark test rule, docs/TEST_FLAGS.md).
-    exec_group_contexts: KeyMap<crate::exec_groups::TargetExecGroups>,
+    exec_group_contexts: Shared<KeyMap<crate::exec_groups::TargetExecGroups>>,
     /// The exec configuration of each named exec group with
     /// `config.exec(exec_group = NAME)` dependency edges.
-    group_exec_configurations: BTreeMap<(ConfiguredTargetKey, String), ConfigId>,
+    group_exec_configurations: Shared<BTreeMap<(ConfiguredTargetKey, String), ConfigId>>,
     /// The exec group, execution platform and exec properties of each
     /// planned Starlark action (docs/EXEC_GROUPS.md), by action id
     /// (lookups only, never iterated).
@@ -3156,14 +3255,14 @@ pub struct Engine {
     /// looked up, by view key, re-issued as accesses on every hit
     /// (Self::plan_dependency_view), so the accesses a consumer's frame
     /// records do not depend on who filled the memo (P3 review item 1).
-    view_accesses: HashMap<ConfiguredTargetKey, Arc<[Label]>>,
+    view_accesses: Shared<HashMap<ConfiguredTargetKey, Arc<[Label]>>>,
     /// The open captures of Engine::target lookups (innermost last).
     access_capture: Vec<Vec<Label>>,
     /// The artifacts a dependency view's miss path registered, by view
     /// key: a memo hit registers them again, so a registration made by a
     /// target prepared ahead of its turn becomes visible where the
     /// sequential engine makes it (ArtifactIndex stamps; P3 review item 2).
-    view_artifacts: HashMap<ConfiguredTargetKey, Artifacts>,
+    view_artifacts: Shared<HashMap<ConfiguredTargetKey, Artifacts>>,
     /// The work ahead of its turn hit such a step (sticky: a caller may
     /// swallow the error).
     ahead_aborted: bool,
@@ -3176,15 +3275,15 @@ pub struct Engine {
     /// Targets analyzed as toolchain implementations, with their parent's
     /// execution platform (the PlatformInfo label), which their own
     /// resolution forces (ToolchainContextUtil.java:136-141; docs/TOOLCHAINS.md).
-    toolchain_implementations: BTreeMap<ConfiguredTargetKey, Label>,
+    toolchain_implementations: Shared<BTreeMap<ConfiguredTargetKey, Label>>,
     /// Duplicate-label attribute errors of Starlark rules, reported with
     /// their other prerequisite errors (Self::starlark_prerequisite_errors).
-    deferred_duplicates: BTreeMap<ConfiguredTargetKey, Vec<String>>,
+    deferred_duplicates: Shared<BTreeMap<ConfiguredTargetKey, Vec<String>>>,
     /// Source directories used as file targets (path -> label).
     /// Several labels (a directory and links to it, N28d) may name one.
-    source_directories: BTreeMap<PathBuf, BTreeSet<Label>>,
+    source_directories: Shared<BTreeMap<PathBuf, BTreeSet<Label>>>,
     /// `source_target`'s probes of the directories on a source path.
-    source_dir_probes: HashMap<PathBuf, SourceDirProbe>,
+    source_dir_probes: Shared<HashMap<PathBuf, SourceDirProbe>>,
     /// Request-only policy; tree/manifest/mode flags live in configurations.
     compact_repo_mapping: bool,
     /// A label `--run_under` (LabelRunUnder): the late-bound
@@ -3208,26 +3307,26 @@ pub struct Engine {
     /// The select()-configured custom rules produced by phase 1, shared with
     /// the plan. Both aspect dependency analysis and implementation planning
     /// must walk these same resolved attributes, regardless of pending flushes.
-    configured_rules: BTreeMap<ConfiguredTargetKey, Arc<Rule>>,
+    configured_rules: Shared<BTreeMap<ConfiguredTargetKey, Arc<Rule>>>,
     /// The configuration of each label attribute of each aspect
     /// application (base configured target key, aspect identity), computed
     /// when phase 1 analyzes the application's own attribute dependencies
     /// (Self::aspect_attribute_configurations) and read by its planning.
-    aspect_attribute_configs:
-        BTreeMap<(ConfiguredTargetKey, String), Arc<BTreeMap<String, TransitionConfigurations>>>,
+    aspect_attribute_configs: Shared<AspectAttributeConfigs>,
     /// The `propagation_predicate` result per (target label, aspect
     /// descriptor) (it reads the label, rule class and tags only) and the
     /// function `attr_aspects`/`toolchains_aspects` lists per (configured
     /// target, descriptor):
     /// evaluated once, print()ing once (crate::aspect_propagation).
-    aspect_predicates: BTreeMap<(Label, String), bool>,
+    aspect_predicates: Shared<BTreeMap<(Label, String), bool>>,
     #[allow(clippy::type_complexity)]
-    aspect_attr_aspects:
+    aspect_attr_aspects: Shared<
         BTreeMap<(ConfiguredTargetKey, String), (Option<Arc<[String]>>, Option<Arc<[String]>>)>,
+    >,
     /// The aspect's own toolchain contexts per (configuration, aspect
     /// identity) (Self::aspect_toolchain_contexts), resolved by phase 1
     /// and read by the application's planning.
-    aspect_toolchains: BTreeMap<(ConfigId, String), Arc<AspectToolchains>>,
+    aspect_toolchains: Shared<BTreeMap<(ConfigId, String), Arc<AspectToolchains>>>,
     /// Set while an aspect's toolchain context is resolved: its
     /// ToolchainException is reported as is (AspectFunction's
     /// AspectCreationException), not as a target's `While resolving
@@ -3332,7 +3431,7 @@ impl Engine {
     pub fn with_repositories(repositories: Arc<RepositorySet>) -> Self {
         Self {
             repositories,
-            packages: BTreeMap::new(),
+            packages: Default::default(),
             emitted_bzl_prints: HashSet::new(),
             loading_phase_threads: std::thread::available_parallelism()
                 .map(usize::from)
@@ -3349,21 +3448,21 @@ impl Engine {
             cquery_fragments: false,
             aquery_capture: None,
             console_owners: HashMap::new(),
-            declared_inputs: HashMap::new(),
-            source_targets: HashMap::new(),
+            declared_inputs: Default::default(),
+            source_targets: Default::default(),
             rule_targets: Default::default(),
-            analyzed_sources: HashSet::new(),
+            analyzed_sources: Default::default(),
             loaded_functions: Arc::default(),
-            generated: BTreeMap::new(),
-            group_nodes: BTreeMap::new(),
+            generated: Default::default(),
+            group_nodes: Default::default(),
             group_budget: HostBudget::default(),
             configurations: Configurations::default(),
-            missing_sources: BTreeMap::new(),
+            missing_sources: Default::default(),
             warnings: Vec::new(),
-            platforms: BTreeMap::new(),
+            platforms: Default::default(),
             resolving_platforms: Vec::new(),
             module_execution_platforms: None,
-            empty_configuration_rules: BTreeSet::new(),
+            empty_configuration_rules: Default::default(),
             registered_toolchains: BTreeMap::new(),
             computing_toolchains: Vec::new(),
             root_checkpoint: None,
@@ -3371,42 +3470,42 @@ impl Engine {
             registered_execution_platforms: BTreeMap::new(),
             computing_execution_platforms: Vec::new(),
             execution_platform_cycle_reports: BTreeMap::new(),
-            exec_configurations: KeyMap::default(),
-            flag_scopes: BTreeMap::new(),
-            exec_transitions: HashMap::new(),
-            transition_cache: BTreeMap::new(),
-            transition_details: BTreeMap::new(),
-            edge_configs: KeyMap::default(),
-            rule_delegations: BTreeMap::new(),
+            exec_configurations: Default::default(),
+            flag_scopes: Default::default(),
+            exec_transitions: Default::default(),
+            transition_cache: Default::default(),
+            transition_details: Default::default(),
+            edge_configs: Default::default(),
+            rule_delegations: Default::default(),
             requested_trimmed_root: None,
-            toolchain_contexts: KeyMap::default(),
-            exec_group_contexts: KeyMap::default(),
-            group_exec_configurations: BTreeMap::new(),
+            toolchain_contexts: Default::default(),
+            exec_group_contexts: Default::default(),
+            group_exec_configurations: Default::default(),
             action_executions: Default::default(),
             action_planning: None,
             planning_plan: None,
             ahead: false,
-            view_accesses: HashMap::new(),
+            view_accesses: Default::default(),
             access_capture: Vec::new(),
-            view_artifacts: HashMap::new(),
+            view_artifacts: Default::default(),
             ahead_aborted: false,
             analysis_pool: None,
             lowering_pool: None,
-            toolchain_implementations: BTreeMap::new(),
-            deferred_duplicates: BTreeMap::new(),
-            source_directories: BTreeMap::new(),
-            source_dir_probes: HashMap::new(),
+            toolchain_implementations: Default::default(),
+            deferred_duplicates: Default::default(),
+            source_directories: Default::default(),
+            source_dir_probes: Default::default(),
             compact_repo_mapping: true,
             run_under: None,
             output_selection: OutputSelection::default(),
             aspects: crate::aspects::AspectRegistry::default(),
             requested_aspects: Vec::new(),
             aspect_parameters: BTreeMap::new(),
-            configured_rules: BTreeMap::new(),
-            aspect_attribute_configs: BTreeMap::new(),
-            aspect_predicates: BTreeMap::new(),
-            aspect_attr_aspects: BTreeMap::new(),
-            aspect_toolchains: BTreeMap::new(),
+            configured_rules: Default::default(),
+            aspect_attribute_configs: Default::default(),
+            aspect_predicates: Default::default(),
+            aspect_attr_aspects: Default::default(),
+            aspect_toolchains: Default::default(),
             resolving_aspect_toolchains: false,
             tests_requested: false,
             bep_groups: Vec::new(),
@@ -4380,7 +4479,7 @@ impl Engine {
         let found = source_target_in(
             &self.repositories,
             label,
-            &mut self.source_dir_probes,
+            &mut *self.source_dir_probes,
             &mut side,
         );
         side.apply(&mut self.missing_sources, &mut self.source_directories);
@@ -11060,7 +11159,7 @@ impl Engine {
         // a new delegation (the map grew) needs another scan. A delegation
         // re-recorded for a requested key is skipped by the scan either way.
         if state.delegations_scanned != self.rule_delegations.len() {
-            for (requested, owner) in &self.rule_delegations {
+            for (requested, owner) in self.rule_delegations.iter() {
                 if !state.dry.contains_key(requested)
                     && !state.delegations.iter().any(|(seen, _)| seen == requested)
                 {
@@ -12008,6 +12107,7 @@ impl Engine {
             input_memos: _,
             delegations_scanned: _,
             delegated_keys: _,
+            walk_results: _,
         } = state;
         // The top-level lookups below: a workspace status File no target
         // registered (only possible under --nobuild, which plans no status

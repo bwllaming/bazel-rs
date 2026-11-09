@@ -354,14 +354,13 @@ const QUEUE_LIMIT: usize = 2_048;
 
 /// `BAZEL_RS_LOWERING_WORKERS` (hidden): the number of lowering workers
 /// (0: lower on the coordinator).
-fn lowering_workers() -> usize {
-    static WORKERS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+fn lowering_workers() -> Option<usize> {
+    static WORKERS: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
     *WORKERS.get_or_init(|| {
         // snapshot-unrecorded: a diagnostics override of the scheduling only; the output is the same either way.
         std::env::var("BAZEL_RS_LOWERING_WORKERS")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(4)
     })
 }
 
@@ -411,8 +410,15 @@ impl Engine {
     /// Start the lowering workers for a pipelined walk (none without
     /// workers or under `--keep_going`).
     pub(super) fn ensure_lowering_pool(&mut self) {
-        if self.lowering_pool.is_none() && lowering_workers() > 0 {
-            self.lowering_pool = LoweringPool::start(lowering_workers());
+        // 4 by default; T3: a frozen walk's cursor merges at the rate the
+        // lowerings drain (one per 3 loading threads, at most 16).
+        let workers = lowering_workers().unwrap_or(if self.frozen_walks() {
+            (self.loading_phase_threads / 3).clamp(4, 16)
+        } else {
+            4
+        });
+        if self.lowering_pool.is_none() && workers > 0 {
+            self.lowering_pool = LoweringPool::start(workers);
         }
     }
 
