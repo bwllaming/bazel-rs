@@ -996,9 +996,10 @@ fn worker(shared: &Arc<Shared>, index: usize) {
                 roll % (shared.jitter_millis + 1),
             ));
         }
-        let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // A panicking load is repeated by the coordinator (below).
+        let loaded = crate::internal_error::recoverable_asserted(|| {
             worker_load(shared.repositories.clone(), &id)
-        }));
+        });
         let mut state = lock(&shared.state);
         state.running -= 1;
         let mut queued = false;

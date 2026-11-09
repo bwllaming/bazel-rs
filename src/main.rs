@@ -6749,6 +6749,9 @@ fn main() {
         let args: Vec<String> = raw.map(|arg| arg.to_string_lossy().into_owned()).collect();
         std::process::exit(bazel_rs::coverage::output_generator_main(&args));
     }
+    // A panic from here on is an internal error: exit code 37 at once,
+    // whichever thread panicked (crate::internal_error).
+    bazel_rs::internal_error::install();
     // Incremental analysis's fallback executes this binary again
     // (crate::snapshot::incremental): its marker, read before any thread.
     bazel_rs::snapshot::incremental::take_reexec_marker();

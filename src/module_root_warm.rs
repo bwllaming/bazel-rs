@@ -247,11 +247,11 @@ fn grow(state: &Arc<Mutex<State>>, workers: &Workers, set: &RepositorySet) {
             .spawn(move || {
                 let cancel = lock(&shared).cancel.clone();
                 CURRENT.with(|current| *current.borrow_mut() = Some(cancel.clone()));
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = crate::internal_error::recoverable_asserted(|| {
                     crate::repository_speculation::with_cancel(Some(cancel), || {
                         worker(&shared, &workers, &set)
                     });
-                }));
+                });
                 CURRENT.with(|current| *current.borrow_mut() = None);
                 lock(&shared).running -= 1;
             });

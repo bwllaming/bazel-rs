@@ -561,7 +561,7 @@ fn worker<O>(shared: &Arc<Shared<O>>, index: u64) {
             crate::repository_speculation::with_cancel(Some(shared.cancel.clone()), || {
                 let _active = enter();
                 DEMANDED.with(|current| *current.borrow_mut() = Some(demanded.clone()));
-                let finished = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&id)))
+                let finished = crate::internal_error::recoverable_asserted(|| job(&id))
                     .unwrap_or(Finished::Failed);
                 DEMANDED.with(|current| *current.borrow_mut() = None);
                 finished

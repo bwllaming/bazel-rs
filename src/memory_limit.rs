@@ -108,6 +108,21 @@ fn kill_live_groups() {
     }
 }
 
+/// Stop new spawns and kill every registered live group, for an exit on
+/// an internal error (crate::internal_error): never waits for the groups'
+/// lock (the panicking thread may hold it).
+pub fn kill_live_children() {
+    STOP_REQUESTED.store(true, Ordering::SeqCst);
+    let groups = match LIVE_GROUPS.try_lock() {
+        Ok(groups) => groups.clone(),
+        Err(std::sync::TryLockError::Poisoned(groups)) => groups.into_inner().clone(),
+        Err(std::sync::TryLockError::WouldBlock) => return,
+    };
+    for group in groups {
+        let _ = crate::git_process::kill_group(group);
+    }
+}
+
 /// Parse a cap in MB from a user value. `None` = unset/invalid (invalid
 /// values warn at the call site; empty means unset).
 pub fn parse_cap_mb(value: &str) -> Option<u64> {

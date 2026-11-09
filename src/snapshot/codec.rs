@@ -670,7 +670,7 @@ fn on_threads<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> V
         .map_or(1, usize::from)
         .min(MAX_THREADS)
         .min(items.len());
-    let run = |item: &T| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(item))).ok();
+    let run = |item: &T| crate::internal_error::recoverable_asserted(|| work(item)).ok();
     if threads <= 1 {
         return items.iter().map(run).collect();
     }

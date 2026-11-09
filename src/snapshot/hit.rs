@@ -183,11 +183,11 @@ fn attempt_keeping(
         Ok(None) => return miss("no snapshot for this key"),
         Err(error) => return miss(format!("unreadable snapshot: {error}")),
     };
-    let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let decoded = crate::internal_error::recoverable_asserted(|| {
         let inputs = format::decode_inputs(&reader.section(Section::Inputs)?)?;
         let window = format::decode_events(&reader.section(Section::Events)?)?;
         Ok::<_, String>((inputs, window))
-    }));
+    });
     let (inputs, window_stderr) = match decoded {
         Ok(Ok(decoded)) => decoded,
         Ok(Err(error)) => return miss(format!("unreadable snapshot: {error}")),
@@ -239,48 +239,55 @@ fn attempt_keeping(
             cancel.store(true, Ordering::Relaxed);
         }
     };
-    let parallel = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    // A panic on any of these threads is a miss (each thread's own
+    // recoverable work, crate::internal_error).
+    let parallel = crate::internal_error::recoverable_asserted(|| {
         std::thread::scope(|scope| {
             let plan = scope.spawn(|| {
-                let started = Instant::now();
-                // The plan is inflated section by section as it decodes
-                // (MEM5), but for the verify mode, which keeps its bytes.
-                let decoded = if keep_plan {
-                    reader.section(Section::Plan).and_then(|bytes| {
-                        let request = crate::snapshot::codec::decode_cancellable(&bytes, &cancel)?;
-                        Ok((request, bytes.len(), Some(bytes)))
-                    })
-                } else {
-                    reader.stored_section(Section::Plan).and_then(|stored| {
-                        crate::snapshot::codec::decode_stored(&stored, &cancel)
-                            .map(|(request, size)| (request, size, None))
-                    })
-                };
-                let decoded = decoded.and_then(|(request, size, bytes)| {
-                    let decoded_at = started.elapsed();
-                    // The plan's portable `map_each` functions, from their
-                    // modules loaded against the pinned tables
-                    // (crate::snapshot::mapper): beside the validation,
-                    // whose failure discards them with the plan.
-                    let mappers = crate::snapshot::mapper::resolve_request(
-                        &request,
-                        tables_for_mappers.as_ref(),
-                        &attempt.replay,
-                    )
-                    .map_err(|error| format!("{MAPPERS_MISS}{error}"))?;
-                    Ok((request, size, bytes, decoded_at, mappers))
-                });
-                failed(decoded.is_err());
-                decoded
+                crate::internal_error::recoverable_resumed(|| {
+                    let started = Instant::now();
+                    // The plan is inflated section by section as it decodes
+                    // (MEM5), but for the verify mode, which keeps its bytes.
+                    let decoded = if keep_plan {
+                        reader.section(Section::Plan).and_then(|bytes| {
+                            let request =
+                                crate::snapshot::codec::decode_cancellable(&bytes, &cancel)?;
+                            Ok((request, bytes.len(), Some(bytes)))
+                        })
+                    } else {
+                        reader.stored_section(Section::Plan).and_then(|stored| {
+                            crate::snapshot::codec::decode_stored(&stored, &cancel)
+                                .map(|(request, size)| (request, size, None))
+                        })
+                    };
+                    let decoded = decoded.and_then(|(request, size, bytes)| {
+                        let decoded_at = started.elapsed();
+                        // The plan's portable `map_each` functions, from their
+                        // modules loaded against the pinned tables
+                        // (crate::snapshot::mapper): beside the validation,
+                        // whose failure discards them with the plan.
+                        let mappers = crate::snapshot::mapper::resolve_request(
+                            &request,
+                            tables_for_mappers.as_ref(),
+                            &attempt.replay,
+                        )
+                        .map_err(|error| format!("{MAPPERS_MISS}{error}"))?;
+                        Ok((request, size, bytes, decoded_at, mappers))
+                    });
+                    failed(decoded.is_err());
+                    decoded
+                })
             });
             let replay = (!inputs.replay.is_empty()).then(|| {
                 let records = &inputs.replay;
                 let replay = &attempt.replay;
                 let (cancel, failed) = (&cancel, &failed);
                 scope.spawn(move || {
-                    let replayed = replay_records(tables, replay, records, cancel);
-                    failed(replayed.is_err());
-                    replayed
+                    crate::internal_error::recoverable_resumed(|| {
+                        let replayed = replay_records(tables, replay, records, cancel);
+                        failed(replayed.is_err());
+                        replayed
+                    })
                 })
             });
             // Beside the replay (L2-W5h): each local repository's published
@@ -291,17 +298,21 @@ fn attempt_keeping(
                 let records = &inputs.replay;
                 let (cancel, failed) = (&cancel, &failed);
                 scope.spawn(move || {
-                    let checked = check_local_trees(records, cancel, explain);
-                    failed(checked.is_err());
-                    checked
+                    crate::internal_error::recoverable_resumed(|| {
+                        let checked = check_local_trees(records, cancel, explain);
+                        failed(checked.is_err());
+                        checked
+                    })
                 })
             });
             let warm = scope.spawn(|| {
-                // The execution tail looks up action inputs in the digest
-                // table: load it now, beside the replay.
-                if let Some(table) = crate::digest_memo::installed() {
-                    let _ = table.loaded();
-                }
+                crate::internal_error::recoverable_resumed(|| {
+                    // The execution tail looks up action inputs in the
+                    // digest table: load it now, beside the replay.
+                    if let Some(table) = crate::digest_memo::installed() {
+                        let _ = table.loaded();
+                    }
+                })
             });
             let validation = validate::validate_for_hit(
                 &inputs.recording,
@@ -342,7 +353,7 @@ fn attempt_keeping(
             let _ = warm.join();
             (validation, plan, replay, local, classified)
         })
-    }));
+    });
     let captured = capture.map(|capture| capture.stop(Duration::from_millis(200)));
     let (validation, plan, replay, local, classified) = match parallel {
         Ok(results) => results,

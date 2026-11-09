@@ -717,7 +717,7 @@ fn worker(shared: &Arc<Shared>, index: u64) {
                 output: Vec::new(),
             });
         });
-        let finished = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&canonical)))
+        let finished = crate::internal_error::recoverable_asserted(|| job(&canonical))
             .unwrap_or(Finished::Failed);
         CURRENT.with(|current| *current.borrow_mut() = None);
         drop(job);

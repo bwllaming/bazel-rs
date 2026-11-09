@@ -1103,11 +1103,12 @@ bad = module_extension(implementation = _bad_impl)\n",
     }
 }
 
-/// A loading worker that panics fails the command with the parallel
-/// loading error — never a crash of the worker scope (hidden hook
+/// A loading worker that panics ends the command as an internal error
+/// (crate::internal_error): the panic's message and exit code 37, never a
+/// crash of the worker scope (hidden hook
 /// `BAZEL_RS_DEBUG_LOADING_WORKER_PANIC=<package>`).
 #[test]
-fn a_panicking_loading_worker_is_an_error_not_a_crash() {
+fn a_panicking_loading_worker_is_an_internal_error_not_a_crash() {
     let ws = Workspace::new();
     for index in 0..6 {
         ws.file(
@@ -1121,12 +1122,14 @@ fn a_panicking_loading_worker_is_an_error_not_a_crash() {
     );
     let error = stderr(&run);
     assert!(
-        error.contains("parallel package loading worker panicked"),
+        error.contains("FATAL: bazel-rs crashed due to an internal error"),
         "{error}"
     );
-    // An error exit, not the panic exit of an aborted process.
-    assert_ne!(run.status.code(), Some(101), "{error}");
-    assert!(run.status.code().is_some(), "{error}");
+    assert!(
+        error.contains("BAZEL_RS_DEBUG_LOADING_WORKER_PANIC: //p3"),
+        "{error}"
+    );
+    assert_eq!(run.status.code(), Some(37), "{error}");
     assert!(!error.contains("a scoped thread panicked"), "{error}");
 }
 

@@ -446,7 +446,7 @@ fn read_chunk<'a>(data: &mut io::PipeReader, buffer: &'a mut [u8]) -> Option<&'a
 fn run(mut painter: Painter, data: io::PipeReader, mut control: io::PipeReader, done: Arc<Done>) {
     let mut data = Some(data);
     let mut buffer = vec![0u8; 64 << 10];
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let outcome = crate::internal_error::recoverable_asserted(|| {
         let mut limit = RateLimit::new(painter.config.rate, Instant::now());
         loop {
             let now = Instant::now();
@@ -489,7 +489,7 @@ fn run(mut painter: Painter, data: io::PipeReader, mut control: io::PipeReader, 
                 painter.refresh_live();
             }
         }
-    }));
+    });
     DRAWN.store(0, Ordering::Relaxed);
     done.set();
     if outcome.is_err() {
