@@ -1741,6 +1741,36 @@ phase 1 needs the prepare's engine reads as node reads (a `PrepareCx` over
   the lag), `PERF-PARALLEL provisional published= natives= stale_rebuilt=
   with_reads= memo_refilled=`.
 
+**Review fixes (eval-t3, first part).** Silent-divergence holes of the
+provisional index, each with a unit test (two same-path owners, late
+publication):
+
+- A published result makes only its **predeclared** outputs visible as
+  `declared` (`DeltaOp::Declared::predeclared`): a same-package sharer of
+  the generating rule's action (rules_js `copy_to_bin`) publishing after it
+  no longer hands readers of the output-file label its own Artifact.
+- A **source** File read as missing is recorded too, and a late
+  publication by an earlier entry lowers the stamp of an occupied
+  producer-less entry (as that entry's merge would); `check_reads` reads
+  the entry now (`current`, provisional included: no `reader - 1`
+  off-by-one) and treats a read entry stamped at or after the reader
+  (inherited from a memo a later entry filled) as stale.
+- A worker prepare's registration never chooses a producer: it inserts or
+  flips an entry only for a producer-less artifact, never replaces a
+  canonical later-stamped entry with another artifact; a vacant generated
+  File there is an internal error in debug builds and under
+  `BAZEL_RS_VERIFY_ARTIFACTS`.
+- `check_published` at every published key's successful commit, Starlark
+  rules too: files to build, provider ids and keys, runfiles
+  (`TargetRunfiles::same_published`: identity, else each set's contents),
+  validation and repositories (natives); provider values by identity, else
+  by repr — always for an alias, in debug builds and under
+  `BAZEL_RS_VERIFY_DELTA` otherwise.
+- A successful frozen walk fails with an internal error if an index entry
+  is still provisional (one scan).
+- A worker's memo fill that resolved a File through its own unpublished
+  registrations (recording no read) is dropped from the memo after its use.
+
 ### T3: the plan-ordered merge buffer
 
 Deltas land in a buffer by plan index in completion order; the cursor
