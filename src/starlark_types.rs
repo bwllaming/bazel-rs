@@ -1624,6 +1624,7 @@ fn memoized_walk(node: &Arc<DepsetNode>) -> Option<Arc<FlatFiles>> {
                         files,
                         set,
                         namespace: OnceLock::new(),
+                        key_blocks: Default::default(),
                     }))
                 })
                 .flatten();
@@ -1657,6 +1658,9 @@ pub(crate) struct FlatFiles {
     /// The namespace of the files' execution paths
     /// (crate::action::InputNamespace), computed on first use.
     pub(crate) namespace: OnceLock<crate::action::InputNamespace>,
+    /// Its blocks in action keys, without and with owners
+    /// (crate::shared_actions::MemoBlocks), computed on first use.
+    key_blocks: [OnceLock<crate::shared_actions::MemoBlocks>; 2],
 }
 
 impl fmt::Debug for FlatFiles {
@@ -1671,6 +1675,12 @@ impl FlatFiles {
         &self.files
     }
 
+    /// Its blocks in action keys (`owned`: with the files' owners).
+    pub(crate) fn key_blocks(&self, owned: bool) -> &crate::shared_actions::MemoBlocks {
+        self.key_blocks[usize::from(owned)]
+            .get_or_init(|| crate::shared_actions::MemoBlocks::of(&self.files, owned))
+    }
+
     /// A walk of `files` (tests).
     #[cfg(test)]
     pub(crate) fn of_files(files: Vec<File>) -> Arc<Self> {
@@ -1678,6 +1688,7 @@ impl FlatFiles {
             set: files.iter().cloned().collect(),
             files,
             namespace: OnceLock::new(),
+            key_blocks: Default::default(),
         })
     }
 }

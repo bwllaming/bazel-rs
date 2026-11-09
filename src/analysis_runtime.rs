@@ -181,6 +181,8 @@ mod owned {
         /// checks never apply to them.
         pub shareable: RefCell<BTreeSet<String>>,
         pub actions: RefCell<Vec<RegisteredAction>>,
+        /// Lookups into `declared` and `actions` ([`OutputIndex`]).
+        pub output_index: RefCell<OutputIndex>,
         pub active: Arc<AtomicBool>,
         pub top_level_functions: std::sync::Arc<[OwnedFrozenValue]>,
         /// The build's registry of every loaded package's top-level
@@ -246,7 +248,66 @@ impl Drop for Context {
     }
 }
 
+/// The declared outputs as a set and each action output's registering
+/// actions, caught up with [`Context::declared`] and [`Context::actions`]
+/// on each lookup (both only grow, until taken): a rule declaring and
+/// registering thousands of outputs (rules_python's PyCompile action per
+/// source file) looked each one up in every earlier one.
+#[derive(Default)]
+pub(crate) struct OutputIndex {
+    declared: std::collections::HashSet<File>,
+    declared_len: usize,
+    /// Output path: the indices of the actions with an output there.
+    actions: std::collections::HashMap<String, Vec<usize>>,
+    actions_len: usize,
+}
+
+impl OutputIndex {
+    fn catch_up_declared(&mut self, declared: &[File]) {
+        if declared.len() < self.declared_len {
+            self.declared.clear();
+            self.declared_len = 0;
+        }
+        self.declared
+            .extend(declared[self.declared_len..].iter().cloned());
+        self.declared_len = declared.len();
+    }
+
+    /// Whether `file` is declared (`declared.contains`).
+    fn is_declared(&mut self, declared: &[File], file: &File) -> bool {
+        self.catch_up_declared(declared);
+        self.declared.contains(file)
+    }
+
+    /// The first action with output `output` (`actions.iter().position`).
+    fn generating(&mut self, actions: &[RegisteredAction], output: &File) -> Option<usize> {
+        if actions.len() < self.actions_len {
+            self.actions.clear();
+            self.actions_len = 0;
+        }
+        for (index, action) in actions.iter().enumerate().skip(self.actions_len) {
+            for file in &action.outputs {
+                let indices = self.actions.entry(file.path.clone()).or_default();
+                if indices.last() != Some(&index) {
+                    indices.push(index);
+                }
+            }
+        }
+        self.actions_len = actions.len();
+        self.actions
+            .get(&output.path)?
+            .iter()
+            .copied()
+            .find(|&index| actions[index].outputs.contains(output))
+    }
+}
+
 impl Context {
+    /// Whether `file` is declared (`declared` holds it).
+    fn is_declared(&self, declared: &[File], file: &File) -> bool {
+        self.output_index.borrow_mut().is_declared(declared, file)
+    }
+
     /// An accessed `ctx.outputs.executable` is a declared output
     /// (RuleContext.createOutputArtifact).
     fn sync_default_executable(&self) {
@@ -254,7 +315,7 @@ impl Context {
             && default.created()
         {
             let mut declared = self.declared.borrow_mut();
-            if !declared.contains(&default.file) {
+            if !self.is_declared(&declared, &default.file) {
                 declared.push(default.file.clone());
             }
         }
@@ -263,6 +324,9 @@ impl Context {
     /// The declared outputs, including an accessed `ctx.outputs.executable`.
     pub(crate) fn take_declared(&self) -> Vec<File> {
         self.sync_default_executable();
+        let mut index = self.output_index.borrow_mut();
+        index.declared.clear();
+        index.declared_len = 0;
         std::mem::take(&mut *self.declared.borrow_mut())
     }
 
@@ -313,7 +377,7 @@ impl Context {
         // commit (crate::engine register_output): the other target's equal
         // action is shared (Actions.canBeShared, crate::shared_actions),
         // anything else is Bazel's action conflict (W1b).
-        if !declared.contains(&file) {
+        if !self.is_declared(&declared, &file) {
             declared.push(file.clone());
         }
         Ok(file)
@@ -350,7 +414,7 @@ impl Context {
         // As for declare_kind: an output path another target already
         // produces is shared or a conflict at the commit (crate::engine
         // register_output; W1b).
-        if !declared.contains(&file) {
+        if !self.is_declared(&declared, &file) {
             declared.push(file.clone());
             // A package-relative declaration of the same exec path is the
             // same artifact; only a fresh shareable declaration skips the
@@ -463,7 +527,7 @@ impl Context {
             ensure!(
                 !output.is_source
                     && output.owner == self.label.to_string()
-                    && declared.contains(output),
+                    && self.is_declared(&declared, output),
                 "action output {} is not declared by {}",
                 output.path,
                 self.label
@@ -474,9 +538,7 @@ impl Context {
                 output.path
             );
             if generated.is_none()
-                && let Some(index) = actions
-                    .iter()
-                    .position(|action| action.outputs.contains(output))
+                && let Some(index) = self.output_index.borrow_mut().generating(&actions, output)
             {
                 generated = Some((index, output.clone()));
             }
@@ -582,6 +644,7 @@ impl Context {
                 execution: self.exec_groups.keyed_execution(&exec_group),
                 deferred: deferred.is_some(),
                 build_info: build_info.is_some(),
+                input_memo: input_memo.as_ref().map(|(start, files)| (*start, &**files)),
                 shareable,
             },
         );
@@ -2515,6 +2578,7 @@ mod tests {
             declared: RefCell::new(Vec::new()),
             shareable: RefCell::new(BTreeSet::new()),
             actions: RefCell::new(Vec::new()),
+            output_index: Default::default(),
             active: Arc::new(AtomicBool::new(true)),
             top_level_functions: Default::default(),
             loaded_functions: None,
@@ -2865,6 +2929,7 @@ r=rule(implementation=_rule,subrules=[S])
             declared: RefCell::new(Vec::new()),
             shareable: RefCell::new(BTreeSet::new()),
             actions: RefCell::new(Vec::new()),
+            output_index: Default::default(),
             active: Arc::new(AtomicBool::new(true)),
             top_level_functions: Default::default(),
             loaded_functions: None,

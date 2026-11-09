@@ -89,6 +89,10 @@ pub struct KeyedParts<'a> {
     /// An actions.transform_{version,info}_file registration
     /// (BuildInfoFileWriteAction.computeKey keys its callback's digest).
     pub build_info: bool,
+    /// The memoized depset walk `inputs` hold from an index on
+    /// (crate::starlark_types::FlatFiles): its blocks' digests are
+    /// computed once ([`MemoBlocks`]), the same key either way.
+    pub input_memo: Option<(usize, &'a crate::starlark_types::FlatFiles)>,
     /// ActionAnalysisMetadata.isShareable (false for a C++ compile,
     /// CppCompileActionBuilder.java:99). Two unshareable actions are one
     /// only when their mandatory inputs and outputs are equal WITH their
@@ -105,11 +109,10 @@ impl ActionKey {
         let mut key = Fingerprint::default();
         key.action(action);
         key.flag(parts.shareable);
+        key.input_blocks(parts.inputs, parts.input_memo, !parts.shareable);
         if parts.shareable {
-            key.files(parts.inputs);
             key.files(parts.outputs);
         } else {
-            key.owned_files(parts.inputs);
             key.owned_files(parts.outputs);
         }
         key.count(parts.runfiles_trees.len());
@@ -282,7 +285,133 @@ impl Default for Fingerprint {
     }
 }
 
+/// The inputs of a key in content-defined blocks: a block ends after each
+/// file whose path hashes to a boundary ([`is_boundary`], one in
+/// [`BLOCK_FILES`] on average) and at the end; the key holds the input
+/// count and each block's digest (BLAKE3 of its files' encoding, with
+/// their owners for an unshareable action). The blocks depend on the
+/// files alone, not on where a run of them starts, so a memoized walk's
+/// blocks between its first and last boundary are hashed once
+/// ([`MemoBlocks`]) for all the actions whose inputs hold it (every
+/// PyCompile action's inputs hold the Python runtime's files): the same
+/// key whether a walk was memoized or not.
+const BLOCK_FILES: u64 = 32;
+
+fn is_boundary(file: &File) -> bool {
+    use std::hash::BuildHasher;
+    crate::fast_hash::FxBuildHasher::default().hash_one(file.path.as_bytes()) % BLOCK_FILES == 0
+}
+
+/// A memoized walk's blocks ([`Fingerprint::input_blocks`]): the digests of
+/// the blocks after its first boundary file up to its last one.
+#[derive(Debug)]
+pub(crate) struct MemoBlocks {
+    /// The first and last boundary files' indices (`None`: no boundary).
+    bounds: Option<(usize, usize)>,
+    digests: Vec<[u8; 32]>,
+}
+
+impl MemoBlocks {
+    pub(crate) fn of(files: &[File], owned: bool) -> Self {
+        let first = files.iter().position(is_boundary);
+        let Some(first) = first else {
+            return Self {
+                bounds: None,
+                digests: Vec::new(),
+            };
+        };
+        let mut block = Block::default();
+        let mut digests = Vec::new();
+        let mut last = first;
+        for (index, file) in files.iter().enumerate().skip(first + 1) {
+            if let Some(digest) = block.push(file, owned) {
+                digests.push(digest);
+                last = index;
+            }
+        }
+        Self {
+            bounds: Some((first, last)),
+            digests,
+        }
+    }
+}
+
+/// The open block of [`Fingerprint::input_blocks`].
+#[derive(Default)]
+struct Block {
+    bytes: Vec<u8>,
+}
+
+impl Block {
+    /// Add `file`; the block's digest when it ends with it.
+    fn push(&mut self, file: &File, owned: bool) -> Option<[u8; 32]> {
+        let text = |bytes: &mut Vec<u8>, text: &str| {
+            bytes.extend_from_slice(&(text.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(text.as_bytes());
+        };
+        text(&mut self.bytes, &file.path);
+        self.bytes.push(u8::from(file.is_directory));
+        if owned {
+            text(&mut self.bytes, &file.owner);
+        }
+        is_boundary(file).then(|| self.close())
+    }
+
+    fn close(&mut self) -> [u8; 32] {
+        let digest = *blake3::hash(&self.bytes).as_bytes();
+        self.bytes.clear();
+        digest
+    }
+}
+
 impl Fingerprint {
+    /// `inputs` in content-defined blocks ([`BLOCK_FILES`]), those of the
+    /// memoized walk `memo` (held from an index on) from its memo.
+    fn input_blocks(
+        &mut self,
+        inputs: &[File],
+        memo: Option<(usize, &crate::starlark_types::FlatFiles)>,
+        owned: bool,
+    ) {
+        self.count(inputs.len());
+        let mut block = Block::default();
+        let push = |key: &mut Self, block: &mut Block, files: &[File]| {
+            for file in files {
+                if let Some(digest) = block.push(file, owned) {
+                    key.update(&digest);
+                }
+            }
+        };
+        let memo = memo.and_then(|(start, flat)| {
+            let files = flat.files();
+            let end = start + files.len();
+            (inputs.get(start..end).is_some_and(|held| held == files))
+                .then(|| (start, end, flat.key_blocks(owned)))
+        });
+        match memo {
+            Some((
+                start,
+                end,
+                MemoBlocks {
+                    bounds: Some((first, last)),
+                    digests,
+                },
+            )) => {
+                push(self, &mut block, &inputs[..=start + first]);
+                for digest in digests {
+                    self.update(digest);
+                }
+                push(self, &mut block, &inputs[start + last + 1..end]);
+                push(self, &mut block, &inputs[end..]);
+            }
+            _ => push(self, &mut block, inputs),
+        }
+        if !block.bytes.is_empty() {
+            let digest = block.close();
+            self.update(&digest);
+        }
+    }
+
     fn update(&mut self, bytes: &[u8]) {
         self.0.extend_from_slice(bytes);
     }
@@ -642,6 +771,69 @@ impl Fingerprint {
 mod tests {
     use super::*;
 
+    /// An action's key is the same whether its inputs hold a memoized walk
+    /// or not, wherever the walk starts and whatever its blocks; keys of
+    /// different inputs differ.
+    #[test]
+    fn memoized_inputs_key_like_plain_ones() {
+        let files = |prefix: &str, count: usize| -> Vec<File> {
+            (0..count)
+                .map(|index| file(&format!("{prefix}/{index}.py"), "//p:x"))
+                .collect()
+        };
+        let keyed = |inputs: &[File],
+                     memo: Option<(usize, &crate::starlark_types::FlatFiles)>,
+                     shareable: bool| {
+            ActionKey::of(
+                &spawn("//p:x#0", "a"),
+                &KeyedParts {
+                    inputs,
+                    outputs: &[file("bazel-out/k8-fastbuild/bin/p/out", "//p:x")],
+                    runfiles_trees: &[],
+                    execution: KeyedExecution::default(),
+                    deferred: false,
+                    build_info: false,
+                    input_memo: memo,
+                    shareable,
+                },
+            )
+            .digest
+        };
+        for walk in [0, 1, 5, 31, 200, 2000] {
+            let memo = crate::starlark_types::FlatFiles::of_files(files("runtime", walk));
+            for (before, after) in [(0, 0), (1, 0), (0, 1), (3, 70), (40, 2)] {
+                let mut inputs = files("before", before);
+                inputs.extend(memo.files().iter().cloned());
+                inputs.extend(files("after", after));
+                for shareable in [true, false] {
+                    assert_eq!(
+                        keyed(&inputs, Some((before, &memo)), shareable),
+                        keyed(&inputs, None, shareable),
+                        "walk {walk}, {before} before, {after} after"
+                    );
+                }
+                // One input more or less, or another one, is another key.
+                let mut other = inputs.clone();
+                other.push(file("x.py", "//p:x"));
+                assert_ne!(keyed(&other, None, true), keyed(&inputs, None, true));
+                if !inputs.is_empty() {
+                    let mut moved = inputs.clone();
+                    moved.rotate_left(1);
+                    if moved != inputs {
+                        assert_ne!(keyed(&moved, None, true), keyed(&inputs, None, true));
+                    }
+                }
+            }
+        }
+        // Owners count for an unshareable action only.
+        let ours = files("p", 100);
+        let theirs = (0..100)
+            .map(|index| file(&format!("p/{index}.py"), "//q:y"))
+            .collect::<Vec<_>>();
+        assert_eq!(keyed(&ours, None, true), keyed(&theirs, None, true));
+        assert_ne!(keyed(&ours, None, false), keyed(&theirs, None, false));
+    }
+
     fn file(path: &str, owner: &str) -> File {
         File::new(crate::starlark_types::FileData {
             path: path.to_owned(),
@@ -699,6 +891,7 @@ mod tests {
                 },
                 deferred: false,
                 build_info: false,
+                input_memo: None,
                 shareable: true,
             },
         )
@@ -830,6 +1023,7 @@ mod tests {
                     execution: KeyedExecution::default(),
                     deferred: false,
                     build_info: false,
+                    input_memo: None,
                     shareable,
                 },
             )
@@ -866,6 +1060,7 @@ mod tests {
                 execution: KeyedExecution::default(),
                 deferred: true,
                 build_info: false,
+                input_memo: None,
                 shareable: true,
             },
         );
@@ -878,6 +1073,7 @@ mod tests {
                 execution: KeyedExecution::default(),
                 deferred: false,
                 build_info: false,
+                input_memo: None,
                 shareable: true,
             },
         );
@@ -912,6 +1108,7 @@ mod tests {
                     execution: KeyedExecution::default(),
                     deferred: false,
                     build_info: false,
+                    input_memo: None,
                     shareable: true,
                 },
             )

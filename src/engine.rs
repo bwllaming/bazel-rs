@@ -16152,6 +16152,7 @@ mod tests {
                 execution: crate::shared_actions::KeyedExecution::default(),
                 deferred: false,
                 build_info: false,
+                input_memo: None,
                 shareable,
             },
         );
