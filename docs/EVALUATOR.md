@@ -1888,7 +1888,7 @@ default threads, alternating runs, host load 10–19):
 
 | | main eval | main eval, frozen + T2 wide bounds | T3 eval (default) | main walk | T3 walk |
 |---|---|---|---|---|---|
-| plan.start → phase 1 done | 36.6 / 34.1 s | 30.4 s | 24.9 / 24.1 s | 35.2 s | 34.9 s |
+| plan.start → phase 1 done | 36.6 / 34.1 s | 30.4 s | 24.9 / 24.1 s | 35.2 s | 35.0 s |
 | phase 2 done (process time) | 45.2 / 42.5 s | 37.5 s | 31.0 / 29.6 s | 43.2 s | 42.8 s |
 | wall | 47.6 / 44.7 s | 39.9 s | 33.4 / 32.0 s | 45.4 s | 45.1 s |
 | CPU (user+sys) | 175 / 188 s | 207 s | 186 / 192 s | 135 s | 131 s |
