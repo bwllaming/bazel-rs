@@ -840,7 +840,9 @@ impl Host for EvalHost<'_, '_> {
     }
 
     fn hint_edges(&mut self, deps: &[(Label, ConfigId)]) {
-        if deps.is_empty() || !self.pooled() {
+        // On the pool, or in the sequential pass while the pool serves
+        // (its context schedules them; otherwise it ignores hints).
+        if deps.is_empty() || !(self.pooled() || self.shared.loading.serving()) {
             return;
         }
         let mut keys = Vec::new();
@@ -1551,7 +1553,12 @@ fn flag_ct2(
             error: None,
         })))
     };
-    if let Some(planned) = cx.coord().planned_providers(&ct.key) {
+    // What a flush planned already (when the coordinator is free: else
+    // the speculation gives the same providers).
+    if let Some(planned) = cx
+        .try_coord()
+        .and_then(|coord| coord.planned_providers(&ct.key))
+    {
         return value(planned);
     }
     // The flag's phase 1 is done (its consumer analyzed it first).
@@ -1584,7 +1591,10 @@ fn flag_ct2(
         .as_ref()
         .and_then(|providers| providers.get(crate::feature_flags::PROVIDER_ID))
         .and_then(|provider| crate::feature_flags::value_of(provider.value()));
-    cx.coord().speculated_flag(ct.key.clone(), flag);
+    // Checked against the planned value later (without waiting for the
+    // coordinator here).
+    let key = ct.key.clone();
+    cx.defer(Box::new(move |coord| coord.speculated_flag(key, flag)));
     value(providers)
 }
 

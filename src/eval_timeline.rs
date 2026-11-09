@@ -35,6 +35,10 @@ struct State {
     samples: Vec<(Duration, u64)>,
     /// Named accumulators: (count, µs).
     sums: BTreeMap<&'static str, (u64, u64)>,
+    /// Accumulators named at run time: (count, µs).
+    dyn_sums: BTreeMap<String, (u64, u64)>,
+    /// The graph's queued/running/waiting counts over time.
+    graph_samples: Vec<(Duration, [usize; 3])>,
     /// Named intervals (relative to the start).
     intervals: Vec<(&'static str, Duration, Duration)>,
 }
@@ -127,6 +131,19 @@ pub(crate) fn add(name: &'static str, since: Instant) {
     entry.1 += us;
 }
 
+/// [`add`] under a name made at run time.
+pub(crate) fn add_dyn(name: impl FnOnce() -> String, since: Instant) {
+    if !on() {
+        return;
+    }
+    let us = since.elapsed().as_micros() as u64;
+    let name = name();
+    let mut state = state();
+    let entry = state.dyn_sums.entry(name).or_default();
+    entry.0 += 1;
+    entry.1 += us;
+}
+
 /// [`add`], and the interval from `since` to now as `name`'s occupancy
 /// over time in the report.
 pub(crate) fn interval(name: &'static str, since: Instant) {
@@ -211,6 +228,19 @@ pub(crate) fn seq_state(what: impl FnOnce() -> String) {
     }
 }
 
+/// Record the graph's queued, running and waiting node counts now.
+pub(crate) fn graph_sample(counts: [usize; 3]) {
+    if !on() {
+        return;
+    }
+    let mut state = state();
+    let Some(start) = state.start else {
+        return;
+    };
+    let at = start.elapsed();
+    state.graph_samples.push((at, counts));
+}
+
 /// A pool attempt of `id` left it to the sequential pass because of
 /// `reason`.
 pub(crate) fn note_inline(id: u32, reason: impl FnOnce() -> String) {
@@ -271,7 +301,7 @@ pub(crate) fn pool_enter() {
 }
 
 /// The pool attempt begun by the last [`pool_enter`] (of `kind`) ended.
-pub(crate) fn pool_exit(kind: &str) {
+pub(crate) fn pool_exit(kind: &str, what: impl FnOnce() -> String) {
     let Some(own) = POOL_FRAMES.with(|frames| {
         let mut frames = frames.borrow_mut();
         let (started, children) = frames.pop()?;
@@ -283,6 +313,15 @@ pub(crate) fn pool_exit(kind: &str) {
     }) else {
         return;
     };
+    if own >= Duration::from_millis(50) {
+        mark(|| {
+            format!(
+                "a slow pool attempt ({} ms self): {}",
+                own.as_millis(),
+                what()
+            )
+        });
+    }
     let Some(start) = state().start else {
         return;
     };
@@ -297,6 +336,8 @@ struct Frame {
     started: Instant,
     children: Duration,
     root: String,
+    /// What it is (a slow attempt's mark).
+    what: String,
 }
 
 thread_local! {
@@ -306,7 +347,7 @@ thread_local! {
 /// A sequential attempt of a node of `kind` begins; `cause` is why it runs
 /// here (its state before). A node reached fresh inherits its parent's
 /// root cause.
-pub(crate) fn seq_enter(cause: &str, detail: impl FnOnce() -> String) {
+pub(crate) fn seq_enter(cause: &str, detail: impl FnOnce() -> String, what: String) {
     FRAMES.with(|frames| {
         let mut frames = frames.borrow_mut();
         let root = if cause == "fresh" {
@@ -320,23 +361,32 @@ pub(crate) fn seq_enter(cause: &str, detail: impl FnOnce() -> String) {
             started: Instant::now(),
             children: Duration::ZERO,
             root,
+            what,
         });
     });
 }
 
 /// The attempt begun by the last [`seq_enter`] ended.
 pub(crate) fn seq_exit(kind: &str, cause: &str) {
-    let Some((own, root)) = FRAMES.with(|frames| {
+    let Some((own, root, what)) = FRAMES.with(|frames| {
         let mut frames = frames.borrow_mut();
         let frame = frames.pop()?;
         let total = frame.started.elapsed();
         if let Some(parent) = frames.last_mut() {
             parent.children += total;
         }
-        Some((total.saturating_sub(frame.children), frame.root))
+        Some((total.saturating_sub(frame.children), frame.root, frame.what))
     }) else {
         return;
     };
+    if own >= Duration::from_millis(20) {
+        mark(|| {
+            format!(
+                "a slow sequential attempt ({} ms self, {cause}): {what}",
+                own.as_millis()
+            )
+        });
+    }
     let own = own.as_micros() as u64;
     let mut state = state();
     let entry = state
@@ -379,6 +429,22 @@ pub(crate) fn report() {
         }
     }
     crate::note!("bazel-rs: eval timeline cores in use (decisecond:cores):{line}");
+    let line: String = state
+        .graph_samples
+        .iter()
+        .map(|(at, [queued, running, waiting])| {
+            format!(" {}:{queued}/{running}/{waiting}", at.as_millis() / 100)
+        })
+        .collect();
+    crate::note!("bazel-rs: eval timeline graph (decisecond:queued/running/waiting):{line}");
+    let mut dyn_sums: Vec<_> = state.dyn_sums.iter().collect();
+    dyn_sums.sort_by_key(|(_, (_, us))| std::cmp::Reverse(*us));
+    for (name, (count, us)) in dyn_sums.iter().take(30) {
+        crate::note!(
+            "bazel-rs: eval timeline sum {name}: {count} times, {} ms",
+            us / 1000
+        );
+    }
     for (name, (count, us)) in &state.sums {
         crate::note!(
             "bazel-rs: eval timeline sum {name}: {count} times, {} ms",

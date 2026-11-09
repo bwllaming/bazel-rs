@@ -372,7 +372,10 @@ fn verify_with(
                         || text.starts_with("Misconfigured execution platforms: ")
                 };
                 let pass1 = walk.is_some_and(cycle_report) && cycle_report(&error);
-                if walk != Some(error.as_str()) && !bodies.coord().saw_flush && !pass1 {
+                if walk != Some(error.as_str())
+                    && !bodies.saw_flush.load(std::sync::atomic::Ordering::Relaxed)
+                    && !pass1
+                {
                     diffs.push(format!("{label}: walk {walk:?} / eval {error:?}"));
                 }
                 return Ok((computed(&evaluator), diffs));

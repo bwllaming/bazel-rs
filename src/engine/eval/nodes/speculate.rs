@@ -116,14 +116,14 @@ impl Scratch {
 }
 
 /// How many scratch engines speculations use at once
-/// (`BAZEL_RS_EVAL_SCRATCHES`, default 4).
+/// (`BAZEL_RS_EVAL_SCRATCHES`, default 2).
 pub(crate) fn scratch_slots() -> usize {
     static SLOTS: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
         // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
         std::env::var("BAZEL_RS_EVAL_SCRATCHES")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(4usize)
+            .unwrap_or(2usize)
             .max(1)
     });
     *SLOTS
@@ -222,8 +222,9 @@ fn run(
     let prepared = std::time::Instant::now();
     let _held = HeldScratch(prepared);
     // What the scratch engine gets of the evaluation so far (the lock
-    // order: the scratch, then the coordinator).
-    {
+    // order: the scratch, then the coordinator), taken out under the
+    // coordinator's lock and published into the scratch engine after it.
+    let (packages, memos, ct1s, planned) = {
         let coord = cx.coord();
         let held = std::time::Instant::now();
         let _held = Held(held);
@@ -234,59 +235,81 @@ fn run(
             })?
         };
         super::super::timeline::add("speculation: subtree (coordinator)", prepared);
-        let published = std::time::Instant::now();
-        let scratch = guard.get_or_insert_with(|| Scratch::new(coord.engine, shared));
-        let engine = &mut *scratch.engine;
-        for package in &coord.store.package_order[scratch.package_order..] {
-            if let Some(Ok(loaded)) = coord.store.packages.get(package)
-                && !engine.packages.contains_key(package)
-                && scratch.packages.insert(package.clone())
-            {
-                commit_package(engine, package, &loaded.package);
-            }
-        }
-        scratch.package_order = coord.store.package_order.len();
-        for published in &coord.store.published[scratch.memos..] {
-            publish_memo(engine, published);
-        }
-        scratch.memos = coord.store.published.len();
+        // (Before anything is taken: a failure here leaves the scratch
+        // engine's prefixes as they were.)
+        let mut ct1s = Vec::with_capacity(subtree.canonical.len());
         for key in &subtree.canonical {
             let Some(value) = coord.ct1_values.get(key) else {
                 return Err(left("a configured target's value is not done"));
             };
-            if let Ok(ok) = &value.outcome {
-                publish_ct1(engine, &mut scratch.configured, key.key.clone(), ok);
-            }
+            ct1s.push((key.key.clone(), Arc::clone(value)));
         }
-        super::super::timeline::add("speculation: packages, memos, ct1 (coordinator)", published);
+        let scratch = guard.get_or_insert_with(|| Scratch::new(coord.engine, shared));
+        let packages: Vec<(crate::label::PackageId, Arc<crate::package::Package>)> =
+            coord.store.package_order[scratch.package_order..]
+                .iter()
+                .filter_map(|package| match coord.store.packages.get(package) {
+                    Some(Ok(loaded)) => Some((package.clone(), Arc::clone(&loaded.package))),
+                    _ => None,
+                })
+                .collect();
+        scratch.package_order = coord.store.package_order.len();
+        let memos = coord.store.published[scratch.memos..].to_vec();
+        scratch.memos = coord.store.published.len();
+        let engine = &mut *scratch.engine;
         for (implementation, platform) in subtree.toolchain_implementations {
             engine
                 .toolchain_implementations
                 .entry(implementation)
                 .or_insert(platform);
         }
-        // What a flush planned already: the planning state's phase 2.
-        let Some(real) = coord.engine.action_planning.as_ref() else {
-            return Err(left("no planning state"));
-        };
-        let state = engine
-            .action_planning
-            .as_mut()
-            .ok_or_else(|| left("no scratch planning state"))?;
-        for key in subtree.imported {
-            import(state, real, &key);
-            scratch.planned.insert(key);
-        }
-        for key in subtree.plan {
-            if !scratch.planned.insert(key.key.clone()) {
-                continue;
-            }
-            let Some(Ok(ok)) = coord.ct1_values.get(&key).map(|value| &value.outcome) else {
-                return Err(left("a plan entry without its configured rule"));
+        // What a flush planned already: the planning state's phase 2 (the
+        // prefixes taken above are published whatever happens here).
+        let planned = (|| {
+            let Some(real) = coord.engine.action_planning.as_ref() else {
+                return Err(left("no planning state"));
             };
-            scratch.plan.push((key.key, Arc::clone(&ok.rule)));
+            let state = engine
+                .action_planning
+                .as_mut()
+                .ok_or_else(|| left("no scratch planning state"))?;
+            for key in subtree.imported {
+                import(state, real, &key);
+                scratch.planned.insert(key);
+            }
+            for key in subtree.plan {
+                if !scratch.planned.insert(key.key.clone()) {
+                    continue;
+                }
+                let Some(Ok(ok)) = coord.ct1_values.get(&key).map(|value| &value.outcome) else {
+                    return Err(left("a plan entry without its configured rule"));
+                };
+                scratch.plan.push((key.key, Arc::clone(&ok.rule)));
+            }
+            Ok(())
+        })();
+        (packages, memos, ct1s, planned)
+    };
+    {
+        let published = std::time::Instant::now();
+        let scratch = guard.as_mut().ok_or_else(|| left("no scratch engine"))?;
+        let engine = &mut *scratch.engine;
+        for (package, loaded) in packages {
+            if !engine.packages.contains_key(&package) && scratch.packages.insert(package.clone()) {
+                commit_package(engine, &package, &loaded);
+            }
         }
+        for published in &memos {
+            publish_memo(engine, published);
+        }
+        for (key, value) in ct1s {
+            if let Ok(ok) = &value.outcome {
+                publish_ct1(engine, &mut scratch.configured, key, ok);
+            }
+        }
+        super::super::timeline::add("speculation: packages, memos, ct1 (scratch)", published);
     }
+    planned?;
     super::super::timeline::add(
         "speculation: subtree and publication (coordinator)",
         prepared,
@@ -376,15 +399,15 @@ fn run(
 /// and dropped: console writes, observations, the evaluator's captures,
 /// `--toolchain_resolution_debug` events, the analysis progress counters.
 fn isolated<R>(f: impl FnOnce() -> R) -> R {
-    let counts = crate::progress::analysis_counts();
     let console = crate::ui::DeferredConsole::start();
     let scope = crate::observed_fs::unit_scope();
     let was = SPECULATING.with(|cell| cell.replace(true));
-    let result = super::super::linearize::capture::isolated(f);
+    // Left out of the counts on this thread only: the build's analysis
+    // (the sequential pass's tape) counts beside it.
+    let result = crate::progress::uncounted(|| super::super::linearize::capture::isolated(f));
     SPECULATING.with(|cell| cell.set(was));
     drop(scope);
     drop(console.finish());
-    crate::progress::restore_analysis_counts(counts);
     result
 }
 

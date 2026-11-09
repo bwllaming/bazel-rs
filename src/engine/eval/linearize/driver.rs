@@ -326,6 +326,22 @@ impl Coord<'_> {
         result
     }
 
+    /// [`Self::linearize`] for at most `events` of pass 1 (the coordinator
+    /// is released between such steps while the pool serves); whether it
+    /// stopped there with more to do.
+    pub(crate) fn linearize_step(&mut self, shared: &EvalShared, events: usize) -> bool {
+        let Some(lin) = self.lin.as_mut() else {
+            return false;
+        };
+        lin.pass.set_budget(Some(events));
+        let result = self.linearize(shared);
+        let Some(lin) = self.lin.as_mut() else {
+            return false;
+        };
+        lin.pass.set_budget(None);
+        result.is_ok() && lin.pass.paused()
+    }
+
     fn linearize_with(&mut self, lin: &mut Linearizer, shared: &EvalShared) -> Result<(), String> {
         if let Some(failure) = &lin.failure {
             return Err(failure.error.clone());
@@ -1488,8 +1504,16 @@ impl Engine {
             });
             let pooled_at = std::time::Instant::now();
             let _ = POOL_START.set(pooled_at);
+            let serve = evaluator.pooled() && *SERVE;
             let pool_roots = if evaluator.pooled() {
-                let roots = warm_up(&evaluator, &shared, labels, top, target_platform.clone());
+                let roots = warm_up(
+                    &evaluator,
+                    &shared,
+                    labels,
+                    top,
+                    target_platform.clone(),
+                    serve,
+                );
                 evaluator.set_inline(true);
                 // The sequential pass hands what the pool can run to it.
                 // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
@@ -1509,7 +1533,6 @@ impl Engine {
                 0
             };
             let driving = std::time::Instant::now();
-            let serve = pool_roots.is_some() && *SERVE;
             let result = if serve {
                 // The pool serves beside the sequential pass (this thread):
                 // what it wakes runs at once, what it needs that the pool
@@ -1520,7 +1543,21 @@ impl Engine {
                     .store(true, std::sync::atomic::Ordering::Release);
                 let was = super::super::nodes::loading::set_sequential(true);
                 evaluator.begin_serving();
+                // The configured roots, and the registrations' packages
+                // (every toolchain resolution waits for them), on the pool
+                // from the start.
+                evaluator.start_first(&registration_packages(&shared));
+                evaluator.start(&pool_roots.clone().unwrap_or_default());
                 let result = std::thread::scope(|scope| {
+                    if super::super::timeline::on() {
+                        let evaluator = &evaluator;
+                        scope.spawn(move || {
+                            while !evaluator.serving_ends() {
+                                super::super::timeline::graph_sample(evaluator.state_counts());
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                            }
+                        });
+                    }
                     if super::super::timeline::watchdog() {
                         let evaluator = &evaluator;
                         scope.spawn(move || {
@@ -2015,6 +2052,9 @@ fn stats_enabled() -> bool {
     std::env::var_os("BAZEL_RS_EVAL_STATS").is_some()
 }
 
+/// Pass 1's events per step while the pool serves.
+pub(crate) const LINEARIZE_STEP: usize = 20_000;
+
 /// Whether the pool serves beside the sequential pass
 /// (`BAZEL_RS_EVAL_NO_SERVE=1`: rounds between requested targets).
 static SERVE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
@@ -2072,6 +2112,7 @@ fn warm_up(
     labels: &[Label],
     top: ConfigId,
     target_platform: Option<Label>,
+    serve: bool,
 ) -> Vec<NodeKey> {
     let pooled = &shared.loading.pooled;
     pooled.store(true, std::sync::atomic::Ordering::Release);
@@ -2106,6 +2147,11 @@ fn warm_up(
             }
         })
         .collect();
+    if serve {
+        // The pool serves them beside the sequential pass.
+        pooled.store(false, std::sync::atomic::Ordering::Release);
+        return roots;
+    }
     evaluator.evaluate_round(&roots, &mut lane);
     super::super::timeline::mark(|| {
         format!(
@@ -2116,6 +2162,35 @@ fn warm_up(
     });
     pooled.store(false, std::sync::atomic::Ordering::Release);
     roots
+}
+
+/// The packages the module graph registers toolchains and execution
+/// platforms in (explicit labels and `:all` patterns; not recursive ones):
+/// every toolchain resolution waits for their loads.
+fn registration_packages(shared: &EvalShared) -> Vec<NodeKey> {
+    let repositories = &shared.repositories;
+    let mut patterns = repositories.toolchain_registrations().unwrap_or_default();
+    if let Ok((platforms, _)) = repositories.execution_platform_registrations(false) {
+        patterns.extend(platforms);
+    }
+    let mut packages: Vec<NodeKey> = Vec::new();
+    for (repository, patterns) in patterns {
+        for pattern in patterns {
+            let text = pattern.trim_start_matches('-');
+            if text.ends_with("...") {
+                continue;
+            }
+            let base = text.rsplit_once(':').map_or(text, |(base, _)| base);
+            let Ok(label) = repositories.parse(&format!("{base}:BUILD"), &repository, "") else {
+                continue;
+            };
+            let package = NodeKey::Pkg(label.package_id());
+            if !packages.contains(&package) {
+                packages.push(package);
+            }
+        }
+    }
+    packages
 }
 
 /// Another round of the pool over `roots` (S2): what the sequential pass
@@ -2378,6 +2453,11 @@ fn drive(
             ok => ok,
         };
         let linearizing = std::time::Instant::now();
+        if evaluator.serving() && analyzed.is_ok() {
+            // In steps, the coordinator released in between (the pool's
+            // speculations need it).
+            while bodies.coord().linearize_step(shared, LINEARIZE_STEP) {}
+        }
         // The requested target's compatibility, on the published nodes.
         let analyzed = analyzed.and_then(|()| {
             let mut coord = bodies.coord();

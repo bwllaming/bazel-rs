@@ -32,9 +32,6 @@ pub(crate) struct Coord<'e> {
     pub(crate) engine: &'e mut Engine,
     /// Record `Access`/`Source` events (incremental tracking is on).
     pub(crate) tracking: bool,
-    /// A `Flush` was emitted (a config_setting with Starlark flag_values
-    /// keys: its CT2 dependencies are S2).
-    pub(crate) saw_flush: bool,
     /// The finished transcripts, the segments and the captured console
     /// writes (worker C).
     pub(crate) store: Store,
@@ -258,7 +255,10 @@ pub(crate) struct Running {
 
 /// What a phase-1 body needs of its context besides [`Cx`].
 pub(crate) trait Phase1Cx<'e>: Cx {
+    #[track_caller]
     fn coord(&self) -> MutexGuard<'_, Coord<'e>>;
+    /// The coordinator if no other thread holds it now.
+    fn try_coord(&self) -> Option<MutexGuard<'_, Coord<'e>>>;
     /// The CT1 value of `key`'s first variant done (without the
     /// coordinator's lock).
     fn ct1_done(&self, key: &ConfiguredTargetKey) -> Option<Arc<Ct1Value>>;
@@ -324,7 +324,11 @@ impl Cx for BodyCx<'_, '_, '_> {
 
     fn emit(&mut self, event: Event) {
         if event == Event::Flush {
-            self.coord().saw_flush = true;
+            // Without the coordinator's lock (every config_setting with
+            // Starlark flag_values emits one).
+            self.bodies
+                .saw_flush
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         self.bodies.drain_local();
         // Under BAZEL_RS_ANALYSIS=eval the coordinator's store is the
@@ -356,8 +360,19 @@ impl Cx for BodyCx<'_, '_, '_> {
 }
 
 impl<'e> Phase1Cx<'e> for BodyCx<'_, '_, 'e> {
+    #[track_caller]
     fn coord(&self) -> MutexGuard<'_, Coord<'e>> {
         self.bodies.coord()
+    }
+
+    fn try_coord(&self) -> Option<MutexGuard<'_, Coord<'e>>> {
+        let mut coord = match self.bodies.coord.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        self.bodies.inbox.absorb(&mut coord);
+        Some(coord)
     }
 
     fn scratch(&self) -> &[Mutex<Option<super::speculate::Scratch>>] {
@@ -442,6 +457,9 @@ pub(crate) struct Phase1Bodies<'s, 'e> {
     /// What pool attempts leave for the store (eval-round1: no
     /// coordinator lock in an attempt's begin, finish or abandon).
     inbox: Inbox<'e>,
+    /// A `Flush` was emitted (a config_setting with Starlark flag_values
+    /// keys: its CT2 dependencies are S2).
+    pub(crate) saw_flush: std::sync::atomic::AtomicBool,
 }
 
 impl<'s, 'e> Phase1Bodies<'s, 'e> {
@@ -464,10 +482,10 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
                 .map(|_| Mutex::new(None))
                 .collect(),
             inbox: Inbox::default(),
+            saw_flush: std::sync::atomic::AtomicBool::new(false),
             coord: Mutex::new(Coord {
                 engine,
                 tracking,
-                saw_flush: false,
                 store: Store::default(),
                 lin: None,
                 ct1_done: Arc::clone(&ct1_done),
@@ -480,6 +498,7 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
     }
 
     /// The coordinator, the pool attempts' records applied to its store.
+    #[track_caller]
     pub(crate) fn coord(&self) -> MutexGuard<'_, Coord<'e>> {
         let mut coord = self.lock_coord();
         self.inbox.absorb(&mut coord);
@@ -516,6 +535,7 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
         self.pooled() && POOL_THREAD.with(std::cell::Cell::get)
     }
 
+    #[track_caller]
     fn lock_coord(&self) -> MutexGuard<'_, Coord<'e>> {
         match self.coord.try_lock() {
             Ok(guard) => {
@@ -532,6 +552,17 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 COORD_LOCKS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let caller = std::panic::Location::caller();
+                super::super::timeline::add_dyn(
+                    || {
+                        format!(
+                            "coordinator lock waited at {}:{}",
+                            caller.file(),
+                            caller.line()
+                        )
+                    },
+                    started,
+                );
                 COORD_LOCKS[2].fetch_add(
                     started.elapsed().as_micros() as u64,
                     std::sync::atomic::Ordering::Relaxed,
@@ -827,7 +858,7 @@ impl Bodies for Phase1Bodies<'_, '_> {
         self.inbox.absorb(&mut coord);
         let started = std::time::Instant::now();
         super::super::timeline::seq_state(|| "idle linearization".to_owned());
-        let _ = coord.linearize(self.shared);
+        let _ = coord.linearize_step(self.shared, super::super::linearize::driver::LINEARIZE_STEP);
         super::super::timeline::seq_state(|| "idle linearization done".to_owned());
         super::super::timeline::add("idle linearization", started);
     }

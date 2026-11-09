@@ -3741,6 +3741,10 @@ pub(crate) trait Phase1: Host {
         }
         self.warm_toolchain_patterns(&patterns);
         let labels = self.expand_toolchain_patterns(&patterns)?;
+        // Analyzed one after another below: on the pool all at once.
+        let hinted: Vec<(Label, ConfigId)> =
+            labels.iter().map(|label| (label.clone(), config)).collect();
+        self.hint_edges(&hinted);
         // configureRegisteredToolchains (:174-215).
         let mut declared = Vec::new();
         // Of several registered targets in a toolchain cycle, Bazel reports

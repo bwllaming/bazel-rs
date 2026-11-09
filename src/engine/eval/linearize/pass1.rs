@@ -294,6 +294,11 @@ pub(crate) struct Pass1 {
     warned: FxHashSet<String>,
     /// [`Options::no_edges`].
     no_edges: bool,
+    /// At most this many events per [`Pass1::resume`] (then it returns
+    /// `Blocked` with no blocker: the caller resumes later).
+    budget: Option<usize>,
+    /// The last resume stopped at its budget.
+    paused: bool,
     /// Platform memos being replayed (`resolving_platforms`).
     platform_depth: usize,
     trimmed_root: Option<ConfiguredTargetKey>,
@@ -397,6 +402,8 @@ impl Pass1 {
             packages: FxHashSet::default(),
             consoles: FxHashSet::default(),
             no_edges: options.no_edges,
+            budget: None,
+            paused: false,
             warned: options.warnings.into_iter().collect(),
             platform_depth: 0,
             trimmed_root: None,
@@ -473,6 +480,16 @@ impl Pass1 {
         self.chains.last_mut().expect("a segment's chain")
     }
 
+    /// Bound the events of each [`Self::resume`] (`None`: no bound).
+    pub(crate) fn set_budget(&mut self, budget: Option<usize>) {
+        self.budget = budget;
+    }
+
+    /// Whether the last [`Self::resume`] stopped at its budget.
+    pub(crate) fn paused(&self) -> bool {
+        self.paused
+    }
+
     /// Continue the replay as far as the transcripts go.
     pub(crate) fn resume<T: Transcripts + ?Sized>(
         &mut self,
@@ -480,7 +497,14 @@ impl Pass1 {
         sink: &mut dyn TapeSink,
     ) -> Result<Progress, String> {
         self.blocked = None;
+        self.paused = false;
+        let mut budget = self.budget.unwrap_or(usize::MAX);
         loop {
+            if budget == 0 {
+                self.paused = true;
+                return Ok(Progress::Blocked);
+            }
+            budget -= 1;
             if self.out.stop.is_some() {
                 return Ok(Progress::Stopped);
             }

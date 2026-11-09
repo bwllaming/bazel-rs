@@ -414,6 +414,23 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         }
     }
 
+    /// Serving: start `keys` on the pool (those nobody started yet).
+    pub(crate) fn start(&self, keys: &[NodeKey]) {
+        for key in keys {
+            let id = self.graph.intern(key);
+            if self.graph.entry(id).transition(State::Fresh, State::Queued) {
+                self.schedule(None, id);
+            }
+        }
+    }
+
+    /// Serving: start `keys` on the pool ahead of everything else.
+    pub(crate) fn start_first(&self, keys: &[NodeKey]) {
+        for key in keys {
+            self.boost(key, 0);
+        }
+    }
+
     /// Whether the pool serves now.
     pub(crate) fn serving(&self) -> bool {
         self.serving.load(Ordering::SeqCst)
@@ -439,6 +456,24 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         self.stop_serving.store(true, Ordering::SeqCst);
         let _coord = self.coord.lock();
         self.coord_wake.notify_all();
+    }
+
+    /// BAZEL_RS_EVAL_TIMELINE: the queued, running and waiting nodes now
+    /// (an O(nodes) scan, concurrent with the pool).
+    pub(crate) fn state_counts(&self) -> [usize; 3] {
+        let mut counts = [0usize; 3];
+        for id in self.graph.ids() {
+            let Some(entry) = self.graph.entry_if(id) else {
+                continue;
+            };
+            match entry.state() {
+                State::Queued => counts[0] += 1,
+                State::Running => counts[1] += 1,
+                State::Waiting => counts[2] += 1,
+                _ => {}
+            }
+        }
+        counts
     }
 
     /// BAZEL_RS_EVAL_WATCHDOG: the serving state.
@@ -490,7 +525,17 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                 return;
             };
             assert_no_locks("a repository fetch");
+            let started = std::time::Instant::now();
             lane.fetch(&name);
+            if started.elapsed() >= std::time::Duration::from_millis(20) {
+                super::timeline::mark(|| {
+                    format!(
+                        "a slow lane fetch ({} ms): {}",
+                        started.elapsed().as_millis(),
+                        name.escape_debug()
+                    )
+                });
+            }
             self.counters.fetches.fetch_add(1, Ordering::Relaxed);
             self.fetched(name);
         }
@@ -574,7 +619,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         {
             self.schedule(None, id);
         }
-        let mut boosted = false;
+        let mut boosted: Option<std::time::Instant> = None;
         let waiting = std::time::Instant::now();
         loop {
             if waiting.elapsed() > std::time::Duration::from_secs(120) {
@@ -592,10 +637,13 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             };
             if wait {
                 super::timeline::seq_state(|| format!("waits for {key:?} {state:?}"));
-                if !boosted {
-                    // The pool runs what the inline driver waits for first.
-                    boosted = true;
-                    self.boost(key, 0);
+                if boosted.is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(1)) {
+                    // The pool runs what the inline driver waits for first:
+                    // the end of its chain of first unfinished dependencies.
+                    boosted = Some(std::time::Instant::now());
+                    if let Some(leaf) = self.queued_leaf(id) {
+                        self.boost(self.graph.key(leaf), 0);
+                    }
                 }
                 // Meanwhile, what only this thread does (repository
                 // demands, the linearizer).
@@ -628,6 +676,30 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         {
             self.schedule(None, id);
         }
+    }
+
+    /// Serving: the queued node at the end of `id`'s chain of first
+    /// unfinished dependencies (what to boost), if any.
+    fn queued_leaf(&self, id: NodeId) -> Option<NodeId> {
+        let mut at = id;
+        for _ in 0..64 {
+            let entry = self.graph.entry(at);
+            match entry.state() {
+                State::Queued => return Some(at),
+                State::Waiting => {
+                    let next = match &entry.inner.lock().wait {
+                        Wait::Nodes(deps) => deps
+                            .iter()
+                            .copied()
+                            .find(|dep| self.graph.entry(*dep).state() != State::Done),
+                        _ => None,
+                    };
+                    at = next?;
+                }
+                _ => return None,
+            }
+        }
+        None
     }
 
     /// Serving: whether the pool makes progress on the parked `id` (the
@@ -1022,7 +1094,8 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         loop {
             let cause = timed.then(|| {
                 let (cause, detail) = self.inline_cause(id, rerun);
-                super::timeline::seq_enter(cause, || detail);
+                let what = format!("{key:?}").chars().take(200).collect();
+                super::timeline::seq_enter(cause, || detail, what);
                 cause
             });
             rerun = true;
@@ -1121,7 +1194,17 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                         Some(_) => {}
                         None => {
                             assert_no_locks("a repository fetch");
+                            let started = std::time::Instant::now();
                             lane.borrow_mut().fetch(&name);
+                            if started.elapsed() >= std::time::Duration::from_millis(20) {
+                                super::timeline::mark(|| {
+                                    format!(
+                                        "a slow inline fetch ({} ms): {}",
+                                        started.elapsed().as_millis(),
+                                        name.escape_debug()
+                                    )
+                                });
+                            }
                             self.counters.fetches.fetch_add(1, Ordering::Relaxed);
                             // Pool attempts parked on it (serving) run again.
                             self.fetched(name);
@@ -1357,7 +1440,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         if timed {
             super::timeline::pool_enter();
         }
-        let _timed = TimedPool(timed, key.kind());
+        let _timed = TimedPool(timed, key);
         let attempt = self.bodies.begin(id, key);
         let mut cx = PoolCx {
             evaluator: self,
@@ -1624,12 +1707,14 @@ impl Drop for InlineFrame {
 }
 
 /// BAZEL_RS_EVAL_TIMELINE: ends a pool attempt's frame when dropped.
-struct TimedPool(bool, &'static str);
+struct TimedPool<'k>(bool, &'k NodeKey);
 
-impl Drop for TimedPool {
+impl Drop for TimedPool<'_> {
     fn drop(&mut self) {
         if self.0 {
-            super::timeline::pool_exit(self.1);
+            super::timeline::pool_exit(self.1.kind(), || {
+                format!("{:?}", self.1).chars().take(200).collect()
+            });
         }
     }
 }
@@ -1724,6 +1809,30 @@ impl<B: Bodies> Cx for InlineCx<'_, '_, '_, B> {
 
     fn id_of(&self, key: &NodeKey) -> NodeId {
         self.evaluator.graph.intern(key)
+    }
+
+    /// Serving: what the body needs soon runs on the pool meanwhile.
+    fn hint(&mut self, keys: &[NodeKey]) {
+        let evaluator = self.evaluator;
+        if !evaluator.serving.load(Ordering::Relaxed) {
+            return;
+        }
+        for key in keys {
+            let id = evaluator.graph.intern(key);
+            if id != self.id
+                && evaluator
+                    .graph
+                    .entry(id)
+                    .transition(State::Fresh, State::Queued)
+            {
+                evaluator.schedule(None, id);
+            }
+        }
+    }
+
+    fn peek(&self, key: &NodeKey) -> Option<Arc<NodeValue>> {
+        let graph = &self.evaluator.graph;
+        graph.get(key).and_then(|id| graph.value(id)).cloned()
     }
 }
 

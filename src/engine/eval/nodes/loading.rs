@@ -97,6 +97,12 @@ pub(crate) fn set_sequential(sequential: bool) -> bool {
 }
 
 impl Loading {
+    /// Whether the pool serves beside this thread's sequential pass.
+    pub(crate) fn serving(&self) -> bool {
+        self.pooled.load(std::sync::atomic::Ordering::Acquire)
+            && SEQUENTIAL.with(std::cell::Cell::get)
+    }
+
     /// Whether attempts on this thread run as the pool's now: the pool
     /// runs, and this thread is not the sequential pass's.
     pub(crate) fn pooled_here(&self) -> bool {

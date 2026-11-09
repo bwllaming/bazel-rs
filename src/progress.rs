@@ -282,10 +282,31 @@ fn info_line(text: &str) {
     crate::snapshot::diag::line(&render::info(text, color));
 }
 
+thread_local! {
+    /// This thread's analysis is not the build's ([`uncounted`]).
+    static UNCOUNTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with this thread's packages, aspects and configured targets
+/// left out of the analysis counts (a speculative phase 2 on a scratch
+/// engine, beside the build's own analysis on other threads).
+pub(crate) fn uncounted<R>(f: impl FnOnce() -> R) -> R {
+    let was = UNCOUNTED.with(|cell| cell.replace(true));
+    let result = f();
+    UNCOUNTED.with(|cell| cell.set(was));
+    result
+}
+
+fn counted() -> bool {
+    !UNCOUNTED.with(std::cell::Cell::get)
+}
+
 /// A package was loaded (committed).
 #[inline]
 pub(crate) fn package_loaded() {
-    COUNTERS.packages.fetch_add(1, Ordering::Relaxed);
+    if counted() {
+        COUNTERS.packages.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// The package, aspect-application and configured-target counts
@@ -309,7 +330,9 @@ pub(crate) fn restore_analysis_counts((packages, aspects, configured): (usize, u
 /// An aspect application was configured (its implementation ran).
 #[inline]
 pub(crate) fn aspect_applied() {
-    COUNTERS.aspects.fetch_add(1, Ordering::Relaxed);
+    if counted() {
+        COUNTERS.aspects.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Analysis of `count` requested targets starts.
@@ -329,7 +352,9 @@ pub(crate) fn analysis_planned(count: usize) {
 /// `count` targets are configured (their implementations ran).
 #[inline]
 pub(crate) fn analysis_configured(count: usize) {
-    COUNTERS.configured.store(count, Ordering::Relaxed);
+    if counted() {
+        COUNTERS.configured.store(count, Ordering::Relaxed);
+    }
 }
 
 /// An execution graph of `actions` actions starts (`test` adds its test
