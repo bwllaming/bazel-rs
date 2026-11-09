@@ -262,9 +262,10 @@ pub(crate) trait Phase1Cx<'e>: Cx {
     /// The CT1 value of `key`'s first variant done (without the
     /// coordinator's lock).
     fn ct1_done(&self, key: &ConfiguredTargetKey) -> Option<Arc<Ct1Value>>;
-    /// The scratch engine of the speculative phase 2s (`nodes::speculate`;
-    /// locked before the coordinator, never after it).
-    fn scratch(&self) -> &Mutex<Option<super::speculate::Scratch>>;
+    /// The scratch engines of the speculative phase 2s
+    /// (`nodes::speculate`; one is locked before the coordinator, never
+    /// after it).
+    fn scratch(&self) -> &[Mutex<Option<super::speculate::Scratch>>];
     /// The evaluation's fixed switches (S2: read without the
     /// coordinator's lock).
     fn flags(&self) -> Flags;
@@ -359,7 +360,7 @@ impl<'e> Phase1Cx<'e> for BodyCx<'_, '_, 'e> {
         self.bodies.coord()
     }
 
-    fn scratch(&self) -> &Mutex<Option<super::speculate::Scratch>> {
+    fn scratch(&self) -> &[Mutex<Option<super::speculate::Scratch>>] {
         &self.bodies.scratch
     }
 
@@ -425,8 +426,10 @@ pub(crate) struct Phase1Bodies<'s, 'e> {
     /// Attempts observe in frames committed in the tape's order (S2: a
     /// pooled evaluation; the inline driver alone observes in order).
     pub(crate) framed: bool,
-    /// The speculative phase 2s' scratch engine (S2, the CsMatch split).
-    pub(crate) scratch: Mutex<Option<super::speculate::Scratch>>,
+    /// The speculative phase 2s' scratch engines (S2, the CsMatch split;
+    /// several speculations run at once, each on a scratch engine of its
+    /// own).
+    pub(crate) scratch: Vec<Mutex<Option<super::speculate::Scratch>>>,
     /// `Coord::ct1_done`, shared.
     pub(crate) ct1_done: Arc<Ct1Done>,
     /// What pool attempts leave for the store (eval-round1: no
@@ -450,7 +453,9 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
                 linearized,
             },
             framed: false,
-            scratch: Mutex::new(None),
+            scratch: (0..super::speculate::scratch_slots())
+                .map(|_| Mutex::new(None))
+                .collect(),
             inbox: Inbox::default(),
             coord: Mutex::new(Coord {
                 engine,
@@ -677,7 +682,7 @@ impl Bodies for Phase1Bodies<'_, '_> {
         }
         let raised = sentinel || order;
         if raised && result.is_ok() && !matches!(key, NodeKey::Pkg(_)) {
-            super::super::timeline::note_inline(cx.current(), || {
+            super::super::timeline::note_inline(cx.current().0, || {
                 let what = if sentinel {
                     crate::repository_demand::last_sentinel().unwrap_or_default()
                 } else {
@@ -802,6 +807,13 @@ impl Bodies for Phase1Bodies<'_, '_> {
         }
     }
 
+    fn pool_mode(&self, on: bool) {
+        self.shared
+            .loading
+            .pooled
+            .store(on, std::sync::atomic::Ordering::Release);
+    }
+
     fn target_platform(&self, config: ConfigId) -> NodeKey {
         let label = self
             .shared
@@ -918,6 +930,7 @@ impl Coord<'_> {
             self.sources.insert(label);
         }
         if let Some((package, result)) = package {
+            self.store.package_order.push(package.clone());
             self.store.packages.insert(package, result);
         }
         self.store.transcripts.insert(

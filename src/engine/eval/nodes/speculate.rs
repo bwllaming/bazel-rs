@@ -82,6 +82,8 @@ pub(crate) struct Scratch {
     packages: FxHashSet<crate::label::PackageId>,
     /// The memo values published (a prefix of the store's).
     memos: usize,
+    /// The store's packages taken (a prefix of its insertion order).
+    package_order: usize,
     /// The configurations it holds (their count when cloned).
     configurations: usize,
 }
@@ -107,9 +109,44 @@ impl Scratch {
             planned: FxHashSet::default(),
             packages: FxHashSet::default(),
             memos: 0,
+            package_order: 0,
             configurations,
         }
     }
+}
+
+/// How many scratch engines speculations use at once
+/// (`BAZEL_RS_EVAL_SCRATCHES`, default 4).
+pub(crate) fn scratch_slots() -> usize {
+    static SLOTS: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
+        std::env::var("BAZEL_RS_EVAL_SCRATCHES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(4usize)
+            .max(1)
+    });
+    *SLOTS
+}
+
+/// A free scratch engine's slot, else the thread's own (waiting for it).
+fn lock_scratch(
+    slots: &[std::sync::Mutex<Option<Scratch>>],
+) -> std::sync::MutexGuard<'_, Option<Scratch>> {
+    for slot in slots {
+        match slot.try_lock() {
+            Ok(guard) => return guard,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => return poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+    }
+    use std::hash::{BuildHasher, Hash, Hasher};
+    let mut hasher = crate::fast_hash::FxBuildHasher::default().build_hasher();
+    std::thread::current().id().hash(&mut hasher);
+    let index = (hasher.finish() as usize) % slots.len();
+    slots[index]
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Why a speculation did not give the providers (counted, then the
@@ -136,6 +173,7 @@ pub(crate) fn flag_providers(
     let started = std::time::Instant::now();
     let result = run(shared, cx, ct);
     bump(STAT_MICROS, started.elapsed().as_micros() as u64);
+    super::super::timeline::interval("a speculation (waiting included)", started);
     match result {
         Ok(providers) => {
             bump(STAT_RUNS, 1);
@@ -177,10 +215,11 @@ fn run(
         return Err(left("--profile"));
     }
     let root = cx.id_of(&NodeKey::Ct1(ct.clone()));
-    let mut guard = cx
-        .scratch()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let waited = std::time::Instant::now();
+    let mut guard = lock_scratch(cx.scratch());
+    super::super::timeline::add("speculation: scratch lock wait", waited);
+    let prepared = std::time::Instant::now();
+    let _held = HeldScratch(prepared);
     // What the scratch engine gets of the evaluation so far (the lock
     // order: the scratch, then the coordinator).
     {
@@ -193,16 +232,19 @@ fn run(
                 planned.is_some_and(|planned| planned.contains(key))
             })?
         };
+        super::super::timeline::add("speculation: subtree (coordinator)", prepared);
+        let published = std::time::Instant::now();
         let scratch = guard.get_or_insert_with(|| Scratch::new(coord.engine, shared));
         let engine = &mut *scratch.engine;
-        for (package, loaded) in &coord.store.packages {
-            if let Ok(loaded) = loaded
+        for package in &coord.store.package_order[scratch.package_order..] {
+            if let Some(Ok(loaded)) = coord.store.packages.get(package)
                 && !engine.packages.contains_key(package)
                 && scratch.packages.insert(package.clone())
             {
                 commit_package(engine, package, &loaded.package);
             }
         }
+        scratch.package_order = coord.store.package_order.len();
         for published in &coord.store.published[scratch.memos..] {
             publish_memo(engine, published);
         }
@@ -215,6 +257,7 @@ fn run(
                 publish_ct1(engine, &mut scratch.configured, key.key.clone(), ok);
             }
         }
+        super::super::timeline::add("speculation: packages, memos, ct1 (coordinator)", published);
         for (implementation, platform) in subtree.toolchain_implementations {
             engine
                 .toolchain_implementations
@@ -243,6 +286,11 @@ fn run(
             scratch.plan.push((key.key, Arc::clone(&ok.rule)));
         }
     }
+    super::super::timeline::add(
+        "speculation: subtree and publication (coordinator)",
+        prepared,
+    );
+    let absorbed = std::time::Instant::now();
     let scratch = guard.as_mut().ok_or_else(|| left("no scratch engine"))?;
     // The configurations and aspect definitions the pool interned and
     // loaded since (content-addressed: a superset reads the same).
@@ -261,6 +309,8 @@ fn run(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
+    super::super::timeline::add("speculation: configurations and aspects", absorbed);
+    let planning = std::time::Instant::now();
     let sentinels = crate::repository_demand::sentinels_raised();
     let planned = isolated(|| {
         let engine = &mut *scratch.engine;
@@ -285,14 +335,17 @@ fn run(
             packages.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
             packages.truncate(8);
             eprintln!(
-                "bazel-rs: speculative phase 2 of {}: {} entries {packages:?}",
+                "bazel-rs: speculative phase 2 of {}: {} entries in {} µs (plan {}) {packages:?}",
                 ct.key,
-                state.done.saturating_sub(before)
+                state.done.saturating_sub(before),
+                planning.elapsed().as_micros(),
+                scratch.plan.len()
             );
         }
         engine.action_planning = Some(state);
         result
     });
+    super::super::timeline::add("speculation: phase 2", planning);
     // A failure (the tape's flush reports the walk's), or a repository
     // the pool may not fetch (a sentinel, even one swallowed): what the
     // scratch engine planned may be partial.
@@ -332,6 +385,15 @@ fn isolated<R>(f: impl FnOnce() -> R) -> R {
     drop(console.finish());
     crate::progress::restore_analysis_counts(counts);
     result
+}
+
+/// BAZEL_RS_EVAL_TIMELINE: a scratch engine held.
+struct HeldScratch(std::time::Instant);
+
+impl Drop for HeldScratch {
+    fn drop(&mut self) {
+        super::super::timeline::interval("a scratch engine held", self.0);
+    }
 }
 
 /// Counts the µs the coordinator's lock is held for a speculation.

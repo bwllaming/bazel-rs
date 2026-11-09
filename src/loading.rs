@@ -1561,11 +1561,13 @@ fn bzl_claim(cache: u64, label: &Label) -> Result<BzlClaim, String> {
                     ));
                 }
                 state.waiting_for.insert(current, key.clone());
+                let waited = std::time::Instant::now();
                 let (unlocked, _resume) = flight
                     .completed
                     .wait_timeout(state, std::time::Duration::from_secs(3600))
                     .unwrap_or_else(|poison| poison.into_inner());
                 state = unlocked;
+                crate::eval_timeline::interval("a .bzl claim waited for", waited);
                 state.waiting_for.remove(&current);
                 if !state.inflight.contains_key(&key) {
                     return Ok(BzlClaim::Waited);

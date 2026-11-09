@@ -441,6 +441,8 @@ impl Speculations {
     /// are speculative again unless something else demanded them (the
     /// coordinator's [`Self::take`] marks them again whenever it wakes).
     pub(crate) fn wait_running(&self, canonical: &str, timeout: std::time::Duration) -> bool {
+        let waited = std::time::Instant::now();
+        let _waited = crate::eval_timeline::Interval("a repository speculation waited for", waited);
         let deadline = std::time::Instant::now() + timeout;
         let mut state = lock(&self.shared.state);
         let mut marked: Option<Arc<AtomicBool>> = None;

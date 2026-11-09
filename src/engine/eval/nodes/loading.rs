@@ -340,7 +340,7 @@ pub(crate) fn package_body(
                         .push(blocker.to_owned());
                     return Err(Missing::Repo(blocker.to_owned()));
                 }
-                super::super::timeline::note_inline(cx.current(), || {
+                super::super::timeline::note_inline(cx.current().0, || {
                     let error = sentinel.map(String::as_str).unwrap_or_default();
                     format!(
                         "a package load's sentinel ({})",

@@ -63,6 +63,7 @@ pub mod dir_stamps;
 pub mod download_proxy;
 pub mod dump_command;
 pub mod engine;
+pub(crate) mod eval_timeline;
 mod exec_groups;
 pub mod exec_log;
 mod execution_info;

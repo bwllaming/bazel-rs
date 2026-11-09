@@ -31,7 +31,7 @@ pub(super) mod nodes;
 pub(super) mod replay_bench;
 pub(super) mod scheduler;
 pub(super) mod shared;
-pub(super) mod timeline;
+pub(super) use crate::eval_timeline as timeline;
 pub(super) mod transcript;
 pub(super) mod value;
 pub(super) mod verify;

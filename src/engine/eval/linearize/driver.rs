@@ -130,6 +130,9 @@ pub(crate) struct Store {
     /// The packages the evaluation loaded (S2, the Pkg nodes): what the
     /// tape's `PkgCommit` commits into the engine.
     pub(crate) packages: FxHashMap<crate::label::PackageId, Result<Arc<PkgValue>, String>>,
+    /// The keys of `packages` in insertion order (a speculation's scratch
+    /// engine takes the new ones).
+    pub(crate) package_order: Vec<crate::label::PackageId>,
     /// What each done attempt observed (a pooled evaluation's frames),
     /// committed where the tape replays the node.
     pub(crate) observations: FxHashMap<NodeId, crate::observed_fs::Observations>,
@@ -152,7 +155,9 @@ pub(crate) struct Store {
     /// Keep released transcripts until a flush planned them (a pooled
     /// evaluation: [`Coord::subtree`]).
     pub(crate) delay_release: bool,
-    pub(crate) release_pending: Vec<NodeId>,
+    /// With the plan's length when pass 1 released them: every plan entry
+    /// of the node's subtree is below it.
+    pub(crate) release_pending: Vec<(NodeId, usize)>,
 }
 
 impl Store {
@@ -185,10 +190,11 @@ impl Store {
     /// Free what pass 1 will not read again: on the pool, a node's
     /// transcript only once a flush planned it (a speculative phase 2 of a
     /// flag replays the subtrees not planned yet, `Coord::subtree`).
-    fn release(&mut self, pass: &mut Pass1) {
+    fn release(&mut self, pass: &mut Pass1, planned: usize) {
         let (nodes, segments) = pass.take_released();
         if self.delay_release {
-            self.release_pending.extend(nodes);
+            self.release_pending
+                .extend(nodes.into_iter().map(|node| (node, planned)));
         } else {
             for node in nodes {
                 self.transcripts.remove(&node);
@@ -202,11 +208,18 @@ impl Store {
         }
     }
 
-    /// Free the transcripts released before a flush (it planned them).
-    fn free_released(&mut self) {
-        for node in std::mem::take(&mut self.release_pending) {
-            self.transcripts.remove(&node);
-            self.released.insert(node);
+    /// Free the transcripts released whose subtree's plan entries are all
+    /// below `walked` (a walk planned them: a deferred flush's segments
+    /// after it are not).
+    fn free_released(&mut self, walked: usize) {
+        let pending = std::mem::take(&mut self.release_pending);
+        for (node, planned) in pending {
+            if planned <= walked {
+                self.transcripts.remove(&node);
+                self.released.insert(node);
+            } else {
+                self.release_pending.push((node, planned));
+            }
         }
     }
 }
@@ -335,7 +348,14 @@ impl Coord<'_> {
             };
             stat(STAT_PASS1, || lin.pass.resume(&view, &mut lin.ops))
         })?;
-        self.store.release(&mut lin.pass);
+        // The plan's length once this resume's entries are applied.
+        let planned = lin.plan.len()
+            + lin
+                .ops
+                .iter()
+                .filter(|op| matches!(op, TapeOp::Plan { .. }))
+                .count();
+        self.store.release(&mut lin.pass, planned);
         // The walk fails at pass 1's stop: what precedes it is applied.
         let stopped = lin.pass.stopped().map(str::to_owned);
         let started = std::time::Instant::now();
@@ -596,6 +616,12 @@ impl Coord<'_> {
             }
             let added = lin.plan.len() - end;
             lin.replay.planned_elsewhere(added);
+            // Plan positions after `end` moved by what the walk added.
+            for (_, planned) in &mut self.store.release_pending {
+                if *planned > end {
+                    *planned += added;
+                }
+            }
             lin.plan.extend(rest);
             if let Err(error) = result {
                 // The flush whose segment holds the failing entry.
@@ -653,7 +679,7 @@ impl Coord<'_> {
             }
         }
         self.store.warnings_seen = self.engine.warnings.len();
-        self.store.free_released();
+        self.store.free_released(end);
         // The FeatureFlagInfo values speculated for config_settings (S2,
         // the CsMatch split) against what the walk planned.
         self.verify_speculated();
@@ -1440,8 +1466,7 @@ impl Engine {
                 // split), forked before the pool runs.
                 let scratch =
                     super::super::nodes::speculate::Scratch::new(bodies.coord().engine, &shared);
-                *bodies
-                    .scratch
+                *bodies.scratch[0]
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(scratch);
             }
@@ -1459,6 +1484,9 @@ impl Engine {
             let pool_roots = if evaluator.pooled() {
                 let roots = warm_up(&evaluator, &shared, labels, top, target_platform.clone());
                 evaluator.set_inline(true);
+                // The sequential pass hands what the pool can run to it.
+                // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
+                evaluator.set_assist(std::env::var_os("BAZEL_RS_EVAL_NO_ASSIST").is_none());
                 Some(roots)
             } else {
                 None
@@ -1603,13 +1631,13 @@ impl Engine {
             // scratch engine are dropped before the deferred walks run
             // (memory: the walks' peak).
             drop(evaluator);
-            drop(
-                bodies
-                    .scratch
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take(),
-            );
+            for slot in &bodies.scratch {
+                drop(
+                    slot.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take(),
+                );
+            }
             crate::alloc_arena::purge();
             crate::perf_mark("plan.eval_graph_dropped");
             super::super::timeline::mark(|| "the evaluator's graph dropped".to_owned());

@@ -97,6 +97,10 @@ pub(crate) trait Bodies: Sync {
         matches!(key, NodeKey::Ct1(_) | NodeKey::Ct2(_) | NodeKey::Aspect(_))
             && value.error().is_some()
     }
+
+    /// The inline driver hands work to the pool (`true`) or takes it back
+    /// ([`Evaluator::set_assist`]): the bodies switch to their pool mode.
+    fn pool_mode(&self, _on: bool) {}
 }
 
 /// [`Bodies`] over a [`NodeFn`] and the shared read view (no per-attempt
@@ -338,6 +342,10 @@ pub(crate) struct Evaluator<'b, B: Bodies> {
     /// Pool waiters the inline driver's completions made ready (queued):
     /// scheduled when the pool evaluates next.
     woken: Tracked<Vec<NodeId>>,
+    /// The inline driver of a pooled evaluation runs what it needs that
+    /// the pool can run (fresh or queued, of an assisted kind) on the pool
+    /// first ([`Self::set_assist`]).
+    assist: AtomicBool,
 }
 
 impl<'b, B: Bodies> Evaluator<'b, B> {
@@ -364,7 +372,36 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             unresolvable: Tracked::default(),
             round: AtomicBool::new(false),
             woken: Tracked::default(),
+            assist: AtomicBool::new(false),
         }
+    }
+
+    /// From now on the inline driver (with a pool) evaluates a node it
+    /// needs that nobody runs on the pool first, as a round of its own
+    /// (phase 1's sequential pass: what only it can run stays its own).
+    pub(crate) fn set_assist(&self, assist: bool) {
+        self.assist
+            .store(assist && self.pool.is_some(), Ordering::SeqCst);
+    }
+
+    /// An inline completion woke pool waiters: once enough are woken,
+    /// a pool round runs them (and what they reach) before the inline
+    /// driver continues (what the pool cannot run parks and stays the
+    /// inline driver's).
+    fn assist(&self, lane: &RefCell<&mut dyn RepoLane>) {
+        if !self.assist.load(Ordering::Relaxed) || self.woken.lock().len() < *ASSIST_WOKEN {
+            return;
+        }
+        super::timeline::mark(|| format!("assist round: {} woken", self.woken.lock().len()));
+        self.bodies.pool_mode(true);
+        self.set_inline(false);
+        {
+            let mut lane = lane.borrow_mut();
+            self.evaluate_round(&[], &mut **lane);
+        }
+        self.set_inline(true);
+        self.bodies.pool_mode(false);
+        super::timeline::mark(|| "assist round done".to_owned());
     }
 
     /// Re-queue the nodes parked unresolvable (S2: what blocked them was
@@ -720,6 +757,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                     let ready = self.publish(id, value, events);
                     if !ready.is_empty() {
                         self.woken.lock().extend(ready);
+                        self.assist(lane);
                     }
                     return;
                 }
@@ -796,7 +834,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                 Wait::Repo(name) | Wait::Unresolvable(name)
                     if name == super::nodes::bodies::INLINE =>
                 {
-                    let reason = super::timeline::inline_reason(id).unwrap_or_default();
+                    let reason = super::timeline::inline_reason(id.0).unwrap_or_default();
                     ("left by the pool", format!("{reason} [{}]", key()))
                 }
                 Wait::Repo(name) | Wait::Unresolvable(name) => (
@@ -839,7 +877,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                             {
                                 end = format!(
                                     "left by the pool: {} [{}]",
-                                    super::timeline::inline_reason(node).unwrap_or_default(),
+                                    super::timeline::inline_reason(node.0).unwrap_or_default(),
                                     format!("{:?}", self.graph.key(node))
                                         .chars()
                                         .take(160)
@@ -992,6 +1030,11 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         self.jitter(id, attempt_number);
         let attempt_seq = self.repo_seq.load(Ordering::Acquire);
         assert_no_locks("a node body");
+        let timed = super::timeline::on();
+        if timed {
+            super::timeline::pool_enter();
+        }
+        let _timed = TimedPool(timed, key.kind());
         let attempt = self.bodies.begin(id, key);
         let mut cx = PoolCx {
             evaluator: self,
@@ -1228,6 +1271,27 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         self.outcome(roots)
     }
 }
+
+/// BAZEL_RS_EVAL_TIMELINE: ends a pool attempt's frame when dropped.
+struct TimedPool(bool, &'static str);
+
+impl Drop for TimedPool {
+    fn drop(&mut self) {
+        if self.0 {
+            super::timeline::pool_exit(self.1);
+        }
+    }
+}
+
+/// How many pool waiters inline completions must have woken before the
+/// inline driver hands them to the pool ([`Evaluator::set_assist`]).
+static ASSIST_WOKEN: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+    // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
+    std::env::var("BAZEL_RS_EVAL_ASSIST_WOKEN")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(8)
+});
 
 /// BAZEL_RS_EVAL_TIMELINE: ends a sequential attempt's frame when dropped.
 struct TimedAttempt(Option<&'static str>, &'static str);

@@ -295,6 +295,10 @@ impl<O: Send + 'static> Pool<O> {
         queued: bool,
     ) -> Option<bool> {
         let deadline = std::time::Instant::now() + wait;
+        let _waited = crate::eval_timeline::Interval(
+            "an extension speculation waited for",
+            std::time::Instant::now(),
+        );
         let mut state = lock(&self.shared.state);
         loop {
             match state.entries.get(id) {

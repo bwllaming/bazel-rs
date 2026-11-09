@@ -469,6 +469,7 @@ impl<T> DemandSlot<T> {
         #[cfg(test)]
         self.waits.fetch_add(1, Ordering::SeqCst);
         let deadline = Instant::now() + probe_wait();
+        let _waited = crate::eval_timeline::Interval("a probe claim waited for", Instant::now());
         while *probing {
             let now = Instant::now();
             if now >= deadline {

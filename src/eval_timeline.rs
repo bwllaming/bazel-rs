@@ -12,8 +12,6 @@ use std::time::{Duration, Instant};
 
 use crate::fast_hash::FxHashMap;
 
-use super::key::NodeId;
-
 static ON: LazyLock<bool> =
     // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
     LazyLock::new(|| std::env::var_os("BAZEL_RS_EVAL_TIMELINE").is_some());
@@ -29,12 +27,16 @@ struct State {
     last_cpu: u64,
     marks: Vec<(Duration, u64, String)>,
     /// Why a pool attempt left its node to the sequential pass.
-    reasons: FxHashMap<NodeId, String>,
+    reasons: FxHashMap<u32, String>,
     /// (kind, cause) → (attempts, self µs).
     by_cause: BTreeMap<(String, String), (u64, u64)>,
     /// root cause → (attempts, self µs).
     by_root: BTreeMap<String, (u64, u64)>,
     samples: Vec<(Duration, u64)>,
+    /// Named accumulators: (count, µs).
+    sums: BTreeMap<&'static str, (u64, u64)>,
+    /// Named intervals (relative to the start).
+    intervals: Vec<(&'static str, Duration, Duration)>,
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(Mutex::default);
@@ -111,9 +113,46 @@ pub(crate) fn mark(what: impl FnOnce() -> String) {
     state.marks.push((at, used, what()));
 }
 
+/// Add `since`'s elapsed µs to the accumulator `name`.
+pub(crate) fn add(name: &'static str, since: Instant) {
+    if !on() {
+        return;
+    }
+    let us = since.elapsed().as_micros() as u64;
+    let mut state = state();
+    let entry = state.sums.entry(name).or_default();
+    entry.0 += 1;
+    entry.1 += us;
+}
+
+/// [`add`], and the interval from `since` to now as `name`'s occupancy
+/// over time in the report.
+pub(crate) fn interval(name: &'static str, since: Instant) {
+    if !on() {
+        return;
+    }
+    add(name, since);
+    let mut state = state();
+    let Some(start) = state.start else {
+        return;
+    };
+    let from = since.saturating_duration_since(start);
+    let to = start.elapsed();
+    state.intervals.push((name, from, to));
+}
+
+/// [`interval`] from the instant to its drop.
+pub(crate) struct Interval(pub(crate) &'static str, pub(crate) Instant);
+
+impl Drop for Interval {
+    fn drop(&mut self) {
+        interval(self.0, self.1);
+    }
+}
+
 /// A pool attempt of `id` left it to the sequential pass because of
 /// `reason`.
-pub(crate) fn note_inline(id: NodeId, reason: impl FnOnce() -> String) {
+pub(crate) fn note_inline(id: u32, reason: impl FnOnce() -> String) {
     if !on() {
         return;
     }
@@ -122,11 +161,75 @@ pub(crate) fn note_inline(id: NodeId, reason: impl FnOnce() -> String) {
 }
 
 /// Why the pool left `id` to the sequential pass (the last note).
-pub(crate) fn inline_reason(id: NodeId) -> Option<String> {
+pub(crate) fn inline_reason(id: u32) -> Option<String> {
     if !on() {
         return None;
     }
     state().reasons.get(&id).cloned()
+}
+
+/// Pool attempts' self time by kind per 250 ms bucket (µs).
+const KINDS: &[&str] = &[
+    "Pkg",
+    "Tgt",
+    "Src",
+    "Group",
+    "CT1",
+    "CsMatch",
+    "Platform",
+    "RegToolchains",
+    "RegExecPlatforms",
+    "ModuleExecPlatforms",
+    "ExecCfg",
+    "Transition",
+    "TransitionDetails",
+    "FlagScope",
+    "AspectPred",
+    "AspectAttrAspects",
+    "AspectToolchains",
+    "Status",
+    "CT2",
+    "View",
+    "Aspect",
+];
+const BUCKETS: usize = 400;
+static POOL_BUSY: LazyLock<Vec<std::sync::atomic::AtomicU64>> = LazyLock::new(|| {
+    (0..KINDS.len() * BUCKETS)
+        .map(|_| std::sync::atomic::AtomicU64::new(0))
+        .collect()
+});
+
+thread_local! {
+    static POOL_FRAMES: std::cell::RefCell<Vec<(Instant, Duration)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A pool attempt begins on this thread.
+pub(crate) fn pool_enter() {
+    POOL_FRAMES.with(|frames| frames.borrow_mut().push((Instant::now(), Duration::ZERO)));
+}
+
+/// The pool attempt begun by the last [`pool_enter`] (of `kind`) ended.
+pub(crate) fn pool_exit(kind: &str) {
+    let Some(own) = POOL_FRAMES.with(|frames| {
+        let mut frames = frames.borrow_mut();
+        let (started, children) = frames.pop()?;
+        let total = started.elapsed();
+        if let Some(parent) = frames.last_mut() {
+            parent.1 += total;
+        }
+        Some(total.saturating_sub(children))
+    }) else {
+        return;
+    };
+    let Some(start) = state().start else {
+        return;
+    };
+    let bucket = (start.elapsed().as_millis() / 250) as usize;
+    let kind = KINDS.iter().position(|k| *k == kind).unwrap_or(0);
+    if bucket < BUCKETS {
+        POOL_BUSY[kind * BUCKETS + bucket].fetch_add(own.as_micros() as u64, Ordering::Relaxed);
+    }
 }
 
 struct Frame {
@@ -215,6 +318,45 @@ pub(crate) fn report() {
         }
     }
     crate::note!("bazel-rs: eval timeline cores in use (decisecond:cores):{line}");
+    for (name, (count, us)) in &state.sums {
+        crate::note!(
+            "bazel-rs: eval timeline sum {name}: {count} times, {} ms",
+            us / 1000
+        );
+    }
+    for (index, kind) in KINDS.iter().enumerate() {
+        let line: String = (0..BUCKETS)
+            .filter_map(|bucket| {
+                let us = POOL_BUSY[index * BUCKETS + bucket].load(Ordering::Relaxed);
+                (us >= 25_000)
+                    .then(|| format!(" {}:{:.1}", bucket * 25 / 10, us as f64 / 250_000.0))
+            })
+            .collect();
+        if !line.is_empty() {
+            crate::note!("bazel-rs: eval timeline pool {kind} self time (decisecond:cores):{line}");
+        }
+    }
+    let mut names: Vec<&'static str> = state.intervals.iter().map(|(name, _, _)| *name).collect();
+    names.sort_unstable();
+    names.dedup();
+    for name in names {
+        // Average concurrency per 250 ms.
+        let mut buckets: BTreeMap<u128, f64> = BTreeMap::new();
+        for (_, from, to) in state.intervals.iter().filter(|(n, _, _)| *n == name) {
+            let mut at = *from;
+            while at < *to {
+                let bucket = at.as_millis() / 250;
+                let end = Duration::from_millis(((bucket + 1) * 250) as u64).min(*to);
+                *buckets.entry(bucket).or_default() += (end - at).as_secs_f64() / 0.25;
+                at = end;
+            }
+        }
+        let line: String = buckets
+            .iter()
+            .map(|(bucket, load)| format!(" {}:{load:.1}", bucket * 25 / 10))
+            .collect();
+        crate::note!("bazel-rs: eval timeline occupancy of {name} (decisecond:concurrent):{line}");
+    }
     let mut causes: Vec<_> = state.by_cause.into_iter().collect();
     causes.sort_by_key(|(_, (_, us))| std::cmp::Reverse(*us));
     for ((kind, cause), (count, us)) in causes.iter().take(60) {
