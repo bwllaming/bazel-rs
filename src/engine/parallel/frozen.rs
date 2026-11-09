@@ -550,14 +550,8 @@ impl Engine {
     ) -> Option<Ahead> {
         let outcome = match received {
             Ok(Ok(outcome)) => outcome,
-            Ok(Err(panic)) => {
-                // Raised at its turn (P3's panic hook), like a compute's.
-                return Some(Ahead::Failed {
-                    error: panic,
-                    effects: Effects::default(),
-                    track: incremental::TrackLog::default(),
-                });
-            }
+            // Raised at its turn (P3's panic hook), like a compute's.
+            Ok(Err(panic)) => return Some(Ahead::Panicked(panic)),
             Err(_) => {
                 // Cancelled (a failing build): prepared at its turn.
                 pipe.prepare_aborted.insert(index);

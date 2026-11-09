@@ -722,6 +722,9 @@ enum Ahead {
     },
     /// Committed ahead of its turn (P4): what its turn applies.
     Committed(Box<CommittedAhead>),
+    /// Its prepare panicked on a worker (S3) with this: the panic the
+    /// sequential engine raises at its turn (an internal error).
+    Panicked(String),
 }
 
 /// A target committed ahead of its turn (P4, [`Engine::commit_ahead`]):
@@ -2093,6 +2096,7 @@ impl Engine {
             }
             Some(Ahead::Committed(_)) => "committed_ahead",
             Some(Ahead::Failed { .. }) => "prepare_failed",
+            Some(Ahead::Panicked(_)) => "prepare_panicked",
             Some(Ahead::Preparing(_)) => "preparing",
             Some(Ahead::Computing { .. }) if !self.commits_ahead(state) => "commit_ahead_off",
             Some(Ahead::Computing { .. }) => match pipe.last_try.get(&index).copied() {
@@ -2377,6 +2381,7 @@ impl Engine {
                 effects.apply(self, true);
                 return Err(error);
             }
+            Some(Ahead::Panicked(panic)) => panic!("{panic}"),
             Some(Ahead::Committed(committed)) => {
                 // P4: everything it held, in the order its turn would have
                 // written it; its nodes and lowerings join the plan here.
