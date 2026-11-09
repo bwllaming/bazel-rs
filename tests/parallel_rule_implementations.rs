@@ -291,6 +291,9 @@ fn action_graph_and_prints_are_the_sequential_ones() {
     let timed = ws.run_env(
         &[
             ("BAZEL_RS_TIMING", "1"),
+            // The pipeline's counters: a frozen walk (the T3 merge buffer)
+            // commits nothing ahead of its turn (tests/eval_buffer.rs).
+            ("BAZEL_RS_EVAL_FROZEN_PREPARES", "0"),
             ("BAZEL_RS_SNAPSHOT", "off"),
             ("BAZEL_RS_VERIFY_AHEAD", "1"),
             ("BAZEL_RS_VERIFY_DELTA", "1"),
@@ -577,7 +580,13 @@ fn commits_ahead_of_the_turn_keep_the_sequential_graph() {
     );
     assert!(reference.status.success(), "{}", stderr(&reference));
     let timed = ws.run_env(
-        &[("BAZEL_RS_TIMING", "1"), ("BAZEL_RS_SNAPSHOT", "off")],
+        &[
+            ("BAZEL_RS_TIMING", "1"),
+            // The pipeline's counters: a frozen walk (the T3 merge buffer)
+            // commits nothing ahead of its turn (tests/eval_buffer.rs).
+            ("BAZEL_RS_EVAL_FROZEN_PREPARES", "0"),
+            ("BAZEL_RS_SNAPSHOT", "off"),
+        ],
         &[
             "build",
             "--loading_phase_threads=8",
@@ -1451,7 +1460,13 @@ fn plan_b_counters_account_for_every_entry() {
     let ws = Workspace::new();
     commit_ahead_workspace(&ws);
     let timed = ws.run_env(
-        &[("BAZEL_RS_TIMING", "1"), ("BAZEL_RS_SNAPSHOT", "off")],
+        &[
+            ("BAZEL_RS_TIMING", "1"),
+            // The pipeline's counters: a frozen walk (the T3 merge buffer)
+            // commits nothing ahead of its turn (tests/eval_buffer.rs).
+            ("BAZEL_RS_EVAL_FROZEN_PREPARES", "0"),
+            ("BAZEL_RS_SNAPSHOT", "off"),
+        ],
         &[
             "build",
             "--loading_phase_threads=8",
@@ -1936,6 +1951,9 @@ fn transition_allowlists_settled_commit_ahead() {
     let timed = ws.run_env(
         &[
             ("BAZEL_RS_TIMING", "1"),
+            // The pipeline's counters: a frozen walk (the T3 merge buffer)
+            // commits nothing ahead of its turn (tests/eval_buffer.rs).
+            ("BAZEL_RS_EVAL_FROZEN_PREPARES", "0"),
             ("BAZEL_RS_SNAPSHOT", "off"),
             ("BAZEL_RS_VERIFY_AHEAD", "1"),
         ],
@@ -2033,6 +2051,9 @@ fn native_rules_commit_ahead_of_their_turn() {
     let timed = ws.run_env(
         &[
             ("BAZEL_RS_TIMING", "1"),
+            // The pipeline's counters: a frozen walk (the T3 merge buffer)
+            // commits nothing ahead of its turn (tests/eval_buffer.rs).
+            ("BAZEL_RS_EVAL_FROZEN_PREPARES", "0"),
             ("BAZEL_RS_SNAPSHOT", "off"),
             ("BAZEL_RS_VERIFY_AHEAD", "1"),
         ],

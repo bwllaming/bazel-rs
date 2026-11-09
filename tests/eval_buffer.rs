@@ -175,13 +175,38 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
         assert_eq!(eval.stdout, walk.stdout, "{what}");
     }
     let timed = ws.build("eval", 8, &[FROZEN, ("BAZEL_RS_TIMING", "1")], args);
+    let succeeded = timed.status.success();
     let timed = String::from_utf8_lossy(&timed.stderr);
+    let line = timed
+        .lines()
+        .find(|line| line.starts_with("PERF-PARALLEL buffer starlark="))
+        .unwrap_or_else(|| panic!("the merge buffer walked: {timed}"));
+    let count = |name: &str| -> u64 {
+        line.split_whitespace()
+            .find_map(|field| field.strip_prefix(name))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("no {name} in {line}"))
+    };
+    // Every entry of the buffered walks is classified at most once (the
+    // cursor may take it first), and either dispatched to a job or taken
+    // at its turn by the cursor.
+    let entries: u64 = timed
+        .lines()
+        .filter_map(|line| line.strip_prefix("PERF-PARALLEL buffer cursor entries="))
+        .filter_map(|rest| rest.split_whitespace().next()?.parse::<u64>().ok())
+        .sum();
+    assert!(count("walks=") > 0 && entries > 0, "{timed}");
     assert!(
-        timed
-            .lines()
-            .any(|line| line.starts_with("PERF-PARALLEL buffer ") && !line.contains(" walks=0")),
-        "the merge buffer walked: {timed}"
+        count("starlark=") + count("native=") + count("turn=") <= entries,
+        "{line}"
     );
+    // (A failed walk stops at its error: the rest is never claimed.)
+    let handled = count("dispatched=") + count("at_turn=");
+    if succeeded {
+        assert_eq!(handled, entries, "{line}");
+    } else {
+        assert!(handled <= entries, "{line}");
+    }
 }
 
 /// The winner of a shared output (first in plan order) computes for long,

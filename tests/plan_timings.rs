@@ -86,6 +86,9 @@ impl Workspace {
         if self.1 {
             command.envs([SNAPSHOT_OFF]);
         }
+        // The pipeline's stage timers: a frozen walk (eval, the T3 merge
+        // buffer) classifies and prepares on the workers, outside them.
+        command.env("BAZEL_RS_EVAL_FROZEN_PREPARES", "0");
         for (name, value) in values {
             command.env(name, value);
         }
