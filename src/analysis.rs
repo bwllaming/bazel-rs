@@ -98,7 +98,7 @@ use crate::analysis_runtime::Context;
 pub use crate::analysis_runtime::RegisteredAction;
 pub(crate) use crate::analysis_runtime::repository_context;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct AnalysisResult {
     pub files: Vec<File>,
     /// The package-relative declared outputs (not the shareable artifacts).

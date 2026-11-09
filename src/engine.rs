@@ -2700,6 +2700,7 @@ struct ComputeOutcome {
 /// transitive repositories alone (RunfilesPrecomputed::compute): the repo
 /// mapping manifest's content and the runfiles tree mapping with its
 /// conflicts.
+#[derive(Clone)]
 struct RunfilesPrecomputed {
     content: Result<Vec<u8>, String>,
     mapping: crate::runfiles::RunfilesMapping,
@@ -10111,13 +10112,29 @@ impl Engine {
                 delta::check_reads(&state.artifact_index.shared, &built.reads, reader, merging);
             check != delta::ReadsCheck::Valid
         };
-        let (worker_delta, reason) = match worker.map(|worker| worker.built) {
+        // T3: a worker whose outputs met an earlier entry's kept the
+        // analysis result for the rebuild here (no implementation run on
+        // the cursor).
+        let (built, mut kept) = match worker {
+            Some(worker) => {
+                let worker = *worker;
+                (Some(worker.built), worker.kept)
+            }
+            None => (None, None),
+        };
+        let (worker_delta, reason) = match built {
             Some(delta::Built::Delta(built)) if stale(&built) => {
                 delta::provisional_bump(1);
                 drop(built);
-                let again = recompute(&mut snapshot);
-                analyzed = again.analyzed?;
-                (precomputed, outputs_checked) = (None, None);
+                match kept.take() {
+                    Some(kept) => {
+                        (analyzed, precomputed, outputs_checked) = *kept;
+                    }
+                    None => {
+                        analyzed = recompute(&mut snapshot).analyzed?;
+                        (precomputed, outputs_checked) = (None, None);
+                    }
+                }
                 (None, "provisional_stale")
             }
             Some(delta::Built::Delta(built)) if !Self::delta_meets_producers(state, &built) => {
@@ -10125,10 +10142,21 @@ impl Engine {
             }
             Some(delta::Built::Delta(built)) => {
                 drop(built);
-                let again = recompute(&mut snapshot);
-                analyzed = again.analyzed?;
-                (precomputed, outputs_checked) = (None, None);
-                (None, "meets_producer")
+                let reason = if kept.is_some() {
+                    "meets_producer_kept"
+                } else {
+                    "meets_producer"
+                };
+                match kept.take() {
+                    Some(kept) => {
+                        (analyzed, precomputed, outputs_checked) = *kept;
+                    }
+                    None => {
+                        analyzed = recompute(&mut snapshot).analyzed?;
+                        (precomputed, outputs_checked) = (None, None);
+                    }
+                }
+                (None, reason)
             }
             Some(delta::Built::Consumed(reason)) => {
                 let again = recompute(&mut snapshot);

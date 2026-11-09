@@ -3085,6 +3085,7 @@ impl Engine {
                 accesses,
                 owner,
                 abort,
+                ..
             } = record;
             if let Some(why) = abort {
                 // The coordinator prepares it (what the attempt observed
@@ -4194,6 +4195,7 @@ impl Engine {
             action_execution: parts.action_execution.clone(),
             platforms: self.remote_platforms(rule, parts.config, &parts.action_execution),
             class,
+            keep_on_meet: false,
         }))
     }
 

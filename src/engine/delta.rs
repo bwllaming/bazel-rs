@@ -339,7 +339,7 @@ pub(super) enum DeltaOp {
     /// An output-file entry of `declared` (`replace`: inserted, else kept
     /// when present; `predeclared`: an output of the rule's output-file
     /// targets — the only entries a published result makes visible ahead
-    /// of the merge, `PlannedResults::publish_delta`).
+    /// of the merge, `PlannedResults::publish_shared`).
     Declared {
         key: DeclaredKey,
         artifact: Artifact,
@@ -420,6 +420,24 @@ pub(super) struct SharedView {
 }
 
 impl SharedView {
+    /// T3: whether the output path hashed `hash` (a delta's of plan entry
+    /// `reader`) is a registered producer's or an earlier compute's.
+    pub(super) fn meets_earlier(&self, hash: u64, reader: u32) -> bool {
+        self.registered.as_ref().is_some_and(|registered| {
+            registered
+                .paths
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&hash)
+                || registered
+                    .computed
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&hash)
+                    .is_some_and(|lowest| *lowest < reader)
+        })
+    }
+
     pub(super) fn new(engine: &Engine, state: &ActionPlanning) -> Self {
         Self {
             semantic_only: engine.semantic_only(),
@@ -2019,7 +2037,19 @@ pub(super) struct WorkerDelta {
     pub(super) ahead_unsafe: Option<&'static str>,
     /// BAZEL_RS_VERIFY_AHEAD: the outputs its commit may register.
     pub(super) summary: Option<parallel::OutputSummary>,
+    /// T3: its outputs meet another entry's: its merge rebuilds it.
+    pub(super) keep: bool,
+    /// T3: the analysis result, kept for that, with the worker's runfiles
+    /// support and declared-outputs check.
+    pub(super) kept: Option<Box<Kept>>,
 }
+
+/// What a rebuild at the merge reuses (T3, [`WorkerDelta::kept`]).
+pub(super) type Kept = (
+    analysis::AnalysisResult,
+    Option<RunfilesPrecomputed>,
+    Option<Result<(), String>>,
+);
 
 /// The worker's delta, or why it has none.
 pub(super) enum Built {
@@ -2043,6 +2073,12 @@ pub(super) struct DeltaInputs {
     pub(super) action_execution: Vec<crate::exec_groups::ActionExecution>,
     pub(super) platforms: RemotePlatforms,
     pub(super) class: u32,
+    /// T3 (the merge buffer): a delta whose outputs meet an earlier
+    /// entry's is built anyway (its results are published for its
+    /// dependents, its shared outputs naming the earlier entry's artifact,
+    /// [`SharedView::meets_earlier`]) and the analysis result is kept for
+    /// the merge's rebuild ([`WorkerDelta::kept`]).
+    pub(super) keep_on_meet: bool,
 }
 
 /// An analysis result whose parts a delta took.
@@ -2133,14 +2169,26 @@ impl DeltaInputs {
         });
         if let Some(reason) = self
             .unsafe_reason(analyzed, outcome.runfiles.as_ref())
-            .or(meets.then_some("delta_meets_producer"))
+            .or((meets && !self.keep_on_meet).then_some("delta_meets_producer"))
         {
             return WorkerDelta {
                 built: Built::Fallback(reason),
                 ahead_unsafe,
                 summary,
+                keep: false,
+                kept: None,
             };
         }
+        // T3: a delta meeting another entry's outputs is rebuilt at its
+        // merge from the very analysis result its published results came
+        // from (the same provider values).
+        let kept = meets.then(|| {
+            Box::new((
+                analyzed.clone(),
+                outcome.runfiles.clone(),
+                outcome.outputs_checked.clone(),
+            ))
+        });
         let analyzed = std::mem::replace(&mut outcome.analyzed, Ok(spent_analysis()))
             .unwrap_or_else(|_| unreachable!());
         let timer = crate::plan_timings::StageTimer::start(
@@ -2172,6 +2220,8 @@ impl DeltaInputs {
             built,
             ahead_unsafe,
             summary,
+            keep: meets,
+            kept,
         }
     }
 }

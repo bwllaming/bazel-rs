@@ -226,8 +226,8 @@ enum Finished {
         outcome: Box<Result<frozen::FrozenOutcome, String>>,
         published: bool,
     },
-    /// What its commit registers, when its results were published.
-    Native(Option<Vec<Artifact>>),
+    /// What its merge applies, when its results were published.
+    Native(Option<frozen::NativeMerge>),
     /// The job panicked (its text): raised at the entry's turn.
     Panicked(String),
 }
@@ -507,9 +507,9 @@ impl Board {
             KIND_NATIVE => match frozen::run_native(frozen, index, key, rule) {
                 Some(published) => {
                     crate::debug_panic::at("t3-publish");
-                    let registered = frozen::publish_native_results(frozen, index, key, *published);
+                    let merge = frozen::publish_native_results(frozen, index, key, *published);
                     self.mark(key);
-                    Finished::Native(Some(registered))
+                    Finished::Native(Some(merge))
                 }
                 None => {
                     stat(S_NATIVE_UNPUBLISHED, 1);
@@ -525,6 +525,7 @@ impl Board {
                     rule,
                     self.jitter,
                     self.verify_summary,
+                    true,
                     &stopped,
                 );
                 let mut published = false;
@@ -1025,7 +1026,7 @@ impl Engine {
                 Claimed::Done(Finished::Native(registered)) => {
                     let _split = frozen::Split::enter(14);
                     match registered {
-                        Some(registered)
+                        Some(merge)
                             if fast_natives()
                                 && native_results::plain(&rule)
                                 && !forwards(&rule) =>
@@ -1033,13 +1034,7 @@ impl Engine {
                             stat(S_FAST_NATIVE, 1);
                             fast = true;
                             let _split = frozen::Split::enter(16);
-                            self.merge_published_native(
-                                state,
-                                &board.frozen,
-                                &key,
-                                &rule,
-                                registered,
-                            );
+                            self.merge_published_native(state, &board.frozen, &key, &rule, merge);
                             Ok(())
                         }
                         registered => {
@@ -1259,8 +1254,20 @@ impl Engine {
         frozen: &Frozen,
         key: &ConfiguredTargetKey,
         rule: &Rule,
-        registered: Vec<Artifact>,
+        merge: frozen::NativeMerge,
     ) {
+        let frozen::NativeMerge {
+            registered,
+            sources,
+        } = merge;
+        // The source lookups its commit would have made (Engine::target):
+        // what they record, their memoized paths.
+        for (label, path, stable, side) in sources {
+            side.apply(&mut self.missing_sources, &mut self.source_directories);
+            if stable {
+                self.source_targets.insert(label, path);
+            }
+        }
         let results = frozen
             .results
             .get(key)

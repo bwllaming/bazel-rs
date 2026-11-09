@@ -393,6 +393,10 @@ pub(super) struct SharedRecord {
     pub(super) owner: Option<(String, crate::shared_path::SharedPath, ConfiguredTargetKey)>,
     /// Why it needs the coordinator.
     pub(super) abort: Option<&'static str>,
+    /// T3: the source files it resolved itself (not memoized yet), with
+    /// whether the path may be memoized and what the lookup records:
+    /// applied where the coordinator would have looked them up.
+    pub(super) sources: Vec<(Label, PathBuf, bool, SourceSide)>,
 }
 
 /// A prepare on a prepare thread ([`Engine::prepare_batch`]), or (S3,
@@ -415,6 +419,11 @@ pub(super) struct SharedPrepare<'a> {
     capture: Vec<Vec<Label>>,
     /// The artifacts the view being built registered.
     view_artifacts: Option<Artifacts>,
+    /// T3: resolve a declared source file not memoized yet here (a native
+    /// rule's results; recorded in `record.sources`) instead of aborting.
+    pub(super) resolve_sources: bool,
+    /// Its packages' input labels, computed once per package.
+    inputs: HashMap<PackageId, HashSet<Label>>,
 }
 
 impl<'a> SharedPrepare<'a> {
@@ -443,6 +452,8 @@ impl<'a> SharedPrepare<'a> {
             record: SharedRecord::default(),
             capture: Vec::new(),
             view_artifacts: None,
+            resolve_sources: false,
+            inputs: HashMap::new(),
         }
     }
 
@@ -472,6 +483,8 @@ impl<'a> SharedPrepare<'a> {
             record: SharedRecord::default(),
             capture: Vec::new(),
             view_artifacts: None,
+            resolve_sources: false,
+            inputs: HashMap::new(),
         }
     }
 
@@ -571,6 +584,35 @@ impl<'a> SharedPrepare<'a> {
     }
 }
 
+impl SharedPrepare<'_> {
+    /// [`Engine::target`]'s source-file path for a declared source of a
+    /// loaded package not memoized yet (`None`: only the coordinator can
+    /// answer — not declared, not loaded, or its lookup recorded
+    /// something only an ordered lookup may).
+    fn source(&mut self, label: &Label) -> Option<Result<Target, String>> {
+        let package_id = label.package_id();
+        let package = self.engine.packages.get(&package_id)?;
+        let declared = package.exports.contains_key(label)
+            || (!package.macro_names.contains(&label.name)
+                && self
+                    .inputs
+                    .entry(package_id.clone())
+                    .or_insert_with(|| package_input_labels_in(&self.engine.repositories, package))
+                    .contains(label));
+        if !declared {
+            return None;
+        }
+        let mut side = SourceSide::default();
+        let mut probes: HashMap<PathBuf, SourceDirProbe> = HashMap::new();
+        let found = source_target_in(&self.engine.repositories, label, &mut probes, &mut side);
+        let (path, stable) = found.ok()?;
+        self.record
+            .sources
+            .push((label.clone(), path.clone(), stable, side));
+        Some(Ok(Target::Source(path)))
+    }
+}
+
 impl Lookup for SharedPrepare<'_> {
     fn engine(&self) -> &Engine {
         self.engine
@@ -580,6 +622,10 @@ impl Lookup for SharedPrepare<'_> {
         self.access(label);
         match self.engine.target_readonly(label) {
             Some(target) => target,
+            None if self.resolve_sources => match self.source(label) {
+                Some(target) => target,
+                None => Err(self.abort("target_lookup")),
+            },
             None => Err(self.abort("target_lookup")),
         }
     }

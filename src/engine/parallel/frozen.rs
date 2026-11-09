@@ -165,17 +165,29 @@ impl PlannedResults {
     /// `artifacts`, visible from its plan index `stamp`). The merge
     /// publishes the planning state's entries over them ([`Self::publish`])
     /// unless they are the very same (T3: a delta merged as built).
-    pub(in crate::engine) fn publish_delta(
+    ///
+    /// T3: the Files in `shared` are shared with earlier entries — their
+    /// artifacts (the index's, by File) replace the delta's own in what is
+    /// published, and the delta registers none of them provisionally (its
+    /// merge decides, rebuilding it).
+    pub(in crate::engine) fn publish_shared(
         &self,
         key: &ConfiguredTargetKey,
         delta: &delta::TargetDelta,
         transitive: &BTreeSet<String>,
         artifacts: &ConcurrentArtifactIndex,
         stamp: u32,
+        shared: &HashMap<File, Artifact>,
     ) {
         let mut results = KeyResults {
             repositories: Some(Arc::new(transitive.clone())),
             ..KeyResults::default()
+        };
+        let resolve = |artifact: &Artifact| {
+            shared
+                .get(&artifact.file)
+                .cloned()
+                .unwrap_or_else(|| artifact.clone())
         };
         for op in &delta.ops {
             match op {
@@ -183,7 +195,12 @@ impl PlannedResults {
                     results.providers = Some(providers.clone());
                     results.provider_keys = Some(keys.clone());
                 }
-                delta::DeltaOp::Dry(dry) => results.dry = Some(Arc::clone(dry)),
+                delta::DeltaOp::Dry(dry) if shared.is_empty() => {
+                    results.dry = Some(Arc::clone(dry));
+                }
+                delta::DeltaOp::Dry(dry) => {
+                    results.dry = Some(Arc::new(dry.iter().map(resolve).collect()));
+                }
                 delta::DeltaOp::RunfilesInfo(runfiles) => {
                     results.runfiles_info = Some(Arc::clone(runfiles));
                 }
@@ -200,10 +217,12 @@ impl PlannedResults {
                     self.declared_shard(key.hash)
                         .write()
                         .unwrap_or_else(|e| e.into_inner())
-                        .put(key.clone(), artifact.clone(), true);
+                        .put(key.clone(), resolve(artifact), true);
                 }
                 delta::DeltaOp::Artifact(file, artifact, hash) => {
-                    artifacts.publish_provisional(*hash, file, artifact, stamp);
+                    if !shared.contains_key(file) {
+                        artifacts.publish_provisional(*hash, file, artifact, stamp);
+                    }
                 }
                 _ => {}
             }
@@ -475,6 +494,7 @@ impl Engine {
                 &rule,
                 jitter,
                 verify_summary,
+                false,
                 &stopped,
             );
             let _ = sender.send(result);
@@ -618,6 +638,7 @@ pub(super) fn run_frozen(
     rule: &Arc<Rule>,
     jitter: u64,
     verify_summary: bool,
+    keep_on_meet: bool,
     stopped: &dyn Fn() -> bool,
 ) -> (
     Result<FrozenOutcome, String>,
@@ -693,6 +714,7 @@ pub(super) fn run_frozen(
                     &parts.action_execution,
                 ),
                 class,
+                keep_on_meet,
             })
         });
         let (worker, registers) = run_compute(
@@ -735,6 +757,9 @@ pub(super) fn run_native(
         let engine = &frozen.engine;
         let reads: &dyn PlanReads = &*frozen.results;
         let mut cx = prepare::SharedPrepare::frozen(frozen, index);
+        // T3: its declared source files resolved here (applied at its
+        // merge, NativePublished::sources).
+        cx.resolve_sources = true;
         let mut transitive = BTreeSet::from([rule.label.repository.clone()]);
         let edges = engine.rule_edges(rule, key.config);
         engine.native_transitive_in(reads, rule, key, &edges, &mut transitive);
@@ -840,6 +865,7 @@ pub(super) fn run_native(
                 .into_iter()
                 .map(|artifact| (key.config, artifact))
                 .collect(),
+            sources: std::mem::take(&mut cx.record.sources),
         }))
     }))
     .ok()
@@ -854,12 +880,13 @@ pub(super) fn publish_native_results(
     index: usize,
     key: &ConfiguredTargetKey,
     published: NativePublished,
-) -> Vec<Artifact> {
+) -> NativeMerge {
     let stamp = u32::try_from(index).unwrap_or(u32::MAX - 1);
     let NativePublished {
         results,
         registered,
         declared,
+        sources,
     } = published;
     for artifact in &registered {
         frozen.artifacts.publish_provisional(
@@ -886,7 +913,17 @@ pub(super) fn publish_native_results(
         .insert(key.clone(), Arc::new(results));
     delta::provisional_bump(4);
     profile(|profile| profile.publish(index));
-    registered
+    NativeMerge {
+        registered,
+        sources,
+    }
+}
+
+/// What the merge of a native rule's published results applies besides
+/// them: what its commit registers, the source files its worker resolved.
+pub(super) struct NativeMerge {
+    pub(super) registered: Vec<Artifact>,
+    pub(super) sources: Vec<(Label, PathBuf, bool, SourceSide)>,
 }
 
 /// Publish entry `index`'s phase-2 results from its worker's delta
@@ -914,12 +951,47 @@ pub(super) fn publish_starlark_results(
         return false;
     }
     let stamp = u32::try_from(index).unwrap_or(u32::MAX - 1);
-    frozen.results.publish_delta(
+    // T3: outputs shared with earlier entries name their artifact (the
+    // index's now); one not registered yet leaves it unpublished.
+    let keep = worker
+        .outcome
+        .delta
+        .as_ref()
+        .is_some_and(|delta| delta.keep);
+    let mut shared = HashMap::new();
+    if keep {
+        let Some(view) = frozen.view.as_ref() else {
+            return false;
+        };
+        for op in &built.ops {
+            let delta::DeltaOp::Output(path, _) = op else {
+                continue;
+            };
+            if !view.meets_earlier(path.hash(), stamp) {
+                continue;
+            }
+            let Some(file) = built.ops.iter().find_map(|op| match op {
+                delta::DeltaOp::Artifact(file, artifact, _) if artifact.exec == *path.path() => {
+                    Some(file.clone())
+                }
+                _ => None,
+            }) else {
+                return false;
+            };
+            let Some((artifact, _)) = frozen.artifacts.get_entry(&file, stamp) else {
+                return false;
+            };
+            shared.insert(file, artifact);
+        }
+        delta::provisional_bump(4);
+    }
+    frozen.results.publish_shared(
         &parts.key,
         built,
         &parts.transitive,
         &frozen.artifacts,
         stamp,
+        &shared,
     );
     delta::provisional_bump(0);
     if !built.reads.is_empty() {
@@ -1028,6 +1100,8 @@ pub(super) struct NativePublished {
     registered: Vec<Artifact>,
     /// A genrule's outputs, declared in their configuration.
     declared: Vec<(ConfigId, Artifact)>,
+    /// The source files it resolved itself ([`prepare::SharedRecord`]).
+    sources: Vec<(Label, PathBuf, bool, SourceSide)>,
 }
 
 /// A native rule's results being computed on a worker (`None`: not
@@ -1511,20 +1585,35 @@ mod tests {
             crate::config_registry::no_config().id,
         );
         // L alone, published late: not a declaration of `p`.
-        results.publish_delta(&l, &declared_delta(&sharer, false), &transitive, &index, 7);
+        results.publish_shared(
+            &l,
+            &declared_delta(&sharer, false),
+            &transitive,
+            &index,
+            7,
+            &HashMap::new(),
+        );
         assert!(
             results
                 .declared(crate::config_registry::no_config().id, &path)
                 .is_none()
         );
-        results.publish_delta(
+        results.publish_shared(
             &w,
             &declared_delta(&generating, true),
             &transitive,
             &index,
             3,
+            &HashMap::new(),
         );
-        results.publish_delta(&l, &declared_delta(&sharer, false), &transitive, &index, 7);
+        results.publish_shared(
+            &l,
+            &declared_delta(&sharer, false),
+            &transitive,
+            &index,
+            7,
+            &HashMap::new(),
+        );
         let declared = results
             .declared(crate::config_registry::no_config().id, &path)
             .unwrap();
