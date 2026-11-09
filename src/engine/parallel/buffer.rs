@@ -71,6 +71,29 @@ fn classify_jitter() -> u64 {
     *JITTER
 }
 
+/// [`frozen::run_native`], a slow one named on stderr (BAZEL_RS_T3_DEBUG).
+fn run_native_timed(
+    frozen: &Frozen,
+    index: usize,
+    key: &ConfiguredTargetKey,
+    rule: &Arc<Rule>,
+) -> Option<Box<frozen::NativePublished>> {
+    let started = std::time::Instant::now();
+    let published = frozen::run_native(frozen, index, key, rule);
+    if debug() && started.elapsed() > std::time::Duration::from_millis(20) {
+        eprintln!(
+            "T3-DEBUG slow native #{index} {} {:.1}ms srcs={} sources={}",
+            key.label,
+            started.elapsed().as_secs_f64() * 1e3,
+            rule.srcs.len(),
+            published
+                .as_ref()
+                .map_or(0, |published| published.sources.len())
+        );
+    }
+    published
+}
+
 /// `BAZEL_RS_T3_CHAIN_WEIGHT=<entries>`: how much earlier in the queue a
 /// job runs per Starlark implementation in its chain of dependents.
 fn chain_weight() -> usize {
@@ -597,22 +620,7 @@ impl Board {
         let (key, rule) = &self.plan[slot];
         let frozen = &self.frozen;
         match self.kind[slot].load(Ordering::Acquire) {
-            KIND_NATIVE => match {
-                let started = std::time::Instant::now();
-                let published = frozen::run_native(frozen, index, key, rule);
-                if debug() && started.elapsed() > std::time::Duration::from_millis(20) {
-                    eprintln!(
-                        "T3-DEBUG slow native #{index} {} {:.1}ms srcs={} sources={}",
-                        key.label,
-                        started.elapsed().as_secs_f64() * 1e3,
-                        rule.srcs.len(),
-                        published
-                            .as_ref()
-                            .map_or(0, |published| published.sources.len())
-                    );
-                }
-                published
-            } {
+            KIND_NATIVE => match run_native_timed(frozen, index, key, rule) {
                 Some(published) => {
                     crate::debug_panic::at("t3-publish");
                     let merge = frozen::publish_native_results(frozen, index, key, *published);
