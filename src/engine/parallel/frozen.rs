@@ -661,10 +661,10 @@ pub(super) fn run_native(
         let mut cx = prepare::SharedPrepare::frozen(frozen, index);
         let mut transitive = BTreeSet::from([rule.label.repository.clone()]);
         let edges = engine.rule_edges(rule, key.config);
-        engine.native_transitive_in(reads, &rule, &key, &edges, &mut transitive);
-        let validation = Engine::native_validation_in(&mut cx, reads, &rule, key.config);
-        let output_group = super::native_results::selected_output_group(&rule);
-        let plain = Engine::inputs_in(&mut cx, reads, &rule, key.config).and_then(|(inputs, _)| {
+        engine.native_transitive_in(reads, rule, key, &edges, &mut transitive);
+        let validation = Engine::native_validation_in(&mut cx, reads, rule, key.config);
+        let output_group = super::native_results::selected_output_group(rule);
+        let plain = Engine::inputs_in(&mut cx, reads, rule, key.config).and_then(|(inputs, _)| {
             let mut registered = inputs.clone();
             // A filegroup's output group: its `srcs`' views.
             let inputs = match &output_group {
@@ -672,7 +672,7 @@ pub(super) fn run_native(
                 Some(group) => {
                     let mut views = Vec::new();
                     for text in &rule.srcs {
-                        let label = engine.resolve_rule_src(&rule, text)?;
+                        let label = engine.resolve_rule_src(rule, text)?;
                         views.push(cx.plan_view(&label, key.config)?);
                     }
                     let reader = u32::try_from(index).unwrap_or(u32::MAX - 1);
@@ -693,8 +693,8 @@ pub(super) fn run_native(
                 &mut cx,
                 reads,
                 &frozen.configured,
-                &rule,
-                &key,
+                rule,
+                key,
                 key.config,
                 inputs,
                 &mut |artifact| registered.push(artifact.clone()),
