@@ -1006,6 +1006,7 @@ impl Coord<'_> {
     /// returned (they apply at the flush's plan position).
     fn publish_values(&mut self, lin: &mut Linearizer, shared: &EvalShared) -> Vec<Published> {
         let engine = &mut *self.engine;
+        let started = std::time::Instant::now();
         // The configured targets pass 1 decided (the first variant reached
         // in DFS order), in its order.
         let mut canonical = std::mem::take(&mut lin.unpublished);
@@ -1024,12 +1025,17 @@ impl Coord<'_> {
             };
             publish_ct1(engine, &mut lin.configured, ct.key.clone(), ok);
         }
+        super::super::timeline::add("publication: configured targets", started);
+        let started = std::time::Instant::now();
         // `toolchain_implementations`: pass 1's first claims in DFS order.
-        for (implementation, platform) in lin.pass.toolchain_implementations() {
-            engine
-                .toolchain_implementations
-                .entry(implementation.clone())
-                .or_insert_with(|| platform.clone());
+        // (The new ones: every one before was published already.)
+        for implementation in lin.pass.take_new_toolchain_implementations() {
+            if let Some(platform) = lin.pass.toolchain_implementations().get(&implementation) {
+                engine
+                    .toolchain_implementations
+                    .entry(implementation)
+                    .or_insert_with(|| platform.clone());
+            }
         }
         for side in std::mem::take(&mut self.store.sources_side) {
             side.apply(&mut engine.missing_sources, &mut engine.source_directories);
@@ -1052,6 +1058,7 @@ impl Coord<'_> {
         }
         let memos = self.store.published[lin.published_memos..].to_vec();
         lin.published_memos = self.store.published.len();
+        super::super::timeline::add("publication: the rest", started);
         memos
     }
 

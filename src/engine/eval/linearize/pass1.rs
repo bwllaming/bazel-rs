@@ -294,6 +294,8 @@ pub(crate) struct Pass1 {
     warned: FxHashSet<String>,
     /// [`Options::no_edges`].
     no_edges: bool,
+    /// The toolchain implementations added since the driver last took them.
+    new_implementations: Vec<ConfiguredTargetKey>,
     /// At most this many events per [`Pass1::resume`] (then it returns
     /// `Blocked` with no blocker: the caller resumes later).
     budget: Option<usize>,
@@ -402,6 +404,7 @@ impl Pass1 {
             packages: FxHashSet::default(),
             consoles: FxHashSet::default(),
             no_edges: options.no_edges,
+            new_implementations: Vec::new(),
             budget: None,
             paused: false,
             warned: options.warnings.into_iter().collect(),
@@ -434,6 +437,11 @@ impl Pass1 {
     /// `toolchain_implementations` so far.
     pub(crate) fn toolchain_implementations(&self) -> &BTreeMap<ConfiguredTargetKey, Label> {
         &self.out.toolchain_implementations
+    }
+
+    /// The `toolchain_implementations` entries added since the last call.
+    pub(crate) fn take_new_toolchain_implementations(&mut self) -> Vec<ConfiguredTargetKey> {
+        std::mem::take(&mut self.new_implementations)
     }
 
     /// The walk's error pass 1 stopped at.
@@ -733,6 +741,7 @@ impl Pass1 {
                         self.out
                             .toolchain_implementations
                             .insert(implementation.clone(), exec_platform.clone());
+                        self.new_implementations.push(implementation.clone());
                     }
                 }
                 sink.op(TapeOp::Effect(event.clone()));
