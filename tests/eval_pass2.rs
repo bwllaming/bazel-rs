@@ -13,6 +13,7 @@
 //! deferred target platform (a flush that stays ordered).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 include!("support/temp_root.rs");
+include!("support/module_archives.rs");
 use std::{
     fs,
     path::Path,
@@ -156,24 +157,32 @@ impl Workspace {
             .env("BAZEL_RS_SNAPSHOT", "off")
             .env("BAZEL_RS_ANALYSIS", mode)
             .env("BAZEL_RS_DUMP_ACTIONS", "1")
-            .args([
-                "--ignore_all_rc_files",
-                "--cache-dir=cache",
-                "build",
-                "--lockfile_mode=off",
-                "--memory-limit=2048",
-                "--nobuild",
-            ])
-            .arg(format!("--loading_phase_threads={threads}"))
-            // The default host platform needs the built-in modules.
-            .args(
-                (!args
-                    .iter()
-                    .any(|arg| arg.starts_with("--experimental-builtin-modules")))
-                .then_some("--experimental-builtin-modules=false"),
-            )
-            .args(args)
+            // The built-in modules resolve through the offline registry,
+            // their archives seeded (no test reaches the network).
+            .args(with_builtin_registry(
+                &[
+                    "--ignore_all_rc_files",
+                    "--cache-dir=cache",
+                    "build",
+                    "--lockfile_mode=off",
+                    "--memory-limit=2048",
+                    "--nobuild",
+                ]
+                .into_iter()
+                .map(str::to_owned)
+                .chain([format!("--loading_phase_threads={threads}")])
+                // The default host platform needs the built-in modules.
+                .chain(
+                    (!args
+                        .iter()
+                        .any(|arg| arg.starts_with("--experimental-builtin-modules")))
+                    .then(|| "--experimental-builtin-modules=false".to_owned()),
+                )
+                .chain(args.iter().map(|arg| (*arg).to_owned()))
+                .collect::<Vec<_>>(),
+            ))
             .envs(env.iter().copied())
+            .seeded_archives()
             .output()
             .unwrap()
     }

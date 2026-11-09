@@ -810,6 +810,7 @@ impl Engine {
             }
             let index = state.done;
             state.done += 1;
+            crate::debug_panic::at("coordinator");
             frozen::profile(|profile| profile.turn(index));
             if crate::plan_timings::enabled()
                 && index >= board.start
@@ -941,8 +942,11 @@ impl Engine {
         index: usize,
         outcome: Box<Result<frozen::FrozenOutcome, String>>,
     ) -> Result<(), String> {
-        // A panic: raised at its turn as the walk's error (P3's hook).
-        let outcome = (*outcome)?;
+        // A worker's panic is raised at its turn, as a compute's.
+        let outcome = match *outcome {
+            Ok(outcome) => outcome,
+            Err(panic) => panic!("{panic}"),
+        };
         let frozen::FrozenOutcome {
             prepared,
             abort,
