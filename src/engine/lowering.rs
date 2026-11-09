@@ -222,9 +222,20 @@ impl From<Vec<PlannedAction>> for PlannedNodes {
 
 type Job = Box<dyn FnOnce() + Send>;
 
+/// What a lowering worker receives: a job, or the pool's stop.
+enum Message {
+    Run(Job),
+    Stop,
+}
+
 /// The lowering workers.
 pub(super) struct LoweringPool {
     jobs: Option<LoweringHandle>,
+    /// The pool's own sender of the stops: handles cloned into the
+    /// analysis workers' deltas (a frozen walk's view among them) may
+    /// outlive the pool when the coordinator unwinds from a panic, so the
+    /// workers never wait for every sender to drop.
+    stop: mpsc::Sender<Message>,
     workers: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -233,7 +244,7 @@ pub(super) struct LoweringPool {
 /// the pool stops (Engine::stop_analysis_pool).
 #[derive(Clone)]
 pub(super) struct LoweringHandle {
-    jobs: mpsc::Sender<Job>,
+    jobs: mpsc::Sender<Message>,
 }
 
 impl LoweringPool {
@@ -243,7 +254,7 @@ impl LoweringPool {
         // reuses it at once instead of it waiting in their own arenas until
         // it decays.
         let coordinator_arena = crate::alloc_arena::current();
-        let (sender, receiver) = mpsc::channel::<Job>();
+        let (sender, receiver) = mpsc::channel::<Message>();
         let receiver = Arc::new(std::sync::Mutex::new(receiver));
         let mut workers = Vec::with_capacity(size);
         for index in 0..size {
@@ -261,8 +272,8 @@ impl LoweringPool {
                             receiver.recv()
                         };
                         match job {
-                            Ok(job) => job(),
-                            Err(_) => break,
+                            Ok(Message::Run(job)) => job(),
+                            Ok(Message::Stop) | Err(_) => break,
                         }
                     }
                 });
@@ -275,6 +286,7 @@ impl LoweringPool {
             return None;
         }
         Some(Self {
+            stop: sender.clone(),
             jobs: Some(LoweringHandle { jobs: sender }),
             workers,
         })
@@ -324,6 +336,12 @@ impl LoweringHandle {
 impl Drop for LoweringPool {
     fn drop(&mut self) {
         self.jobs = None;
+        // One stop per worker, behind the jobs already queued: each worker
+        // runs what was submitted before and exits (a job submitted after
+        // runs nowhere: its result channel reports the stopped worker).
+        for _ in &self.workers {
+            let _ = self.stop.send(Message::Stop);
+        }
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
@@ -514,4 +532,36 @@ pub(super) enum Drain {
     All,
     /// What is done, and the oldest beyond the queue limit.
     Bounded,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pool stops while a handle of it is still held (a frozen walk's
+    /// view when the coordinator unwinds from a panic): its workers exit
+    /// after the jobs queued before, never waiting for that handle.
+    #[test]
+    fn the_pool_stops_while_a_handle_is_held() {
+        let pool = LoweringPool::start(2).expect("the lowering workers start");
+        let held = pool.handle().expect("a running pool's handle").clone();
+        let queued = held
+            .submit(|| Err("ran".to_owned()))
+            .unwrap_or_else(|_| panic!("the running pool takes the job"));
+        let (done, stopped) = mpsc::channel();
+        std::thread::spawn(move || {
+            drop(pool);
+            let _ = done.send(());
+        });
+        stopped
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the pool stops with a handle held");
+        assert!(matches!(queued.recv(), Ok(Ok(Err(error))) if error == "ran"));
+        // After the stop the job is handed back (or reports the stopped
+        // worker), never left waiting.
+        match held.submit(|| Err("late".to_owned())) {
+            Err(_) => {}
+            Ok(pending) => assert!(pending.recv().is_err()),
+        }
+    }
 }
