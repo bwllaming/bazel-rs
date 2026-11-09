@@ -384,110 +384,23 @@ impl Engine {
         let verify_summary = verify_ahead();
         let jitter = jitter_millis();
         let job: Job = Box::new(move || {
-            if cancelled
-                .as_ref()
-                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
-            {
+            let stopped = || {
+                cancelled
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+            };
+            if stopped() {
                 return;
             }
-            let mut summary = None;
-            let mut platform_read = true;
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                crate::debug_panic::at("analysis-worker");
-                if jitter > 0 {
-                    let roll = loading_jitter_roll(index as u64, 0x5034) % (jitter + 1);
-                    let until = std::time::Instant::now() + std::time::Duration::from_millis(roll);
-                    while std::time::Instant::now() < until
-                        && !cancelled
-                            .as_ref()
-                            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
-                    {
-                        std::thread::sleep(std::time::Duration::from_millis(5));
-                    }
-                }
-                let class = crate::plan_timings::class_id(rule.rule_class_name());
-                let platform_known = frozen.engine.platform_resolved(&key);
-                let isolation = Isolation::enter();
-                let started = std::time::Instant::now();
-                let timer = crate::plan_timings::StageTimer::start(
-                    crate::plan_timings::PlanStage::Prepare,
-                    index as u64,
-                    class,
-                );
-                let mut cx = prepare::SharedPrepare::frozen(&frozen, index);
-                let prepared = Engine::prepare_custom(&mut cx, &key, &rule);
-                timer.finish();
-                let elapsed = started.elapsed();
-                let (effects, sentinel) = isolation.finish();
-                let prepare::SharedRecord { owner, abort, .. } = cx.record;
-                let aborted = sentinel
-                    || abort.is_some()
-                    || prepared.as_ref().is_err_and(|error| {
-                        crate::repository_demand::is_inline_rerun_sentinel(error)
-                    });
-                let mut outcome = FrozenOutcome {
-                    prepared: Ok(None),
-                    abort: abort.or(aborted.then_some("sentinel")),
-                    owner,
-                    effects,
-                    platform_known,
-                    elapsed,
-                    worker: None,
-                };
-                if aborted {
-                    return outcome;
-                }
-                let prepared = match prepared {
-                    Err(error) => {
-                        outcome.prepared = Err(error);
-                        return outcome;
-                    }
-                    Ok(prepared) => prepared,
-                };
-                let Some((parts, snapshot)) = PreparedParts::split(prepared) else {
-                    outcome.abort = Some("not_starlark");
-                    return outcome;
-                };
-                let delta = frozen.view.as_ref().map(|view| {
-                    Box::new(delta::DeltaInputs {
-                        view: view.clone(),
-                        key: parts.key.clone(),
-                        output_root: parts.output_root.clone(),
-                        action_owner: parts.action_owner.clone(),
-                        main_ignored: Arc::clone(&parts.main_ignored),
-                        transitive: parts.transitive.clone(),
-                        action_execution: parts.action_execution.clone(),
-                        platforms: frozen.engine.remote_platforms(
-                            &rule,
-                            parts.config,
-                            &parts.action_execution,
-                        ),
-                        class,
-                    })
-                });
-                let (worker, registers) = run_compute(
-                    snapshot,
-                    &parts.transitive,
-                    index,
-                    class,
-                    delta,
-                    frozen.compact_repo_mapping,
-                    verify_summary,
-                );
-                summary = registers;
-                platform_read = worker.sentinel || worker.outcome.platform_read;
-                outcome.prepared = Ok(Some(Box::new(parts)));
-                outcome.worker = Some(Ok(worker));
-                outcome
-            }));
-            let result = result.map_err(|_| {
-                WORKER_PANIC
-                    .with(|slot| slot.borrow_mut().take())
-                    .unwrap_or_else(|| "an analysis worker panicked".to_owned())
-            });
-            if result.is_err() {
-                summary = None;
-            }
+            let (result, summary, platform_read) = run_frozen(
+                &frozen,
+                index,
+                &key,
+                &rule,
+                jitter,
+                verify_summary,
+                &stopped,
+            );
             let _ = sender.send(result);
             if let Some(finished) = finished {
                 let _ = finished.send((index, summary, platform_read, std::time::Instant::now()));
@@ -615,6 +528,272 @@ impl Engine {
             }
         }
     }
+}
+
+/// A worker's prepare, compute and delta of plan entry `index` over
+/// `frozen` ([`Engine::dispatch_frozen`], the merge buffer's Starlark
+/// job): the outcome (`Err`: the text of a panic), the outputs its commit
+/// registers, and whether its implementation asked for a deferred target
+/// platform.
+pub(super) fn run_frozen(
+    frozen: &Frozen,
+    index: usize,
+    key: &ConfiguredTargetKey,
+    rule: &Arc<Rule>,
+    jitter: u64,
+    verify_summary: bool,
+    stopped: &dyn Fn() -> bool,
+) -> (
+    Result<FrozenOutcome, String>,
+    Option<Arc<OutputSummary>>,
+    bool,
+) {
+    let mut summary = None;
+    let mut platform_read = true;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::debug_panic::at("analysis-worker");
+        if jitter > 0 {
+            let roll = loading_jitter_roll(index as u64, 0x5034) % (jitter + 1);
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(roll);
+            while std::time::Instant::now() < until && !stopped() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        let class = crate::plan_timings::class_id(rule.rule_class_name());
+        let platform_known = frozen.engine.platform_resolved(key);
+        let isolation = Isolation::enter();
+        let started = std::time::Instant::now();
+        let timer = crate::plan_timings::StageTimer::start(
+            crate::plan_timings::PlanStage::Prepare,
+            index as u64,
+            class,
+        );
+        let mut cx = prepare::SharedPrepare::frozen(frozen, index);
+        let prepared = Engine::prepare_custom(&mut cx, key, rule);
+        timer.finish();
+        let elapsed = started.elapsed();
+        let (effects, sentinel) = isolation.finish();
+        let prepare::SharedRecord { owner, abort, .. } = cx.record;
+        let aborted = sentinel
+            || abort.is_some()
+            || prepared
+                .as_ref()
+                .is_err_and(|error| crate::repository_demand::is_inline_rerun_sentinel(error));
+        let mut outcome = FrozenOutcome {
+            prepared: Ok(None),
+            abort: abort.or(aborted.then_some("sentinel")),
+            owner,
+            effects,
+            platform_known,
+            elapsed,
+            worker: None,
+        };
+        if aborted {
+            return outcome;
+        }
+        let prepared = match prepared {
+            Err(error) => {
+                outcome.prepared = Err(error);
+                return outcome;
+            }
+            Ok(prepared) => prepared,
+        };
+        let Some((parts, snapshot)) = PreparedParts::split(prepared) else {
+            outcome.abort = Some("not_starlark");
+            return outcome;
+        };
+        let delta = frozen.view.as_ref().map(|view| {
+            Box::new(delta::DeltaInputs {
+                view: view.clone(),
+                key: parts.key.clone(),
+                output_root: parts.output_root.clone(),
+                action_owner: parts.action_owner.clone(),
+                main_ignored: Arc::clone(&parts.main_ignored),
+                transitive: parts.transitive.clone(),
+                action_execution: parts.action_execution.clone(),
+                platforms: frozen.engine.remote_platforms(
+                    rule,
+                    parts.config,
+                    &parts.action_execution,
+                ),
+                class,
+            })
+        });
+        let (worker, registers) = run_compute(
+            snapshot,
+            &parts.transitive,
+            index,
+            class,
+            delta,
+            frozen.compact_repo_mapping,
+            verify_summary,
+        );
+        summary = registers;
+        platform_read = worker.sentinel || worker.outcome.platform_read;
+        outcome.prepared = Ok(Some(Box::new(parts)));
+        outcome.worker = Some(Ok(worker));
+        outcome
+    }));
+    let result = result.map_err(|_| {
+        WORKER_PANIC
+            .with(|slot| slot.borrow_mut().take())
+            .unwrap_or_else(|| "an analysis worker panicked".to_owned())
+    });
+    if result.is_err() {
+        summary = None;
+    }
+    (result, summary, platform_read)
+}
+
+/// A native rule's results computed on a worker over `frozen`
+/// ([`Engine::dispatch_native`], the merge buffer's native job; `None`:
+/// not computable there).
+pub(super) fn run_native(
+    frozen: &Frozen,
+    index: usize,
+    key: &ConfiguredTargetKey,
+    rule: &Arc<Rule>,
+) -> Option<Box<NativePublished>> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let isolation = Isolation::enter();
+        let engine = &frozen.engine;
+        let reads: &dyn PlanReads = &frozen.results;
+        let mut cx = prepare::SharedPrepare::frozen(frozen, index);
+        let mut transitive = BTreeSet::from([rule.label.repository.clone()]);
+        let edges = engine.rule_edges(rule, key.config);
+        engine.native_transitive_in(reads, &rule, &key, &edges, &mut transitive);
+        let validation = Engine::native_validation_in(&mut cx, reads, &rule, key.config);
+        let output_group = super::native_results::selected_output_group(&rule);
+        let plain = Engine::inputs_in(&mut cx, reads, &rule, key.config).and_then(|(inputs, _)| {
+            let mut registered = inputs.clone();
+            // A filegroup's output group: its `srcs`' views.
+            let inputs = match &output_group {
+                None => inputs,
+                Some(group) => {
+                    let mut views = Vec::new();
+                    for text in &rule.srcs {
+                        let label = engine.resolve_rule_src(&rule, text)?;
+                        views.push(cx.plan_view(&label, key.config)?);
+                    }
+                    let reader = u32::try_from(index).unwrap_or(u32::MAX - 1);
+                    let mut selected = Vec::new();
+                    for file in super::native_results::output_group_files(&views, group) {
+                        // A workspace status file is registered on
+                        // first need, by its commit.
+                        let (artifact, _) = frozen
+                            .artifacts
+                            .get_entry(&file, reader)
+                            .ok_or_else(|| "unregistered".to_owned())?;
+                        selected.push(artifact);
+                    }
+                    selected
+                }
+            };
+            Engine::native_plain_in(
+                &mut cx,
+                reads,
+                &frozen.configured,
+                &rule,
+                &key,
+                key.config,
+                inputs,
+                &mut |artifact| registered.push(artifact.clone()),
+            )
+            .map(|plain| (plain, registered))
+        });
+        let (effects, sentinel) = isolation.finish();
+        let quiet = effects.console.is_empty()
+            && effects.observations.is_empty()
+            && effects.roots.is_empty();
+        if sentinel || !quiet || cx.record.abort.is_some() {
+            return None;
+        }
+        let (plain, registered) = plain.ok()?;
+        Some(Box::new(NativePublished {
+            results: KeyResults {
+                dry: Some(Arc::new(plain.dry)),
+                providers: plain.providers,
+                provider_keys: None,
+                runfiles_info: plain.runfiles_info,
+                validation,
+                repositories: Some(Arc::new(transitive)),
+            },
+            registered,
+        }))
+    }))
+    .ok()
+    .flatten()
+}
+
+/// Publish a native rule's results computed on a worker (plan index
+/// `index`): its results for its dependents, its inputs' registrations
+/// provisionally.
+pub(super) fn publish_native_results(
+    frozen: &Frozen,
+    index: usize,
+    key: &ConfiguredTargetKey,
+    published: NativePublished,
+) {
+    let stamp = u32::try_from(index).unwrap_or(u32::MAX - 1);
+    let NativePublished {
+        results,
+        registered,
+    } = published;
+    for artifact in &registered {
+        frozen.artifacts.publish_provisional(
+            file_hash(&artifact.file),
+            &artifact.file,
+            artifact,
+            stamp,
+        );
+    }
+    frozen
+        .results
+        .key_shard(key)
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key.clone(), Arc::new(results));
+    delta::provisional_bump(4);
+    profile(|profile| profile.publish(index));
+}
+
+/// Publish entry `index`'s phase-2 results from its worker's delta
+/// ([`Engine::publish_ahead`]'s rule); whether they were.
+pub(super) fn publish_starlark_results(
+    frozen: &Frozen,
+    index: usize,
+    parts: &PreparedParts,
+    worker: &WorkerOutcome,
+    platform_known: bool,
+) -> bool {
+    profile(|profile| profile.publish(index));
+    if !publishes()
+        || worker.sentinel
+        || !(platform_known || !worker.outcome.platform_read)
+        || worker.outcome.analyzed.is_err()
+    {
+        return false;
+    }
+    let Some(delta::Built::Delta(built)) = worker.outcome.delta.as_ref().map(|delta| &delta.built)
+    else {
+        return false;
+    };
+    if built.error.is_some() || built.failed_output.is_some() {
+        return false;
+    }
+    let stamp = u32::try_from(index).unwrap_or(u32::MAX - 1);
+    frozen.results.publish_delta(
+        &parts.key,
+        built,
+        &parts.transitive,
+        &frozen.artifacts,
+        stamp,
+    );
+    delta::provisional_bump(0);
+    if !built.reads.is_empty() {
+        delta::provisional_bump(2);
+    }
+    true
 }
 
 /// T2, `BAZEL_RS_TIMING`: when each phase-2 result of the frozen walks
@@ -821,77 +1000,7 @@ impl Engine {
             .as_ref()
             .map(|pool| pool.finished.0.clone());
         let job: Job = Box::new(move || {
-            let published = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let isolation = Isolation::enter();
-                let engine = &frozen.engine;
-                let reads: &dyn PlanReads = &frozen.results;
-                let mut cx = prepare::SharedPrepare::frozen(&frozen, index);
-                let mut transitive = BTreeSet::from([rule.label.repository.clone()]);
-                let edges = engine.rule_edges(&rule, key.config);
-                engine.native_transitive_in(reads, &rule, &key, &edges, &mut transitive);
-                let validation = Engine::native_validation_in(&mut cx, reads, &rule, key.config);
-                let output_group = super::native_results::selected_output_group(&rule);
-                let plain =
-                    Engine::inputs_in(&mut cx, reads, &rule, key.config).and_then(|(inputs, _)| {
-                        let mut registered = inputs.clone();
-                        // A filegroup's output group: its `srcs`' views.
-                        let inputs = match &output_group {
-                            None => inputs,
-                            Some(group) => {
-                                let mut views = Vec::new();
-                                for text in &rule.srcs {
-                                    let label = engine.resolve_rule_src(&rule, text)?;
-                                    views.push(cx.plan_view(&label, key.config)?);
-                                }
-                                let reader = u32::try_from(index).unwrap_or(u32::MAX - 1);
-                                let mut selected = Vec::new();
-                                for file in super::native_results::output_group_files(&views, group)
-                                {
-                                    // A workspace status file is registered on
-                                    // first need, by its commit.
-                                    let (artifact, _) = frozen
-                                        .artifacts
-                                        .get_entry(&file, reader)
-                                        .ok_or_else(|| "unregistered".to_owned())?;
-                                    selected.push(artifact);
-                                }
-                                selected
-                            }
-                        };
-                        Engine::native_plain_in(
-                            &mut cx,
-                            reads,
-                            &frozen.configured,
-                            &rule,
-                            &key,
-                            key.config,
-                            inputs,
-                            &mut |artifact| registered.push(artifact.clone()),
-                        )
-                        .map(|plain| (plain, registered))
-                    });
-                let (effects, sentinel) = isolation.finish();
-                let quiet = effects.console.is_empty()
-                    && effects.observations.is_empty()
-                    && effects.roots.is_empty();
-                if sentinel || !quiet || cx.record.abort.is_some() {
-                    return None;
-                }
-                let (plain, registered) = plain.ok()?;
-                Some(Box::new(NativePublished {
-                    results: KeyResults {
-                        dry: Some(Arc::new(plain.dry)),
-                        providers: plain.providers,
-                        provider_keys: None,
-                        runfiles_info: plain.runfiles_info,
-                        validation,
-                        repositories: Some(Arc::new(transitive)),
-                    },
-                    registered,
-                }))
-            }))
-            .ok()
-            .flatten();
+            let published = run_native(&frozen, index, &key, &rule);
             let _ = sender.send(published);
             if let Some(finished) = finished {
                 let _ = finished.send((index, None, true, std::time::Instant::now()));
@@ -963,27 +1072,7 @@ impl Engine {
         if state.dry.contains_key(key) || pipe.published.contains_key(key) {
             return;
         }
-        let stamp = u32::try_from(index).unwrap_or(u32::MAX - 1);
-        let NativePublished {
-            results,
-            registered,
-        } = published;
-        for artifact in &registered {
-            frozen.artifacts.publish_provisional(
-                file_hash(&artifact.file),
-                &artifact.file,
-                artifact,
-                stamp,
-            );
-        }
-        frozen
-            .results
-            .key_shard(key)
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(key.clone(), Arc::new(results));
-        delta::provisional_bump(4);
-        profile(|profile| profile.publish(index));
+        publish_native_results(frozen, index, key, published);
         pipe.published.insert(key.clone(), index);
         pipe.newly_published.push(key.clone());
     }
@@ -1038,34 +1127,8 @@ impl Engine {
         let Some(frozen) = self.frozen_walk.as_ref() else {
             return;
         };
-        // The Ct2 completion profile: when its worker finished.
-        profile(|profile| profile.publish(index));
-        if !publishes()
-            || worker.sentinel
-            || !(platform_known || !worker.outcome.platform_read)
-            || worker.outcome.analyzed.is_err()
-        {
+        if !publish_starlark_results(frozen, index, parts, worker, platform_known) {
             return;
-        }
-        let Some(delta::Built::Delta(built)) =
-            worker.outcome.delta.as_ref().map(|delta| &delta.built)
-        else {
-            return;
-        };
-        if built.error.is_some() || built.failed_output.is_some() {
-            return;
-        }
-        let stamp = u32::try_from(index).unwrap_or(u32::MAX - 1);
-        frozen.results.publish_delta(
-            &parts.key,
-            built,
-            &parts.transitive,
-            &frozen.artifacts,
-            stamp,
-        );
-        delta::provisional_bump(0);
-        if !built.reads.is_empty() {
-            delta::provisional_bump(2);
         }
         pipe.published.insert(parts.key.clone(), index);
         pipe.newly_published.push(parts.key.clone());
