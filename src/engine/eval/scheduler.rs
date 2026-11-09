@@ -684,7 +684,18 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
     fn run_inline(&self, id: NodeId, lane: &RefCell<&mut dyn RepoLane>) {
         let entry = self.graph.entry(id);
         let key = self.graph.key(id);
+        // BAZEL_RS_EVAL_TIMELINE: why the sequential pass of a pooled
+        // evaluation runs this attempt.
+        let timed = self.pool.is_some() && super::timeline::on();
+        let mut rerun = false;
         loop {
+            let cause = timed.then(|| {
+                let (cause, detail) = self.inline_cause(id, rerun);
+                super::timeline::seq_enter(cause, || detail);
+                cause
+            });
+            rerun = true;
+            let _timed = TimedAttempt(cause, key.kind());
             // A node parked by the pool: its waiter registrations die.
             entry.epoch.fetch_add(1, Ordering::AcqRel);
             entry.set_state(State::Running);
@@ -761,6 +772,94 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                     return;
                 }
             }
+        }
+    }
+
+    /// BAZEL_RS_EVAL_TIMELINE: why the inline driver runs `id` (its state
+    /// before; for a node the pool left to it, the pool's reason).
+    fn inline_cause(&self, id: NodeId, rerun: bool) -> (&'static str, String) {
+        if rerun {
+            return ("re-run after a fetch", String::new());
+        }
+        let entry = self.graph.entry(id);
+        let key = || {
+            format!("{:?}", self.graph.key(id))
+                .chars()
+                .take(200)
+                .collect::<String>()
+        };
+        match entry.state() {
+            State::Fresh => ("fresh", String::new()),
+            State::Queued => ("queued (woken, not run yet)", key()),
+            State::Deferred => ("deferred", key()),
+            State::Waiting => match entry.inner.lock().wait.clone() {
+                Wait::Repo(name) | Wait::Unresolvable(name)
+                    if name == super::nodes::bodies::INLINE =>
+                {
+                    let reason = super::timeline::inline_reason(id).unwrap_or_default();
+                    ("left by the pool", format!("{reason} [{}]", key()))
+                }
+                Wait::Repo(name) | Wait::Unresolvable(name) => (
+                    "parked on a lane blocker",
+                    format!("{} [{}]", name.escape_debug(), key()),
+                ),
+                Wait::Nodes(nodes) => {
+                    // The chain of first unfinished dependencies, to what
+                    // blocks it.
+                    let mut chain = Vec::new();
+                    let mut at = nodes
+                        .iter()
+                        .copied()
+                        .find(|node| self.graph.entry(*node).state() != State::Done);
+                    let mut end = String::from("done");
+                    while let Some(node) = at.take() {
+                        chain.push(self.graph.key(node).kind());
+                        if chain.len() > 64 {
+                            end = "a long chain".to_owned();
+                            break;
+                        }
+                        let dependency = self.graph.entry(node);
+                        let state = dependency.state();
+                        if state != State::Waiting {
+                            end = format!("{state:?}");
+                            break;
+                        }
+                        let wait = dependency.inner.lock().wait.clone();
+                        match wait {
+                            Wait::Nodes(deps) => {
+                                at = deps
+                                    .into_iter()
+                                    .find(|dep| self.graph.entry(*dep).state() != State::Done);
+                                if at.is_none() {
+                                    end = "ready".to_owned();
+                                }
+                            }
+                            Wait::Repo(name) | Wait::Unresolvable(name)
+                                if name == super::nodes::bodies::INLINE =>
+                            {
+                                end = format!(
+                                    "left by the pool: {} [{}]",
+                                    super::timeline::inline_reason(node).unwrap_or_default(),
+                                    format!("{:?}", self.graph.key(node))
+                                        .chars()
+                                        .take(160)
+                                        .collect::<String>()
+                                );
+                            }
+                            other => {
+                                end = format!("{other:?}").chars().take(200).collect();
+                            }
+                        }
+                    }
+                    (
+                        "waiting on a node",
+                        format!("{} -> {end}", chain.join(" -> ")),
+                    )
+                }
+                Wait::BackEdge(_) => ("a back edge", key()),
+                Wait::None => ("waiting (none)", key()),
+            },
+            State::Running | State::Done => ("running", key()),
         }
     }
 
@@ -1127,6 +1226,17 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             };
         }
         self.outcome(roots)
+    }
+}
+
+/// BAZEL_RS_EVAL_TIMELINE: ends a sequential attempt's frame when dropped.
+struct TimedAttempt(Option<&'static str>, &'static str);
+
+impl Drop for TimedAttempt {
+    fn drop(&mut self) {
+        if let Some(cause) = self.0 {
+            super::timeline::seq_exit(self.1, cause);
+        }
     }
 }
 

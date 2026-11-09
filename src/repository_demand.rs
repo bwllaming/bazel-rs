@@ -59,7 +59,7 @@ pub fn is_parallel_bzl_cycle(error: &str) -> bool {
 /// point, so a worker (no-demand mode) aborts its unit instead and the
 /// coordinator re-runs it inline there (W6 phase-1 prefetch; P2).
 pub fn order_dependent(what: &str) -> String {
-    note_sentinel();
+    note_sentinel_about(|| format!("order-dependent: {what}"));
     format!(
         "{NEEDS_REPOSITORY}: {what} depends on the repositories materialized so far and this thread does not decide it"
     )
@@ -76,6 +76,32 @@ pub fn note_sentinel() {
     SENTINELS.with(|count| count.set(count.get().wrapping_add(1)));
 }
 
+/// Whether [`note_sentinel_about`] keeps what each sentinel was about
+/// (`BAZEL_RS_EVAL_TIMELINE`: why the evaluator's pool left work to its
+/// sequential pass).
+pub static DESCRIBE_SENTINELS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+thread_local! {
+    static LAST_SENTINEL: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// [`note_sentinel`], remembering `what` it was about while
+/// [`DESCRIBE_SENTINELS`] is on ([`last_sentinel`]).
+pub fn note_sentinel_about(what: impl FnOnce() -> String) {
+    note_sentinel();
+    if DESCRIBE_SENTINELS.load(std::sync::atomic::Ordering::Relaxed) {
+        let what = what();
+        LAST_SENTINEL.with(|last| *last.borrow_mut() = Some(what));
+    }
+}
+
+/// What the last sentinel this thread raised was about (diagnostics).
+pub fn last_sentinel() -> Option<String> {
+    LAST_SENTINEL.with(|last| last.borrow().clone())
+}
+
 /// How many no-demand sentinels ([`NEEDS_REPOSITORY`]) this thread has
 /// raised so far: work during which the count moved depended on a demand
 /// it did not make, even when a caller swallowed the error.
@@ -85,7 +111,7 @@ pub fn sentinels_raised() -> u64 {
 
 /// The sentinel of the unfetched value `key` of runtime `runtime_id`.
 fn unfetched(runtime_id: u64, key: &str) -> String {
-    note_sentinel();
+    note_sentinel_about(|| format!("unfetched runtime value {key}"));
     format!(
         "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
     )

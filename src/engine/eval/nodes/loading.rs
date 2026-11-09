@@ -340,6 +340,13 @@ pub(crate) fn package_body(
                         .push(blocker.to_owned());
                     return Err(Missing::Repo(blocker.to_owned()));
                 }
+                super::super::timeline::note_inline(cx.current(), || {
+                    let error = sentinel.map(String::as_str).unwrap_or_default();
+                    format!(
+                        "a package load's sentinel ({})",
+                        error.chars().take(160).collect::<String>()
+                    )
+                });
                 return Err(Missing::Repo(super::bodies::INLINE.to_owned()));
             }
             // The roots it obtained before the sequential engine had them

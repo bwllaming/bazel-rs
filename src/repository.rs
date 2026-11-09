@@ -3183,7 +3183,7 @@ impl RepositorySet {
             let _ = self.root(repository);
             return;
         }
-        crate::repository_demand::note_sentinel();
+        crate::repository_demand::note_sentinel_about(|| format!("unprepared group {id}"));
         UNIT_ROOTS.with(|roots| {
             if let Some(roots) = roots.borrow_mut().as_mut() {
                 roots.insert(format!("{EVAL_GROUP_KEY}{id}"));
@@ -4132,7 +4132,9 @@ impl RepositorySet {
     /// never its demand slot; noted for the commit, which demands it.
     fn speculative_registry_root(&self, repository: &str) -> Result<&Path, String> {
         let unfetched = || {
-            crate::repository_demand::note_sentinel();
+            crate::repository_demand::note_sentinel_about(|| {
+                format!("registry root @@{repository} (speculative)")
+            });
             format!(
                 "{}: repository @@{repository} is unfetched and this thread does not fetch",
                 crate::repository_demand::NEEDS_REPOSITORY
@@ -7354,7 +7356,7 @@ fn guarded_root_slot<'a>(
         return result.as_ref().map(PathBuf::as_path).map_err(Clone::clone);
     }
     if crate::repository_demand::no_demand_active() {
-        crate::repository_demand::note_sentinel();
+        crate::repository_demand::note_sentinel_about(|| format!("root @@{repository}"));
         return Err(format!(
             "{}: repository @@{repository} is unfetched and this thread does not fetch",
             crate::repository_demand::NEEDS_REPOSITORY

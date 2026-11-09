@@ -580,6 +580,12 @@ impl Coord<'_> {
                 started.elapsed().as_micros() as u64,
                 std::sync::atomic::Ordering::Relaxed,
             );
+            super::super::timeline::mark(|| {
+                format!(
+                    "a pass-2 walk of plan [{walked}, {end}) in {} ms",
+                    started.elapsed().as_millis()
+                )
+            });
             let pending = self.engine.eval_pass2.take();
             let (result, done) = result;
             // What the walk analyzed itself (a deferred target platform's
@@ -1379,10 +1385,16 @@ impl Engine {
                 && target != top.native.host_platform)
                 .then_some(target)
         };
+        super::super::timeline::start();
+        crate::repository_demand::DESCRIBE_SENTINELS.store(
+            super::super::timeline::on(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         super::capture::start(tracking);
         let console = crate::ui::DeferredConsole::start();
         crate::ui::set_count_deferred(true);
         let shared = EvalShared::from_engine(self);
+        super::super::timeline::mark(|| "the shared view built".to_owned());
         let mut lin = Linearizer {
             pass: Pass1::new(Options { warnings }),
             ops: Vec::new(),
@@ -1439,6 +1451,9 @@ impl Engine {
             // requests need first (attempts only the sequential pass can
             // run park); the walk's order then drives the inline pass over
             // the same graph.
+            super::super::timeline::mark(|| {
+                "the evaluator built (scratch engine forked)".to_owned()
+            });
             let pooled_at = std::time::Instant::now();
             let _ = POOL_START.set(pooled_at);
             let pool_roots = if evaluator.pooled() {
@@ -1597,6 +1612,7 @@ impl Engine {
             );
             crate::alloc_arena::purge();
             crate::perf_mark("plan.eval_graph_dropped");
+            super::super::timeline::mark(|| "the evaluator's graph dropped".to_owned());
             let mut coord = bodies.coord();
             coord.drain();
             coord.store.segments_done = true;
@@ -1609,6 +1625,9 @@ impl Engine {
                     .unwrap_or(error)),
                 finished => finished,
             };
+            super::super::timeline::mark(|| {
+                format!("the deferred walks done ({})", linearizer_times())
+            });
             let mut lin = coord.lin.take().expect("the linearizer");
             coord.publish(&mut lin, &shared);
             let result = result.and(finished).and_then(|()| {
@@ -1660,6 +1679,8 @@ impl Engine {
         // linearizer): their pages before the planning tail's peak.
         crate::alloc_arena::purge();
         crate::perf_mark("plan.eval_phase1_done");
+        super::super::timeline::mark(|| "phase 1 done".to_owned());
+        super::super::timeline::report();
         // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
         if std::env::var_os("BAZEL_RS_EVAL_PARKED_DEBUG").is_some() {
             let kinds = std::mem::take(
@@ -1876,6 +1897,18 @@ fn parked_histogram(evaluator: &Evaluator<'_, Phase1Bodies<'_, '_>>) {
     }
 }
 
+/// BAZEL_RS_EVAL_TIMELINE: the linearizer's cumulative times.
+fn linearizer_times() -> String {
+    let ms = |index: usize| STATS[index].load(std::sync::atomic::Ordering::Relaxed) / 1000;
+    format!(
+        "so far: pass 1 {} ms, tape {} ms, publication {} ms, flush phase 2 {} ms",
+        ms(STAT_PASS1),
+        ms(STAT_APPLY),
+        ms(STAT_PUBLISH),
+        ms(STAT_PHASE2)
+    )
+}
+
 /// BAZEL_RS_EVAL_STATS=1.
 fn stats_enabled() -> bool {
     // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
@@ -1941,7 +1974,9 @@ fn warm_up(
         .into_iter()
         .collect();
     roots.extend(labels.iter().map(|label| NodeKey::Tgt(label.clone())));
+    super::super::timeline::mark(|| "round 1 begins: the requested lookups".to_owned());
     evaluator.evaluate_round(&roots, &mut lane);
+    super::super::timeline::mark(|| "round 1: the requested lookups done".to_owned());
     let no_config = shared
         .configurations
         .lock()
@@ -1965,6 +2000,13 @@ fn warm_up(
         })
         .collect();
     evaluator.evaluate_round(&roots, &mut lane);
+    super::super::timeline::mark(|| {
+        format!(
+            "round 1 done: {} nodes done of {}",
+            evaluator.stats().done,
+            evaluator.graph().len()
+        )
+    });
     pooled.store(false, std::sync::atomic::Ordering::Release);
     roots
 }
@@ -1994,8 +2036,19 @@ fn pool_round(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
             < 200;
-    let before = counted.then(|| evaluator.stats().done);
+    let before = (counted || super::super::timeline::on()).then(|| evaluator.stats().done);
+    super::super::timeline::mark(|| {
+        format!("pool round begins ({} nodes done)", before.unwrap_or(0))
+    });
     evaluator.evaluate_round(roots, &mut Lane { shared });
+    super::super::timeline::mark(|| {
+        let done = evaluator.stats().done;
+        format!(
+            "pool round done: {} nodes ({done} done of {})",
+            done - before.unwrap_or(0),
+            evaluator.graph().len()
+        )
+    });
     if stats_enabled() {
         let elapsed = started.elapsed();
         let done = before.map_or(0, |before| evaluator.stats().done - before);
@@ -2192,6 +2245,18 @@ fn drive(
             started.elapsed().as_micros() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
+        let evaluated = started.elapsed();
+        if super::super::timeline::on()
+            && (sequential_attempts() != ran || evaluated.as_millis() >= 5)
+        {
+            super::super::timeline::mark(|| {
+                format!(
+                    "requested #{position} {label}: evaluated in {} ms, {} sequential attempts",
+                    evaluated.as_millis(),
+                    sequential_attempts() - ran
+                )
+            });
+        }
         // The requested target's segment renders the chain errors.
         let analyzed = analyzed.map_err(|error| render_chains(shared, &error, trimmed.as_ref()));
         // A flush of this segment that failed where the walk would have
@@ -2231,6 +2296,16 @@ fn drive(
             linearizing.elapsed().as_micros() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
+        if linearizing.elapsed().as_millis() >= 5 {
+            super::super::timeline::mark(|| {
+                format!(
+                    "requested #{position}: linearized in {} ms ({}; plan {})",
+                    linearizing.elapsed().as_millis(),
+                    linearizer_times(),
+                    bodies.coord().lin.as_ref().map_or(0, |lin| lin.plan.len())
+                )
+            });
+        }
         // Engine::analyze_requested's report of an aborted analysis.
         analyzed.map_err(|error| {
             match error.split_once(super::super::super::ANALYSIS_ABORTED) {

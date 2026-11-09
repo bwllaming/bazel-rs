@@ -676,6 +676,16 @@ impl Bodies for Phase1Bodies<'_, '_> {
             }
         }
         let raised = sentinel || order;
+        if raised && result.is_ok() && !matches!(key, NodeKey::Pkg(_)) {
+            super::super::timeline::note_inline(cx.current(), || {
+                let what = if sentinel {
+                    crate::repository_demand::last_sentinel().unwrap_or_default()
+                } else {
+                    "an order-dependent decision".to_owned()
+                };
+                format!("a swallowed sentinel ({what})")
+            });
+        }
         crate::repository_demand::restore_order_dependent(order_dependent);
         match result {
             Ok(_) if raised && !matches!(key, NodeKey::Pkg(_)) => {
