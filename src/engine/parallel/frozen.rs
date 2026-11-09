@@ -214,30 +214,37 @@ impl PlannedResults {
     }
 
     /// Copy the declarations made since the last call.
-    pub(in crate::engine) fn publish_declared(&self, state: &ActionPlanning) {
+    ///
+    /// Only an output-file target's declaration (its generating rule's
+    /// predeclared output, what a reader of the label asks for) replaces
+    /// one published: another target's declaration of the path merged
+    /// earlier in plan order must not hide the generating rule's published
+    /// ahead of its merge (a reader of the label is ready once that is).
+    pub(in crate::engine) fn publish_declared(&self, state: &ActionPlanning, engine: &Engine) {
         let Some(journal) = state.declared.journal.as_ref() else {
             return;
         };
         let keys = std::mem::take(&mut *journal.lock().unwrap_or_else(|e| e.into_inner()));
         for key in keys {
             if let Some(artifact) = state.declared.get(key.config, &key.path) {
+                let predeclared = predeclared(engine, &key, artifact);
                 self.declared_shard(key.hash)
                     .write()
                     .unwrap_or_else(|e| e.into_inner())
-                    .put(key, artifact.clone(), true);
+                    .put(key, artifact.clone(), predeclared);
             }
         }
     }
 
     /// The results committed since the last walk (`state.dry` only grows;
     /// the declarations by their journal).
-    fn catch_up(&self, state: &ActionPlanning) {
+    fn catch_up(&self, state: &ActionPlanning, engine: &Engine) {
         for key in state.dry.keys() {
             if self.get(key).is_none() {
                 self.publish(key, state);
             }
         }
-        self.publish_declared(state);
+        self.publish_declared(state, engine);
     }
 
     /// Every result of `state` (the targets committed before the walk).
@@ -255,6 +262,23 @@ impl PlannedResults {
         }
         results
     }
+}
+
+/// Whether `artifact`, declared at `key`, is an output-file target's: a
+/// predeclared output of the rule owning it.
+fn predeclared(engine: &Engine, key: &DeclaredKey, artifact: &Artifact) -> bool {
+    let Ok(owner) = Label::parse_canonical(&artifact.owner) else {
+        return false;
+    };
+    let Some(Ok(Target::Rule(rule))) = engine.target_readonly(&owner) else {
+        return false;
+    };
+    let output_root = engine.configurations.output_root(key.config);
+    rule.outs.iter().any(|out| {
+        rule.label
+            .with_name(out)
+            .is_ok_and(|label| label.generated_exec_path(&output_root) == key.path)
+    })
 }
 
 impl PlanReads for PlannedResults {
@@ -364,7 +388,7 @@ impl Engine {
         let results = match state.walk_results.take() {
             // What was committed since the last frozen walk.
             Some(results) => {
-                results.catch_up(state);
+                results.catch_up(state, self);
                 results
             }
             None => Arc::new(PlannedResults::seed(state)),

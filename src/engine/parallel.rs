@@ -2287,7 +2287,7 @@ impl Engine {
         }
         if let Some(frozen) = &self.frozen_walk {
             frozen.results.publish(key, state);
-            frozen.results.publish_declared(state);
+            frozen.results.publish_declared(state, self);
             Self::native_publish_wake(state, pipe, key);
         }
         let Some(waiters) = pipe.waiting.remove(key) else {

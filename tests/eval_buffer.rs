@@ -35,6 +35,27 @@ def _w_impl(ctx):
     )
     return [DefaultInfo(files = depset([summary], transitive = [files]))]
 
+def _writer_impl(ctx):
+    out = ctx.outputs.out if ctx.attr.out else ctx.actions.declare_file(ctx.attr.path)
+    ctx.actions.write(out, "shared write\n")
+    return [DefaultInfo(files = depset([out]))]
+
+writer = rule(
+    implementation = _writer_impl,
+    attrs = {"out": attr.output(), "path": attr.string()},
+)
+
+def _owners_impl(ctx):
+    print("owners %s" % [(file.path, file.owner) for file in ctx.files.srcs])
+    report = ctx.actions.declare_file(ctx.label.name + ".report")
+    ctx.actions.write(report, str([(file.path, file.owner) for file in ctx.files.srcs]))
+    return [DefaultInfo(files = depset([report]))]
+
+owners = rule(
+    implementation = _owners_impl,
+    attrs = {"srcs": attr.label_list(allow_files = True)},
+)
+
 w = rule(
     implementation = _w_impl,
     attrs = {
@@ -199,6 +220,27 @@ w(name = "z", deps = [":r", ":a"])
             }
         });
     }
+}
+
+/// An output-file target's File names its generating rule even when
+/// another target of the package declared the same path (a shared action)
+/// earlier in plan order and merged before the generating rule published:
+/// a reader of the label gets the generating rule's declaration.
+#[test]
+fn an_output_file_label_resolves_to_its_generating_rules_declaration() {
+    let ws = Workspace::new(&[(
+        "o/BUILD.bazel",
+        r#"load("//rules:defs.bzl", "owners", "writer")
+writer(name = "w_declared", path = "w.txt")
+writer(name = "w_output", out = "w.txt")
+owners(name = "w_owners", srcs = [":w.txt"])
+"#
+        .to_owned(),
+    )]);
+    compare(&ws, &["//o:w_declared", "//o:w_owners"], |success, text| {
+        assert!(success, "{text}");
+        assert!(text.contains("Label(\"//o:w_output\")"), "{text}");
+    });
 }
 
 /// A target in the middle of the plan fails; the targets after it (not

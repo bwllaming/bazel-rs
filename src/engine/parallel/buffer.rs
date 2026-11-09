@@ -938,7 +938,7 @@ impl Engine {
                     board.frozen.results.publish(&key, state);
                     board.mark(&key);
                 }
-                board.frozen.results.publish_declared(state);
+                board.frozen.results.publish_declared(state, self);
             }
         }
         self.flush_delegations(state);
