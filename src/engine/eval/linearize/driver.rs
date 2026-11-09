@@ -631,6 +631,13 @@ impl Coord<'_> {
                 lin.pass.external(key.clone(), super::pass1::EXTERNAL, true);
             }
             let added = lin.plan.len() - end;
+            if added > 0 {
+                super::super::timeline::mark(|| {
+                    format!(
+                        "the walk to {end} planned {added} entries itself (a deferred platform's tree)"
+                    )
+                });
+            }
             lin.replay.planned_elsewhere(added);
             // Plan positions after `end` moved by what the walk added.
             for (_, planned) in &mut self.store.release_pending {

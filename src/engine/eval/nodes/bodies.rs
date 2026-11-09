@@ -955,7 +955,9 @@ impl Coord<'_> {
     /// are the [`Inbox`]'s).
     pub(crate) fn begin_attempt(&mut self, id: NodeId, key: &NodeKey) {
         self.store.keys.entry(id).or_insert_with(|| key.clone());
-        self.store.carry.remove(&id);
+        // The abandoned attempt's events stay visible to pass 1 while the
+        // rerun runs (on a pool thread nothing else shows them; the rerun
+        // re-emits them first): replaced when it finishes or stops.
     }
 
     /// The running attempt received a `Missing`: it stops here.
@@ -974,6 +976,7 @@ impl Coord<'_> {
             source,
             package,
         } = parts;
+        self.store.carry.remove(&running.id);
         self.store.memo_ok.insert(running.id, memo_ok);
         self.store.published.extend(published);
         if let Some((ct, ct1)) = ct1 {

@@ -546,15 +546,18 @@ impl Pass1 {
                         .ok_or("internal error: pass 1: a segment vanished")?;
                     (segment.events.get(*pos), segment.complete, Blocker::Segment)
                 }
-                Frame::Body { node, pos, .. } => {
-                    let (events, complete) = source
-                        .events(*node, false)
-                        .ok_or("internal error: pass 1: a body vanished")?;
-                    (events.get(*pos), complete, Blocker::Node(*node))
-                }
+                Frame::Body { node, pos, .. } => match source.events(*node, false) {
+                    Some((events, complete)) => (events.get(*pos), complete, Blocker::Node(*node)),
+                    // Between a rerun's start and its end (nodes finish in
+                    // any order): wait for it.
+                    None if !source.evaluation_done() => (None, false, Blocker::Node(*node)),
+                    None => return Err("internal error: pass 1: a body vanished".to_owned()),
+                },
                 Frame::Memo { node, pos, .. } => match source.events(*node, true) {
                     Some((events, complete)) => (events.get(*pos), complete, Blocker::Node(*node)),
-                    None => (None, true, Blocker::Node(*node)),
+                    // A memo replayed in part whose rerun runs: wait for it
+                    // (its effects are not all known yet).
+                    None => (None, source.evaluation_done(), Blocker::Node(*node)),
                 },
             };
             let depth = self.frames.len() - 1;
