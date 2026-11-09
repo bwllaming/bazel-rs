@@ -1806,6 +1806,127 @@ over 2–3 threads where nothing reads between, §6). At each merge:
 cursor's missing entries and what they need run (`Evaluator::boost` on the
 cursor's `Ct2` and, transitively, its waits; deferred nodes otherwise).
 
+### T3 as built (eval-t3)
+
+Branch `eval-t3`. Code: `parallel/buffer.rs` (new), `parallel/frozen.rs`
+(the jobs as functions of the frozen view, genrule results, the results
+kept across walks), `engine.rs` (`Shared`), `eval/verify.rs`
+(`fork_frozen`), `lowering.rs`.
+
+**The merge buffer** replaces the pipeline in a frozen walk (every eval
+pass-2 walk of ≥ 2,048 entries; `BAZEL_RS_EVAL_FROZEN_PREPARES=0` off,
+`=all` every walk; `BAZEL_RS_EVAL_NO_BUFFER=1` the T2 pipeline):
+
+- **Classification on the workers**, 64 entries per job, for the window
+  ahead of the cursor (16,384, `BAZEL_RS_T3_WINDOW`): a Starlark rule's
+  requirements (`ahead_requirements` over the frozen view: dependency edges
+  after the alias chain, output files' generating rules — looked up in the
+  frozen packages —, resolved toolchains), a native rule's whose results a
+  worker computes (`publishes_native`, now including genrules: their
+  outputs, declarations and data runfiles); attribute-aspect rules,
+  package groups and coverage natives are the cursor's at their turn.
+- **Dispatch on publication**: an entry whose requirements all have
+  results (published by a worker or committed) is queued; its job (a
+  Starlark rule's prepare + compute + delta, a native rule's results)
+  publishes its own results and readies its dependents (`Board::mark`).
+  The queue takes the lowest plan index first.
+- **Per-entry stage** (idle, classifying, queued, running, done, claimed):
+  the cursor takes a done job, waits for a running one, runs a queued one
+  itself (`stolen`), and prepares an idle one at its turn (`buffered_at_turn`:
+  prepare + compute there, as the walk).
+- **The cursor only merges**: `commit_turn` (the producers' exact check;
+  a delta meeting a producer, or with stale provisional reads, is rebuilt
+  there — from the kept analysis result when the worker left it, else
+  computed again), the pass-2 ops at their positions, the effects the
+  jobs held (console, observations, roots) applied in plan order. A plain
+  native rule whose results a worker published is merged from them
+  (`merge_published_native`: artifacts resolved through the index, the
+  published files to build reused when no producer changed;
+  `BAZEL_RS_VERIFY_DELTA` / `BAZEL_RS_VERIFY_AHEAD` / `--profile` /
+  `BAZEL_RS_T3_NATIVE_COMMIT=1` commit instead, checking them). The first
+  error in plan order stops the walk (fail fast; later finished jobs held
+  their effects: dropped; a worker's panic is raised at its turn).
+- **Declarations**: a merge republishes a declaration only as an
+  output-file target's when it is one (`frozen::predeclared`): another
+  target's earlier declaration of the path no longer hides the generating
+  rule's published one (`shared_actions` `write_output_first`, reachable
+  under T2's frozen walks too).
+- What the buffer makes unnecessary in the eval path: commit-ahead
+  classification and retries (`Pipeline::unsettled`, barriers, parks),
+  Starlark at the turn, the turn-stamped prepares (merges are at the turn).
+  The walk keeps the pipeline unchanged.
+
+**The frozen view without a fork**: the phase-1 tables the workers read
+are `Shared<T>` (an `Arc`, copied on the first write while shared:
+`Arc::make_mut`), as are the configured nodes; `fork_frozen` shares them
+and leaves out phase 2's own tables (console owners, action executions,
+warnings, errors, BEP groups, run plans). The committed results
+(`PlannedResults`) are kept in the planning state from one frozen walk to
+the next (each catches up with what was committed since), and a finished
+walk's view memos keep no `view_artifacts` (every entry merged). Freezing
+took 0.35 s + 0.94 s and ~0.6 GB on ~/code; now ~0 s and ~0 MB.
+`PERF-SHARED copies` (`BAZEL_RS_TIMING`) names the tables a write copied
+(`walk:` during a frozen walk).
+
+**Scheduling**: 8 workers for frozen walks (the cursor bounds the walk;
+48 workers gave the same walk time and +0.35 GB of concurrent computes),
+`--loading_phase_threads / 3` lowering workers (4–16; the op positions
+drain the lowerings: hooks 1.85 → 0.35 s).
+
+**Diagnostics** (`BAZEL_RS_TIMING=1`): `PERF-PARALLEL buffer` (classified
+by kind, dispatched, stolen, cursor waits and µs, at-turn entries, fast
+natives), `buffer at_turn` (by why and rule class), `buffer classified_turn`,
+`buffer cursor` (the cursor's time at each tenth of each walk, also as
+`PERF … pass2.cursor` marks with the RSS), the coordinator split's
+`cursor_claim`, `merge_starlark`, `merge_native`, `at_turn`, `fast_native`.
+`BAZEL_RS_T3_DEBUG=1`: the 40 slowest cursor steps per walk with the chain
+of what readied each entry.
+
+**Measured** (2026-11-09, ~/code `80d6724f3a` private clone, LTO release,
+warm repositories, `BAZEL_RS_SNAPSHOT=off`, `build --nobuild //src/...`,
+default threads, alternating runs, host load 10–19):
+
+| | main eval | main eval, frozen + T2 wide bounds | T3 eval (default) | main walk | T3 walk |
+|---|---|---|---|---|---|
+| plan.start → phase 1 done | 36.6 / 34.1 s | 30.4 s | 24.9 / 24.1 s | 35.2 s | 34.9 s |
+| phase 2 done (process time) | 45.2 / 42.5 s | 37.5 s | 31.0 / 29.6 s | 43.2 s | 42.8 s |
+| wall | 47.6 / 44.7 s | 39.9 s | 33.4 / 32.0 s | 45.4 s | 45.1 s |
+| CPU (user+sys) | 175 / 188 s | 207 s | 186 / 192 s | 135 s | 131 s |
+| max RSS | 9.69 / 9.63 GB | 10.71 GB | 9.94 / 9.94 GB | 8.93 GB | 8.89 GB |
+
+The big deferred walk (96,694 entries) takes 9.9 s on the cursor (T2:
+16.6 s): the Ct2s are published at p50 2.4 s / p99 8.4 s, the cursor's
+time at each tenth 1.5/3.3/3.5/4.3/4.5/4.6/5.8/8.4/9.1 s. Of its ~10 s:
+waits for a running job 3.9 s (chains through entries the cursor
+commits: attribute-aspect rules — rust_clippy / rustfmt_test 2.5 s at
+their turn —, unpublished filegroups, rules_js npm stores whose deltas
+meet a shared action's producer and so publish nothing), Starlark merges
+2.1 s (of it ~1.1 s rebuilding 439 such deltas from their kept analysis),
+native merges 1.9 s + 0.5 s published natives, publication 1.0 s.
+
+Identical output: the action dump (6,486,165 lines) of `build` and `test
+--nobuild //src/...` for main's walk, T3 eval and T3 walk;
+`BAZEL_RS_VERIFY_DELTA=1 BAZEL_RS_VERIFY_ARTIFACTS=1` clean (38,070 worker
+deltas verified); `BAZEL_RS_EVAL_VERIFY=1` clean on `build`, `test
+--nobuild` and `affected --base=HEAD^`. Suites (ptest): walk 3735/3735, eval
+3736/3736; frozen walks everywhere (`BAZEL_RS_DEFAULT_EVAL_FROZEN_PREPARES=all`,
+also with `BAZEL_RS_EVAL_RESTARTS=7`) 3730/3736 — the six are the
+pipeline's instrumentation expectations (`plan_timings` stage coverage,
+`parallel_rule_implementations`' commit-ahead and shared-prepare counters),
+not output. `tests/eval_buffer.rs`: shared outputs and a conflict where the
+loser finishes first, a reader of the loser; an output-file label whose
+path another target declared first; a fail-fast error mid-plan with the
+later entries finished; prints across buffered merges — each at 2/8/32
+threads, with jitter, restarts, a window of 3 and `BAZEL_RS_VERIFY_DELTA`.
+
+**Not done**: the 2–3-thread split of a batched merge (merges are one at
+a time at the cursor; natives are interleaved with Starlark deltas, so a
+batch without reads in between is short); contested readers rewritten
+through an alias map instead of rebuilt (publishing a loser's delta made
+~540 readers stale at their merge: +6 s, so a delta meeting a producer
+publishes nothing and is rebuilt from its kept analysis); attribute
+aspects and package groups as jobs; `Aspect` nodes (T2c).
+
 ### Effort
 
 | Step | Work | Estimate |
