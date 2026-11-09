@@ -219,10 +219,8 @@ impl PlannedResults {
                         .unwrap_or_else(|e| e.into_inner())
                         .put(key.clone(), resolve(artifact), true);
                 }
-                delta::DeltaOp::Artifact(file, artifact, hash) => {
-                    if !shared.contains_key(file) {
-                        artifacts.publish_provisional(*hash, file, artifact, stamp);
-                    }
+                delta::DeltaOp::Artifact(file, artifact, hash) if !shared.contains_key(file) => {
+                    artifacts.publish_provisional(*hash, file, artifact, stamp);
                 }
                 _ => {}
             }
@@ -631,6 +629,7 @@ impl Engine {
 /// job): the outcome (`Err`: the text of a panic), the outputs its commit
 /// registers, and whether its implementation asked for a deferred target
 /// platform.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run_frozen(
     frozen: &Frozen,
     index: usize,
