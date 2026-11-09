@@ -1927,6 +1927,37 @@ through an alias map instead of rebuilt (publishing a loser's delta made
 publishes nothing and is rebuilt from its kept analysis); attribute
 aspects and package groups as jobs; `Aspect` nodes (T2c).
 
+### T3, round 2 (eval-t3, after the review)
+
+- **Memory** (~/code peak 9.94 → 9.36–9.37 GB, same host): phase 1's
+  evaluator graph and the speculations' scratch engine are dropped before
+  the deferred walks; jemalloc's dirty pages are purged
+  (`alloc_arena::purge`, `arena.<all>.purge`) once they are freed and
+  after phase 1's structures go; a published delta sharing an output keeps
+  only what its merge's rebuild needs.
+- **Native rules' sources**: a native rule's worker resolves the declared
+  source files its lookups miss (`SharedPrepare::resolve_sources`: the
+  package's declared inputs, `source_target_in` without the memo), the
+  lookups' records (memoized path, missing files, source directories)
+  applied at its merge; the 11 large filegroups that published nothing
+  (python runtimes, `npm_files`, pip `:srcs`) now publish and merge as
+  published (`native_unpublished` 11 → 0, native merges 1.9 → 0.9 s).
+- **Shared outputs**: a delta whose output path an earlier entry computed
+  or registered (`SharedView::meets_earlier`) is built anyway and its
+  results published, its shared outputs naming the earlier entry's
+  artifact (the index's: `PlannedResults::publish_shared`; none registered
+  yet → unpublished as before); its analysis result, runfiles support and
+  outputs check are kept and the delta dropped, so its merge rebuilds it
+  from them as before (no implementation run). Its dependents no longer
+  wait for its merge.
+- Not done: attribute-aspect rules (rust_clippy, rustfmt_test: ~2.7 s at
+  their turn) as worker jobs — their prepare applies aspects over the
+  dependency tree, writing the planning state (the `Aspect` nodes of T2c);
+  the 2–3-thread merge split. The cursor's remaining waits (~5 s) are
+  chains of computes readied by their last dependency (each link a
+  compute's latency) and long single computes started late by the
+  lowest-index-first queue.
+
 ### Effort
 
 | Step | Work | Estimate |
