@@ -301,6 +301,8 @@ struct Board {
     verify_summary: bool,
     /// BAZEL_RS_T3_DEBUG: when each entry became ready and on which key.
     readied: std::sync::Mutex<HashMap<usize, (std::time::Instant, Option<ConfiguredTargetKey>)>>,
+    /// BAZEL_RS_T3_DEBUG: each job's dispatch, start and end.
+    job_times: std::sync::Mutex<HashMap<usize, [Option<std::time::Instant>; 3]>>,
     /// BAZEL_RS_T3_DEBUG: (µs, what) of the cursor's slow steps.
     slow: std::sync::Mutex<Vec<(u64, String)>>,
     /// The plan index of each entry's key (a requirement must be earlier).
@@ -333,6 +335,16 @@ impl Board {
         }
     }
 
+    fn note_job(&self, index: usize, step: usize) {
+        if debug() {
+            self.job_times
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(index)
+                .or_default()[step] = Some(std::time::Instant::now());
+        }
+    }
+
     fn note_slow(&self, index: usize, what: &str, elapsed: std::time::Duration) {
         if !debug() || elapsed < std::time::Duration::from_millis(2) {
             return;
@@ -348,8 +360,23 @@ impl Board {
                     ready.push_str(" <- (not readied: at its turn)");
                     break;
                 };
+                let job = self
+                    .job_times
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&at)
+                    .copied()
+                    .unwrap_or_default();
+                let ago = |at: Option<std::time::Instant>| {
+                    at.map_or("-".to_owned(), |at| {
+                        format!("{:.0}", at.elapsed().as_secs_f64() * 1e3)
+                    })
+                };
                 ready.push_str(&format!(
-                    " <- ready {:.0}ms ago by {}",
+                    " <- [job queued/started/ended {}/{}/{}ms ago] ready {:.0}ms ago by {}",
+                    ago(job[0]),
+                    ago(job[1]),
+                    ago(job[2]),
                     when.elapsed().as_secs_f64() * 1e3,
                     by.as_ref()
                         .map_or("classification".to_owned(), |key| key.label.to_string())
@@ -536,6 +563,7 @@ impl Board {
             return;
         }
         stat(S_DISPATCHED, 1);
+        self.note_job(index, 0);
         let board = Arc::clone(self);
         self.submit(
             self.priority(index),
@@ -549,9 +577,11 @@ impl Board {
                 }
                 // A panic (the job's, its publication's) is raised at the
                 // entry's turn: the cursor always finds the entry done.
+                board.note_job(index, 1);
                 let finished =
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| board.run(index)))
                         .unwrap_or_else(|_| Finished::Panicked(worker_panic()));
+                board.note_job(index, 2);
                 let mut done = board.finished.lock().unwrap_or_else(|e| e.into_inner());
                 done.insert(index, finished);
                 board.stage[slot].store(DONE, Ordering::Release);
@@ -567,7 +597,22 @@ impl Board {
         let (key, rule) = &self.plan[slot];
         let frozen = &self.frozen;
         match self.kind[slot].load(Ordering::Acquire) {
-            KIND_NATIVE => match frozen::run_native(frozen, index, key, rule) {
+            KIND_NATIVE => match {
+                let started = std::time::Instant::now();
+                let published = frozen::run_native(frozen, index, key, rule);
+                if debug() && started.elapsed() > std::time::Duration::from_millis(20) {
+                    eprintln!(
+                        "T3-DEBUG slow native #{index} {} {:.1}ms srcs={} sources={}",
+                        key.label,
+                        started.elapsed().as_secs_f64() * 1e3,
+                        rule.srcs.len(),
+                        published
+                            .as_ref()
+                            .map_or(0, |published| published.sources.len())
+                    );
+                }
+                published
+            } {
                 Some(published) => {
                     crate::debug_panic::at("t3-publish");
                     let merge = frozen::publish_native_results(frozen, index, key, *published);
@@ -1008,6 +1053,7 @@ impl Engine {
             jitter: jitter_millis(),
             verify_summary: verify_ahead(),
             readied: Default::default(),
+            job_times: Default::default(),
             slow: Default::default(),
             index_of,
             panics: Default::default(),
