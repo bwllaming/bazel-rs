@@ -932,6 +932,11 @@ impl Engine {
         let Some(published) = frozen.results.get(key) else {
             return;
         };
+        // A failed commit (its error is the build's at its turn) leaves no
+        // files to build: nothing was committed to compare.
+        if !state.dry.contains_key(key) {
+            return;
+        }
         let native = !matches!(rule.kind, RuleKind::Custom);
         if let Err(what) = compare_published(
             &published,
