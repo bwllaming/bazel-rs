@@ -58,6 +58,22 @@ fn window() -> usize {
     *WINDOW
 }
 
+/// `BAZEL_RS_T3_CLASSIFY_JITTER=<µs>` (a test hook): each classification
+/// first sleeps a reproducible time up to that bound.
+fn classify_jitter() -> u64 {
+    static JITTER: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a hidden test hook delaying classifications; no result depends on it.
+        std::env::var("BAZEL_RS_T3_CLASSIFY_JITTER")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0)
+    });
+    *JITTER
+}
+
+/// How long the cursor waits for one entry before it names it on stderr.
+const WATCHDOG: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Entries per classification job.
 const CHUNK: usize = 64;
 
@@ -76,7 +92,7 @@ const KIND_NATIVE: u8 = 2;
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL buffer`).
 static STATS: [AtomicU64; STAT_NAMES.len()] = [const { AtomicU64::new(0) }; STAT_NAMES.len()];
-const STAT_NAMES: [&str; 13] = [
+const STAT_NAMES: [&str; 15] = [
     "starlark",
     "native",
     "turn",
@@ -90,6 +106,8 @@ const STAT_NAMES: [&str; 13] = [
     "walks",
     "native_unpublished",
     "fast_native",
+    "later_requirement",
+    "held_view",
 ];
 const S_STARLARK: usize = 0;
 const S_NATIVE: usize = 1;
@@ -104,6 +122,8 @@ const S_INVALIDATED: usize = 9;
 const S_WALKS: usize = 10;
 const S_NATIVE_UNPUBLISHED: usize = 11;
 const S_FAST_NATIVE: usize = 12;
+const S_LATER_REQUIREMENT: usize = 13;
+const S_HELD_VIEW: usize = 14;
 
 /// Whether a plain native rule whose results a worker published merges
 /// them ([`Engine::merge_published_native`]) instead of committing again
@@ -200,17 +220,41 @@ fn debug() -> bool {
 
 /// A finished job.
 enum Finished {
-    Starlark(Box<Result<frozen::FrozenOutcome, String>>),
+    /// `published`: its results were published (its dependents may have
+    /// run on them).
+    Starlark {
+        outcome: Box<Result<frozen::FrozenOutcome, String>>,
+        published: bool,
+    },
     /// What its commit registers, when its results were published.
     Native(Option<Vec<Artifact>>),
+    /// The job panicked (its text): raised at the entry's turn.
+    Panicked(String),
 }
 
 /// What the cursor found for its entry.
 enum Claimed {
     /// No job: prepared (and computed) at its turn.
     Turn,
-    Starlark(Box<Result<frozen::FrozenOutcome, String>>),
-    Native(Option<Vec<Artifact>>),
+    Done(Finished),
+}
+
+impl Finished {
+    fn published(&self) -> bool {
+        match self {
+            Finished::Starlark { published, .. } => *published,
+            Finished::Native(registered) => registered.is_some(),
+            Finished::Panicked(_) => false,
+        }
+    }
+}
+
+/// The text of the panic an analysis worker just caught (its hook
+/// recorded it, parallel::install_worker_panic_hook).
+fn worker_panic() -> String {
+    WORKER_PANIC
+        .with(|slot| slot.borrow_mut().take())
+        .unwrap_or_else(|| "an analysis worker panicked".to_owned())
 }
 
 /// Which entries wait for which keys' results.
@@ -243,6 +287,10 @@ struct Board {
     readied: std::sync::Mutex<HashMap<usize, (std::time::Instant, Option<ConfiguredTargetKey>)>>,
     /// BAZEL_RS_T3_DEBUG: (µs, what) of the cursor's slow steps.
     slow: std::sync::Mutex<Vec<(u64, String)>>,
+    /// The plan index of each entry's key (a requirement must be earlier).
+    index_of: HashMap<ConfiguredTargetKey, usize>,
+    /// Classifications that panicked (their text), raised at the turn.
+    panics: std::sync::Mutex<HashMap<usize, String>>,
 }
 
 impl Board {
@@ -329,7 +377,44 @@ impl Board {
                 continue;
             }
             let (key, rule) = &self.plan[slot];
-            let (kind, keys, stash) = classify(&self.frozen, index, key, rule);
+            // A panic is raised at the entry's turn, by the cursor (the
+            // entry left to it: never a classification left half done).
+            let classified = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::debug_panic::at("t3-classify");
+                let jitter = classify_jitter();
+                if jitter > 0 {
+                    // The test hook: the cursor meets entries still being
+                    // classified.
+                    let roll = loading_jitter_roll(index as u64, 0x5435) % (jitter + 1);
+                    std::thread::sleep(std::time::Duration::from_micros(roll));
+                }
+                let (kind, keys, stash) = classify(&self.frozen, index, key, rule);
+                // A requirement later in plan order than the entry cannot
+                // be (the plan is a post-order): left to its turn.
+                if keys
+                    .iter()
+                    .any(|key| self.index_of.get(key).is_some_and(|at| *at >= index))
+                {
+                    stat(S_LATER_REQUIREMENT, 1);
+                    debug_assert!(
+                        false,
+                        "internal error: {} requires a later entry",
+                        key.label
+                    );
+                    return (KIND_TURN, Vec::new(), stash);
+                }
+                (kind, keys, stash)
+            }));
+            let (kind, keys, stash) = match classified {
+                Ok(classified) => classified,
+                Err(_) => {
+                    self.panics
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(index, worker_panic());
+                    (KIND_TURN, Vec::new(), None)
+                }
+            };
             if let Some(effects) = stash {
                 self.stash
                     .lock()
@@ -399,7 +484,11 @@ impl Board {
                 {
                     return;
                 }
-                let finished = board.run(index);
+                // A panic (the job's, its publication's) is raised at the
+                // entry's turn: the cursor always finds the entry done.
+                let finished =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| board.run(index)))
+                        .unwrap_or_else(|_| Finished::Panicked(worker_panic()));
                 let mut done = board.finished.lock().unwrap_or_else(|e| e.into_inner());
                 done.insert(index, finished);
                 board.stage[slot].store(DONE, Ordering::Release);
@@ -417,6 +506,7 @@ impl Board {
         match self.kind[slot].load(Ordering::Acquire) {
             KIND_NATIVE => match frozen::run_native(frozen, index, key, rule) {
                 Some(published) => {
+                    crate::debug_panic::at("t3-publish");
                     let registered = frozen::publish_native_results(frozen, index, key, *published);
                     self.mark(key);
                     Finished::Native(Some(registered))
@@ -437,20 +527,27 @@ impl Board {
                     self.verify_summary,
                     &stopped,
                 );
+                let mut published = false;
                 if let Ok(outcome) = &result
                     && let (Ok(Some(parts)), Some(Ok(worker))) =
                         (&outcome.prepared, &outcome.worker)
-                    && frozen::publish_starlark_results(
+                {
+                    crate::debug_panic::at("t3-publish");
+                    if frozen::publish_starlark_results(
                         frozen,
                         index,
                         parts,
                         worker,
                         outcome.platform_known,
-                    )
-                {
-                    self.mark(key);
+                    ) {
+                        published = true;
+                        self.mark(key);
+                    }
                 }
-                Finished::Starlark(Box::new(result))
+                Finished::Starlark {
+                    outcome: Box::new(result),
+                    published,
+                }
             }
         }
     }
@@ -487,6 +584,21 @@ impl Board {
         let Some(slot) = self.slot(index) else {
             return Claimed::Turn;
         };
+        let started = std::time::Instant::now();
+        let mut warned = false;
+        // A watchdog (debug builds, BAZEL_RS_T3_DEBUG): an entry the cursor
+        // waits for this long names itself (a job that never finishes
+        // would hang the walk).
+        let mut watch = |what: &str| {
+            if !warned && (cfg!(debug_assertions) || debug()) && started.elapsed() > WATCHDOG {
+                warned = true;
+                eprintln!(
+                    "bazel-rs: internal warning: the merge buffer has waited {}s for plan entry {index} ({}) {what}",
+                    started.elapsed().as_secs(),
+                    self.plan[slot].0.label
+                );
+            }
+        };
         loop {
             match self.stage[slot].load(Ordering::Acquire) {
                 IDLE => {
@@ -497,17 +609,17 @@ impl Board {
                         return Claimed::Turn;
                     }
                 }
-                CLASSIFYING => std::thread::yield_now(),
+                CLASSIFYING => {
+                    watch("being classified");
+                    std::thread::yield_now();
+                }
                 QUEUED => {
                     if self.stage[slot]
                         .compare_exchange(QUEUED, CLAIMED, Ordering::AcqRel, Ordering::Acquire)
                         .is_ok()
                     {
                         stat(S_STOLEN, 1);
-                        return match self.run(index) {
-                            Finished::Native(registered) => Claimed::Native(registered),
-                            Finished::Starlark(outcome) => Claimed::Starlark(outcome),
-                        };
+                        return Claimed::Done(self.run(index));
                     }
                 }
                 RUNNING | DONE => {
@@ -521,8 +633,10 @@ impl Board {
                         waited = true;
                         done = self
                             .finished_cv
-                            .wait(done)
-                            .unwrap_or_else(|e| e.into_inner());
+                            .wait_timeout(done, std::time::Duration::from_secs(10))
+                            .unwrap_or_else(|e| e.into_inner())
+                            .0;
+                        watch("running on a worker");
                     };
                     drop(done);
                     if waited {
@@ -531,10 +645,7 @@ impl Board {
                         self.note_slow(index, "wait", started.elapsed());
                     }
                     self.stage[slot].store(CLAIMED, Ordering::Release);
-                    return match finished {
-                        Finished::Native(registered) => Claimed::Native(registered),
-                        Finished::Starlark(outcome) => Claimed::Starlark(outcome),
-                    };
+                    return Claimed::Done(finished);
                 }
                 _ => return Claimed::Turn,
             }
@@ -736,6 +847,11 @@ impl Engine {
             .map(|plan| plan.get(start..).unwrap_or_default().to_vec())
             .unwrap_or_default();
         let len = plan.len();
+        let index_of: HashMap<ConfiguredTargetKey, usize> = plan
+            .iter()
+            .enumerate()
+            .map(|(slot, (key, _))| (key.clone(), start + slot))
+            .collect();
         let board = Arc::new(Board {
             frozen,
             plan,
@@ -753,6 +869,8 @@ impl Engine {
             verify_summary: verify_ahead(),
             readied: Default::default(),
             slow: Default::default(),
+            index_of,
+            panics: Default::default(),
         });
         stat(S_WALKS, 1);
         let started = std::time::Instant::now();
@@ -780,6 +898,11 @@ impl Engine {
             let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
             while Arc::strong_count(&board) > 1 && std::time::Instant::now() < until {
                 std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+            if Arc::strong_count(&board) > 1 {
+                // A job still holds the frozen view: its memos are copied
+                // back (Engine::thaw), its tables stay shared meanwhile.
+                stat(S_HELD_VIEW, 1);
             }
         }
         if crate::plan_timings::enabled() {
@@ -856,15 +979,28 @@ impl Engine {
                 board.submit(from, Box::new(move || chunk.classify_chunk(from, to)));
                 classified = to;
             }
-            for effects in board.take_stash(index) {
-                effects.apply(self, false);
-            }
-            let published = board.frozen.results.get(&key).is_some();
             let mut fast = false;
             let claimed = {
                 let _split = frozen::Split::enter(12);
                 board.claim(index)
             };
+            // After the claim: a classification still running pushed what
+            // it observed before releasing the entry.
+            for effects in board.take_stash(index) {
+                effects.apply(self, false);
+            }
+            if let Some(panic) = board
+                .panics
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&index)
+            {
+                // Its classification panicked on a worker: raised here.
+                panic!("{panic}");
+            }
+            // Whether its dependents may have run on a worker's results
+            // (its own job published them, on a worker or stolen here).
+            let published = matches!(&claimed, Claimed::Done(finished) if finished.published());
             let result = match claimed {
                 Claimed::Turn => {
                     stat(S_AT_TURN, 1);
@@ -882,7 +1018,11 @@ impl Engine {
                     board.note_slow(index, why, turn_started.elapsed());
                     result
                 }
-                Claimed::Native(registered) => {
+                Claimed::Done(Finished::Panicked(panic)) => {
+                    // A worker's panic, raised at its turn (P3's rule).
+                    panic!("{panic}")
+                }
+                Claimed::Done(Finished::Native(registered)) => {
                     let _split = frozen::Split::enter(14);
                     match registered {
                         Some(registered)
@@ -919,7 +1059,7 @@ impl Engine {
                         }
                     }
                 }
-                Claimed::Starlark(outcome) => {
+                Claimed::Done(Finished::Starlark { outcome, .. }) => {
                     let _split = frozen::Split::enter(13);
                     self.buffered_starlark(state, configured, &key, &rule, index, outcome)
                 }
@@ -931,11 +1071,25 @@ impl Engine {
                 let _split = frozen::Split::enter(11);
                 if published && !fast {
                     // Its dependents read what a worker published: checked
-                    // against the commit, and kept (the same Files and
-                    // values; artifacts resolve through the index).
+                    // against the commit (the same Files and values).
                     self.check_published(state, &key, &rule);
-                } else {
+                }
+                // The committed results replace the published ones unless
+                // they are the very same (a worker's delta merged as built,
+                // a native rule merged from its published results): a
+                // delta rebuilt here names the canonical producers.
+                let same = published
+                    && board
+                        .frozen
+                        .results
+                        .get(&key)
+                        .and_then(|results| results.parts().0)
+                        .zip(state.dry.get(&key))
+                        .is_some_and(|(kept, committed)| Arc::ptr_eq(&kept, committed));
+                if !same {
                     board.frozen.results.publish(&key, state);
+                }
+                if !published {
                     board.mark(&key);
                 }
                 board.frozen.results.publish_declared(state, self);

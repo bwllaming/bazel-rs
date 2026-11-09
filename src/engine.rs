@@ -2990,6 +2990,9 @@ impl<T> std::ops::Deref for Shared<T> {
     }
 }
 
+/// (No `RefUnwindSafe` bound: the tables hold `Arc<Rule>` / `Arc<Package>`
+/// whose interior memo cells every clone shared before `Shared` too; what
+/// a table holds by value is plain data.)
 impl<T: Clone> std::ops::DerefMut for Shared<T> {
     fn deref_mut(&mut self) -> &mut T {
         if Arc::strong_count(&self.0) > 1 && crate::plan_timings::enabled() {

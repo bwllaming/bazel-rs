@@ -4,7 +4,9 @@
 //! promptly (crate::internal_error), never a hang. Sites: `coordinator`
 //! (the walk's coordinator, mid-walk), `analysis-worker`, `lowering`,
 //! `drop` (the planning drop thread), `evaluator` (an evaluator pool
-//! thread, BAZEL_RS_ANALYSIS=eval), `loading-worker`.
+//! thread, BAZEL_RS_ANALYSIS=eval), `loading-worker`, `t3-classify` and
+//! `t3-publish` (a frozen walk's classification and publication on an
+//! analysis worker, raised at the entry's turn).
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};

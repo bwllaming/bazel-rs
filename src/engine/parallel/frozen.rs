@@ -163,7 +163,8 @@ impl PlannedResults {
     /// (`transitive`: its transitive repositories, the commit's first
     /// write) —, its declarations and its registrations (provisional in
     /// `artifacts`, visible from its plan index `stamp`). The merge
-    /// publishes the planning state's entries over them ([`Self::publish`]).
+    /// publishes the planning state's entries over them ([`Self::publish`])
+    /// unless they are the very same (T3: a delta merged as built).
     pub(in crate::engine) fn publish_delta(
         &self,
         key: &ConfiguredTargetKey,
@@ -1176,6 +1177,25 @@ impl Engine {
             return;
         }
         let native = !matches!(rule.kind, RuleKind::Custom);
+        // Its output-file targets' declarations (what a reader of their
+        // labels got), against the committed ones (the File).
+        let output_root = self.configurations.output_root(key.config);
+        for out in &rule.outs {
+            let Ok(label) = rule.label.with_name(out) else {
+                continue;
+            };
+            let exec = label.generated_exec_path(&output_root);
+            if let Some(published) = frozen.results.declared(key.config, &exec)
+                && state
+                    .declared
+                    .get(key.config, &exec)
+                    .is_none_or(|committed| committed.file() != published.file())
+            {
+                panic!(
+                    "internal error: BAZEL_RS_ANALYSIS=eval: the declaration of {label} published ahead of its merge differs from the committed one (BAZEL_RS_EVAL_NO_PUBLISH=1 waits for the merges)"
+                )
+            }
+        }
         if let Err(what) = compare_published(
             &published,
             state,

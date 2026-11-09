@@ -1895,6 +1895,11 @@ impl Engine {
             // The jobs still running hold it (a failing walk).
             pipe.ahead.clear();
             self.thaw(state, frozen);
+            if result.is_err() {
+                // A failed walk merged only part of what it published: no
+                // later walk reads those results.
+                state.walk_results = None;
+            }
             // T2: every published result merged, so no entry of the index
             // is provisional any more (one left would name a producer no
             // merge chose).
