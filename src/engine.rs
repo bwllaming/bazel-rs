@@ -944,20 +944,33 @@ impl ConcurrentArtifactIndex {
 
     /// T2: register `artifact` of `file` (hashed `hash`) provisionally,
     /// visible from `stamp` (the publishing result's plan index), unless
-    /// `file` has an entry.
+    /// `file` has an entry. An entry without a producer (a source File,
+    /// one artifact whoever registers it) registered later — by an entry
+    /// prepared ahead — becomes visible from `stamp`, as the publisher's
+    /// merge would make it.
     fn publish_provisional(&self, hash: u64, file: &File, artifact: &Artifact, stamp: u32) {
         let mut shard = self.shard(hash).write().unwrap_or_else(|e| e.into_inner());
-        if let hashbrown::hash_table::Entry::Vacant(entry) =
-            shard.entry(hash, |entry| entry.file == *file, |entry| entry.hash)
-        {
-            entry.insert(IndexEntry {
-                hash,
-                file: file.clone(),
-                artifact: artifact.clone(),
-                stamp,
-                provisional: true,
-                superseded: None,
-            });
+        match shard.entry(hash, |entry| entry.file == *file, |entry| entry.hash) {
+            hashbrown::hash_table::Entry::Vacant(entry) => {
+                entry.insert(IndexEntry {
+                    hash,
+                    file: file.clone(),
+                    artifact: artifact.clone(),
+                    stamp,
+                    provisional: true,
+                    superseded: None,
+                });
+            }
+            hashbrown::hash_table::Entry::Occupied(mut entry) => {
+                let entry = entry.get_mut();
+                if entry.stamp > stamp
+                    && entry.artifact.producer.is_none()
+                    && artifact.producer.is_none()
+                {
+                    check_reregistered(&entry.file, &entry.artifact, artifact);
+                    entry.stamp = stamp;
+                }
+            }
         }
     }
 
@@ -1001,10 +1014,12 @@ impl ConcurrentArtifactIndex {
                         }
                         entry.provisional = false;
                         entry.stamp = entry.stamp.min(stamp);
-                    } else if entry.stamp > reader {
+                    } else if entry.stamp > reader && artifact.borrow().producer.is_none() {
                         // A later entry's published registration of a File
                         // this earlier prepare's view hands over (a source
-                        // File's: one artifact whoever registers it).
+                        // File's: one artifact whoever registers it). A
+                        // generated File's producer is chosen by the merges
+                        // only: left as it is.
                         entry.artifact = artifact.into_owned();
                         entry.stamp = stamp;
                         entry.provisional = false;
@@ -1017,9 +1032,31 @@ impl ConcurrentArtifactIndex {
                     {
                         check_reregistered(&entry.file, &entry.artifact, artifact.borrow());
                     }
+                } else if provisional && artifact.borrow().producer.is_some() {
+                    // A worker prepare's view copy of a generated File a
+                    // later entry's merge registered: never replaces it (it
+                    // may be a stale copy naming a shared output's loser);
+                    // the same artifact becomes visible from here.
+                    if same_artifact(&entry.artifact, artifact.borrow()) {
+                        entry.stamp = entry.stamp.min(stamp);
+                    }
                 } else {
                     entry.artifact = artifact.into_owned();
                     entry.stamp = entry.stamp.min(stamp);
+                }
+            }
+            hashbrown::hash_table::Entry::Vacant(_)
+                if provisional && artifact.borrow().producer.is_some() =>
+            {
+                // A worker prepare never makes a generated File's producer:
+                // its dependencies' results registered their outputs
+                // (provisionally, if published). Left unregistered: a read
+                // of it is recorded as missing and checked at the merge.
+                if cfg!(debug_assertions) || verify_artifacts() {
+                    panic!(
+                        "internal error: a prepare ahead of its merge registered generated File {} that no published result registered",
+                        file.borrow().path
+                    );
                 }
             }
             hashbrown::hash_table::Entry::Vacant(entry) => {
@@ -1033,6 +1070,19 @@ impl ConcurrentArtifactIndex {
                 });
             }
         }
+    }
+
+    /// T2: an entry still provisional (its publisher never merged it), by
+    /// path and stamp: none once a walk merged every entry it published.
+    fn first_provisional(&self) -> Option<(String, u32)> {
+        self.shards.iter().find_map(|shard| {
+            shard
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .find(|entry| entry.provisional)
+                .map(|entry| (entry.file.path.to_string(), entry.stamp))
+        })
     }
 
     fn len(&self) -> usize {
@@ -15656,6 +15706,164 @@ mod tests {
             delta::check_reads(&index, &missing, 9, true),
             delta::ReadsCheck::Valid
         );
+    }
+
+    /// A loser's Artifact of one shared output (two same-path owners).
+    fn loser_out_txt() -> Artifact {
+        let canonical = generated_out_txt();
+        Artifact::new(
+            canonical.real.to_path_buf(),
+            canonical.exec.to_path_buf(),
+            Some(("//pkg:loser#genrule".into(), 0)),
+            "//pkg:gen".into(),
+            false,
+            false,
+        )
+    }
+
+    fn source_s_txt() -> Artifact {
+        Artifact::new(
+            PathBuf::from("pkg/s.txt"),
+            PathBuf::from("pkg/s.txt"),
+            None,
+            "//pkg:s.txt".into(),
+            false,
+            false,
+        )
+    }
+
+    /// T2 review: a source File read as missing is recorded and stale once
+    /// an earlier entry's late publication makes it visible before the
+    /// reader (a native rule's inputs published after a later entry
+    /// prepared ahead registered the File: the publication lowers its
+    /// stamp, as that entry's merge would).
+    #[test]
+    fn a_source_published_late_by_an_earlier_entry_is_visible_from_it() {
+        let source = source_s_txt();
+        let file = source.file.clone();
+        let index = ConcurrentArtifactIndex::default();
+        // X (plan index 9), prepared ahead, registers S first.
+        index.register(file_hash(&file), &file, &source, 9, 9, true);
+        assert!(index.get(&file, 5).is_none(), "invisible to R (5)");
+        let missing = vec![delta::ProvisionalRead {
+            file: file.clone(),
+            artifact: None,
+            stamp: u32::MAX,
+        }];
+        assert_eq!(
+            delta::check_reads(&index, &missing, 5, true),
+            delta::ReadsCheck::Valid
+        );
+        // D (plan index 3) publishes it late.
+        index.publish_provisional(file_hash(&file), &file, &source, 3);
+        assert!(index.get(&file, 5).is_some(), "visible from D on");
+        assert_eq!(
+            delta::check_reads(&index, &missing, 5, true),
+            delta::ReadsCheck::Stale,
+            "R's build read it as missing: rebuilt at its merge"
+        );
+    }
+
+    /// T2 review: a missing read is stale when an entry just before the
+    /// reader registered the File provisionally (not hidden by its
+    /// provisional flag), and a read entry stamped at or after the reader
+    /// (inherited from a memo a later entry filled) is not this reader's.
+    #[test]
+    fn reads_are_checked_against_the_readers_own_view() {
+        let canonical = generated_out_txt();
+        let file = canonical.file.clone();
+        let index = ConcurrentArtifactIndex::default();
+        index.publish_provisional(file_hash(&file), &file, &canonical, 4);
+        let missing = vec![delta::ProvisionalRead {
+            file: file.clone(),
+            artifact: None,
+            stamp: u32::MAX,
+        }];
+        assert_eq!(
+            delta::check_reads(&index, &missing, 5, true),
+            delta::ReadsCheck::Stale
+        );
+        let index = ConcurrentArtifactIndex::default();
+        index.publish_provisional(file_hash(&file), &file, &canonical, 7);
+        let inherited = vec![delta::ProvisionalRead {
+            file: file.clone(),
+            artifact: Some(canonical.clone()),
+            stamp: 7,
+        }];
+        assert_eq!(
+            delta::check_reads(&index, &inherited, 5, true),
+            delta::ReadsCheck::Stale
+        );
+        assert_eq!(
+            delta::check_reads(&index, &inherited, 9, true),
+            delta::ReadsCheck::Valid
+        );
+    }
+
+    /// T2 review: a worker prepare's registration (a dependency view's copy
+    /// of a generated File) never makes a producer: a later sharer's
+    /// published entry stays provisional at its own stamp, and a
+    /// canonical later-stamped entry is not replaced by a stale copy; a
+    /// source File's registration still makes it visible from the prepare.
+    #[test]
+    fn a_prepares_view_copy_never_chooses_a_producer() {
+        let (winner, loser) = (generated_out_txt(), loser_out_txt());
+        let file = winner.file.clone();
+        // L (7), a later sharer, publishes its own action as producer;
+        // an earlier prepare (3) registers that copy.
+        let index = ConcurrentArtifactIndex::default();
+        index.publish_provisional(file_hash(&file), &file, &loser, 7);
+        index.register(file_hash(&file), &file, &loser, 3, 3, true);
+        assert_eq!(
+            index.current(&file).map(|(_, p, s)| (p, s)),
+            Some((true, 7))
+        );
+        assert!(index.get(&file, 5).is_none());
+        // A canonical entry merged ahead at 8 is kept against a stale copy.
+        let index = ConcurrentArtifactIndex::default();
+        index.register(file_hash(&file), &file, &winner, 8, 8, false);
+        index.register(file_hash(&file), &file, &loser, 3, 3, true);
+        let (now, provisional, stamp) = index.current(&file).unwrap();
+        assert!(same_artifact(&now, &winner) && !provisional && stamp == 8);
+        // The same artifact becomes visible from the prepare.
+        index.register(file_hash(&file), &file, &winner, 3, 3, true);
+        assert_eq!(index.current(&file).map(|(_, _, s)| s), Some(3));
+        // A source File: one artifact whoever registers it.
+        let source = source_s_txt();
+        let index = ConcurrentArtifactIndex::default();
+        index.publish_provisional(file_hash(&source.file), &source.file, &source, 7);
+        index.register(file_hash(&source.file), &source.file, &source, 3, 3, true);
+        assert_eq!(
+            index.current(&source.file).map(|(_, p, s)| (p, s)),
+            Some((false, 3))
+        );
+        // A generated File no result published: never registered by a
+        // prepare (an internal error in debug builds).
+        let index = ConcurrentArtifactIndex::default();
+        let registered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            index.register(file_hash(&file), &file, &winner, 3, 3, true);
+        }));
+        assert_eq!(
+            registered.is_err(),
+            cfg!(debug_assertions) || verify_artifacts()
+        );
+        assert!(index.current(&file).is_none());
+    }
+
+    /// T2 review: an entry left provisional after a walk is found.
+    #[test]
+    fn provisional_entries_left_after_the_merges_are_found() {
+        let (winner, loser) = (generated_out_txt(), loser_out_txt());
+        let file = winner.file.clone();
+        let index = ConcurrentArtifactIndex::default();
+        assert!(index.first_provisional().is_none());
+        index.publish_provisional(file_hash(&file), &file, &loser, 7);
+        assert_eq!(
+            index.first_provisional(),
+            Some(("bazel-out/k8-fastbuild/bin/pkg/out.txt".to_owned(), 7))
+        );
+        index.register(file_hash(&file), &file, &winner, 7, 7, false);
+        assert!(index.first_provisional().is_none());
     }
 
     /// W1b registration invariant: a File keeps its first registration; an

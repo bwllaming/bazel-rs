@@ -192,6 +192,24 @@ impl Runfiles {
             .clone()
     }
 
+    /// T2 (docs/EVALUATOR.md §8): the same contents — artifacts, symlinks,
+    /// root symlinks (each set shared, else flattened and compared), the
+    /// empty-files supplier and the conflict policy. A published phase-2
+    /// result is checked against the committed one with it.
+    pub(crate) fn same_contents(&self, other: &Runfiles) -> bool {
+        let same_set =
+            |a: &Arc<DepsetNode>, b: &Arc<DepsetNode>, list: &dyn Fn(&Runfiles) -> Vec<File>| {
+                Arc::ptr_eq(a, b) || list(self) == list(other)
+            };
+        self.empty_files == other.empty_files
+            && self.conflict_error == other.conflict_error
+            && same_set(&self.artifacts, &other.artifacts, &Runfiles::artifacts)
+            && (Arc::ptr_eq(&self.symlinks, &other.symlinks)
+                || self.symlink_entries(false) == other.symlink_entries(false))
+            && (Arc::ptr_eq(&self.root_symlinks, &other.root_symlinks)
+                || self.symlink_entries(true) == other.symlink_entries(true))
+    }
+
     /// Runfiles.isEmpty (Runfiles.java:446-448): empty filenames do not count.
     pub fn is_empty(&self) -> bool {
         self.artifacts.empty && self.symlinks.empty && self.root_symlinks.empty
@@ -1226,6 +1244,41 @@ pub struct RunSettings {
     /// (TestTargetExecutionSettings.getRunUnderExecutable): the first
     /// argument after test-setup.sh (TestStrategy.addRunUnderArgs).
     pub run_under_executable: Option<String>,
+}
+
+impl TargetRunfiles {
+    /// T2 (docs/EVALUATOR.md §8): whether a phase-2 result published ahead
+    /// of its merge holds the runfiles its merge commits (the same value, or
+    /// equal providers' runfiles and files to run).
+    pub(crate) fn same_published(this: &Arc<Self>, other: &Arc<Self>) -> bool {
+        if Arc::ptr_eq(this, other) {
+            return true;
+        }
+        let providers = match (&this.provider, &other.provider) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                a.default.same_contents(&b.default) && a.data.same_contents(&b.data)
+            }
+            _ => false,
+        };
+        let files_to_run = match (&this.files_to_run, &other.files_to_run) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                a.kind == b.kind
+                    && a.executable == b.executable
+                    && a.runfiles_manifest == b.runfiles_manifest
+                    && a.repo_mapping_manifest == b.repo_mapping_manifest
+                    && a.files == b.files
+                    && match (&a.runfiles, &b.runfiles) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => a.same_contents(b),
+                        _ => false,
+                    }
+            }
+            _ => false,
+        };
+        providers && files_to_run
+    }
 }
 
 impl TargetRunfiles {

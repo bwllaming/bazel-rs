@@ -161,15 +161,20 @@ impl PlannedResults {
                 delta::DeltaOp::RunfilesInfo(runfiles) => {
                     results.runfiles_info = Some(Arc::clone(runfiles));
                 }
+                // Only its output-file targets' outputs: what a reader of
+                // an output-file label asks for (B2). Another declaration
+                // of the path (a same-package rule sharing the generating
+                // rule's action) is decided by the merges, in plan order.
                 delta::DeltaOp::Declared {
                     key,
                     artifact,
-                    replace,
+                    predeclared: true,
+                    ..
                 } => {
                     self.declared_shard(key.hash)
                         .write()
                         .unwrap_or_else(|e| e.into_inner())
-                        .put(key.clone(), artifact.clone(), *replace);
+                        .put(key.clone(), artifact.clone(), true);
                 }
                 delta::DeltaOp::Artifact(file, artifact, hash) => {
                     artifacts.publish_provisional(*hash, file, artifact, stamp);
@@ -721,6 +726,73 @@ pub(super) struct NativePublished {
 /// computable there; its dependents wait for its commit).
 pub(super) type NativeJob = mpsc::Receiver<Option<Box<NativePublished>>>;
 
+/// [`Engine::check_published`]'s comparison: `Err(what)` differs.
+/// `values`: provider values compared in release builds too.
+fn compare_published(
+    published: &KeyResults,
+    state: &ActionPlanning,
+    key: &ConfiguredTargetKey,
+    native: bool,
+    values: bool,
+) -> Result<(), &'static str> {
+    let files =
+        |dry: Option<&Artifacts>| dry.map(|dry| dry.iter().map(Artifact::file).collect::<Vec<_>>());
+    let same_dry = match (published.dry.as_ref(), state.dry.get(key)) {
+        (Some(a), Some(b)) if Arc::ptr_eq(a, b) => true,
+        (a, b) => files(a) == files(b),
+    };
+    if !same_dry {
+        return Err("files to build");
+    }
+    let values = values || cfg!(debug_assertions) || delta::verify_delta();
+    let same_providers = match (
+        published.providers.as_ref(),
+        state.custom_providers.get(key),
+    ) {
+        (None, None) => true,
+        (Some(published), Some(committed)) => {
+            published.len() == committed.len()
+                && published
+                    .iter()
+                    .zip(committed)
+                    .all(|((id, value), (other_id, other))| {
+                        id == other_id
+                            && (value.value().ptr_eq(other.value())
+                                || !values
+                                || value.value().to_repr() == other.value().to_repr())
+                    })
+        }
+        _ => false,
+    };
+    if !same_providers {
+        return Err("providers");
+    }
+    if let Some(keys) = published.provider_keys.as_ref()
+        && state.provider_keys.get(key) != Some(keys)
+    {
+        return Err("provider keys");
+    }
+    let same_runfiles = match (
+        published.runfiles_info.as_ref(),
+        state.runfiles_info.get(key),
+    ) {
+        (None, None) => true,
+        (Some(a), Some(b)) => crate::runfiles::TargetRunfiles::same_published(a, b),
+        _ => false,
+    };
+    if !same_runfiles {
+        return Err("runfiles");
+    }
+    // A Starlark rule's published results carry no validation group.
+    if native && published.validation.is_some() != state.validation.contains_key(key) {
+        return Err("validation group");
+    }
+    if published.repositories.as_deref() != state.repositories.get(key).map(|known| &**known) {
+        return Err("transitive repositories");
+    }
+    Ok(())
+}
+
 /// T2: whether a frozen walk publishes `rule`'s results from a worker
 /// (`native_results::plain`, no coverage instrumentation, an execution
 /// plan).
@@ -838,73 +910,40 @@ impl Engine {
         receiver
     }
 
-    /// T2: at the commit of native rule `key` whose results a worker
-    /// published, they are the committed ones (one function computes both,
-    /// `native_results`; its dependents' phase 2s read them). The Files,
-    /// not the Artifacts: a dependency's provisional producer is checked
-    /// by its readers' merges.
-    pub(super) fn check_published_native(&self, state: &ActionPlanning, key: &ConfiguredTargetKey) {
+    /// T2: at the commit of `key` whose results a worker published (a
+    /// native rule's computed by `native_results`, a Starlark rule's from
+    /// its delta), they are the committed ones: its dependents' phase 2s
+    /// read them. The Files, not the Artifacts: a dependency's provisional
+    /// producer is checked by its readers' merges. Provider values are
+    /// compared by identity, else by contents: always for a native rule
+    /// forwarding another target's providers (an alias), in debug builds
+    /// and under BAZEL_RS_VERIFY_DELTA otherwise (a platform provider is
+    /// frozen again by each computation, a Starlark rule's rebuilt delta
+    /// computes its providers again).
+    pub(super) fn check_published(
+        &self,
+        state: &ActionPlanning,
+        key: &ConfiguredTargetKey,
+        rule: &Rule,
+    ) {
         let Some(frozen) = self.frozen_walk.as_ref() else {
             return;
         };
         let Some(published) = frozen.results.get(key) else {
             return;
         };
-        let fail = |what: &str| -> ! {
+        let native = !matches!(rule.kind, RuleKind::Custom);
+        if let Err(what) = compare_published(
+            &published,
+            state,
+            key,
+            native,
+            native && super::super::forwards(rule),
+        ) {
             panic!(
-                "internal error: BAZEL_RS_ANALYSIS=eval: the {what} of native rule {} published ahead of its commit differ from the committed ones (BAZEL_RS_EVAL_NO_PUBLISH=1 waits for the commits)",
+                "internal error: BAZEL_RS_ANALYSIS=eval: the {what} of {} published ahead of its merge differ from the committed ones (BAZEL_RS_EVAL_NO_PUBLISH=1 waits for the merges)",
                 key.label
             )
-        };
-        let files = |dry: Option<&Artifacts>| {
-            dry.map(|dry| dry.iter().map(Artifact::file).collect::<Vec<_>>())
-        };
-        if files(published.dry.as_ref()) != files(state.dry.get(key)) {
-            fail("files to build");
-        }
-        let same_providers = match (
-            published.providers.as_ref(),
-            state.custom_providers.get(key),
-        ) {
-            (None, None) => true,
-            (Some(published), Some(committed)) => {
-                published.len() == committed.len()
-                    && published
-                        .iter()
-                        .zip(committed)
-                        .all(|((id, value), (other_id, other))| {
-                            // The values' contents in debug builds and under
-                            // BAZEL_RS_VERIFY_DELTA (a platform provider is
-                            // frozen again by each computation).
-                            id == other_id
-                                && (value.value().ptr_eq(other.value())
-                                    || !(cfg!(debug_assertions) || delta::verify_delta())
-                                    || value.value().to_repr() == other.value().to_repr())
-                        })
-            }
-            _ => false,
-        };
-        if !same_providers {
-            fail("providers");
-        }
-        let runfiles = |info: Option<&Arc<crate::runfiles::TargetRunfiles>>| {
-            info.map(|info| {
-                (
-                    info.files(),
-                    info.files_to_run
-                        .as_ref()
-                        .map(|files_to_run| files_to_run.executable().cloned()),
-                )
-            })
-        };
-        if runfiles(published.runfiles_info.as_ref()) != runfiles(state.runfiles_info.get(key)) {
-            fail("runfiles");
-        }
-        if published.validation.is_some() != state.validation.contains_key(key) {
-            fail("validation group");
-        }
-        if published.repositories.as_deref() != state.repositories.get(key).map(|known| &**known) {
-            fail("transitive repositories");
         }
     }
 
@@ -944,7 +983,6 @@ impl Engine {
             .unwrap_or_else(|e| e.into_inner())
             .insert(key.clone(), Arc::new(results));
         delta::provisional_bump(4);
-        pipe.published_native.insert(key.clone());
         profile(|profile| profile.publish(index));
         pipe.published.insert(key.clone(), index);
         pipe.newly_published.push(key.clone());
@@ -1191,5 +1229,147 @@ impl Drop for Split {
                 *started = now;
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn out_txt(producer: &str) -> Artifact {
+        let path = PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/p.txt");
+        Artifact::new(
+            path.clone(),
+            path,
+            Some((producer.into(), 0)),
+            "//pkg:p.txt".into(),
+            false,
+            false,
+        )
+    }
+
+    fn declared_delta(artifact: &Artifact, predeclared: bool) -> delta::TargetDelta {
+        delta::TargetDelta {
+            ops: vec![delta::DeltaOp::Declared {
+                key: DeclaredKey::new(
+                    crate::config_registry::no_config().id,
+                    artifact.exec.to_path_buf(),
+                ),
+                artifact: artifact.clone(),
+                // On a worker no earlier producer is known: always inserted.
+                replace: true,
+                predeclared,
+            }],
+            error: None,
+            unchecked: true,
+            uses: Vec::new(),
+            failed_output: None,
+            reads: Vec::new(),
+        }
+    }
+
+    /// T2 review: W predeclares `p`; L of the same package (not the
+    /// generating rule) declares `p` too, sharing the action, and
+    /// publishes after W. A reader of the output-file label `//pkg:p.txt`
+    /// still gets W's declaration: a published result makes only its
+    /// predeclared outputs visible (the merges decide the rest).
+    #[test]
+    fn only_predeclared_outputs_are_published_as_declared() {
+        let (generating, sharer) = (out_txt("//pkg:w#0"), out_txt("//pkg:l#0"));
+        let path = generating.exec.to_path_buf();
+        let results = PlannedResults::new();
+        let index = ConcurrentArtifactIndex::default();
+        let transitive = BTreeSet::new();
+        let w = ConfiguredTargetKey::new(
+            Label::parse_canonical("//pkg:w").unwrap(),
+            crate::config_registry::no_config().id,
+        );
+        let l = ConfiguredTargetKey::new(
+            Label::parse_canonical("//pkg:l").unwrap(),
+            crate::config_registry::no_config().id,
+        );
+        // L alone, published late: not a declaration of `p`.
+        results.publish_delta(&l, &declared_delta(&sharer, false), &transitive, &index, 7);
+        assert!(
+            results
+                .declared(crate::config_registry::no_config().id, &path)
+                .is_none()
+        );
+        results.publish_delta(
+            &w,
+            &declared_delta(&generating, true),
+            &transitive,
+            &index,
+            3,
+        );
+        results.publish_delta(&l, &declared_delta(&sharer, false), &transitive, &index, 7);
+        let declared = results
+            .declared(crate::config_registry::no_config().id, &path)
+            .unwrap();
+        assert!(same_artifact(&declared, &generating));
+    }
+
+    /// T2 review: a Starlark rule's published results are compared with
+    /// what its merge committed.
+    #[test]
+    fn published_results_are_compared_with_the_committed_ones() {
+        let key = ConfiguredTargetKey::new(
+            Label::parse_canonical("//pkg:w").unwrap(),
+            crate::config_registry::no_config().id,
+        );
+        let mut state = ActionPlanning::default();
+        let (a, b) = (out_txt("//pkg:w#0"), {
+            let path = PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/q.txt");
+            Artifact::new(
+                path.clone(),
+                path,
+                Some(("//pkg:w#1".into(), 0)),
+                "//pkg:q.txt".into(),
+                false,
+                false,
+            )
+        });
+        state.dry.insert(key.clone(), Arc::new(vec![a.clone()]));
+        state
+            .provider_keys
+            .insert(key.clone(), vec!["DefaultInfo".to_owned()]);
+        state.runfiles_info.insert(key.clone(), Arc::default());
+        let published = |dry: Artifact, keys: &[&str]| KeyResults {
+            dry: Some(Arc::new(vec![dry])),
+            providers: None,
+            provider_keys: Some(keys.iter().map(|key| (*key).to_owned()).collect()),
+            runfiles_info: Some(Arc::default()),
+            validation: None,
+            repositories: None,
+        };
+        assert_eq!(
+            compare_published(
+                &published(a.clone(), &["DefaultInfo"]),
+                &state,
+                &key,
+                false,
+                false
+            ),
+            Ok(())
+        );
+        // Another producer of the same File: the same files to build.
+        assert_eq!(
+            compare_published(
+                &published(out_txt("//pkg:l#0"), &["DefaultInfo"]),
+                &state,
+                &key,
+                false,
+                false
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            compare_published(&published(b, &["DefaultInfo"]), &state, &key, false, false),
+            Err("files to build")
+        );
+        assert_eq!(
+            compare_published(&published(a, &["OtherInfo"]), &state, &key, false, false),
+            Err("provider keys")
+        );
     }
 }

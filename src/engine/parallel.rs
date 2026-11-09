@@ -866,9 +866,6 @@ struct Pipeline {
     native_waiting: HashMap<ConfiguredTargetKey, Vec<(usize, Vec<ConfiguredTargetKey>)>>,
     native_publish_ready: Vec<usize>,
     native_jobs: HashMap<usize, frozen::NativeJob>,
-    /// The native rules whose results were published from a worker
-    /// (checked at their commit, [`Engine::check_published_native`]).
-    published_native: std::collections::HashSet<ConfiguredTargetKey>,
 }
 
 impl Pipeline {
@@ -1867,11 +1864,22 @@ impl Engine {
             let _split = frozen::Split::enter(0);
             self.plan_targets_pipelined(state, configured, &mut pipe)
         };
+        let mut result = result;
         if let Some(frozen) = self.frozen_walk.take() {
             frozen::profile(frozen::Ct2Profile::walk_end);
             // The jobs still running hold it (a failing walk).
             pipe.ahead.clear();
             self.thaw(state, frozen);
+            // T2: every published result merged, so no entry of the index
+            // is provisional any more (one left would name a producer no
+            // merge chose).
+            if result.is_ok()
+                && let Some((path, stamp)) = state.artifact_index.shared.first_provisional()
+            {
+                result = Err(format!(
+                    "internal error: BAZEL_RS_ANALYSIS=eval: the artifact of {path} published by plan entry {stamp} was never merged (BAZEL_RS_EVAL_NO_PUBLISH=1 waits for the merges)"
+                ));
+            }
         }
         if crate::plan_timings::enabled() {
             let entries = state.done - walk_start;
@@ -2244,8 +2252,11 @@ impl Engine {
         key: &ConfiguredTargetKey,
     ) {
         // S3: what the workers' prepares read of it, before they may run.
-        if pipe.published_native.remove(key) {
-            self.check_published_native(state, key);
+        if let Some(index) = pipe.published.remove(key)
+            && let Some((_, rule)) = self.planning_plan.as_ref().and_then(|plan| plan.get(index))
+        {
+            let rule = Arc::clone(rule);
+            self.check_published(state, key, &rule);
         }
         if let Some(frozen) = &self.frozen_walk {
             frozen.results.publish(key, state);

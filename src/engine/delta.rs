@@ -264,8 +264,13 @@ pub(super) fn check_reads(
     let mut pending = None;
     for read in reads {
         match &read.artifact {
+            // The entry it read, still visible before the reader (a read
+            // of an entry stamped at or after the reader — inherited from a
+            // memo a later entry filled — is not this reader's view).
             Some(artifact) => match index.current(&read.file) {
-                Some((now, provisional, _)) if same_artifact(&now, artifact) => {
+                Some((now, provisional, stamp))
+                    if stamp < reader && same_artifact(&now, artifact) =>
+                {
                     if provisional && !merging {
                         pending = Some(pending.map_or(read.stamp, |at: u32| at.max(read.stamp)));
                     }
@@ -274,9 +279,12 @@ pub(super) fn check_reads(
             },
             None => {
                 // Not registered when it was built: still not visible
-                // before the reader (its own registrations are stamped
-                // with its index).
-                if reader > 0 && index.get(&read.file, reader - 1).is_some() {
+                // before the reader, provisional or not (its own
+                // registrations are stamped with its index).
+                if index
+                    .current(&read.file)
+                    .is_some_and(|(_, _, stamp)| stamp < reader)
+                {
                     return ReadsCheck::Stale;
                 }
                 if !merging {
@@ -329,11 +337,14 @@ pub(super) enum DeltaOp {
     /// hash there (computed where the delta is built).
     Artifact(File, Artifact, u64),
     /// An output-file entry of `declared` (`replace`: inserted, else kept
-    /// when present).
+    /// when present; `predeclared`: an output of the rule's output-file
+    /// targets — the only entries a published result makes visible ahead
+    /// of the merge, `PlannedResults::publish_delta`).
     Declared {
         key: DeclaredKey,
         artifact: Artifact,
         replace: bool,
+        predeclared: bool,
     },
     RunfilesInfo(Arc<crate::runfiles::TargetRunfiles>),
     RunfilesNodes(Box<RunfilesNodes>),
@@ -609,6 +620,10 @@ pub(super) struct DeltaBuilder<'a> {
     failed_output: Option<PathBuf>,
     /// T2: the index reads the build depends on (a worker's build only).
     reads: std::cell::RefCell<Vec<ProvisionalRead>>,
+    /// T2: the memo fills in progress, each with whether it resolved a
+    /// File through this build's own registrations (unpublished, recording no
+    /// read: such a value is not kept for other users, [`Self::unshared`]).
+    filling: std::cell::RefCell<Vec<bool>>,
 }
 
 impl<'a> DeltaBuilder<'a> {
@@ -626,6 +641,7 @@ impl<'a> DeltaBuilder<'a> {
             spent: Vec::new(),
             failed_output: None,
             reads: Default::default(),
+            filling: Default::default(),
         }
     }
 
@@ -672,6 +688,11 @@ impl<'a> DeltaBuilder<'a> {
             && self.keys.contains(&quick_key(file))
             && let Some(artifact) = self.index.get(file)
         {
+            // Every fill in progress depends on it (an outer one holds
+            // the inner's value).
+            for own in self.filling.borrow_mut().iter_mut() {
+                *own = true;
+            }
             return Some(artifact.clone());
         }
         if !matches!(self.hooks, Hooks::Worker) {
@@ -689,13 +710,14 @@ impl<'a> DeltaBuilder<'a> {
                 Some(artifact)
             }
             None => {
-                if !file.is_source {
-                    self.reads.borrow_mut().push(ProvisionalRead {
-                        file: file.clone(),
-                        artifact: None,
-                        stamp: u32::MAX,
-                    });
-                }
+                // A source File too: an earlier entry (a native rule's
+                // inputs, published or merged) may register it before this
+                // one's merge, where the build read it as missing.
+                self.reads.borrow_mut().push(ProvisionalRead {
+                    file: file.clone(),
+                    artifact: None,
+                    stamp: u32::MAX,
+                });
                 None
             }
         }
@@ -703,7 +725,18 @@ impl<'a> DeltaBuilder<'a> {
 
     /// The reads recorded so far (a memo fill's start).
     fn reads_mark(&self) -> usize {
+        self.filling.borrow_mut().push(false);
         self.reads.borrow().len()
+    }
+
+    /// A memo fill ends: whether it resolved a File through this build's
+    /// own registrations, which no other user sees (its value is then
+    /// dropped from the memo after this use: [`Self::reads_mark`]).
+    fn fill_done(&self) -> bool {
+        let own = self.filling.borrow_mut().pop().unwrap_or(false);
+        // A coordinator's build merges at once: its registrations are the
+        // canonical ones every later user sees.
+        own && matches!(self.hooks, Hooks::Worker)
     }
 
     /// The reads recorded since `mark` (a memo fill's own).
@@ -895,17 +928,22 @@ impl<'a> DeltaBuilder<'a> {
         let memo: &InputMemos = self.view.input_memos;
         self.memo_reads(memo, &address, |value| &value.reads);
         let mut filled_here = false;
+        let mut unshared = false;
         let value = memo
             .get_or_fill(&address, || {
                 filled_here = true;
                 let mark = self.reads_mark();
                 let mut filled = SharedInputs::of(&|file| self.lookup(file), files);
+                unshared = self.fill_done();
                 if let Some(filled) = filled.as_mut() {
                     filled.reads = self.reads_since(mark);
                 }
                 Ok::<_, std::convert::Infallible>(filled)
             })
             .unwrap_or_else(|never| match never {});
+        if unshared {
+            memo.remove(&address);
+        }
         if let Some(value) = &value {
             self.note_memo_reads(filled_here, &value.reads);
         }
@@ -947,12 +985,15 @@ impl<'a> DeltaBuilder<'a> {
             let memo: &InputGroups = self.view.input_groups;
             self.memo_reads(memo, &tree.identity(), |value| &value.reads);
             let mut filled_here = false;
+            let mut unshared = false;
             let expanded = memo
                 .get_or_fill(&tree.identity(), || {
                     filled_here = true;
                     let mark = self.reads_mark();
-                    let (artifacts, empty_files) =
-                        runfiles_tree_entries(tree, owner, &mut |file| self.artifact(file))?;
+                    let entries =
+                        runfiles_tree_entries(tree, owner, &mut |file| self.artifact(file));
+                    unshared = self.fill_done();
+                    let (artifacts, empty_files) = entries?;
                     Ok::<_, String>(Some(ExpandedTree {
                         tree: Arc::clone(tree),
                         group: Arc::new(runfiles_input_group(
@@ -965,6 +1006,9 @@ impl<'a> DeltaBuilder<'a> {
                     }))
                 })?
                 .expect("a runfiles group fill returns one");
+            if unshared {
+                memo.remove(&tree.identity());
+            }
             self.note_memo_reads(filled_here, &expanded.reads);
             // One identity is one content
             // (crate::analysis_runtime::ToolRunfilesTree).
@@ -1087,11 +1131,13 @@ impl<'a> DeltaBuilder<'a> {
                 let artifact = output_artifact(registered, file, &exec, &first, index);
                 verify_declared_file(file, &artifact);
                 self.register_artifact(file, &artifact);
-                let replace = first.is_none() || predeclared(&exec);
+                let predeclared = predeclared(&exec);
+                let replace = first.is_none() || predeclared;
                 self.ops.push(DeltaOp::Declared {
                     key: DeclaredKey::new(config, exec),
                     artifact,
                     replace,
+                    predeclared,
                 });
             }
             shared.push(first.is_some());
@@ -1121,6 +1167,7 @@ impl<'a> DeltaBuilder<'a> {
             key: DeclaredKey::new(key.config, exec),
             artifact: artifact.clone(),
             replace: true,
+            predeclared: false,
         });
         Ok(artifact)
     }
@@ -1574,6 +1621,7 @@ impl<'a> DeltaBuilder<'a> {
                     key: DeclaredKey::new(config, PathBuf::from(&file.path)),
                     artifact,
                     replace: true,
+                    predeclared: true,
                 });
             }
         }
@@ -1874,6 +1922,7 @@ pub(super) fn merge_op(
             key,
             artifact,
             replace,
+            predeclared: _,
         } => {
             state.declared.put(key, artifact, replace);
         }
@@ -1941,10 +1990,12 @@ impl DeltaOp {
                 key,
                 artifact,
                 replace,
+                predeclared,
             } => DeltaOp::Declared {
                 key: key.clone(),
                 artifact: artifact.clone(),
                 replace: *replace,
+                predeclared: *predeclared,
             },
             DeltaOp::RunfilesInfo(runfiles) => DeltaOp::RunfilesInfo(Arc::clone(runfiles)),
             DeltaOp::RunfilesNodes(nodes) => DeltaOp::RunfilesNodes(nodes.clone()),
@@ -2215,7 +2266,8 @@ fn rendered(op: &DeltaOp) -> String {
             key,
             artifact,
             replace,
-        } => format!("declared {key:?} {artifact:?} {replace}"),
+            predeclared,
+        } => format!("declared {key:?} {artifact:?} {replace} {predeclared}"),
         // The runfiles' files are compared through the runfiles support's
         // mapping (RunfilesNodes) and the files to build (Dry): listing them
         // here would flatten every target's runfiles.
@@ -2285,4 +2337,67 @@ pub(super) fn compare_deltas(key: &ConfiguredTargetKey, worker: &TargetDelta, he
         fail("the tool runfiles groups it used", &worker.uses, &here.uses);
     }
     parallel::note_verified_delta();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T2 review: a memo fill that resolves a File through the worker
+    /// build's own (unpublished) registrations records no read, so its
+    /// value is not kept for other users; a fill through the index is.
+    #[test]
+    fn memo_fills_through_own_registrations_are_not_shared() {
+        let repositories = RepositorySet::new(std::env::temp_dir());
+        let artifacts = ConcurrentArtifactIndex::default();
+        let (groups, memos, environment) = (
+            InputGroups::default(),
+            InputMemos::default(),
+            ClientEnvironment::default(),
+        );
+        let view = EngineView {
+            semantic_only: false,
+            compact_repo_mapping: false,
+            repositories: &repositories,
+            artifacts: &artifacts,
+            reader: 5,
+            input_groups: &groups,
+            input_memos: &memos,
+            client_environment: &environment,
+            lowering: None,
+        };
+        let path = PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/own.txt");
+        let own = Artifact::new(
+            path.clone(),
+            path,
+            Some(("//pkg:own#0".into(), 0)),
+            "//pkg:own".into(),
+            false,
+            false,
+        );
+        let mut builder = DeltaBuilder::new(view, Hooks::Worker, 5);
+        builder.register_artifact(&own.file, &own);
+        builder.reads_mark();
+        assert!(builder.lookup(&own.file).is_some());
+        assert!(builder.fill_done(), "resolved through its own registration");
+        builder.reads_mark();
+        assert!(builder.lookup(&own.file.clone()).is_some());
+        builder.reads_mark();
+        assert!(
+            !builder.fill_done(),
+            "the inner fill read nothing of its own"
+        );
+        assert!(builder.fill_done(), "the outer one did");
+        builder.reads_mark();
+        let other = Artifact::new(
+            PathBuf::from("pkg/src.txt"),
+            PathBuf::from("pkg/src.txt"),
+            None,
+            "//pkg:src.txt".into(),
+            false,
+            false,
+        );
+        assert!(builder.lookup(&other.file).is_none());
+        assert!(!builder.fill_done());
+    }
 }
