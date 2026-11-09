@@ -857,9 +857,7 @@ impl Bodies for Phase1Bodies<'_, '_> {
         };
         self.inbox.absorb(&mut coord);
         let started = std::time::Instant::now();
-        super::super::timeline::seq_state(|| "idle linearization".to_owned());
         let _ = coord.linearize_step(self.shared, super::super::linearize::driver::LINEARIZE_STEP);
-        super::super::timeline::seq_state(|| "idle linearization done".to_owned());
         super::super::timeline::add("idle linearization", started);
     }
 

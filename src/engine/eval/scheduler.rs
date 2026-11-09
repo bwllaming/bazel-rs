@@ -636,7 +636,21 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                 State::Fresh | State::Deferred => false,
             };
             if wait {
-                super::timeline::seq_state(|| format!("waits for {key:?} {state:?}"));
+                super::timeline::seq_state(|| {
+                    let stack = INLINE_STACK.with(|stack| {
+                        stack
+                            .borrow()
+                            .iter()
+                            .map(|id| {
+                                format!("{:?}", self.graph.key(*id))
+                                    .chars()
+                                    .take(90)
+                                    .collect::<String>()
+                            })
+                            .collect::<Vec<_>>()
+                    });
+                    format!("waits for {key:?} {state:?}; inline stack {stack:#?}")
+                });
                 if boosted.is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(1)) {
                     // The pool runs what the inline driver waits for first:
                     // the end of its chain of first unfinished dependencies.
@@ -723,6 +737,10 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                             .iter()
                             .copied()
                             .find(|dep| self.graph.entry(*dep).state() != State::Done),
+                        // A lane blocker (this thread's lane resolves it,
+                        // then the pool runs the unit again, as in a round:
+                        // its demand is not made here ahead of the tape).
+                        Wait::Repo(name) => return name != super::nodes::bodies::INLINE,
                         _ => return false,
                     };
                     match next {
@@ -1098,9 +1116,13 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                 super::timeline::seq_enter(cause, || detail, what);
                 cause
             });
+            let first = !rerun;
             rerun = true;
             let _timed = TimedAttempt(cause, key.kind());
-            if self.serving.load(Ordering::SeqCst) {
+            if !first && entry.state() == State::Running {
+                // A rerun (after a fetch, or once what it needed is done):
+                // still this driver's attempt.
+            } else if self.serving.load(Ordering::SeqCst) {
                 if !self.claim_inline(id, lane) {
                     return;
                 }

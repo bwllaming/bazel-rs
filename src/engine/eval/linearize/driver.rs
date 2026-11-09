@@ -1546,7 +1546,6 @@ impl Engine {
                 // The configured roots, and the registrations' packages
                 // (every toolchain resolution waits for them), on the pool
                 // from the start.
-                evaluator.start_first(&registration_packages(&shared));
                 evaluator.start(&pool_roots.clone().unwrap_or_default());
                 let result = std::thread::scope(|scope| {
                     if super::super::timeline::on() {
@@ -1573,7 +1572,7 @@ impl Engine {
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                                     .chars()
-                                    .take(300)
+                                    .take(4000)
                                     .collect::<String>();
                                 eprintln!(
                                     "bazel-rs: watchdog: {} | sequential: {seq}",
@@ -2148,9 +2147,9 @@ fn warm_up(
         })
         .collect();
     if serve {
-        // The pool serves them beside the sequential pass.
-        pooled.store(false, std::sync::atomic::Ordering::Release);
-        return roots;
+        // The registrations' packages ahead of the roots (every toolchain
+        // resolution waits for them).
+        evaluator.start_first(&registration_packages(shared));
     }
     evaluator.evaluate_round(&roots, &mut lane);
     super::super::timeline::mark(|| {
@@ -2168,6 +2167,15 @@ fn warm_up(
 /// platforms in (explicit labels and `:all` patterns; not recursive ones):
 /// every toolchain resolution waits for their loads.
 fn registration_packages(shared: &EvalShared) -> Vec<NodeKey> {
+    // A hint only: nothing demanded (an extension's repository mapping is
+    // not prepared here, where the walk would not), nothing observed.
+    crate::observed_fs::discard(|| {
+        let _no_demand = crate::repository_demand::no_demand();
+        registration_packages_in(shared)
+    })
+}
+
+fn registration_packages_in(shared: &EvalShared) -> Vec<NodeKey> {
     let repositories = &shared.repositories;
     let mut patterns = repositories.toolchain_registrations().unwrap_or_default();
     if let Ok((platforms, _)) = repositories.execution_platform_registrations(false) {
