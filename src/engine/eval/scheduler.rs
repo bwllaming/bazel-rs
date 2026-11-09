@@ -853,6 +853,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
     /// last completion handed on, then its own nodes (`rest` from the
     /// end).
     fn drive<'s>(&'s self, scope: &Scope<'s>, mut own: Option<NodeId>, mut rest: Vec<NodeId>) {
+        crate::debug_panic::at("evaluator");
         loop {
             let next = match self.pop_boost() {
                 Some(boosted) => boosted,

@@ -393,6 +393,7 @@ impl Engine {
             let mut summary = None;
             let mut platform_read = true;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::debug_panic::at("analysis-worker");
                 if jitter > 0 {
                     let roll = loading_jitter_roll(index as u64, 0x5034) % (jitter + 1);
                     let until = std::time::Instant::now() + std::time::Duration::from_millis(roll);

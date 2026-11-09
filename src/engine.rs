@@ -2142,6 +2142,7 @@ fn drop_elsewhere<T: Send + 'static>(value: T) {
             .name("planning-drop".to_owned())
             .spawn(move || {
                 for dropped in receiver {
+                    crate::debug_panic::at("drop");
                     drop(dropped);
                 }
             })
@@ -4025,6 +4026,7 @@ impl Engine {
                     .spawn_scoped(scope, move || {
                         let _note = pattern_pool::PanicNote(pool);
                         while let Some(index) = pool.next() {
+                            crate::debug_panic::at("loading-worker");
                             let id = &pending[index];
                             if panic_on.as_deref() == Some(id.package.as_str()) {
                                 panic!("BAZEL_RS_DEBUG_LOADING_WORKER_PANIC: //{}", id.package);

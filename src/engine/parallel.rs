@@ -1951,6 +1951,7 @@ impl Engine {
             }
             let index = state.done;
             state.done += 1;
+            crate::debug_panic::at("coordinator");
             if self.frozen_walk.is_some() {
                 frozen::profile(|profile| profile.turn(index));
             }
@@ -2710,6 +2711,7 @@ impl Engine {
             let mut summary = None;
             let summary_slot = &mut summary;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::debug_panic::at("analysis-worker");
                 let summary = summary_slot;
                 if jitter > 0 {
                     // Interrupted when the pool stops (a failing build).

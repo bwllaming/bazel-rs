@@ -304,11 +304,14 @@ impl LoweringHandle {
             }
             let job = taken.lock().unwrap_or_else(|e| e.into_inner()).take();
             if let Some(job) = job {
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    crate::debug_panic::at("lowering");
+                    job()
+                }));
                 let _ = sender.send(outcome);
             }
         });
-        match self.jobs.send(wrapped) {
+        match self.jobs.send(Message::Run(wrapped)) {
             Ok(()) => Ok(receiver),
             Err(_) => {
                 let job = slot.lock().unwrap_or_else(|e| e.into_inner()).take();

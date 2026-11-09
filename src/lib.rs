@@ -55,6 +55,7 @@ pub mod cquery_text;
 pub mod credentials;
 pub mod ctx_surface;
 pub mod custom_rule;
+pub mod debug_panic;
 pub mod debug_print;
 mod depset_items;
 pub mod digest_memo;
