@@ -1583,6 +1583,20 @@ impl Engine {
                     spec(4) / 1000
                 );
             }
+            // Phase 1's bodies are done: the graph (its interned keys, its
+            // entries, the memo values only it holds) and the speculations'
+            // scratch engine are dropped before the deferred walks run
+            // (memory: the walks' peak).
+            drop(evaluator);
+            drop(
+                bodies
+                    .scratch
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take(),
+            );
+            crate::alloc_arena::purge();
+            crate::perf_mark("plan.eval_graph_dropped");
             let mut coord = bodies.coord();
             coord.drain();
             coord.store.segments_done = true;
@@ -1642,6 +1656,9 @@ impl Engine {
         *plan = planned;
         crate::ui::replay(leftover);
         let linearized = pass.finish();
+        // Phase 1's structures are gone (the bodies, the shared view, the
+        // linearizer): their pages before the planning tail's peak.
+        crate::alloc_arena::purge();
         crate::perf_mark("plan.eval_phase1_done");
         // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
         if std::env::var_os("BAZEL_RS_EVAL_PARKED_DEBUG").is_some() {

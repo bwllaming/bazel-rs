@@ -75,6 +75,28 @@ pub fn bind(arena: u32) -> bool {
     }
 }
 
+/// Return every arena's dirty pages to the system now (`arena.<all>.purge`):
+/// called right after a phase frees large structures, so the next phase's
+/// peak does not stack on memory that would otherwise wait for its decay
+/// (docs/MEMORY.md, "The allocator"). A no-op without jemalloc.
+pub fn purge() {
+    #[cfg(feature = "jemalloc")]
+    {
+        // MALLCTL_ARENAS_ALL (jemalloc.h): every arena.
+        // SAFETY: `arena.<i>.purge` is a void control taking and returning
+        // nothing; we pass null pointers and zero sizes.
+        unsafe {
+            tikv_jemalloc_sys::mallctl(
+                c"arena.4096.purge".as_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
