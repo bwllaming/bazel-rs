@@ -424,6 +424,29 @@ pub(super) struct SharedPrepare<'a> {
     pub(super) resolve_sources: bool,
     /// Its packages' input labels, computed once per package.
     inputs: HashMap<PackageId, HashSet<Label>>,
+    /// The source files it resolved (each looked up again by the rule's
+    /// inputs, prerequisites and runfiles), and the directories it probed
+    /// on their way beyond the engine's probes.
+    resolved: HashMap<Label, PathBuf>,
+    probes: HashMap<PathBuf, SourceDirProbe>,
+    /// The link policies of the repositories of the symlinked sources it
+    /// resolved (one view of the materialized roots for the job).
+    link_policies: HashMap<String, crate::source_links::LinkPolicy>,
+}
+
+/// The engine's source-directory probes, then a job's own.
+struct ReadThrough<'a> {
+    base: &'a HashMap<PathBuf, SourceDirProbe>,
+    own: &'a mut HashMap<PathBuf, SourceDirProbe>,
+}
+
+impl SourceProbes for ReadThrough<'_> {
+    fn get(&self, path: &Path) -> Option<SourceDirProbe> {
+        self.base.get(path).or_else(|| self.own.get(path)).cloned()
+    }
+    fn put(&mut self, path: PathBuf, probe: SourceDirProbe) {
+        self.own.insert(path, probe);
+    }
 }
 
 impl<'a> SharedPrepare<'a> {
@@ -454,6 +477,9 @@ impl<'a> SharedPrepare<'a> {
             view_artifacts: None,
             resolve_sources: false,
             inputs: HashMap::new(),
+            resolved: HashMap::new(),
+            probes: HashMap::new(),
+            link_policies: HashMap::new(),
         }
     }
 
@@ -485,6 +511,9 @@ impl<'a> SharedPrepare<'a> {
             view_artifacts: None,
             resolve_sources: false,
             inputs: HashMap::new(),
+            resolved: HashMap::new(),
+            probes: HashMap::new(),
+            link_policies: HashMap::new(),
         }
     }
 
@@ -590,6 +619,9 @@ impl SharedPrepare<'_> {
     /// answer — not declared, not loaded, or its lookup recorded
     /// something only an ordered lookup may).
     fn source(&mut self, label: &Label) -> Option<Result<Target, String>> {
+        if let Some(path) = self.resolved.get(label) {
+            return Some(Ok(Target::Source(path.clone())));
+        }
         let package_id = label.package_id();
         let package = self.engine.packages.get(&package_id)?;
         let declared = package.exports.contains_key(label)
@@ -603,9 +635,22 @@ impl SharedPrepare<'_> {
             return None;
         }
         let mut side = SourceSide::default();
-        let mut probes: HashMap<PathBuf, SourceDirProbe> = HashMap::new();
-        let found = source_target_in(&self.engine.repositories, label, &mut probes, &mut side);
+        let mut probes = ReadThrough {
+            base: &self.engine.source_dir_probes,
+            own: &mut self.probes,
+        };
+        let repositories = &self.engine.repositories;
+        let policies = &mut self.link_policies;
+        let found = source_target_with(repositories, label, &mut probes, &mut side, &mut |name| {
+            policies
+                .entry(name.to_owned())
+                .or_insert_with(|| repositories.link_policy(name))
+                .clone()
+        });
         let (path, stable) = found.ok()?;
+        // Once per job, a symlinked source too (the same policy: the same
+        // answer; the merge memoizes only a stable one).
+        self.resolved.insert(label.clone(), path.clone());
         self.record
             .sources
             .push((label.clone(), path.clone(), stable, side));

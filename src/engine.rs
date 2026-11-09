@@ -269,7 +269,6 @@ impl Artifact {
 /// planned `dry` lists, their delegation copies and the dependency views
 /// hold one list (W1a).
 type Artifacts = Arc<Vec<Artifact>>;
-type Locations = BTreeMap<String, Vec<PathBuf>>;
 /// Declared generated artifacts by configuration and execution path.
 /// The client environment inherited action variables resolve against
 /// (read once per build on first need, crate::action_env).
@@ -378,7 +377,7 @@ impl Declared {
 /// A lookup-only map by configured target key (never iterated where the
 /// order is observed).
 type KeyMap<V> = crate::fast_hash::FxHashMap<ConfiguredTargetKey, V>;
-type ResolvedInputs = (Vec<Artifact>, Locations);
+type ResolvedInputs = Vec<Artifact>;
 /// [`Engine`]'s `action_executions`.
 type ActionExecutions = crate::fast_hash::FxHashMap<String, crate::exec_groups::ActionExecution>;
 
@@ -10313,7 +10312,7 @@ impl Engine {
             // Build and --nobuild retain strict execution-path normalization
             // after shared-action reconciliation. Do not use execute_build as
             // the analysis-only switch: --nobuild is not cquery.
-            self.inputs(rule, config, dry, declared)?.0
+            self.inputs(rule, config, dry, declared)?
         };
         for artifact in &inputs {
             register_artifact(artifact_index, &artifact.file, artifact);
@@ -18752,6 +18751,22 @@ fn source_target_in(
     probes: &mut dyn SourceProbes,
     side: &mut SourceSide,
 ) -> Result<(PathBuf, bool), String> {
+    source_target_with(repositories, label, probes, side, &mut |repository| {
+        repositories.link_policy(repository)
+    })
+}
+
+/// [`source_target_in`] with the link policy of a symlinked source's
+/// repository from `link_policy` (RepositorySet::link_policy canonicalizes
+/// the blocked prefixes and the store on every call: a T3 job asks once
+/// per repository).
+fn source_target_with(
+    repositories: &RepositorySet,
+    label: &Label,
+    probes: &mut dyn SourceProbes,
+    side: &mut SourceSide,
+    link_policy: &mut dyn FnMut(&str) -> crate::source_links::LinkPolicy,
+) -> Result<(PathBuf, bool), String> {
     let repository_root = repositories.root(&label.repository)?.to_path_buf();
     let package_dir = repository_root.join(&label.package);
     // A source name with a lone (non-UTF-8) byte escape: Bazel 9.3 reads
@@ -18865,7 +18880,7 @@ fn source_target_in(
         // Links may continue into a repository already materialized in
         // this invocation, or (repository-rule-generated repositories
         // only) a host path; reads only (source_links::LinkPolicy).
-        let policy = repositories.link_policy(&label.repository);
+        let policy = link_policy(&label.repository);
         match crate::source_links::resolve_with_policy(&repository_root, &relative, &policy)
             .map_err(|error| format!("source {label}: {error}"))?
         {

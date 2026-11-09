@@ -166,21 +166,13 @@ impl Engine {
         rule: &Rule,
         config: ConfigId,
     ) -> Result<ResolvedInputs, String> {
-        let mut inputs = Vec::new();
+        let mut inputs = Vec::with_capacity(rule.srcs.len());
         // Lookups only: `inputs` keeps the declaration order.
-        let mut seen: HashMap<SharedPath, Artifact> = HashMap::new();
-        let mut locations = BTreeMap::new();
+        let mut seen: HashMap<SharedPath, Artifact> = HashMap::with_capacity(rule.srcs.len());
         for src in &rule.srcs {
             let label = cx.engine().resolve_rule_src(rule, src)?;
-            let artifacts =
-                Arc::unwrap_or_clone(Self::shared_artifacts_in(cx, &label, config, reads)?);
-            let paths = artifacts
-                .iter()
-                .map(|a| a.exec.to_path_buf())
-                .collect::<Vec<_>>();
-            locations.insert(label.to_string(), paths.clone());
-            locations.insert(src.clone(), paths);
-            for artifact in artifacts {
+            let artifacts = Self::shared_artifacts_in(cx, &label, config, reads)?;
+            for artifact in artifacts.iter().cloned() {
                 if let Some(previous) = seen.get(artifact.exec.as_path()) {
                     // One artifact without its owner: a generated one is
                     // identified by its producer (two targets' Artifacts of
@@ -200,7 +192,7 @@ impl Engine {
                 }
             }
         }
-        Ok((inputs, locations))
+        Ok(inputs)
     }
 
     /// The results of a [`plain`] native rule (`Engine::commit_native_target`

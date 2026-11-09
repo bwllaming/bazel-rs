@@ -774,7 +774,7 @@ pub(super) fn run_native(
         let output_group = super::native_results::selected_output_group(rule);
         let mut declared = Vec::new();
         let genrule = matches!(rule.kind, RuleKind::Genrule);
-        let plain = Engine::inputs_in(&mut cx, reads, rule, key.config).and_then(|(inputs, _)| {
+        let plain = Engine::inputs_in(&mut cx, reads, rule, key.config).and_then(|inputs| {
             if genrule {
                 // T3: a genrule's results are its outputs (its commit's
                 // `dry`, `declared`, data runfiles; their producer its
@@ -1125,7 +1125,7 @@ pub(super) struct NativePublished {
     /// A genrule's outputs, declared in their configuration.
     declared: Vec<(ConfigId, Artifact)>,
     /// The source files it resolved itself ([`prepare::SharedRecord`]).
-    sources: Vec<(Label, PathBuf, bool, SourceSide)>,
+    pub(super) sources: Vec<(Label, PathBuf, bool, SourceSide)>,
 }
 
 /// A native rule's results being computed on a worker (`None`: not
