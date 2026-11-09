@@ -75,7 +75,7 @@ const RESULT_SHARDS: usize = 64;
 
 /// One committed target's per-target planning-state entries.
 #[derive(Default)]
-struct KeyResults {
+pub(super) struct KeyResults {
     dry: Option<Artifacts>,
     providers: Option<BTreeMap<String, starlark::values::OwnedFrozenValue>>,
     provider_keys: Option<Vec<String>>,
@@ -109,7 +109,7 @@ impl PlannedResults {
         &self.declared[(hash >> 58) as usize & (RESULT_SHARDS - 1)]
     }
 
-    fn get(&self, key: &ConfiguredTargetKey) -> Option<Arc<KeyResults>> {
+    pub(super) fn get(&self, key: &ConfiguredTargetKey) -> Option<Arc<KeyResults>> {
         self.key_shard(key)
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -273,14 +273,14 @@ impl PlanReads for PlannedResults {
 /// A worker's prepare and compute of one entry ([`Engine::dispatch_frozen`]).
 pub(super) struct FrozenOutcome {
     /// `Ok(None)`: the prepare aborted (prepared at its turn).
-    prepared: Result<Option<Box<PreparedParts>>, String>,
-    abort: Option<&'static str>,
-    owner: Option<(String, crate::shared_path::SharedPath, ConfiguredTargetKey)>,
-    effects: Effects,
-    platform_known: bool,
-    elapsed: std::time::Duration,
+    pub(super) prepared: Result<Option<Box<PreparedParts>>, String>,
+    pub(super) abort: Option<&'static str>,
+    pub(super) owner: Option<(String, crate::shared_path::SharedPath, ConfiguredTargetKey)>,
+    pub(super) effects: Effects,
+    pub(super) platform_known: bool,
+    pub(super) elapsed: std::time::Duration,
     /// Its compute (absent when the prepare did not give one).
-    worker: Option<Result<WorkerOutcome, String>>,
+    pub(super) worker: Option<Result<WorkerOutcome, String>>,
 }
 
 /// An entry being prepared and computed on a worker.
@@ -1230,7 +1230,7 @@ impl Engine {
 /// exclusive of nested buckets).
 pub(super) static SPLIT: [AtomicU64; SPLIT_NAMES.len()] =
     [const { AtomicU64::new(0) }; SPLIT_NAMES.len()];
-pub(super) const SPLIT_NAMES: [&str; 12] = [
+pub(super) const SPLIT_NAMES: [&str; 16] = [
     "other",
     "drain_lowerings",
     "hooks",
@@ -1243,6 +1243,10 @@ pub(super) const SPLIT_NAMES: [&str; 12] = [
     "natives_ahead",
     "dispatch",
     "committed_wake",
+    "cursor_claim",
+    "merge_starlark",
+    "merge_native",
+    "at_turn",
 ];
 
 thread_local! {

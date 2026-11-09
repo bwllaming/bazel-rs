@@ -34,6 +34,7 @@
 
 use super::*;
 
+mod buffer;
 mod frozen;
 pub(super) use frozen::Frozen;
 use std::collections::BTreeSet as OrderedSet;
@@ -1288,6 +1289,7 @@ pub(super) fn report(workers: usize) {
         get(&frozen::FROZEN_STATS[2]),
         get(&frozen::FROZEN_STATS[3]) as f64 / 1e6,
     ));
+    buffer::report();
     if let Some(profile) = frozen::CT2_PROFILE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -1865,7 +1867,12 @@ impl Engine {
         }
         let result = {
             let _split = frozen::Split::enter(0);
-            self.plan_targets_pipelined(state, configured, &mut pipe)
+            if self.frozen_walk.is_some() && buffer::enabled() {
+                // T3: the plan-ordered merge buffer.
+                self.plan_targets_buffered(state, configured)
+            } else {
+                self.plan_targets_pipelined(state, configured, &mut pipe)
+            }
         };
         let mut result = result;
         if let Some(frozen) = self.frozen_walk.take() {
