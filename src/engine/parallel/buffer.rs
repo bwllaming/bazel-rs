@@ -76,7 +76,7 @@ const KIND_NATIVE: u8 = 2;
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL buffer`).
 static STATS: [AtomicU64; STAT_NAMES.len()] = [const { AtomicU64::new(0) }; STAT_NAMES.len()];
-const STAT_NAMES: [&str; 11] = [
+const STAT_NAMES: [&str; 12] = [
     "starlark",
     "native",
     "turn",
@@ -88,6 +88,7 @@ const STAT_NAMES: [&str; 11] = [
     "aborted",
     "invalidated",
     "walks",
+    "native_unpublished",
 ];
 const S_STARLARK: usize = 0;
 const S_NATIVE: usize = 1;
@@ -100,6 +101,7 @@ const S_AT_TURN: usize = 7;
 const S_ABORTED: usize = 8;
 const S_INVALIDATED: usize = 9;
 const S_WALKS: usize = 10;
+const S_NATIVE_UNPUBLISHED: usize = 11;
 
 fn stat(index: usize, by: u64) {
     STATS[index].fetch_add(by, Ordering::Relaxed);
@@ -108,6 +110,22 @@ fn stat(index: usize, by: u64) {
 /// The cursor's progress of the walks (BAZEL_RS_TIMING): seconds since the
 /// walk started at each tenth of its entries.
 static PROGRESS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// BAZEL_RS_TIMING: the entries at their turn by why and rule class (count,
+/// µs).
+static AT_TURN: std::sync::Mutex<BTreeMap<String, (u64, u64)>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn note_at_turn(why: &str, rule: &Rule, elapsed: std::time::Duration) {
+    if crate::plan_timings::enabled() {
+        let mut classes = AT_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = classes
+            .entry(format!("{why}:{}", rule.rule_class_name()))
+            .or_default();
+        entry.0 += 1;
+        entry.1 += elapsed.as_micros() as u64;
+    }
+}
 
 /// The `PERF-PARALLEL buffer` lines.
 pub(super) fn report() {
@@ -124,9 +142,45 @@ pub(super) fn report() {
             .collect::<Vec<_>>()
             .join(" ")
     ));
+    let mut classes: Vec<(String, (u64, u64))> = AT_TURN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|(class, value)| (class.clone(), *value))
+        .collect();
+    classes.sort_by_key(|(_, (_, us))| std::cmp::Reverse(*us));
+    crate::snapshot::diag::line_fmt(format_args!(
+        "PERF-PARALLEL buffer at_turn {}",
+        classes
+            .iter()
+            .take(16)
+            .map(|(class, (count, us))| format!("{class}={count}:{:.3}s", *us as f64 / 1e6))
+            .collect::<Vec<_>>()
+            .join(" ")
+    ));
+    crate::snapshot::diag::line_fmt(format_args!(
+        "PERF-PARALLEL buffer classified_turn {}",
+        TURN_REASONS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(why, count)| format!("{why}={count}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    ));
     for line in PROGRESS.lock().unwrap_or_else(|e| e.into_inner()).iter() {
         crate::snapshot::diag::line_fmt(format_args!("PERF-PARALLEL buffer cursor {line}"));
     }
+}
+
+/// `BAZEL_RS_T3_DEBUG=1`: the cursor's longest waits and entries at their
+/// turn, with what readied them.
+fn debug() -> bool {
+    static DEBUG: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a diagnostics switch; the output is the same either way.
+        std::env::var_os("BAZEL_RS_T3_DEBUG").is_some()
+    });
+    *DEBUG
 }
 
 /// A finished job.
@@ -169,9 +223,61 @@ struct Board {
     cancelled: Arc<AtomicBool>,
     jitter: u64,
     verify_summary: bool,
+    /// BAZEL_RS_T3_DEBUG: when each entry became ready and on which key.
+    readied: std::sync::Mutex<HashMap<usize, (std::time::Instant, Option<ConfiguredTargetKey>)>>,
+    /// BAZEL_RS_T3_DEBUG: (µs, what) of the cursor's slow steps.
+    slow: std::sync::Mutex<Vec<(u64, String)>>,
 }
 
 impl Board {
+    fn note_ready(&self, index: usize, by: Option<&ConfiguredTargetKey>) {
+        if debug() {
+            self.readied
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(index, (std::time::Instant::now(), by.cloned()));
+        }
+    }
+
+    fn note_slow(&self, index: usize, what: &str, elapsed: std::time::Duration) {
+        if !debug() || elapsed < std::time::Duration::from_millis(2) {
+            return;
+        }
+        // The chain of what readied it (each by the key whose results
+        // came last), back to a classification or a commit.
+        let mut ready = String::new();
+        {
+            let readied = self.readied.lock().unwrap_or_else(|e| e.into_inner());
+            let mut at = index;
+            for _ in 0..8 {
+                let Some((when, by)) = readied.get(&at) else {
+                    ready.push_str(" <- (not readied: at its turn)");
+                    break;
+                };
+                ready.push_str(&format!(
+                    " <- ready {:.0}ms ago by {}",
+                    when.elapsed().as_secs_f64() * 1e3,
+                    by.as_ref()
+                        .map_or("classification".to_owned(), |key| key.label.to_string())
+                ));
+                let Some(next) = by
+                    .as_ref()
+                    .and_then(|key| self.plan.iter().position(|(other, _)| other == key))
+                else {
+                    break;
+                };
+                at = self.start + next;
+            }
+        }
+        let label = self
+            .slot(index)
+            .map_or("?".to_owned(), |slot| self.plan[slot].0.label.to_string());
+        self.slow.lock().unwrap_or_else(|e| e.into_inner()).push((
+            elapsed.as_micros() as u64,
+            format!("{what} #{index} {label}{ready}"),
+        ));
+    }
+
     fn slot(&self, index: usize) -> Option<usize> {
         index
             .checked_sub(self.start)
@@ -248,6 +354,7 @@ impl Board {
                 missing == 0
             };
             if ready {
+                self.note_ready(index, None);
                 self.dispatch(index);
             }
         }
@@ -293,9 +400,12 @@ impl Board {
         let frozen = &self.frozen;
         match self.kind[slot].load(Ordering::Acquire) {
             KIND_NATIVE => {
-                if let Some(published) = frozen::run_native(frozen, index, key, rule) {
-                    frozen::publish_native_results(frozen, index, key, *published);
-                    self.mark(key);
+                match frozen::run_native(frozen, index, key, rule) {
+                    Some(published) => {
+                        frozen::publish_native_results(frozen, index, key, *published);
+                        self.mark(key);
+                    }
+                    None => stat(S_NATIVE_UNPUBLISHED, 1),
                 }
                 Finished::Native
             }
@@ -349,6 +459,7 @@ impl Board {
             ready
         };
         for index in ready {
+            self.note_ready(index, Some(key));
             self.dispatch(index);
         }
     }
@@ -400,6 +511,7 @@ impl Board {
                     if waited {
                         stat(S_WAITED, 1);
                         stat(S_WAIT_US, started.elapsed().as_micros() as u64);
+                        self.note_slow(index, "wait", started.elapsed());
                     }
                     self.stage[slot].store(CLAIMED, Ordering::Release);
                     return match finished {
@@ -430,13 +542,33 @@ fn classify(
     key: &ConfiguredTargetKey,
     rule: &Rule,
 ) -> (u8, Vec<ConfiguredTargetKey>, Option<Effects>) {
-    let turn = (KIND_TURN, Vec::new(), None);
+    let (kind, keys, stash, why) = classify_why(frozen, index, key, rule);
+    if kind == KIND_TURN && crate::plan_timings::enabled() {
+        let mut reasons = TURN_REASONS.lock().unwrap_or_else(|e| e.into_inner());
+        *reasons
+            .entry(format!("{why}:{}", rule.rule_class_name()))
+            .or_default() += 1;
+    }
+    (kind, keys, stash)
+}
+
+/// BAZEL_RS_TIMING: why entries are classified to their turn.
+static TURN_REASONS: std::sync::Mutex<BTreeMap<String, u64>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn classify_why(
+    frozen: &Frozen,
+    index: usize,
+    key: &ConfiguredTargetKey,
+    rule: &Rule,
+) -> (u8, Vec<ConfiguredTargetKey>, Option<Effects>, &'static str) {
+    let turn = |why| (KIND_TURN, Vec::new(), None, why);
     if frozen
         .configured
         .get(key)
         .is_none_or(|node| node.incompatible.is_some())
     {
-        return turn;
+        return turn("incompatible");
     }
     let engine = &frozen.engine;
     let starlark = matches!(rule.kind, RuleKind::Custom);
@@ -444,17 +576,17 @@ fn classify(
         // Attribute aspects apply at the prepare (outputs registered in
         // other packages): at its turn.
         let Some(custom) = rule.custom.as_ref() else {
-            return turn;
+            return turn("no_custom");
         };
         if custom
             .schema
             .values()
             .any(|spec| !spec.declaration.aspects.is_empty())
         {
-            return turn;
+            return turn("attribute_aspects");
         }
     } else if !frozen::publishes_native(engine, rule, key.config) {
-        return turn;
+        return turn("native");
     }
     let isolation = Isolation::enter();
     let mut cx = prepare::SharedPrepare::frozen(frozen, index);
@@ -464,13 +596,21 @@ fn classify(
     let quiet =
         effects.console.is_empty() && effects.observations.is_empty() && effects.roots.is_empty();
     let stash = (!quiet).then_some(effects);
+    let why = match (&keys, cx.record.abort) {
+        (_, Some(why)) => why,
+        (None, None) => "requirements",
+        _ if sentinel => "sentinel",
+        _ if !quiet => "observed",
+        _ => "",
+    };
     match keys {
         Some(keys) if !aborted && !sentinel && quiet => (
             if starlark { KIND_STARLARK } else { KIND_NATIVE },
             keys,
             None,
+            "",
         ),
-        _ => (KIND_TURN, Vec::new(), stash),
+        _ => (KIND_TURN, Vec::new(), stash, why),
     }
 }
 
@@ -541,12 +681,14 @@ fn requirements(
     }
     let mut keys = Vec::with_capacity(labels.len());
     for (label, config) in labels {
-        match prepare::Lookup::target(cx, &label).ok()? {
-            Target::Source(_) => {}
-            Target::Output(generating, _) => {
-                keys.push(ConfiguredTargetKey::new(generating.label.clone(), config));
-            }
-            Target::Rule(_) => keys.push(ConfiguredTargetKey::new(label, config)),
+        // Only rules and output files have results: a label of a loaded
+        // package that is neither is a source file (or missing: its
+        // prepare reports it), whether or not its lookup was memoized.
+        let package = engine.packages.get(&label.package_id())?;
+        if package.get(&label).is_some() {
+            keys.push(ConfiguredTargetKey::new(label, config));
+        } else if let Some((owner, _)) = engine.generated.get(&label) {
+            keys.push(ConfiguredTargetKey::new(owner.clone(), config));
         }
     }
     Some(keys)
@@ -592,12 +734,28 @@ impl Engine {
             cancelled,
             jitter: jitter_millis(),
             verify_summary: verify_ahead(),
+            readied: Default::default(),
+            slow: Default::default(),
         });
         stat(S_WALKS, 1);
         let started = std::time::Instant::now();
         let mut progress = Vec::new();
         let result = self.buffered_walk(state, configured, &board, started, &mut progress);
         board.stop.store(true, Ordering::Relaxed);
+        if debug() {
+            let mut slow =
+                std::mem::take(&mut *board.slow.lock().unwrap_or_else(|e| e.into_inner()));
+            let total: u64 = slow.iter().map(|(us, _)| us).sum();
+            slow.sort_by_key(|(us, _)| std::cmp::Reverse(*us));
+            eprintln!(
+                "T3-DEBUG walk of {len}: slow steps {} ({:.3}s)",
+                slow.len(),
+                total as f64 / 1e6
+            );
+            for (us, what) in slow.iter().take(40) {
+                eprintln!("T3-DEBUG {:.1}ms {what}", *us as f64 / 1e3);
+            }
+        }
         if result.is_ok() {
             // The jobs left in the queue (classifications passed by the
             // cursor) skip and release the frozen view, so its memos move
@@ -691,7 +849,18 @@ impl Engine {
                 Claimed::Turn => {
                     stat(S_AT_TURN, 1);
                     let _split = frozen::Split::enter(15);
-                    self.buffered_at_turn(state, configured, &key, &rule, index)
+                    let turn_started = std::time::Instant::now();
+                    let why = match board.slot(index) {
+                        None => "unplanned",
+                        Some(slot) if board.kind[slot].load(Ordering::Acquire) == KIND_TURN => {
+                            "unclassified"
+                        }
+                        Some(_) => "unready",
+                    };
+                    let result = self.buffered_at_turn(state, configured, &key, &rule, index);
+                    note_at_turn(why, &rule, turn_started.elapsed());
+                    board.note_slow(index, why, turn_started.elapsed());
+                    result
                 }
                 Claimed::Native => {
                     let _split = frozen::Split::enter(14);

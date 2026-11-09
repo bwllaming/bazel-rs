@@ -664,7 +664,48 @@ pub(super) fn run_native(
         engine.native_transitive_in(reads, rule, key, &edges, &mut transitive);
         let validation = Engine::native_validation_in(&mut cx, reads, rule, key.config);
         let output_group = super::native_results::selected_output_group(rule);
+        let mut declared = Vec::new();
+        let genrule = matches!(rule.kind, RuleKind::Genrule);
         let plain = Engine::inputs_in(&mut cx, reads, rule, key.config).and_then(|(inputs, _)| {
+            if genrule {
+                // T3: a genrule's results are its outputs (its commit's
+                // `dry`, `declared`, data runfiles; their producer its
+                // action), whatever its command expands to.
+                let mut registered = inputs;
+                let output_root = engine.configurations.output_root(key.config);
+                let action_owner = key.action_owner(engine.configurations.top());
+                let mut artifacts = Vec::with_capacity(rule.outs.len());
+                for (index, out) in rule.outs.iter().enumerate() {
+                    let exec = rule.label.with_name(out)?.generated_exec_path(&output_root);
+                    artifacts.push(Artifact::new(
+                        exec.clone(),
+                        exec,
+                        Some((action_owner.clone(), index)),
+                        rule.label.to_string(),
+                        false,
+                        false,
+                    ));
+                }
+                if artifacts.is_empty() {
+                    return Err("a genrule without outputs".to_owned());
+                }
+                let files = artifacts.iter().map(Artifact::file).collect::<Vec<_>>();
+                let runfiles = crate::runfiles::TargetRunfiles::genrule(
+                    &files,
+                    super::super::genrule_is_executable(rule),
+                )
+                .map_err(|error| error.to_string())?;
+                registered.extend(artifacts.iter().cloned());
+                declared = artifacts.clone();
+                return Ok((
+                    super::native_results::NativePlain {
+                        dry: artifacts,
+                        providers: None,
+                        runfiles_info: Some(Arc::new(runfiles)),
+                    },
+                    registered,
+                ));
+            }
             let mut registered = inputs.clone();
             // A filegroup's output group: its `srcs`' views.
             let inputs = match &output_group {
@@ -719,6 +760,10 @@ pub(super) fn run_native(
                 repositories: Some(Arc::new(transitive)),
             },
             registered,
+            declared: declared
+                .into_iter()
+                .map(|artifact| (key.config, artifact))
+                .collect(),
         }))
     }))
     .ok()
@@ -738,6 +783,7 @@ pub(super) fn publish_native_results(
     let NativePublished {
         results,
         registered,
+        declared,
     } = published;
     for artifact in &registered {
         frozen.artifacts.publish_provisional(
@@ -746,6 +792,15 @@ pub(super) fn publish_native_results(
             artifact,
             stamp,
         );
+    }
+    for (config, artifact) in declared {
+        let key = DeclaredKey::new(config, artifact.exec.to_path_buf());
+        frozen
+            .results
+            .declared_shard(key.hash)
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .put(key, artifact, true);
     }
     frozen
         .results
@@ -894,6 +949,8 @@ impl Ct2Profile {
 pub(super) struct NativePublished {
     results: KeyResults,
     registered: Vec<Artifact>,
+    /// A genrule's outputs, declared in their configuration.
+    declared: Vec<(ConfigId, Artifact)>,
 }
 
 /// A native rule's results being computed on a worker (`None`: not
@@ -973,7 +1030,8 @@ fn compare_published(
 pub(super) fn publishes_native(engine: &Engine, rule: &Rule, config: ConfigId) -> bool {
     publishes()
         && (super::native_results::plain(rule)
-            || super::native_results::selected_output_group(rule).is_some())
+            || super::native_results::selected_output_group(rule).is_some()
+            || matches!(rule.kind, RuleKind::Genrule))
         && !engine.semantic_only()
         && !engine
             .configurations
