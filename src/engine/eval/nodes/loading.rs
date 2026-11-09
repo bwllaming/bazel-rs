@@ -82,6 +82,29 @@ pub(crate) struct Loading {
     pub(crate) stable_sources: Mutex<Vec<(Label, PathBuf)>>,
 }
 
+thread_local! {
+    /// This thread runs the sequential pass while the pool serves
+    /// (docs/EVALUATOR.md "Phase 1, the concurrent sequential pass"): its
+    /// attempts are the sequential pass's, whatever [`Loading::pooled`]
+    /// says.
+    static SEQUENTIAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Mark this thread as the sequential pass's (or not) while the pool
+/// serves; the previous mark.
+pub(crate) fn set_sequential(sequential: bool) -> bool {
+    SEQUENTIAL.with(|cell| cell.replace(sequential))
+}
+
+impl Loading {
+    /// Whether attempts on this thread run as the pool's now: the pool
+    /// runs, and this thread is not the sequential pass's.
+    pub(crate) fn pooled_here(&self) -> bool {
+        self.pooled.load(std::sync::atomic::Ordering::Acquire)
+            && !SEQUENTIAL.with(std::cell::Cell::get)
+    }
+}
+
 /// A loaded package's value: the package and its lookup indexes.
 pub(crate) struct PkgValue {
     pub(crate) package: Arc<Package>,
@@ -250,10 +273,7 @@ pub(crate) fn package_body(
         ))))));
     }
     let repositories = &shared.repositories;
-    let pooled = shared
-        .loading
-        .pooled
-        .load(std::sync::atomic::Ordering::Acquire);
+    let pooled = shared.loading.pooled_here();
     let unit = match () {
         () if pooled => {
             let guard = crate::repository_demand::no_demand();

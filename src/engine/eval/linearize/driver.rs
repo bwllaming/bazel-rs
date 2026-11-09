@@ -1083,7 +1083,10 @@ impl Coord<'_> {
                 planned: &planned,
                 imported: std::cell::RefCell::new(Vec::new()),
             };
-            let mut pass = Pass1::new(Options::default());
+            let mut pass = Pass1::new(Options {
+                no_edges: true,
+                ..Options::default()
+            });
             let mut ops = Vec::new();
             let progress = pass.resume(&source, &mut ops)?;
             if progress != Progress::Finished {
@@ -1177,7 +1180,7 @@ struct SubtreeSource<'a, 'v> {
 const PLANNED: &[Event] = &[Event::Done];
 
 impl Transcripts for SubtreeSource<'_, '_> {
-    fn key(&self, node: NodeId) -> NodeKey {
+    fn key(&self, node: NodeId) -> &NodeKey {
         self.view.key(node)
     }
 
@@ -1189,7 +1192,7 @@ impl Transcripts for SubtreeSource<'_, '_> {
         {
             let mut imported = self.imported.borrow_mut();
             if !imported.contains(&ct.key) {
-                imported.push(ct.key);
+                imported.push(ct.key.clone());
             }
             return Some(Ct1Record {
                 events: PLANNED,
@@ -1294,12 +1297,13 @@ impl View<'_> {
 }
 
 impl Transcripts for View<'_> {
-    fn key(&self, node: NodeId) -> NodeKey {
-        self.store
-            .keys
-            .get(&node)
-            .cloned()
-            .unwrap_or(NodeKey::Status)
+    fn key(&self, node: NodeId) -> &NodeKey {
+        static UNKNOWN: NodeKey = NodeKey::Status;
+        self.store.keys.get(&node).unwrap_or(&UNKNOWN)
+    }
+
+    fn events(&self, node: NodeId, _memo: bool) -> Option<(&[Event], bool)> {
+        View::events(self, node)
     }
 
     fn ct1(&self, node: NodeId) -> Option<Ct1Record<'_>> {
@@ -1422,7 +1426,10 @@ impl Engine {
         let shared = EvalShared::from_engine(self);
         super::super::timeline::mark(|| "the shared view built".to_owned());
         let mut lin = Linearizer {
-            pass: Pass1::new(Options { warnings }),
+            pass: Pass1::new(Options {
+                warnings,
+                no_edges: true,
+            }),
             ops: Vec::new(),
             tracker,
             replay: TapeReplay::new(0),
@@ -1502,15 +1509,80 @@ impl Engine {
                 0
             };
             let driving = std::time::Instant::now();
-            let result = drive(
-                &bodies,
-                &evaluator,
-                &shared,
-                labels,
-                top,
-                target_platform,
-                pool_roots.as_deref(),
-            );
+            let serve = pool_roots.is_some() && *SERVE;
+            let result = if serve {
+                // The pool serves beside the sequential pass (this thread):
+                // what it wakes runs at once, what it needs that the pool
+                // runs it waits for.
+                shared
+                    .loading
+                    .pooled
+                    .store(true, std::sync::atomic::Ordering::Release);
+                let was = super::super::nodes::loading::set_sequential(true);
+                evaluator.begin_serving();
+                let result = std::thread::scope(|scope| {
+                    if super::super::timeline::watchdog() {
+                        let evaluator = &evaluator;
+                        scope.spawn(move || {
+                            for tick in 0.. {
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                                if evaluator.serving_ends() {
+                                    break;
+                                }
+                                if tick % 50 != 49 {
+                                    continue;
+                                }
+                                let seq = super::super::timeline::SEQ_STATE
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .chars()
+                                    .take(300)
+                                    .collect::<String>();
+                                eprintln!(
+                                    "bazel-rs: watchdog: {} | sequential: {seq}",
+                                    evaluator.watchdog_report()
+                                );
+                            }
+                        });
+                    }
+                    let server = std::thread::Builder::new()
+                        .name("eval-serve".to_owned())
+                        .stack_size(PHASE1_STACK)
+                        .spawn_scoped(scope, || evaluator.serve())
+                        .expect("the evaluator's serving thread");
+                    let result = drive(
+                        &bodies,
+                        &evaluator,
+                        &shared,
+                        labels,
+                        top,
+                        target_platform,
+                        pool_roots.as_deref(),
+                    );
+                    evaluator.end_serving();
+                    if let Err(panic) = server.join() {
+                        std::panic::resume_unwind(panic);
+                    }
+                    result
+                });
+                evaluator.serving_done();
+                super::super::nodes::loading::set_sequential(was);
+                shared
+                    .loading
+                    .pooled
+                    .store(false, std::sync::atomic::Ordering::Release);
+                result
+            } else {
+                drive(
+                    &bodies,
+                    &evaluator,
+                    &shared,
+                    labels,
+                    top,
+                    target_platform,
+                    pool_roots.as_deref(),
+                )
+            };
             DRIVE[2].fetch_add(
                 driving.elapsed().as_micros() as u64,
                 std::sync::atomic::Ordering::Relaxed,
@@ -1943,6 +2015,13 @@ fn stats_enabled() -> bool {
     std::env::var_os("BAZEL_RS_EVAL_STATS").is_some()
 }
 
+/// Whether the pool serves beside the sequential pass
+/// (`BAZEL_RS_EVAL_NO_SERVE=1`: rounds between requested targets).
+static SERVE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
+    std::env::var_os("BAZEL_RS_EVAL_NO_SERVE").is_none()
+});
+
 /// The pool's worker stack in phase 1: attempts nest depth first on a
 /// worker (help-first needs), as deep as the walk's recursion.
 const PHASE1_STACK: usize = 512 << 20;
@@ -2344,7 +2423,17 @@ fn drive(
                 None => error,
             }
         })?;
-        if pool_roots.is_some() && sequential_attempts() != ran {
+        if evaluator.serving() {
+            // What it ran may have unblocked what the pool left; what the
+            // serving pool demanded is fetched here.
+            if sequential_attempts() != ran {
+                if let Some((key, priority)) = bodies.coord().frontier() {
+                    evaluator.boost(&key, priority);
+                }
+                evaluator.retry_unresolvable();
+            }
+            evaluator.lane_work(&mut Lane { shared });
+        } else if pool_roots.is_some() && sequential_attempts() != ran {
             // What it ran may have unblocked more for the pool.
             let round = std::time::Instant::now();
             pool_round(bodies, evaluator, shared, pool_roots.unwrap_or_default());

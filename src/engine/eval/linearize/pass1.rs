@@ -42,7 +42,9 @@
 //!
 //! Everything else is copied to the tape at its position.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::fast_hash::{FxHashMap, FxHashSet};
 
 use crate::configuration::ConfigId;
 use crate::label::{Label, PackageId};
@@ -97,7 +99,19 @@ pub(crate) struct SegmentRecord<'a> {
 /// error texts.
 pub(crate) trait Transcripts {
     /// The key of `node`.
-    fn key(&self, node: NodeId) -> NodeKey;
+    fn key(&self, node: NodeId) -> &NodeKey;
+    /// A node's events as far as they go and whether complete (the hot
+    /// path of the replay: [`Self::ct1`] / [`Self::memo`] without their
+    /// value's fields).
+    fn events(&self, node: NodeId, memo: bool) -> Option<(&[Event], bool)> {
+        if memo {
+            self.memo(node)
+                .map(|record| (record.events, record.complete))
+        } else {
+            self.ct1(node)
+                .map(|record| (record.events, record.complete))
+        }
+    }
     /// A CT1 node's transcript (`None`: the node never ran — an internal
     /// error when pass 1 enters it).
     fn ct1(&self, node: NodeId) -> Option<Ct1Record<'_>>;
@@ -147,6 +161,9 @@ pub(crate) struct Options {
     /// The warnings reported before phase 1 (an identical phase-1 warning
     /// is not repeated).
     pub(crate) warnings: Vec<String>,
+    /// Do not record [`Linearized::edges`] (only `--keep_going` reads
+    /// them; the evaluator does not plan it).
+    pub(crate) no_edges: bool,
 }
 
 /// Pass 1's result.
@@ -268,13 +285,15 @@ enum Frame {
 pub(crate) struct Pass1 {
     out: Linearized,
     /// Complete configured keys and their canonical node (`configured`).
-    visited: HashMap<ConfiguredTargetKey, NodeId>,
+    visited: FxHashMap<ConfiguredTargetKey, NodeId>,
     /// The active chains, innermost (a memo's fresh chain) last.
     chains: Vec<Vec<ConfiguredTargetKey>>,
-    memos: HashSet<NodeId>,
-    packages: HashSet<PackageId>,
-    consoles: HashSet<u32>,
-    warned: HashSet<String>,
+    memos: FxHashSet<NodeId>,
+    packages: FxHashSet<PackageId>,
+    consoles: FxHashSet<u32>,
+    warned: FxHashSet<String>,
+    /// [`Options::no_edges`].
+    no_edges: bool,
     /// Platform memos being replayed (`resolving_platforms`).
     platform_depth: usize,
     trimmed_root: Option<ConfiguredTargetKey>,
@@ -295,7 +314,7 @@ pub(crate) struct Pass1 {
     /// Skipped scopes open (a later use of a computed memo).
     skipping: usize,
     /// The memos computed (first use), with their value digest.
-    memo_values: HashMap<u64, u64>,
+    memo_values: FxHashMap<u64, u64>,
     /// Where each `Flush` of the tape not taken yet happens
     /// ([`Pass1::take_flush_point`]).
     flush_points: std::collections::VecDeque<FlushPoint>,
@@ -322,7 +341,7 @@ pub(crate) fn run<T: Transcripts + ?Sized>(
         segments: &'a [Segment],
     }
     impl<T: Transcripts + ?Sized> Transcripts for Complete<'_, T> {
-        fn key(&self, node: NodeId) -> NodeKey {
+        fn key(&self, node: NodeId) -> &NodeKey {
             self.source.key(node)
         }
         fn ct1(&self, node: NodeId) -> Option<Ct1Record<'_>> {
@@ -372,11 +391,12 @@ impl Pass1 {
     pub(crate) fn new(options: Options) -> Self {
         Self {
             out: Linearized::default(),
-            visited: HashMap::new(),
+            visited: FxHashMap::default(),
             chains: Vec::new(),
-            memos: HashSet::new(),
-            packages: HashSet::new(),
-            consoles: HashSet::new(),
+            memos: FxHashSet::default(),
+            packages: FxHashSet::default(),
+            consoles: FxHashSet::default(),
+            no_edges: options.no_edges,
             warned: options.warnings.into_iter().collect(),
             platform_depth: 0,
             trimmed_root: None,
@@ -388,7 +408,7 @@ impl Pass1 {
             canonical: Vec::new(),
             scopes: Vec::new(),
             skipping: 0,
-            memo_values: HashMap::new(),
+            memo_values: FxHashMap::default(),
             flush_points: std::collections::VecDeque::new(),
         }
     }
@@ -492,28 +512,16 @@ impl Pass1 {
                     let segment = source
                         .segment(*index)
                         .ok_or("internal error: pass 1: a segment vanished")?;
-                    (
-                        segment.events.get(*pos).cloned(),
-                        segment.complete,
-                        Blocker::Segment,
-                    )
+                    (segment.events.get(*pos), segment.complete, Blocker::Segment)
                 }
                 Frame::Body { node, pos, .. } => {
-                    let record = source
-                        .ct1(*node)
+                    let (events, complete) = source
+                        .events(*node, false)
                         .ok_or("internal error: pass 1: a body vanished")?;
-                    (
-                        record.events.get(*pos).cloned(),
-                        record.complete,
-                        Blocker::Node(*node),
-                    )
+                    (events.get(*pos), complete, Blocker::Node(*node))
                 }
-                Frame::Memo { node, pos, .. } => match source.memo(*node) {
-                    Some(record) => (
-                        record.events.get(*pos).cloned(),
-                        record.complete,
-                        Blocker::Node(*node),
-                    ),
+                Frame::Memo { node, pos, .. } => match source.events(*node, true) {
+                    Some((events, complete)) => (events.get(*pos), complete, Blocker::Node(*node)),
                     None => (None, true, Blocker::Node(*node)),
                 },
             };
@@ -586,7 +594,7 @@ impl Pass1 {
                 if let NodeKey::RegToolchains(config) = source.key(node)
                     && source.memo(node).is_some_and(|record| record.ok)
                 {
-                    self.out.first_toolchains.get_or_insert(config);
+                    self.out.first_toolchains.get_or_insert(*config);
                 }
             }
         }
@@ -611,32 +619,32 @@ impl Pass1 {
         &mut self,
         source: &T,
         sink: &mut dyn TapeSink,
-        event: Event,
+        event: &Event,
         complete: bool,
     ) -> Result<Option<Blocker>, String> {
         // A memo scope (the walk computes the memo at its first use only).
-        match event {
+        match *event {
             Event::MemoBegin(memo) => {
                 let skip = self.skipping > 0 || self.memo_values.contains_key(&memo);
                 self.skipping += usize::from(skip);
                 self.scopes.push((memo, skip));
                 return Ok(None);
             }
-            Event::MemoEnd(value) => {
+            Event::MemoEnd(ref value) => {
                 let Some((memo, skipped)) = self.scopes.pop() else {
                     return Err("internal error: pass 1: a memo scope ends unopened".to_owned());
                 };
                 if skipped {
                     self.skipping -= 1;
                     if self.skipping == 0
-                        && let Some(value) = value
+                        && let Some(value) = *value
                         && self.memo_values.get(&memo) != Some(&value)
                     {
                         self.out.divergences.push(format!(
                             "a first-visit memo (an aspect's, {memo:x}) computed again gives another value than at its first use"
                         ));
                     }
-                } else if let Some(value) = value {
+                } else if let Some(value) = *value {
                     self.memo_values.entry(memo).or_insert(value);
                 }
                 return Ok(None);
@@ -645,7 +653,7 @@ impl Pass1 {
             _ if self.skipping > 0 => return Ok(None),
             _ => {}
         }
-        match event {
+        match *event {
             Event::Reach(node) => {
                 if let Some(blocker) = self.reach_blocker(source, node) {
                     return Ok(Some(blocker));
@@ -657,12 +665,12 @@ impl Pass1 {
             }
             Event::PkgCommit(ref package, _) => {
                 if self.packages.insert(package.clone()) {
-                    sink.op(TapeOp::Effect(event));
+                    sink.op(TapeOp::Effect(event.clone()));
                 }
             }
             Event::Console(index) => {
                 if self.consoles.insert(index) {
-                    sink.op(TapeOp::Effect(event));
+                    sink.op(TapeOp::Effect(event.clone()));
                 }
             }
             Event::MemoUse(node) => {
@@ -678,7 +686,7 @@ impl Pass1 {
             Event::Warn(ref warning) => {
                 if self.warned.insert(warning.clone()) {
                     self.out.warnings.push(warning.clone());
-                    sink.op(TapeOp::Effect(event));
+                    sink.op(TapeOp::Effect(event.clone()));
                 }
             }
             Event::ToolchainImpl(ref needed) => {
@@ -703,7 +711,7 @@ impl Pass1 {
                             .insert(implementation.clone(), exec_platform.clone());
                     }
                 }
-                sink.op(TapeOp::Effect(event));
+                sink.op(TapeOp::Effect(event.clone()));
             }
             Event::PlanPush => {
                 let Some((node, ct)) = self.owner() else {
@@ -764,7 +772,7 @@ impl Pass1 {
             | Event::Continue(_)
             | Event::Info(_)
             | Event::LoadPrints(_)
-            | Event::Error(_) => sink.op(TapeOp::Effect(event)),
+            | Event::Error(_) => sink.op(TapeOp::Effect(event.clone())),
             Event::MemoBegin(_) | Event::MemoEnd(_) => unreachable!("handled above"),
         }
         Ok(None)
@@ -807,13 +815,15 @@ impl Pass1 {
         let key = ct.key.clone();
         let parent = self.chain().last().cloned();
         let canonical = self.visited.get(&key).copied();
+        if !self.no_edges {
+            self.out.edges.push((parent.clone(), key.clone()));
+        }
         sink.op(TapeOp::Reach {
             node,
             key: key.clone(),
-            parent: parent.clone(),
+            parent,
             enter: canonical.is_none(),
         });
-        self.out.edges.push((parent, key.clone()));
         if let Some(canonical) = canonical {
             if canonical != node
                 && canonical != EXTERNAL
@@ -878,7 +888,7 @@ impl Pass1 {
         self.chain().push(key);
         self.frames.push(Frame::Body {
             node,
-            ct,
+            ct: ct.clone(),
             pos: 0,
             done: false,
         });
@@ -933,6 +943,7 @@ pub(crate) mod tests {
     //! Pass 1 over synthetic transcripts.
     use super::*;
     use crate::engine::eval::key::Interner;
+    use std::collections::{HashMap, HashSet};
 
     /// A body: transcript, delegate, empty configuration, incompatible.
     pub(crate) type FixtureBody = (Transcript, Option<ConfiguredTargetKey>, bool, bool);
@@ -973,8 +984,8 @@ pub(crate) mod tests {
     }
 
     impl Transcripts for Fixture {
-        fn key(&self, node: NodeId) -> NodeKey {
-            self.interner.key(node).clone()
+        fn key(&self, node: NodeId) -> &NodeKey {
+            self.interner.key(node)
         }
         fn ct1(&self, node: NodeId) -> Option<Ct1Record<'_>> {
             let (transcript, delegate, empty, incompatible) = self.bodies.get(&node)?.first()?;
@@ -1255,6 +1266,7 @@ pub(crate) mod tests {
             &root(vec![Event::Reach(a)]),
             Options {
                 warnings: vec!["w0".into()],
+                ..Options::default()
             },
         )
         .unwrap();

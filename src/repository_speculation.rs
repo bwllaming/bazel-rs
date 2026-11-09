@@ -443,6 +443,8 @@ impl Speculations {
     pub(crate) fn wait_running(&self, canonical: &str, timeout: std::time::Duration) -> bool {
         let waited = std::time::Instant::now();
         let _waited = crate::eval_timeline::Interval("a repository speculation waited for", waited);
+        let _blocked =
+            crate::eval_timeline::blocked_on(|| format!("the repository speculation {canonical}"));
         let deadline = std::time::Instant::now() + timeout;
         let mut state = lock(&self.shared.state);
         let mut marked: Option<Arc<AtomicBool>> = None;
@@ -474,6 +476,9 @@ impl Speculations {
     /// (waiting while it runs), or `None` when the coordinator executes the
     /// rule itself. Either way it is never speculated again.
     pub(crate) fn take(&self, canonical: &str) -> Option<Box<Outcome>> {
+        let _blocked = crate::eval_timeline::blocked_on(|| {
+            format!("taking the repository speculation {canonical}")
+        });
         let mut state = lock(&self.shared.state);
         let mut waited = None;
         loop {

@@ -253,6 +253,12 @@ impl Graph {
             .expect("internal error: an id the graph never interned")[offset]
     }
 
+    /// The entry of `id` if its segment exists (a concurrent scan).
+    pub(crate) fn entry_if(&self, id: NodeId) -> Option<&Entry> {
+        let (segment, offset) = slot_of(id.0);
+        self.segments[segment].get().map(|entries| &entries[offset])
+    }
+
     /// The value of `id` once done.
     pub(crate) fn value(&self, id: NodeId) -> Option<&Arc<NodeValue>> {
         self.entry(id).value()
@@ -326,6 +332,25 @@ impl<'a, T> TrackedGuard<'a, T> {
             LOCK_DEPTH.with(|depth| depth.set(depth.get() + 1));
         }
         Self { guard: Some(guard) }
+    }
+
+    /// [`Self::wait`] for at most `timeout`; whether it timed out.
+    pub(crate) fn wait_timeout(
+        mut self,
+        condvar: &Condvar,
+        timeout: std::time::Duration,
+    ) -> (Self, bool) {
+        let guard = self.guard.take().expect("a live guard");
+        if cfg!(debug_assertions) {
+            LOCK_DEPTH.with(|depth| depth.set(depth.get() - 1));
+        }
+        let (guard, result) = condvar
+            .wait_timeout(guard, timeout)
+            .unwrap_or_else(|e| e.into_inner());
+        if cfg!(debug_assertions) {
+            LOCK_DEPTH.with(|depth| depth.set(depth.get() + 1));
+        }
+        (Self { guard: Some(guard) }, result.timed_out())
     }
 }
 

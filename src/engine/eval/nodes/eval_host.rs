@@ -169,10 +169,7 @@ impl<'c, 'e> EvalHost<'c, 'e> {
 
     /// Attempts run on the pool now (S2).
     fn pooled(&self) -> bool {
-        self.shared
-            .loading
-            .pooled
-            .load(std::sync::atomic::Ordering::Acquire)
+        self.shared.loading.pooled_here()
     }
 
     /// Stop: only the sequential pass runs this attempt (a flush; S2).
@@ -1455,12 +1452,7 @@ pub(crate) fn body(
             Ok(NodeValue::TransitionDetails(host.finish(result)?))
         }
         NodeKey::Ct2(ct)
-            if cx.flags().linearized
-                && (shared
-                    .loading
-                    .pooled
-                    .load(std::sync::atomic::Ordering::Acquire)
-                    || cx.coord().defers()) =>
+            if cx.flags().linearized && (shared.loading.pooled_here() || cx.coord().defers()) =>
         {
             flag_ct2(shared, cx, ct)
         }
@@ -1565,11 +1557,7 @@ fn flag_ct2(
     // The flag's phase 1 is done (its consumer analyzed it first).
     cx.need_one(NodeKey::Ct1(ct.clone()))?;
     let Some(providers) = super::speculate::flag_providers(shared, cx, ct) else {
-        if !shared
-            .loading
-            .pooled
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
+        if !shared.loading.pooled_here() {
             // The sequential pass (S3 pass 2 deferring): the ordered
             // flushes' phase 2, then the planned providers.
             let mut coord = cx.coord();

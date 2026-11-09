@@ -470,6 +470,7 @@ impl<T> DemandSlot<T> {
         self.waits.fetch_add(1, Ordering::SeqCst);
         let deadline = Instant::now() + probe_wait();
         let _waited = crate::eval_timeline::Interval("a probe claim waited for", Instant::now());
+        let _blocked = crate::eval_timeline::blocked_on(|| "a probe claim".to_owned());
         while *probing {
             let now = Instant::now();
             if now >= deadline {
@@ -606,7 +607,17 @@ impl<T> DemandSlot<T> {
             return Err(unfetched(runtime_id, key));
         }
         let claimed = if !nested {
-            match self.claim_probe() {
+            let waited = Instant::now();
+            let claim = self.claim_probe();
+            if waited.elapsed() >= Duration::from_millis(50) {
+                crate::eval_timeline::mark(|| {
+                    format!(
+                        "a probe of {key} waited {} ms for another thread's",
+                        waited.elapsed().as_millis()
+                    )
+                });
+            }
+            match claim {
                 ProbeClaim::Owner => true,
                 ProbeClaim::Finished => {
                     return match self.ready.get() {

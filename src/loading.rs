@@ -1562,6 +1562,9 @@ fn bzl_claim(cache: u64, label: &Label) -> Result<BzlClaim, String> {
                 }
                 state.waiting_for.insert(current, key.clone());
                 let waited = std::time::Instant::now();
+                let _blocked = crate::eval_timeline::blocked_on(|| {
+                    format!("the .bzl claim of {label} held by {owner:?}")
+                });
                 let (unlocked, _resume) = flight
                     .completed
                     .wait_timeout(state, std::time::Duration::from_secs(3600))

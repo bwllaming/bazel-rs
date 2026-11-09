@@ -101,6 +101,10 @@ pub(crate) trait Bodies: Sync {
     /// The inline driver hands work to the pool (`true`) or takes it back
     /// ([`Evaluator::set_assist`]): the bodies switch to their pool mode.
     fn pool_mode(&self, _on: bool) {}
+
+    /// The coordinator thread has nothing to do while the pool runs
+    /// (called between waits, no evaluator lock held).
+    fn idle(&self) {}
 }
 
 /// [`Bodies`] over a [`NodeFn`] and the shared read view (no per-attempt
@@ -346,6 +350,22 @@ pub(crate) struct Evaluator<'b, B: Bodies> {
     /// the pool can run (fresh or queued, of an assisted kind) on the pool
     /// first ([`Self::set_assist`]).
     assist: AtomicBool,
+    /// The pool serves while the inline driver runs ([`Self::serve`]):
+    /// both claim attempts by CAS, the inline driver waits for what the
+    /// pool runs.
+    serving: AtomicBool,
+    /// [`Self::serve`] stops once the pool is idle.
+    stop_serving: AtomicBool,
+    /// Repositories the serving pool's attempts demand: fetched by the
+    /// inline driver's thread ([`Self::lane_work`]), the coordinator of
+    /// repository demand.
+    lane_queue: Tracked<VecDeque<String>>,
+}
+
+thread_local! {
+    /// The nodes the inline driver runs on this thread (serving: a back
+    /// edge is one of them, not any running node).
+    static INLINE_STACK: RefCell<Vec<NodeId>> = const { RefCell::new(Vec::new()) };
 }
 
 impl<'b, B: Bodies> Evaluator<'b, B> {
@@ -373,7 +393,275 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             round: AtomicBool::new(false),
             woken: Tracked::default(),
             assist: AtomicBool::new(false),
+            serving: AtomicBool::new(false),
+            stop_serving: AtomicBool::new(false),
+            lane_queue: Tracked::default(),
         }
+    }
+
+    /// The pool serves from now on (call before [`Self::serve`] runs, so
+    /// that nothing scheduled meanwhile is dropped): what the inline
+    /// driver wakes or the pool spawns runs at once, beside it.
+    pub(crate) fn begin_serving(&self) {
+        if self.pool.is_some() {
+            self.stop_serving.store(false, Ordering::SeqCst);
+            self.serving.store(true, Ordering::SeqCst);
+            // What inline completions woke before.
+            let woken = std::mem::take(&mut *self.woken.lock());
+            let mut coord = self.coord.lock();
+            coord.starts.extend(woken);
+            self.coord_wake.notify_one();
+        }
+    }
+
+    /// Whether the pool serves now.
+    pub(crate) fn serving(&self) -> bool {
+        self.serving.load(Ordering::SeqCst)
+    }
+
+    /// Whether [`Self::end_serving`] was called.
+    pub(crate) fn serving_ends(&self) -> bool {
+        self.stop_serving.load(Ordering::SeqCst)
+    }
+
+    /// Run the pool's coordinator until [`Self::end_serving`] and the
+    /// pool is idle (on a thread of its own: the inline driver runs on
+    /// the caller's). Repository demands go to [`Self::lane_work`].
+    pub(crate) fn serve(&self) {
+        let Some(pool) = &self.pool else {
+            return;
+        };
+        pool.in_place_scope(|scope| self.coordinate_serving(scope));
+    }
+
+    /// Let [`Self::serve`] return once the pool is idle.
+    pub(crate) fn end_serving(&self) {
+        self.stop_serving.store(true, Ordering::SeqCst);
+        let _coord = self.coord.lock();
+        self.coord_wake.notify_all();
+    }
+
+    /// BAZEL_RS_EVAL_WATCHDOG: the serving state.
+    pub(crate) fn watchdog_report(&self) -> String {
+        let mut counts = [0usize; 6];
+        let mut running = Vec::new();
+        for id in self.graph.ids() {
+            let Some(entry) = self.graph.entry_if(id) else {
+                continue;
+            };
+            let state = entry.state();
+            counts[state as usize] += 1;
+            if state == State::Running && running.len() < 30 {
+                running.push(
+                    format!("{:?}", self.graph.key(id))
+                        .chars()
+                        .take(150)
+                        .collect::<String>(),
+                );
+            }
+        }
+        if counts[State::Running as usize] < 40 {
+            eprintln!(
+                "bazel-rs: watchdog: running {running:#?}; blocked: {}",
+                super::timeline::blocked_report()
+            );
+        }
+        let coord = self.coord.lock();
+        format!(
+            "states {counts:?} outstanding {} coord nodes {} starts {} repos {} lane {}",
+            self.outstanding.load(Ordering::Acquire),
+            coord.nodes.len(),
+            coord.starts.len(),
+            coord.repos.len(),
+            self.lane_queue.lock().len()
+        )
+    }
+
+    /// After [`Self::serve`] returned.
+    pub(crate) fn serving_done(&self) {
+        self.serving.store(false, Ordering::SeqCst);
+    }
+
+    /// The repositories the serving pool demanded, fetched here (the
+    /// inline driver's thread) and their demanders re-queued.
+    pub(crate) fn lane_work(&self, lane: &mut dyn RepoLane) {
+        loop {
+            let Some(name) = self.lane_queue.lock().pop_front() else {
+                return;
+            };
+            assert_no_locks("a repository fetch");
+            lane.fetch(&name);
+            self.counters.fetches.fetch_add(1, Ordering::Relaxed);
+            self.fetched(name);
+        }
+    }
+
+    /// `name` was fetched: record it and re-queue its parked demanders.
+    fn fetched(&self, name: String) {
+        let demanders = {
+            let mut repos = self.repos.lock();
+            let seq = self.repo_seq.fetch_add(1, Ordering::AcqRel) + 1;
+            let demanders = repos.parked.remove(&name).unwrap_or_default();
+            repos.fetched.insert(name, seq);
+            demanders
+        };
+        for (id, epoch) in demanders {
+            let entry = self.graph.entry(id);
+            if entry.count_down(epoch, 1) && entry.transition(State::Waiting, State::Queued) {
+                self.schedule(None, id);
+            }
+        }
+    }
+
+    /// The serving pool's coordinator: coordinator-only nodes, outside
+    /// starts; repository demands are queued for [`Self::lane_work`].
+    fn coordinate_serving<'s>(&'s self, scope: &Scope<'s>) {
+        loop {
+            let mut coord = self.coord.lock();
+            while coord.nodes.is_empty() && coord.repos.is_empty() && coord.starts.is_empty() {
+                if self.stop_serving.load(Ordering::SeqCst)
+                    && self.outstanding.load(Ordering::Acquire) == 0
+                {
+                    return;
+                }
+                coord = coord
+                    .wait_timeout(
+                        &self.coord_wake,
+                        std::time::Duration::from_millis(IDLE_MILLIS),
+                    )
+                    .0;
+            }
+            if let Some(id) = coord.nodes.pop_front() {
+                drop(coord);
+                if let Some(ready) = self.run_one(scope, id) {
+                    self.schedule(Some(scope), ready);
+                }
+                self.outstanding.fetch_sub(1, Ordering::AcqRel);
+                continue;
+            }
+            if !coord.starts.is_empty() {
+                let starts = std::mem::take(&mut coord.starts);
+                drop(coord);
+                let queued = starts
+                    .into_iter()
+                    .filter(|&id| self.graph.entry(id).state() == State::Queued)
+                    .collect();
+                self.schedule_many(scope, queued);
+                continue;
+            }
+            let repos = std::mem::take(&mut coord.repos);
+            drop(coord);
+            self.lane_queue.lock().extend(repos);
+        }
+    }
+
+    /// Serving: claim `id` for the inline driver (by CAS: the pool may run
+    /// it), waiting while the pool makes progress on it; `false` when it
+    /// is done. A fresh node of a kind the pool runs well is handed to the
+    /// pool first (its subtree spreads over the workers).
+    fn claim_inline(&self, id: NodeId, lane: &RefCell<&mut dyn RepoLane>) -> bool {
+        let entry = self.graph.entry(id);
+        let key = self.graph.key(id);
+        if matches!(
+            key,
+            NodeKey::Ct1(_)
+                | NodeKey::Pkg(_)
+                | NodeKey::Transition(_)
+                | NodeKey::Platform(_)
+                | NodeKey::RegToolchains(_)
+                | NodeKey::RegExecPlatforms(_)
+        ) && entry.transition(State::Fresh, State::Queued)
+        {
+            self.schedule(None, id);
+        }
+        let mut boosted = false;
+        let waiting = std::time::Instant::now();
+        loop {
+            if waiting.elapsed() > std::time::Duration::from_secs(120) {
+                panic!(
+                    "internal error: BAZEL_RS_ANALYSIS=eval: the sequential pass waited 120 s for {key:?} ({:?}); rerun with BAZEL_RS_EVAL_NO_SERVE=1",
+                    entry.state()
+                );
+            }
+            let state = entry.state();
+            let wait = match state {
+                State::Done => return false,
+                State::Running | State::Queued => true,
+                State::Waiting => self.pool_progresses(id),
+                State::Fresh | State::Deferred => false,
+            };
+            if wait {
+                super::timeline::seq_state(|| format!("waits for {key:?} {state:?}"));
+                if !boosted {
+                    // The pool runs what the inline driver waits for first.
+                    boosted = true;
+                    self.boost(key, 0);
+                }
+                // Meanwhile, what only this thread does (repository
+                // demands, the linearizer).
+                self.lane_work(&mut **lane.borrow_mut());
+                self.bodies.idle();
+                std::thread::sleep(std::time::Duration::from_micros(20));
+                continue;
+            }
+            // Waiter registrations of its parked attempt die.
+            entry.epoch.fetch_add(1, Ordering::AcqRel);
+            if entry.transition(state, State::Running) {
+                return true;
+            }
+        }
+    }
+
+    /// Serving: park the inline driver's `id` on `deps` as a pool attempt
+    /// parks (their waiter), so that the pool runs it once they are done.
+    fn park_inline_on_nodes(&self, id: NodeId, deps: Vec<NodeId>) {
+        let entry = self.graph.entry(id);
+        let count = deps.len() as u32;
+        let epoch = self.park_as(id, Wait::Nodes(deps.clone()), count + 1);
+        let mut satisfied = 0;
+        for dep in deps {
+            if !self.graph.entry(dep).add_waiter(id, epoch) {
+                satisfied += 1;
+            }
+        }
+        if entry.count_down(epoch, satisfied + 1) && entry.transition(State::Waiting, State::Queued)
+        {
+            self.schedule(None, id);
+        }
+    }
+
+    /// Serving: whether the pool makes progress on the parked `id` (the
+    /// chain of its first unfinished dependencies reaches a node the pool
+    /// runs or will run), so that the inline driver waits instead of
+    /// taking it over.
+    fn pool_progresses(&self, id: NodeId) -> bool {
+        let mut at = id;
+        for _ in 0..64 {
+            let entry = self.graph.entry(at);
+            match entry.state() {
+                State::Done => return true,
+                State::Queued => return true,
+                State::Running => {
+                    return !INLINE_STACK.with(|stack| stack.borrow().contains(&at));
+                }
+                State::Fresh | State::Deferred => return false,
+                State::Waiting => {
+                    let next = match &entry.inner.lock().wait {
+                        Wait::Nodes(deps) => deps
+                            .iter()
+                            .copied()
+                            .find(|dep| self.graph.entry(*dep).state() != State::Done),
+                        _ => return false,
+                    };
+                    match next {
+                        Some(next) => at = next,
+                        // Its last dependency finished: it is re-queued.
+                        None => return true,
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// From now on the inline driver (with a pool) evaluates a node it
@@ -579,9 +867,15 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         for (waiter, epoch) in waiters {
             let waiting = self.graph.entry(waiter);
             if waiting.count_down(epoch, 1) {
-                let requeued = waiting.transition(State::Waiting, State::Queued);
-                debug_assert!(requeued, "internal error: a ready waiter was not waiting");
-                ready.push(waiter);
+                // Serving: the inline driver may have claimed it meanwhile.
+                if waiting.transition(State::Waiting, State::Queued) {
+                    ready.push(waiter);
+                } else {
+                    debug_assert!(
+                        self.serving.load(Ordering::SeqCst),
+                        "internal error: a ready waiter was not waiting"
+                    );
+                }
             }
         }
         ready
@@ -733,13 +1027,27 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             });
             rerun = true;
             let _timed = TimedAttempt(cause, key.kind());
-            // A node parked by the pool: its waiter registrations die.
-            entry.epoch.fetch_add(1, Ordering::AcqRel);
-            entry.set_state(State::Running);
+            if self.serving.load(Ordering::SeqCst) {
+                if !self.claim_inline(id, lane) {
+                    return;
+                }
+            } else {
+                // A node parked by the pool: its waiter registrations die.
+                entry.epoch.fetch_add(1, Ordering::AcqRel);
+                entry.set_state(State::Running);
+            }
+            INLINE_STACK.with(|stack| stack.borrow_mut().push(id));
+            let _inline = InlineFrame;
+            if self.serving.load(Ordering::Relaxed) {
+                // What the serving pool demanded (this thread fetches).
+                self.lane_work(&mut **lane.borrow_mut());
+            }
             entry.attempts.fetch_add(1, Ordering::Relaxed);
             let attempt_seq = self.repo_seq.load(Ordering::Acquire);
             assert_no_locks("a node body");
+            super::timeline::seq_state(|| format!("begins {key:?}"));
             let attempt = self.bodies.begin(id, key);
+            super::timeline::seq_state(|| format!("runs {key:?}"));
             let mut cx = InlineCx {
                 evaluator: self,
                 lane,
@@ -755,7 +1063,11 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                     // Waiters are the pool's (parked before the inline
                     // driver took over): they run at its next evaluation.
                     let ready = self.publish(id, value, events);
-                    if !ready.is_empty() {
+                    if self.serving.load(Ordering::SeqCst) {
+                        for ready in ready {
+                            self.schedule(None, ready);
+                        }
+                    } else if !ready.is_empty() {
                         self.woken.lock().extend(ready);
                         self.assist(lane);
                     }
@@ -775,16 +1087,27 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                         }
                         _ => unreachable!(),
                     };
+                    let serving = self.serving.load(Ordering::SeqCst);
                     for &dep in &deps {
-                        if matches!(
-                            self.graph.entry(dep).state(),
-                            State::Fresh | State::Queued | State::Deferred
-                        ) {
+                        let state = self.graph.entry(dep).state();
+                        // Serving: what the pool runs or parked is waited
+                        // for or taken over too.
+                        let run = matches!(state, State::Fresh | State::Queued | State::Deferred)
+                            || (serving
+                                && state != State::Done
+                                && !INLINE_STACK.with(|stack| stack.borrow().contains(&dep)));
+                        if run {
                             self.run_inline(dep, lane);
                         }
                     }
                     if deps.iter().any(|&dep| self.graph.value(dep).is_none()) {
-                        self.park_as(id, Wait::Nodes(deps), 1);
+                        if serving {
+                            // Registered as their waiter: the pool runs it
+                            // once they are done.
+                            self.park_inline_on_nodes(id, deps);
+                        } else {
+                            self.park_as(id, Wait::Nodes(deps), 1);
+                        }
                         return;
                     }
                 }
@@ -800,8 +1123,8 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                             assert_no_locks("a repository fetch");
                             lane.borrow_mut().fetch(&name);
                             self.counters.fetches.fetch_add(1, Ordering::Relaxed);
-                            let seq = self.repo_seq.fetch_add(1, Ordering::AcqRel) + 1;
-                            self.repos.lock().fetched.insert(name, seq);
+                            // Pool attempts parked on it (serving) run again.
+                            self.fetched(name);
                         }
                     }
                 }
@@ -906,7 +1229,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
     /// Schedule a node just made `Queued`: a pool job, or the
     /// coordinator's queue for a coordinator-only node or outside a job.
     fn schedule<'s>(&'s self, scope: Option<&Scope<'s>>, id: NodeId) {
-        if !self.pooled() {
+        if !self.pooled() && !self.serving.load(Ordering::Relaxed) {
             // The inline driver runs what it needs in place.
             return;
         }
@@ -1142,9 +1465,10 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         }
         self.schedule_many(scope, fresh);
         if entry.count_down(epoch, satisfied + 1) {
+            // Serving: the inline driver may have claimed it meanwhile.
             let requeued = entry.transition(State::Waiting, State::Queued);
-            debug_assert!(requeued);
-            return Some(id);
+            debug_assert!(requeued || self.serving.load(Ordering::SeqCst));
+            return requeued.then_some(id);
         }
         None
     }
@@ -1202,7 +1526,21 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                 && coord.starts.is_empty()
                 && self.outstanding.load(Ordering::Acquire) != 0
             {
-                coord = coord.wait(&self.coord_wake);
+                let (guard, timeout) = coord.wait_timeout(
+                    &self.coord_wake,
+                    std::time::Duration::from_millis(IDLE_MILLIS),
+                );
+                coord = guard;
+                if timeout
+                    && coord.nodes.is_empty()
+                    && coord.repos.is_empty()
+                    && coord.starts.is_empty()
+                {
+                    drop(coord);
+                    assert_no_locks("the coordinator's idle work");
+                    self.bodies.idle();
+                    coord = self.coord.lock();
+                }
             }
             if let Some(id) = coord.nodes.pop_front() {
                 drop(coord);
@@ -1272,6 +1610,19 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
     }
 }
 
+/// How long the coordinator waits for pool work before it does its idle
+/// work ([`Bodies::idle`]).
+const IDLE_MILLIS: u64 = 2;
+
+/// Pops the inline driver's [`INLINE_STACK`] when dropped.
+struct InlineFrame;
+
+impl Drop for InlineFrame {
+    fn drop(&mut self) {
+        INLINE_STACK.with(|stack| stack.borrow_mut().pop());
+    }
+}
+
 /// BAZEL_RS_EVAL_TIMELINE: ends a pool attempt's frame when dropped.
 struct TimedPool(bool, &'static str);
 
@@ -1334,7 +1685,13 @@ impl<B: Bodies> Cx for InlineCx<'_, '_, '_, B> {
         for key in keys {
             let id = graph.intern(key);
             let entry = graph.entry(id);
-            let back_edge = entry.state() == State::Running || evaluator.answered(self.id, id);
+            let running = if evaluator.serving.load(Ordering::Relaxed) {
+                // The pool's running attempts are no back edges.
+                INLINE_STACK.with(|stack| stack.borrow().contains(&id))
+            } else {
+                entry.state() == State::Running
+            };
+            let back_edge = running || evaluator.answered(self.id, id);
             if back_edge {
                 evaluator.answer(self.id, id);
                 if missing.is_empty() {

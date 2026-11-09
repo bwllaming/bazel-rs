@@ -241,6 +241,8 @@ impl<O: Send + 'static> Pool<O> {
             return None;
         }
         let mut waited = None;
+        let _blocked =
+            crate::eval_timeline::blocked_on(|| format!("taking the extension speculation {id}"));
         loop {
             match state.entries.get(id) {
                 Some(Entry::Running(demanded)) => {
@@ -299,6 +301,9 @@ impl<O: Send + 'static> Pool<O> {
             "an extension speculation waited for",
             std::time::Instant::now(),
         );
+        let _blocked = crate::eval_timeline::blocked_on(|| {
+            format!("the extension speculation {id} (finished)")
+        });
         let mut state = lock(&self.shared.state);
         loop {
             match state.entries.get(id) {

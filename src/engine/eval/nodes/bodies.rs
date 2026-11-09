@@ -413,6 +413,13 @@ pub(crate) static BEGIN_LINEARIZE: std::sync::atomic::AtomicU64 =
 pub(crate) static SEQUENTIAL_KINDS: Mutex<std::collections::BTreeMap<&'static str, u64>> =
     Mutex::new(std::collections::BTreeMap::new());
 
+/// Whether the coordinator linearizes while the pool runs
+/// (`BAZEL_RS_EVAL_NO_IDLE_LINEARIZE=1`: not).
+static IDLE_LINEARIZE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
+    std::env::var_os("BAZEL_RS_EVAL_NO_IDLE_LINEARIZE").is_none()
+});
+
 /// The marker of [`Missing::Repo`] for an attempt only the sequential
 /// pass can run (S2: on the pool, a flush or a repository demand): it
 /// parks until the inline pass.
@@ -518,6 +525,8 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => {
                 let started = std::time::Instant::now();
+                let _blocked =
+                    super::super::timeline::blocked_on(|| "the coordinator's lock".to_owned());
                 let guard = self
                     .coord
                     .lock()
@@ -534,10 +543,7 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
 
     /// Whether attempts run on the pool now.
     fn pooled(&self) -> bool {
-        self.shared
-            .loading
-            .pooled
-            .load(std::sync::atomic::Ordering::Acquire)
+        self.shared.loading.pooled_here()
     }
 
     /// Move what this thread captured since the last call (tracker
@@ -805,6 +811,25 @@ impl Bodies for Phase1Bodies<'_, '_> {
                 self.coord().abandon_attempt(running);
             }
         }
+    }
+
+    /// The coordinator thread is idle while the pool runs: pass 1 and the
+    /// tape as far as the transcripts go (what the sequential pass's next
+    /// attempt would apply first), unless another thread holds the
+    /// coordinator.
+    fn idle(&self) {
+        if !self.framed || !*IDLE_LINEARIZE {
+            return;
+        }
+        let Ok(mut coord) = self.coord.try_lock() else {
+            return;
+        };
+        self.inbox.absorb(&mut coord);
+        let started = std::time::Instant::now();
+        super::super::timeline::seq_state(|| "idle linearization".to_owned());
+        let _ = coord.linearize(self.shared);
+        super::super::timeline::seq_state(|| "idle linearization done".to_owned());
+        super::super::timeline::add("idle linearization", started);
     }
 
     fn pool_mode(&self, on: bool) {

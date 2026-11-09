@@ -144,6 +144,7 @@ fn lock_scratch(
     let mut hasher = crate::fast_hash::FxBuildHasher::default().build_hasher();
     std::thread::current().id().hash(&mut hasher);
     let index = (hasher.finish() as usize) % slots.len();
+    let _blocked = super::super::timeline::blocked_on(|| format!("scratch engine {index}"));
     slots[index]
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

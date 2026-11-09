@@ -102,6 +102,8 @@ pub(crate) fn mark(what: impl FnOnce() -> String) {
     if !on() {
         return;
     }
+    // Never under the timeline's lock: `what` may take other locks.
+    let what = what();
     let cpu = cpu_us();
     let mut state = state();
     let Some(start) = state.start else {
@@ -110,7 +112,7 @@ pub(crate) fn mark(what: impl FnOnce() -> String) {
     let used = cpu.saturating_sub(state.last_cpu);
     state.last_cpu = cpu;
     let at = start.elapsed();
-    state.marks.push((at, used, what()));
+    state.marks.push((at, used, what));
 }
 
 /// Add `since`'s elapsed µs to the accumulator `name`.
@@ -147,6 +149,65 @@ pub(crate) struct Interval(pub(crate) &'static str, pub(crate) Instant);
 impl Drop for Interval {
     fn drop(&mut self) {
         interval(self.0, self.1);
+    }
+}
+
+/// What the sequential pass does now (`BAZEL_RS_EVAL_WATCHDOG`).
+pub(crate) static SEQ_STATE: Mutex<String> = Mutex::new(String::new());
+
+/// Whether the watchdog is on (`BAZEL_RS_EVAL_WATCHDOG=1`).
+pub(crate) fn watchdog() -> bool {
+    static ON: LazyLock<bool> =
+        // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
+        LazyLock::new(|| std::env::var_os("BAZEL_RS_EVAL_WATCHDOG").is_some());
+    *ON
+}
+
+/// What each thread blocks on now (watchdog only).
+static ACTIVITIES: LazyLock<Mutex<BTreeMap<String, String>>> = LazyLock::new(Mutex::default);
+
+/// This thread blocks on `what` until the guard drops (watchdog only).
+pub(crate) fn blocked_on(what: impl FnOnce() -> String) -> Option<Blocked> {
+    if !watchdog() {
+        return None;
+    }
+    let thread = std::thread::current();
+    let name = format!("{:?} {}", thread.id(), thread.name().unwrap_or("?"));
+    ACTIVITIES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(name.clone(), what());
+    Some(Blocked(name))
+}
+
+/// Clears a [`blocked_on`] entry when dropped.
+pub(crate) struct Blocked(String);
+
+impl Drop for Blocked {
+    fn drop(&mut self) {
+        ACTIVITIES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.0);
+    }
+}
+
+/// The threads blocked now and on what (watchdog only).
+pub(crate) fn blocked_report() -> String {
+    ACTIVITIES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .map(|(thread, what)| format!("\n  {thread}: {what}"))
+        .collect()
+}
+
+/// Record what the sequential pass does now (watchdog only).
+pub(crate) fn seq_state(what: impl FnOnce() -> String) {
+    if watchdog() {
+        *SEQ_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = what();
     }
 }
 
