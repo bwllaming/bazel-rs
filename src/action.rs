@@ -8486,7 +8486,7 @@ mod tests {
         assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
         assert!(tree_stamps::COUNTS[0].load(Ordering::Relaxed) > stamped);
         // The change falls after the stamped times, as settled ones are.
-        wait_past_directory_times(&fixture.0, &tree);
+        wait_past_directory_times(&fixture.0, tree);
         fs::write(tree.join("_main/pkg/extra"), b"").unwrap();
         assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
         assert!(!tree.join("_main/pkg/extra").exists());
