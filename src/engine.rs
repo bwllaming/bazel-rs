@@ -9001,7 +9001,7 @@ impl Engine {
             parallel::aspects::Analysis::Here(application) => {
                 analysis::analyze_aspect_buffered(&application, &outputs)
             }
-            parallel::aspects::Analysis::Done { analyzed, printed } => (analyzed, printed),
+            parallel::aspects::Analysis::Done { analyzed, printed } => (Ok(*analyzed), printed),
             parallel::aspects::Analysis::Dry(providers) => return providers,
         };
         for line in printed {

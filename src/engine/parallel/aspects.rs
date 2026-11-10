@@ -53,7 +53,7 @@ struct Job {
 
 enum Outcome {
     Analyzed {
-        analyzed: crate::analysis::AnalysisResult,
+        analyzed: Box<crate::analysis::AnalysisResult>,
         printed: Vec<String>,
     },
     /// Failed, panicked or had effects: the prepare analyzes it itself.
@@ -127,10 +127,37 @@ fn with<R>(f: impl FnOnce(&mut Prefetch) -> R) -> Option<R> {
 }
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL aspects`).
-static STATS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-const STAT_NAMES: [&str; 8] = [
-    "turns", "walks", "rewalks", "analyzed", "used", "redone", "dry_us", "wait_us",
+static STATS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
+const STAT_NAMES: [&str; 10] = [
+    "turns", "walks", "rewalks", "analyzed", "used", "redone", "dry_us", "wait_us", "inline",
+    "skipped",
 ];
+
+/// Each aspect's analyses so far (descriptor: µs, count): an aspect whose
+/// analyses are cheap is analyzed where the dry walk meets it, and a turn
+/// whose aspects are all cheap is not prefetched (the dry walk's planning
+/// would cost more than its analyses).
+static COSTS: std::sync::Mutex<BTreeMap<String, (u64, u64)>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+/// An analysis cheaper than this (on average) is not worth a job.
+const CHEAP_US: u64 = 1000;
+
+fn note_cost(aspect: &str, micros: u64) {
+    let mut costs = COSTS.lock().unwrap_or_else(|e| e.into_inner());
+    let entry = costs.entry(aspect.to_owned()).or_default();
+    entry.0 += micros;
+    entry.1 += 1;
+}
+
+/// Whether `aspect`'s analyses are known to be cheap.
+fn cheap(aspect: &str) -> bool {
+    COSTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(aspect)
+        .is_some_and(|(micros, count)| *count >= 4 && *micros < CHEAP_US * *count)
+}
 
 fn stat(index: usize, value: u64) {
     STATS[index].fetch_add(value, Ordering::Relaxed);
@@ -255,10 +282,10 @@ pub(in crate::engine) fn leave_walk(
 /// What [`analysis`] decided for an application.
 pub(in crate::engine) enum Analysis {
     /// Analyze it here (no prefetch, or its prefetch is not usable).
-    Here(crate::analysis::AspectApplication),
+    Here(Box<crate::analysis::AspectApplication>),
     /// Analyzed off the turn.
     Done {
-        analyzed: Result<crate::analysis::AnalysisResult, String>,
+        analyzed: Box<crate::analysis::AnalysisResult>,
         printed: Vec<String>,
     },
     /// The dry walk: its providers (analyzed), or [`PENDING`] / [`STOP`].
@@ -276,12 +303,32 @@ pub(in crate::engine) fn analysis(
     PREFETCH.with(|cell| {
         let mut cell = cell.borrow_mut();
         let Some(prefetch) = cell.as_mut() else {
-            return Analysis::Here(application);
+            return Analysis::Here(Box::new(application));
         };
         match prefetch.mode {
             Mode::Dry => Analysis::Dry(match prefetch.results.get(key) {
                 Some(Outcome::Analyzed { analyzed, .. }) => Ok(analyzed.providers.clone()),
                 Some(Outcome::Unusable) => Err(STOP.to_owned()),
+                None if cheap(&key.aspect) => {
+                    // Cheap: analyzed here, now (kept for the replay).
+                    stat(8, 1);
+                    let outcome = analyze(Job {
+                        key: key.clone(),
+                        application,
+                        output_root: outputs.output_root.to_owned(),
+                        action_owner: outputs.action_owner.to_owned(),
+                        action_env: outputs.action_env.clone(),
+                        runfiles: outputs.runfiles,
+                        loaded_functions: outputs.loaded_functions.cloned(),
+                        run_under: outputs.run_under.clone(),
+                    });
+                    let providers = match &outcome {
+                        Outcome::Analyzed { analyzed, .. } => Ok(analyzed.providers.clone()),
+                        Outcome::Unusable => Err(STOP.to_owned()),
+                    };
+                    prefetch.results.insert(key.clone(), outcome);
+                    providers
+                }
                 None => {
                     if prefetch.queued.insert(key.clone()) {
                         prefetch.jobs.push(Job {
@@ -290,7 +337,7 @@ pub(in crate::engine) fn analysis(
                             output_root: outputs.output_root.to_owned(),
                             action_owner: outputs.action_owner.to_owned(),
                             action_env: outputs.action_env.clone(),
-                            runfiles: outputs.runfiles.clone(),
+                            runfiles: outputs.runfiles,
                             loaded_functions: outputs.loaded_functions.cloned(),
                             run_under: outputs.run_under.clone(),
                         });
@@ -305,16 +352,13 @@ pub(in crate::engine) fn analysis(
                     if delta::verify_delta() {
                         verify(key, &application, outputs, &analyzed, &printed);
                     }
-                    Analysis::Done {
-                        analyzed: Ok(analyzed),
-                        printed,
-                    }
+                    Analysis::Done { analyzed, printed }
                 }
                 Some(Outcome::Unusable) => {
                     stat(5, 1);
-                    Analysis::Here(application)
+                    Analysis::Here(Box::new(application))
                 }
-                None => Analysis::Here(application),
+                None => Analysis::Here(Box::new(application)),
             },
         }
     })
@@ -399,6 +443,18 @@ impl Engine {
         submit: &dyn Fn(Box<dyn FnOnce() + Send>),
     ) {
         if !enabled() || self.semantic_only() {
+            return;
+        }
+        if let Some(definitions) = rule.custom.as_ref().map(|custom| {
+            custom
+                .schema
+                .values()
+                .flat_map(|spec| spec.declaration.aspects.iter().cloned())
+                .collect::<Vec<_>>()
+        }) && let Ok(aspects) = self.attribute_aspects(rule, &definitions)
+            && aspects.iter().all(|aspect| cheap(&aspect.descriptor))
+        {
+            stat(9, 1);
             return;
         }
         stat(0, 1);
@@ -637,7 +693,7 @@ pub(super) fn end_prefetch() {
 /// prepare.
 fn analyze(job: Job) -> Outcome {
     let Job {
-        key: _,
+        key,
         application,
         output_root,
         action_owner,
@@ -657,13 +713,18 @@ fn analyze(job: Job) -> Outcome {
             loaded_functions: loaded_functions.as_ref(),
             run_under,
         };
+        let started = std::time::Instant::now();
         let (analyzed, printed) = crate::analysis::analyze_aspect_buffered(&application, &outputs);
+        note_cost(&key.aspect, started.elapsed().as_micros() as u64);
         let (effects, sentinel) = isolation.finish();
         let quiet = effects.console.is_empty()
             && effects.observations.is_empty()
             && effects.roots.is_empty();
         match analyzed {
-            Ok(analyzed) if quiet && !sentinel => Outcome::Analyzed { analyzed, printed },
+            Ok(analyzed) if quiet && !sentinel => Outcome::Analyzed {
+                analyzed: Box::new(analyzed),
+                printed,
+            },
             _ => Outcome::Unusable,
         }
     }));
