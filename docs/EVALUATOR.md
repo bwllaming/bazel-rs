@@ -2180,7 +2180,9 @@ proper is 23.5–23.7 s (was 9.8–10.2 s), flush phase 2 15.0–15.4 s (was
 32.8–33.2 s (was 28.9–29.5 s), RSS 9.4–9.5 GB. Getting this back means
 deferring a new platform's flush instead of walking at once (the
 platform published as an effect at its position in the deferred walk),
-which is pass 2's deferral (the deferred walks' area). (4) The serving
+which is pass 2's deferral (the deferred walks' area). Rebased on T3
+round 3 (642cbd8a): phase 1 proper 22.0–22.7 s, phase 1 done 23.0–23.6 s,
+elapsed 31.4–31.8 s, RSS 9.4–9.5 GB. (4) The serving
 sequential pass's wait is bounded by progress: no node completed and no
 repository fetched for 300 s (`BAZEL_RS_EVAL_SERVE_STALL_SECS`) is an
 internal error naming `BAZEL_RS_EVAL_NO_SERVE=1` (a cycle of a `.bzl`
