@@ -337,3 +337,28 @@ fn flag_and_flush_failures_on_the_pool_give_the_walks_error() {
         },
     );
 }
+
+/// A speculated FeatureFlagInfo that differs from the planned one
+/// (forced by the `BAZEL_RS_EVAL_TEST_FLAG_MISMATCH` hook) fails the build
+/// with the internal error, whichever step ran the walk that checked it
+/// (an idle step, a sequential attempt's begin, a requested target's
+/// linearization: they ignore their result; the mismatch is sticky).
+#[test]
+fn a_speculated_flag_differing_from_the_planned_one_is_an_internal_error() {
+    let ws = Workspace::new();
+    for threads in [2, 8, 32] {
+        let eval = ws.build(
+            "eval",
+            threads,
+            &[("BAZEL_RS_EVAL_TEST_FLAG_MISMATCH", "1")],
+            &["//:everything", "--//:feature=on"],
+        );
+        let text = stable(&eval);
+        assert!(!eval.status.success(), "{threads} threads: {text}");
+        assert!(
+            text.contains("internal error: BAZEL_RS_ANALYSIS=eval: the FeatureFlagInfo of")
+                && text.contains("differs from the flush's"),
+            "{threads} threads: {text}"
+        );
+    }
+}

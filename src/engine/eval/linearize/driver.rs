@@ -706,12 +706,26 @@ impl Coord<'_> {
         // The FeatureFlagInfo values speculated for config_settings (S2,
         // the CsMatch split) against what the walk planned.
         self.verify_speculated();
-        match self.store.rerun_mismatch.take() {
-            Some(mismatch) => Err(format!(
-                "internal error: BAZEL_RS_ANALYSIS=eval: {mismatch}; rerun with BAZEL_RS_ANALYSIS=walk"
-            )),
+        // Sticky: a caller that ignores this result (an idle step, the
+        // sequential pass's begin) must not lose it; every later
+        // linearization and the end of phase 1 fail with it.
+        match self.sticky_mismatch() {
+            Some(mismatch) => Err(mismatch),
             None => Ok(()),
         }
+    }
+
+    /// The internal error a speculated flag, a rerun or an extension
+    /// adoption recorded, if any (kept: it fails the build).
+    pub(crate) fn sticky_mismatch(&mut self) -> Option<String> {
+        if let Some(mismatch) = super::super::nodes::bodies::rerun_mismatch() {
+            self.store.rerun_mismatch.get_or_insert(mismatch);
+        }
+        self.store.rerun_mismatch.clone().map(|mismatch| {
+            format!(
+                "internal error: BAZEL_RS_ANALYSIS=eval: {mismatch}; rerun with BAZEL_RS_ANALYSIS=walk"
+            )
+        })
     }
 
     /// A package the evaluation loaded commits into the engine here
@@ -861,7 +875,9 @@ impl Coord<'_> {
         speculated: &Option<crate::feature_flags::FeatureFlagValue>,
         planned: &Option<crate::feature_flags::FeatureFlagValue>,
     ) {
-        if speculated != planned {
+        // snapshot-unrecorded: a test hook (BAZEL_RS_EVAL_TEST_FLAG_MISMATCH=1 makes every check a mismatch); it only ever fails a build.
+        let forced = std::env::var_os("BAZEL_RS_EVAL_TEST_FLAG_MISMATCH").is_some();
+        if speculated != planned || forced {
             self.store.rerun_mismatch.get_or_insert(format!(
                 "the FeatureFlagInfo of {key} planned speculatively ({speculated:?}) differs from the flush's ({planned:?})"
             ));
@@ -1773,7 +1789,13 @@ impl Engine {
             });
             let mut lin = coord.lin.take().expect("the linearizer");
             coord.publish(&mut lin, &shared);
-            let result = result.and(finished).and_then(|()| {
+            // A mismatch any step recorded (also one whose result a caller
+            // dropped) fails the build, before any other error.
+            let result = match coord.sticky_mismatch() {
+                Some(mismatch) => Err(mismatch),
+                None => result.and(finished),
+            };
+            let result = result.and_then(|()| {
                 let resumed = with_running(|stack| {
                     let view = View {
                         store: &coord.store,
