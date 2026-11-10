@@ -56,21 +56,24 @@ const HORIZON: usize = 4096;
 /// `--loading_phase_threads`, bounded by the cores.
 fn frozen_workers(loading_phase_threads: usize) -> usize {
     // T3: the cursor's merges bound a frozen walk, not the workers; more
-    // than 8 at once only raise the peak memory of their computes (~/code:
-    // 48 workers 10.3 GB, 8 workers 9.95 GB, the same walk time).
+    // than 8 at once only raised the peak memory of their computes (~/code:
+    // 48 workers 10.3 GB, 8 workers 9.95 GB, the same walk time). Under the
+    // sweep (super::sweep, no rebuilds at the merges) 16 (~/code: elapsed
+    // 24.1 -> 23.3 s, peak 9.4 -> 9.8 GB; 24 workers 22.9 s, 10.0 GB).
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
     let cap = frozen_worker_cap();
     loading_phase_threads.min(cores).clamp(2, cap.max(2))
 }
 
-/// `BAZEL_RS_T3_WORKERS=<n>`: the frozen walk's analysis workers (8).
+/// `BAZEL_RS_T3_WORKERS=<n>`: the frozen walk's analysis workers (16; 8
+/// with `BAZEL_RS_EVAL_SWEEP=0`).
 fn frozen_worker_cap() -> usize {
     static CAP: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
         // snapshot-unrecorded: a scheduling bound; the output is the same either way.
         std::env::var("BAZEL_RS_T3_WORKERS")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(8)
+            .unwrap_or(if super::sweep::enabled() { 16 } else { 8 })
     });
     *CAP
 }
