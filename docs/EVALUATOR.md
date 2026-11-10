@@ -2150,6 +2150,39 @@ concurrently); (d) warm-reuse probes of a repository's tree started
 ahead (go_deps); (e) `local_jdk` executed ahead when its `execute()`
 calls are known read-only.
 
+**After the review of 5d835ab4** (four fixes, each its own commit):
+(1) the internal error of a speculated flag, a rerun or an extension
+adoption that differs is sticky in the store (`Coord::sticky_mismatch`):
+the idle steps, a sequential attempt's begin and the stepped
+linearization drop their result, and the error was taken with it; now
+every later linearization and the end of phase 1 fail with it (hook
+`BAZEL_RS_EVAL_TEST_FLAG_MISMATCH=1`, test in `eval_csmatch`). (2) An
+extension group's adoption by a pool load against the group's eviction
+when the sequential thread prepares it otherwise: adopting loads count
+themselves in flight per group until the load ends (`GroupFlight`); the
+eviction marks the group dropped under the adoption locks (no
+`eval_used` fast path), adoption re-checks the mark, and an adopter in
+flight at the drop is the adoption-mismatch internal error. (3) A
+platform memo is published at the first flush after the tape's first
+use of it (held in `Linearizer::held_platforms` until then; the rest at
+phase 1's end), not at the first flush after the pool finished it: the
+walk's segment before that use saw the platform deferred. The
+new-platform walks are now order-invariant
+(`BAZEL_RS_EVAL_PLATFORM_LOG=1` logs each publication's flush; the same
+50 on ~/code in every run, also under `BAZEL_RS_EVAL_RESTARTS=3` with
+`BAZEL_RS_EVAL_JITTER=100`; test in `eval_pass2`). (4) The serving
+sequential pass's wait is bounded by progress: no node completed and no
+repository fetched for 300 s (`BAZEL_RS_EVAL_SERVE_STALL_SECS`) is an
+internal error naming `BAZEL_RS_EVAL_NO_SERVE=1` (a cycle of a `.bzl`
+claim, a demand and a speculation the claim waits' own detection does
+not see); a waiting claim whose dependencies are all done is taken over
+(a park without waiter registrations no longer spins). No suite test
+reaches the serving wait (the test workspaces finish in round 1). A
+debug assertion checks that a pool thread's root commits write nothing;
+the suggested one on pass 1's blocker after a begin does not hold for
+cycles (pass 1 waits for `cycle_b`, parked on `cycle_a`, while `cycle_a`
+begins again with its back edge answered), so it is not kept.
+
 ### Effort
 
 | Step | Work | Estimate |
