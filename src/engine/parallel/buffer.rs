@@ -1582,6 +1582,7 @@ impl Engine {
 /// This thread's time on the CPU and waiting for one (runnable), in
 /// nanoseconds (/proc/thread-self/schedstat; BAZEL_RS_TIMING).
 fn thread_schedstat() -> (u64, u64) {
+    // snapshot-unrecorded: a BAZEL_RS_TIMING diagnostic of the cursor's scheduling; no result depends on it.
     std::fs::read_to_string("/proc/thread-self/schedstat")
         .ok()
         .and_then(|text| {
