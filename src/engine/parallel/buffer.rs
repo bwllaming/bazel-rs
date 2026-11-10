@@ -110,6 +110,86 @@ fn has_attribute_aspects(rule: &Rule) -> bool {
     })
 }
 
+/// `BAZEL_RS_T3_CRITICAL=1`: measure the job DAG's critical path.
+fn critical() -> bool {
+    static CRITICAL: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a diagnostics switch; it changes nothing the analysis computes.
+        std::env::var_os("BAZEL_RS_T3_CRITICAL").is_some_and(|value| value == "1")
+    });
+    *CRITICAL
+}
+
+impl Board {
+    /// The job DAG's critical path (each entry's work, requirement edges):
+    /// the walk's length if nothing waited for plan order; printed with
+    /// the total work and its longest chain.
+    fn critical_path(&self) {
+        let len = self.plan.len();
+        let work: Vec<u64> = self
+            .work
+            .iter()
+            .map(|w| w.load(Ordering::Relaxed))
+            .collect();
+        let mut edges = self
+            .edges_kept
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        // By dependent: its requirements (earlier in the plan).
+        edges.sort_unstable_by_key(|&(requirement, dependent)| (dependent, requirement));
+        let mut finish = vec![0u64; len];
+        let mut via = vec![u32::MAX; len];
+        let mut next = 0;
+        for slot in 0..len {
+            let mut start = 0;
+            while next < edges.len() && edges[next].1 as usize == slot {
+                let requirement = edges[next].0 as usize;
+                if requirement < slot && finish[requirement] > start {
+                    start = finish[requirement];
+                    via[slot] = requirement as u32;
+                }
+                next += 1;
+            }
+            finish[slot] = start + work[slot];
+        }
+        let Some((mut at, longest)) = finish.iter().copied().enumerate().max_by_key(|(_, f)| *f)
+        else {
+            return;
+        };
+        let total: u64 = work.iter().sum();
+        let mut chain = Vec::new();
+        loop {
+            chain.push(format!(
+                "{}:{:.1}ms",
+                self.plan[at].0.label,
+                work[at] as f64 / 1e3
+            ));
+            match via[at] {
+                u32::MAX => break,
+                previous => at = previous as usize,
+            }
+        }
+        let heavy = {
+            let mut heavy: Vec<(u64, usize)> = work.iter().copied().zip(0..).collect();
+            heavy.sort_unstable_by_key(|(w, _)| std::cmp::Reverse(*w));
+            heavy
+                .iter()
+                .take(10)
+                .map(|(w, slot)| format!("{}:{:.1}ms", self.plan[*slot].0.label, *w as f64 / 1e3))
+                .collect::<Vec<_>>()
+        };
+        eprintln!(
+            "PERF-PARALLEL critical entries={len} edges={} path={:.3}s links={} total_work={:.3}s heaviest={}",
+            edges.len(),
+            longest as f64 / 1e6,
+            chain.len(),
+            total as f64 / 1e6,
+            heavy.join(",")
+        );
+        eprintln!("PERF-PARALLEL critical chain {}", chain.join(" <- "));
+    }
+}
+
 /// `BAZEL_RS_T3_CHAIN_WEIGHT=<entries>`: how much earlier in the queue a
 /// job runs per Starlark implementation in its chain of dependents.
 fn chain_weight() -> usize {
@@ -361,6 +441,11 @@ struct Board {
     /// (dispatched as it advances).
     cursor: std::sync::atomic::AtomicUsize,
     window: usize,
+    /// `BAZEL_RS_T3_CRITICAL=1`: each entry's work (µs: its job, and its
+    /// merge or turn on the cursor, waits excluded) and the requirement
+    /// edges, for the job DAG's critical path ([`Board::critical_path`]).
+    work: Box<[AtomicU64]>,
+    edges_kept: std::sync::Mutex<Vec<(u32, u32)>>,
     parked: std::sync::Mutex<std::collections::BinaryHeap<std::cmp::Reverse<usize>>>,
 }
 
@@ -632,6 +717,16 @@ impl Board {
 
     /// Run entry `index`'s job and publish its results.
     fn run(self: &Arc<Self>, index: usize) -> Finished {
+        let started = critical().then(std::time::Instant::now);
+        let finished = self.run_job(index);
+        if let Some(started) = started {
+            self.work[index - self.start]
+                .fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+        finished
+    }
+
+    fn run_job(self: &Arc<Self>, index: usize) -> Finished {
         let slot = index - self.start;
         let (key, rule) = &self.plan[slot];
         let frozen = &self.frozen;
@@ -745,6 +840,9 @@ impl Board {
         let len = self.plan.len();
         let mut edges = std::mem::take(&mut *self.edges.lock().unwrap_or_else(|e| e.into_inner()));
         edges.sort_unstable();
+        if critical() {
+            *self.edges_kept.lock().unwrap_or_else(|e| e.into_inner()) = edges.clone();
+        }
         let mut chain = vec![0u32; len];
         let mut next = edges.len();
         for slot in (0..len).rev() {
@@ -1088,6 +1186,8 @@ impl Engine {
             chain: std::sync::OnceLock::new(),
             cursor: std::sync::atomic::AtomicUsize::new(start),
             window: window(),
+            work: (0..len).map(|_| AtomicU64::new(0)).collect(),
+            edges_kept: Default::default(),
             parked: Default::default(),
         });
         // Every entry is classified at once, ahead of every job (cheap:
@@ -1103,6 +1203,9 @@ impl Engine {
         let mut progress = Vec::new();
         let result = self.buffered_walk(state, configured, &board, started, &mut progress);
         board.stop.store(true, Ordering::Relaxed);
+        if critical() {
+            board.critical_path();
+        }
         if debug() {
             let mut slow =
                 std::mem::take(&mut *board.slow.lock().unwrap_or_else(|e| e.into_inner()));
@@ -1214,10 +1317,12 @@ impl Engine {
             // ready, is then the cursor's own).
             board.classify_entry(index);
             let mut fast = false;
+            let body_started = critical().then(std::time::Instant::now);
             let claimed = {
                 let _split = frozen::Split::enter(12);
                 board.claim(index)
             };
+            let claim_done = body_started.map(|started| started.elapsed());
             // After the claim: a classification still running pushed what
             // it observed before releasing the entry.
             for effects in board.take_stash(index) {
@@ -1323,6 +1428,12 @@ impl Engine {
                     board.mark(&key);
                 }
                 board.frozen.results.publish_declared(state, self);
+            }
+            if let (Some(started), Some(claim), Some(slot)) =
+                (body_started, claim_done, board.slot(index))
+            {
+                let cursor = started.elapsed().saturating_sub(claim);
+                board.work[slot].fetch_add(cursor.as_micros() as u64, Ordering::Relaxed);
             }
         }
         self.flush_delegations(state);
