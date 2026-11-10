@@ -20,9 +20,9 @@
 //!   plan, the per-key maps, the warnings, the tracker; phase 2 continues
 //!   on pass 1's plan.
 //!
-//! Not covered in S1 (the walk plans these requests): cquery/aquery
-//! captures, `--keep_going`, top-level aspects, the cquery root
-//! checkpoint (S4).
+//! Not covered yet (the walk plans these requests, `eval::select`):
+//! cquery/aquery captures, `--keep_going`, top-level aspects, the cquery
+//! root checkpoint (S4).
 
 use std::sync::Arc;
 
@@ -1468,16 +1468,6 @@ impl Transcripts for View<'_> {
 }
 
 impl Engine {
-    /// Whether the evaluator plans this request (S1: not cquery/aquery
-    /// captures, `--keep_going`, top-level aspects or a root checkpoint).
-    pub(in crate::engine) fn eval_covers(&self, checkpoint: bool) -> bool {
-        !checkpoint
-            && self.cquery_capture.is_none()
-            && self.aquery_capture.is_none()
-            && !self.keep_going
-            && self.requested_aspects.is_empty()
-    }
-
     /// Whether phase 1 runs on a pool (S2: more than one thread).
     pub(in crate::engine) fn eval_pooled(&self) -> bool {
         phase1_config(self.loading_phase_threads).threads > 1

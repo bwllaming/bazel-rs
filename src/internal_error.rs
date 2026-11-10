@@ -14,7 +14,7 @@
 
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, UnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Bazel's ExitCode.BLAZE_INTERNAL_ERROR.
 pub const EXIT_CODE: i32 = 37;
@@ -46,6 +46,11 @@ pub fn install() {
                 "FATAL: bazel-rs crashed due to an internal error (exit code {EXIT_CODE}). Printing the panic:"
             );
             previous(info);
+            if EVALUATOR.load(Ordering::SeqCst) > 0 {
+                eprintln!(
+                    "bazel-rs: the panic happened while the parallel analysis evaluator (the default engine) planned; rerun with BAZEL_RS_ANALYSIS=walk to plan with the sequential walk"
+                );
+            }
             crash();
         }));
     });
@@ -76,6 +81,27 @@ pub fn recoverable_asserted<R>(work: impl FnOnce() -> R) -> std::thread::Result<
 /// (the join's `Err`): [`recoverable`], the panic resumed without the hook.
 pub fn recoverable_resumed<R>(work: impl FnOnce() -> R) -> R {
     recoverable_asserted(work).unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+/// How many [`EvaluatorScope`]s are open (any thread).
+static EVALUATOR: AtomicU32 = AtomicU32::new(0);
+
+/// While open, a panic (on any thread) names `BAZEL_RS_ANALYSIS=walk` as
+/// the workaround: the planning runs on the evaluator
+/// (crate::engine::eval::select).
+pub struct EvaluatorScope(());
+
+impl EvaluatorScope {
+    pub fn enter() -> Self {
+        EVALUATOR.fetch_add(1, Ordering::SeqCst);
+        Self(())
+    }
+}
+
+impl Drop for EvaluatorScope {
+    fn drop(&mut self) {
+        EVALUATOR.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Whether this thread is the first to crash (the one that ends the

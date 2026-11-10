@@ -11885,6 +11885,28 @@ impl Engine {
         if self.eval_verifying.is_none() && self.eval_mode.is_none() && eval::verify::enabled() {
             return self.plan_build_verified(labels, checkpoint);
         }
+        // The evaluator unless forced off or not covering the request
+        // (eval::select: the walk then, silently).
+        let evaluate = self.select_engine(mode, checkpoint.is_some()).evaluates();
+        if !evaluate {
+            return self.plan_build_selected(labels, checkpoint, false);
+        }
+        // An evaluator internal error names the workaround (an error
+        // returned here, or a panic: crate::internal_error).
+        let _scope = crate::internal_error::EvaluatorScope::enter();
+        self.plan_build_selected(labels, checkpoint, true)
+            .map_err(eval::select::with_workaround)
+    }
+
+    /// [`Self::plan_build_with_checkpoint`] on the engine selected:
+    /// `evaluate`, phase 1 by the evaluator (docs/EVALUATOR.md), else the
+    /// walk.
+    fn plan_build_selected(
+        &mut self,
+        labels: &[Label],
+        checkpoint: Option<&mut root_checkpoint::Callback<'_>>,
+        evaluate: bool,
+    ) -> Result<root_checkpoint::Outcome<BuildPlan>, String> {
         crate::progress::analysis_targets(labels.len());
         crate::perf_mark("plan.start");
         // The workspace status is computed at most once per build
@@ -11947,10 +11969,8 @@ impl Engine {
         // a constraint needs it (docs/PLATFORMS.md).
         let top_configuration = self.configurations.top_configuration().clone();
         let target = top_configuration.native.target_platform().clone();
-        // BAZEL_RS_ANALYSIS=eval (S1, docs/EVALUATOR.md): phase 1 by the
-        // node bodies on the inline driver, linearized by pass 1 (the
-        // requests the evaluator does not cover yet plan with the walk).
-        let evaluate = mode == eval::AnalysisMode::Eval && self.eval_covers(checkpoint.is_some());
+        // The evaluator (docs/EVALUATOR.md): phase 1 by the node bodies on
+        // the pool, linearized by pass 1.
         let analyzed = if evaluate {
             // No phase-1 prefetch: the evaluator's Pkg nodes load the
             // packages (S2).

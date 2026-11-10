@@ -144,6 +144,16 @@ fn crashes(mode: &str, site: &str) {
         stderr.contains(&format!("BAZEL_RS_DEBUG_PANIC_AT: {name}")),
         "{mode} {site}\n{stderr}"
     );
+    // A panic while the evaluator plans names the workaround
+    // (crate::internal_error::EvaluatorScope); the walk's does not.
+    let hint = "rerun with BAZEL_RS_ANALYSIS=walk";
+    if mode == "walk" {
+        assert!(!stderr.contains(hint), "{mode} {site}\n{stderr}");
+    } else if name != "drop" && name != "loading-worker" {
+        // (The drop thread and the pattern-loading workers run outside
+        // the planning.)
+        assert!(stderr.contains(hint), "{mode} {site}\n{stderr}");
+    }
 }
 
 macro_rules! sites {
