@@ -140,6 +140,35 @@ thread_local! {
     /// first-use order; `None`: not such a load.
     static EVAL_GROUPS: std::cell::RefCell<Option<Vec<String>>> =
         const { std::cell::RefCell::new(None) };
+    /// The groups the load on this thread counts itself in flight for
+    /// ([`GroupFlight`]): released when the load ends ([`EvalAdoption`]).
+    static EVAL_FLIGHT: std::cell::RefCell<Vec<(String, Arc<std::sync::Mutex<GroupFlight>>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The evaluator's pool loads adopting a group's speculative preparation
+/// right now, per group, and the groups whose speculative preparation was
+/// dropped (prepared otherwise where the walk prepares them): a load
+/// adopting a dropped group, or one still in flight when its group is
+/// dropped (what it loads may enter the shared caches after their
+/// eviction), is the internal error ([`EVAL_ADOPTION_MISMATCH`]).
+#[derive(Debug, Default)]
+pub(crate) struct GroupFlight {
+    inflight: BTreeMap<String, usize>,
+    dropped: BTreeSet<String>,
+}
+
+/// The load on this thread ended: its groups are no longer in flight.
+fn release_eval_flight(flight: Vec<(String, Arc<std::sync::Mutex<GroupFlight>>)>) {
+    for (id, groups) in flight {
+        let mut groups = lock_ignoring_poison(&groups);
+        if let Some(count) = groups.inflight.get_mut(&id) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                groups.inflight.remove(&id);
+            }
+        }
+    }
 }
 
 /// The key of an extension group a pool load used speculatively, among a
@@ -158,13 +187,16 @@ pub(crate) const EVAL_GROUP_KEY: &str = "\u{1}prepare:ordinary:";
 /// load's commit prepares first (the speculation's commit, verified there).
 pub(crate) struct EvalAdoption {
     previous: Option<Option<Vec<String>>>,
+    previous_flight: Vec<(String, Arc<std::sync::Mutex<GroupFlight>>)>,
 }
 
 impl EvalAdoption {
     pub(crate) fn start() -> Self {
         let previous = EVAL_GROUPS.with(|groups| groups.replace(Some(Vec::new())));
+        let previous_flight = EVAL_FLIGHT.with(|flight| std::mem::take(&mut *flight.borrow_mut()));
         Self {
             previous: Some(previous),
+            previous_flight,
         }
     }
 
@@ -172,6 +204,7 @@ impl EvalAdoption {
     /// order.
     pub(crate) fn finish(mut self) -> Vec<String> {
         let previous = self.previous.take().flatten();
+        self.end_flight();
         EVAL_GROUPS
             .with(|groups| groups.replace(previous))
             .unwrap_or_default()
@@ -179,11 +212,19 @@ impl EvalAdoption {
             .map(|id| format!("{EVAL_GROUP_KEY}{id}"))
             .collect()
     }
+
+    /// The load ends (finished or abandoned): its groups' flight released.
+    fn end_flight(&mut self) {
+        let previous = std::mem::take(&mut self.previous_flight);
+        let flight = EVAL_FLIGHT.with(|flight| flight.replace(previous));
+        release_eval_flight(flight);
+    }
 }
 
 impl Drop for EvalAdoption {
     fn drop(&mut self) {
         if let Some(previous) = self.previous.take() {
+            self.end_flight();
             EVAL_GROUPS.with(|groups| *groups.borrow_mut() = previous);
         }
     }
@@ -448,6 +489,9 @@ struct RepositoryState {
     /// preparation must be that very one), and whether there are any.
     eval_used_groups: std::sync::Mutex<BTreeSet<String>>,
     eval_used: std::sync::atomic::AtomicBool,
+    /// The adopting loads in flight and the dropped groups (locked after
+    /// `eval_used_groups`, never before).
+    eval_group_flight: Arc<std::sync::Mutex<GroupFlight>>,
     /// The repositories an evaluator's pool load waits for, which
     /// repository speculation may execute ahead on the finished
     /// speculative preparation of their extension group, and execute even
@@ -1315,6 +1359,7 @@ impl RepositorySet {
                 speculative_groups: OnceLock::new(),
                 eval_adoptable: Default::default(),
                 eval_used_groups: Default::default(),
+                eval_group_flight: Default::default(),
                 eval_used: Default::default(),
                 eval_local: Default::default(),
                 eval_local_refused: Default::default(),
@@ -3667,10 +3712,30 @@ impl RepositorySet {
             return None;
         }
         let prepared = self.speculated_group(id)?;
-        note_eval_group(id);
-        if lock_ignoring_poison(&self.state.eval_used_groups).insert(id.to_owned()) {
-            self.state.eval_used.store(true, Ordering::SeqCst);
+        {
+            let mut used = lock_ignoring_poison(&self.state.eval_used_groups);
+            let mut flight = lock_ignoring_poison(&self.state.eval_group_flight);
+            if flight.dropped.contains(id) {
+                // Prepared otherwise already: its caches were evicted.
+                EVAL_ADOPTIONS[1].fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+            let counted = EVAL_FLIGHT.with(|own| {
+                let mut own = own.borrow_mut();
+                if own.iter().any(|(group, _)| group == id) {
+                    return true;
+                }
+                own.push((id.to_owned(), Arc::clone(&self.state.eval_group_flight)));
+                false
+            });
+            if !counted {
+                *flight.inflight.entry(id.to_owned()).or_default() += 1;
+            }
+            if used.insert(id.to_owned()) {
+                self.state.eval_used.store(true, Ordering::SeqCst);
+            }
         }
+        note_eval_group(id);
         EVAL_ADOPTIONS[0].fetch_add(1, Ordering::Relaxed);
         Some(prepared)
     }
@@ -3683,19 +3748,35 @@ impl RepositorySet {
     /// `.bzl` modules and their loaders, the ignored subdirectories): the
     /// walk loads them from this one.
     fn evict_dropped_group(&self, id: &str, prepared: &Arc<PreparedOrdinary>) {
-        if !self.state.eval_used.load(Ordering::Relaxed) {
-            return;
-        }
-        // Once (prepared now: a memo hit finds its root slot from here on).
-        if !lock_ignoring_poison(&self.state.eval_used_groups).remove(id) {
-            return;
-        }
-        let Some(used) = self.speculated_group(id) else {
-            return;
+        // No fast path on `eval_used`: a load that saw the group unprepared
+        // may adopt it right now; the mark below, under the locks
+        // adoption takes, closes that window.
+        let used = {
+            let mut used_groups = lock_ignoring_poison(&self.state.eval_used_groups);
+            // Once (prepared now: a memo hit finds its root slot from here
+            // on).
+            let was_used = used_groups.remove(id);
+            let used = self.speculated_group(id);
+            if used.is_some_and(|used| Arc::ptr_eq(used, prepared)) {
+                return;
+            }
+            // Dropped (or never finished): no load adopts it from now on,
+            // and one adopting it now could fill the caches after the
+            // eviction below.
+            let mut flight = lock_ignoring_poison(&self.state.eval_group_flight);
+            flight.dropped.insert(id.to_owned());
+            if flight.inflight.get(id).is_some_and(|count| *count > 0) {
+                note_eval_adoption_mismatch(|| {
+                    format!(
+                        "the module extension group {id} was prepared otherwise while a pool load was using its speculative preparation"
+                    )
+                });
+            }
+            match used {
+                Some(used) if was_used => used,
+                _ => return,
+            }
         };
-        if Arc::ptr_eq(used, prepared) {
-            return;
-        }
         let repositories: BTreeSet<String> = used
             .repositories
             .values()
