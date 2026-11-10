@@ -343,3 +343,119 @@ fn prints_keep_the_plan_order_across_buffered_merges() {
         },
     );
 }
+
+const ASPECTS_BZL: &str = r#"
+HeavyInfo = provider(fields = ["files", "count"])
+LightInfo = provider(fields = ["files"])
+
+def _heavy_impl(target, ctx):
+    print("heavy %s" % target.label)
+    if target.label.name == ctx.attr._boom:
+        fail("the heavy aspect failed on %s" % target.label.name)
+    total = 0
+    for i in range(ctx.attr._work):
+        total += i * i
+    deps = [dep[HeavyInfo] for dep in ctx.rule.attr.deps if HeavyInfo in dep]
+    out = ctx.actions.declare_file(target.label.name + ".heavy")
+    ctx.actions.write(out, "%d %d" % (total % 7, len(deps)))
+    count = 1
+    for info in deps:
+        count += info.count
+    return [HeavyInfo(
+        files = depset([out], transitive = [info.files for info in deps]),
+        count = count,
+    )]
+
+heavy = aspect(
+    implementation = _heavy_impl,
+    attr_aspects = ["deps"],
+    attrs = {"_work": attr.int(default = 60000), "_boom": attr.string(default = "BOOM")},
+)
+
+def _light_impl(target, ctx):
+    deps = [dep[LightInfo] for dep in ctx.rule.attr.deps if LightInfo in dep]
+    out = ctx.actions.declare_file(target.label.name + ".light")
+    ctx.actions.write(out, "%s %d" % (target.label, target[HeavyInfo].count))
+    return [LightInfo(files = depset([out], transitive = [info.files for info in deps]))]
+
+light = aspect(implementation = _light_impl, attr_aspects = ["deps"], requires = [heavy])
+
+def _lib_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".lib")
+    ctx.actions.write(out, ctx.label.name)
+    return [DefaultInfo(files = depset([out]))]
+
+lib = rule(implementation = _lib_impl, attrs = {"deps": attr.label_list()})
+
+def _lint_impl(ctx):
+    print("lint %s" % ctx.label)
+    files = depset(transitive = [dep[LightInfo].files for dep in ctx.attr.deps] +
+                                [dep[HeavyInfo].files for dep in ctx.attr.deps])
+    out = ctx.actions.declare_file(ctx.label.name + ".lint")
+    ctx.actions.run_shell(inputs = files, outputs = [out], command = "touch " + out.path)
+    return [DefaultInfo(files = depset([out]))]
+
+lint = rule(implementation = _lint_impl, attrs = {"deps": attr.label_list(aspects = [light])})
+"#;
+
+/// Lint targets apply attribute aspects (one requiring the other) over a
+/// shared dependency graph, like rules_rust's clippy and rustfmt: at each
+/// lint target's turn the applications are analyzed on the workers first
+/// (super::aspects' dry walk) and replayed by its prepare. Prints, actions
+/// and an aspect's failure come out as the walk's.
+#[test]
+fn attribute_aspect_applications_analyzed_ahead_replay_in_order() {
+    for boom in ["BOOM", "l7"] {
+        let mut build = String::from("load(\"//rules:aspects.bzl\", \"lib\", \"lint\")\n");
+        for index in 0..12 {
+            let deps = (0..index)
+                .filter(|dep| (index + dep) % 3 == 0 || dep + 1 == index)
+                .map(|dep| format!("\":l{dep}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            build.push_str(&format!("lib(name = \"l{index}\", deps = [{deps}])\n"));
+        }
+        build.push_str("lint(name = \"lint_a\", deps = [\":l5\", \":l11\"])\n");
+        build.push_str("lint(name = \"lint_b\", deps = [\":l9\"])\n");
+        build.push_str("lint(name = \"lint_c\", deps = [\":l11\", \":l2\"])\n");
+        let ws = Workspace::new(&[
+            (
+                "rules/aspects.bzl",
+                ASPECTS_BZL.replace("default = \"BOOM\"", &format!("default = \"{boom}\"")),
+            ),
+            ("a/BUILD.bazel", build),
+        ]);
+        compare(
+            &ws,
+            &["//a:lint_a", "//a:lint_b", "//a:lint_c"],
+            |success, text| {
+                if boom == "BOOM" {
+                    assert!(success, "{text}");
+                    assert!(text.contains("lint @@//a:lint_c"), "{text}");
+                } else {
+                    assert!(!success, "{text}");
+                    assert!(text.contains("the heavy aspect failed on l7"), "{text}");
+                }
+            },
+        );
+        if boom == "BOOM" {
+            let timed = ws.build(
+                "eval",
+                8,
+                &[FROZEN, ("BAZEL_RS_TIMING", "1")],
+                &["//a:lint_a", "//a:lint_b", "//a:lint_c"],
+            );
+            let timed = String::from_utf8_lossy(&timed.stderr);
+            let line = timed
+                .lines()
+                .find(|line| line.starts_with("PERF-PARALLEL aspects "))
+                .unwrap_or_else(|| panic!("the aspects were prefetched: {timed}"));
+            let used = line
+                .split_whitespace()
+                .find_map(|field| field.strip_prefix("used="))
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or_default();
+            assert!(used > 0, "{line}");
+        }
+    }
+}
