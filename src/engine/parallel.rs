@@ -59,7 +59,20 @@ fn frozen_workers(loading_phase_threads: usize) -> usize {
     // than 8 at once only raise the peak memory of their computes (~/code:
     // 48 workers 10.3 GB, 8 workers 9.95 GB, the same walk time).
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
-    loading_phase_threads.min(cores).clamp(2, 8)
+    let cap = frozen_worker_cap();
+    loading_phase_threads.min(cores).clamp(2, cap.max(2))
+}
+
+/// `BAZEL_RS_T3_WORKERS=<n>`: the frozen walk's analysis workers (8).
+fn frozen_worker_cap() -> usize {
+    static CAP: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling bound; the output is the same either way.
+        std::env::var("BAZEL_RS_T3_WORKERS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(8)
+    });
+    *CAP
 }
 
 type Job = Box<dyn FnOnce() + Send>;

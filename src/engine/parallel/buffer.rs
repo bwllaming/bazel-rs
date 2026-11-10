@@ -828,10 +828,12 @@ impl Board {
                         .is_ok()
                     {
                         stat(S_STOLEN, 1);
+                        let _split = frozen::Split::enter(17);
                         return Claimed::Done(self.run(index));
                     }
                 }
                 RUNNING | DONE => {
+                    let _split = frozen::Split::enter(18);
                     let started = std::time::Instant::now();
                     let mut waited = false;
                     let mut done = self.finished.lock().unwrap_or_else(|e| e.into_inner());
@@ -1291,7 +1293,7 @@ impl Engine {
             // later entries' jobs held their effects, never applied.
             result?;
             {
-                let _split = frozen::Split::enter(11);
+                let _split = frozen::Split::enter(19);
                 if published && !fast {
                     // Its dependents read what a worker published: checked
                     // against the commit (the same Files and values).

@@ -1535,7 +1535,7 @@ impl Engine {
 /// exclusive of nested buckets).
 pub(super) static SPLIT: [AtomicU64; SPLIT_NAMES.len()] =
     [const { AtomicU64::new(0) }; SPLIT_NAMES.len()];
-pub(super) const SPLIT_NAMES: [&str; 17] = [
+pub(super) const SPLIT_NAMES: [&str; 20] = [
     "other",
     "drain_lowerings",
     "hooks",
@@ -1553,6 +1553,9 @@ pub(super) const SPLIT_NAMES: [&str; 17] = [
     "merge_native",
     "at_turn",
     "fast_native",
+    "claim_steal",
+    "claim_wait",
+    "publish_merged",
 ];
 
 thread_local! {
