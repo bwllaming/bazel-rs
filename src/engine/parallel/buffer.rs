@@ -1174,6 +1174,14 @@ impl Engine {
             .map(|plan| plan.get(start..).unwrap_or_default().to_vec())
             .unwrap_or_default();
         let len = plan.len();
+        // The per-target tables the merges fill, sized once for the walk
+        // (growing them rehashed every entry on the cursor).
+        state.dry.reserve(len);
+        state.repositories.reserve(len);
+        state.custom_providers.reserve(len);
+        state.provider_keys.reserve(len);
+        state.runfiles_info.reserve(len);
+        self.console_owners.reserve(len);
         let index_of: HashMap<ConfiguredTargetKey, usize> = plan
             .iter()
             .enumerate()

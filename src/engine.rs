@@ -428,6 +428,10 @@ struct ActionPlanning {
     /// from one walk to the next (each walk adds what was committed since,
     /// instead of copying every result again).
     walk_results: Option<Arc<parallel::PlannedResults>>,
+    /// The sweep (task A): the provisional reads found canonical at a
+    /// merge, by their artifact's identity (each kept: canonical entries
+    /// never change, so they stay valid for every later reader).
+    canonical_reads: sweep::CanonicalReads,
     dry: KeyMap<Artifacts>,
     custom_providers: KeyMap<BTreeMap<String, starlark::values::OwnedFrozenValue>>,
     /// Returned declared-provider names per analyzed rule (Target debugPrint).
@@ -10242,7 +10246,7 @@ impl Engine {
         // T2: a delta built ahead of its merge over provisional results
         // whose reads are stale now (a shared output's winner is another
         // target) is rebuilt here, like one meeting a producer.
-        let stale = |built: &delta::TargetDelta| {
+        let stale = |state: &ActionPlanning, built: &delta::TargetDelta| {
             if built.reads.is_empty() {
                 return false;
             }
@@ -10268,14 +10272,13 @@ impl Engine {
         let mut adopted = false;
         let mut adopted_delta = None;
         let built = match built {
-            Some(delta::Built::Delta(built))
-                if sweep::enabled()
-                    && self.frozen_walk.is_some()
-                    && (stale(&built) || Self::delta_meets_producers(state, &built)) =>
-            {
+            Some(delta::Built::Delta(built)) if sweep::enabled() && self.frozen_walk.is_some() => {
                 let meets = Self::delta_meets_producers(state, &built);
-                match sweep::adopt(state, built, state.artifact_index.turn, meets) {
-                    Ok(delta) => {
+                let reader = state.artifact_index.turn;
+                match sweep::adopt(state, built, reader, meets) {
+                    // As built: the worker's delta.
+                    Ok((delta, false)) => Some(delta::Built::Delta(delta)),
+                    Ok((delta, true)) => {
                         adopted = true;
                         adopted_delta = Some(delta);
                         None
@@ -10293,7 +10296,7 @@ impl Engine {
         };
         let (worker_delta, reason) = match built {
             _ if adopted => (adopted_delta.take(), "sweep"),
-            Some(delta::Built::Delta(built)) if stale(&built) => {
+            Some(delta::Built::Delta(built)) if stale(state, &built) => {
                 delta::provisional_bump(1);
                 drop_elsewhere(built);
                 match kept.take() {
@@ -12348,6 +12351,7 @@ impl Engine {
             delegations_scanned: _,
             delegated_keys: _,
             walk_results: _,
+            canonical_reads: _,
         } = state;
         // The top-level lookups below: a workspace status File no target
         // registered (only possible under --nobuild, which plans no status

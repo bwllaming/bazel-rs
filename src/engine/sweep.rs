@@ -104,6 +104,26 @@ pub(super) fn report() {
     ));
 }
 
+/// The provisional reads found canonical at a merge
+/// ([`ActionPlanning::canonical_reads`]), by the identity of the artifact
+/// read (kept alive here, so the identity is never reused).
+#[derive(Default)]
+pub(super) struct CanonicalReads(crate::fast_hash::FxHashMap<usize, Artifact>);
+
+impl CanonicalReads {
+    fn key(artifact: &Artifact) -> usize {
+        Arc::as_ptr(&artifact.0) as usize
+    }
+
+    fn contains(&self, artifact: &Artifact) -> bool {
+        self.0.contains_key(&Self::key(artifact))
+    }
+
+    fn insert(&mut self, artifact: &Artifact) {
+        self.0.insert(Self::key(artifact), artifact.clone());
+    }
+}
+
 /// Producer action ids a delta names → the ids its merge names.
 pub(super) type Aliases = crate::fast_hash::FxHashMap<String, String>;
 
@@ -124,18 +144,25 @@ fn alias(aliases: &mut Aliases, from: &str, to: &str) -> bool {
 /// differs from it in its producer id only; `None` otherwise (built again).
 pub(super) fn read_aliases(
     index: &ConcurrentArtifactIndex,
+    canonical: &mut CanonicalReads,
     reads: &[delta::ProvisionalRead],
     reader: u32,
 ) -> Option<Aliases> {
     let mut aliases = Aliases::default();
     for read in reads {
         match &read.artifact {
+            // Found canonical at an earlier merge: canonical entries never
+            // change and readers merge in plan order.
+            Some(artifact) if canonical.contains(artifact) => {}
             Some(artifact) => {
                 let (now, provisional, stamp) = index.current(&read.file)?;
                 if stamp >= reader {
                     return None;
                 }
                 if same_artifact(&now, artifact) {
+                    if !provisional {
+                        canonical.insert(artifact);
+                    }
                     continue;
                 }
                 // A still provisional entry is never replaced by another
@@ -247,41 +274,61 @@ fn pending(outcome: Outcome) -> lowering::Pending {
     receiver
 }
 
-/// The rewrite of one delta's producer ids.
-struct Rewriter<'a> {
-    aliases: &'a Aliases,
-    artifacts: crate::fast_hash::FxHashMap<*const ArtifactData, Artifact>,
-    groups: crate::fast_hash::FxHashMap<*const scheduler::InputGroup, Arc<scheduler::InputGroup>>,
+/// The rewrite of one delta's producer ids, shared with the placement of
+/// its lowerings in flight ([`Rewrite::place`]).
+pub(super) struct Rewrite {
+    aliases: Aliases,
+    /// The delta's shared actions: their lowered nodes are not placed.
+    dropped: crate::fast_hash::FxHashSet<String>,
+    caches: std::sync::Mutex<Caches>,
 }
 
-impl Rewriter<'_> {
-    fn artifact(&mut self, artifact: &mut Artifact) {
+/// Each artifact and shared input group rewritten once, by identity (the
+/// original kept: the identity is never reused while it is a key).
+#[derive(Default)]
+struct Caches {
+    artifacts: crate::fast_hash::FxHashMap<usize, (Artifact, Artifact)>,
+    groups: crate::fast_hash::FxHashMap<
+        usize,
+        (Arc<scheduler::InputGroup>, Arc<scheduler::InputGroup>),
+    >,
+}
+
+impl Rewrite {
+    fn touched(&self, artifact: &Artifact) -> bool {
+        artifact
+            .producer
+            .as_ref()
+            .is_some_and(|(id, _)| self.aliases.contains_key(id))
+    }
+
+    fn caches(&self) -> std::sync::MutexGuard<'_, Caches> {
+        self.caches.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn artifact(&self, artifact: &mut Artifact) {
         let Some((id, _)) = artifact.producer.as_ref() else {
             return;
         };
         let Some(to) = self.aliases.get(id) else {
             return;
         };
-        let key = Arc::as_ptr(&artifact.0);
+        let key = Arc::as_ptr(&artifact.0) as usize;
         let rewritten = self
+            .caches()
             .artifacts
             .entry(key)
             .or_insert_with(|| {
                 stat(S_ARTIFACTS, 1);
-                artifact.with_producer_id(to)
+                (artifact.clone(), artifact.with_producer_id(to))
             })
+            .1
             .clone();
         *artifact = rewritten;
     }
 
-    fn artifacts(&mut self, artifacts: &mut Artifacts) {
-        let touched = artifacts.iter().any(|artifact| {
-            artifact
-                .producer
-                .as_ref()
-                .is_some_and(|(id, _)| self.aliases.contains_key(id))
-        });
-        if touched {
+    fn artifacts(&self, artifacts: &mut Artifacts) {
+        if artifacts.iter().any(|artifact| self.touched(artifact)) {
             let mut list = (**artifacts).clone();
             for artifact in &mut list {
                 self.artifact(artifact);
@@ -290,39 +337,35 @@ impl Rewriter<'_> {
         }
     }
 
-    fn dependencies(&self, dependencies: &mut [scheduler::Dependency]) -> bool {
-        let mut touched = false;
+    fn dependencies(&self, dependencies: &mut [scheduler::Dependency]) {
         for dependency in dependencies {
             if let Some(to) = self.aliases.get(&dependency.action_id) {
                 dependency.action_id = to.clone();
-                touched = true;
             }
         }
-        touched
     }
 
-    fn group(&mut self, group: &mut Arc<scheduler::InputGroup>) {
-        let key = Arc::as_ptr(group);
-        if let Some(rewritten) = self.groups.get(&key) {
-            *group = Arc::clone(rewritten);
-            return;
-        }
-        let rewritten = if group
-            .dependencies
-            .iter()
-            .any(|dependency| self.aliases.contains_key(&dependency.action_id))
-        {
-            let mut copy = (**group).clone();
-            self.dependencies(&mut copy.dependencies);
-            Arc::new(copy)
-        } else {
-            Arc::clone(group)
-        };
-        self.groups.insert(key, Arc::clone(&rewritten));
-        *group = rewritten;
+    fn group(&self, group: &mut Arc<scheduler::InputGroup>) {
+        let key = Arc::as_ptr(group) as usize;
+        let mut caches = self.caches();
+        let (_, rewritten) = caches.groups.entry(key).or_insert_with(|| {
+            let rewritten = if group
+                .dependencies
+                .iter()
+                .any(|dependency| self.aliases.contains_key(&dependency.action_id))
+            {
+                let mut copy = (**group).clone();
+                self.dependencies(&mut copy.dependencies);
+                Arc::new(copy)
+            } else {
+                Arc::clone(group)
+            };
+            (Arc::clone(group), rewritten)
+        });
+        *group = Arc::clone(rewritten);
     }
 
-    fn node(&mut self, planned: &mut PlannedAction, sources: &mut Option<(String, SourceInputs)>) {
+    fn node(&self, planned: &mut PlannedAction, sources: &mut Option<(String, SourceInputs)>) {
         self.dependencies(&mut planned.dependencies);
         for group in &mut planned.groups {
             self.group(group);
@@ -334,7 +377,7 @@ impl Rewriter<'_> {
         }
     }
 
-    fn runfiles_nodes(&mut self, nodes: &mut RunfilesNodes) {
+    fn runfiles_nodes(&self, nodes: &mut RunfilesNodes) {
         for artifact in [nodes.tree.as_mut(), nodes.manifest.as_mut()]
             .into_iter()
             .flatten()
@@ -350,42 +393,42 @@ impl Rewriter<'_> {
         }
     }
 
-    /// A listed action's own inputs; `false` when its shared inputs name a
-    /// rewritten id (not rewritten here: built again).
-    fn listing(&mut self, listing: &mut lowering::Listing) -> bool {
-        for artifact in &mut listing.own {
-            self.artifact(artifact);
-        }
-        !listing.shared.as_ref().is_some_and(|(_, shared)| {
-            shared.artifacts.iter().any(|artifact| {
-                artifact
-                    .producer
-                    .as_ref()
-                    .is_some_and(|(id, _)| self.aliases.contains_key(id))
-            })
-        })
+    /// Whether the lowering of a shared action (not placed).
+    pub(super) fn drops(&self, lowered: &lowering::Lowered) -> bool {
+        let id = match lowered {
+            lowering::Lowered::Node { planned, .. } => &planned.action.id,
+            lowering::Lowered::Listing(listing) => &listing.action.id,
+        };
+        self.dropped.contains(id)
     }
-}
 
-/// The action id of a lowering's product.
-fn lowered_id(outcome: &Outcome) -> Option<&str> {
-    match outcome {
-        Ok(Ok(lowering::Lowered::Node { planned, .. })) => Some(planned.action.id.as_str()),
-        Ok(Ok(lowering::Lowered::Listing(listing))) => Some(listing.action.id.as_str()),
-        _ => None,
+    /// A lowered node of the delta placed (its listed path's nodes
+    /// rewritten where they are built, [`Self::placed`]).
+    pub(super) fn lowered(&self, lowered: &mut lowering::Lowered) {
+        if let lowering::Lowered::Node { planned, sources } = lowered {
+            self.node(planned, sources);
+        }
+    }
+
+    /// A node the placement of a listed action built.
+    pub(super) fn placed(
+        &self,
+        planned: &mut PlannedAction,
+        sources: &mut Option<(String, SourceInputs)>,
+    ) {
+        self.node(planned, sources);
     }
 }
 
 /// `delta` as its merge in the walk would have built it: `localized`'s
 /// shared actions dropped (their outputs `Shared`, their declarations
 /// replacing only when predeclared) and every producer id of `aliases`
-/// rewritten. `None`: a listed action's shared inputs name a rewritten id
-/// (built again).
+/// rewritten — its lowerings in flight where they are placed.
 pub(super) fn rewrite(
     delta: delta::TargetDelta,
     localized: Option<&Localized>,
-    aliases: &Aliases,
-) -> Option<delta::TargetDelta> {
+    aliases: Aliases,
+) -> delta::TargetDelta {
     let delta::TargetDelta {
         ops,
         error,
@@ -394,12 +437,14 @@ pub(super) fn rewrite(
         failed_output,
         reads: _,
     } = delta;
-    let mut rewriter = Rewriter {
+    let rewrite = Arc::new(Rewrite {
         aliases,
-        artifacts: Default::default(),
-        groups: Default::default(),
-    };
-    let dropped = |id: &str| localized.is_some_and(|localized| localized.shared.contains(id));
+        dropped: localized
+            .map(|localized| localized.shared.clone())
+            .unwrap_or_default(),
+        caches: Default::default(),
+    });
+    let dropped = |id: &str| rewrite.dropped.contains(id);
     let own_shared = |artifact: &Artifact| {
         artifact
             .producer
@@ -422,7 +467,7 @@ pub(super) fn rewrite(
                 }
             }
             delta::DeltaOp::Artifact(file, mut artifact, hash) => {
-                rewriter.artifact(&mut artifact);
+                rewrite.artifact(&mut artifact);
                 out.push(delta::DeltaOp::Artifact(file, artifact, hash));
             }
             delta::DeltaOp::Declared {
@@ -436,7 +481,7 @@ pub(super) fn rewrite(
                 } else {
                     replace
                 };
-                rewriter.artifact(&mut artifact);
+                rewrite.artifact(&mut artifact);
                 out.push(delta::DeltaOp::Declared {
                     key,
                     artifact,
@@ -445,11 +490,11 @@ pub(super) fn rewrite(
                 });
             }
             delta::DeltaOp::Dry(mut dry) => {
-                rewriter.artifacts(&mut dry);
+                rewrite.artifacts(&mut dry);
                 out.push(delta::DeltaOp::Dry(dry));
             }
             delta::DeltaOp::RunfilesNodes(mut nodes) => {
-                rewriter.runfiles_nodes(&mut nodes);
+                rewrite.runfiles_nodes(&mut nodes);
                 out.push(delta::DeltaOp::RunfilesNodes(nodes));
             }
             delta::DeltaOp::Node(mut planned, mut sources) => {
@@ -460,61 +505,48 @@ pub(super) fn rewrite(
                     }
                     continue;
                 }
-                rewriter.node(&mut planned, &mut sources);
+                rewrite.node(&mut planned, &mut sources);
                 out.push(delta::DeltaOp::Node(planned, sources));
             }
-            delta::DeltaOp::Lowering(receiver) => {
-                let started = std::time::Instant::now();
-                let mut outcome = receiver
-                    .recv()
-                    .unwrap_or_else(|_| Err(Box::new("a lowering worker stopped".to_owned())));
-                stat_since(S_LOWERING_US, started);
-                if lowered_id(&outcome).is_some_and(dropped) {
-                    continue;
-                }
-                match &mut outcome {
-                    Ok(Ok(lowering::Lowered::Node { planned, sources })) => {
-                        rewriter.node(planned, sources);
-                    }
-                    Ok(Ok(lowering::Lowered::Listing(listing))) => {
-                        if !rewriter.listing(listing) {
-                            return None;
-                        }
-                    }
-                    _ => {}
-                }
-                out.push(delta::DeltaOp::Lowering(pending(outcome)));
+            delta::DeltaOp::Lowering(pending) | delta::DeltaOp::Rewritten(pending, _) => {
+                out.push(delta::DeltaOp::Rewritten(pending, Arc::clone(&rewrite)));
             }
             delta::DeltaOp::ActionExecution(id, _) | delta::DeltaOp::BuildInfoAction(id)
                 if dropped(&id) => {}
             other => out.push(other),
         }
     }
-    Some(delta::TargetDelta {
+    delta::TargetDelta {
         ops: out,
         error,
         unchecked,
         uses,
         failed_output,
         reads: Vec::new(),
-    })
+    }
 }
 
 /// The merge's adoption of a worker's delta (entry `reader`; the module's
-/// doc): `Ok` merged as returned, `Err` built again (the delta given back
-/// when it was not consumed). `meets`: an output path meets a producer.
+/// doc): `Ok` merged as returned (with whether it was rewritten), `Err`
+/// built again (the delta given back when it was not consumed). `meets`:
+/// an output path meets a producer.
 #[allow(clippy::result_large_err)]
 pub(super) fn adopt(
-    state: &ActionPlanning,
+    state: &mut ActionPlanning,
     delta: delta::TargetDelta,
     reader: u32,
     meets: bool,
-) -> Result<delta::TargetDelta, Option<delta::TargetDelta>> {
+) -> Result<(delta::TargetDelta, bool), Option<delta::TargetDelta>> {
     let started = std::time::Instant::now();
     let Some(mut aliases) = (if delta.reads.is_empty() {
         Some(Aliases::default())
     } else {
-        read_aliases(&state.artifact_index.shared, &delta.reads, reader)
+        read_aliases(
+            &state.artifact_index.shared,
+            &mut state.canonical_reads,
+            &delta.reads,
+            reader,
+        )
     }) else {
         return Err(Some(delta));
     };
@@ -531,45 +563,71 @@ pub(super) fn adopt(
     if aliases.is_empty() && localized.is_none() {
         let mut delta = delta;
         delta.reads.clear();
-        return Ok(delta);
+        return Ok((delta, false));
     }
     stat_since(S_LOCALIZE_US, started);
     stat(if meets { S_LOSER } else { S_READER }, 1);
     let started = std::time::Instant::now();
-    let rewritten = rewrite(delta, localized.as_ref(), &aliases).ok_or(None);
+    let rewritten = rewrite(delta, localized.as_ref(), aliases);
     stat_since(S_REWRITE_US, started);
-    rewritten
+    Ok((rewritten, true))
 }
 
 /// A comparable rendering of `delta`'s ops (BAZEL_RS_PARITY_VERIFY): its
-/// lowerings received (and handed on), shared input groups by content.
+/// lowerings received (and handed on) and shown as placed (a rewritten
+/// delta's dropped or rewritten), shared input groups by content.
 pub(super) fn rendered(delta: &mut delta::TargetDelta) -> Vec<String> {
     let mut lines = Vec::with_capacity(delta.ops.len());
     for op in &mut delta.ops {
-        match op {
-            delta::DeltaOp::Lowering(receiver) => {
-                let outcome = std::mem::replace(receiver, std::sync::mpsc::channel().1)
-                    .recv()
-                    .unwrap_or_else(|_| Err(Box::new("a lowering worker stopped".to_owned())));
-                lines.push(match &outcome {
-                    Ok(Ok(lowering::Lowered::Node { planned, sources })) => {
-                        node_line(planned, sources.as_ref())
-                    }
-                    Ok(Ok(lowering::Lowered::Listing(listing))) => {
-                        format!("listing {} {:?}", listing.action.id, listing.own)
-                    }
-                    Ok(Err(error)) => format!("lowering error {error}"),
-                    Err(_) => "lowering panic".to_owned(),
-                });
-                *receiver = pending(outcome);
-            }
+        let (receiver, rewrite) = match op {
+            delta::DeltaOp::Lowering(receiver) => (receiver, None),
+            delta::DeltaOp::Rewritten(receiver, rewrite) => (receiver, Some(Arc::clone(rewrite))),
             delta::DeltaOp::Node(planned, sources) => {
                 lines.push(node_line(planned, sources.as_ref()));
+                continue;
             }
-            other => lines.push(delta::rendered(other)),
+            other => {
+                lines.push(delta::rendered(other));
+                continue;
+            }
+        };
+        let started = std::time::Instant::now();
+        let outcome = std::mem::replace(receiver, std::sync::mpsc::channel().1)
+            .recv()
+            .unwrap_or_else(|_| Err(Box::new("a lowering worker stopped".to_owned())));
+        stat_since(S_LOWERING_US, started);
+        if let Some(line) = lowered_line(&outcome, rewrite.as_deref()) {
+            lines.push(line);
         }
+        *receiver = pending(outcome);
     }
     lines
+}
+
+/// A lowering's product as its placement places it.
+fn lowered_line(outcome: &Outcome, rewrite: Option<&Rewrite>) -> Option<String> {
+    Some(match outcome {
+        Ok(Ok(lowered)) if rewrite.is_some_and(|rewrite| rewrite.drops(lowered)) => return None,
+        Ok(Ok(lowering::Lowered::Node { planned, sources })) => match rewrite {
+            Some(rewrite) => {
+                let (mut planned, mut sources) = (planned.clone(), sources.clone());
+                rewrite.placed(&mut planned, &mut sources);
+                node_line(&planned, sources.as_ref())
+            }
+            None => node_line(planned, sources.as_ref()),
+        },
+        Ok(Ok(lowering::Lowered::Listing(listing))) => {
+            let mut own = listing.own.clone();
+            if let Some(rewrite) = rewrite {
+                for artifact in &mut own {
+                    rewrite.artifact(artifact);
+                }
+            }
+            format!("listing {} {own:?}", listing.action.id)
+        }
+        Ok(Err(error)) => format!("lowering error {error}"),
+        Err(_) => "lowering panic".to_owned(),
+    })
 }
 
 fn node_line(planned: &PlannedAction, sources: Option<&(String, SourceInputs)>) -> String {
@@ -702,23 +760,25 @@ mod tests {
             artifact: Some(loser.clone()),
             stamp: 5,
         };
-        let aliases = read_aliases(&index, std::slice::from_ref(&read), 9).expect("a rewrite");
+        let fresh = || CanonicalReads::default();
+        let aliases =
+            read_aliases(&index, &mut fresh(), std::slice::from_ref(&read), 9).expect("a rewrite");
         assert_eq!(aliases.get("//p:b#0").map(String::as_str), Some("//p:a#0"));
         // The reader before the publisher's stamp: not its view.
-        assert!(read_aliases(&index, std::slice::from_ref(&read), 5).is_none());
+        assert!(read_aliases(&index, &mut fresh(), std::slice::from_ref(&read), 5).is_none());
         // Another output index is not a rewrite.
         let other = delta::ProvisionalRead {
             artifact: Some(generated("bazel-out/k8/bin/p/out", "//p:b", "//p:b#0", 1)),
             ..read.clone()
         };
-        assert!(read_aliases(&index, &[other], 9).is_none());
+        assert!(read_aliases(&index, &mut fresh(), &[other], 9).is_none());
         // A File read as missing that is registered now: built again.
         let missing = delta::ProvisionalRead {
             file: file.clone(),
             artifact: None,
             stamp: u32::MAX,
         };
-        assert!(read_aliases(&index, &[missing], 9).is_none());
+        assert!(read_aliases(&index, &mut fresh(), &[missing], 9).is_none());
         // Two reads mapping one id two ways: built again.
         let second = generated("bazel-out/k8/bin/p/out2", "//p:b", "//p:b#0", 1);
         let second_file = second.file();
@@ -739,7 +799,7 @@ mod tests {
                 stamp: 5,
             },
         ];
-        assert!(read_aliases(&index, &both, 9).is_none());
+        assert!(read_aliases(&index, &mut fresh(), &both, 9).is_none());
     }
 
     /// A loser's outputs replay the walk's registration: its shared action
@@ -794,12 +854,12 @@ mod tests {
         let mut aliases = Aliases::default();
         let localized = localize(&producers, &delta, &mut aliases).expect("a replay");
         assert_eq!(aliases.get("//p:b#0").map(String::as_str), Some("//p:a#0"));
-        let rewritten = rewrite(delta, Some(&localized), &aliases).expect("rewritten");
+        let rewritten = rewrite(delta, Some(&localized), aliases);
         let kinds: Vec<&str> = rewritten.ops.iter().map(delta::DeltaOp::kind).collect();
         assert_eq!(kinds, ["shared", "artifact", "declared", "dry"]);
         for op in &rewritten.ops {
             match op {
-                delta::DeltaOp::Shared(_, registered) => assert_eq!(*registered, 3),
+                delta::DeltaOp::Shared(_, registered) => assert_eq!(registered, &3),
                 delta::DeltaOp::Artifact(_, artifact, _) => {
                     assert!(same_artifact(artifact, &own.with_producer_id("//p:a#0")))
                 }

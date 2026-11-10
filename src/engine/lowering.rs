@@ -59,6 +59,9 @@ enum Queued {
     Lowering {
         /// (A mutex: the planning state is shared with the S2 prepares.)
         outcome: std::sync::Mutex<Pending>,
+        /// The sweep's rewrite of its delta (super::sweep), applied where
+        /// it is placed.
+        rewrite: Option<Arc<super::sweep::Rewrite>>,
         /// The engine's warnings and errors when it was dispatched (kept
         /// up to there when it fails).
         warnings: usize,
@@ -158,12 +161,14 @@ impl PlannedNodes {
                 Queued::Console(writes) => crate::ui::replay(writes),
                 Queued::Lowering {
                     outcome,
+                    rewrite,
                     warnings,
                     errors,
-                } => self.enqueue(
+                } => self.enqueue_rewritten(
                     outcome.into_inner().unwrap_or_else(|e| e.into_inner()),
                     warnings - from.0 + to.0,
                     errors - from.1 + to.1,
+                    rewrite,
                 ),
             }
         }
@@ -173,6 +178,17 @@ impl PlannedNodes {
     /// `errors`: the engine's lists' lengths now (kept up to there when it
     /// fails).
     pub(super) fn enqueue(&mut self, outcome: Pending, warnings: usize, errors: usize) {
+        self.enqueue_rewritten(outcome, warnings, errors, None);
+    }
+
+    /// [`Self::enqueue`] of a rewritten delta's lowering (super::sweep).
+    pub(super) fn enqueue_rewritten(
+        &mut self,
+        outcome: Pending,
+        warnings: usize,
+        errors: usize,
+        rewrite: Option<Arc<super::sweep::Rewrite>>,
+    ) {
         if self.segment {
             let writes = crate::ui::deferred_split();
             if !writes.is_empty() {
@@ -180,6 +196,7 @@ impl PlannedNodes {
             }
             self.queue.push_back(Queued::Lowering {
                 outcome: std::sync::Mutex::new(outcome),
+                rewrite,
                 warnings,
                 errors,
             });
@@ -192,6 +209,7 @@ impl PlannedNodes {
         self.holding = true;
         self.queue.push_back(Queued::Lowering {
             outcome: std::sync::Mutex::new(outcome),
+            rewrite,
             warnings,
             errors,
         });
@@ -456,12 +474,15 @@ impl Engine {
                             match peeked {
                                 Ok(received) => {
                                     let Some(Queued::Lowering {
-                                        warnings, errors, ..
+                                        warnings,
+                                        errors,
+                                        rewrite,
+                                        ..
                                     }) = state.nodes.queue.pop_front()
                                     else {
                                         unreachable!()
                                     };
-                                    self.place_queued(state, received, warnings, errors)?;
+                                    self.place_queued(state, received, warnings, errors, rewrite)?;
                                     continue;
                                 }
                                 Err(mpsc::TryRecvError::Empty) => false,
@@ -480,6 +501,7 @@ impl Engine {
                 Some(Queued::Console(writes)) => crate::ui::replay_before_held(writes),
                 Some(Queued::Lowering {
                     outcome,
+                    rewrite,
                     warnings,
                     errors,
                 }) => {
@@ -487,7 +509,7 @@ impl Engine {
                     let received = outcome.recv().unwrap_or_else(|_| {
                         Ok(Err("internal error: a lowering worker stopped".to_owned()))
                     });
-                    self.place_queued(state, received, warnings, errors)?;
+                    self.place_queued(state, received, warnings, errors, rewrite)?;
                 }
                 None => break,
             }
@@ -504,8 +526,9 @@ impl Engine {
         received: Outcome,
         warnings: usize,
         errors: usize,
+        rewrite: Option<Arc<super::sweep::Rewrite>>,
     ) -> Result<(), String> {
-        let lowered = match received {
+        let mut lowered = match received {
             Ok(Ok(lowered)) => lowered,
             Ok(Err(error)) => {
                 self.abandon_lowerings(state, warnings, errors);
@@ -516,8 +539,23 @@ impl Engine {
                 std::panic::resume_unwind(panic)
             }
         };
+        // A rewritten delta's (super::sweep): a shared action's node is
+        // not placed, another's names the canonical producers.
+        if let Some(rewrite) = &rewrite {
+            if rewrite.drops(&lowered) {
+                return Ok(());
+            }
+            rewrite.lowered(&mut lowered);
+        }
         state.nodes.placing = true;
-        let placed = self.commit_now(state, |builder| builder.place(lowered));
+        let placed = match &rewrite {
+            Some(rewrite) => self.commit_with_nodes(
+                state.commit_parts(),
+                |builder| builder.place(lowered),
+                &mut |planned, sources| rewrite.placed(planned, sources),
+            ),
+            None => self.commit_now(state, |builder| builder.place(lowered)),
+        };
         state.nodes.placing = false;
         if placed.is_err() {
             self.abandon_lowerings(state, warnings, errors);

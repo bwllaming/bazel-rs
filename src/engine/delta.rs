@@ -352,6 +352,9 @@ pub(super) enum DeltaOp {
     Node(Box<PlannedAction>, Option<(String, SourceInputs)>),
     /// A lowering in flight on a lowering worker (coordinator builds only).
     Lowering(lowering::Pending),
+    /// The sweep (task A): a lowering in flight of a rewritten delta, its
+    /// product rewritten (or dropped: a shared action's) where it is placed.
+    Rewritten(lowering::Pending, Arc<super::sweep::Rewrite>),
     ActionExecution(String, crate::exec_groups::ActionExecution),
     BuildInfoAction(String),
     Dry(Artifacts),
@@ -1674,6 +1677,10 @@ fn resolve_repo_mapping(
     Ok(())
 }
 
+/// What [`Engine::commit_with_nodes`] passes each planned node to.
+pub(super) type NodeHook<'a> =
+    dyn FnMut(&mut PlannedAction, &mut Option<(String, SourceInputs)>) + 'a;
+
 /// The planning state a coordinator build reads and its merge writes, for
 /// the commits that merge their actions at once (native rules, aspect
 /// applications, a lowering placed in commit order).
@@ -1715,6 +1722,17 @@ impl Engine {
         &self,
         parts: CommitParts<'_>,
         build: impl FnOnce(&mut DeltaBuilder<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.commit_with_nodes(parts, build, &mut |_, _| {})
+    }
+
+    /// [`Self::commit_with`], each planned node passed to `each` first
+    /// (the sweep's rewrite of a listed action placed, super::sweep).
+    pub(super) fn commit_with_nodes<T>(
+        &self,
+        parts: CommitParts<'_>,
+        build: impl FnOnce(&mut DeltaBuilder<'_>) -> Result<T, String>,
+        each: &mut NodeHook<'_>,
     ) -> Result<T, String> {
         let CommitParts {
             artifact_index,
@@ -1758,7 +1776,8 @@ impl Engine {
         let marks = (self.warnings.len(), self.errors.len());
         for op in ops {
             match op {
-                DeltaOp::Node(planned, sources) => {
+                DeltaOp::Node(mut planned, mut sources) => {
+                    each(&mut planned, &mut sources);
                     if let Some((id, sources)) = sources {
                         source_inputs.insert(id, sources);
                     }
@@ -1959,6 +1978,11 @@ pub(super) fn merge_op(
         DeltaOp::Lowering(pending) => {
             state.nodes.enqueue(pending, warnings, errors);
         }
+        DeltaOp::Rewritten(pending, rewrite) => {
+            state
+                .nodes
+                .enqueue_rewritten(pending, warnings, errors, Some(rewrite));
+        }
         DeltaOp::ActionExecution(id, execution) => {
             action_executions.insert(id, execution);
         }
@@ -1985,6 +2009,7 @@ impl DeltaOp {
             DeltaOp::RunfilesNodes(..) => "runfiles_nodes",
             DeltaOp::Node(..) => "node",
             DeltaOp::Lowering(..) => "lowering",
+            DeltaOp::Rewritten(..) => "lowering_rewritten",
             DeltaOp::ActionExecution(..) => "action_execution",
             DeltaOp::BuildInfoAction(..) => "build_info_action",
             DeltaOp::Dry(..) => "dry",
@@ -2018,7 +2043,7 @@ impl DeltaOp {
             DeltaOp::RunfilesInfo(runfiles) => DeltaOp::RunfilesInfo(Arc::clone(runfiles)),
             DeltaOp::RunfilesNodes(nodes) => DeltaOp::RunfilesNodes(nodes.clone()),
             DeltaOp::Node(planned, sources) => DeltaOp::Node(planned.clone(), sources.clone()),
-            DeltaOp::Lowering(_) => return None,
+            DeltaOp::Lowering(_) | DeltaOp::Rewritten(..) => return None,
             DeltaOp::ActionExecution(id, execution) => {
                 DeltaOp::ActionExecution(id.clone(), execution.clone())
             }
@@ -2337,7 +2362,7 @@ pub(super) fn rendered(op: &DeltaOp) -> String {
                 sources.groups.iter().map(Arc::as_ptr).collect::<Vec<_>>()
             ))
         ),
-        DeltaOp::Lowering(_) => "lowering".to_owned(),
+        DeltaOp::Lowering(_) | DeltaOp::Rewritten(..) => "lowering".to_owned(),
         DeltaOp::ActionExecution(id, execution) => format!("execution {id} {execution:?}"),
         DeltaOp::BuildInfoAction(id) => format!("build info {id}"),
         DeltaOp::Dry(defaults) => format!("dry {defaults:?}"),
