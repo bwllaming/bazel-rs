@@ -787,7 +787,7 @@ impl Coord<'_> {
         lin.segments.push_back((start, end, point));
         let reason = if !lin.defer {
             Some(STAT_ORDERED_MODE)
-        } else if new_platform {
+        } else if new_platform && platform_walks() {
             Some(STAT_NEW_PLATFORM)
         } else if self.platform_unresolved(lin, shared, start, end) {
             Some(super::pass2::STAT_PLATFORM_UNRESOLVED)
@@ -2616,4 +2616,15 @@ pub(crate) fn render_chains(
         ),
     });
     super::chains::close(error, root.as_ref()).0
+}
+
+/// `BAZEL_RS_EVAL_PLATFORM_WALKS=1`: a flush publishing a new platform is
+/// walked at once (with the deferred segments before it), as before the
+/// platform became an op of the deferred walk.
+fn platform_walks() -> bool {
+    static WALKS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling switch; the output is the same either way.
+        std::env::var_os("BAZEL_RS_EVAL_PLATFORM_WALKS").is_some_and(|value| value == "1")
+    });
+    *WALKS
 }
