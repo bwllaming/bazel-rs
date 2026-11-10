@@ -62,6 +62,11 @@ pub(crate) struct Loading {
     pub(crate) pooled: std::sync::atomic::AtomicBool,
     /// The package groups resolved so far (`Engine::group_nodes`).
     pub(crate) groups: Mutex<FxHashMap<Label, Arc<crate::package_specification::GroupNode>>>,
+    /// The extension groups a pool load of a package used speculatively
+    /// (as `EVAL_GROUP_KEY` keys): a lookup in that package may use them
+    /// too ([`target_body`]; committed where the tape replays the load,
+    /// before the lookup's user reads the package).
+    pub(crate) package_groups: Mutex<FxHashMap<PackageId, Vec<String>>>,
     /// The module repository root each Pkg node waits for on the lane.
     pub(crate) pending_blockers: Mutex<FxHashMap<PackageId, Vec<String>>>,
     /// What the lane wrote materializing a root, by blocker.
@@ -381,6 +386,9 @@ pub(crate) fn package_body(
             let mut unit = unit;
             // The groups it used first: their commit precedes their
             // repositories' (`RepositorySet::note_committed_roots`).
+            if !groups.is_empty() {
+                lock(&shared.loading.package_groups).insert(id.clone(), groups.clone());
+            }
             let mut roots = groups;
             roots.append(&mut unit.roots);
             if !roots.is_empty() {
@@ -502,6 +510,34 @@ pub(crate) fn target_body(
             output.clone(),
         ))));
     }
+    // A lookup on the pool in a package whose load used extension groups
+    // speculatively may use those (where the walk's lookup finds them
+    // prepared by that load), not others.
+    let adoption = shared
+        .loading
+        .pooled_here()
+        .then(|| {
+            lock(&shared.loading.package_groups)
+                .get(&package_id)
+                .cloned()
+        })
+        .flatten()
+        .map(|groups| crate::repository::EvalAdoption::start_limited(&groups));
+    let result = source_lookup(shared, cx, label, &pkg);
+    if let Some(adoption) = adoption {
+        // Committed by the package's load (a subset of its groups).
+        let _ = adoption.finish();
+    }
+    result
+}
+
+/// [`target_body`] past the package's own targets: a source file.
+fn source_lookup(
+    shared: &EvalShared,
+    cx: &mut dyn Phase1Cx<'_>,
+    label: &Label,
+    pkg: &PkgValue,
+) -> Result<NodeValue, Missing> {
     let repositories = &shared.repositories;
     if !pkg.declared_source(repositories, label) {
         let error = match no_such_target_in(repositories, Some(&pkg.package), label) {

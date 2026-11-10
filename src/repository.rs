@@ -144,6 +144,10 @@ thread_local! {
     /// ([`GroupFlight`]): released when the load ends ([`EvalAdoption`]).
     static EVAL_FLIGHT: std::cell::RefCell<Vec<(String, Arc<std::sync::Mutex<GroupFlight>>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// The only groups the load on this thread may adopt (`None`: any;
+    /// [`EvalAdoption::start_limited`]).
+    static EVAL_ALLOWED: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// The evaluator's pool loads adopting a group's speculative preparation
@@ -188,15 +192,34 @@ pub(crate) const EVAL_GROUP_KEY: &str = "\u{1}prepare:ordinary:";
 pub(crate) struct EvalAdoption {
     previous: Option<Option<Vec<String>>>,
     previous_flight: Vec<(String, Arc<std::sync::Mutex<GroupFlight>>)>,
+    previous_allowed: Option<Vec<String>>,
 }
 
 impl EvalAdoption {
     pub(crate) fn start() -> Self {
+        Self::start_with(None)
+    }
+
+    /// [`Self::start`] for a lookup in a package a pool load adopted the
+    /// groups `allowed` for (their ids, as [`Self::finish`] lists them):
+    /// only those (committed where the tape replays that load, before the
+    /// lookup's user reads the package), never another.
+    pub(crate) fn start_limited(allowed: &[String]) -> Self {
+        let ids = allowed
+            .iter()
+            .map(|key| key.strip_prefix(EVAL_GROUP_KEY).unwrap_or(key).to_owned())
+            .collect();
+        Self::start_with(Some(ids))
+    }
+
+    fn start_with(allowed: Option<Vec<String>>) -> Self {
         let previous = EVAL_GROUPS.with(|groups| groups.replace(Some(Vec::new())));
         let previous_flight = EVAL_FLIGHT.with(|flight| std::mem::take(&mut *flight.borrow_mut()));
+        let previous_allowed = EVAL_ALLOWED.with(|limit| limit.replace(allowed));
         Self {
             previous: Some(previous),
             previous_flight,
+            previous_allowed,
         }
     }
 
@@ -218,6 +241,8 @@ impl EvalAdoption {
         let previous = std::mem::take(&mut self.previous_flight);
         let flight = EVAL_FLIGHT.with(|flight| flight.replace(previous));
         release_eval_flight(flight);
+        let allowed = self.previous_allowed.take();
+        EVAL_ALLOWED.with(|limit| *limit.borrow_mut() = allowed);
     }
 }
 
@@ -3680,6 +3705,15 @@ impl RepositorySet {
     /// group, as the commit checks it). `None` elsewhere.
     fn eval_adopt_group(&self, id: &str) -> Option<&Arc<PreparedOrdinary>> {
         if !eval_adopting() || !crate::repository_demand::no_demand_active() {
+            return None;
+        }
+        let allowed = EVAL_ALLOWED.with(|limit| {
+            limit
+                .borrow()
+                .as_ref()
+                .is_none_or(|allowed| allowed.iter().any(|group| group == id))
+        });
+        if !allowed {
             return None;
         }
         let verdict = lock_ignoring_poison(&self.state.eval_adoptable)
