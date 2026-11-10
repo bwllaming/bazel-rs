@@ -159,6 +159,15 @@ a re-run whose recorded inputs are all unchanged skips loading and analysis.
 hit against a full analysis when a result looks stale
 (docs/ANALYSIS_SNAPSHOT.md).
 
+Analysis runs on the parallel evaluator by default; the sequential walk it
+replaces still plans what the evaluator does not cover yet (`cquery`,
+`aquery`, `print_action`, `--keep_going`, top-level `--aspects`) and where it
+is faster (a planning the analysis snapshot records, i.e. a snapshot miss, and
+`--profile`). Both engines give the same output; the choice is silent.
+`BAZEL_RS_ANALYSIS=walk` forces the walk — the workaround an evaluator
+internal error names —, `BAZEL_RS_ANALYSIS=eval` uses the evaluator wherever
+it is covered (docs/EVALUATOR.md "Selecting the engine").
+
 Implemented:
 
 - Workspace and package discovery; main and local external-repository labels, with a deliberately

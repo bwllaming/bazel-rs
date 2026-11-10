@@ -1,10 +1,98 @@
 # The parallel analysis evaluator
 
-Status: **S1 integrated** (A, B, C). `BAZEL_RS_ANALYSIS=walk` (the
-default) is today's sequential phase-1 walk with the P3/S1/S2 pipeline
-(docs/PARALLEL_ANALYSIS.md); `BAZEL_RS_ANALYSIS=eval` runs phase 1 with
-the node bodies on the inline driver, linearized by pass 1 (§4 "S1,
-worker C"); `BAZEL_RS_EVAL_VERIFY=1` plans with both and compares.
+Status: **the default engine** (0.4.16, "Selecting the engine" below).
+The evaluator plans every request it covers unless the walk is faster;
+`BAZEL_RS_ANALYSIS=walk` forces today's sequential phase-1 walk with the
+P3/S1/S2 pipeline (docs/PARALLEL_ANALYSIS.md); `BAZEL_RS_EVAL_VERIFY=1`
+plans with both and compares.
+
+## Selecting the engine
+
+`src/engine/eval/select.rs`, at the start of every planning
+(`Engine::plan_build_with_checkpoint`; every analyzing command goes
+through it):
+
+| `BAZEL_RS_ANALYSIS` | Engine |
+|---|---|
+| unset, empty, `auto` (the default) | the evaluator, unless a fallback below applies |
+| `eval` | the evaluator, unless a **coverage** fallback applies (also where the walk is faster: tests, measurements) |
+| `walk` | the walk, always |
+| anything else | an error naming the three values |
+
+A test-suite binary built with `BAZEL_RS_DEFAULT_ANALYSIS=walk` (or
+`eval`) has that as its default (the walk-forced and eval-forced suite
+runs; tests that set `BAZEL_RS_ANALYSIS` themselves are unaffected).
+`BAZEL_RS_ANALYSIS_REPORT=1` (hidden) prints one line per planning:
+`bazel-rs: analysis engine: eval`, `walk (forced)` or
+`walk (fallback: <reason>)`.
+
+**Fallbacks** (silent: both engines plan identically, so nothing the user
+sees depends on the choice; `tests/eval_default.rs` checks each against the
+forced walk byte for byte):
+
+| Reason (report text) | When | Kind | Why |
+|---|---|---|---|
+| `cquery root checkpoint` | cquery's accepted-query cut between requested targets (docs/CQUERY_ROOT_CHECKPOINT.md) | coverage | the walk's `root_cut` between roots; the evaluator's driver has no cut point |
+| `aquery capture` | `aquery`, `print_action` | coverage | the action capture (and the cquery capture aquery uses) is filled by the walk only |
+| `cquery capture` | `cquery` | coverage | the bodies emit `CqueryEdge` events, but no pass builds the capture (rules, incompatible targets, aspect targets, toolchain contexts) from them |
+| `--keep_going` | `--keep_going`, `-k` (build/test/run/coverage) | coverage | the walk skips a failed requested target and continues (`keep_going_state` edges, failed targets, docs/KEEP_GOING.md); the evaluator stops at the first error (frontier-only) |
+| `top-level aspects` | `--aspects`, and the validation aspect (`--run_validations` with `--experimental_use_validation_aspect`) | coverage | the walk analyzes the aspect applications after the requested targets; the driver has no `TopLevelAspects` segment yet. (Before 0.4.16 the validation aspect alone did not fall back.) |
+| `snapshot recording or incremental tracking` | the analysis snapshot records the planning (`BAZEL_RS_SNAPSHOT` `on`/`verify` on a miss — the default mode —, `record`) or the incremental tracker is on | speed | the evaluator keeps every flush ordered there (the recording and the tracker see phase 2 and the tape in the walk's order): ~/code `build --nobuild //src/...` on a miss 81.5 s / 10.5 GB against the walk's 63 s / 9.9 GB (record: 80 s vs 65 s) |
+| `--profile` | `--profile` | speed | the same ordered flushes (its spans in the walk's order) |
+
+Everything else plans with the evaluator: `build`, `test`, `run`,
+`coverage` (with `--nobuild`, `--check_up_to_date`, `--run_under`, test
+sharding, `--platforms`, Starlark flags and transitions, several
+configurations, the workspace status, BEP, remote/disk caches — execution
+reads the plan, not the engine), `affected` (its `test --nobuild`
+subprocesses; the in-place one records when the snapshot is on) and the
+self-build (`scripts/self_build.py`). Commands
+without analysis are unaffected (`query`, `fetch`, `info`, `mod`,
+`config`, `dump`, `clean`, `gc`). With `BAZEL_RS_SNAPSHOT` on (the
+default) a miss records, so it plans with the walk (and so do a hit's
+partial plannings, `verify`'s shadow analysis); the evaluator plans where
+nothing records: `BAZEL_RS_SNAPSHOT=off`, and commands outside the
+recording.
+
+**Internal errors** of an evaluator planning name the workaround: an error
+returned from it that contains `internal error` and not yet
+`BAZEL_RS_ANALYSIS=walk` gets ` (the parallel analysis evaluator, the
+default engine; rerun with BAZEL_RS_ANALYSIS=walk to plan with the
+sequential walk)` appended (`select::with_workaround`; a user error is the
+walk's text, unchanged), and a panic while it plans (any thread:
+`internal_error::EvaluatorScope`) prints `bazel-rs: the panic happened
+while the parallel analysis evaluator (the default engine) planned; rerun
+with BAZEL_RS_ANALYSIS=walk …` after the panic (`tests/internal_error.rs`).
+Such an error is the one place where the engines differ visibly.
+
+**Measured** (2026-11-10, ~/code `91867d4ddf` private clone, release
+build of this branch, warm repositories, 48 threads, host load ~15):
+
+| | walk (`BAZEL_RS_ANALYSIS=walk`) | default |
+|---|---|---|
+| `build --nobuild //src/...`, snapshot off: elapsed / max RSS | 44.5 / 43.9 s, 8.96 / 8.89 GB | 25.1 / 25.0 s (eval), 9.32 / 9.26 GB |
+| the same, snapshot on, a miss (records and saves) | 63.1 s, 9.88 GB | 63.7 s, 9.91 GB (walk: fallback; eval forced: 81.5 s, 10.50 GB) |
+| `affected --scope=full --base=HEAD^` | 219.9 s, 9.13 GB | 84.7 s, 9.53 GB |
+| `cquery 'deps(//src/rust/...)'` | 28.5 s | 13.0 s (walk: fallback; the walk run was first) |
+
+Identical: the action dump (`BAZEL_RS_DUMP_ACTIONS=1`, 6,620,633 lines)
+and stdout of `build` and `test --nobuild //src/...`; the snapshot
+recording (`BAZEL_RS_SNAPSHOT=record`, 521,010 observations; timings
+aside) walk vs eval; `affected --base=HEAD^` (scoped and `--scope=full`, 7
+of 2,021); `cquery 'deps(//src/rust/...)'` and `cquery //src/python/...
+--output=jsonproto`; snapshot `on` (save) → `on` (hit) → `verify` clean. A
+real `build //src/rust/graphlake/...` (1,864 actions) and `test
+//src/rust/graphlake/...` (187 tests pass) on the evaluator, then the walk:
+everything up to date / cached (the same action and test keys). The
+self-build (`scripts/self_build.py check --no-test`, snapshot off) on the
+evaluator: built and smoke-tested.
+
+**No automatic retry with the walk**: when an evaluator planning fails,
+the process has fetched repositories (and may have written the lockfile),
+written console output (warnings, `print()`, fetch progress) and fed the
+snapshot recording and the tracker; a second planning would print and
+record twice and could see the repositories in another state. Not
+provably side-effect free, so not done.
 
 Goal: cold analysis of `~/code //src/...` (repositories fetched, analysis
 snapshot off) below genuine Bazel (~10–11 s; bazel-rs today ~49–50 s). The
