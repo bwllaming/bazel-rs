@@ -2294,7 +2294,7 @@ impl Engine {
 /// values by content; the providers by id, type and display name (a
 /// compute run again allocates its own values, and a repr would walk —
 /// and memoize — every depset they hold).
-fn rendered(op: &DeltaOp) -> String {
+pub(super) fn rendered(op: &DeltaOp) -> String {
     match op {
         DeltaOp::Providers(providers, keys) => format!(
             "providers {:?} {keys:?}",

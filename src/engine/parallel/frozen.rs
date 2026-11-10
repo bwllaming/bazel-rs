@@ -1055,6 +1055,10 @@ pub(super) fn publish_starlark_results(
                 _ => None,
             }) else {
                 delta::provisional_bump(6);
+                // The sweep rewrites its readers at their merges.
+                if super::super::sweep::enabled() {
+                    continue;
+                }
                 return false;
             };
             let winner = frozen
@@ -1063,6 +1067,9 @@ pub(super) fn publish_starlark_results(
                 .and_then(|(_, artifact)| artifact.producer.clone());
             let Some((id, _)) = winner else {
                 delta::provisional_bump(6);
+                if super::super::sweep::enabled() {
+                    continue;
+                }
                 return false;
             };
             shared.insert(own.file.clone(), own.with_producer_id(&id));

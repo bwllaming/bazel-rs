@@ -51,6 +51,7 @@ mod query_attrs;
 pub mod root_checkpoint;
 mod split;
 mod starlark_doc_extract;
+mod sweep;
 
 /// A planned artifact. Its data is shared by its copies (MEM4): the
 /// planner holds one artifact in many places — a target's files to build
@@ -10261,7 +10262,37 @@ impl Engine {
             }
             None => (None, None),
         };
+        // Task A (sweep): a contested reader's or a loser's delta is
+        // merged with its producer ids rewritten (sweep::adopt) instead of
+        // built again; what it cannot rewrite is built again below.
+        let mut adopted = false;
+        let mut adopted_delta = None;
+        let built = match built {
+            Some(delta::Built::Delta(built))
+                if sweep::enabled()
+                    && self.frozen_walk.is_some()
+                    && (stale(&built) || Self::delta_meets_producers(state, &built)) =>
+            {
+                let meets = Self::delta_meets_producers(state, &built);
+                match sweep::adopt(state, built, state.artifact_index.turn, meets) {
+                    Ok(delta) => {
+                        adopted = true;
+                        adopted_delta = Some(delta);
+                        None
+                    }
+                    Err(kept_delta) => {
+                        sweep::stat(sweep::S_FALLBACK, 1);
+                        Some(match kept_delta {
+                            Some(built) => delta::Built::Delta(built),
+                            None => delta::Built::Consumed("sweep_fallback"),
+                        })
+                    }
+                }
+            }
+            other => other,
+        };
         let (worker_delta, reason) = match built {
+            _ if adopted => (adopted_delta.take(), "sweep"),
             Some(delta::Built::Delta(built)) if stale(&built) => {
                 delta::provisional_bump(1);
                 drop_elsewhere(built);
@@ -10307,7 +10338,8 @@ impl Engine {
             None => (None, "coordinator"),
         };
         // The rest of the commit's inputs, for a delta built here.
-        let platforms = if worker_delta.is_none() || delta::verify_delta() {
+        let verify_adopted = adopted && (sweep::verify() || delta::verify_delta());
+        let platforms = if worker_delta.is_none() || delta::verify_delta() || verify_adopted {
             self.remote_platforms(rule, config, &action_execution)
         } else {
             delta::RemotePlatforms::undecided()
@@ -10328,6 +10360,24 @@ impl Engine {
             outputs_checked,
         };
         let delta = match worker_delta {
+            Some(mut built) if verify_adopted => {
+                // BAZEL_RS_PARITY_VERIFY: built again as the T3 cursor
+                // builds it (from the kept analysis, else computed again).
+                let analysis = match kept.take() {
+                    Some(kept) => Some(*kept),
+                    None => recompute(&mut snapshot)
+                        .analyzed
+                        .ok()
+                        .map(|analyzed| (analyzed, None, None)),
+                };
+                if let Some((analyzed, precomputed, outputs_checked)) = analysis {
+                    let mut rebuilt =
+                        self.build_delta(state, commit(analyzed, precomputed, outputs_checked));
+                    sweep::compare(&key, &mut built, &mut rebuilt);
+                    drop_elsewhere(rebuilt);
+                }
+                built
+            }
             Some(built) => {
                 if delta::verify_delta() {
                     // BAZEL_RS_VERIFY_DELTA: the delta built here, now, is
@@ -16236,7 +16286,7 @@ mod tests {
 
     /// A producer of `outputs` whose action (id `id`) writes `content`,
     /// owned by `owner` ([`OutputProducer::action`]'s fields).
-    fn writing_producer(
+    pub(super) fn writing_producer(
         owner: &str,
         id: &str,
         outputs: &[&str],

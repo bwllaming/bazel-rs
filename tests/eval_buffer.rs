@@ -144,6 +144,8 @@ fn stable(output: &Output) -> String {
 }
 
 const FROZEN: (&str, &str) = ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all");
+const PARITY_VERIFY: (&str, &str) = ("BAZEL_RS_PARITY_VERIFY", "1");
+const REVERSE: (&str, &str) = ("BAZEL_RS_PARITY_REVERSE", "1");
 
 /// The walk's output, then the buffered evaluation's at several thread
 /// counts, with jitter, restarts and a tiny window, compared byte for byte;
@@ -152,7 +154,7 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
     let walk = ws.build("walk", 1, &[], args);
     let text = stable(&walk);
     check(walk.status.success(), &text);
-    let runs: [(usize, &[(&str, &str)]); 9] = [
+    let runs: [(usize, &[(&str, &str)]); 17] = [
         (2, &[FROZEN]),
         (8, &[FROZEN]),
         (32, &[FROZEN]),
@@ -163,6 +165,16 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
         // The cursor meets entries still being classified.
         (32, &[FROZEN, ("BAZEL_RS_T3_CLASSIFY_JITTER", "20000")]),
         (8, &[FROZEN, ("BAZEL_RS_VERIFY_DELTA", "1")]),
+        // The sweep (task A): rewrites checked against the T3 cursor's
+        // rebuilds; the latest ready job first; the rebuilds themselves.
+        (8, &[FROZEN, PARITY_VERIFY]),
+        (1, &[FROZEN, REVERSE]),
+        (2, &[FROZEN, REVERSE, PARITY_VERIFY]),
+        (8, &[FROZEN, REVERSE, PARITY_VERIFY]),
+        (32, &[FROZEN, REVERSE, ("BAZEL_RS_ANALYSIS_JITTER", "5")]),
+        (8, &[FROZEN, REVERSE, ("BAZEL_RS_EVAL_JITTER", "300")]),
+        (8, &[FROZEN, REVERSE, ("BAZEL_RS_EVAL_RESTARTS", "5")]),
+        (8, &[FROZEN, ("BAZEL_RS_EVAL_SWEEP", "0")]),
     ];
     for (threads, env) in runs {
         let eval = ws.build("eval", threads, env, args);

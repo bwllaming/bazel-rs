@@ -98,6 +98,11 @@ impl PlannedNodes {
         }
     }
 
+    /// The nodes placed so far (BAZEL_RS_PARITY_VERIFY's scan).
+    pub(super) fn planned(&self) -> &[PlannedAction] {
+        &self.nodes
+    }
+
     /// The planned nodes, taken (nothing may be in flight).
     pub(super) fn into_vec(self) -> Vec<PlannedAction> {
         debug_assert!(self.queue.is_empty(), "internal error: lowerings in flight");

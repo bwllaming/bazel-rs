@@ -1307,6 +1307,7 @@ pub(super) fn report(workers: usize) {
         get(&frozen::FROZEN_STATS[3]) as f64 / 1e6,
     ));
     buffer::report();
+    super::sweep::report();
     aspects::report();
     if let Some(profile) = frozen::CT2_PROFILE
         .lock()
@@ -1953,6 +1954,9 @@ impl Engine {
         let drained = self.drain_lowerings(state, lowering::Drain::All);
         state.nodes.deferring = deferring;
         let result = drained.and(result);
+        if result.is_ok() && super::sweep::verify() && !self.semantic_only() {
+            super::sweep::check_ids(state);
+        }
         state.delegated_keys.clear();
         state.artifact_index.walk_done();
         state.producers.set_stamp(None);

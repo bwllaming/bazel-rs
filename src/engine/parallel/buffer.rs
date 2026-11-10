@@ -203,6 +203,16 @@ fn chain_weight() -> usize {
     *WEIGHT
 }
 
+/// `BAZEL_RS_PARITY_REVERSE=1` (a test hook): the ready job latest in plan
+/// order runs first (the merges' results must not depend on it).
+fn reverse() -> bool {
+    static REVERSE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a hidden test hook ordering the jobs; no result depends on it.
+        std::env::var_os("BAZEL_RS_PARITY_REVERSE").is_some_and(|value| value == "1")
+    });
+    *REVERSE
+}
+
 /// How long the cursor waits for one entry before it names it on stderr.
 const WATCHDOG: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -776,8 +786,12 @@ impl Board {
                 // at its merge: once published, only what the rebuild needs
                 // is kept (the analysis result, the runfiles support, the
                 // outputs check), not the delta too (memory).
+                // The sweep merges the delta itself (super::super::sweep):
+                // kept whole, the analysis too (a delta it cannot rewrite
+                // is built again from it).
                 let mut result = result;
-                if let Ok(outcome) = &mut result
+                if !super::super::sweep::enabled()
+                    && let Ok(outcome) = &mut result
                     && let Some(Ok(worker)) = &mut outcome.worker
                     && let Some(delta) = worker.outcome.delta.as_mut()
                     && let Some(kept) = delta.kept.take()
@@ -805,6 +819,10 @@ impl Board {
     /// Starlark implementation in its longest chain of dependents (a long
     /// chain starts early, its links then run one after the other).
     fn priority(&self, index: usize) -> usize {
+        if reverse() {
+            // The test hook: the latest ready entry first.
+            return usize::MAX - index;
+        }
         let chain = self
             .chain
             .get()
