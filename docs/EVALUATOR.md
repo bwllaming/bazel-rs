@@ -307,6 +307,10 @@ change announced to the other two workers; adding a helper is not.
   documented). The `ExecCfg` value marks an interning failure with
   `nodes::phase1::EXEC_INTERN_ERROR` (the consumer locates it at its
   rule).
+- 2026-11-10 (eval-phase1, step 1): `repository::EvalAdoption::start_limited(&[group keys])`
+  (adoption restricted to those groups; thread-local `EVAL_ALLOWED`);
+  `nodes::loading::Loading::package_groups` (the groups each pool package
+  load adopted); `target_body`'s source-file part is `source_lookup`.
 
 **Phase-1 bodies as built (S1, worker B)** — `eval/nodes/`:
 
@@ -2182,7 +2186,24 @@ deferring a new platform's flush instead of walking at once (the
 platform published as an effect at its position in the deferred walk),
 which is pass 2's deferral (the deferred walks' area). Rebased on T3
 round 3 (642cbd8a): phase 1 proper 22.0–22.7 s, phase 1 done 23.0–23.6 s,
-elapsed 31.4–31.8 s, RSS 9.4–9.5 GB. (4) The serving
+elapsed 31.4–31.8 s, RSS 9.4–9.5 GB.
+
+**Step 1 (repository side, separate commit for review): lookups adopt.**
+A `Tgt` lookup on the pool whose source-file part (`source_target_with`
+→ `root()`) needs an extension group not prepared yet raised a sentinel
+and went to the sequential pass (~/code: 4,765, the `go_deps`, `apt`,
+`pnpm`, `i`, `protoc` repositories) although the package's own pool
+load had adopted that group's speculative preparation. Such a lookup now
+adopts the groups its package's load adopted (`Loading::package_groups`,
+`EvalAdoption::start_limited`), and no other. Their commit stays the
+load's: where the tape replays the `Pkg` (the lookup's user replays
+`MemoUse(Pkg)` before it reads the target), and the commit's check
+(`check_eval_group`) still fails closed when the walk prepares the group
+otherwise; the lookup counts in flight for the eviction check as a load
+does. ~/code: repository sentinels 4,765 → 0, output identical (dump,
+platform publications). No suite fixture leaves such a lookup to the
+sequential pass (their groups are committed before the lookups run), so
+the change has no regression test of its own. (4) The serving
 sequential pass's wait is bounded by progress: no node completed and no
 repository fetched for 300 s (`BAZEL_RS_EVAL_SERVE_STALL_SECS`) is an
 internal error naming `BAZEL_RS_EVAL_NO_SERVE=1` (a cycle of a `.bzl`
