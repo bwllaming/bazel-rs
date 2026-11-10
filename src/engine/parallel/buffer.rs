@@ -94,6 +94,22 @@ fn run_native_timed(
     published
 }
 
+thread_local! {
+    /// The board of the buffered walk running on this (the coordinator's)
+    /// thread.
+    static CURRENT_BOARD: std::cell::RefCell<Option<Arc<Board>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A Starlark rule with attribute aspects (`attr.*(aspects = [...])`).
+fn has_attribute_aspects(rule: &Rule) -> bool {
+    rule.custom.as_ref().is_some_and(|custom| {
+        custom
+            .schema
+            .values()
+            .any(|spec| !spec.declaration.aspects.is_empty())
+    })
+}
+
 /// `BAZEL_RS_T3_CHAIN_WEIGHT=<entries>`: how much earlier in the queue a
 /// job runs per Starlark implementation in its chain of dependents.
 fn chain_weight() -> usize {
@@ -1133,6 +1149,16 @@ impl Engine {
         started: std::time::Instant,
         progress: &mut Vec<String>,
     ) -> Result<(), String> {
+        // The aspect prefetch of the entries at their turn queues on the
+        // walk's workers (Engine::buffered_at_turn).
+        struct Current;
+        impl Drop for Current {
+            fn drop(&mut self) {
+                CURRENT_BOARD.with(|cell| cell.borrow_mut().take());
+            }
+        }
+        CURRENT_BOARD.with(|cell| *cell.borrow_mut() = Some(Arc::clone(board)));
+        let _current = Current;
         let tenth = board.plan.len().div_ceil(10).max(1);
         while let Some((key, rule)) = self
             .planning_plan
@@ -1319,8 +1345,17 @@ impl Engine {
             use crate::plan_timings::{PlanStage, StageTimer};
             let profiled = crate::profile::active().then(std::time::Instant::now);
             let class = crate::plan_timings::class_id(rule.rule_class_name());
-            let (parts, compute) =
-                self.prepare_at_turn(state, configured, key, rule, index, class)?;
+            // Its attribute aspects' applications analyzed on the workers
+            // first (super::aspects), replayed by its prepare.
+            if has_attribute_aspects(rule)
+                && let Some(board) = CURRENT_BOARD.with(|cell| cell.borrow().clone())
+            {
+                let submit = |job: Job| board.submit(0, job);
+                self.prefetch_aspects(state, configured, key, rule, &submit);
+            }
+            let prepared = self.prepare_at_turn(state, configured, key, rule, index, class);
+            super::aspects::end_prefetch();
+            let (parts, compute) = prepared?;
             let Compute::Inline(snapshot) = compute else {
                 return Err(format!(
                     "internal error: the Starlark rule {} prepared at its turn computes elsewhere",

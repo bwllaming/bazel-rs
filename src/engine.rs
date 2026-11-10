@@ -8222,6 +8222,10 @@ impl Engine {
             crate::aspects::AspectApplicationKey,
             BTreeMap<String, starlark::values::OwnedFrozenValue>,
         )> = Vec::new();
+        // T3's dry walk (parallel::aspects): an application waiting for its
+        // analysis is pending, with the aspects over it; the others go on.
+        let dry = parallel::aspects::dry();
+        let mut pending: Vec<&str> = Vec::new();
         for (aspect, bases) in &collection.used {
             let key = crate::aspects::AspectApplicationKey {
                 base: base_key.clone(),
@@ -8229,7 +8233,7 @@ impl Engine {
                 bases: bases.clone(),
             };
             self.track_aspect_application(&key);
-            if order_audit::enabled() {
+            if order_audit::enabled() && !dry {
                 order_audit::note_aspect(!state.aspect_providers.contains_key(&key));
             }
             if state.aspect_providers.contains_key(&key) {
@@ -8243,6 +8247,29 @@ impl Engine {
                 ));
                 continue;
             }
+            if dry {
+                if let Some(providers) = parallel::aspects::dry_providers(&key) {
+                    applications.push((key, providers));
+                    continue;
+                }
+                if bases.iter().any(|base| pending.contains(&base.as_str())) {
+                    pending.push(&aspect.descriptor);
+                    continue;
+                }
+                match self.plan_aspect_application(
+                    state, configured, &base_key, &base, aspect, bases, collection,
+                ) {
+                    Ok(providers) => {
+                        parallel::aspects::note_dry(&key, &providers);
+                        applications.push((key, providers));
+                    }
+                    Err(error) if error == parallel::aspects::PENDING => {
+                        pending.push(&aspect.descriptor);
+                    }
+                    Err(error) => return Err(error),
+                }
+                continue;
+            }
             let providers = self.plan_aspect_application(
                 state, configured, &base_key, &base, aspect, bases, collection,
             )?;
@@ -8251,6 +8278,9 @@ impl Engine {
                 .aspect_providers
                 .insert(key.clone(), providers.clone());
             applications.push((key, providers));
+        }
+        if !pending.is_empty() {
+            return Err(parallel::aspects::PENDING.to_owned());
         }
         base = crate::aspects::merged_dependency(&base, &applications)?;
         // One shared Target value per aspect-configured target (N55's
@@ -8309,6 +8339,7 @@ impl Engine {
     > {
         let mut aspect_dependencies: BTreeMap<String, DependencyTarget> = BTreeMap::new();
         let mut aspect_split_dependencies = BTreeMap::new();
+        let mut pending = false;
         for (name, spec) in &owner.declaration.attrs {
             if names.is_some_and(|names| !names.contains(name)) {
                 continue;
@@ -8328,13 +8359,19 @@ impl Engine {
                 labels.push(dependency.clone());
                 for (_, attribute_config) in branches.iter() {
                     let attribute_config = *attribute_config;
-                    let (view, _) = self.plan_aspect_dependency(
+                    let (view, _) = match self.plan_aspect_dependency(
                         state,
                         configured,
                         &dependency,
                         attribute_config,
                         propagating.clone(),
-                    )?;
+                    ) {
+                        Err(error) if error == parallel::aspects::PENDING => {
+                            pending = true;
+                            continue;
+                        }
+                        planned => planned?,
+                    };
                     aspect_dependencies.insert(
                         if split {
                             analysis::split_dependency_key(
@@ -8353,6 +8390,9 @@ impl Engine {
                 aspect_split_dependencies
                     .insert(name.clone(), self.split_attribute(name, labels, branches)?);
             }
+        }
+        if pending {
+            return Err(parallel::aspects::PENDING.to_owned());
         }
         Ok((aspect_dependencies, aspect_split_dependencies))
     }
@@ -8417,6 +8457,7 @@ impl Engine {
                 .aspect_providers
                 .get(&base_aspect_key)
                 .cloned()
+                .or_else(|| parallel::aspects::dry_providers(&base_aspect_key))
                 .ok_or_else(|| {
                     format!(
                         "internal error: aspect {base_aspect} of {} was not planned before {}",
@@ -8474,7 +8515,10 @@ impl Engine {
         let path = self
             .with_computed_attr_aspects(collection.clone(), base_key, &base_rule)?
             .path_aspects(&aspect.descriptor);
-        let (aspect_dependencies, aspect_split_dependencies) = self
+        // T3's dry walk: what waits for an analysis below is pending; the
+        // rest of the application's dependencies are walked on.
+        let mut pending = false;
+        let (aspect_dependencies, aspect_split_dependencies) = match self
             .plan_aspect_attribute_dependencies(
                 state,
                 configured,
@@ -8482,7 +8526,13 @@ impl Engine {
                 None,
                 &attribute_configs,
                 &path,
-            )?;
+            ) {
+            Err(error) if error == parallel::aspects::PENDING => {
+                pending = true;
+                Default::default()
+            }
+            planned => planned?,
+        };
         // The base aspects' attributes `ctx.rule.attr` holds, planned as
         // phase 1 analyzed them (Self::analyze_aspect_attribute_edges).
         let mut base_aspect_attributes = Vec::new();
@@ -8498,14 +8548,20 @@ impl Engine {
                         owner.identity, aspect.identity, base_key.label
                     )
                 })?;
-            let (dependencies, split_dependencies) = self.plan_aspect_attribute_dependencies(
+            let (dependencies, split_dependencies) = match self.plan_aspect_attribute_dependencies(
                 state,
                 configured,
                 &owner,
                 Some(&names),
                 &owner_configs,
                 &path,
-            )?;
+            ) {
+                Err(error) if error == parallel::aspects::PENDING => {
+                    pending = true;
+                    continue;
+                }
+                planned => planned?,
+            };
             base_aspect_attributes.push(analysis::BaseAspectAttributes {
                 aspect: owner,
                 names,
@@ -8546,13 +8602,19 @@ impl Engine {
             };
             let dependency = self.resolve_rule_src(&base_rule, &edge.label)?;
             for edge_config in edge_configs.ids() {
-                let (view, _) = self.plan_aspect_dependency(
+                let (view, _) = match self.plan_aspect_dependency(
                     state,
                     configured,
                     &dependency,
                     edge_config,
                     propagating.clone(),
-                )?;
+                ) {
+                    Err(error) if error == parallel::aspects::PENDING => {
+                        pending = true;
+                        continue;
+                    }
+                    planned => planned?,
+                };
                 let spec = base_rule
                     .custom
                     .as_ref()
@@ -8605,13 +8667,19 @@ impl Engine {
                 let propagating = crate::aspects::propagating_to_toolchain(&incoming, &type_labels);
                 let mut providers = BTreeMap::new();
                 if !propagating.is_empty() {
-                    let (_, applications) = self.plan_aspect_dependency(
+                    let (_, applications) = match self.plan_aspect_dependency(
                         state,
                         configured,
                         &implementation,
                         base_key.config,
                         propagating,
-                    )?;
+                    ) {
+                        Err(error) if error == parallel::aspects::PENDING => {
+                            pending = true;
+                            continue;
+                        }
+                        planned => planned?,
+                    };
                     providers =
                         crate::aspects::merge_providers(&BTreeMap::new(), &[], &applications)?
                             .with_groups();
@@ -8647,6 +8715,9 @@ impl Engine {
                 repositories: self.repositories.clone(),
             })
         };
+        if pending {
+            return Err(parallel::aspects::PENDING.to_owned());
+        }
         // Run the implementation.
         let output_root = self.configurations.output_root(base_key.config);
         let action_env = Arc::new(
@@ -8924,7 +8995,15 @@ impl Engine {
             toolchains: aspect_toolchains,
             repositories: self.repositories.clone(),
         };
-        let (analyzed, printed) = analysis::analyze_aspect_buffered(&application, &outputs);
+        // T3: analyzed on a worker before the turn's prepare, or (its dry
+        // walk) queued there (parallel::aspects).
+        let (analyzed, printed) = match parallel::aspects::analysis(&key, application, &outputs) {
+            parallel::aspects::Analysis::Here(application) => {
+                analysis::analyze_aspect_buffered(&application, &outputs)
+            }
+            parallel::aspects::Analysis::Done { analyzed, printed } => (analyzed, printed),
+            parallel::aspects::Analysis::Dry(providers) => return providers,
+        };
         for line in printed {
             self.note_analysis_print(&line);
         }
@@ -9070,6 +9149,37 @@ impl Engine {
     /// One dependency of an aspect application: the plain configured target
     /// view, or the aspect-applied view when `aspects` propagate to it.
     fn plan_aspect_dependency(
+        &mut self,
+        state: &mut PlanState<'_>,
+        configured: &mut ConfiguredNodes,
+        label: &Label,
+        edge_config: ConfigId,
+        aspects: Vec<std::sync::Arc<crate::aspects::AspectDefinition>>,
+    ) -> Result<(DependencyTarget, AspectApplications), String> {
+        // T3's dry walk (parallel::aspects): a dependency whose applications
+        // are all analyzed is walked once per turn, a pending one again only
+        // once what it waits for is analyzed.
+        if aspects.is_empty() || !parallel::aspects::dry() {
+            return self.plan_aspect_dependency_walk(
+                state,
+                configured,
+                label,
+                edge_config,
+                aspects,
+            );
+        }
+        let walked = match parallel::aspects::enter_walk(label, edge_config, &aspects) {
+            parallel::aspects::Enter::Known(planned) => return planned,
+            parallel::aspects::Enter::Walk(walked) => walked,
+        };
+        let planned =
+            self.plan_aspect_dependency_walk(state, configured, label, edge_config, aspects);
+        parallel::aspects::leave_walk(walked, &planned);
+        planned
+    }
+
+    /// [`Self::plan_aspect_dependency`].
+    fn plan_aspect_dependency_walk(
         &mut self,
         state: &mut PlanState<'_>,
         configured: &mut ConfiguredNodes,

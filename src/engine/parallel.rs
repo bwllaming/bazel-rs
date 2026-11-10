@@ -34,6 +34,7 @@
 
 use super::*;
 
+pub(super) mod aspects;
 mod buffer;
 mod frozen;
 pub(super) use frozen::{Frozen, PlannedResults};
@@ -1293,6 +1294,7 @@ pub(super) fn report(workers: usize) {
         get(&frozen::FROZEN_STATS[3]) as f64 / 1e6,
     ));
     buffer::report();
+    aspects::report();
     if let Some(profile) = frozen::CT2_PROFILE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
