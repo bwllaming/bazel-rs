@@ -2315,6 +2315,97 @@ the error where it emitted a `MemoUse`; pass 1 never replayed those
 events (it stops at the failure). So a mismatch fails a build that would
 succeed, and a build the walk fails keeps the walk's error.
 
+### Genuine parity, task A: the sweep (eval-t3)
+
+Design: `plans/genuine-parity-design.md` (workers do the heavy work in any
+order; every position-dependent decision is a function of plan order and
+the delta's own ops). What is built (`src/engine/sweep.rs`,
+`BAZEL_RS_EVAL_SWEEP`, on; `=0` keeps the T3 cursor's rebuilds):
+
+- **Losers are not built again.** A worker's delta always names its own
+  actions (a shared output's loser publishes its results with its own
+  action ids when the winner's artifact is not known yet, instead of
+  publishing nothing). At its merge, `localize` replays the walk's output
+  registration over the build's producers — `check_output` per `Output`
+  op in order: New / Shared (winner and its stamp), the partial-share rule
+  (every output of an action as its first), any conflict — and turns each
+  shared action into the walk's: its `Output` ops `Shared`, its
+  declarations `replace` only when predeclared, its node, execution,
+  build-info and listing marker dropped, its id mapped to the winner's. An
+  error, a failed output, a conflict, a partial share or a sharing inside
+  the delta is built again as before (its exact text and partial state).
+- **Contested readers are not built again.** `read_aliases` checks a
+  delta's recorded index reads at its merge: a read that differs from the
+  index's canonical entry now *only in its producer id* (same output
+  index, every other field equal, stamped before the reader) maps that id
+  to the canonical one; any other difference (a File read as missing that
+  is registered now, a still-provisional entry that differs) is built again.
+  A read once found canonical is remembered by its artifact's identity
+  (`ActionPlanning::canonical_reads`: canonical entries never change and
+  readers merge in plan order), so the memoized depset walks' reads every
+  PyCompile delta inherits are checked once.
+- **The rewrite** (`rewrite`): every Artifact naming a mapped id names the
+  canonical one (its output index kept: a shared action shares every
+  output, in order), each once by identity — `Artifact`, `Declared`,
+  `Dry`, `RunfilesNodes` —, and so does every generated input of the
+  delta's nodes and shared input groups (each `Arc<InputGroup>` once, by
+  pointer). A lowering in flight becomes `DeltaOp::Rewritten`: where it is
+  placed, a shared action's product is dropped and another's rewritten (a
+  listed action's nodes after the placement builds them). Nothing else of
+  a node depends on a producer id (inputs at one exec path are one input
+  by producer class, dbb5be3c). Dependents are not touched: providers and
+  views hold Files.
+- **Hooks**: `BAZEL_RS_PARITY_VERIFY=1` builds every rewritten delta again
+  as the T3 cursor does (from the kept analysis, else computed again) and
+  compares op for op (lowerings as placed, groups by content), and at each
+  walk's end checks that every generated input of every node, every file to
+  build and runfiles artifact names a planned action (no unaliased loser id
+  is left); `BAZEL_RS_PARITY_REVERSE=1` runs the ready job latest in plan
+  order first. `tests/eval_buffer.rs` runs both at 1/2/8/32 threads with
+  jitter and restarts, and `BAZEL_RS_EVAL_SWEEP=0`.
+- **Workers**: 16 for frozen walks (8 with the sweep off).
+- `BAZEL_RS_TIMING`: `PERF-PARALLEL sweep` (readers, losers, fallbacks,
+  verified, artifacts rewritten, the time of each step),
+  `PERF-PARALLEL buffer cursor … last_job=` (when the walk's last job
+  ended).
+
+Not built (the rest of task A): the cursor itself — claims, waits,
+steals, the per-entry stages and at-turn entries stay; output registration
+is replayed at the cursor's merge rather than in a separate sweep; no
+per-entry result slots (the published results stay `PlannedResults`).
+
+**Measured** (2026-11-10, ~/code `80d6724f3a` private clone, LTO release,
+warm, snapshots off, `build --nobuild //src/...`, alternating, host load
+6–9):
+
+| | main dbb5be3c | sweep, 8 workers | sweep, 16 workers |
+|---|---|---|---|
+| `INFO: Elapsed time` | 25.7 / 26.2 s | 24.3 / 24.1 s | 23.3 s (12: 23.9 s, 24: 22.9 s) |
+| big deferred walk (119k entries) | 9.2–9.4 s | 8.7 s | 8.2–8.4 s |
+| cursor `merge_starlark` | 2.2–2.6 s | 1.4 s | 1.4 s |
+| deltas built again at the merge | 432 losers + ~170 stale | 0 (734 rewritten: 464 losers, ~270 readers; 0 fallbacks) | 0 |
+| max RSS | 9.2 GB | 9.3–9.4 GB | 9.8 GB (24: 10.0 GB) |
+
+The rewrites cost 0.3 s on the cursor (reads 0.1 s, replay 0.09 s,
+rewrite 0.11 s) where the rebuilds cost ~1.3 s. The walk still ends with its
+last job (`last_job` within 0.3 s of the end), but the jobs themselves are
+gated by the cursor: a profile of the cursor (pprof, 16 workers) is 42%
+entries at their turn (`buffered_at_turn`: attribute-aspect applications,
+rustfmt/clippy 1.1 + 0.5 s), 13% Starlark merges, 12% published natives'
+merges, 6% natives committed at their turn; and `BAZEL_RS_T3_DEBUG`'s slow
+steps are those turns and the chains they ready (a `package_group` at its
+turn readying the cc toolchain, `_sandbox_native.so`'s cc_binary readying
+`//src/python:web_lib` → `:web`, 0.4 s). Those are task B (no at-turn
+entries).
+
+Identical output: `BAZEL_RS_DUMP_ACTIONS` stderr of `build --nobuild`
+(85ae7ead3db2, 6,486,165 lines) for the walk, the sweep at 16 workers and
+under `BAZEL_RS_PARITY_REVERSE=1`; `test --nobuild` (941d72967f5c).
+`BAZEL_RS_PARITY_VERIFY=1`: 758 rewritten deltas compared, the producer-id
+scan clean; `BAZEL_RS_VERIFY_DELTA=1 BAZEL_RS_VERIFY_ARTIFACTS=1` clean
+(37,916 worker deltas, 771 rewritten ones); `BAZEL_RS_EVAL_VERIFY=1`
+(`--memory-limit=40000`) clean.
+
 ### Effort
 
 | Step | Work | Estimate |
