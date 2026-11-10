@@ -21,11 +21,17 @@
 //! them by key, a dependency only after it was analyzed; the pipeline's
 //! work ahead of its turn needs them.
 //!
+//! A flush that publishes a new platform is deferred too: the platform is
+//! its op ([`Op::Publish`]) at the segment's start, applied before that
+//! turn; work ahead of its turn sees it as the turn does (a frozen walk's
+//! workers through `Frozen::platform_at`, the platforms the walk's ops
+//! publish by position; the pipeline commits no entry ahead whose platform
+//! an op publishes before its turn). `BAZEL_RS_EVAL_PLATFORM_WALKS=1`
+//! walks such a flush at once, as before.
+//!
 //! A flush is not deferred (the walk runs now, after every deferred one:
 //! the ordered path) when the order would show:
 //!
-//! - it publishes a new platform (work ahead of its turn would see it
-//!   deferred where the ordered walk sees it resolved);
 //! - its segment holds a Starlark rule or a genrule whose configuration's
 //!   target platform is not resolved (its phase 2 may resolve the
 //!   deferred platform, whose tree the ordered walk plans at the flush);

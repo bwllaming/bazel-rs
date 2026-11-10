@@ -206,7 +206,7 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
     let walk = ws.build("walk", 1, &[], args);
     let text = stable(&walk);
     check(walk.status.success(), &text);
-    let runs: [(usize, &[(&str, &str)]); 10] = [
+    let runs: [(usize, &[(&str, &str)]); 11] = [
         (1, &[]),
         (2, &[]),
         (8, &[]),
@@ -223,6 +223,8 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
             ],
         ),
         (8, &[("BAZEL_RS_EVAL_NO_DEFER", "1")]),
+        // A new platform's flush walked at once, as before it was an op.
+        (8, &[("BAZEL_RS_EVAL_PLATFORM_WALKS", "1")]),
     ];
     for (threads, env) in runs {
         let eval = ws.build("eval", threads, env, args);
@@ -430,6 +432,11 @@ on_platform(name = "on_c", platform = "//plat:c", deps = ["//p1:top", ":u"])
         lines.sort();
         lines
     };
+    // A new platform's flush is deferred: its platform is an op of the
+    // deferred walk.
+    let stats = ws.build("eval", 8, &[("BAZEL_RS_EVAL_STATS", "1")], &args);
+    let stats = String::from_utf8_lossy(&stats.stderr);
+    assert!(stats.contains("walked at once: new platform 0,"), "{stats}");
     let first = ws.build("eval", 1, &log, &args);
     assert!(first.status.success(), "{}", stable(&first));
     let expected = sequence(&first);
