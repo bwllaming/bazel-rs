@@ -1150,10 +1150,12 @@ fn apply_finish(
             .any(|root| root.starts_with(crate::repository::EVAL_GROUP_KEY))
         {
             // An extension group is prepared where the tape replays its
-            // user (a Pkg node's first use, after it finished; any other
-            // attempt that would need one leaves itself to the sequential
-            // pass): here, on whichever thread applies the record, it
-            // would be too late and maybe without demand. Fail closed.
+            // user (a Pkg node's first use, after it finished; a lookup in
+            // that package uses only the groups the package's load used,
+            // committed by it, and records none itself; any other attempt
+            // that would need one leaves itself to the sequential pass):
+            // here, on whichever thread applies the record, it would be
+            // too late and maybe without demand. Fail closed.
             crate::repository::note_eval_adoption_mismatch(|| {
                 format!(
                     "{:?} obtained an extension group's repository after the tape replayed it",

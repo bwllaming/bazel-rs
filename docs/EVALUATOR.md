@@ -309,8 +309,9 @@ change announced to the other two workers; adding a helper is not.
   rule).
 - 2026-11-10 (eval-phase1, step 1): `repository::EvalAdoption::start_limited(&[group keys])`
   (adoption restricted to those groups; thread-local `EVAL_ALLOWED`);
-  `nodes::loading::Loading::package_groups` (the groups each pool package
-  load adopted); `target_body`'s source-file part is `source_lookup`.
+  `nodes::loading::PkgValue::adopted_groups` (the groups the pool load
+  that produced the value used speculatively; empty for a sequential
+  load); `target_body`'s source-file part is `source_lookup`.
 
 **Phase-1 bodies as built (S1, worker B)** — `eval/nodes/`:
 
@@ -2194,8 +2195,11 @@ A `Tgt` lookup on the pool whose source-file part (`source_target_with`
 and went to the sequential pass (~/code: 4,765, the `go_deps`, `apt`,
 `pnpm`, `i`, `protoc` repositories) although the package's own pool
 load had adopted that group's speculative preparation. Such a lookup now
-adopts the groups its package's load adopted (`Loading::package_groups`,
-`EvalAdoption::start_limited`), and no other. Their commit stays the
+adopts the groups the load of the very package value it read adopted
+(`PkgValue::adopted_groups`, `EvalAdoption::start_limited`; a debug
+assertion checks the subset), and no other. A lookup records no group
+itself: it has no replay point of its own (its events are its user's),
+and the groups are among that load's roots. Their commit stays the
 load's: where the tape replays the `Pkg` (the lookup's user replays
 `MemoUse(Pkg)` before it reads the target), and the commit's check
 (`check_eval_group`) still fails closed when the walk prepares the group

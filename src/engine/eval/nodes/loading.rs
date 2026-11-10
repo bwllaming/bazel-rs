@@ -62,11 +62,6 @@ pub(crate) struct Loading {
     pub(crate) pooled: std::sync::atomic::AtomicBool,
     /// The package groups resolved so far (`Engine::group_nodes`).
     pub(crate) groups: Mutex<FxHashMap<Label, Arc<crate::package_specification::GroupNode>>>,
-    /// The extension groups a pool load of a package used speculatively
-    /// (as `EVAL_GROUP_KEY` keys): a lookup in that package may use them
-    /// too ([`target_body`]; committed where the tape replays the load,
-    /// before the lookup's user reads the package).
-    pub(crate) package_groups: Mutex<FxHashMap<PackageId, Vec<String>>>,
     /// The module repository root each Pkg node waits for on the lane.
     pub(crate) pending_blockers: Mutex<FxHashMap<PackageId, Vec<String>>>,
     /// What the lane wrote materializing a root, by blocker.
@@ -123,6 +118,10 @@ pub(crate) struct PkgValue {
     outputs: FxHashMap<Label, (Arc<Rule>, String)>,
     /// The labels its rules name as inputs (`Engine::declared_inputs`).
     declared: OnceLock<HashSet<Label>>,
+    /// The extension groups the pool load that produced this value used
+    /// speculatively (`EVAL_GROUP_KEY` keys; empty for a sequential load):
+    /// the only ones a lookup in it may use ([`target_body`]).
+    pub(crate) adopted_groups: Vec<String>,
 }
 
 impl PkgValue {
@@ -139,6 +138,7 @@ impl PkgValue {
             package,
             outputs,
             declared: OnceLock::new(),
+            adopted_groups: Vec::new(),
         }
     }
 
@@ -386,9 +386,7 @@ pub(crate) fn package_body(
             let mut unit = unit;
             // The groups it used first: their commit precedes their
             // repositories' (`RepositorySet::note_committed_roots`).
-            if !groups.is_empty() {
-                lock(&shared.loading.package_groups).insert(id.clone(), groups.clone());
-            }
+            let adopted = groups.clone();
             let mut roots = groups;
             roots.append(&mut unit.roots);
             if !roots.is_empty() {
@@ -397,17 +395,17 @@ pub(crate) fn package_body(
                     coord.store.roots.insert(current, roots);
                 }));
             }
-            (unit, validated)
+            (unit, validated, adopted)
         }
         () => {
             let unit = load_package_attempt_in(repositories, id);
             // An inline load may have prepared what the speculations were
             // blocked on (Engine::load_package's retry).
             repositories.retry_speculations();
-            (unit, None)
+            (unit, None, Vec::new())
         }
     };
-    let (unit, validated) = unit;
+    let (unit, validated, adopted) = unit;
     // The module events of attempts aborted on the pool print first (as
     // an aborted unit's before its inline re-run).
     let aborted = shared
@@ -455,7 +453,9 @@ pub(crate) fn package_body(
             Some(validated) => validated?,
             None => validate_package_outputs(repositories, id, &package)?,
         }
-        Ok(Arc::new(PkgValue::new(Arc::new(package))))
+        let mut value = PkgValue::new(Arc::new(package));
+        value.adopted_groups = adopted;
+        Ok(Arc::new(value))
     });
     Ok(NodeValue::Pkg(value))
 }
@@ -513,20 +513,22 @@ pub(crate) fn target_body(
     // A lookup on the pool in a package whose load used extension groups
     // speculatively may use those (where the walk's lookup finds them
     // prepared by that load), not others.
-    let adoption = shared
-        .loading
-        .pooled_here()
-        .then(|| {
-            lock(&shared.loading.package_groups)
-                .get(&package_id)
-                .cloned()
-        })
-        .flatten()
-        .map(|groups| crate::repository::EvalAdoption::start_limited(&groups));
+    let adoption = (shared.loading.pooled_here() && !pkg.adopted_groups.is_empty())
+        .then(|| crate::repository::EvalAdoption::start_limited(&pkg.adopted_groups));
     let result = source_lookup(shared, cx, label, &pkg);
     if let Some(adoption) = adoption {
-        // Committed by the package's load (a subset of its groups).
-        let _ = adoption.finish();
+        let used = adoption.finish();
+        debug_assert!(
+            used.iter().all(|group| pkg.adopted_groups.contains(group)),
+            "internal error: a lookup in {package_id:?} used {used:?}, its load {:?}",
+            pkg.adopted_groups
+        );
+        // No commit of its own: a lookup has no replay point (its events
+        // are its user's; `store.roots` of a `Tgt` node would never be
+        // committed). The groups are committed and checked by the load that
+        // produced `pkg` (they are among its roots), whose `MemoUse` the
+        // user replays before it reads the target.
+        drop(used);
     }
     result
 }
