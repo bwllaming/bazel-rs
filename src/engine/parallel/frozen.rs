@@ -59,8 +59,7 @@ pub(in crate::engine) struct Frozen {
     pub(in crate::engine) engine: Engine,
     pub(in crate::engine) configured: ConfiguredNodes,
     pub(in crate::engine) views: DependencyViews,
-    pub(in crate::engine) identities:
-        BTreeMap<TargetIdentityKey, Arc<crate::starlark_types::Target>>,
+    pub(in crate::engine) identities: TargetIdentities,
     pub(in crate::engine) output_groups:
         BTreeMap<ConfiguredTargetKey, starlark::values::OwnedFrozenValue>,
     pub(in crate::engine) results: Arc<PlannedResults>,
@@ -133,6 +132,14 @@ pub(in crate::engine) struct PlannedResults {
 }
 
 impl KeyResults {
+    /// Whether its files to build are `committed` (the same value).
+    pub(super) fn same_dry(&self, committed: Option<&Artifacts>) -> bool {
+        self.dry
+            .as_ref()
+            .zip(committed)
+            .is_some_and(|(kept, committed)| Arc::ptr_eq(kept, committed))
+    }
+
     /// Its files to build, providers, runfiles, validation group and
     /// transitive repositories.
     #[allow(clippy::type_complexity)]
@@ -1459,10 +1466,7 @@ impl Engine {
             starlark::values::OwnedFrozenValue,
         >,
         validation: &mut BTreeMap<ConfiguredTargetKey, crate::starlark_types::Depset>,
-        target_identities: &mut BTreeMap<
-            TargetIdentityKey,
-            std::sync::Arc<crate::starlark_types::Target>,
-        >,
+        target_identities: &mut TargetIdentities,
         label: &Label,
         edge_config: ConfigId,
     ) -> Result<DependencyTarget, String> {

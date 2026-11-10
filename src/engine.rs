@@ -390,6 +390,12 @@ type ActionExecutions = crate::fast_hash::FxHashMap<String, crate::exec_groups::
 /// configuration of a rule, alias or output-file edge.
 type TargetIdentityKey = (Label, Option<ConfigId>);
 
+/// The one shared `Target` value of each configured target (N55), by
+/// [`TargetIdentityKey`] (lookups only: a hash map, filled in bulk when a
+/// frozen walk's memos move back, `Engine::apply_memos`).
+type TargetIdentities =
+    crate::fast_hash::FxHashMap<TargetIdentityKey, std::sync::Arc<crate::starlark_types::Target>>;
+
 /// The one shared `Target` value of each aspect-configured target (N58):
 /// keyed by the base configured target's label, its configuration and the
 /// applied aspects' identities.
@@ -540,7 +546,7 @@ struct ActionPlanning {
     /// output file by the generating rule's configuration. An alias edge
     /// and an exec-configured rule edge are their own keys, hence their
     /// own instances.
-    target_identities: BTreeMap<TargetIdentityKey, std::sync::Arc<crate::starlark_types::Target>>,
+    target_identities: TargetIdentities,
     /// The memoized dependency view of each dependency edge key (W1a,
     /// PLAN-L1 §2.1; Engine::plan_dependency_view).
     views: DependencyViews,
@@ -548,7 +554,7 @@ struct ActionPlanning {
 
 /// The dependency views of a build, keyed like the edge that requested
 /// them: the requested label in the edge's configuration.
-type DependencyViews = HashMap<ConfiguredTargetKey, DependencyTarget>;
+type DependencyViews = crate::fast_hash::FxHashMap<ConfiguredTargetKey, DependencyTarget>;
 
 /// What a dependency view reads of the planning state
 /// ([`Engine::dependency_view_in`]).
@@ -1324,8 +1330,7 @@ struct PlanState<'a> {
     pub native_output_groups:
         &'a mut BTreeMap<ConfiguredTargetKey, starlark::values::OwnedFrozenValue>,
     pub validation: &'a mut BTreeMap<ConfiguredTargetKey, crate::starlark_types::Depset>,
-    pub target_identities:
-        &'a mut BTreeMap<TargetIdentityKey, std::sync::Arc<crate::starlark_types::Target>>,
+    pub target_identities: &'a mut TargetIdentities,
     pub aspect_providers: &'a mut BTreeMap<
         crate::aspects::AspectApplicationKey,
         BTreeMap<String, starlark::values::OwnedFrozenValue>,
@@ -7784,10 +7789,7 @@ impl Engine {
             starlark::values::OwnedFrozenValue,
         >,
         validation: &mut BTreeMap<ConfiguredTargetKey, crate::starlark_types::Depset>,
-        target_identities: &mut BTreeMap<
-            TargetIdentityKey,
-            std::sync::Arc<crate::starlark_types::Target>,
-        >,
+        target_identities: &mut TargetIdentities,
         views: &mut DependencyViews,
         label: &Label,
         edge_config: ConfigId,
@@ -7913,10 +7915,7 @@ impl Engine {
             starlark::values::OwnedFrozenValue,
         >,
         validation: &mut BTreeMap<ConfiguredTargetKey, crate::starlark_types::Depset>,
-        target_identities: &mut BTreeMap<
-            TargetIdentityKey,
-            std::sync::Arc<crate::starlark_types::Target>,
-        >,
+        target_identities: &mut TargetIdentities,
         label: &Label,
         edge_config: ConfigId,
     ) -> Result<DependencyTarget, String> {

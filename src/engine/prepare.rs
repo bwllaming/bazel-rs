@@ -128,8 +128,7 @@ pub(super) struct CoordViews<'a> {
     pub(super) artifact_index: &'a ArtifactIndex,
     pub(super) native_output_groups:
         &'a mut BTreeMap<ConfiguredTargetKey, starlark::values::OwnedFrozenValue>,
-    pub(super) target_identities:
-        &'a mut BTreeMap<TargetIdentityKey, Arc<crate::starlark_types::Target>>,
+    pub(super) target_identities: &'a mut TargetIdentities,
 }
 
 impl Lookup for CoordViews<'_> {
@@ -414,7 +413,7 @@ pub(super) struct SharedPrepare<'a> {
     reads: &'a dyn PlanReads,
     /// The memos filled before (the planning state's).
     views: &'a DependencyViews,
-    identities: &'a BTreeMap<TargetIdentityKey, Arc<crate::starlark_types::Target>>,
+    identities: &'a TargetIdentities,
     output_groups: &'a BTreeMap<ConfiguredTargetKey, starlark::values::OwnedFrozenValue>,
     pub(super) configured: &'a ConfiguredNodes,
     pub(super) memos: &'a BatchMemos,
@@ -849,7 +848,9 @@ impl Engine {
             output_groups,
         } = memos;
         let tracking = self.tracking();
-        for (key, fill) in views.into_filled() {
+        let views = views.into_filled();
+        state.views.reserve(views.len());
+        for (key, fill) in views {
             let ViewFill {
                 view,
                 artifacts,
@@ -863,7 +864,9 @@ impl Engine {
             }
             state.views.insert(key, view);
         }
-        for (key, identity) in identities.into_filled() {
+        let identities = identities.into_filled();
+        state.target_identities.reserve(identities.len());
+        for (key, identity) in identities {
             state
                 .target_identities
                 .entry(key)

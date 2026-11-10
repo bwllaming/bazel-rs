@@ -1098,6 +1098,7 @@ impl Engine {
             board.submit(0, Box::new(move || chunk.classify_chunk(from, to)));
         }
         stat(S_WALKS, 1);
+        let sched = thread_schedstat();
         let started = std::time::Instant::now();
         let mut progress = Vec::new();
         let result = self.buffered_walk(state, configured, &board, started, &mut progress);
@@ -1131,14 +1132,16 @@ impl Engine {
             }
         }
         if crate::plan_timings::enabled() {
-            PROGRESS
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(format!(
-                    "entries={len} at(10%..100%)={} total={:.3}s",
+            PROGRESS.lock().unwrap_or_else(|e| e.into_inner()).push({
+                let now = thread_schedstat();
+                format!(
+                    "entries={len} at(10%..100%)={} total={:.3}s cpu={:.3}s runqueue={:.3}s",
                     progress.join("/"),
-                    started.elapsed().as_secs_f64()
-                ));
+                    started.elapsed().as_secs_f64(),
+                    (now.0 - sched.0) as f64 / 1e9,
+                    (now.1 - sched.1) as f64 / 1e9,
+                )
+            });
         }
         result
     }
@@ -1294,11 +1297,6 @@ impl Engine {
             result?;
             {
                 let _split = frozen::Split::enter(19);
-                if published && !fast {
-                    // Its dependents read what a worker published: checked
-                    // against the commit (the same Files and values).
-                    self.check_published(state, &key, &rule);
-                }
                 // The committed results replace the published ones unless
                 // they are the very same (a worker's delta merged as built,
                 // a native rule merged from its published results): a
@@ -1308,9 +1306,16 @@ impl Engine {
                         .frozen
                         .results
                         .get(&key)
-                        .and_then(|results| results.parts().0)
-                        .zip(state.dry.get(&key))
-                        .is_some_and(|(kept, committed)| Arc::ptr_eq(&kept, committed));
+                        .is_some_and(|results| results.same_dry(state.dry.get(&key)));
+                // Its dependents read what a worker published: checked
+                // against the commit (the same Files and values) — a merge
+                // of the very published files to build (the published delta
+                // or results themselves) in debug builds and under
+                // BAZEL_RS_VERIFY_DELTA only.
+                if published && !fast && (!same || cfg!(debug_assertions) || delta::verify_delta())
+                {
+                    self.check_published(state, &key, &rule);
+                }
                 if !same {
                     board.frozen.results.publish(&key, state);
                 }
@@ -1572,4 +1577,18 @@ impl Engine {
         };
         state.dry.insert(key.clone(), dry);
     }
+}
+
+/// This thread's time on the CPU and waiting for one (runnable), in
+/// nanoseconds (/proc/thread-self/schedstat; BAZEL_RS_TIMING).
+fn thread_schedstat() -> (u64, u64) {
+    std::fs::read_to_string("/proc/thread-self/schedstat")
+        .ok()
+        .and_then(|text| {
+            let mut fields = text
+                .split_whitespace()
+                .map(|field| field.parse::<u64>().ok());
+            Some((fields.next()??, fields.next()??))
+        })
+        .unwrap_or_default()
 }
