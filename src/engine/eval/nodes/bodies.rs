@@ -1163,6 +1163,13 @@ fn apply_finish(
         } else {
             let writes =
                 super::super::linearize::driver::commit_roots(&coord.engine.repositories, &roots);
+            // A pool thread applies the records of nodes the tape has not
+            // replayed: their roots' commits write at the replay instead.
+            debug_assert!(
+                !POOL_THREAD.with(std::cell::Cell::get) || writes.is_empty(),
+                "internal error: a pool thread committed roots that write ({:?})",
+                running.key
+            );
             crate::ui::replay(writes);
         }
     }

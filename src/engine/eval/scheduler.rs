@@ -354,6 +354,8 @@ pub(crate) struct Evaluator<'b, B: Bodies> {
     /// both claim attempts by CAS, the inline driver waits for what the
     /// pool runs.
     serving: AtomicBool,
+    /// The nodes completed so far (the serving wait's progress bound).
+    completions: AtomicU64,
     /// [`Self::serve`] stops once the pool is idle.
     stop_serving: AtomicBool,
     /// Repositories the serving pool's attempts demand: fetched by the
@@ -394,6 +396,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             woken: Tracked::default(),
             assist: AtomicBool::new(false),
             serving: AtomicBool::new(false),
+            completions: AtomicU64::new(0),
             stop_serving: AtomicBool::new(false),
             lane_queue: Tracked::default(),
         }
@@ -613,6 +616,10 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             self.schedule(None, id);
         }
         let mut boosted: Option<std::time::Instant> = None;
+        // The wait's bound: no node completed and no repository fetched
+        // for that long (a cycle of claims, demands and speculations the
+        // claim waits' own detection does not see) is the internal error.
+        let mut progress = (self.progress_mark(), std::time::Instant::now());
         loop {
             let state = entry.state();
             let wait = match state {
@@ -622,6 +629,15 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                 State::Fresh | State::Deferred => false,
             };
             if wait {
+                let mark = self.progress_mark();
+                if mark != progress.0 {
+                    progress = (mark, std::time::Instant::now());
+                } else if progress.1.elapsed() >= *SERVE_STALL {
+                    panic!(
+                        "internal error: BAZEL_RS_ANALYSIS=eval: phase 1's sequential pass waited {} s for {key:?} ({state:?}) with no node finishing; rerun with BAZEL_RS_EVAL_NO_SERVE=1 or BAZEL_RS_ANALYSIS=walk",
+                        progress.1.elapsed().as_secs()
+                    );
+                }
                 super::timeline::seq_state(|| {
                     let stack = INLINE_STACK.with(|stack| {
                         stack
@@ -658,6 +674,15 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                 return true;
             }
         }
+    }
+
+    /// What changes whenever the evaluation progresses: nodes completed,
+    /// repositories fetched.
+    fn progress_mark(&self) -> (u64, u64) {
+        (
+            self.completions.load(Ordering::Relaxed),
+            self.repo_seq.load(Ordering::Acquire),
+        )
     }
 
     /// Serving: park the inline driver's `id` on `deps` as a pool attempt
@@ -731,8 +756,12 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                     };
                     match next {
                         Some(next) => at = next,
-                        // Its last dependency finished: it is re-queued.
-                        None => return true,
+                        // Every dependency finished, yet waiting: a
+                        // publication re-queues it right now, or it was
+                        // parked without registering as their waiter
+                        // (nothing re-queues it). Taken over (the
+                        // claim's epoch bump voids a late re-queue).
+                        None => return at != id,
                     }
                 }
             }
@@ -930,6 +959,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         let stops = !self.config.keep_going && self.bodies.stops_build(key, &value);
         let entry = self.graph.entry(id);
         let waiters = entry.complete(Arc::new(value), Transcript { events });
+        self.completions.fetch_add(1, Ordering::Relaxed);
         if stops {
             let _ = self.first_error.compare_exchange(
                 NO_ERROR,
@@ -1735,6 +1765,19 @@ static ASSIST_WOKEN: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(8)
+});
+
+/// How long the serving sequential pass waits with no progress at all
+/// before it fails ([`Evaluator::claim_inline`]; 300 s).
+static SERVE_STALL: std::sync::LazyLock<std::time::Duration> = std::sync::LazyLock::new(|| {
+    // snapshot-unrecorded: a diagnostics bound on a stuck wait; it only ever fails a build that would hang.
+    std::env::var("BAZEL_RS_EVAL_SERVE_STALL_SECS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map_or(
+            std::time::Duration::from_secs(300),
+            std::time::Duration::from_secs,
+        )
 });
 
 /// BAZEL_RS_EVAL_TIMELINE: ends a sequential attempt's frame when dropped.
