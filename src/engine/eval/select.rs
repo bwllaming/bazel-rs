@@ -1,7 +1,9 @@
 //! Which engine plans a request (docs/EVALUATOR.md "Selecting the
-//! engine"): the evaluator by default, the walk when `BAZEL_RS_ANALYSIS=walk`
-//! forces it, and the walk, silently, for the requests the evaluator does
-//! not cover ([`Fallback`]). Both engines plan identically (stdout, stderr,
+//! engine"): the evaluator by default (`BAZEL_RS_ANALYSIS` unset, empty or
+//! `auto`), the walk when `BAZEL_RS_ANALYSIS=walk` forces it, and the walk,
+//! silently, for the requests the evaluator does not cover or where the
+//! walk is faster ([`Fallback`]; `BAZEL_RS_ANALYSIS=eval` keeps only the
+//! coverage fallbacks). Both engines plan identically (stdout, stderr,
 //! the action graph, the incremental index, the snapshot recording), so the
 //! fallback is never visible; only internal errors differ: the evaluator's
 //! name `BAZEL_RS_ANALYSIS=walk` as the workaround ([`with_workaround`]).
@@ -19,7 +21,8 @@ use super::AnalysisMode;
 pub(crate) const WORKAROUND: &str = "BAZEL_RS_ANALYSIS=walk";
 
 /// Why a request plans with the walk although the evaluator is selected:
-/// each is a part of phase 1 the evaluator's driver does not run yet (S4).
+/// a part of phase 1 the evaluator's driver does not run yet (S4), or a
+/// mode in which the evaluator is slower than the walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Fallback {
     /// cquery's root checkpoint (an accepted query ends planning after a
@@ -40,9 +43,24 @@ pub(crate) enum Fallback {
     /// walk's `analyze_aspect_applications` after the requested targets;
     /// the evaluator's driver has no top-level aspect segment yet.
     TopLevelAspects,
+    /// The analysis snapshot records this planning (`BAZEL_RS_SNAPSHOT`
+    /// on/verify on a miss, record) or the incremental tracker is on: the
+    /// evaluator then keeps every flush ordered (the recording and the
+    /// tracker see phase 2 and the tape in the walk's order) and is slower
+    /// than the walk (~/code `build --nobuild //src/...`, a snapshot miss:
+    /// 81 s and 10.5 GB against 63 s and 9.9 GB).
+    Recording,
+    /// `--profile`: the same ordered flushes (its spans in the walk's order).
+    Profile,
 }
 
 impl Fallback {
+    /// A fallback for speed (the evaluator covers the request):
+    /// `BAZEL_RS_ANALYSIS=eval` plans with the evaluator anyway.
+    pub(crate) fn performance(self) -> bool {
+        matches!(self, Self::Recording | Self::Profile)
+    }
+
     /// The reason as `BAZEL_RS_ANALYSIS_REPORT` prints it.
     pub(crate) fn reason(self) -> &'static str {
         match self {
@@ -51,6 +69,8 @@ impl Fallback {
             Self::Aquery => "aquery capture",
             Self::KeepGoing => "--keep_going",
             Self::TopLevelAspects => "top-level aspects",
+            Self::Recording => "snapshot recording or incremental tracking",
+            Self::Profile => "--profile",
         }
     }
 }
@@ -89,6 +109,10 @@ impl Engine {
             Some(Fallback::KeepGoing)
         } else if !self.effective_aspects().is_empty() {
             Some(Fallback::TopLevelAspects)
+        } else if self.incremental.is_some() || crate::observed_fs::recording() {
+            Some(Fallback::Recording)
+        } else if crate::profile::active() {
+            Some(Fallback::Profile)
         } else {
             None
         }
@@ -102,7 +126,11 @@ impl Engine {
     ) -> Selected {
         let selected = match mode {
             AnalysisMode::Walk => Selected::Forced,
-            AnalysisMode::Eval => match self.eval_fallback(checkpoint) {
+            AnalysisMode::Eval | AnalysisMode::Auto => match self.eval_fallback(checkpoint) {
+                // `eval` asked for: the evaluator also where it is slower.
+                Some(fallback) if mode == AnalysisMode::Eval && fallback.performance() => {
+                    Selected::Eval
+                }
                 Some(fallback) => Selected::Fallback(fallback),
                 None => Selected::Eval,
             },
@@ -165,6 +193,8 @@ mod tests {
             Fallback::Aquery,
             Fallback::KeepGoing,
             Fallback::TopLevelAspects,
+            Fallback::Recording,
+            Fallback::Profile,
         ];
         let reasons: std::collections::BTreeSet<_> = all.iter().map(|f| f.reason()).collect();
         assert_eq!(reasons.len(), all.len());

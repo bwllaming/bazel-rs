@@ -15,8 +15,8 @@ use std::{
 
 /// The walk-forced suite run builds the binary with
 /// `BAZEL_RS_DEFAULT_ANALYSIS=walk`: its default is the walk.
-fn default_is_walk() -> bool {
-    option_env!("BAZEL_RS_DEFAULT_ANALYSIS") == Some("walk")
+fn default_mode() -> &'static str {
+    option_env!("BAZEL_RS_DEFAULT_ANALYSIS").unwrap_or("auto")
 }
 
 const REPORT: &str = "bazel-rs: analysis engine: ";
@@ -50,8 +50,9 @@ fn workspace() -> tempfile::TempDir {
 }
 
 /// `bazel-rs <command> <args>` with `BAZEL_RS_ANALYSIS=<mode>` (`None`:
-/// unset) and the engine report on.
-fn run(root: &Path, mode: Option<&str>, command: &str, args: &[&str]) -> Output {
+/// unset), `BAZEL_RS_SNAPSHOT=<snapshot>` (a fresh cache: a miss) and the
+/// engine report on.
+fn run(root: &Path, mode: Option<&str>, snapshot: &str, command: &str, args: &[&str]) -> Output {
     let _ = fs::remove_dir_all(root.join("cache"));
     let mut process = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
     process
@@ -61,7 +62,7 @@ fn run(root: &Path, mode: Option<&str>, command: &str, args: &[&str]) -> Output 
         .env("HOME", root.join("home"))
         .env("TMPDIR", root.join("tmp"))
         .env("BAZEL_RS_CACHE_GC", "off")
-        .env("BAZEL_RS_SNAPSHOT", "off")
+        .env("BAZEL_RS_SNAPSHOT", snapshot)
         .env("BAZEL_RS_ANALYSIS_REPORT", "1")
         .args(["--ignore_all_rc_files", "--cache-dir=cache", command])
         .args([
@@ -95,25 +96,42 @@ fn stable(output: &Output) -> String {
                 && !line.starts_with("bazel-rs: memory limit")
                 && !line.starts_with("bazel-rs: peak RSS")
                 && !line.starts_with("PERF")
+                // (record mode's report: timings)
+                && !line.starts_with("bazel-rs-snapshot:")
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-/// The default and an explicit `eval` plan on `expected` (the evaluator
-/// or a fallback), with the forced walk's exit code, stdout and stderr.
-fn same_as_walk(root: &Path, command: &str, args: &[&str], expected: &str) -> Output {
-    let walk = run(root, Some("walk"), command, args);
+/// The default (`BAZEL_RS_ANALYSIS` unset, empty, `auto`) plans on
+/// `expected` (the evaluator or a fallback), an explicit `eval` too unless
+/// the fallback is one for speed (then the evaluator), each with the
+/// forced walk's exit code, stdout and stderr.
+fn same_as_walk(
+    root: &Path,
+    snapshot: &str,
+    command: &str,
+    args: &[&str],
+    expected: &str,
+) -> Output {
+    let walk = run(root, Some("walk"), snapshot, command, args);
     assert_eq!(engines(&walk), ["walk (forced)"], "{}", stable(&walk));
-    let modes: &[Option<&str>] = &[None, Some(""), Some("eval")];
+    let for_speed = expected.contains("snapshot recording") || expected.contains("--profile");
+    let wanted = |mode: &str| match mode {
+        "walk" => "walk (forced)",
+        "eval" if for_speed => "eval",
+        _ => expected,
+    };
+    let modes: &[Option<&str>] = &[None, Some(""), Some("auto"), Some("eval")];
     for &mode in modes {
-        let output = run(root, mode, command, args);
-        let what = format!("{command} {args:?} with BAZEL_RS_ANALYSIS={mode:?}");
-        let wanted = if mode.is_none() && default_is_walk() {
-            "walk (forced)"
-        } else {
-            expected
-        };
+        let output = run(root, mode, snapshot, command, args);
+        let what =
+            format!("{command} {args:?} with BAZEL_RS_ANALYSIS={mode:?}, snapshot {snapshot}");
+        let wanted =
+            wanted(mode.map_or(
+                default_mode(),
+                |mode| if mode.is_empty() { "auto" } else { mode },
+            ));
         assert_eq!(engines(&output), [wanted], "{what}: {}", stable(&output));
         assert_eq!(
             output.status.code(),
@@ -135,10 +153,16 @@ fn builds_plan_with_the_evaluator_by_default() {
         &["//:g"],
         &["--platforms=//:plat", "//:g"],
     ] {
-        let walk = same_as_walk(ws.path(), "build", args, "eval");
+        let walk = same_as_walk(ws.path(), "off", "build", args, "eval");
         assert!(walk.status.success(), "{args:?}: {}", stable(&walk));
     }
-    let walk = same_as_walk(ws.path(), "build", &["--nobuild", "//:broken"], "eval");
+    let walk = same_as_walk(
+        ws.path(),
+        "off",
+        "build",
+        &["--nobuild", "//:broken"],
+        "eval",
+    );
     assert!(!walk.status.success());
 }
 
@@ -148,6 +172,7 @@ fn uncovered_requests_fall_back_to_the_walk_silently() {
     for flag in ["--keep_going", "-k"] {
         same_as_walk(
             ws.path(),
+            "off",
             "build",
             &["--nobuild", flag, "//:top", "//:broken"],
             "walk (fallback: --keep_going)",
@@ -155,12 +180,14 @@ fn uncovered_requests_fall_back_to_the_walk_silently() {
     }
     same_as_walk(
         ws.path(),
+        "off",
         "build",
         &["--nobuild", "--aspects=//:defs.bzl%an_aspect", "//:top"],
         "walk (fallback: top-level aspects)",
     );
     same_as_walk(
         ws.path(),
+        "off",
         "build",
         &[
             "--nobuild",
@@ -171,18 +198,21 @@ fn uncovered_requests_fall_back_to_the_walk_silently() {
     );
     same_as_walk(
         ws.path(),
+        "off",
         "cquery",
         &["--platforms=//:plat", "deps(//:top)"],
         "walk (fallback: cquery capture)",
     );
     same_as_walk(
         ws.path(),
+        "off",
         "aquery",
         &["--platforms=//:plat", "//:g"],
         "walk (fallback: aquery capture)",
     );
     same_as_walk(
         ws.path(),
+        "off",
         "print_action",
         &["--platforms=//:plat", "//:g"],
         "walk (fallback: aquery capture)",
@@ -195,14 +225,41 @@ fn an_unknown_engine_is_an_error() {
     let output = run(
         ws.path(),
         Some("parallel"),
+        "off",
         "build",
         &["--nobuild", "//:top"],
     );
     assert!(!output.status.success());
     assert!(
-        stable(&output)
-            .contains("BAZEL_RS_ANALYSIS=parallel: expected `eval` (the default) or `walk`"),
+        stable(&output).contains("BAZEL_RS_ANALYSIS=parallel: expected `auto`"),
         "{}",
         stable(&output)
+    );
+}
+
+#[test]
+fn the_walk_plans_where_it_is_faster() {
+    let ws = workspace();
+    // A snapshot miss records (and saves) the planning: ordered flushes.
+    for snapshot in ["on", "record"] {
+        same_as_walk(
+            ws.path(),
+            snapshot,
+            "build",
+            &["--nobuild", "//:top", "//:g"],
+            "walk (fallback: snapshot recording or incremental tracking)",
+        );
+    }
+    let profile = ws.path().join("tmp/profile.json");
+    same_as_walk(
+        ws.path(),
+        "off",
+        "build",
+        &[
+            "--nobuild",
+            &format!("--profile={}", profile.display()),
+            "//:top",
+        ],
+        "walk (fallback: --profile)",
     );
 }
