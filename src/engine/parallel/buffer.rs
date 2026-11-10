@@ -457,6 +457,10 @@ struct Board {
     work: Box<[AtomicU64]>,
     edges_kept: std::sync::Mutex<Vec<(u32, u32)>>,
     parked: std::sync::Mutex<std::collections::BinaryHeap<std::cmp::Reverse<usize>>>,
+    /// BAZEL_RS_TIMING: when the walk started and its last job ended (µs
+    /// after it): how long the merges ran on after the last job.
+    started: std::time::Instant,
+    last_job: AtomicU64,
 }
 
 impl Board {
@@ -729,6 +733,8 @@ impl Board {
     fn run(self: &Arc<Self>, index: usize) -> Finished {
         let started = critical().then(std::time::Instant::now);
         let finished = self.run_job(index);
+        self.last_job
+            .fetch_max(self.started.elapsed().as_micros() as u64, Ordering::Relaxed);
         if let Some(started) = started {
             self.work[index - self.start]
                 .fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
@@ -1215,6 +1221,8 @@ impl Engine {
             work: (0..len).map(|_| AtomicU64::new(0)).collect(),
             edges_kept: Default::default(),
             parked: Default::default(),
+            started: std::time::Instant::now(),
+            last_job: AtomicU64::new(0),
         });
         // Every entry is classified at once, ahead of every job (cheap:
         // lookups; what is ready beyond the window waits, parked): the
@@ -1264,9 +1272,10 @@ impl Engine {
             PROGRESS.lock().unwrap_or_else(|e| e.into_inner()).push({
                 let now = thread_schedstat();
                 format!(
-                    "entries={len} at(10%..100%)={} total={:.3}s cpu={:.3}s runqueue={:.3}s",
+                    "entries={len} at(10%..100%)={} total={:.3}s last_job={:.3}s cpu={:.3}s runqueue={:.3}s",
                     progress.join("/"),
                     started.elapsed().as_secs_f64(),
+                    board.last_job.load(Ordering::Relaxed) as f64 / 1e6,
                     (now.0 - sched.0) as f64 / 1e9,
                     (now.1 - sched.1) as f64 / 1e9,
                 )
