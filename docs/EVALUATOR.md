@@ -2169,8 +2169,18 @@ phase 1's end), not at the first flush after the pool finished it: the
 walk's segment before that use saw the platform deferred. The
 new-platform walks are now order-invariant
 (`BAZEL_RS_EVAL_PLATFORM_LOG=1` logs each publication's flush; the same
-50 on ~/code in every run, also under `BAZEL_RS_EVAL_RESTARTS=3` with
-`BAZEL_RS_EVAL_JITTER=100`; test in `eval_pass2`). (4) The serving
+51 publications at the same flushes on ~/code in every run, also under
+`BAZEL_RS_EVAL_RESTARTS=3` with `BAZEL_RS_EVAL_JITTER=100`; test in
+`eval_pass2`). Its cost: ~/code's pass 2 is now always "new platform 27,
+walks 51 (112,246 entries)" (before: 5–6 new-platform walks, 9–16 walks,
+~22k entries, by timing: the pool's early platforms hid the new ones);
+the ordered walks run on the sequential thread inside phase 1, so phase 1
+proper is 23.5–23.7 s (was 9.8–10.2 s), flush phase 2 15.0–15.4 s (was
+11.0–11.3 s), phase 1 done at 24.4–24.6 s (was 20.4–21.0 s), elapsed
+32.8–33.2 s (was 28.9–29.5 s), RSS 9.4–9.5 GB. Getting this back means
+deferring a new platform's flush instead of walking at once (the
+platform published as an effect at its position in the deferred walk),
+which is pass 2's deferral (the deferred walks' area). (4) The serving
 sequential pass's wait is bounded by progress: no node completed and no
 repository fetched for 300 s (`BAZEL_RS_EVAL_SERVE_STALL_SECS`) is an
 internal error naming `BAZEL_RS_EVAL_NO_SERVE=1` (a cycle of a `.bzl`
@@ -2182,6 +2192,13 @@ debug assertion checks that a pool thread's root commits write nothing;
 the suggested one on pass 1's blocker after a begin does not hold for
 cycles (pass 1 waits for `cycle_b`, parked on `cycle_a`, while `cycle_a`
 begins again with its back edge answered), so it is not kept.
+The sticky mismatch surfaced two reruns that differ in the suites
+(`test_flags` `early_planned_flag_keys…`, `toolchains`
+`registration_pattern_errors…`, eval default): an attempt abandoned
+after a flush whose phase 2 fails (or past pass 1's stop) reruns with
+the error where it emitted a `MemoUse`; pass 1 never replayed those
+events (it stops at the failure). So a mismatch fails a build that would
+succeed, and a build the walk fails keeps the walk's error.
 
 ### Effort
 
