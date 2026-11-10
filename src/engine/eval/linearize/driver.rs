@@ -1834,13 +1834,7 @@ impl Engine {
             });
             let mut lin = coord.lin.take().expect("the linearizer");
             coord.publish(&mut lin, &shared, true);
-            // A mismatch any step recorded (also one whose result a caller
-            // dropped) fails the build, before any other error.
-            let result = match coord.sticky_mismatch() {
-                Some(mismatch) => Err(mismatch),
-                None => result.and(finished),
-            };
-            let result = result.and_then(|()| {
+            let result = result.and(finished).and_then(|()| {
                 let resumed = with_running(|stack| {
                     let view = View {
                         store: &coord.store,
@@ -1858,6 +1852,15 @@ impl Engine {
                     ),
                 }
             });
+            // A mismatch any step recorded (also one whose result a caller
+            // dropped) fails a build that would succeed. A build the walk
+            // fails keeps the walk's error: pass 1 stopped there, and an
+            // attempt abandoned past a failing flush (its events after it
+            // never replayed) may rerun otherwise.
+            let result = match (result, coord.sticky_mismatch()) {
+                (Ok(()), Some(mismatch)) => Err(mismatch),
+                (result, _) => result,
+            };
             (result, lin)
         };
         crate::ui::set_count_deferred(false);
