@@ -2007,6 +2007,149 @@ aspects and package groups as jobs; `Aspect` nodes (T2c).
   memoized walk (about 33 µs per PyCompile action cloning 1.6k `Arc`s;
   ~60 readers of `inputs`).
 
+### Phase 1, measured and cut (eval-phase1)
+
+Branch `eval-phase1`. "Phase 1 proper" below is plan.start →
+`plan.eval_graph_dropped` (the evaluation, before the deferred walks of
+pass 2, which are T3's).
+
+**Instrument: `BAZEL_RS_EVAL_TIMELINE=1`** (`src/eval_timeline.rs`;
+diagnostics only, off by default): marks with the process CPU since the
+previous mark (rounds, each requested target's evaluation and
+linearization, every pass-2 walk, assist rounds, slow sequential attempts
+≥ 20 ms, slow pool attempts ≥ 50 ms, slow lane fetches, probe waits ≥
+50 ms), the cores in use per 250 ms, the graph's queued/running/waiting
+counts per 100 ms (serving), the pool attempts' self time by kind per
+250 ms, the sequential pass's attempts by cause (the node's state before:
+fresh, waiting on a node — with the chain of first unfinished
+dependencies to what blocks it —, left by the pool with the sentinel's
+subject, queued, a lane blocker) and by root cause (a fresh node inherits
+its parent's), occupancy of the speculations, the scratch engines, `.bzl`
+claim, probe-claim and speculation waits, and the coordinator lock's
+contended waits by call site. `BAZEL_RS_EVAL_WATCHDOG=1` prints every 5 s
+what the sequential pass waits for, the running nodes and what each
+thread blocks on (it found the deadlocks below).
+
+**Where phase 1's ~13–15 s went** (main `ce83252b`, ~/code `//src/...`,
+warm, snapshots off, 48 threads; plan.start-relative):
+
+| Span | Time | What |
+|---|---|---|
+| round 1 | 0–0.48 s | 14.7k of 461.6k nodes; everything else waits for `RegToolchains`, which waits for `Pkg(@rules_java++toolchains+local_jdk)` (a local rule calling `execute()`: left to the sequential pass) |
+| requested #0's sequential pass | 0.48–2.48 s | 17,246 attempts on one core: local_jdk 0.1 s, then the woken 1,587 CT1s' subtrees inline (`Pkg` fresh 769 attempts 2.5 s self, CT1 fresh 9.3k 0.9 s, Tgt 24k 0.3 s) |
+| round 2 | 2.48–6.05 s | 307k nodes, 54 core-s; cores 20–35, then 5–15 for the last ~1.5 s |
+| later sequential passes | ~2.4 s | #8 0.6 s (2.3k attempts), #148 1.5 s (29.8k), #1023 0.5 s, small ones; root causes: `RegToolchains` woken subtrees, `apt`/`go_deps`/`pnpm`/`i` extension sentinels on `Tgt` lookups (left by the pool), pool waiters woken by inline completions |
+| later rounds | ~1.4 s | 69k, 7.5k, 1.4k, 7.4k nodes |
+| linearization | ~4.6 s | pass 1 2.6 s (5.9 M events), tape 0.5 s, publication 0.7 s, the new-platform ordered walks 0.9 s; serial, between rounds (the pool idle) |
+
+CPU: ~1 core in use outside the rounds (≈ 8 of the ~15 s). The sequential
+pass's own work that the pool could not do was small (1 `Pkg` left by
+the pool, 0.1 s; 8 `Tgt`s): the rest was its depth-first runs of fresh
+or woken subtrees, plus pass 1.
+
+**What changed** (in order of the measured gain):
+
+1. **The pool serves beside the sequential pass** (`Evaluator::serve`,
+   `BAZEL_RS_EVAL_NO_SERVE=1` falls back to rounds): after round 1 the
+   pool's coordinator runs on a thread of its own and never stops at
+   quiescence; the sequential pass (this thread, marked
+   `loading::set_sequential`: its attempts are the sequential pass's
+   whatever `Loading::pooled` says, `Loading::pooled_here`) claims nodes
+   by CAS (`claim_inline`) and waits while the pool makes progress on
+   what it needs (`pool_progresses`: the chain of first unfinished
+   dependencies reaches a queued or pool-running node, or a lane
+   blocker); a fresh CT1/Pkg/Transition/Platform/registration node is
+   handed to the pool first; the end of the waited chain is boosted.
+   Inline completions schedule their waiters at once; an inline attempt
+   that parks registers as its dependencies' waiter
+   (`park_inline_on_nodes`); a back edge is a node on this thread's
+   `INLINE_STACK`, not any running node. Repository demands stay on the
+   sequential thread (`lane_work`: the serving coordinator queues them).
+   While waiting, the sequential thread linearizes (`Bodies::idle`, in
+   steps of 20k pass-1 events, the coordinator released in between).
+   The sequential pass hints its edges (and a registration's toolchains)
+   to the pool. Round 1 stays a round (its lane's writes are where the
+   walk's are).
+2. **Pass 1** 2.6 → 1.5 s: the hot loop reads a node's events without
+   its value (`Transcripts::events`), keys by reference, events by
+   reference (cloned only into the tape), Fx hash maps, no keep-going
+   edges (`Options::no_edges`).
+3. **The coordinator's lock off the pool's paths**: a `Flush` marks
+   `Phase1Bodies::saw_flush` (an atomic; it took the lock: 28 s of
+   threads blocked), a speculated FeatureFlagInfo is checked through the
+   inbox, the planned-providers check uses `try_coord`; a speculation
+   takes its subtree and the store's new packages/memos/CT1 values under
+   the lock and publishes them into its scratch engine after it
+   (packages by insertion order, not a scan of all).
+4. **Speculations on 2 scratch engines** (`BAZEL_RS_EVAL_SCRATCHES`).
+5. Smaller: toolchain implementations published incrementally.
+6. With `BAZEL_RS_EVAL_NO_SERVE=1` (rounds between requested targets),
+   the sequential pass hands what inline completions woke to the pool
+   once ≥ 8 are woken (an *assist round*, `BAZEL_RS_EVAL_ASSIST_WOKEN`,
+   `BAZEL_RS_EVAL_NO_ASSIST=1`), and the coordinator linearizes while a
+   round runs (`BAZEL_RS_EVAL_NO_IDLE_LINEARIZE=1`): phase 1 proper
+   ~11–13.8 s there.
+
+**Fixes found on the way** (latent before, exposed by the concurrency):
+released transcripts were freed after *any* walk (a deferred segment's
+nodes too: a speculation then failed on "a transcript of the subtree was
+freed"; now `free_released(walked)`); a speculation's progress counters
+were restored to a snapshot (racing the tape's package commits: "10244
+packages loaded"; now `progress::uncounted` per thread); a rerun's start
+on a pool thread removed the abandoned attempt's events from the store
+before the rerun finished, so pass 1, inside that memo's partly replayed
+transcript, saw no transcript and ended the memo there (a
+`RegToolchains` memo lost ~3.5k plan entries in ~1 of 4 runs: "129636
+targets configured"); now the carry stays until the rerun finishes or
+stops, and pass 1 waits for a vanished transcript before the end.
+Deadlocks found with the watchdog and fixed: an inline attempt's rerun
+re-claiming its own node; an inline park without waiter registrations;
+a timeline mark taking the coordinator's lock under the timeline's lock;
+a registration-package hint whose module-graph resolution waited for a
+demand on the coordinator (removed).
+
+**Measured** (2026-11-10, ~/code `80d6724f3a` private clone, LTO release
+of main `2c7c1a64` and of the branch rebased on it, warm, snapshots off,
+`build --nobuild //src/...`, default threads, alternating, host load
+10–13):
+
+| | main | eval-phase1 |
+|---|---|---|
+| phase 1 proper (plan.start → graph dropped) | 18.1 / 15.1 / 15.4 s | 9.5 / 9.5 / 8.7 s |
+| plan.start → phase 1 done | 28.5 / 26.1 / 26.4 s | 20.2 / 20.6 / 19.6 s |
+| `INFO: Elapsed time` | 37.6 / 34.0 / 34.1 s | 28.0 / 28.3 / 28.3 s |
+| max RSS | 9.3–9.5 GB | 9.2–9.3 GB |
+
+Byte-identical: `BAZEL_RS_DUMP_ACTIONS` stderr of `build` and `test
+--nobuild` (6,486,165 lines; walk = branch eval), `affected --base=HEAD^`
+(737 of 802); `BAZEL_RS_EVAL_VERIFY=1` clean on `build`, `test --nobuild`
+and `affected`; `MODULE.bazel.lock` (native), the hidden lockfile and the
+snapshot recording (520,171 records) identical between main's walk and the
+branch's eval. Suites: eval default (`BAZEL_RS_DEFAULT_ANALYSIS=eval`)
+3738/3738, also with `BAZEL_RS_EVAL_RESTARTS=7`.
+
+**What remains of phase 1 proper (~9 s)** (the final timeline):
+round 1 0.3 s; requested #0 until 4.4 s — the zig toolchain's
+`Pkg(@hermetic_cc_toolchain++toolchains+zig_config)` loads for 0.6–0.9 s
+on one thread on `RegToolchains`' path, local_jdk 0.1 s, go_deps probe
+claims (up to 18 threads wait for one repository's warm-reuse probe,
+~8 s of thread time), speculations serialized on their subtree replay
+under the coordinator's lock (~3–4 s of waits); 4.4–9.3 s: the
+sequential pass reaches what the pool left (`Tgt` lookups whose
+extension group is not prepared: `apt`, `go_deps`, `pnpm`, `i`; ~6–8k
+nodes wait for it) while linearizing (pass 1 1.4 s, tape 0.5 s,
+publication 0.7 s — mostly `publish_ct1`'s map inserts and the `Shared`
+tables copied after each ordered walk —, the ordered new-platform walks
+0.9 s), on one core. Next, in order: (a) `Tgt`/`Src` nodes adopting a
+finished extension speculation as `Pkg` loads do (repository-side; needs
+review) so the pool does not wait for the sequential pass; (b) the
+publication without copying the shared tables (fewer ordered walks, or
+publication batched before a walk); (c) the subtree replay of a
+speculation outside the coordinator's lock (a store readable
+concurrently); (d) warm-reuse probes of a repository's tree started
+ahead (go_deps); (e) `local_jdk` executed ahead when its `execute()`
+calls are known read-only.
+
 ### Effort
 
 | Step | Work | Estimate |
