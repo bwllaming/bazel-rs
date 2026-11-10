@@ -29,6 +29,12 @@ pub(super) trait Lookup {
     fn engine(&self) -> &Engine;
     /// [`Engine::target`].
     fn target(&mut self, label: &Label) -> Result<Target, String>;
+    /// The target platform `target` as the prepare sees it (the engine's
+    /// resolved platforms; a frozen walk's worker also those its
+    /// deferred flushes publish before its entry, `Frozen::platform_at`).
+    fn platform(&self, target: &ConfiguredTargetKey) -> Option<PlatformResult> {
+        self.engine().platforms.get(target).cloned()
+    }
     /// The no-config configuration (interned on first use).
     fn no_config(&mut self) -> Result<ConfigId, String>;
     /// The resolved attribute aspects of an attribute (Engine::attribute_aspects).
@@ -424,6 +430,9 @@ pub(super) struct SharedPrepare<'a> {
     pub(super) resolve_sources: bool,
     /// Its packages' input labels, computed once per package.
     inputs: HashMap<PackageId, HashSet<Label>>,
+    /// A frozen walk's worker: the walk's view (the platforms its
+    /// deferred flushes publish) and its entry's plan index.
+    frozen: Option<(&'a parallel::Frozen, usize)>,
     /// The source files it resolved (each looked up again by the rule's
     /// inputs, prerequisites and runfiles), and the directories it probed
     /// on their way beyond the engine's probes.
@@ -477,6 +486,7 @@ impl<'a> SharedPrepare<'a> {
             view_artifacts: None,
             resolve_sources: false,
             inputs: HashMap::new(),
+            frozen: None,
             resolved: HashMap::new(),
             probes: HashMap::new(),
             link_policies: HashMap::new(),
@@ -511,6 +521,7 @@ impl<'a> SharedPrepare<'a> {
             view_artifacts: None,
             resolve_sources: false,
             inputs: HashMap::new(),
+            frozen: Some((frozen, index)),
             resolved: HashMap::new(),
             probes: HashMap::new(),
             link_policies: HashMap::new(),
@@ -661,6 +672,13 @@ impl SharedPrepare<'_> {
 impl Lookup for SharedPrepare<'_> {
     fn engine(&self) -> &Engine {
         self.engine
+    }
+
+    fn platform(&self, target: &ConfiguredTargetKey) -> Option<PlatformResult> {
+        match self.frozen {
+            Some((frozen, index)) => frozen.platform_at(target, index),
+            None => self.engine.platforms.get(target).cloned(),
+        }
     }
 
     fn target(&mut self, label: &Label) -> Result<Target, String> {

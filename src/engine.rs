@@ -1665,6 +1665,9 @@ enum ResolutionError {
 }
 
 /// Why a platform label could not be resolved (PlatformFunction).
+/// A target platform's resolution (`Engine::platforms`).
+type PlatformResult = Result<Arc<PlatformInfo>, PlatformError>;
+
 #[derive(Clone, Debug)]
 enum PlatformError {
     /// A package or target loading error (NoSuchThingException, propagated
@@ -9755,13 +9758,11 @@ impl Engine {
             custom.cpp = crate::custom_rule::CppConfigurationView::of(
                 &engine.configurations.get(config).native,
             );
+            let platform = cx.platform(&target);
             if order_audit::enabled() {
-                order_audit::note_platform_read(
-                    &target,
-                    matches!(engine.platforms.get(&target), Some(Ok(_))),
-                );
+                order_audit::note_platform_read(&target, matches!(platform, Some(Ok(_))));
             }
-            custom.target_platform = match engine.platforms.get(&target) {
+            custom.target_platform = match platform {
                 _ if !uses_toolchains => crate::platforms::TargetPlatform::Absent,
                 Some(Ok(platform)) => crate::platforms::TargetPlatform::Resolved(platform.clone()),
                 _ => crate::platforms::TargetPlatform::Deferred,
@@ -9912,10 +9913,8 @@ impl Engine {
                 rule,
                 config,
                 &output_root,
-                match engine.platforms.get(&target) {
-                    Some(Ok(platform)) => {
-                        crate::platforms::TargetPlatform::Resolved(platform.clone())
-                    }
+                match cx.platform(&target) {
+                    Some(Ok(platform)) => crate::platforms::TargetPlatform::Resolved(platform),
                     _ => crate::platforms::TargetPlatform::Deferred,
                 },
                 template_variables,

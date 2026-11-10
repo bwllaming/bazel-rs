@@ -2799,6 +2799,32 @@ impl Engine {
 
     /// Whether the target platform of `key`'s configuration is resolved
     /// (Engine::platforms, which prepare's ctx surface reads).
+    /// Whether a deferred flush's op of the walk publishes the target
+    /// platform of `key`'s configuration before entry `index`'s turn
+    /// (`eval::linearize::pass2`): its turn sees it resolved.
+    fn pass2_publishes_platform(&self, key: &ConfiguredTargetKey, index: usize) -> bool {
+        let Some(pending) = &self.eval_pass2 else {
+            return false;
+        };
+        let target = ConfiguredTargetKey::new(
+            self.configurations
+                .get(key.config)
+                .native
+                .target_platform()
+                .clone(),
+            key.config,
+        );
+        pending.ops.iter().any(|(position, op)| {
+            *position <= index
+                && matches!(
+                    op,
+                    eval::linearize::pass2::Op::Publish(
+                        eval::linearize::driver::Published::Platform(published, _)
+                    ) if *published == target
+                )
+        })
+    }
+
     fn platform_resolved(&self, key: &ConfiguredTargetKey) -> bool {
         let target = ConfiguredTargetKey::new(
             self.configurations
@@ -3812,7 +3838,10 @@ impl Engine {
         // before it can resolve it any more (and its own implementation
         // did not ask for it), else at its turn.
         if !platform_known {
-            let retry = if worker.outcome.platform_read || self.platform_resolved(&key) {
+            let retry = if worker.outcome.platform_read
+                || self.platform_resolved(&key)
+                || self.pass2_publishes_platform(&key, index)
+            {
                 Retry::Done(false)
             } else if let Some(blocker) = pipe.platform_resolver_before(index, key.config) {
                 pipe.park(index, blocker);

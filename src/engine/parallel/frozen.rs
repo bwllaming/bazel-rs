@@ -70,6 +70,45 @@ pub(in crate::engine) struct Frozen {
     /// the coordinator).
     view: Option<delta::SharedView>,
     compact_repo_mapping: bool,
+    /// The target platforms the walk's deferred flushes publish, each with
+    /// the plan position before whose turn its op applies
+    /// (`eval::linearize::pass2`): an entry at or after it sees it
+    /// resolved, as at its turn.
+    platform_schedule: HashMap<ConfiguredTargetKey, (usize, PlatformResult)>,
+}
+
+impl Frozen {
+    /// Target platform `target` as entry `index` sees it at its turn: the
+    /// engine's (resolved before the walk), else published by a deferred
+    /// flush at a position up to `index`.
+    pub(in crate::engine) fn platform_at(
+        &self,
+        target: &ConfiguredTargetKey,
+        index: usize,
+    ) -> Option<PlatformResult> {
+        if let Some(platform) = self.engine.platforms.get(target) {
+            return Some(platform.clone());
+        }
+        self.platform_schedule
+            .get(target)
+            .filter(|(position, _)| *position <= index)
+            .map(|(_, platform)| platform.clone())
+    }
+
+    /// Whether the target platform of `key`'s configuration is resolved
+    /// at entry `index`'s turn ([`Self::platform_at`]).
+    pub(super) fn platform_resolved_at(&self, key: &ConfiguredTargetKey, index: usize) -> bool {
+        let target = ConfiguredTargetKey::new(
+            self.engine
+                .configurations
+                .get(key.config)
+                .native
+                .target_platform()
+                .clone(),
+            key.config,
+        );
+        self.platform_at(&target, index).is_some()
+    }
 }
 
 /// The shards of [`PlannedResults`].
@@ -420,6 +459,19 @@ impl Engine {
             None => Arc::new(PlannedResults::seed(state)),
         };
         crate::perf_mark("pass2.freeze.results");
+        let mut platform_schedule = HashMap::new();
+        if let Some(pending) = &self.eval_pass2 {
+            for (position, op) in &pending.ops {
+                if let eval::linearize::pass2::Op::Publish(
+                    eval::linearize::driver::Published::Platform(key, platform),
+                ) = op
+                {
+                    platform_schedule
+                        .entry(key.clone())
+                        .or_insert_with(|| (*position, platform.clone()));
+                }
+            }
+        }
         Arc::new(Frozen {
             engine,
             configured,
@@ -431,6 +483,7 @@ impl Engine {
             artifacts: Arc::clone(&state.artifact_index.shared),
             view,
             compact_repo_mapping: self.compact_repo_mapping,
+            platform_schedule,
         })
     }
 
@@ -664,7 +717,7 @@ pub(super) fn run_frozen(
             }
         }
         let class = crate::plan_timings::class_id(rule.rule_class_name());
-        let platform_known = frozen.engine.platform_resolved(key);
+        let platform_known = frozen.platform_resolved_at(key, index);
         let isolation = Isolation::enter();
         let started = std::time::Instant::now();
         let timer = crate::plan_timings::StageTimer::start(
