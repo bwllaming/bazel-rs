@@ -530,6 +530,14 @@ change announced to the other two workers; adding a helper is not.
   `Engine::{publish_ahead, dispatch_native, publish_native,
   check_published_native}` (`parallel/frozen.rs`).
 
+- 2026-11-10 (eval-t3, round 3; no frozen interface changed): engine.rs's
+  deferred-walk aspect planning (`plan_aspect_collection`,
+  `plan_aspect_application`, `plan_aspect_attribute_dependencies`,
+  `plan_aspect_dependency`) knows the dry walk of `parallel::aspects`
+  (`PENDING`, `Analysis`); `source_target_with` beside `source_target_in`
+  (unchanged; `eval/nodes/loading.rs` untouched); `KeyedParts::input_memo`;
+  `analysis_runtime::OutputIndex` (a `Context` field).
+
 ## 4. Stages and gates
 
 | Stage | Work | Gate |
@@ -1957,6 +1965,47 @@ aspects and package groups as jobs; `Aspect` nodes (T2c).
   chains of computes readied by their last dependency (each link a
   compute's latency) and long single computes started late by the
   lowest-index-first queue.
+
+### T3, round 3 (eval-t3): scheduling, natives, aspects
+
+- **Critical-path scheduling**: every entry is classified when the walk
+  starts; its job is queued `BAZEL_RS_T3_CHAIN_WEIGHT` (256) entries
+  earlier per Starlark implementation in its longest chain of dependents;
+  ready entries beyond the window are parked until the cursor reaches
+  them. Neutral on ~/code (the remaining waits are not queue order).
+- **Natives**: a worker resolves each source file once per job, reading
+  the engine's directory probes and one link policy per repository
+  (`source_target_with`; `RepositorySet::link_policy` canonicalized the
+  store per symlinked source, 2–9 ms each).
+- **Action keys** hash the inputs in content-defined blocks, a memoized
+  depset walk's blocks once (`shared_actions::MemoBlocks`): the same key
+  with or without the memo; rules_python's PyCompile action per source no
+  longer hashes the runtime's 1.6k files each.
+- **Attribute aspects at their turn** (`parallel/aspects.rs`): a Starlark
+  rule with attribute aspects (rules_rust's clippy, rustfmt) stays at its
+  turn, but before its prepare the coordinator walks its aspect-applied
+  edges *dry* — `Engine::plan_aspect_dependency`'s recursion building
+  each application's `AspectApplication`, which is queued as a job
+  instead of analyzed (`PENDING` up the walk; siblings walked on). The
+  jobs run on the walk's workers and the cursor, isolated like a
+  compute; as each finishes, the dependencies that waited for nothing
+  else are walked again (an analyzed application's providers stand for its
+  result, a planned dependency is walked once per turn). Nothing commits
+  while dry (no aspect memo, action, print). The prepare then replays: each
+  application takes its analysis from the table and commits in the
+  sequential order (first-wins and the aspect memo unchanged: the memo is
+  filled by the prepare only). An analysis that failed, panicked or had
+  effects is redone by the prepare at its point. Aspects whose analyses
+  are cheap (< 1 ms on average) are analyzed inline in the dry walk, and a
+  turn whose aspects are all cheap is not prefetched. `BAZEL_RS_T3_ASPECTS=0`
+  turns it off; `BAZEL_RS_VERIFY_DELTA=1` analyzes every replayed
+  application again and compares; `PERF-PARALLEL aspects`. ~/code: clippy
+  turns 1.6 → 0.53 s, rustfmt 1.0 → 1.1 s, the big walk's cursor 9.5 →
+  8.5 s.
+- Not done: a full `Aspect` node (applications off the coordinator's
+  planning walk altogether); `RegisteredAction.inputs` sharing the
+  memoized walk (about 33 µs per PyCompile action cloning 1.6k `Arc`s;
+  ~60 readers of `inputs`).
 
 ### Effort
 
