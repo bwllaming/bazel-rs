@@ -62,13 +62,23 @@ pub(super) fn verify() -> bool {
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL sweep`): deltas rewritten as readers,
 /// localized as losers, built again (fallbacks), verified; ids rewritten.
-pub(super) static STATS: [std::sync::atomic::AtomicU64; 5] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 5];
+pub(super) static STATS: [std::sync::atomic::AtomicU64; 9] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 9];
 pub(super) const S_READER: usize = 0;
 pub(super) const S_LOSER: usize = 1;
 pub(super) const S_FALLBACK: usize = 2;
 pub(super) const S_VERIFIED: usize = 3;
 pub(super) const S_ARTIFACTS: usize = 4;
+/// µs: the reads checked, the outputs replayed, the rewrites (of them
+/// waiting for lowerings).
+const S_READS_US: usize = 5;
+const S_LOCALIZE_US: usize = 6;
+const S_REWRITE_US: usize = 7;
+const S_LOWERING_US: usize = 8;
+
+fn stat_since(index: usize, started: std::time::Instant) {
+    stat(index, started.elapsed().as_micros() as u64);
+}
 
 pub(super) fn stat(index: usize, by: u64) {
     STATS[index].fetch_add(by, std::sync::atomic::Ordering::Relaxed);
@@ -81,12 +91,16 @@ pub(super) fn report() {
         return;
     }
     crate::snapshot::diag::line_fmt(format_args!(
-        "PERF-PARALLEL sweep readers={} losers={} fallbacks={} verified={} artifacts_rewritten={}",
+        "PERF-PARALLEL sweep readers={} losers={} fallbacks={} verified={} artifacts_rewritten={} reads={:.3}s localize={:.3}s rewrite={:.3}s lowering_wait={:.3}s",
         get(S_READER),
         get(S_LOSER),
         get(S_FALLBACK),
         get(S_VERIFIED),
-        get(S_ARTIFACTS)
+        get(S_ARTIFACTS),
+        get(S_READS_US) as f64 / 1e6,
+        get(S_LOCALIZE_US) as f64 / 1e6,
+        get(S_REWRITE_US) as f64 / 1e6,
+        get(S_LOWERING_US) as f64 / 1e6,
     ));
 }
 
@@ -450,9 +464,11 @@ pub(super) fn rewrite(
                 out.push(delta::DeltaOp::Node(planned, sources));
             }
             delta::DeltaOp::Lowering(receiver) => {
+                let started = std::time::Instant::now();
                 let mut outcome = receiver
                     .recv()
                     .unwrap_or_else(|_| Err(Box::new("a lowering worker stopped".to_owned())));
+                stat_since(S_LOWERING_US, started);
                 if lowered_id(&outcome).is_some_and(dropped) {
                     continue;
                 }
@@ -494,6 +510,7 @@ pub(super) fn adopt(
     reader: u32,
     meets: bool,
 ) -> Result<delta::TargetDelta, Option<delta::TargetDelta>> {
+    let started = std::time::Instant::now();
     let Some(mut aliases) = (if delta.reads.is_empty() {
         Some(Aliases::default())
     } else {
@@ -501,6 +518,8 @@ pub(super) fn adopt(
     }) else {
         return Err(Some(delta));
     };
+    stat_since(S_READS_US, started);
+    let started = std::time::Instant::now();
     let localized = if meets {
         match localize(&state.producers, &delta, &mut aliases) {
             Some(localized) => Some(localized),
@@ -514,8 +533,12 @@ pub(super) fn adopt(
         delta.reads.clear();
         return Ok(delta);
     }
+    stat_since(S_LOCALIZE_US, started);
     stat(if meets { S_LOSER } else { S_READER }, 1);
-    rewrite(delta, localized.as_ref(), &aliases).ok_or(None)
+    let started = std::time::Instant::now();
+    let rewritten = rewrite(delta, localized.as_ref(), &aliases).ok_or(None);
+    stat_since(S_REWRITE_US, started);
+    rewritten
 }
 
 /// A comparable rendering of `delta`'s ops (BAZEL_RS_PARITY_VERIFY): its
