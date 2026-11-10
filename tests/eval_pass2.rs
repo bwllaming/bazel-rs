@@ -350,3 +350,102 @@ filegroup(name = "with_cpu", srcs = [":after_cpu", "//p1:top"])
         },
     );
 }
+
+const PLATFORMS_BZL: &str = r#"
+def _uses_impl(ctx):
+    print("toolchain of " + str(ctx.label) + ": " + str(ctx.toolchains["//plat:tt"] != None))
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, "x")
+    return [DefaultInfo(files = depset([out]))]
+
+uses = rule(
+    implementation = _uses_impl,
+    toolchains = [config_common.toolchain_type("//plat:tt", mandatory = False)],
+)
+
+def _to_impl(settings, attr):
+    return {"//command_line_option:platforms": [attr.platform]}
+
+_to = transition(implementation = _to_impl, inputs = [], outputs = ["//command_line_option:platforms"])
+
+def _on_impl(ctx):
+    return [DefaultInfo(files = depset(transitive = [dep[DefaultInfo].files for dep in ctx.attr.deps]))]
+
+on_platform = rule(
+    implementation = _on_impl,
+    attrs = {
+        "platform": attr.string(),
+        "deps": attr.label_list(cfg = _to),
+        "_allowlist_function_transition": attr.label(
+            default = "//tools/allowlists/function_transition_allowlist",
+        ),
+    },
+)
+"#;
+
+/// Where each platform is published (the flush after its memo's first use
+/// on the tape) does not depend on when the pool computed it: the same
+/// sequence at every thread count, under jitter and restarts; and the
+/// output is the walk's.
+#[test]
+fn platforms_are_published_at_their_first_use_whatever_the_timing() {
+    let ws = Workspace::new(
+        4,
+        r#"filegroup(name = "multi", srcs = ["//p3:top", "//plat:on_a", "//p1:top", "//plat:on_b", "//p2:top", "//plat:on_c"])
+"#,
+    );
+    for (path, text) in [
+        ("plat/defs.bzl", PLATFORMS_BZL),
+        (
+            "plat/BUILD.bazel",
+            r#"load(":defs.bzl", "on_platform", "uses")
+package(default_visibility = ["//visibility:public"])
+toolchain_type(name = "tt")
+platform(name = "a")
+platform(name = "b")
+platform(name = "c")
+uses(name = "u")
+on_platform(name = "on_a", platform = "//plat:a", deps = [":u", "//p0:top"])
+on_platform(name = "on_b", platform = "//plat:b", deps = [":u", "//p2:top"])
+on_platform(name = "on_c", platform = "//plat:c", deps = ["//p1:top", ":u"])
+"#,
+        ),
+    ] {
+        fs::create_dir_all(ws.path().join("plat")).unwrap();
+        fs::write(ws.path().join(path), text).unwrap();
+    }
+    let args = ["//:multi", "--experimental-builtin-modules=true"];
+    compare(&ws, &args, |success, text| {
+        assert!(success, "{text}");
+    });
+    let log = [("BAZEL_RS_EVAL_PLATFORM_LOG", "1")];
+    // (Sorted: the notes reach stderr through the held console, not
+    // necessarily in flush order; the flush of each is what must agree.)
+    let sequence = |output: &Output| -> Vec<String> {
+        let mut lines: Vec<String> = String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .filter(|line| line.starts_with("bazel-rs: eval platform published"))
+            .map(str::to_owned)
+            .collect();
+        lines.sort();
+        lines
+    };
+    let first = ws.build("eval", 1, &log, &args);
+    assert!(first.status.success(), "{}", stable(&first));
+    let expected = sequence(&first);
+    assert!(expected.len() >= 3, "{}", stable(&first));
+    let runs: [(usize, &[(&str, &str)]); 6] = [
+        (2, &[]),
+        (8, &[]),
+        (32, &[]),
+        (8, &[("BAZEL_RS_EVAL_JITTER", "300")]),
+        (32, &[("BAZEL_RS_EVAL_JITTER", "100")]),
+        (8, &[("BAZEL_RS_EVAL_RESTARTS", "5")]),
+    ];
+    for (threads, env) in runs {
+        let env: Vec<(&str, &str)> = log.iter().chain(env).copied().collect();
+        let eval = ws.build("eval", threads, &env, &args);
+        assert!(eval.status.success(), "{}", stable(&eval));
+        assert_eq!(sequence(&eval), expected, "{threads} threads, {env:?}");
+    }
+}

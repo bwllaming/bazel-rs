@@ -255,6 +255,15 @@ pub(crate) struct Linearizer {
     segments: std::collections::VecDeque<(usize, usize, Option<super::pass1::FlushPoint>)>,
     /// The platforms published (applied or pending).
     platforms: FxHashSet<ConfiguredTargetKey>,
+    /// The platforms whose memo's first use the tape applied: a platform
+    /// is published at the first flush after it (the walk resolves it
+    /// there), never earlier, however early the pool computed it.
+    used_platforms: FxHashSet<ConfiguredTargetKey>,
+    /// Finished platform memos not used by the tape yet (published at
+    /// their first use's flush, or at the end of phase 1).
+    held_platforms: Vec<Published>,
+    /// The flushes so far (BAZEL_RS_EVAL_PLATFORM_LOG).
+    flushes: usize,
     /// The target platform of each configuration (the deferral check;
     /// `None`: the no-config configuration).
     target_platforms: FxHashMap<ConfigId, Option<ConfiguredTargetKey>>,
@@ -409,6 +418,9 @@ impl Coord<'_> {
                 }
                 | TapeOp::Effect(Event::MemoUse(node)) => {
                     self.store.replayed.insert(*node);
+                    if let Some(NodeKey::Platform(platform)) = self.store.keys.get(node) {
+                        lin.used_platforms.insert(platform.clone());
+                    }
                     if let Some(roots) = self.store.roots.remove(node) {
                         // An extension group's commit among them writes
                         // its output here (eval-round1), an effect at the
@@ -752,9 +764,20 @@ impl Coord<'_> {
         use super::pass2::{Op, STAT_DEFERRED, STAT_NEW_PLATFORM, STAT_ORDERED_MODE, bump};
         let memos = stat(STAT_PUBLISH, || self.publish_values(lin, shared));
         let mut new_platform = false;
+        lin.flushes += 1;
         for memo in memos {
             if let Published::Platform(key, _) = &memo {
-                new_platform |= lin.platforms.insert(key.clone());
+                let new = lin.platforms.insert(key.clone());
+                // snapshot-unrecorded: a diagnostics log of where platforms are published; it changes nothing the analysis computes.
+                if new && std::env::var_os("BAZEL_RS_EVAL_PLATFORM_LOG").is_some() {
+                    crate::note!(
+                        "bazel-rs: eval platform published at flush {} (plan entry {}): {}",
+                        lin.flushes,
+                        lin.plan.len(),
+                        key
+                    );
+                }
+                new_platform |= new;
             }
             self.effect(lin, Op::Publish(memo));
         }
@@ -1079,16 +1102,35 @@ impl Coord<'_> {
                 engine.source_targets.entry(label).or_insert(path);
             }
         }
-        let memos = self.store.published[lin.published_memos..].to_vec();
+        let fresh = self.store.published[lin.published_memos..].to_vec();
         lin.published_memos = self.store.published.len();
+        // A platform waits for its first use on the tape (order
+        // invariance: the pool may finish it long before the walk's
+        // position resolves it).
+        let mut memos = Vec::with_capacity(fresh.len());
+        let held = std::mem::take(&mut lin.held_platforms);
+        for memo in held.into_iter().chain(fresh) {
+            match &memo {
+                Published::Platform(key, _) if !lin.used_platforms.contains(key) => {
+                    lin.held_platforms.push(memo);
+                }
+                _ => memos.push(memo),
+            }
+        }
         super::super::timeline::add("publication: the rest", started);
         memos
     }
 
     /// Publish everything done into the engine's maps (the end of phase
     /// 1, the requested target's compatibility check).
-    fn publish(&mut self, lin: &mut Linearizer, shared: &EvalShared) {
-        for memo in self.publish_values(lin, shared) {
+    /// `end`: the end of phase 1, where also the platforms the tape has
+    /// not used are published.
+    fn publish(&mut self, lin: &mut Linearizer, shared: &EvalShared, end: bool) {
+        let mut memos = self.publish_values(lin, shared);
+        if end {
+            memos.append(&mut lin.held_platforms);
+        }
+        for memo in memos {
             if let Published::Platform(key, _) = &memo {
                 lin.platforms.insert(key.clone());
             }
@@ -1490,6 +1532,9 @@ impl Engine {
             pending: Default::default(),
             segments: Default::default(),
             platforms: FxHashSet::default(),
+            used_platforms: FxHashSet::default(),
+            held_platforms: Vec::new(),
+            flushes: 0,
             target_platforms: FxHashMap::default(),
         };
         let (result, lin) = {
@@ -1788,7 +1833,7 @@ impl Engine {
                 format!("the deferred walks done ({})", linearizer_times())
             });
             let mut lin = coord.lin.take().expect("the linearizer");
-            coord.publish(&mut lin, &shared);
+            coord.publish(&mut lin, &shared, true);
             // A mismatch any step recorded (also one whose result a caller
             // dropped) fails the build, before any other error.
             let result = match coord.sticky_mismatch() {
@@ -2460,7 +2505,7 @@ fn drive(
             let Some(mut lin) = coord.lin.take() else {
                 return Ok(());
             };
-            coord.publish(&mut lin, shared);
+            coord.publish(&mut lin, shared, false);
             let checked = coord.with_engine(&mut lin, shared, |engine, lin| {
                 engine.check_requested_compatibility(&lin.configured, label, top)
             });
