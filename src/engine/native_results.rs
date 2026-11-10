@@ -175,10 +175,11 @@ impl Engine {
             for artifact in artifacts.iter().cloned() {
                 if let Some(previous) = seen.get(artifact.exec.as_path()) {
                     // One artifact without its owner: a generated one is
-                    // identified by its producer (two targets' Artifacts of
-                    // a shared action's output are one input).
+                    // identified by its producer's class (two targets'
+                    // Artifacts of a shared action's output are one input,
+                    // whichever registrant's id names the producer).
                     if previous.real != artifact.real
-                        || previous.producer != artifact.producer
+                        || previous.producer_class() != artifact.producer_class()
                         || (artifact.producer.is_none() && previous.owner != artifact.owner)
                     {
                         return Err(format!(

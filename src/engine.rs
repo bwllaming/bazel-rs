@@ -245,6 +245,15 @@ impl Artifact {
         artifact
     }
 
+    /// The class of its producer: a generated artifact's output index (its
+    /// exec path the rest), `None` for a source. Two artifacts at one exec
+    /// path of one class are one input whatever action id names their
+    /// producer: a shared action's registrants' own ids (the merge's
+    /// winner is decided by plan order, not by which id a reader saw).
+    pub(super) fn producer_class(&self) -> Option<usize> {
+        self.producer.as_ref().map(|(_, index)| *index)
+    }
+
     /// This artifact's data, to change (copied first when shared).
     fn make_mut(&mut self) -> &mut ArtifactData {
         Arc::make_mut(&mut self.0)
@@ -15297,16 +15306,13 @@ enum Occurrence {
 }
 
 /// What identifies an input at an execution path ([`plan_listed_action`]):
-/// (directory, producing action and index, owner of a source).
-type InputIdentity<'a> = (bool, Option<(&'a str, usize)>, &'a str);
+/// (directory, its producer class, owner of a source).
+type InputIdentity<'a> = (bool, Option<usize>, &'a str);
 
 fn input_identity(artifact: &Artifact) -> InputIdentity<'_> {
     (
         artifact.directory,
-        artifact
-            .producer
-            .as_ref()
-            .map(|(id, index)| (id.as_str(), *index)),
+        artifact.producer_class(),
         if artifact.producer.is_some() {
             ""
         } else {
@@ -17724,6 +17730,41 @@ m = macro(implementation=emit)
     /// The occurrences of inputs beginning with shared ones (SharedInputs)
     /// are the full pass's whenever they are reused; otherwise the full
     /// pass runs (and reports the error).
+    #[test]
+    fn generated_inputs_are_one_input_by_producer_class_not_id() {
+        let generated = |id: &str, index: usize, owner: &str| {
+            Artifact::new(
+                "bazel-out/k8-fastbuild/bin/p/out".into(),
+                "bazel-out/k8-fastbuild/bin/p/out".into(),
+                Some((id.into(), index)),
+                owner.into(),
+                false,
+                false,
+            )
+        };
+        // A shared action's output as two registrants name it (their own
+        // action ids): one input.
+        let winner = generated("//p:a#0", 1, "//p:a");
+        let loser = generated("//p:b#3", 1, "//p:b");
+        assert_eq!(
+            input_occurrences(&[winner.clone(), loser.clone()]),
+            Ok(vec![Occurrence::Kept, Occurrence::SameReal])
+        );
+        // Another output index at the exec path, or a source there: other
+        // artifacts.
+        assert!(input_occurrences(&[winner.clone(), generated("//p:b#3", 2, "//p:b")]).is_err());
+        let source = Artifact::new(
+            "bazel-out/k8-fastbuild/bin/p/out".into(),
+            "bazel-out/k8-fastbuild/bin/p/out".into(),
+            None,
+            "//p:out".into(),
+            false,
+            false,
+        );
+        assert!(input_occurrences(&[winner, source]).is_err());
+        assert_eq!(loser.producer_class(), Some(1));
+    }
+
     #[test]
     fn shared_input_occurrences_are_the_full_ones() {
         let artifact = |real: &str, exec: &str, owner: &str| {
