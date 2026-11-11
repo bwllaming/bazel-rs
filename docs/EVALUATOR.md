@@ -631,6 +631,15 @@ change announced to the other two workers; adding a helper is not.
   (unchanged; `eval/nodes/loading.rs` untouched); `KeyedParts::input_memo`;
   `analysis_runtime::OutputIndex` (a `Context` field).
 
+- 2026-11-11 (task A, the sweep): `DeltaOp::Lowering` carries its
+  Starlark action's id (`None`: a native lowering); a new
+  `DeltaOp::Rewritten` (a rewritten delta's lowering in flight, placed
+  through `PlannedNodes::enqueue_rewritten`); `Engine::commit_with_nodes`
+  (each placed node passed to a hook). The sweep is on only with the T3
+  merge buffer, i.e. only in frozen walks; a walk the driver keeps ordered
+  (recording or tracking, task E) sees none of it. No change to the
+  recording/driver side.
+
 ## 4. Stages and gates
 
 | Stage | Work | Gate |
@@ -2385,6 +2394,25 @@ warm, snapshots off, `build --nobuild //src/...`, alternating, host load
 | cursor `merge_starlark` | 2.2–2.6 s | 1.4 s | 1.4 s |
 | deltas built again at the merge | 432 losers + ~170 stale | 0 (734 rewritten: 464 losers, ~270 readers; 0 fallbacks) | 0 |
 | max RSS | 9.2 GB | 9.3–9.4 GB | 9.8 GB (24: 10.0 GB) |
+
+**Memory** (8 → 16 workers: 9.3–9.4 → 9.7–9.8 GB; main 9.2 GB): mostly
+the 16 workers' computes in flight. The rest: the kept analysis results of
+the deltas that meet an earlier entry's outputs (kept only for those,
+~430 on ~/code, for a fallback rebuild), the rewritten Artifacts (~70k)
+and the per-delta copies of the shared input groups a rewrite touches
+(the memo's own value is refilled by later users), and
+`canonical_reads` (one artifact handle per provisional read found
+canonical, for the planning run).
+
+**After the review of 19223aae**: a shared action's lowering is dropped
+at the rewrite (the lowering op carries its action id), so a failure only
+its lowering finds no longer fails the build (`BAZEL_RS_LOWERING_FAIL`
+test) and is not waited for; the sweep needs the merge buffer
+(`BAZEL_RS_EVAL_NO_BUFFER=1` is the T2 pipeline, whose builds ahead of
+their turn record no reads); the walk-end scan also covers the index's
+entries, the declarations, the execution table and the source inputs;
+debug builds and `PARITY_VERIFY` assert no alias chain and no mapped or
+dropped id left in a rewritten delta or a placed node.
 
 The rewrites cost 0.3 s on the cursor (reads 0.1 s, replay 0.09 s,
 rewrite 0.11 s) where the rebuilds cost ~1.3 s. The walk still ends with its
