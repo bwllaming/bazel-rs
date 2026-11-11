@@ -145,6 +145,8 @@ fn stable(output: &Output) -> String {
 
 const FROZEN: (&str, &str) = ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all");
 const ASPECT_JOBS: (&str, &str) = ("BAZEL_RS_T3_ASPECT_JOBS", "1");
+/// The aspect prefetch at the rule's turn instead (parallel::aspects).
+const NO_ASPECT_JOBS: (&str, &str) = ("BAZEL_RS_T3_ASPECT_JOBS", "0");
 const PARITY_VERIFY: (&str, &str) = ("BAZEL_RS_PARITY_VERIFY", "1");
 const REVERSE: (&str, &str) = ("BAZEL_RS_PARITY_REVERSE", "1");
 
@@ -183,7 +185,7 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
         ),
         // Task B: attribute-aspect rules as worker jobs; checked against
         // the coordinator's inputs; the latest ready job first.
-        (8, &[FROZEN, ASPECT_JOBS]),
+        (8, &[FROZEN, NO_ASPECT_JOBS]),
         (2, &[FROZEN, ASPECT_JOBS, ("BAZEL_RS_VERIFY_DELTA", "1")]),
         (
             8,
@@ -503,10 +505,12 @@ lint = rule(implementation = _lint_impl, attrs = {"deps": attr.label_list(aspect
 "#;
 
 /// Lint targets apply attribute aspects (one requiring the other) over a
-/// shared dependency graph, like rules_rust's clippy and rustfmt: at each
-/// lint target's turn the applications are analyzed on the workers first
-/// (super::aspects' dry walk) and replayed by its prepare. Prints, actions
-/// and an aspect's failure come out as the walk's.
+/// shared dependency graph, like rules_rust's clippy and rustfmt: each lint
+/// target is a worker job whose applications are analyzed once and
+/// committed at the first lint target's merge (parallel::aspect_jobs), or
+/// (`BAZEL_RS_T3_ASPECT_JOBS=0`) analyzed on the workers at its turn and
+/// replayed by its prepare (parallel::aspects). Prints, actions and an
+/// aspect's failure come out as the walk's.
 #[test]
 fn attribute_aspect_applications_analyzed_ahead_replay_in_order() {
     for boom in ["BOOM", "l7"] {
@@ -549,7 +553,6 @@ fn attribute_aspect_applications_analyzed_ahead_replay_in_order() {
                     .and_then(|value| value.parse::<u64>().ok())
                     .unwrap_or_default()
             };
-            eprintln!("{line}");
             assert!(count("placed_rules=") > 0, "{line}");
             assert!(count("placed=") > 0, "{line}");
         }
@@ -570,7 +573,7 @@ fn attribute_aspect_applications_analyzed_ahead_replay_in_order() {
             let timed = ws.build(
                 "eval",
                 8,
-                &[FROZEN, ("BAZEL_RS_TIMING", "1")],
+                &[FROZEN, NO_ASPECT_JOBS, ("BAZEL_RS_TIMING", "1")],
                 &["//a:lint_a", "//a:lint_b", "//a:lint_c"],
             );
             let timed = String::from_utf8_lossy(&timed.stderr);

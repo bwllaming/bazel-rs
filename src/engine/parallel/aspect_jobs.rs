@@ -40,15 +40,16 @@ use crate::engine::aspect_plan::{self, AspectCommit, AspectCx, AspectIdentityKey
 /// A dependency's results are not published yet (the job is queued again).
 pub(in crate::engine) const UNREADY: &str = "\u{1}aspect-job-unready";
 
-/// `BAZEL_RS_T3_ASPECT_JOBS`: `0` off, `verify` (jobs, then every such
-/// rule at its turn).
+/// `BAZEL_RS_T3_ASPECT_JOBS`: on by default; `0` off (the prefetch at the
+/// rule's turn, `parallel::aspects`), `verify` (jobs, then every such rule
+/// at its turn).
 fn mode() -> u8 {
     static MODE: std::sync::LazyLock<u8> = std::sync::LazyLock::new(|| {
         // snapshot-unrecorded: a scheduling switch; the output is the same either way.
         match std::env::var("BAZEL_RS_T3_ASPECT_JOBS").as_deref() {
-            Ok("1") => 1,
+            Ok("0") => 0,
             Ok("verify") => 2,
-            _ => 0,
+            _ => 1,
         }
     });
     *MODE
