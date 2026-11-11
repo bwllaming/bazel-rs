@@ -88,6 +88,90 @@ pub(in crate::engine) enum Op {
     Publish(Published),
 }
 
+/// The tape's tracker ops not applied yet, by the plan position before
+/// whose turn they apply: runs of one position share a chunk, freed once
+/// applied (~/code holds 6.8M at the end of phase 1; 8 bytes each).
+#[derive(Default)]
+pub(crate) struct TrackQueue {
+    chunks: std::collections::VecDeque<(u32, Vec<TrackOp>)>,
+    len: usize,
+}
+
+impl TrackQueue {
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub(crate) fn push(&mut self, position: u32, op: TrackOp) {
+        match self.chunks.back_mut() {
+            Some((last, ops)) if *last == position => ops.push(op),
+            _ => {
+                if let Some((_, ops)) = self.chunks.back_mut() {
+                    ops.shrink_to_fit();
+                }
+                self.chunks.push_back((position, vec![op]));
+            }
+        }
+        self.len += 1;
+    }
+
+    /// The ops before position `end`, taken out.
+    pub(crate) fn split_before(&mut self, end: usize) -> TrackQueue {
+        let mut taken = TrackQueue::default();
+        while self
+            .chunks
+            .front()
+            .is_some_and(|(position, _)| (*position as usize) < end)
+        {
+            if let Some(chunk) = self.chunks.pop_front() {
+                self.len -= chunk.1.len();
+                taken.len += chunk.1.len();
+                taken.chunks.push_back(chunk);
+            }
+        }
+        taken
+    }
+
+    /// `earlier`'s ops before these.
+    pub(crate) fn prepend(&mut self, earlier: TrackQueue) {
+        self.len += earlier.len;
+        for chunk in earlier.chunks.into_iter().rev() {
+            self.chunks.push_front(chunk);
+        }
+    }
+
+    /// Apply (`apply`) and free the ops due at or before position `index`.
+    pub(crate) fn apply_due(&mut self, index: usize, mut apply: impl FnMut(TrackOp)) {
+        while self
+            .chunks
+            .front()
+            .is_some_and(|(position, _)| (*position as usize) <= index)
+        {
+            if let Some((_, ops)) = self.chunks.pop_front() {
+                self.len -= ops.len();
+                for op in ops {
+                    apply(op);
+                }
+            }
+        }
+    }
+
+    /// Whether every op is due at or before position `end`.
+    pub(crate) fn all_at_or_before(&self, end: usize) -> bool {
+        self.chunks
+            .iter()
+            .all(|(position, _)| (*position as usize) <= end)
+    }
+
+    pub(crate) fn clear(&mut self) {
+        *self = TrackQueue::default();
+    }
+}
+
 /// The ops of deferred flushes, by the plan position before whose turn
 /// they apply (non-decreasing), while a walk runs them.
 #[derive(Default)]
@@ -103,7 +187,7 @@ pub(in crate::engine) struct Pending {
     /// The tape's incremental-tracker ops due before the walk's end, by
     /// position ([`Engine::eval_pass2_track`]), and the replay applying
     /// them (moved here for the walk).
-    pub(crate) track: std::collections::VecDeque<(u32, TrackOp)>,
+    pub(crate) track: TrackQueue,
     pub(crate) replay: Option<Box<TapeReplay>>,
 }
 
@@ -154,16 +238,17 @@ impl Engine {
         let Some(pending) = self.eval_pass2.as_mut() else {
             return;
         };
-        while let Some((position, op)) = pending.track.front().copied()
-            && position as usize <= index
-        {
-            pending.track.pop_front();
-            if let (Some(replay), Some(tracker)) = (
-                pending.replay.as_deref_mut(),
-                self.incremental.as_deref_mut(),
-            ) {
-                replay.replay(tracker, op);
+        let (replay, tracker) = (
+            pending.replay.as_deref_mut(),
+            self.incremental.as_deref_mut(),
+        );
+        match (replay, tracker) {
+            (Some(replay), Some(tracker)) => {
+                pending
+                    .track
+                    .apply_due(index, |op| replay.replay(tracker, op));
             }
+            _ => pending.track.apply_due(index, |_| {}),
         }
     }
 
@@ -208,4 +293,40 @@ pub(crate) fn commit_package(engine: &mut Engine, package: &PackageId, loaded: O
             .register(&custom.top_level_functions);
     }
     engine.packages.insert(package.clone(), Arc::clone(rules));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn track_queue_applies_by_position_and_keeps_the_rest() {
+        assert_eq!(std::mem::size_of::<TrackOp>(), 8);
+        let mut queue = TrackQueue::default();
+        for (position, op) in [
+            (0, TrackOp::Leave),
+            (0, TrackOp::Print),
+            (3, TrackOp::Access(1)),
+            (5, TrackOp::Access(2)),
+            (5, TrackOp::Leave),
+        ] {
+            queue.push(position, op);
+        }
+        assert_eq!(queue.len(), 5);
+        let mut early = queue.split_before(4);
+        assert_eq!((early.len(), queue.len()), (3, 2));
+        let mut seen = Vec::new();
+        early.apply_due(0, |op| seen.push(op));
+        assert_eq!(seen, [TrackOp::Leave, TrackOp::Print]);
+        queue.prepend(early);
+        assert_eq!(queue.len(), 3);
+        assert!(!queue.all_at_or_before(4));
+        seen.clear();
+        queue.apply_due(5, |op| seen.push(op));
+        assert_eq!(
+            seen,
+            [TrackOp::Access(1), TrackOp::Access(2), TrackOp::Leave]
+        );
+        assert!(queue.is_empty());
+    }
 }

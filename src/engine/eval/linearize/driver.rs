@@ -32,7 +32,7 @@ use crate::label::Label;
 use crate::platforms::PlatformInfo;
 use crate::toolchains::RegisteredToolchains;
 
-use super::super::super::incremental::{TapeReplay, TrackOp, Tracker};
+use super::super::super::incremental::{TapeReplay, Tracker};
 use super::super::super::{
     ConfiguredNodes, ConfiguredTargetKey, Engine, ExecutionPlatforms, Plan, PlatformError,
     ResolutionError, RuleKind, Target, TransitionDetails, forwards,
@@ -285,7 +285,7 @@ pub(crate) struct Linearizer {
     pending: std::collections::VecDeque<(usize, super::pass2::Op)>,
     /// The tape's tracker ops not applied yet, by position (like
     /// `pending`; kept apart: they need no lowering drain, and are many).
-    track: std::collections::VecDeque<(u32, TrackOp)>,
+    track: super::pass2::TrackQueue,
     /// The flushes' plan segments not walked yet: `[start, end)` and
     /// where the flush happened.
     segments: std::collections::VecDeque<(usize, usize, Option<super::pass1::FlushPoint>)>,
@@ -456,7 +456,7 @@ impl Coord<'_> {
                         lin.replay.replay(tracker, track);
                     }
                 } else {
-                    lin.track.push_back((lin.position as u32, track));
+                    lin.track.push(lin.position as u32, track);
                 }
             }
             // What a node observed reaches the recording where the walk
@@ -579,9 +579,8 @@ impl Coord<'_> {
         if stats_enabled() && lin.tracker.is_some() {
             let (keys, labels, packages) = lin.replay.interned();
             crate::note!(
-                "bazel-rs: eval pass 2: tracker ops pending {} (capacity {}), interned keys {keys}, labels {labels}, packages {packages}",
-                lin.track.len(),
-                lin.track.capacity()
+                "bazel-rs: eval pass 2: tracker ops pending {}, interned keys {keys}, labels {labels}, packages {packages}",
+                lin.track.len()
             );
         }
         // The end of phase 1 (pass 1 is through every segment, no flag is
@@ -701,14 +700,7 @@ impl Coord<'_> {
             {
                 due.extend(lin.pending.pop_front());
             }
-            let mut track = std::collections::VecDeque::new();
-            while lin
-                .track
-                .front()
-                .is_some_and(|(position, _)| (*position as usize) < end)
-            {
-                track.extend(lin.track.pop_front());
-            }
+            let track = lin.track.split_before(end);
             let replay = std::mem::replace(&mut lin.replay, TapeReplay::new(0));
             self.engine.eval_pass2 = Some(Box::new(super::pass2::Pending {
                 ops: due,
@@ -760,10 +752,7 @@ impl Coord<'_> {
             // flush walked at once, the last one).
             debug_assert!(
                 added == 0
-                    || (lin
-                        .track
-                        .iter()
-                        .all(|(position, _)| (*position as usize) <= end)
+                    || (lin.track.all_at_or_before(end)
                         && lin.pending.iter().all(|(position, _)| *position <= end)),
                 "internal error: effects kept after a walk that planned {added} entries itself"
             );
@@ -807,9 +796,7 @@ impl Coord<'_> {
                 for op in pending.ops.into_iter().rev() {
                     lin.pending.push_front(op);
                 }
-                for op in pending.track.into_iter().rev() {
-                    lin.track.push_front(op);
-                }
+                lin.track.prepend(pending.track);
             }
             while lin
                 .segments
@@ -841,12 +828,16 @@ impl Coord<'_> {
                 lin.direct(|_| engine.apply_pass2_op(op));
             }
         }
-        while let Some((position, op)) = lin.track.front().copied()
-            && position as usize <= end
         {
-            lin.track.pop_front();
-            if let Some(tracker) = lin.tracker.as_deref_mut() {
-                lin.replay.replay(tracker, op);
+            let Linearizer {
+                track,
+                tracker,
+                replay,
+                ..
+            } = lin;
+            match tracker.as_deref_mut() {
+                Some(tracker) => track.apply_due(end, |op| replay.replay(tracker, op)),
+                None => track.apply_due(end, |_| {}),
             }
         }
         self.store.warnings_seen = self.engine.warnings.len();
