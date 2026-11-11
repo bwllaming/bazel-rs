@@ -18,8 +18,54 @@ impl Engine {
         })
     }
 
-    pub(super) fn split_attribute(
-        &mut self,
+    /// [`Self::analyzed_edge_configurations`] over a lookup context (an
+    /// aspect job's frozen view: the no-config configuration interned
+    /// already).
+    pub(super) fn analyzed_edge_configurations_in<C: super::prepare::Lookup + ?Sized>(
+        cx: &mut C,
+        key: &ConfiguredTargetKey,
+        cfg: &EdgeCfg,
+    ) -> Result<EdgeConfigurations, String> {
+        if *cfg == EdgeCfg::NoConfig {
+            return Ok(EdgeConfigurations::One(cx.no_config()?));
+        }
+        let engine = cx.engine();
+        Ok(match cfg {
+            EdgeCfg::Target | EdgeCfg::NoConfig => EdgeConfigurations::One(key.config),
+            EdgeCfg::Exec(None) => EdgeConfigurations::One(
+                engine
+                    .exec_configurations
+                    .get(key)
+                    .copied()
+                    .unwrap_or(key.config),
+            ),
+            EdgeCfg::Exec(Some(group)) => EdgeConfigurations::One(
+                engine
+                    .group_exec_configurations
+                    .get(&(key.clone(), group.clone()))
+                    .copied()
+                    .unwrap_or(key.config),
+            ),
+            EdgeCfg::Starlark(attribute) => EdgeConfigurations::Transition(
+                engine
+                    .edge_configs
+                    .get(key)
+                    .and_then(|attrs| attrs.get(attribute))
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!(
+                            "internal error: no transitioned configuration for {} attribute {attribute}",
+                            key.label
+                        )
+                    })?,
+            ),
+        })
+    }
+
+    /// A split attribute's prerequisites (over a lookup context: the
+    /// coordinator, or an aspect job's frozen view).
+    pub(super) fn split_attribute<C: super::prepare::Lookup + ?Sized>(
+        cx: &mut C,
         name: &str,
         labels: Vec<Label>,
         branches: &[(String, ConfigId)],
@@ -30,7 +76,7 @@ impl Engine {
             if !seen_labels.insert(label.clone()) {
                 continue;
             }
-            let target = self.target(&label)?;
+            let target = cx.target(&label)?;
             let mut prerequisites: Vec<(Option<ConfigId>, SplitPrerequisite)> = Vec::new();
             for (branch, config) in branches.iter() {
                 let identity = match &target {
@@ -39,7 +85,8 @@ impl Engine {
                     Target::Rule(rule) | Target::Output(rule, _) => {
                         let key = ConfiguredTargetKey::new(rule.label.clone(), *config);
                         Some(
-                            self.rule_delegations
+                            cx.engine()
+                                .rule_delegations
                                 .get(&key)
                                 .map_or(*config, |owner| owner.config),
                         )
@@ -72,8 +119,9 @@ impl Engine {
                 }
             }
             prerequisites.sort_by(|(a, _), (b, _)| {
-                let mnemonic =
-                    |id: Option<ConfigId>| id.map_or("", |id| self.configurations.mnemonic(id));
+                let mnemonic = |id: Option<ConfigId>| {
+                    id.map_or("", |id| cx.engine().configurations.mnemonic(id))
+                };
                 mnemonic(*a).cmp(mnemonic(*b)).then(a.cmp(b))
             });
             attribute
