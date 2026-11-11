@@ -1,0 +1,11 @@
+# Genuine Bazel 9.3.1 (--batch --ignore_all_rc_files, `build --nobuild --noshow_progress
+# --curses=no --color=no`), the sorted `print()` texts (DEBUG lines without their
+# `DEBUG: <WS>/defs.bzl:L:C: ` lead).
+### build //:all
+A a1 on @@//:p target=<target //:p> rule.attr.deps=["<merged target //:q>"]
+A a1 on @@//:q target=<target //:q> rule.attr.deps=[]
+A a1 on @@//:r target=<target //:r> rule.attr.deps=["<merged target //:q>"]
+M a_through_alias: dep=<merged target //:p> label=@@//:p a1=<target //:p> loc=bazel-out/k8-fastbuild/bin/p.out
+M b_direct: dep=<merged target //:p> label=@@//:p a1=<target //:p> loc=bazel-out/k8-fastbuild/bin/p.out
+M c_alias_again: dep=<merged target //:p> label=@@//:p a1=<target //:p> loc=bazel-out/k8-fastbuild/bin/p.out
+M c_alias_again: dep=<merged target //:r> label=@@//:r a1=<target //:r> loc=bazel-out/k8-fastbuild/bin/p.out

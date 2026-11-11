@@ -764,9 +764,12 @@ fn plan_collection<C: AspectCx>(
     // in another context holds others), so equal views share one value.
     let requested_text = label.to_string();
     let variant = identity_variant(&format!("{requested_text}\0{edge_config}"), &applications);
+    // Keyed by the requested label: an alias's merged target is not its
+    // actual's (its AliasProvider), whichever is requested first; both
+    // print `<merged target ACTUAL>` (MergedConfiguredTarget.repr).
     let identity = cx.identity(
         (
-            base_label.clone(),
+            label.clone(),
             Some(base_key.config),
             collection.descriptors(),
         ),
@@ -785,7 +788,8 @@ fn plan_collection<C: AspectCx>(
                     &base.provider_keys,
                     &base.runfiles,
                 )
-                .with_rule_class(base.rule_class.as_deref()),
+                .with_rule_class(base.rule_class.as_deref())
+                .merged(),
             )
         },
     );

@@ -1064,3 +1064,11 @@ fn aspects_call_their_subrules() {
 fn rules_must_declare_their_aspects_required_parameters() {
     compare_genuine_builtin("aspect_rule_parameters", &["A "], false);
 }
+
+/// A dependency with attribute aspects applied prints as a merged target of
+/// its actual label whether requested through an alias or directly, and
+/// whatever the request order (tests/fixtures/aspect_merged_alias).
+#[test]
+fn aspect_applied_dependencies_are_merged_targets_whatever_the_request() {
+    compare_genuine_builtin("aspect_merged_alias", &["A ", "M "], false);
+}

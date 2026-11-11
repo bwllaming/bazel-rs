@@ -375,6 +375,12 @@ pub(crate) enum TargetKind {
     /// the alias's own canonical label; `label` and the boxed kind describe
     /// the actual target.
     Alias(String, Box<TargetKind>),
+    /// MergedConfiguredTarget.repr (configuredtargets/MergedConfiguredTarget.java:371-373):
+    /// a dependency with aspects applied, `<merged target LABEL>` with its
+    /// base's label (an alias's actual, AliasConfiguredTarget.getLabel);
+    /// the boxed kind is the base's (its providers, an alias's
+    /// AliasProvider, are the merged target's).
+    Merged(Box<TargetKind>),
 }
 
 /// The exec path of a File's `root` value and whether it is a source root.
@@ -2240,6 +2246,7 @@ impl fmt::Display for Target {
             TargetKind::OutputFile => write!(f, "<output file target {label}>"),
             TargetKind::Unknown => write!(f, "<unknown target {label}>"),
             TargetKind::Alias(alias, _) => write!(f, "<alias target {alias} of {label}>"),
+            TargetKind::Merged(_) => write!(f, "<merged target {label}>"),
         }
     }
 }
@@ -2252,6 +2259,12 @@ impl fmt::Display for TargetValue {
 }
 
 impl Target {
+    /// The target with aspects applied (TargetKind::Merged over its kind).
+    pub(crate) fn merged(mut self) -> Self {
+        self.kind = TargetKind::Merged(Box::new(self.kind));
+        self
+    }
+
     pub(crate) fn with_rule_class(mut self, rule_class: Option<&str>) -> Self {
         self.rule_class = rule_class.map(str::to_owned);
         self
@@ -2262,7 +2275,7 @@ impl Target {
         fn rule(kind: &TargetKind) -> bool {
             match kind {
                 TargetKind::Rule | TargetKind::SingleExecutableRule => true,
-                TargetKind::Alias(_, actual) => rule(actual),
+                TargetKind::Alias(_, actual) | TargetKind::Merged(actual) => rule(actual),
                 _ => false,
             }
         }
@@ -2603,6 +2616,10 @@ pub(crate) fn target_location_entry(value: Value<'_>) -> Option<(String, Vec<Fil
     let target = TargetValue::from_value(value)?.0.as_ref();
     let label = match &target.kind {
         TargetKind::Alias(alias, _) => alias.clone(),
+        TargetKind::Merged(base) => match base.as_ref() {
+            TargetKind::Alias(alias, _) => alias.clone(),
+            _ => target.label.canonical_form(),
+        },
         _ => target.label.canonical_form(),
     };
     // The stored FilesToRun's executable, read in place (a FilesToRun
