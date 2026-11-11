@@ -350,8 +350,9 @@ pub(super) enum DeltaOp {
     RunfilesNodes(Box<RunfilesNodes>),
     /// A planned node with its source inputs.
     Node(Box<PlannedAction>, Option<(String, SourceInputs)>),
-    /// A lowering in flight on a lowering worker (coordinator builds only).
-    Lowering(lowering::Pending),
+    /// A lowering in flight on a lowering worker (coordinator builds only),
+    /// with its Starlark action's id (the sweep drops a shared action's).
+    Lowering(lowering::Pending, Option<String>),
     /// The sweep (task A): a lowering in flight of a rewritten delta, its
     /// product rewritten (or dropped: a shared action's) where it is placed.
     Rewritten(lowering::Pending, Arc<super::sweep::Rewrite>),
@@ -912,12 +913,13 @@ impl<'a> DeltaBuilder<'a> {
     /// Lower `job` on a lowering worker, or here.
     fn lower(
         &mut self,
+        id: Option<String>,
         job: impl FnOnce() -> Result<lowering::Lowered, String> + Send + 'static,
     ) -> Result<(), String> {
         let job = match self.view.lowering {
             Some(pool) => match pool.submit(job) {
                 Ok(pending) => {
-                    self.ops.push(DeltaOp::Lowering(pending));
+                    self.ops.push(DeltaOp::Lowering(pending, id));
                     return Ok(());
                 }
                 Err(job) => job,
@@ -1062,7 +1064,8 @@ impl<'a> DeltaBuilder<'a> {
             main_ignored: Arc::clone(main_ignored),
             shared: shared.map(|(start, shared)| (start, Arc::clone(shared))),
         };
-        self.lower(move || lower_action(listing, groups, environment))
+        let id = listing.action.id.clone();
+        self.lower(Some(id), move || lower_action(listing, groups, environment))
     }
 
     /// The listed path of [`Self::commit_action`]: the tool runfiles groups
@@ -1324,7 +1327,9 @@ impl<'a> DeltaBuilder<'a> {
                 },
             );
             let (inputs, ignored) = (Arc::clone(&inputs), Arc::clone(main_ignored));
-            self.lower(move || lower_native_action(manifest, &inputs, &ignored))?;
+            self.lower(None, move || {
+                lower_native_action(manifest, &inputs, &ignored)
+            })?;
             Some(self.runfiles_output(key, &id, &input_manifest)?)
         } else {
             None
@@ -1351,7 +1356,9 @@ impl<'a> DeltaBuilder<'a> {
                     },
                 );
                 let ignored = Arc::clone(main_ignored);
-                self.lower(move || lower_native_action(tree, &tree_inputs, &ignored))?;
+                self.lower(None, move || {
+                    lower_native_action(tree, &tree_inputs, &ignored)
+                })?;
                 Some(self.runfiles_output(key, &tree_id, &tree_file)?)
             }
             None => None,
@@ -1783,7 +1790,7 @@ impl Engine {
                     }
                     nodes.push(*planned);
                 }
-                DeltaOp::Lowering(pending) => nodes.enqueue(pending, marks.0, marks.1),
+                DeltaOp::Lowering(pending, _) => nodes.enqueue(pending, marks.0, marks.1),
                 DeltaOp::ListedTreeAction => *listed_tree_actions += 1,
                 _ => unreachable!("internal error: an action commit wrote more than nodes"),
             }
@@ -1975,7 +1982,7 @@ pub(super) fn merge_op(
             }
             state.nodes.push(*planned);
         }
-        DeltaOp::Lowering(pending) => {
+        DeltaOp::Lowering(pending, _) => {
             state.nodes.enqueue(pending, warnings, errors);
         }
         DeltaOp::Rewritten(pending, rewrite) => {
@@ -2043,7 +2050,7 @@ impl DeltaOp {
             DeltaOp::RunfilesInfo(runfiles) => DeltaOp::RunfilesInfo(Arc::clone(runfiles)),
             DeltaOp::RunfilesNodes(nodes) => DeltaOp::RunfilesNodes(nodes.clone()),
             DeltaOp::Node(planned, sources) => DeltaOp::Node(planned.clone(), sources.clone()),
-            DeltaOp::Lowering(_) | DeltaOp::Rewritten(..) => return None,
+            DeltaOp::Lowering(..) | DeltaOp::Rewritten(..) => return None,
             DeltaOp::ActionExecution(id, execution) => {
                 DeltaOp::ActionExecution(id.clone(), execution.clone())
             }
@@ -2362,7 +2369,7 @@ pub(super) fn rendered(op: &DeltaOp) -> String {
                 sources.groups.iter().map(Arc::as_ptr).collect::<Vec<_>>()
             ))
         ),
-        DeltaOp::Lowering(_) | DeltaOp::Rewritten(..) => "lowering".to_owned(),
+        DeltaOp::Lowering(..) | DeltaOp::Rewritten(..) => "lowering".to_owned(),
         DeltaOp::ActionExecution(id, execution) => format!("execution {id} {execution:?}"),
         DeltaOp::BuildInfoAction(id) => format!("build info {id}"),
         DeltaOp::Dry(defaults) => format!("dry {defaults:?}"),

@@ -154,7 +154,7 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
     let walk = ws.build("walk", 1, &[], args);
     let text = stable(&walk);
     check(walk.status.success(), &text);
-    let runs: [(usize, &[(&str, &str)]); 17] = [
+    let runs: [(usize, &[(&str, &str)]); 18] = [
         (2, &[FROZEN]),
         (8, &[FROZEN]),
         (32, &[FROZEN]),
@@ -175,6 +175,11 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
         (8, &[FROZEN, REVERSE, ("BAZEL_RS_EVAL_JITTER", "300")]),
         (8, &[FROZEN, REVERSE, ("BAZEL_RS_EVAL_RESTARTS", "5")]),
         (8, &[FROZEN, ("BAZEL_RS_EVAL_SWEEP", "0")]),
+        // The T2 pipeline (no buffer: no sweep, losers publish nothing).
+        (
+            8,
+            &[FROZEN, ("BAZEL_RS_EVAL_NO_BUFFER", "1"), PARITY_VERIFY],
+        ),
     ];
     for (threads, env) in runs {
         let eval = ws.build("eval", threads, env, args);
@@ -258,6 +263,36 @@ w(name = "z", deps = [":r", ":a"])
                 assert!(text.contains("conflicting actions"), "{text}");
             }
         });
+    }
+}
+
+/// The loser's shared action is never lowered by the walk, so a failure
+/// only its lowering finds (the `BAZEL_RS_LOWERING_FAIL` hook) never fails
+/// the build: the sweep drops that lowering with the action.
+#[test]
+fn a_shared_actions_dropped_lowering_never_fails_the_build() {
+    let ws = Workspace::new(&[(
+        "sh/BUILD.bazel",
+        r#"load("//rules:defs.bzl", "w")
+w(name = "a", out = "shared.txt", content = "same", work = 400000)
+w(name = "b", out = "shared.txt", content = "same")
+w(name = "r", deps = [":b"])
+w(name = "z", deps = [":r", ":a"])
+"#
+        .to_owned(),
+    )]);
+    let fail = ("BAZEL_RS_LOWERING_FAIL", "//sh:b#0");
+    let args = ["//sh:z", "//sh:b", "//sh:a"];
+    let walk = ws.build("walk", 1, &[fail], &args);
+    assert!(walk.status.success(), "{}", stable(&walk));
+    for (threads, env) in [
+        (8, &[FROZEN, fail][..]),
+        (2, &[FROZEN, fail, PARITY_VERIFY][..]),
+        (8, &[FROZEN, fail, REVERSE][..]),
+    ] {
+        let eval = ws.build("eval", threads, env, &args);
+        assert_eq!(stable(&eval), stable(&walk), "{env:?}");
+        assert_eq!(eval.status.code(), walk.status.code(), "{env:?}");
     }
 }
 

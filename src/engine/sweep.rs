@@ -40,11 +40,15 @@
 use super::*;
 
 /// Whether merges rewrite contested and losing deltas instead of building
-/// them again (`BAZEL_RS_EVAL_SWEEP=0`: built again).
+/// them again (`BAZEL_RS_EVAL_SWEEP=0`: built again). Only with the T3
+/// merge buffer (`BAZEL_RS_EVAL_NO_BUFFER=1` turns it off too): the T2
+/// pipeline's builds ahead of their turn read the index without recording
+/// what they read, so a loser publishing its own ids would reach them.
 pub(super) fn enabled() -> bool {
     static ENABLED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
         // snapshot-unrecorded: a merge strategy switch; the output is the same either way.
         std::env::var_os("BAZEL_RS_EVAL_SWEEP").is_none_or(|value| value != "0")
+            && parallel::buffered()
     });
     *ENABLED
 }
@@ -115,8 +119,12 @@ impl CanonicalReads {
         Arc::as_ptr(&artifact.0) as usize
     }
 
-    fn contains(&self, artifact: &Artifact) -> bool {
-        self.0.contains_key(&Self::key(artifact))
+    /// Whether `artifact`, read as `file`'s, was found canonical (its
+    /// identity, and the File it was found for: a reused identity is not).
+    fn contains(&self, file: &File, artifact: &Artifact) -> bool {
+        self.0
+            .get(&Self::key(artifact))
+            .is_some_and(|known| known.file == *file && Arc::ptr_eq(&known.0, &artifact.0))
     }
 
     fn insert(&mut self, artifact: &Artifact) {
@@ -153,7 +161,7 @@ pub(super) fn read_aliases(
         match &read.artifact {
             // Found canonical at an earlier merge: canonical entries never
             // change and readers merge in plan order.
-            Some(artifact) if canonical.contains(artifact) => {}
+            Some(artifact) if canonical.contains(&read.file, artifact) => {}
             Some(artifact) => {
                 let (now, provisional, stamp) = index.current(&read.file)?;
                 if stamp >= reader {
@@ -417,6 +425,16 @@ impl Rewrite {
         sources: &mut Option<(String, SourceInputs)>,
     ) {
         self.node(planned, sources);
+        debug_assert!(
+            !self.dropped.contains(&planned.action.id)
+                && !planned
+                    .dependencies
+                    .iter()
+                    .chain(planned.groups.iter().flat_map(|group| &group.dependencies))
+                    .any(|dependency| self.aliases.contains_key(&dependency.action_id)),
+            "internal error: the sweep placed {} unrewritten",
+            planned.action.id
+        );
     }
 }
 
@@ -508,7 +526,10 @@ pub(super) fn rewrite(
                 rewrite.node(&mut planned, &mut sources);
                 out.push(delta::DeltaOp::Node(planned, sources));
             }
-            delta::DeltaOp::Lowering(pending) | delta::DeltaOp::Rewritten(pending, _) => {
+            // A shared action's lowering is never placed (nor waited
+            // for: the walk never lowers it, so it cannot fail the build).
+            delta::DeltaOp::Lowering(_, Some(id)) if dropped(&id) => {}
+            delta::DeltaOp::Lowering(pending, _) | delta::DeltaOp::Rewritten(pending, _) => {
                 out.push(delta::DeltaOp::Rewritten(pending, Arc::clone(&rewrite)));
             }
             delta::DeltaOp::ActionExecution(id, _) | delta::DeltaOp::BuildInfoAction(id)
@@ -516,13 +537,95 @@ pub(super) fn rewrite(
             other => out.push(other),
         }
     }
-    delta::TargetDelta {
+    let rewritten = delta::TargetDelta {
         ops: out,
         error,
         unchecked,
         uses,
         failed_output,
         reads: Vec::new(),
+    };
+    if cfg!(debug_assertions) || verify() {
+        check_rewritten(&rewritten, &rewrite);
+    }
+    rewritten
+}
+
+/// Debug builds, BAZEL_RS_PARITY_VERIFY: a rewritten delta names no mapped
+/// (or dropped) producer id, plans no shared action and registers none of
+/// its outputs as new.
+fn check_rewritten(delta: &delta::TargetDelta, rewrite: &Rewrite) {
+    let fail = |what: String| -> ! { panic!("internal error: the sweep's rewrite left {what}") };
+    let artifact = |what: &str, artifact: &Artifact| {
+        if rewrite.touched(artifact) {
+            fail(format!(
+                "{what} {} naming {:?}",
+                artifact.exec.display(),
+                artifact.producer
+            ));
+        }
+    };
+    let node = |planned: &PlannedAction| {
+        if rewrite.dropped.contains(&planned.action.id) {
+            fail(format!("the shared action {}'s node", planned.action.id));
+        }
+        for dependency in planned
+            .dependencies
+            .iter()
+            .chain(planned.groups.iter().flat_map(|group| &group.dependencies))
+        {
+            if rewrite.aliases.contains_key(&dependency.action_id) {
+                fail(format!(
+                    "input {} of {} naming {}",
+                    dependency.destination.display(),
+                    planned.action.id,
+                    dependency.action_id
+                ));
+            }
+        }
+    };
+    for op in &delta.ops {
+        match op {
+            delta::DeltaOp::Output(path, producer) => {
+                if producer
+                    .action
+                    .as_ref()
+                    .is_some_and(|(id, _)| rewrite.dropped.contains(id))
+                {
+                    fail(format!(
+                        "the shared output {} registered new",
+                        path.path().display()
+                    ));
+                }
+            }
+            delta::DeltaOp::Artifact(_, registered, _) => artifact("the artifact", registered),
+            delta::DeltaOp::Declared {
+                artifact: declared, ..
+            } => artifact("the declaration", declared),
+            delta::DeltaOp::Dry(dry) => {
+                for file in dry.iter() {
+                    artifact("the file to build", file);
+                }
+            }
+            delta::DeltaOp::RunfilesNodes(nodes) => {
+                artifact("the executable", &nodes.executable);
+                for (_, entry) in &nodes.entries {
+                    if let Some(entry) = entry {
+                        artifact("the runfile", entry);
+                    }
+                }
+            }
+            delta::DeltaOp::Node(planned, _) => node(planned),
+            delta::DeltaOp::ActionExecution(id, _) | delta::DeltaOp::BuildInfoAction(id)
+                if rewrite.dropped.contains(id) =>
+            {
+                fail(format!("the shared action {id}'s execution"))
+            }
+            delta::DeltaOp::Lowering(_, Some(id)) if rewrite.dropped.contains(id) => {
+                fail(format!("the shared action {id}'s lowering"))
+            }
+            _ => {}
+        }
     }
 }
 
@@ -566,6 +669,16 @@ pub(super) fn adopt(
         return Ok((delta, false));
     }
     stat_since(S_LOCALIZE_US, started);
+    // No chains (a loser's id never names a winner) and no shared action
+    // kept: else built again (an internal inconsistency, asserted).
+    let chained = aliases.values().any(|to| aliases.contains_key(to));
+    debug_assert!(
+        !chained,
+        "internal error: a producer id alias chain: {aliases:?}"
+    );
+    if chained {
+        return Err(Some(delta));
+    }
     stat(if meets { S_LOSER } else { S_READER }, 1);
     let started = std::time::Instant::now();
     let rewritten = rewrite(delta, localized.as_ref(), aliases);
@@ -580,7 +693,7 @@ pub(super) fn rendered(delta: &mut delta::TargetDelta) -> Vec<String> {
     let mut lines = Vec::with_capacity(delta.ops.len());
     for op in &mut delta.ops {
         let (receiver, rewrite) = match op {
-            delta::DeltaOp::Lowering(receiver) => (receiver, None),
+            delta::DeltaOp::Lowering(receiver, _) => (receiver, None),
             delta::DeltaOp::Rewritten(receiver, rewrite) => (receiver, Some(Arc::clone(rewrite))),
             delta::DeltaOp::Node(planned, sources) => {
                 lines.push(node_line(planned, sources.as_ref()));
@@ -670,7 +783,7 @@ pub(super) fn compare(
 /// planned node (its own, its shared groups'), every files-to-build and
 /// runfiles artifact names a planned node's action (the workspace status
 /// excepted).
-pub(super) fn check_ids(state: &ActionPlanning) {
+pub(super) fn check_ids(state: &ActionPlanning, action_executions: &ActionExecutions) {
     let nodes = state.nodes.planned();
     // The planned nodes', and the runfiles supports' (planned at the end).
     let mut ids: crate::fast_hash::FxHashSet<&str> =
@@ -716,6 +829,33 @@ pub(super) fn check_ids(state: &ActionPlanning) {
     for (key, dry) in state.dry.iter() {
         for file in dry.iter() {
             artifact(&format!("a file to build of {}", key.label), file);
+        }
+    }
+    // The index's canonical entries (output groups, validation, coverage
+    // and the requested files resolve through it at the end), the
+    // declarations (top-level output-file targets), the per-action tables.
+    state.artifact_index.shared.for_each_shard(|shard| {
+        for entry in shard.iter() {
+            artifact(
+                &format!("the index entry of {}", entry.file.path),
+                &entry.artifact,
+            );
+        }
+    });
+    for (key, declared) in state.declared.entries.iter() {
+        artifact(
+            &format!("the declaration of {}", key.path.display()),
+            declared,
+        );
+    }
+    for id in action_executions.keys() {
+        if !ids.contains(id.as_str()) {
+            fail(format!("the execution table's {id}"));
+        }
+    }
+    for id in state.source_inputs.keys() {
+        if !ids.contains(id.as_str()) {
+            fail(format!("the source inputs' {id}"));
         }
     }
     for (key, nodes) in state.runfiles_nodes.iter() {

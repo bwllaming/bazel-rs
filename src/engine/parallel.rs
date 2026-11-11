@@ -65,6 +65,12 @@ fn frozen_workers(loading_phase_threads: usize) -> usize {
     loading_phase_threads.min(cores).clamp(2, cap.max(2))
 }
 
+/// Whether frozen walks merge through the T3 buffer (the sweep needs it:
+/// super::sweep::enabled).
+pub(super) fn buffered() -> bool {
+    buffer::enabled()
+}
+
 /// `BAZEL_RS_T3_WORKERS=<n>`: the frozen walk's analysis workers (16; 8
 /// with `BAZEL_RS_EVAL_SWEEP=0`).
 fn frozen_worker_cap() -> usize {
@@ -1958,7 +1964,7 @@ impl Engine {
         state.nodes.deferring = deferring;
         let result = drained.and(result);
         if result.is_ok() && super::sweep::verify() && !self.semantic_only() {
-            super::sweep::check_ids(state);
+            super::sweep::check_ids(state, &self.action_executions);
         }
         state.delegated_keys.clear();
         state.artifact_index.walk_done();
