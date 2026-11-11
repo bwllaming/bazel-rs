@@ -1734,6 +1734,28 @@ impl Events {
         self.events.is_empty() && self.children.is_empty()
     }
 
+    /// Whether the events (or a set they hold not recorded yet) include
+    /// one whose effect depends on the order of the recorder's commits:
+    /// tree claims (an owner's replaces a crossing's), selections and
+    /// supersessions, provisional taints (confirmed later), taints (their
+    /// details are capped, first come first kept).
+    fn order_dependent(&self) -> bool {
+        self.events.iter().any(|event| {
+            matches!(
+                event,
+                Event::Claim(_)
+                    | Event::Selection(_)
+                    | Event::SupersedeSelection(..)
+                    | Event::Supersede(_)
+                    | Event::Provisional(_)
+                    | Event::Taint(..)
+            )
+        }) || self
+            .children
+            .iter()
+            .any(|child| child.order_dependent && !child.recorded.load(Ordering::Acquire))
+    }
+
     fn add_child(&mut self, child: Arc<Captured>) {
         if !self.children.iter().any(|known| Arc::ptr_eq(known, &child)) {
             self.children.push(child);
@@ -1758,6 +1780,9 @@ pub struct Captured {
     events: Events,
     /// Its events reached the recorder.
     recorded: AtomicBool,
+    /// It holds events whose effect depends on the order they reach the
+    /// recorder in ([`Events::order_dependent`]).
+    order_dependent: bool,
 }
 
 impl Captured {
@@ -1768,9 +1793,11 @@ impl Captured {
     }
 
     fn new(events: Events) -> Arc<Self> {
+        let order_dependent = events.order_dependent();
         Arc::new(Self {
             events,
             recorded: AtomicBool::new(false),
+            order_dependent,
         })
     }
 
@@ -1958,6 +1985,14 @@ pub fn commit_to_recorder(observations: Observations) {
         return;
     }
     if let Some(recorder) = active() {
+        // Events whose effect depends on the order of the commits reach
+        // the recorder in the caller's (the tape's) order: at once, after
+        // the background commits sent before them.
+        if observations.0.order_dependent() {
+            wait_commits();
+            recorder.apply_events(observations.0);
+            return;
+        }
         committer().send(recorder, observations.0);
     }
 }
@@ -2004,9 +2039,10 @@ impl Committer {
     }
 }
 
+static COMMITTER_SLOT: OnceLock<Committer> = OnceLock::new();
+
 fn committer() -> &'static Committer {
-    static COMMITTER: OnceLock<Committer> = OnceLock::new();
-    COMMITTER.get_or_init(|| {
+    COMMITTER_SLOT.get_or_init(|| {
         let (sender, receiver) = mpsc::channel::<(&'static Recorder, Events)>();
         let receiver = Arc::new(Mutex::new(receiver));
         for index in 0..COMMIT_THREADS {
@@ -2019,10 +2055,10 @@ fn committer() -> &'static Committer {
                         let Ok((recorder, events)) = next else {
                             return;
                         };
+                        // Done also when the apply panics (the readers
+                        // waiting then fail instead of hanging).
+                        let _done = CommitDone;
                         recorder.apply_events(events);
-                        if let Some(committer) = COMMITTER.get() {
-                            committer.done();
-                        }
                     }
                 });
         }
@@ -2045,6 +2081,25 @@ fn scopeguard_wait(started: Instant) -> impl Drop {
     Waited(started)
 }
 
+/// Marks one background commit applied when dropped (also by a panic:
+/// [`COMMIT_FAILED`]).
+struct CommitDone;
+
+impl Drop for CommitDone {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            COMMIT_FAILED.store(true, Ordering::SeqCst);
+        }
+        if let Some(committer) = COMMITTER_SLOT.get() {
+            committer.done();
+        }
+    }
+}
+
+/// A background commit panicked: the recording is incomplete, and every
+/// later reader panics too (the process ends as an internal error).
+static COMMIT_FAILED: AtomicBool = AtomicBool::new(false);
+
 /// Wait until every [`commit_to_recorder`] so far reached the recorder.
 pub fn wait_commits() {
     let committer = committer();
@@ -2060,6 +2115,11 @@ pub fn wait_commits() {
             .wait(pending)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
+    drop(pending);
+    assert!(
+        !COMMIT_FAILED.load(Ordering::SeqCst),
+        "internal error: a background commit of the analysis snapshot's recording panicked"
+    );
 }
 
 /// Run `f` capturing what it observes (a memo's miss): the set is handed to
@@ -2653,6 +2713,7 @@ pub fn provisional_taint(detail: impl FnOnce() -> String) {
 /// longer taints the run. A later replay of the same provisional event
 /// (a captured set) taints again.
 pub fn confirm_provisional(detail: &str) {
+    wait_commits();
     if let Some(recorder) = active().or_else(|| RECORDER.get()) {
         lock(&recorder.provisional).remove(detail);
     }
@@ -2762,6 +2823,7 @@ pub fn taint_after_window(kind: Taint, detail: impl FnOnce() -> String) {
 /// (crate::request::PlannedRequest::blockers: the actions the plan kept),
 /// taint the run. Recorded also after the window closed.
 pub fn settle_plan_taints(blockers: impl IntoIterator<Item = (Taint, String)>) {
+    wait_commits();
     if let Some(recorder) = RECORDER.get() {
         recorder.settle_plan(blockers);
     }
@@ -3010,6 +3072,38 @@ mod tests {
 
     /// W6R: a load unit's frame reaches the recorder only through its
     /// commit; a dropped frame (an unused or aborted unit), and the
+    /// `commit_to_recorder` applies a frame in the background, unless it
+    /// holds an event whose effect depends on the commits' order (a taint,
+    /// a claim, ...): that one at once, in the caller's order.
+    #[test]
+    fn background_commits_keep_order_dependent_events_in_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let window = record_this_thread();
+        let unit = unit_scope();
+        taint(Taint::Network, || "one".to_owned());
+        let observations = unit.finish();
+        assert!(observations.0.order_dependent());
+        commit_to_recorder(observations);
+        assert!(lock(&window.recorder.taints).contains_key(&Taint::Network));
+        let unit = unit_scope();
+        exists(temp.path().join("g"));
+        let observations = unit.finish();
+        assert!(!observations.0.order_dependent());
+        commit_to_recorder(observations);
+        wait_commits();
+        assert_eq!(
+            paths_of(&window.recorder.snapshot()),
+            [(temp.path().join("g").display().to_string(), "STAT")]
+        );
+        // A captured set holding a taint makes its replaying frame's
+        // commit order-dependent until the set is recorded.
+        let unit = unit_scope();
+        let (_, captured) = capture(|| taint(Taint::Network, || "two".to_owned()));
+        let observations = unit.finish();
+        assert!(captured.is_some_and(|captured| captured.order_dependent));
+        assert!(observations.0.order_dependent());
+    }
+
     /// captures inside it, record nothing.
     #[test]
     fn a_frame_reaches_the_recorder_only_through_its_commit() {
