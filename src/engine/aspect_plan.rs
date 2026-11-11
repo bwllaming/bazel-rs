@@ -67,6 +67,17 @@ pub(super) trait AspectCx: prepare::Lookup + Sized {
         key: &ConfiguredTargetKey,
         rule: &Rule,
     ) -> Result<crate::aspects::AspectCollection, String>;
+    /// Phase 1's configurations of an aspect's attributes on a base target.
+    fn attribute_configs(
+        &self,
+        memo: &(ConfiguredTargetKey, String),
+    ) -> Option<Arc<BTreeMap<String, TransitionConfigurations>>> {
+        self.engine().aspect_attribute_configs.get(memo).cloned()
+    }
+    /// Phase 1's toolchain contexts of an aspect in a configuration.
+    fn aspect_toolchains(&self, memo: &(ConfigId, String)) -> Option<Arc<AspectToolchains>> {
+        self.engine().aspect_toolchains.get(memo).cloned()
+    }
     /// Walk one aspect-applied dependency (`walk`), or answer it from what
     /// the context knows of it.
     fn walk_dependency(
@@ -843,10 +854,7 @@ fn plan_application<C: AspectCx>(
     // a prerequisite collection of their own (AspectContext.
     // getMainAspectPrerequisitesCollection), never the base rule's.
     let attribute_configs = cx
-        .engine()
-        .aspect_attribute_configs
-        .get(&(base_key.clone(), aspect.identity.clone()))
-        .cloned()
+        .attribute_configs(&(base_key.clone(), aspect.identity.clone()))
         .ok_or_else(|| {
             format!(
                 "internal analysis order error: aspect {} on {} was not analyzed",
@@ -872,12 +880,7 @@ fn plan_application<C: AspectCx>(
     let mut base_aspect_attributes = Vec::new();
     for (owner, names) in crate::aspects::base_aspect_attributes(&path, &base_rule) {
         let memo = (base_key.clone(), aspect_attribute_memo_name(&owner, aspect));
-        let owner_configs = cx
-            .engine()
-            .aspect_attribute_configs
-            .get(&memo)
-            .cloned()
-            .ok_or_else(|| {
+        let owner_configs = cx.attribute_configs(&memo).ok_or_else(|| {
                 format!(
                     "internal analysis order error: the attributes of aspect {} under {} on {} were not analyzed",
                     owner.identity, aspect.identity, base_key.label
@@ -1081,10 +1084,8 @@ fn plan_application<C: AspectCx>(
     // ctx.exec_groups and the action factory's exec groups; the
     // execution table over NO exec_properties (an aspect's RuleContext
     // takes none, ConfiguredTargetFactory.createAspect:702).
-    let toolchains = engine
-        .aspect_toolchains
-        .get(&(base_key.config, aspect.identity.clone()))
-        .cloned()
+    let toolchains = cx
+        .aspect_toolchains(&(base_key.config, aspect.identity.clone()))
         .ok_or_else(|| {
             format!(
                 "internal analysis order error: the toolchains of aspect {} in the configuration of {} were not resolved",

@@ -67,6 +67,16 @@ impl<K: std::hash::Hash + Eq + Clone, V> SingleFlight<K, V> {
         slot.try_lock().ok().and_then(|value| value.clone())
     }
 
+    /// The value of `key` if it is filled, waiting for a fill in progress
+    /// (none started: `None`).
+    pub(super) fn get(&self, key: &K) -> Option<Arc<V>> {
+        let slot = {
+            let shard = self.shard(key).lock().unwrap_or_else(|e| e.into_inner());
+            Arc::clone(shard.get(key)?)
+        };
+        slot.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// T2: drop `key`'s entry (its value was filled from reads that are
     /// stale now): the next use fills it again.
     pub(super) fn remove(&self, key: &K) {

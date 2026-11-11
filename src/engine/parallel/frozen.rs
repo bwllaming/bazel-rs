@@ -495,7 +495,7 @@ impl Engine {
             view,
             compact_repo_mapping: self.compact_repo_mapping,
             platform_schedule,
-            aspects: super::aspect_jobs::AspectTable::new(state),
+            aspects: super::aspect_jobs::AspectTable::new(self, state),
         })
     }
 
@@ -743,17 +743,32 @@ pub(super) fn run_frozen(
         );
         let mut cx = prepare::SharedPrepare::frozen(frozen, index);
         cx.aspect_jobs = super::aspect_jobs::enabled();
+        // Task B: an aspect job resolves the source files its applications
+        // look up (applied at its merge, AspectRecord::sources).
+        cx.resolve_sources = cx.aspect_jobs && super::aspect_jobs::has_attribute_aspects(rule);
         let prepared = Engine::prepare_custom(&mut cx, key, rule);
         timer.finish();
         let elapsed = started.elapsed();
         let (effects, sentinel) = isolation.finish();
         let prepare::SharedRecord {
             owner,
-            abort,
+            mut abort,
             aspects,
+            sources,
             ..
         } = cx.record;
-        let aspects = aspects.map(Box::new);
+        let aspects = match aspects {
+            Some(mut record) => {
+                record.sources = sources;
+                Some(Box::new(record))
+            }
+            None => {
+                if !sources.is_empty() {
+                    abort.get_or_insert("target_lookup");
+                }
+                None
+            }
+        };
         let aborted = sentinel
             || abort.is_some()
             || prepared

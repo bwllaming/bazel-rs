@@ -535,8 +535,8 @@ impl<'a> SharedPrepare<'a> {
     }
 
     /// A frozen walk worker's view.
-    pub(super) fn frozen_view(&self) -> Option<&'a parallel::Frozen> {
-        self.frozen.map(|(frozen, _)| frozen)
+    pub(super) fn frozen_view(&self) -> Option<(&'a parallel::Frozen, usize)> {
+        self.frozen
     }
 
     pub(super) fn abort(&mut self, why: &'static str) -> String {
@@ -698,7 +698,12 @@ impl Lookup for SharedPrepare<'_> {
             Some(target) => target,
             None if self.resolve_sources => match self.source(label) {
                 Some(target) => target,
-                None => Err(self.abort("target_lookup")),
+                None => {
+                    if self.aspect_jobs && parallel::debug_t3() {
+                        eprintln!("T3-DEBUG aspect job lookup of {label} left to the coordinator");
+                    }
+                    Err(self.abort("target_lookup"))
+                }
             },
             None => Err(self.abort("target_lookup")),
         }

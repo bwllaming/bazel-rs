@@ -357,7 +357,7 @@ pub(super) fn report() {
 
 /// `BAZEL_RS_T3_DEBUG=1`: the cursor's longest waits and entries at their
 /// turn, with what readied them.
-fn debug() -> bool {
+pub(super) fn debug() -> bool {
     static DEBUG: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
         // snapshot-unrecorded: a diagnostics switch; the output is the same either way.
         std::env::var_os("BAZEL_RS_T3_DEBUG").is_some()
@@ -1651,6 +1651,16 @@ impl Engine {
                 || super::aspect_jobs::verify_mode())
         {
             super::aspect_jobs::stat(super::aspect_jobs::S_FALLBACK_PREPARE, 1);
+            if debug() {
+                eprintln!(
+                    "T3-DEBUG aspect job {} at its turn: prepared={:?} worker={} console={} observations={}",
+                    key.label,
+                    prepared.as_ref().err(),
+                    worker.is_some(),
+                    effects.console.len(),
+                    !effects.observations.is_empty()
+                );
+            }
             effects.apply(self, false);
             return self.buffered_at_turn(state, configured, key, rule, index);
         }

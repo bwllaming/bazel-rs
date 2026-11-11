@@ -147,18 +147,69 @@ pub(in crate::engine) struct AspectTable {
     /// The planning state's as the walk froze them.
     memo: BTreeMap<AspectApplicationKey, AspectProviders>,
     memo_identities: AspectTargetIdentities,
+    /// Phase 1's aspect tables the walk's pass-2 ops publish, each with
+    /// the plan position before whose turn it applies (an entry at or
+    /// after it sees it, as at its turn; `Frozen::platform_at`).
+    predicates: HashMap<(Label, String), (usize, bool)>,
+    attr_aspects: HashMap<(ConfiguredTargetKey, String), (usize, AspectAttrAspects)>,
+    toolchains: HashMap<(ConfigId, String), (usize, Arc<AspectToolchains>)>,
+    attribute_configs: HashMap<
+        (ConfiguredTargetKey, String),
+        (usize, Arc<BTreeMap<String, TransitionConfigurations>>),
+    >,
 }
 
+type AspectAttrAspects = (Option<Arc<[String]>>, Option<Arc<[String]>>);
+
 impl AspectTable {
-    pub(in crate::engine) fn new(state: &ActionPlanning) -> Self {
+    pub(in crate::engine) fn new(engine: &Engine, state: &ActionPlanning) -> Self {
         if !enabled() {
             return Self::default();
         }
-        Self {
+        let mut table = Self {
             memo: state.aspect_providers.clone(),
             memo_identities: state.aspect_target_identities.clone(),
             ..Self::default()
+        };
+        use crate::engine::eval::linearize::driver::Published;
+        use crate::engine::eval::linearize::pass2::Op;
+        let Some(pending) = &engine.eval_pass2 else {
+            return table;
+        };
+        for (position, op) in &pending.ops {
+            let Op::Publish(published) = op else {
+                continue;
+            };
+            let position = *position;
+            match published {
+                Published::AspectPredicate(memo, value) => {
+                    table
+                        .predicates
+                        .entry(memo.clone())
+                        .or_insert((position, *value));
+                }
+                Published::AspectAttrAspects(memo, value) => {
+                    table
+                        .attr_aspects
+                        .entry(memo.clone())
+                        .or_insert_with(|| (position, value.clone()));
+                }
+                Published::AspectToolchains(memo, value) => {
+                    table
+                        .toolchains
+                        .entry(memo.clone())
+                        .or_insert_with(|| (position, Arc::clone(value)));
+                }
+                Published::AspectAttributeConfigs(memo, value) => {
+                    table
+                        .attribute_configs
+                        .entry(memo.clone())
+                        .or_insert_with(|| (position, Arc::clone(value)));
+                }
+                _ => {}
+            }
         }
+        table
     }
 }
 
@@ -171,6 +222,9 @@ pub(in crate::engine) struct AspectRecord {
     identities: Vec<(AspectIdentityKey, Arc<crate::starlark_types::Target>)>,
     /// A dependency whose results were not published.
     pub(super) unready: Option<ConfiguredTargetKey>,
+    /// The source files its lookups resolved (Engine::target's records,
+    /// applied at its merge).
+    pub(super) sources: Vec<(Label, PathBuf, bool, SourceSide)>,
     /// The dependencies walked (one result per job).
     walked: HashMap<(Label, ConfigId, Vec<String>), (DependencyTarget, AspectApplications)>,
 }
@@ -179,6 +233,8 @@ pub(in crate::engine) struct AspectRecord {
 struct FrozenAspects<'p, 'a> {
     prepare: &'p mut prepare::SharedPrepare<'a>,
     frozen: &'a Frozen,
+    /// The job's plan index.
+    index: usize,
     /// The subs of the applications being planned (innermost last).
     frames: Vec<Vec<AspectApplicationKey>>,
     owner: Option<(
@@ -246,6 +302,16 @@ impl prepare::Lookup for FrozenAspects<'_, '_> {
 
 /// Engine::attribute_aspects over the definitions loaded already (`None`:
 /// one is not).
+/// A Starlark rule with attribute aspects (`attr.*(aspects = [...])`).
+pub(super) fn has_attribute_aspects(rule: &Rule) -> bool {
+    rule.custom.as_ref().is_some_and(|custom| {
+        custom
+            .schema
+            .values()
+            .any(|spec| !spec.declaration.aspects.is_empty())
+    })
+}
+
 pub(in crate::engine) fn loaded_attribute_aspects(
     engine: &Engine,
     rule: &Rule,
@@ -337,14 +403,25 @@ impl AspectCx for FrozenAspects<'_, '_> {
         rule: &Rule,
     ) -> Result<crate::aspects::AspectCollection, String> {
         let engine = self.prepare.engine;
+        let (table, index) = (&self.frozen.aspects, self.index);
         let mut missed = false;
         let collection = crate::aspects::aspect_collection(aspects, rule, &mut |aspect| {
             let memo = (rule.label.clone(), aspect.descriptor.clone());
-            match engine.aspect_predicates.get(&memo) {
-                Some(result) => Ok(*result),
+            let scheduled = table
+                .predicates
+                .get(&memo)
+                .filter(|(position, _)| *position <= index)
+                .map(|(_, value)| *value);
+            match engine.aspect_predicates.get(&memo).copied().or(scheduled) {
+                Some(result) => Ok(result),
+                // Phase 1's memo is the evaluator's: computed here (a
+                // function of the aspect and the rule), an error left to
+                // the coordinator.
                 None => {
-                    missed = true;
-                    Err(prepare::SHARED_ABORT.to_owned())
+                    crate::aspect_propagation::propagation_predicate(aspect, rule).map_err(|_| {
+                        missed = true;
+                        prepare::SHARED_ABORT.to_owned()
+                    })
                 }
             }
         });
@@ -358,7 +435,7 @@ impl AspectCx for FrozenAspects<'_, '_> {
         &mut self,
         mut collection: crate::aspects::AspectCollection,
         key: &ConfiguredTargetKey,
-        _rule: &Rule,
+        rule: &Rule,
     ) -> Result<crate::aspects::AspectCollection, String> {
         let engine = self.prepare.engine;
         for (aspect, _) in &mut collection.used {
@@ -368,9 +445,30 @@ impl AspectCx for FrozenAspects<'_, '_> {
                 continue;
             }
             let memo = (key.clone(), aspect.descriptor.clone());
-            let Some((attr_aspects, toolchains_aspects)) =
-                engine.aspect_attr_aspects.get(&memo).cloned()
-            else {
+            let table = &self.frozen.aspects;
+            let scheduled = || {
+                table
+                    .attr_aspects
+                    .get(&memo)
+                    .filter(|(position, _)| *position <= self.index)
+                    .map(|(_, value)| value.clone())
+            };
+            let computed = engine
+                .aspect_attr_aspects
+                .get(&memo)
+                .cloned()
+                .or_else(scheduled)
+                .or_else(|| {
+                    Some((
+                        crate::aspect_propagation::computed_attr_aspects(aspect, rule)
+                            .ok()?
+                            .map(Arc::from),
+                        crate::aspect_propagation::computed_toolchains_aspects(aspect, rule)
+                            .ok()?
+                            .map(Arc::from),
+                    ))
+                });
+            let Some((attr_aspects, toolchains_aspects)) = computed else {
                 return Err(self.prepare.abort("aspect_attr_aspects"));
             };
             let mut definition = aspect.as_ref().clone();
@@ -379,6 +477,33 @@ impl AspectCx for FrozenAspects<'_, '_> {
             *aspect = Arc::new(definition);
         }
         Ok(collection)
+    }
+
+    fn attribute_configs(
+        &self,
+        memo: &(ConfiguredTargetKey, String),
+    ) -> Option<Arc<BTreeMap<String, TransitionConfigurations>>> {
+        self.prepare
+            .engine
+            .aspect_attribute_configs
+            .get(memo)
+            .cloned()
+            .or_else(|| {
+                let (position, value) = self.frozen.aspects.attribute_configs.get(memo)?;
+                (*position <= self.index).then(|| Arc::clone(value))
+            })
+    }
+
+    fn aspect_toolchains(&self, memo: &(ConfigId, String)) -> Option<Arc<AspectToolchains>> {
+        self.prepare
+            .engine
+            .aspect_toolchains
+            .get(memo)
+            .cloned()
+            .or_else(|| {
+                let (position, value) = self.frozen.aspects.toolchains.get(memo)?;
+                (*position <= self.index).then(|| Arc::clone(value))
+            })
     }
 
     fn walk_dependency(
@@ -423,7 +548,7 @@ impl AspectCx for FrozenAspects<'_, '_> {
         if let Some(providers) = table.memo.get(key) {
             return Some(providers.clone());
         }
-        let applied = table.applications.peek(key)?;
+        let applied = table.applications.get(key)?;
         match applied.kind {
             AppliedKind::Unusable => None,
             _ => Some(applied.providers.clone()),
@@ -576,12 +701,13 @@ pub(in crate::engine) fn edge_view(
     edge_config: ConfigId,
     aspects: Vec<Arc<crate::aspects::AspectDefinition>>,
 ) -> Result<DependencyTarget, String> {
-    let Some(frozen) = prepare.frozen_view() else {
+    let Some((frozen, index)) = prepare.frozen_view() else {
         return Err(prepare.abort("attribute_aspects"));
     };
     let mut cx = FrozenAspects {
         prepare,
         frozen,
+        index,
         frames: Vec::new(),
         owner: None,
         missed: Default::default(),
@@ -657,6 +783,15 @@ impl Engine {
         let Some(frozen) = self.frozen_walk.clone() else {
             return Ok(false);
         };
+        // The source lookups its prepare made (Engine::target): what they
+        // record, their memoized paths.
+        for (label, path, stable, side) in &record.sources {
+            side.clone()
+                .apply(&mut self.missing_sources, &mut self.source_directories);
+            if *stable {
+                self.source_targets.insert(label.clone(), path.clone());
+            }
+        }
         for (key, identity) in &record.identities {
             if state
                 .aspect_target_identities
@@ -691,7 +826,7 @@ impl Engine {
         if state.aspect_providers.contains_key(key) {
             return Ok(true);
         }
-        let Some(applied) = frozen.aspects.applications.peek(key) else {
+        let Some(applied) = frozen.aspects.applications.get(key) else {
             stat(9, 1);
             return Ok(false);
         };

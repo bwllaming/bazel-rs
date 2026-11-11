@@ -4630,3 +4630,8 @@ const _: () = {
     sync::<ActionPlanning>();
     sync::<ConfiguredNodes>();
 };
+
+/// `BAZEL_RS_T3_DEBUG`.
+pub(super) fn debug_t3() -> bool {
+    buffer::debug()
+}
