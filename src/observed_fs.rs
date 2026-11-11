@@ -2368,12 +2368,21 @@ fn audit_report(recorder: &Recorder) -> Option<String> {
         }
     }
     let missing: usize = kinds.values().map(|(_, missing)| missing).sum();
+    // The kinds whose value the engine keeps for phase 2 (a memo: a hit
+    // there observes nothing). A configured target, a package or a lookup
+    // the tape never used is not the engine's: phase 2 observes it itself
+    // if it needs it, as the walk does.
+    let memos: usize = kinds
+        .iter()
+        .filter(|(kind, _)| !matches!(**kind, "CT1" | "Pkg" | "Tgt" | "CsMatch"))
+        .map(|(_, (_, missing))| missing)
+        .sum();
     let by_kind: Vec<String> = kinds
         .iter()
         .map(|(kind, (dropped, missing))| format!("{kind} {dropped}/{missing}"))
         .collect();
     Some(format!(
-        "eval audit: observations of dropped frames (kind dropped/not recorded): {}; not recorded {missing}{}",
+        "eval audit: observations of dropped frames (kind dropped/not recorded): {}; not recorded {missing}, of memos {memos}{}",
         by_kind.join(", "),
         first_missing
             .map(|first| format!(", first: {first}"))
