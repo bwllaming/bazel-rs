@@ -1488,7 +1488,15 @@ impl Recorder {
         if let Some(mut record) = record {
             restat_manifest(&mut record, self.window_start_ns);
             repositories.push(record);
+            // Owned now: a claim inside a frame walks nothing more.
+            lock(&self.walks).remove(root);
         }
+    }
+
+    /// Forget the trees claims inside frames walked (memory: the end of
+    /// the evaluator's phase 1; a later claim walks again).
+    pub fn forget_walks(&self) {
+        *lock(&self.walks) = HashMap::new();
     }
 
     /// A claim event reaching the recorder: [`Self::store_claim`] with the
@@ -1756,6 +1764,42 @@ impl Events {
             .any(|child| child.order_dependent && !child.recorded.load(Ordering::Acquire))
     }
 
+    /// Whether the events (or a set they hold not recorded yet) forget an
+    /// earlier observation ([`supersede`], [`supersede_selection`]):
+    /// ordered after every commit before them, the background ones
+    /// included.
+    fn supersedes(&self) -> bool {
+        self.events
+            .iter()
+            .any(|event| matches!(event, Event::Supersede(_) | Event::SupersedeSelection(..)))
+            || self
+                .children
+                .iter()
+                .any(|child| child.supersedes && !child.recorded.load(Ordering::Acquire))
+    }
+
+    /// The order-dependent part (applied in the caller's order) and the
+    /// rest (observations and environment digests, any order): a set
+    /// holding an order-dependent event goes whole with the first.
+    fn split_order_dependent(self) -> (Events, Events) {
+        let mut ordered = Events::default();
+        let mut free = Events::default();
+        for event in self.events {
+            match event {
+                Event::Observe(..) | Event::Env(..) => free.events.push(event),
+                event => ordered.events.push(event),
+            }
+        }
+        for child in self.children {
+            if child.order_dependent && !child.recorded.load(Ordering::Acquire) {
+                ordered.children.push(child);
+            } else {
+                free.children.push(child);
+            }
+        }
+        (ordered, free)
+    }
+
     fn add_child(&mut self, child: Arc<Captured>) {
         if !self.children.iter().any(|known| Arc::ptr_eq(known, &child)) {
             self.children.push(child);
@@ -1783,6 +1827,8 @@ pub struct Captured {
     /// It holds events whose effect depends on the order they reach the
     /// recorder in ([`Events::order_dependent`]).
     order_dependent: bool,
+    /// Of them, a supersession ([`Events::supersedes`]).
+    supersedes: bool,
 }
 
 impl Captured {
@@ -1794,10 +1840,12 @@ impl Captured {
 
     fn new(events: Events) -> Arc<Self> {
         let order_dependent = events.order_dependent();
+        let supersedes = events.supersedes();
         Arc::new(Self {
             events,
             recorded: AtomicBool::new(false),
             order_dependent,
+            supersedes,
         })
     }
 
@@ -1986,11 +2034,21 @@ pub fn commit_to_recorder(observations: Observations) {
     }
     if let Some(recorder) = active() {
         // Events whose effect depends on the order of the commits reach
-        // the recorder in the caller's (the tape's) order: at once, after
-        // the background commits sent before them.
+        // the recorder in the caller's (the tape's) order: at once (their
+        // order is among themselves: the background commits hold none); a
+        // supersession after the background commits sent before it (it
+        // forgets what they observed).
         if observations.0.order_dependent() {
-            wait_commits();
-            recorder.apply_events(observations.0);
+            if observations.0.supersedes() {
+                wait_commits();
+                recorder.apply_events(observations.0);
+                return;
+            }
+            let (ordered, free) = observations.0.split_order_dependent();
+            recorder.apply_events(ordered);
+            if !free.is_empty() {
+                committer().send(recorder, free);
+            }
             return;
         }
         committer().send(recorder, observations.0);
