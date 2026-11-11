@@ -456,3 +456,93 @@ on_platform(name = "on_c", platform = "//plat:c", deps = ["//p1:top", ":u"])
         assert_eq!(sequence(&eval), expected, "{threads} threads, {env:?}");
     }
 }
+
+const PLATFORM_ASPECT_BZL: &str = r#"
+def _seen_impl(target, ctx):
+    has = ctx.target_platform_has_constraint(ctx.attr._red[platform_common.ConstraintValueInfo])
+    print("aspect on %s: red=%s" % (target.label, has))
+    return []
+
+seen = aspect(
+    implementation = _seen_impl,
+    attr_aspects = ["deps"],
+    attrs = {"_red": attr.label(default = "//plat:red")},
+)
+
+def _lib_impl(ctx):
+    return [DefaultInfo()]
+
+lib = rule(implementation = _lib_impl, attrs = {"deps": attr.label_list()})
+
+def _lint_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, "x")
+    return [DefaultInfo(files = depset([out]))]
+
+lint = rule(implementation = _lint_impl, attrs = {"deps": attr.label_list(aspects = [seen])})
+"#;
+
+/// Task B: aspect applications whose implementation reads the target
+/// platform, under platforms the deferred walk publishes at their first
+/// use: an application analyzed by a later rule's job (the platform
+/// resolved at its position) and committed at an earlier one's merge is
+/// the earlier position's, as the walk analyzes it (the jobs' reads hold
+/// only where the walk's would; else the rule is prepared at its turn).
+#[test]
+fn aspect_applications_under_deferred_platforms_read_them_at_the_placing_rules_position() {
+    let ws = Workspace::new(
+        3,
+        r#"filegroup(name = "multi", srcs = ["//plat:on_a", "//p1:top", "//plat:on_b", "//p2:top", "//plat:on_a2"])
+"#,
+    );
+    for (path, text) in [
+        ("plat/defs.bzl", PLATFORMS_BZL.to_owned()),
+        ("plat/aspects.bzl", PLATFORM_ASPECT_BZL.to_owned()),
+        (
+            "plat/BUILD.bazel",
+            r#"load(":defs.bzl", "on_platform")
+load(":aspects.bzl", "lib", "lint")
+package(default_visibility = ["//visibility:public"])
+constraint_setting(name = "color")
+constraint_value(name = "red", constraint_setting = ":color")
+platform(name = "a", constraint_values = [":red"])
+platform(name = "b")
+lib(name = "base")
+lib(name = "mid", deps = [":base"])
+lint(name = "early", deps = [":mid"])
+lint(name = "late", deps = [":mid", ":base"])
+on_platform(name = "on_a", platform = "//plat:a", deps = [":early", "//p0:top"])
+on_platform(name = "on_b", platform = "//plat:b", deps = [":late", ":early"])
+on_platform(name = "on_a2", platform = "//plat:a", deps = ["//p1:top", ":late"])
+"#
+            .to_owned(),
+        ),
+    ] {
+        fs::create_dir_all(ws.path().join("plat")).unwrap();
+        fs::write(ws.path().join(path), text).unwrap();
+    }
+    let args = ["//:multi", "--experimental-builtin-modules=true"];
+    compare(&ws, &args, |success, text| {
+        assert!(success, "{text}");
+        assert!(text.contains("red=True"), "{text}");
+    });
+    let walk = ws.build("walk", 1, &[], &args);
+    let frozen = ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all");
+    let runs: [(usize, &[(&str, &str)]); 4] = [
+        (8, &[frozen, ("BAZEL_RS_PARITY_REVERSE", "1")]),
+        (32, &[frozen, ("BAZEL_RS_T3_CLASSIFY_JITTER", "20000")]),
+        (
+            2,
+            &[
+                frozen,
+                ("BAZEL_RS_PARITY_REVERSE", "1"),
+                ("BAZEL_RS_VERIFY_DELTA", "1"),
+            ],
+        ),
+        (8, &[frozen, ("BAZEL_RS_T3_ASPECT_JOBS", "0")]),
+    ];
+    for (threads, env) in runs {
+        let eval = ws.build("eval", threads, env, &args);
+        assert_eq!(stable(&eval), stable(&walk), "{threads} threads, {env:?}");
+    }
+}

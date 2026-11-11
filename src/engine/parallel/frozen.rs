@@ -96,6 +96,25 @@ impl Frozen {
             .map(|(_, platform)| platform.clone())
     }
 
+    /// [`Self::platform_at`] with the plan positions where the answer is
+    /// the same: `[from, to)`.
+    pub(in crate::engine) fn platform_range(
+        &self,
+        target: &ConfiguredTargetKey,
+        index: usize,
+    ) -> (Option<PlatformResult>, usize, usize) {
+        if let Some(platform) = self.engine.platforms.get(target) {
+            return (Some(platform.clone()), 0, usize::MAX);
+        }
+        match self.platform_schedule.get(target) {
+            Some((position, platform)) if *position <= index => {
+                (Some(platform.clone()), *position, usize::MAX)
+            }
+            Some((position, _)) => (None, 0, *position),
+            None => (None, 0, usize::MAX),
+        }
+    }
+
     /// Whether the target platform of `key`'s configuration is resolved
     /// at entry `index`'s turn ([`Self::platform_at`]).
     pub(super) fn platform_resolved_at(&self, key: &ConfiguredTargetKey, index: usize) -> bool {

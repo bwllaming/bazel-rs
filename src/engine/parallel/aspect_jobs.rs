@@ -35,7 +35,9 @@
 
 use super::*;
 use crate::aspects::AspectApplicationKey;
-use crate::engine::aspect_plan::{self, AspectCommit, AspectCx, AspectIdentityKey, Planned};
+use crate::engine::aspect_plan::{
+    self, AspectCommit, AspectCx, AspectIdentityKey, Context, Planned,
+};
 
 /// A dependency's results are not published yet (the job is queued again).
 pub(in crate::engine) const UNREADY: &str = "\u{1}aspect-job-unready";
@@ -75,8 +77,8 @@ pub(super) fn verify_mode() -> bool {
 }
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL aspect_jobs`).
-static STATS: [AtomicU64; 14] = [const { AtomicU64::new(0) }; 14];
-const STAT_NAMES: [&str; 14] = [
+static STATS: [AtomicU64; 17] = [const { AtomicU64::new(0) }; 17];
+const STAT_NAMES: [&str; 17] = [
     "analyzed",
     "unusable",
     "requeued",
@@ -91,6 +93,9 @@ const STAT_NAMES: [&str; 14] = [
     "place_inputs",
     "place_taken",
     "fallback_prepare",
+    "place_range",
+    "place_memo",
+    "coordinator_rejects",
 ];
 pub(super) const S_FALLBACK_PREPARE: usize = 13;
 pub(super) const S_REQUEUED: usize = 2;
@@ -121,13 +126,42 @@ pub(super) fn report() {
     ));
 }
 
-/// One application of a frozen walk: analyzed once, committed at its first
-/// dependent's merge.
+/// Aspect-configured `Target` values by key.
+type Identities = Vec<(AspectIdentityKey, Arc<crate::starlark_types::Target>)>;
+
+/// An application in its context (the walk's table key).
+pub(in crate::engine) type Applying = (AspectApplicationKey, Context);
+
+/// The plan positions `[from, to)` at whose turn what an analysis read is
+/// the same (target platforms and phase 1's tables published by the
+/// walk's pass-2 ops).
+#[derive(Clone, Copy)]
+struct Range(usize, usize);
+
+impl Range {
+    const ALL: Range = Range(0, usize::MAX);
+
+    fn narrow(&mut self, from: usize, to: usize) {
+        self.0 = self.0.max(from);
+        self.1 = self.1.min(to);
+    }
+
+    fn contains(&self, index: usize) -> bool {
+        self.0 <= index && index < self.1
+    }
+}
+
+/// One application of a frozen walk in one context: analyzed once,
+/// committed at its first dependent's merge.
 pub(in crate::engine) struct Applied {
     providers: AspectProviders,
     /// The applications its dependencies met, in the recursion's order
     /// (committed before it).
-    subs: Vec<AspectApplicationKey>,
+    subs: Vec<Applying>,
+    /// The aspect-configured `Target` values its dependencies' views hold.
+    identities: Identities,
+    /// Where its analysis holds (a placement elsewhere falls back).
+    range: Range,
     kind: AppliedKind,
 }
 
@@ -153,8 +187,11 @@ enum AppliedKind {
 /// The applications and aspect-configured targets of a frozen walk.
 #[derive(Default)]
 pub(in crate::engine) struct AspectTable {
-    applications: delta::SingleFlight<AspectApplicationKey, Applied>,
-    identities: delta::SingleFlight<AspectIdentityKey, Arc<crate::starlark_types::Target>>,
+    applications: delta::SingleFlight<Applying, Applied>,
+    /// By key and variant (the requested label, the merged providers'
+    /// identities: `aspect_plan::identity_variant`).
+    identities:
+        delta::SingleFlight<(AspectIdentityKey, String), Arc<crate::starlark_types::Target>>,
     /// The planning state's as the walk froze them.
     memo: BTreeMap<AspectApplicationKey, AspectProviders>,
     memo_identities: AspectTargetIdentities,
@@ -165,11 +202,220 @@ pub(in crate::engine) struct AspectTable {
     attr_aspects: HashMap<(ConfiguredTargetKey, String), (usize, AspectAttrAspects)>,
     toolchains: HashMap<(ConfigId, String), (usize, Arc<AspectToolchains>)>,
     attribute_configs: HashMap<(ConfiguredTargetKey, String), (usize, AttributeConfigs)>,
+    /// The plan index of each entry of the walk.
+    positions: HashMap<ConfiguredTargetKey, usize>,
 }
 
 type AttributeConfigs = Arc<BTreeMap<String, TransitionConfigurations>>;
 
 type AspectAttrAspects = (Option<Arc<[String]>>, Option<Arc<[String]>>);
+
+/// The value `scheduled` (published at a position) or `known` (before
+/// the walk) as entry `index` sees it, with where that answer holds.
+fn at_position<T: Clone>(
+    known: Option<&T>,
+    scheduled: Option<&(usize, T)>,
+    index: usize,
+) -> (Option<T>, usize, usize) {
+    if let Some(value) = known {
+        return (Some(value.clone()), 0, usize::MAX);
+    }
+    match scheduled {
+        Some((position, value)) if *position <= index => {
+            (Some(value.clone()), *position, usize::MAX)
+        }
+        Some((position, _)) => (None, 0, *position),
+        None => (None, 0, usize::MAX),
+    }
+}
+
+/// Whether two providers maps hold the very same values.
+fn same_providers(a: &AspectProviders, b: &AspectProviders) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|((ka, va), (kb, vb))| ka == kb && va.value().ptr_eq(vb.value()))
+}
+
+/// What a job's aspect planning met, for its merge.
+#[derive(Default)]
+pub(in crate::engine) struct AspectRecord {
+    /// The applications of the rule's aspect-applied edges, in order.
+    placements: Vec<Applying>,
+    /// The shared `Target` values its views hold.
+    identities: Identities,
+    /// A dependency whose results were not published.
+    pub(super) unready: Option<ConfiguredTargetKey>,
+    /// The source files its lookups resolved (Engine::target's records,
+    /// applied at its merge).
+    pub(super) sources: Vec<(Label, PathBuf, bool, SourceSide)>,
+    /// The dependencies walked (one result per job), with what each walk
+    /// gave the frame that walked it.
+    walked: HashMap<(Label, ConfigId, Vec<String>), (Planned, Walking)>,
+}
+
+/// What one application's planning met (its entry's subs, values, range).
+#[derive(Default)]
+struct Frame {
+    subs: Vec<Applying>,
+    identities: Identities,
+    range: Option<Range>,
+}
+
+/// What walking one dependency gave the frame it was walked in (replayed
+/// on the job's next walk of it).
+#[derive(Clone, Default)]
+struct Walking {
+    /// The frame depth it was walked at.
+    depth: usize,
+    collected: Vec<Applying>,
+    identities: Identities,
+    range: Option<Range>,
+}
+
+#[derive(Default)]
+struct Frames {
+    frames: Vec<Frame>,
+    walking: Vec<Walking>,
+    missed: Option<ConfiguredTargetKey>,
+}
+
+impl Frames {
+    /// A read whose answer holds at `[from, to)`: the innermost frame's
+    /// (and the walks open at its depth).
+    fn narrow(&mut self, from: usize, to: usize) {
+        if (from, to) == (0, usize::MAX) {
+            return;
+        }
+        let depth = self.frames.len();
+        if let Some(frame) = self.frames.last_mut() {
+            frame.range.get_or_insert(Range::ALL).narrow(from, to);
+        }
+        for walking in self.walking.iter_mut().rev() {
+            if walking.depth != depth {
+                break;
+            }
+            walking.range.get_or_insert(Range::ALL).narrow(from, to);
+        }
+    }
+}
+
+/// The aspect planning of a worker's prepare over the frozen view.
+struct FrozenAspects<'p, 'a> {
+    prepare: &'p mut prepare::SharedPrepare<'a>,
+    frozen: &'a Frozen,
+    /// The job's plan index.
+    index: usize,
+    state: std::cell::RefCell<Frames>,
+    owner: Option<(
+        String,
+        crate::shared_path::SharedPath,
+        Vec<crate::aquery::Aspect>,
+    )>,
+}
+
+impl FrozenAspects<'_, '_> {
+    fn record(&mut self) -> &mut AspectRecord {
+        self.prepare
+            .record
+            .aspects
+            .get_or_insert_with(Default::default)
+    }
+
+    fn unready(&mut self, key: ConfiguredTargetKey) -> String {
+        self.record().unready.get_or_insert(key);
+        UNREADY.to_owned()
+    }
+
+    fn narrow(&self, from: usize, to: usize) {
+        self.state.borrow_mut().narrow(from, to);
+    }
+
+    /// The results `label`'s view reads, if they are not published yet.
+    fn missing(&mut self, label: &Label, config: ConfigId) -> Result<(), String> {
+        let engine = self.prepare.engine;
+        let Some(package) = engine.packages.get(&label.package_id()) else {
+            return Ok(());
+        };
+        let key = if package.get(label).is_some() {
+            ConfiguredTargetKey::new(label.clone(), config)
+        } else if let Some((owner, _)) = engine.generated.get(label) {
+            ConfiguredTargetKey::new(owner.clone(), config)
+        } else {
+            return Ok(());
+        };
+        if self.frozen.results.get(&key).is_some() {
+            return Ok(());
+        }
+        // A dependency is earlier in the plan (a post-order).
+        if self
+            .frozen
+            .aspects
+            .positions
+            .get(&key)
+            .is_some_and(|position| *position >= self.index)
+        {
+            debug_assert!(
+                false,
+                "internal error: an aspect job reads a later entry {}",
+                key.label
+            );
+            return Err(self.prepare.abort("aspect_later_dependency"));
+        }
+        Err(self.unready(key))
+    }
+
+    /// Note an application of the walk being collected.
+    fn push_identity(&self, key: AspectIdentityKey, identity: Arc<crate::starlark_types::Target>) {
+        let mut state = self.state.borrow_mut();
+        if let Some(walking) = state.walking.last_mut() {
+            walking.identities.push((key.clone(), identity.clone()));
+        }
+        if let Some(frame) = state.frames.last_mut() {
+            frame.identities.push((key, identity));
+        }
+    }
+
+    fn entry_of(&self) -> (Vec<Applying>, Identities, Range) {
+        let state = self.state.borrow();
+        match state.frames.last() {
+            Some(frame) => (
+                frame.subs.clone(),
+                frame.identities.clone(),
+                frame.range.unwrap_or(Range::ALL),
+            ),
+            None => (Vec::new(), Vec::new(), Range::ALL),
+        }
+    }
+}
+
+impl prepare::Lookup for FrozenAspects<'_, '_> {
+    fn engine(&self) -> &Engine {
+        self.prepare.engine
+    }
+
+    fn platform(&self, target: &ConfiguredTargetKey) -> Option<PlatformResult> {
+        let (platform, from, to) = self.frozen.platform_range(target, self.index);
+        self.narrow(from, to);
+        platform
+    }
+
+    fn target(&mut self, label: &Label) -> Result<Target, String> {
+        prepare::Lookup::target(self.prepare, label)
+    }
+
+    fn no_config(&mut self) -> Result<ConfigId, String> {
+        prepare::Lookup::no_config(self.prepare)
+    }
+
+    fn attribute_aspects(
+        &mut self,
+        rule: &Rule,
+        identities: &[String],
+    ) -> Result<Vec<Arc<crate::aspects::AspectDefinition>>, String> {
+        prepare::Lookup::attribute_aspects(self.prepare, rule, identities)
+    }
+}
 
 impl AspectTable {
     pub(in crate::engine) fn new(engine: &Engine, state: &ActionPlanning) -> Self {
@@ -181,6 +427,14 @@ impl AspectTable {
             memo_identities: state.aspect_target_identities.clone(),
             ..Self::default()
         };
+        if let Some(plan) = &engine.planning_plan {
+            table.positions = plan
+                .iter()
+                .enumerate()
+                .skip(state.done)
+                .map(|(index, (key, _))| (key.clone(), index))
+                .collect();
+        }
         use crate::engine::eval::linearize::driver::Published;
         use crate::engine::eval::linearize::pass2::Op;
         let Some(pending) = &engine.eval_pass2 else {
@@ -223,95 +477,6 @@ impl AspectTable {
     }
 }
 
-/// What a job's aspect planning met, for its merge.
-#[derive(Default)]
-pub(in crate::engine) struct AspectRecord {
-    /// The applications of the rule's aspect-applied edges, in order.
-    placements: Vec<AspectApplicationKey>,
-    /// The shared `Target` values it filled or took from the walk's table.
-    identities: Vec<(AspectIdentityKey, Arc<crate::starlark_types::Target>)>,
-    /// A dependency whose results were not published.
-    pub(super) unready: Option<ConfiguredTargetKey>,
-    /// The source files its lookups resolved (Engine::target's records,
-    /// applied at its merge).
-    pub(super) sources: Vec<(Label, PathBuf, bool, SourceSide)>,
-    /// The dependencies walked (one result per job).
-    walked: HashMap<(Label, ConfigId, Vec<String>), (DependencyTarget, AspectApplications)>,
-}
-
-/// The aspect planning of a worker's prepare over the frozen view.
-struct FrozenAspects<'p, 'a> {
-    prepare: &'p mut prepare::SharedPrepare<'a>,
-    frozen: &'a Frozen,
-    /// The job's plan index.
-    index: usize,
-    /// The subs of the applications being planned (innermost last).
-    frames: Vec<Vec<AspectApplicationKey>>,
-    owner: Option<(
-        String,
-        crate::shared_path::SharedPath,
-        Vec<crate::aquery::Aspect>,
-    )>,
-    /// A toolchain read whose results were not published (reported by the
-    /// application's analysis: the reads' answers are not the walk's).
-    missed: std::cell::RefCell<Option<ConfiguredTargetKey>>,
-}
-
-impl FrozenAspects<'_, '_> {
-    fn record(&mut self) -> &mut AspectRecord {
-        self.prepare
-            .record
-            .aspects
-            .get_or_insert_with(Default::default)
-    }
-
-    fn unready(&mut self, key: ConfiguredTargetKey) -> String {
-        self.record().unready.get_or_insert(key);
-        UNREADY.to_owned()
-    }
-
-    /// The results `label`'s view reads, if they are not published yet.
-    fn missing(&self, label: &Label, config: ConfigId) -> Option<ConfiguredTargetKey> {
-        let engine = self.prepare.engine;
-        let package = engine.packages.get(&label.package_id())?;
-        let key = if package.get(label).is_some() {
-            ConfiguredTargetKey::new(label.clone(), config)
-        } else {
-            let (owner, _) = engine.generated.get(label)?;
-            ConfiguredTargetKey::new(owner.clone(), config)
-        };
-        self.frozen.results.get(&key).is_none().then_some(key)
-    }
-}
-
-impl prepare::Lookup for FrozenAspects<'_, '_> {
-    fn engine(&self) -> &Engine {
-        self.prepare.engine
-    }
-
-    fn platform(&self, target: &ConfiguredTargetKey) -> Option<PlatformResult> {
-        prepare::Lookup::platform(&*self.prepare, target)
-    }
-
-    fn target(&mut self, label: &Label) -> Result<Target, String> {
-        prepare::Lookup::target(self.prepare, label)
-    }
-
-    fn no_config(&mut self) -> Result<ConfigId, String> {
-        prepare::Lookup::no_config(self.prepare)
-    }
-
-    fn attribute_aspects(
-        &mut self,
-        rule: &Rule,
-        identities: &[String],
-    ) -> Result<Vec<Arc<crate::aspects::AspectDefinition>>, String> {
-        prepare::Lookup::attribute_aspects(self.prepare, rule, identities)
-    }
-}
-
-/// Engine::attribute_aspects over the definitions loaded already (`None`:
-/// one is not).
 /// A Starlark rule with attribute aspects (`attr.*(aspects = [...])`).
 pub(super) fn has_attribute_aspects(rule: &Rule) -> bool {
     rule.custom.as_ref().is_some_and(|custom| {
@@ -342,12 +507,13 @@ pub(in crate::engine) fn loaded_attribute_aspects(
 /// Every PlanReads read, noting a key whose results are not published.
 struct MissReads<'r> {
     reads: &'r dyn PlanReads,
+    results: &'r PlannedResults,
     missed: std::sync::Mutex<Option<ConfiguredTargetKey>>,
 }
 
 impl MissReads<'_> {
     fn note(&self, key: &ConfiguredTargetKey) {
-        if self.reads.providers(key).is_none() {
+        if self.results.get(key).is_none() {
             self.missed
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -401,9 +567,7 @@ impl AspectCx for FrozenAspects<'_, '_> {
     }
 
     fn view(&mut self, label: &Label, edge_config: ConfigId) -> Result<DependencyTarget, String> {
-        if let Some(key) = self.missing(label, edge_config) {
-            return Err(self.unready(key));
-        }
+        self.missing(label, edge_config)?;
         self.prepare.plan_view(label, edge_config)
     }
 
@@ -415,14 +579,16 @@ impl AspectCx for FrozenAspects<'_, '_> {
         let engine = self.prepare.engine;
         let (table, index) = (&self.frozen.aspects, self.index);
         let mut missed = false;
+        let mut range = Range::ALL;
         let collection = crate::aspects::aspect_collection(aspects, rule, &mut |aspect| {
             let memo = (rule.label.clone(), aspect.descriptor.clone());
-            let scheduled = table
-                .predicates
-                .get(&memo)
-                .filter(|(position, _)| *position <= index)
-                .map(|(_, value)| *value);
-            match engine.aspect_predicates.get(&memo).copied().or(scheduled) {
+            let (value, from, to) = at_position(
+                engine.aspect_predicates.get(&memo),
+                table.predicates.get(&memo),
+                index,
+            );
+            range.narrow(from, to);
+            match value {
                 Some(result) => Ok(result),
                 // Phase 1's memo is the evaluator's: computed here (a
                 // function of the aspect and the rule), an error left to
@@ -435,6 +601,7 @@ impl AspectCx for FrozenAspects<'_, '_> {
                 }
             }
         });
+        self.narrow(range.0, range.1);
         if missed {
             return Err(self.prepare.abort("aspect_predicate"));
         }
@@ -455,29 +622,22 @@ impl AspectCx for FrozenAspects<'_, '_> {
                 continue;
             }
             let memo = (key.clone(), aspect.descriptor.clone());
-            let table = &self.frozen.aspects;
-            let scheduled = || {
-                table
-                    .attr_aspects
-                    .get(&memo)
-                    .filter(|(position, _)| *position <= self.index)
-                    .map(|(_, value)| value.clone())
-            };
-            let computed = engine
-                .aspect_attr_aspects
-                .get(&memo)
-                .cloned()
-                .or_else(scheduled)
-                .or_else(|| {
-                    Some((
-                        crate::aspect_propagation::computed_attr_aspects(aspect, rule)
-                            .ok()?
-                            .map(Arc::from),
-                        crate::aspect_propagation::computed_toolchains_aspects(aspect, rule)
-                            .ok()?
-                            .map(Arc::from),
-                    ))
-                });
+            let (known, from, to) = at_position(
+                engine.aspect_attr_aspects.get(&memo),
+                self.frozen.aspects.attr_aspects.get(&memo),
+                self.index,
+            );
+            self.narrow(from, to);
+            let computed = known.or_else(|| {
+                Some((
+                    crate::aspect_propagation::computed_attr_aspects(aspect, rule)
+                        .ok()?
+                        .map(Arc::from),
+                    crate::aspect_propagation::computed_toolchains_aspects(aspect, rule)
+                        .ok()?
+                        .map(Arc::from),
+                ))
+            });
             let Some((attr_aspects, toolchains_aspects)) = computed else {
                 return Err(self.prepare.abort("aspect_attr_aspects"));
             };
@@ -493,27 +653,23 @@ impl AspectCx for FrozenAspects<'_, '_> {
         &self,
         memo: &(ConfiguredTargetKey, String),
     ) -> Option<Arc<BTreeMap<String, TransitionConfigurations>>> {
-        self.prepare
-            .engine
-            .aspect_attribute_configs
-            .get(memo)
-            .cloned()
-            .or_else(|| {
-                let (position, value) = self.frozen.aspects.attribute_configs.get(memo)?;
-                (*position <= self.index).then(|| Arc::clone(value))
-            })
+        let (value, from, to) = at_position(
+            self.prepare.engine.aspect_attribute_configs.get(memo),
+            self.frozen.aspects.attribute_configs.get(memo),
+            self.index,
+        );
+        self.narrow(from, to);
+        value
     }
 
     fn aspect_toolchains(&self, memo: &(ConfigId, String)) -> Option<Arc<AspectToolchains>> {
-        self.prepare
-            .engine
-            .aspect_toolchains
-            .get(memo)
-            .cloned()
-            .or_else(|| {
-                let (position, value) = self.frozen.aspects.toolchains.get(memo)?;
-                (*position <= self.index).then(|| Arc::clone(value))
-            })
+        let (value, from, to) = at_position(
+            self.prepare.engine.aspect_toolchains.get(memo),
+            self.frozen.aspects.toolchains.get(memo),
+            self.index,
+        );
+        self.narrow(from, to);
+        value
     }
 
     fn walk_dependency(
@@ -534,34 +690,69 @@ impl AspectCx for FrozenAspects<'_, '_> {
                 .map(|aspect| aspect.descriptor.clone())
                 .collect::<Vec<_>>(),
         );
-        let planned = match self.record().walked.get(&walked) {
-            Some(planned) => planned.clone(),
+        let known = self.record().walked.get(&walked).cloned();
+        let (planned, walking) = match known {
+            Some(known) => known,
             None => {
-                let planned = walk(self, aspects)?;
-                self.record().walked.insert(walked, planned.clone());
-                planned
+                let depth = self.state.borrow().frames.len();
+                self.state.borrow_mut().walking.push(Walking {
+                    depth,
+                    ..Walking::default()
+                });
+                let planned = walk(self, aspects);
+                let walking = self.state.borrow_mut().walking.pop().unwrap_or_default();
+                let planned = planned?;
+                self.record()
+                    .walked
+                    .insert(walked, (Ok(planned.clone()), walking.clone()));
+                (Ok(planned), walking)
             }
         };
-        let keys = planned.1.iter().map(|(key, _)| key.clone());
-        match self.frames.last_mut() {
-            Some(frame) => frame.extend(keys),
-            None => {
-                let keys: Vec<_> = keys.collect();
-                self.record().placements.extend(keys);
+        // What the walk gave its frame, again for this one.
+        {
+            let mut state = self.state.borrow_mut();
+            if let Some(range) = walking.range {
+                state.narrow(range.0, range.1);
+            }
+            if let Some(frame) = state.frames.last_mut() {
+                frame.subs.extend(walking.collected.iter().cloned());
+                frame.identities.extend(walking.identities.iter().cloned());
+            }
+            // An enclosing walk at the same depth replays it too.
+            let depth = state.frames.len();
+            if let Some(outer) = state.walking.last_mut()
+                && outer.depth == depth
+            {
+                outer.identities.extend(walking.identities.iter().cloned());
             }
         }
-        Ok(planned)
+        if self.state.borrow().frames.is_empty() {
+            let record = self.record();
+            record.placements.extend(walking.collected.iter().cloned());
+            record.identities.extend(walking.identities.iter().cloned());
+        }
+        planned
     }
 
-    fn memo(&self, key: &AspectApplicationKey) -> Option<AspectProviders> {
+    fn memo(&self, key: &AspectApplicationKey, context: &Context) -> Option<AspectProviders> {
         let table = &self.frozen.aspects;
         if let Some(providers) = table.memo.get(key) {
             return Some(providers.clone());
         }
-        let applied = table.applications.get(key)?;
+        let applied = table.applications.get(&(key.clone(), context.clone()))?;
         match applied.kind {
             AppliedKind::Unusable => None,
             _ => Some(applied.providers.clone()),
+        }
+    }
+
+    fn collected(&mut self, key: &AspectApplicationKey, context: &Context) {
+        if self.frozen.aspects.memo.contains_key(key) {
+            // Committed before the walk (a memo hit wherever it is met).
+            return;
+        }
+        if let Some(walking) = self.state.borrow_mut().walking.last_mut() {
+            walking.collected.push((key.clone(), context.clone()));
         }
     }
 
@@ -570,17 +761,24 @@ impl AspectCx for FrozenAspects<'_, '_> {
     fn applied(
         &mut self,
         key: &AspectApplicationKey,
+        context: &Context,
         providers: AspectProviders,
     ) -> AspectProviders {
         // A validation or non-applicable aspect's providers (no analysis):
         // one value for the walk too.
-        let filled = self.frozen.aspects.applications.get_or_fill(key, || {
-            Ok::<_, std::convert::Infallible>(Some(Applied {
-                providers: providers.clone(),
-                subs: Vec::new(),
-                kind: AppliedKind::Trivial,
-            }))
-        });
+        let filled =
+            self.frozen
+                .aspects
+                .applications
+                .get_or_fill(&(key.clone(), context.clone()), || {
+                    Ok::<_, std::convert::Infallible>(Some(Applied {
+                        providers: providers.clone(),
+                        subs: Vec::new(),
+                        identities: Vec::new(),
+                        range: Range::ALL,
+                        kind: AppliedKind::Trivial,
+                    }))
+                });
         match filled {
             Ok(Some(applied)) => applied.providers.clone(),
             _ => providers,
@@ -588,16 +786,17 @@ impl AspectCx for FrozenAspects<'_, '_> {
     }
 
     fn begin_application(&mut self) {
-        self.frames.push(Vec::new());
+        self.state.borrow_mut().frames.push(Frame::default());
     }
 
     fn end_application(&mut self) {
-        self.frames.pop();
+        self.state.borrow_mut().frames.pop();
     }
 
     fn identity(
         &mut self,
         key: AspectIdentityKey,
+        variant: &str,
         fill: &mut dyn FnMut() -> Arc<crate::starlark_types::Target>,
     ) -> Arc<crate::starlark_types::Target> {
         if let Some(identity) = self.frozen.aspects.memo_identities.get(&key) {
@@ -607,23 +806,27 @@ impl AspectCx for FrozenAspects<'_, '_> {
             .frozen
             .aspects
             .identities
-            .get_or_fill(&key, || Ok::<_, std::convert::Infallible>(Some(fill())))
-        {
+            .get_or_fill(&(key.clone(), variant.to_owned()), || {
+                Ok::<_, std::convert::Infallible>(Some(fill()))
+            }) {
             Ok(Some(identity)) => (*identity).clone(),
             _ => fill(),
         };
-        self.record().identities.push((key, identity.clone()));
+        self.push_identity(key, identity.clone());
         identity
     }
 
     fn with_reads<R>(&self, f: impl FnOnce(&dyn PlanReads) -> R) -> R {
         let reads = MissReads {
             reads: prepare::PrepareCx::reads(&*self.prepare),
+            results: &self.frozen.results,
             missed: Default::default(),
         };
         let result = f(&reads);
         if let Some(key) = reads.missed.into_inner().unwrap_or_else(|e| e.into_inner()) {
-            self.missed.borrow_mut().get_or_insert(key);
+            // Reported by the application's analysis (the reads' answers
+            // are not the walk's).
+            self.state.borrow_mut().missed.get_or_insert(key);
         }
         result
     }
@@ -641,24 +844,31 @@ impl AspectCx for FrozenAspects<'_, '_> {
     fn analyze(
         &mut self,
         key: &AspectApplicationKey,
+        context: &Context,
         application: crate::analysis::AspectApplication,
         commit: AspectCommit,
     ) -> Result<AspectProviders, String> {
-        let missed = self.missed.borrow_mut().take();
+        let missed = self.state.borrow_mut().missed.take();
         if let Some(missed) = missed {
             return Err(self.unready(missed));
         }
-        let subs = self.frames.last().cloned().unwrap_or_default();
+        let (subs, identities, range) = self.entry_of();
         let owner = self.owner.take();
-        let filled = self.frozen.aspects.applications.get_or_fill(key, || {
-            let outcome = super::aspects::analyze_one(key, &application, &commit.outputs());
-            Ok::<_, std::convert::Infallible>(Some(applied_of(
-                outcome,
-                subs,
-                Some(Box::new(commit)),
-                owner,
-            )))
-        });
+        let filled =
+            self.frozen
+                .aspects
+                .applications
+                .get_or_fill(&(key.clone(), context.clone()), || {
+                    let outcome = super::aspects::analyze_one(key, &application, &commit.outputs());
+                    Ok::<_, std::convert::Infallible>(Some(applied_of(
+                        outcome,
+                        subs,
+                        identities,
+                        range,
+                        Some(Box::new(commit)),
+                        owner,
+                    )))
+                });
         match filled {
             Ok(Some(applied)) if !matches!(applied.kind, AppliedKind::Unusable) => {
                 Ok(applied.providers.clone())
@@ -670,7 +880,9 @@ impl AspectCx for FrozenAspects<'_, '_> {
 
 fn applied_of(
     outcome: super::aspects::Outcome,
-    subs: Vec<AspectApplicationKey>,
+    subs: Vec<Applying>,
+    identities: Identities,
+    range: Range,
     commit: Option<Box<AspectCommit>>,
     owner: Option<(
         String,
@@ -684,6 +896,8 @@ fn applied_of(
             Applied {
                 providers: analyzed.providers.clone(),
                 subs,
+                identities,
+                range,
                 kind: AppliedKind::Analyzed {
                     commit,
                     owner,
@@ -697,6 +911,8 @@ fn applied_of(
             Applied {
                 providers: BTreeMap::new(),
                 subs,
+                identities,
+                range,
                 kind: AppliedKind::Unusable,
             }
         }
@@ -718,12 +934,11 @@ pub(in crate::engine) fn edge_view(
         prepare,
         frozen,
         index,
-        frames: Vec::new(),
+        state: Default::default(),
         owner: None,
-        missed: Default::default(),
     };
     let planned = aspect_plan::plan_dependency(&mut cx, label, edge_config, aspects);
-    let missed = cx.missed.borrow_mut().take();
+    let missed = cx.state.borrow_mut().missed.take();
     if let Some(missed) = missed {
         cx.unready(missed);
     }
@@ -744,15 +959,44 @@ pub(in crate::engine) fn edge_view(
 }
 
 impl Engine {
+    /// The coordinator's aspect-configured `Target` value of `key` in its
+    /// `variant` in a frozen walk with aspect jobs: the walk's (the one the
+    /// jobs' analyses of the same view saw).
+    pub(in crate::engine) fn walk_aspect_identity(
+        &self,
+        key: &AspectIdentityKey,
+        variant: &str,
+        fill: &mut dyn FnMut() -> Arc<crate::starlark_types::Target>,
+    ) -> Option<Arc<crate::starlark_types::Target>> {
+        if !enabled() {
+            return None;
+        }
+        let frozen = self.frozen_walk.as_ref()?;
+        frozen
+            .aspects
+            .identities
+            .get_or_fill(&(key.clone(), variant.to_owned()), || {
+                Ok::<_, std::convert::Infallible>(Some(fill()))
+            })
+            .ok()?
+            .map(|identity| (*identity).clone())
+    }
+
     /// The coordinator's analysis of an application in a frozen walk with
-    /// aspect jobs: the walk's one analysis of it (a worker's, else made
-    /// here, isolated); `None`: analyze it here as before (not such a walk,
-    /// or its analysis is not usable).
+    /// aspect jobs: the walk's one analysis of it in its context (a
+    /// worker's, else made here, isolated); `None`: analyze it here as
+    /// before (not such a walk, its analysis is not usable, or does not
+    /// hold at entry `index` with the planning state's `Target` values).
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::engine) fn walk_aspect_analysis(
         &self,
         key: &AspectApplicationKey,
+        context: &Context,
         application: &crate::analysis::AspectApplication,
         outputs: &crate::analysis::ConfiguredOutputs<'_>,
+        index: usize,
+        identities: &AspectTargetIdentities,
+        memo: &BTreeMap<AspectApplicationKey, AspectProviders>,
     ) -> Option<(Box<crate::analysis::AnalysisResult>, Vec<String>)> {
         if !enabled() {
             return None;
@@ -762,19 +1006,49 @@ impl Engine {
         let filled = frozen
             .aspects
             .applications
-            .get_or_fill(key, || {
+            .get_or_fill(&(key.clone(), context.clone()), || {
                 here = true;
                 let outcome = super::aspects::analyze_one(key, application, outputs);
-                Ok::<_, std::convert::Infallible>(Some(applied_of(outcome, Vec::new(), None, None)))
+                Ok::<_, std::convert::Infallible>(Some(applied_of(
+                    outcome,
+                    Vec::new(),
+                    Vec::new(),
+                    Range::ALL,
+                    None,
+                    None,
+                )))
             })
             .ok()??;
-        stat(if here { 8 } else { 7 }, 1);
         let AppliedKind::Analyzed {
             analysis, printed, ..
         } = &filled.kind
         else {
             return None;
         };
+        if !here
+            && (!filled.range.contains(index)
+                || filled.identities.iter().any(|(key, identity)| {
+                    identities
+                        .get(key)
+                        .is_none_or(|known| !Arc::ptr_eq(known, identity))
+                })
+                // Its dependencies' applications as the planning state
+                // committed them (the very providers its analysis saw).
+                || filled.subs.iter().any(|sub| {
+                    let committed = memo.get(&sub.0);
+                    let seen = frozen.aspects.applications.get(sub);
+                    match (committed, seen) {
+                        (Some(committed), Some(seen)) => {
+                            !same_providers(committed, &seen.providers)
+                        }
+                        _ => true,
+                    }
+                }))
+        {
+            stat(16, 1);
+            return None;
+        }
+        stat(if here { 8 } else { 7 }, 1);
         let analyzed = analysis.lock().unwrap_or_else(|e| e.into_inner()).take()?;
         if !here && delta::verify_delta() {
             super::aspects::verify(key, application, outputs, &analyzed, printed);
@@ -782,20 +1056,24 @@ impl Engine {
         Some((analyzed, printed.clone()))
     }
 
-    /// At an aspect job's merge: commit the applications it met that are
-    /// not in the aspect memo, in the sequential order (module docs).
-    /// `false`: one could not be (the rule is prepared at its turn).
+    /// At an aspect job's merge (entry `index`): commit the applications
+    /// it met that are not in the aspect memo, in the sequential order
+    /// (module docs). `false`: one could not be (the rule is prepared at
+    /// its turn).
     pub(super) fn place_aspects(
         &mut self,
         state: &mut ActionPlanning,
         rule: &Rule,
+        index: usize,
         record: &AspectRecord,
     ) -> Result<bool, String> {
         let Some(frozen) = self.frozen_walk.clone() else {
             return Ok(false);
         };
         // The source lookups its prepare made (Engine::target): what they
-        // record, their memoized paths.
+        // record, their memoized paths. (Applied before the placement: a
+        // commit error below stops the walk, unless --keep_going, whose
+        // later lookups see them memoized either way.)
         for (label, path, stable, side) in &record.sources {
             side.clone()
                 .apply(&mut self.missing_sources, &mut self.source_directories);
@@ -803,53 +1081,96 @@ impl Engine {
                 self.source_targets.insert(label.clone(), path.clone());
             }
         }
-        for (key, identity) in &record.identities {
-            if state
-                .aspect_target_identities
-                .get(key)
-                .is_some_and(|known| !Arc::ptr_eq(known, identity))
-            {
-                stat(6, 1);
-                return Ok(false);
-            }
+        // Its views' values: checked now, put in the planning state once
+        // every application they merge is placed (the very providers).
+        if Self::identities_differ(state, &record.identities) {
+            return Ok(false);
         }
-        for (key, identity) in &record.identities {
-            state
-                .aspect_target_identities
-                .entry(key.clone())
-                .or_insert_with(|| identity.clone());
-        }
-        for key in &record.placements {
+        for applying in &record.placements {
             // An error is the rule's prepare's, at its location
             // (CoordPrepare::edge_view).
             if !self
-                .place_application(state, &frozen, key)
+                .place_application(state, &frozen, index, applying)
                 .map_err(|error| located(rule.location.as_deref(), error))?
             {
                 return Ok(false);
             }
         }
+        if !self.adopt_identities(state, &record.identities) {
+            return Ok(false);
+        }
         stat(4, 1);
         Ok(true)
+    }
+
+    fn identities_differ(state: &ActionPlanning, identities: &Identities) -> bool {
+        let differ = identities.iter().any(|(key, identity)| {
+            state
+                .aspect_target_identities
+                .get(key)
+                .is_some_and(|known| !Arc::ptr_eq(known, identity))
+        });
+        if differ {
+            stat(6, 1);
+        }
+        differ
+    }
+
+    /// The `Target` values a placement's views hold: each the planning
+    /// state's (the first in plan order), or put there now.
+    fn adopt_identities(&self, state: &mut ActionPlanning, identities: &Identities) -> bool {
+        if Self::identities_differ(state, identities) {
+            return false;
+        }
+        for (key, identity) in identities {
+            state
+                .aspect_target_identities
+                .entry(key.clone())
+                .or_insert_with(|| identity.clone());
+        }
+        true
     }
 
     fn place_application(
         &mut self,
         state: &mut ActionPlanning,
         frozen: &Frozen,
-        key: &AspectApplicationKey,
+        index: usize,
+        applying: &Applying,
     ) -> Result<bool, String> {
-        if state.aspect_providers.contains_key(key) {
-            return Ok(true);
+        let key = &applying.0;
+        let applied = frozen.aspects.applications.get(applying);
+        if let Some(known) = state.aspect_providers.get(key) {
+            // Committed already: the very providers the job's views hold
+            // (another context's, or the coordinator's, are not).
+            let same = match &applied {
+                Some(applied) => same_providers(known, &applied.providers),
+                None => frozen
+                    .aspects
+                    .memo
+                    .get(key)
+                    .is_some_and(|frozen| same_providers(known, frozen)),
+            };
+            if !same {
+                stat(15, 1);
+            }
+            return Ok(same);
         }
-        let Some(applied) = frozen.aspects.applications.get(key) else {
+        let Some(applied) = applied else {
             stat(9, 1);
             return Ok(false);
         };
+        if !applied.range.contains(index) {
+            stat(14, 1);
+            return Ok(false);
+        }
         for sub in &applied.subs {
-            if !self.place_application(state, frozen, sub)? {
+            if !self.place_application(state, frozen, index, sub)? {
                 return Ok(false);
             }
+        }
+        if !self.adopt_identities(state, &applied.identities) {
+            return Ok(false);
         }
         match &applied.kind {
             AppliedKind::Unusable => {

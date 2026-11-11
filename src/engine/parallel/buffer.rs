@@ -749,6 +749,9 @@ impl Board {
                 // A panic (the job's, its publication's) is raised at the
                 // entry's turn: the cursor always finds the entry done.
                 board.note_job(index, 1);
+                // The key a rerun found published already (twice: the job
+                // is left to its turn).
+                let mut published_again: Option<ConfiguredTargetKey> = None;
                 let finished = loop {
                     let finished =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| board.run(index)))
@@ -756,12 +759,14 @@ impl Board {
                     // Task B: an aspect job that read a dependency not
                     // published yet runs again once it is.
                     if let Some(unready) = finished.unready()
+                        && published_again.as_ref() != Some(&unready)
                         && board.requeues[slot].fetch_add(1, Ordering::Relaxed) < MAX_REQUEUES
                     {
                         super::aspect_jobs::stat(super::aspect_jobs::S_REQUEUED, 1);
-                        if board.wait_for(index, slot, unready) {
+                        if board.wait_for(index, slot, unready.clone()) {
                             return;
                         }
+                        published_again = Some(unready);
                         continue;
                     }
                     break finished;
@@ -1708,7 +1713,7 @@ impl Engine {
         }
         // Its applications not committed yet, where its prepare meets them.
         if let Some(record) = &aspects
-            && !self.place_aspects(state, rule, record)?
+            && !self.place_aspects(state, rule, index, record)?
         {
             super::aspect_jobs::stat(super::aspect_jobs::S_FALLBACK, 1);
             effects.apply(self, false);

@@ -20,6 +20,23 @@ pub(super) type Planned = Result<(DependencyTarget, AspectApplications), String>
 /// The key of an aspect-configured target's one shared `Target` value.
 pub(super) type AspectIdentityKey = (Label, Option<ConfigId>, Vec<String>);
 
+/// What an application's analysis depends on besides its key: how its
+/// collection reached it (task B's aspect jobs share one analysis per key
+/// and context; the sequential walk plans each key once, in the first
+/// context in plan order).
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub(super) struct Context {
+    /// The collection's aspects, in order (the propagating `incoming`, the
+    /// computed `attr_aspects`).
+    pub(super) descriptors: Vec<String>,
+    /// The requested label and its edge's configuration (the base view, an
+    /// alias's included).
+    pub(super) requested: Label,
+    pub(super) edge_config: ConfigId,
+    /// Whether the base configuration's target platform is resolved.
+    pub(super) platform: bool,
+}
+
 /// What the commit of an application needs besides its analysis: its
 /// outputs' configuration, its owner and its base target.
 pub(super) struct AspectCommit {
@@ -88,7 +105,13 @@ pub(super) trait AspectCx: prepare::Lookup + Sized {
         walk: impl FnOnce(&mut Self, Vec<Arc<crate::aspects::AspectDefinition>>) -> Planned,
     ) -> Planned;
     /// The providers of an application planned before.
-    fn memo(&self, key: &crate::aspects::AspectApplicationKey) -> Option<AspectProviders>;
+    fn memo(
+        &self,
+        key: &crate::aspects::AspectApplicationKey,
+        context: &Context,
+    ) -> Option<AspectProviders>;
+    /// A collection's application (a memo hit or planned), in order.
+    fn collected(&mut self, _key: &crate::aspects::AspectApplicationKey, _context: &Context) {}
     /// A collection meets the application `key` (before its memo).
     fn applying(&mut self, key: &crate::aspects::AspectApplicationKey);
     /// The application `key` was planned: its providers (the ones every
@@ -96,6 +119,7 @@ pub(super) trait AspectCx: prepare::Lookup + Sized {
     fn applied(
         &mut self,
         key: &crate::aspects::AspectApplicationKey,
+        context: &Context,
         providers: AspectProviders,
     ) -> AspectProviders;
     /// The planning of one application starts / ends.
@@ -105,6 +129,7 @@ pub(super) trait AspectCx: prepare::Lookup + Sized {
     fn identity(
         &mut self,
         key: AspectIdentityKey,
+        variant: &str,
         fill: &mut dyn FnMut() -> Arc<crate::starlark_types::Target>,
     ) -> Arc<crate::starlark_types::Target>;
     /// The planned targets' results (the toolchains' providers).
@@ -121,6 +146,7 @@ pub(super) trait AspectCx: prepare::Lookup + Sized {
     fn analyze(
         &mut self,
         key: &crate::aspects::AspectApplicationKey,
+        context: &Context,
         application: analysis::AspectApplication,
         commit: AspectCommit,
     ) -> Result<AspectProviders, String>;
@@ -231,7 +257,11 @@ impl AspectCx for CoordAspects<'_, '_> {
         planned
     }
 
-    fn memo(&self, key: &crate::aspects::AspectApplicationKey) -> Option<AspectProviders> {
+    fn memo(
+        &self,
+        key: &crate::aspects::AspectApplicationKey,
+        _context: &Context,
+    ) -> Option<AspectProviders> {
         if let Some(providers) = self.state.aspect_providers.get(key) {
             return Some(providers.clone());
         }
@@ -251,6 +281,7 @@ impl AspectCx for CoordAspects<'_, '_> {
     fn applied(
         &mut self,
         key: &crate::aspects::AspectApplicationKey,
+        _context: &Context,
         providers: AspectProviders,
     ) -> AspectProviders {
         if parallel::aspects::dry() {
@@ -267,13 +298,22 @@ impl AspectCx for CoordAspects<'_, '_> {
     fn identity(
         &mut self,
         key: AspectIdentityKey,
+        variant: &str,
         fill: &mut dyn FnMut() -> Arc<crate::starlark_types::Target>,
     ) -> Arc<crate::starlark_types::Target> {
+        if let Some(identity) = self.state.aspect_target_identities.get(&key) {
+            return identity.clone();
+        }
+        // Task B: the walk's value of the aspect jobs (the one their
+        // analyses saw), first in plan order here.
+        let identity = self
+            .engine
+            .walk_aspect_identity(&key, variant, fill)
+            .unwrap_or_else(fill);
         self.state
             .aspect_target_identities
-            .entry(key)
-            .or_insert_with(fill)
-            .clone()
+            .insert(key, identity.clone());
+        identity
     }
 
     fn with_reads<R>(&self, f: impl FnOnce(&dyn PlanReads) -> R) -> R {
@@ -299,6 +339,7 @@ impl AspectCx for CoordAspects<'_, '_> {
     fn analyze(
         &mut self,
         key: &crate::aspects::AspectApplicationKey,
+        context: &Context,
         application: analysis::AspectApplication,
         commit: AspectCommit,
     ) -> Result<AspectProviders, String> {
@@ -306,10 +347,15 @@ impl AspectCx for CoordAspects<'_, '_> {
         // walk) queued there (parallel::aspects).
         let outputs = commit.outputs();
         // Task B: a frozen walk's one analysis of it (parallel::aspect_jobs).
-        if let Some((analyzed, printed)) =
-            self.engine
-                .walk_aspect_analysis(key, &application, &outputs)
-        {
+        if let Some((analyzed, printed)) = self.engine.walk_aspect_analysis(
+            key,
+            context,
+            &application,
+            &outputs,
+            self.state.artifact_index.turn as usize,
+            &*self.state.aspect_target_identities,
+            &*self.state.aspect_providers,
+        ) {
             return commit_application(self.engine, self.state, &commit, Ok(*analyzed), printed);
         }
         let (analyzed, printed) = match parallel::aspects::analysis(key, application, &outputs) {
@@ -613,6 +659,21 @@ fn plan_collection<C: AspectCx>(
         base_label.clone(),
         cx.engine().delegated_config(&requested, edge_config),
     );
+    let platform_key = ConfiguredTargetKey::new(
+        cx.engine()
+            .configurations
+            .get(base_key.config)
+            .native
+            .target_platform()
+            .clone(),
+        base_key.config,
+    );
+    let context = Context {
+        descriptors: collection.descriptors(),
+        requested: label.clone(),
+        edge_config,
+        platform: matches!(cx.platform(&platform_key), Some(Ok(_))),
+    };
     // AspectCollection.createAspectKeys: each aspect over the base
     // target, in application order.
     let mut applications: AspectApplications = Vec::new();
@@ -626,7 +687,8 @@ fn plan_collection<C: AspectCx>(
             bases: bases.clone(),
         };
         cx.applying(&key);
-        if let Some(providers) = cx.memo(&key) {
+        if let Some(providers) = cx.memo(&key, &context) {
+            cx.collected(&key, &context);
             applications.push((key, providers));
             continue;
         }
@@ -635,11 +697,12 @@ fn plan_collection<C: AspectCx>(
             continue;
         }
         cx.begin_application();
-        let planned = plan_application(cx, &base_key, &base, aspect, bases, collection);
+        let planned = plan_application(cx, &base_key, &base, aspect, bases, collection, &context);
         cx.end_application();
         match planned {
             Ok(providers) => {
-                let providers = cx.applied(&key, providers);
+                let providers = cx.applied(&key, &context, providers);
+                cx.collected(&key, &context);
                 applications.push((key, providers));
             }
             Err(error) if error == parallel::aspects::PENDING => {
@@ -655,13 +718,18 @@ fn plan_collection<C: AspectCx>(
     // One shared Target value per aspect-configured target (N55's
     // sharing applied to the merged configured target): its providers
     // are the merged set, not the base target's.
+    // The value's variant: the requested label (an alias's names it) and
+    // the very provider values of the applications merged in (one analyzed
+    // in another context holds others), so equal views share one value.
     let requested_text = label.to_string();
+    let variant = identity_variant(&format!("{requested_text}\0{edge_config}"), &applications);
     let identity = cx.identity(
         (
             base_label.clone(),
             Some(base_key.config),
             collection.descriptors(),
         ),
+        &variant,
         &mut || {
             Arc::new(
                 analysis::dependency_target_data(
@@ -682,6 +750,27 @@ fn plan_collection<C: AspectCx>(
     );
     base.identity = identity;
     Ok((base, applications))
+}
+
+/// An aspect-configured `Target` value's variant (task B's table key
+/// beside its identity key): the requested label and the identities of the
+/// applications' provider values (the merged values are made per merge).
+fn identity_variant(requested: &str, applications: &AspectApplications) -> String {
+    use std::fmt::Write as _;
+    use std::hash::BuildHasher;
+    let hasher = crate::fast_hash::FxBuildHasher::default();
+    let mut text = requested.to_owned();
+    for (key, providers) in applications {
+        let _ = write!(text, "\0{}", key.aspect);
+        for (name, value) in providers {
+            let _ = write!(
+                text,
+                "\0{name}={:x}",
+                hasher.hash_one(value.value().identity())
+            );
+        }
+    }
+    text
 }
 
 /// The planned dependencies of the label attributes of `owner` (the
@@ -765,6 +854,7 @@ fn plan_attribute_dependencies<C: AspectCx>(
 /// implementation over its `target` parameter and its dependencies (the
 /// aspect's own attributes plus the base rule's edges, aspect-applied
 /// where the aspect propagates), returning the aspect's providers.
+#[allow(clippy::too_many_arguments)]
 fn plan_application<C: AspectCx>(
     cx: &mut C,
     base_key: &ConfiguredTargetKey,
@@ -772,6 +862,7 @@ fn plan_application<C: AspectCx>(
     aspect: &Arc<crate::aspects::AspectDefinition>,
     bases: &[String],
     collection: &crate::aspects::AspectCollection,
+    context: &Context,
 ) -> Result<AspectProviders, String> {
     let top = cx.engine().configurations.top();
     let key = crate::aspects::AspectApplicationKey {
@@ -809,7 +900,7 @@ fn plan_application<C: AspectCx>(
                 .map(|(_, used_bases)| used_bases.clone())
                 .unwrap_or_default(),
         };
-        let providers = cx.memo(&base_aspect_key).ok_or_else(|| {
+        let providers = cx.memo(&base_aspect_key, context).ok_or_else(|| {
             format!(
                 "internal error: aspect {base_aspect} of {} was not planned before {}",
                 base_key.label, aspect.identity
@@ -1314,7 +1405,7 @@ fn plan_application<C: AspectCx>(
         aspect_identity: aspect.identity.clone(),
         action_execution,
     };
-    cx.analyze(&key, application, commit)
+    cx.analyze(&key, context, application, commit)
 }
 
 impl Engine {

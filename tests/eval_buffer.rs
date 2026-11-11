@@ -223,7 +223,27 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
             "{what}: {}",
             stable(&eval)
         );
-        assert_eq!(stable(&eval), text, "{what}");
+        let got = stable(&eval);
+        if got != text {
+            // The first lines that differ (the whole texts are long).
+            let first = got
+                .lines()
+                .zip(text.lines())
+                .position(|(a, b)| a != b)
+                .unwrap_or(0);
+            let window = |all: &str| {
+                all.lines()
+                    .skip(first.saturating_sub(2))
+                    .take(8)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            panic!(
+                "{what}: differs at line {first}\neval:\n{}\nwalk:\n{}",
+                window(&got),
+                window(&text)
+            );
+        }
         assert_eq!(eval.stdout, walk.stdout, "{what}");
     }
     let timed = ws.build("eval", 8, &[FROZEN, ("BAZEL_RS_TIMING", "1")], args);
@@ -597,4 +617,104 @@ fn attribute_aspect_applications_analyzed_ahead_replay_in_order() {
             assert!(used > 0, "{line}");
         }
     }
+}
+
+const CONTEXT_BZL: &str = r#"
+A1Info = provider(fields = ["seen"])
+A2Info = provider(fields = ["files"])
+
+def _a1_impl(target, ctx):
+    deps = getattr(ctx.rule.attr, "deps", [])
+    seen = [str(dep.label) + ":" + str(A2Info in dep) for dep in deps]
+    print("a1 on %s (%s) target %s" % (target.label, ", ".join(seen), target))
+    out = ctx.actions.declare_file(target.label.name + ".a1")
+    ctx.actions.write(out, ",".join(seen))
+    return [A1Info(seen = seen), OutputGroupInfo(a1 = depset([out]))]
+
+a1 = aspect(implementation = _a1_impl)
+
+def _a2_impl(target, ctx):
+    print("a2 on %s" % target.label)
+    out = ctx.actions.declare_file(target.label.name + ".a2")
+    ctx.actions.write(out, "a2")
+    return [A2Info(files = depset([out]))]
+
+a2 = aspect(implementation = _a2_impl, attr_aspects = ["deps"])
+
+def _lib_impl(ctx):
+    print("lib %s" % ctx.label)
+    return [DefaultInfo()]
+
+lib = rule(implementation = _lib_impl, attrs = {"deps": attr.label_list()})
+
+def _user_impl(ctx):
+    print("%s sees %s" % (ctx.label, ", ".join([str(dep) + "=" + str(dep[A1Info].seen) for dep in ctx.attr.deps])))
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, "x")
+    return [DefaultInfo(files = depset([out], transitive = [dep[OutputGroupInfo].a1 for dep in ctx.attr.deps]))]
+
+one = rule(implementation = _user_impl, attrs = {"deps": attr.label_list(aspects = [a1])})
+both = rule(implementation = _user_impl, attrs = {"deps": attr.label_list(aspects = [a1, a2])})
+"#;
+
+/// Task B: one aspect application reached in two contexts. An earlier rule
+/// applies [a1] to :p, a later one [a1, a2] (a2 along `deps`): the
+/// sequential walk plans (p, a1) once, in the earlier rule's context, and
+/// the later rule's a2 applications at its own turn — whichever job
+/// analyzes first. Under the latest-ready-first and classification jitter
+/// runs of the matrix the later rule's job fills its context first.
+#[test]
+fn an_aspect_application_reached_in_two_contexts_is_the_first_in_plan_orders() {
+    let mut build = String::from(
+        "load(\"//rules:context.bzl\", \"both\", \"lib\", \"one\")\n\
+         lib(name = \"q\")\nlib(name = \"r\", deps = [\":q\"])\n\
+         lib(name = \"p\", deps = [\":r\"])\n\
+         one(name = \"early\", deps = [\":p\"])\n",
+    );
+    for index in 0..6 {
+        build.push_str(&format!("lib(name = \"z{index}\")\n"));
+    }
+    build.push_str(
+        "both(name = \"late\", deps = [\":p\", \":z0\", \":z1\", \":z2\", \":z3\", \":z4\", \":z5\"])\n",
+    );
+    let ws = Workspace::new(&[
+        ("rules/context.bzl", CONTEXT_BZL.to_owned()),
+        ("a/BUILD.bazel", build),
+    ]);
+    compare(&ws, &["//a:early", "//a:late"], |success, text| {
+        assert!(success, "{text}");
+        assert!(text.contains("a2 on @@//a:q"), "{text}");
+    });
+}
+
+/// Task B: an aspect-configured target reached through an alias first in
+/// plan order and through its actual label first in time: its one shared
+/// `Target` value (and the application's base view) is the alias's, as the
+/// sequential walk builds it.
+#[test]
+fn an_alias_first_in_plan_order_keeps_its_aspect_configured_target() {
+    let mut build = String::from(
+        "load(\"//rules:context.bzl\", \"lib\", \"one\")\n\
+         lib(name = \"q\")\nlib(name = \"p\", deps = [\":q\"])\n\
+         alias(name = \"p_alias\", actual = \":p\")\n\
+         one(name = \"through_alias\", deps = [\":p_alias\"])\n",
+    );
+    for index in 0..6 {
+        build.push_str(&format!("lib(name = \"z{index}\")\n"));
+    }
+    build.push_str(
+        "one(name = \"direct\", deps = [\":p\", \":z0\", \":z1\", \":z2\", \":z3\", \":z4\", \":z5\"])\n",
+    );
+    let ws = Workspace::new(&[
+        ("rules/context.bzl", CONTEXT_BZL.to_owned()),
+        ("a/BUILD.bazel", build),
+    ]);
+    compare(
+        &ws,
+        &["//a:through_alias", "//a:direct"],
+        |success, text| {
+            assert!(success, "{text}");
+            assert!(text.contains("a1 on @@//a:p"), "{text}");
+        },
+    );
 }
