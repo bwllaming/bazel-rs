@@ -183,6 +183,17 @@ pub(super) struct Tracker {
 }
 
 impl Tracker {
+    /// Whether nothing was recorded (a frozen walk's fork carries an empty
+    /// tracker as the tracking mark: nothing may write it).
+    pub(super) fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+            && self.frames.is_empty()
+            && self.packages.is_empty()
+            && self.accesses.is_empty()
+            && self.costs.is_empty()
+            && self.deferred.is_none()
+    }
+
     /// A copy for a second engine (BAZEL_RS_EVAL_VERIFY's fork), not
     /// deferring.
     pub(super) fn fork(&self) -> Self {

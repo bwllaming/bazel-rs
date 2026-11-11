@@ -742,6 +742,18 @@ impl Coord<'_> {
                 lin.pass.external(key.clone(), super::pass1::EXTERNAL, true);
             }
             let added = lin.plan.len() - end;
+            // Positions after `end` would move by what the walk added: none
+            // is kept (a deferred platform's tree is planned only by a
+            // flush walked at once, the last one).
+            debug_assert!(
+                added == 0
+                    || (lin
+                        .track
+                        .iter()
+                        .all(|(position, _)| (*position as usize) <= end)
+                        && lin.pending.iter().all(|(position, _)| *position <= end)),
+                "internal error: effects kept after a walk that planned {added} entries itself"
+            );
             if added > 0 {
                 super::super::timeline::mark(|| {
                     format!(

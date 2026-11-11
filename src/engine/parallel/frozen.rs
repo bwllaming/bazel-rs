@@ -526,6 +526,14 @@ impl Engine {
         // The journal stays on: the next frozen walk's results catch up
         // with what is declared until then.
         state.walk_results = Some(Arc::clone(&frozen.results));
+        debug_assert!(
+            frozen
+                .engine
+                .incremental
+                .as_ref()
+                .is_none_or(|tracker| tracker.is_empty()),
+            "internal error: a frozen walk's fork recorded into its tracker"
+        );
         let Frozen {
             views,
             identities,
