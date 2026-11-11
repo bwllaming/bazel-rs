@@ -70,6 +70,20 @@ fn classify_first() -> bool {
     *FIRST
 }
 
+/// `BAZEL_RS_T3_CLASSIFIERS=<n>`: the threads that classify a walk's
+/// entries beside its workers (`0`: the classification chunks are the
+/// workers' jobs, queued in plan order among the others).
+fn classifiers() -> usize {
+    static THREADS: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling switch; the output is the same either way.
+        std::env::var("BAZEL_RS_T3_CLASSIFIERS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1)
+    });
+    if classify_first() { 0 } else { *THREADS }
+}
+
 /// `BAZEL_RS_T3_CLASSIFY_JITTER=<µs>` (a test hook): each classification
 /// first sleeps a reproducible time up to that bound.
 fn classify_jitter() -> u64 {
@@ -204,6 +218,19 @@ impl Board {
 
 /// `BAZEL_RS_T3_CHAIN_WEIGHT=<entries>`: how much earlier in the queue a
 /// job runs per Starlark implementation in its chain of dependents.
+/// `BAZEL_RS_T3_ASPECT_WEIGHT=<links>`: what a rule with attribute aspects
+/// weighs in its dependencies' chains (`Board::chains`; a Starlark rule 1).
+fn aspect_weight() -> u32 {
+    static WEIGHT: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling bound; the output is the same either way.
+        std::env::var("BAZEL_RS_T3_ASPECT_WEIGHT")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1)
+    });
+    *WEIGHT
+}
+
 fn chain_weight() -> usize {
     static WEIGHT: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
         // snapshot-unrecorded: a scheduling bound; the output is the same either way.
@@ -491,6 +518,9 @@ struct Board {
     /// after it): how long the merges ran on after the last job.
     started: std::time::Instant,
     last_job: AtomicU64,
+    /// When the last classification chunk ended (µs since the walk
+    /// started; BAZEL_RS_TIMING).
+    classified_at: AtomicU64,
     /// Task B: how often each aspect job was queued again (a dependency
     /// its applications read was not published).
     requeues: Box<[AtomicU8]>,
@@ -526,7 +556,7 @@ impl Board {
         {
             let readied = self.readied.lock().unwrap_or_else(|e| e.into_inner());
             let mut at = index;
-            for _ in 0..8 {
+            for _ in 0..16 {
                 let Some((when, by)) = readied.get(&at) else {
                     ready.push_str(" <- (not readied: at its turn)");
                     break;
@@ -585,7 +615,35 @@ impl Board {
         let _ = self.jobs.push(index, job);
     }
 
-    /// Classify entries `from..to` (a worker's job).
+    /// `BAZEL_RS_T3_CLASSIFIERS` threads of their own classify the walk's
+    /// chunks in plan order, beside the workers (`false`: none could be
+    /// started, the chunks are the workers' jobs).
+    fn spawn_classifiers(self: &Arc<Self>, threads: usize) -> bool {
+        let next = Arc::new(std::sync::atomic::AtomicUsize::new(self.start));
+        let mut spawned = 0;
+        for thread in 0..threads {
+            let (board, next) = (Arc::clone(self), Arc::clone(&next));
+            let started = std::thread::Builder::new()
+                .name(format!("t3-classify-{thread}"))
+                .stack_size(64 << 20)
+                .spawn(move || {
+                    let end = board.start + board.plan.len();
+                    loop {
+                        let from = next.fetch_add(CHUNK, Ordering::Relaxed);
+                        if from >= end || board.stopped() {
+                            break;
+                        }
+                        board.classify_chunk(from, (from + CHUNK).min(end));
+                    }
+                });
+            if started.is_ok() {
+                spawned += 1;
+            }
+        }
+        spawned > 0
+    }
+
+    /// Classify entries `from..to` (a worker's job, or a classifier's).
     fn classify_chunk(self: &Arc<Self>, from: usize, to: usize) {
         for index in from..to {
             if self.stopped() {
@@ -594,6 +652,8 @@ impl Board {
             self.classify_entry(index);
         }
         if self.chunks_left.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.classified_at
+                .store(self.started.elapsed().as_micros() as u64, Ordering::Relaxed);
             self.chains();
         }
     }
@@ -841,6 +901,7 @@ impl Board {
                     self.jitter,
                     self.verify_summary,
                     true,
+                    true,
                     &stopped,
                 );
                 let mut published = false;
@@ -942,7 +1003,15 @@ impl Board {
         let mut chain = vec![0u32; len];
         let mut next = edges.len();
         for slot in (0..len).rev() {
-            let own = u32::from(matches!(self.plan[slot].1.kind, RuleKind::Custom));
+            let rule = &self.plan[slot].1;
+            // A rule with attribute aspects analyzes their applications
+            // over its dependencies' closure in its job: a heavy link
+            // (BAZEL_RS_T3_ASPECT_WEIGHT links).
+            let own = if super::aspect_jobs::has_attribute_aspects(rule) {
+                aspect_weight()
+            } else {
+                u32::from(matches!(rule.kind, RuleKind::Custom))
+            };
             let mut longest = 0;
             while next > 0 && edges[next - 1].0 as usize == slot {
                 next -= 1;
@@ -1306,12 +1375,17 @@ impl Engine {
             parked: Default::default(),
             started: std::time::Instant::now(),
             last_job: AtomicU64::new(0),
+            classified_at: AtomicU64::new(0),
             requeues: (0..len).map(|_| AtomicU8::new(0)).collect(),
         });
         // Every entry is classified at once, ahead of every job (cheap:
         // lookups; what is ready beyond the window waits, parked): the
         // chains of dependents decide the jobs' order.
+        let classifying = board.spawn_classifiers(classifiers());
         for from in (start..start + len).step_by(CHUNK) {
+            if classifying {
+                break;
+            }
             let (to, chunk) = ((from + CHUNK).min(start + len), Arc::clone(&board));
             // In plan order among the jobs (a job readied early in the
             // plan does not wait for the classification of the whole
@@ -1360,10 +1434,11 @@ impl Engine {
             PROGRESS.lock().unwrap_or_else(|e| e.into_inner()).push({
                 let now = thread_schedstat();
                 format!(
-                    "entries={len} at(10%..100%)={} total={:.3}s last_job={:.3}s cpu={:.3}s runqueue={:.3}s",
+                    "entries={len} at(10%..100%)={} total={:.3}s last_job={:.3}s classified={:.3}s cpu={:.3}s runqueue={:.3}s",
                     progress.join("/"),
                     started.elapsed().as_secs_f64(),
                     board.last_job.load(Ordering::Relaxed) as f64 / 1e6,
+                    board.classified_at.load(Ordering::Relaxed) as f64 / 1e6,
                     (now.0 - sched.0) as f64 / 1e9,
                     (now.1 - sched.1) as f64 / 1e9,
                 )
@@ -1652,10 +1727,14 @@ impl Engine {
             aspects,
             accesses,
             elapsed,
+            sources,
             ..
         } = outcome;
         if let Some(why) = abort {
             stat(S_ABORTED, 1);
+            if debug() {
+                eprintln!("T3-DEBUG aborted #{index} {}: {why:?}", key.label);
+            }
             frozen::FROZEN_STATS[1].fetch_add(1, Ordering::Relaxed);
             prepare_fallback(why);
             if !effects.console.is_empty() {
@@ -1690,6 +1769,15 @@ impl Engine {
             return self.buffered_at_turn(state, configured, key, rule, index);
         }
         frozen::FROZEN_STATS[0].fetch_add(1, Ordering::Relaxed);
+        // The source lookups its prepare made (Engine::target): what they
+        // record, their memoized paths (the same facts whoever looks them
+        // up; a fallback below looks them up again, to the same effect).
+        for (label, path, stable, side) in sources {
+            side.apply(&mut self.missing_sources, &mut self.source_directories);
+            if stable {
+                self.source_targets.insert(label, path);
+            }
+        }
         if let Some((action_owner, console, owner_key)) = owner {
             self.console_owners.insert(action_owner.clone(), console);
             self.aquery_owner(&action_owner, &owner_key, Vec::new);

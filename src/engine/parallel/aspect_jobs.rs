@@ -484,6 +484,38 @@ impl AspectTable {
 }
 
 /// A Starlark rule with attribute aspects (`attr.*(aspects = [...])`).
+/// The input Files one placement ([`Engine::place_aspects`]) found
+/// registered, by identity (each kept, so that no address is reused): its
+/// applications' actions share most of their inputs (a closure's), and an
+/// entry visible at a turn stays visible through it (registrations only
+/// add entries).
+#[derive(Default)]
+struct Registered(HashMap<usize, File, crate::fast_hash::FxBuildHasher>);
+
+impl Registered {
+    fn address(file: &File) -> usize {
+        Arc::as_ptr(file.shared_data()) as usize
+    }
+
+    /// Whether `file` was found registered already.
+    fn known(&self, file: &File) -> bool {
+        self.0.contains_key(&Self::address(file))
+    }
+
+    /// Whether `file` is registered (visible at this turn).
+    fn check(&mut self, file: &File, index: &ArtifactIndex) -> bool {
+        let address = Self::address(file);
+        if self.0.contains_key(&address) {
+            return true;
+        }
+        if index.get(file).is_none() {
+            return false;
+        }
+        self.0.insert(address, file.clone());
+        true
+    }
+}
+
 pub(super) fn has_attribute_aspects(rule: &Rule) -> bool {
     rule.custom.as_ref().is_some_and(|custom| {
         custom
@@ -1095,11 +1127,14 @@ impl Engine {
         if Self::identities_differ(state, &record.identities) {
             return Ok(false);
         }
+        // The inputs found registered by this placement's checks (by
+        // identity, each File kept: nothing is unregistered meanwhile).
+        let mut registered = Registered::default();
         for applying in &record.placements {
             // An error is the rule's prepare's, at its location
             // (CoordPrepare::edge_view).
             if !self
-                .place_application(state, &frozen, index, applying)
+                .place_application(state, &frozen, index, applying, &mut registered)
                 .map_err(|error| located(rule.location.as_deref(), error))?
             {
                 return Ok(false);
@@ -1157,6 +1192,7 @@ impl Engine {
         frozen: &Frozen,
         index: usize,
         applying: &Applying,
+        registered: &mut Registered,
     ) -> Result<bool, String> {
         let key = &applying.0;
         let applied = frozen.aspects.applications.get(applying);
@@ -1212,7 +1248,7 @@ impl Engine {
             return Ok(false);
         }
         for sub in &applied.subs {
-            if !self.place_application(state, frozen, index, sub)? {
+            if !self.place_application(state, frozen, index, sub, registered)? {
                 return Ok(false);
             }
         }
@@ -1248,10 +1284,11 @@ impl Engine {
                     .flat_map(|action| &action.outputs)
                     .collect();
                 if !analyzed.actions.iter().all(|action| {
-                    action
-                        .inputs
-                        .iter()
-                        .all(|file| own.contains(file) || state.artifact_index.get(file).is_some())
+                    action.inputs.iter().all(|file| {
+                        registered.known(file)
+                            || own.contains(file)
+                            || registered.check(file, &state.artifact_index)
+                    })
                 }) {
                     *slot = Some(analyzed);
                     stat(11, 1);

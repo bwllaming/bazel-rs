@@ -383,6 +383,41 @@ reader(name = "r", group = ":g")
     });
 }
 
+/// A symlinked source file's lookup is never memoized (its path may
+/// change), so no frozen view knows it: a job of the merge buffer resolves
+/// it itself (applied at its merge) instead of leaving the target to its
+/// turn, whose dependents would wait for the cursor.
+#[test]
+fn symlinked_sources_resolve_on_the_workers() {
+    let ws = Workspace::new(&[
+        ("s/a.txt", "a\n".to_owned()),
+        ("s/sub/dir/f", "f\n".to_owned()),
+        (
+            "s/BUILD.bazel",
+            r#"load("//rules:defs.bzl", "owners")
+owners(name = "o1", srcs = ["link.txt", "a.txt", "sub/dir", "missing.txt"])
+owners(name = "o2", srcs = ["link.txt", ":o1"])
+"#
+            .to_owned(),
+        ),
+    ]);
+    std::os::unix::fs::symlink("a.txt", ws.path().join("s/link.txt")).unwrap();
+    compare(&ws, &["//s:all"], |success, text| {
+        assert!(success, "{text}");
+        assert!(
+            text.contains("(\"s/link.txt\", Label(\"//s:link.txt\"))"),
+            "{text}"
+        );
+    });
+    let timed = ws.build("eval", 8, &[FROZEN, ("BAZEL_RS_TIMING", "1")], &["//s:all"]);
+    let timed = String::from_utf8_lossy(&timed.stderr);
+    let line = timed
+        .lines()
+        .find(|line| line.starts_with("PERF-PARALLEL buffer starlark="))
+        .unwrap_or_else(|| panic!("the merge buffer walked: {timed}"));
+    assert!(line.contains(" aborted=0 "), "{line}");
+}
+
 /// An output-file target's File names its generating rule even when
 /// another target of the package declared the same path (a shared action)
 /// earlier in plan order and merged before the generating rule published:

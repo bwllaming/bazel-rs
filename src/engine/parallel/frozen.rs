@@ -441,6 +441,10 @@ pub(super) struct FrozenOutcome {
     /// (replayed in its planning frame at its turn; empty without the
     /// tracker).
     pub(super) accesses: Vec<Label>,
+    /// The source files its prepare resolved itself (not memoized in the
+    /// frozen view; a job of the merge buffer only): applied at its merge,
+    /// where the sequential prepare looks them up (`Engine::target`).
+    pub(super) sources: Vec<(Label, PathBuf, bool, SourceSide)>,
 }
 
 /// An entry being prepared and computed on a worker.
@@ -596,6 +600,7 @@ impl Engine {
                 jitter,
                 verify_summary,
                 false,
+                false,
                 &stopped,
             );
             let _ = sender.send(result);
@@ -678,6 +683,7 @@ impl Engine {
             worker,
             aspects,
             accesses,
+            sources: _,
         } = outcome;
         // The pipeline places no aspect applications: such an entry is
         // prepared at its turn.
@@ -750,6 +756,7 @@ pub(super) fn run_frozen(
     jitter: u64,
     verify_summary: bool,
     keep_on_meet: bool,
+    resolve_sources: bool,
     stopped: &dyn Fn() -> bool,
 ) -> (
     Result<FrozenOutcome, String>,
@@ -779,8 +786,11 @@ pub(super) fn run_frozen(
         let mut cx = prepare::SharedPrepare::frozen(frozen, index);
         cx.aspect_jobs = super::aspect_jobs::enabled();
         // Task B: an aspect job resolves the source files its applications
-        // look up (applied at its merge, AspectRecord::sources).
-        cx.resolve_sources = cx.aspect_jobs && super::aspect_jobs::has_attribute_aspects(rule);
+        // look up (applied at its merge, AspectRecord::sources); a job of
+        // the merge buffer the source files its prepare looks up
+        // (`FrozenOutcome::sources`, applied at its merge).
+        cx.resolve_sources =
+            resolve_sources || (cx.aspect_jobs && super::aspect_jobs::has_attribute_aspects(rule));
         let prepared = Engine::prepare_custom(&mut cx, key, rule);
         timer.finish();
         let elapsed = started.elapsed();
@@ -793,13 +803,16 @@ pub(super) fn run_frozen(
             accesses,
             ..
         } = cx.record;
+        let mut resolved = Vec::new();
         let aspects = match aspects {
             Some(mut record) => {
                 record.sources = sources;
                 Some(Box::new(record))
             }
             None => {
-                if !sources.is_empty() {
+                if resolve_sources {
+                    resolved = sources;
+                } else if !sources.is_empty() {
                     abort.get_or_insert("target_lookup");
                 }
                 None
@@ -820,6 +833,7 @@ pub(super) fn run_frozen(
             worker: None,
             aspects,
             accesses,
+            sources: resolved,
         };
         if aborted {
             return outcome;
@@ -1126,6 +1140,29 @@ pub(super) fn publish_starlark_results(
     platform_known: bool,
 ) -> bool {
     profile(|profile| profile.publish(index));
+    if super::debug_t3() {
+        let why = if worker.sentinel {
+            "sentinel".to_owned()
+        } else if !(platform_known || !worker.outcome.platform_read) {
+            "platform".to_owned()
+        } else if worker.outcome.analyzed.is_err() {
+            "analysis error".to_owned()
+        } else {
+            match worker.outcome.delta.as_ref().map(|delta| &delta.built) {
+                None => "no delta".to_owned(),
+                Some(delta::Built::Fallback(why)) => format!("fallback {why}"),
+                Some(delta::Built::Consumed(why)) => format!("consumed {why}"),
+                Some(delta::Built::Delta(built)) if built.error.is_some() => "error".to_owned(),
+                Some(delta::Built::Delta(built)) if built.failed_output.is_some() => {
+                    "failed output".to_owned()
+                }
+                Some(delta::Built::Delta(_)) => String::new(),
+            }
+        };
+        if !why.is_empty() {
+            eprintln!("T3-DEBUG unpublished #{index} {}: {why}", parts.key.label);
+        }
+    }
     if !publishes()
         || worker.sentinel
         || !(platform_known || !worker.outcome.platform_read)
