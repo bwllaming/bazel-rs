@@ -2528,6 +2528,43 @@ scan clean; `BAZEL_RS_VERIFY_DELTA=1 BAZEL_RS_VERIFY_ARTIFACTS=1` clean
   analyses compared), `BAZEL_RS_VERIFY_DELTA=1 BAZEL_RS_VERIFY_ARTIFACTS=1`,
   `BAZEL_RS_PARITY_VERIFY=1 BAZEL_RS_PARITY_REVERSE=1` and
   `BAZEL_RS_EVAL_VERIFY=1` (`--memory-limit=40000`) clean.
+- **After the review** (an application's analysis depends on how it was
+  reached, not only on its key): the walk's table is keyed by key and
+  *context* (`aspect_plan::Context`: the collection's aspects, the content
+  of the base view the `target` parameter is built from — provider values
+  and runfiles by identity, so an alias's view and its actual's share an
+  analysis —, the target-platform answer). Each entry records the
+  plan-position range where its position-dependent reads hold (target
+  platforms, phase 1's aspect tables published by pass-2 ops) and the
+  aspect-configured `Target` values its dependencies' views hold. A
+  placement: an application already committed must have the very
+  providers the job saw (else the rule at its turn), an entry only inside
+  its range, its `Target` values checked and put in the planning state
+  (the rule's own after all its placements). The `Target` table is keyed
+  by key and variant (requested label, the merged applications' provider
+  identities); the coordinator takes its values from it. The coordinator
+  takes a job's analysis only where it holds (range, `Target` values, its
+  dependencies' applications as committed); a rule whose job was not
+  placed is prepared at its turn with the prefetch. Applications committed
+  by earlier merges are memo hits for later jobs. A requeue stops when the
+  key is published already. Tests: `eval_buffer`
+  `an_aspect_application_reached_in_two_contexts_is_the_first_in_plan_orders`,
+  `an_alias_first_in_plan_order_keeps_its_aspect_configured_target`;
+  `eval_pass2`
+  `aspect_applications_under_deferred_platforms_read_them_at_the_placing_rules_position`.
+- ~/code after the review: 14 aspect rules placed, 8 at their turn (6
+  `Target` values differ: crate_universe's `@crates//:x` aliases and
+  protobuf's `@protobuf//:any_proto` aliases make the one shared
+  aspect-configured `Target` value of a crate the first requester's in
+  plan order, alias kind or not, and the jobs above it saw the other kind;
+  2 applications committed in another context), 689 analyses redone at
+  those turns. Big walk 6.2–6.7 s (before task B 7.4–7.8 s; the
+  pre-review jobs 5.6 s), `INFO: Elapsed time` 21.2–21.7 s vs 22.0–23.6 s
+  (`BAZEL_RS_T3_ASPECT_JOBS=0 BAZEL_RS_T3_CLASSIFY_FIRST=1`, alternating,
+  host load 10–12). Dumps identical (build, build under
+  `BAZEL_RS_PARITY_REVERSE=1`, `test --nobuild`); `=verify` +
+  `BAZEL_RS_VERIFY_DELTA`, `VERIFY_DELTA` + `VERIFY_ARTIFACTS`,
+  `PARITY_VERIFY` + `REVERSE`, `EVAL_VERIFY` clean.
 - Left at their turn: the natives committed there (genrules, filegroups,
   aliases: published, so nobody waits, ~0.85 s cursor CPU). Not done: an
   application's delta built on its worker (`DeltaBuilder` +
