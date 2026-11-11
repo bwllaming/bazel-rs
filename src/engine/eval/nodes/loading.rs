@@ -197,12 +197,27 @@ const EXTENSION_BLOCKER: &str = "\u{2}extension:";
 /// speculative execution (crate::repository's `eval_local_blocker`).
 const LOCAL_BLOCKER: &str = "\u{2}local:";
 
+/// How long the lane waits for one blocker's speculative preparation (10
+/// s; `BAZEL_RS_EVAL_TEST_LANE_WAIT_SECS`, a hidden test hook: a loaded
+/// host's speculation may take longer, and a test counting what the lane
+/// executed ahead must not depend on it).
+fn lane_wait_secs() -> u64 {
+    static SECS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a hidden test hook bounding a wait; the output is the same either way.
+        std::env::var("BAZEL_RS_EVAL_TEST_LANE_WAIT_SECS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(10)
+    });
+    *SECS
+}
+
 /// The coordinator's lane: materialize the module repository root a
 /// pool unit was blocked on (where demand may fetch), its console writes
 /// kept for the unit's re-run.
 pub(crate) fn lane_fetch(shared: &EvalShared, blocker: &str) {
     // At most this long per blocker (the unit parks again past it).
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(lane_wait_secs());
     if let Some(group) = blocker.strip_prefix(EXTENSION_BLOCKER) {
         // Blocked on a registry module's root: materialized here (what it
         // writes and observes is the waiting unit's), then once more.

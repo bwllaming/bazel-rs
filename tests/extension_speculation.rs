@@ -796,7 +796,13 @@ fn pool_counter(fixture: &Fixture, baseline: &Baseline, patterns: &[&str], name:
     let run = fixture.build(
         8,
         "off",
-        &[("BAZEL_RS_ANALYSIS", "eval"), ("BAZEL_RS_EVAL_STATS", "1")],
+        &[
+            ("BAZEL_RS_ANALYSIS", "eval"),
+            ("BAZEL_RS_EVAL_STATS", "1"),
+            // A loaded host's speculations may outlast the lane's usual
+            // wait (the counters would depend on it).
+            ("BAZEL_RS_EVAL_TEST_LANE_WAIT_SECS", "240"),
+        ],
         patterns,
     );
     baseline.restore(fixture);
