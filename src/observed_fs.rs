@@ -2296,9 +2296,112 @@ pub fn repository_inputs() -> Vec<(PathBuf, bool, Option<String>)> {
     lock(&REPOSITORY_INPUTS).iter().cloned().collect()
 }
 
+// ---- the dropped-frames audit (eval-record review) -----------------------
+
+/// The observations of frames the evaluator dropped (its nodes the tape
+/// never replayed), by the dropper's kind: checked against the recording
+/// when the window closes ([`audit_dropped`]).
+#[allow(clippy::type_complexity)]
+static AUDIT: Mutex<Vec<(&'static str, PathBuf, Op, Outcome)>> = Mutex::new(Vec::new());
+
+/// Whether dropped frames are audited: `BAZEL_RS_EVAL_STATS` or
+/// `BAZEL_RS_EVAL_AUDIT=1` (the report on the diagnostics stream), or a
+/// binary built with `BAZEL_RS_DEFAULT_EVAL_AUDIT_LOG=<file>` (the test
+/// suites' audit run: one line per window appended to the file).
+pub fn auditing() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        // snapshot-unrecorded: diagnostics switches; they change nothing the analysis computes.
+        std::env::var_os("BAZEL_RS_EVAL_STATS").is_some()
+            || std::env::var_os("BAZEL_RS_EVAL_AUDIT").is_some_and(|value| value == "1")
+            || option_env!("BAZEL_RS_DEFAULT_EVAL_AUDIT_LOG").is_some()
+    })
+}
+
+/// Keep the observations of a frame the evaluator drops (a node of kind
+/// `kind` the tape never replayed) for the window's audit.
+pub fn audit_dropped(kind: &'static str, observations: &Observations) {
+    if !auditing() || observations.is_empty() {
+        return;
+    }
+    fn flatten(
+        kind: &'static str,
+        events: &Events,
+        into: &mut Vec<(&'static str, PathBuf, Op, Outcome)>,
+    ) {
+        for event in &events.events {
+            if let Event::Observe(path, op, outcome) = event {
+                into.push((kind, path.clone(), op.clone(), outcome.clone()));
+            }
+        }
+        for child in &events.children {
+            flatten(kind, &child.events, into);
+        }
+    }
+    flatten(kind, &observations.0, &mut lock(&AUDIT));
+}
+
+/// The audit of the dropped frames against what `recorder` holds: per
+/// kind, the observations dropped and those of them not in the recording
+/// (`None`: nothing was dropped).
+fn audit_report(recorder: &Recorder) -> Option<String> {
+    let dropped = std::mem::take(&mut *lock(&AUDIT));
+    if dropped.is_empty() {
+        return None;
+    }
+    let mut kinds: BTreeMap<&'static str, (usize, usize)> = BTreeMap::new();
+    let mut first_missing = None;
+    for (kind, path, op, outcome) in dropped {
+        let present = lock(&recorder.shards[shard_of(&path)])
+            .get(&path)
+            .is_some_and(|seen| {
+                seen.iter()
+                    .any(|seen| seen.op == op && seen.outcome == outcome)
+            });
+        let entry = kinds.entry(kind).or_default();
+        entry.0 += 1;
+        if !present {
+            entry.1 += 1;
+            first_missing.get_or_insert_with(|| {
+                format!("{kind} {} {}", op.name(), escape(path.as_os_str()))
+            });
+        }
+    }
+    let missing: usize = kinds.values().map(|(_, missing)| missing).sum();
+    let by_kind: Vec<String> = kinds
+        .iter()
+        .map(|(kind, (dropped, missing))| format!("{kind} {dropped}/{missing}"))
+        .collect();
+    Some(format!(
+        "eval audit: observations of dropped frames (kind dropped/not recorded): {}; not recorded {missing}{}",
+        by_kind.join(", "),
+        first_missing
+            .map(|first| format!(", first: {first}"))
+            .unwrap_or_default()
+    ))
+}
+
 /// Close the window (idempotent): planning ended. Later calls record nothing.
 pub fn close_window() {
     wait_commits();
+    if let Some(recorder) = active()
+        && let Some(report) = audit_report(recorder)
+    {
+        // snapshot-unrecorded: diagnostics switches; they change nothing the analysis computes.
+        if std::env::var_os("BAZEL_RS_EVAL_STATS").is_some()
+            || std::env::var_os("BAZEL_RS_EVAL_AUDIT").is_some_and(|value| value == "1")
+        {
+            diag(&report);
+        }
+        if let Some(log) = option_env!("BAZEL_RS_DEFAULT_EVAL_AUDIT_LOG") {
+            use std::io::Write as _;
+            let directory = std::env::current_dir().unwrap_or_default();
+            // snapshot-unrecorded: a test-suite diagnostics log, written after the window.
+            if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(log) {
+                let _ = writeln!(file, "{} {report}", escape(directory.as_os_str()));
+            }
+        }
+    }
     if RECORDING.swap(false, Ordering::SeqCst) {
         if let Some(recorder) = RECORDER.get() {
             *lock(&recorder.window) = Some(recorder.started.elapsed());

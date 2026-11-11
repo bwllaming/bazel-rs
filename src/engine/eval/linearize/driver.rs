@@ -594,8 +594,7 @@ impl Coord<'_> {
             // What the nodes the tape never replayed observed (it will not:
             // no transcript is left), and the source lookups' sets (the
             // sources resolved are memoized or kept with theirs).
-            self.store.observations = FxHashMap::default();
-            self.store.package_observations = FxHashMap::default();
+            self.drop_leftover_observations();
             publish_sources(self.engine, shared, &mut lin);
             *shared
                 .loading
@@ -620,6 +619,20 @@ impl Coord<'_> {
         };
         self.lin = Some(lin);
         result
+    }
+
+    /// Drop what the nodes the tape never replayed observed (it will not
+    /// replay them now), kept for the window's audit
+    /// (`observed_fs::audit_dropped`: a memo such a node published may be
+    /// hit by phase 2, which then observes nothing).
+    pub(crate) fn drop_leftover_observations(&mut self) {
+        for (node, observations) in std::mem::take(&mut self.store.observations) {
+            let kind = self.store.keys.get(&node).map_or("?", NodeKey::kind);
+            crate::observed_fs::audit_dropped(kind, &observations);
+        }
+        for (_, observations) in std::mem::take(&mut self.store.package_observations) {
+            crate::observed_fs::audit_dropped("Pkg", &observations);
+        }
     }
 
     /// Whether flushes may be deferred (S3, [`super::pass2`]): a flush is
@@ -1969,6 +1982,7 @@ impl Engine {
             });
             let mut lin = coord.lin.take().expect("the linearizer");
             coord.publish(&mut lin, &shared, true);
+            coord.drop_leftover_observations();
             let result = result.and(finished).and_then(|()| {
                 let resumed = with_running(|stack| {
                     let view = View {

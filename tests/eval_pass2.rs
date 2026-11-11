@@ -658,11 +658,22 @@ filegroup(name = "all", srcs = [":everything", ":after_cpu", ":sources", ":via_d
         let mut recording: Vec<(&str, &str)> = vec![
             ("BAZEL_RS_SNAPSHOT", "record"),
             ("BAZEL_RS_SNAPSHOT_DUMP", record.to_str().unwrap()),
+            // The dropped frames' audit: what the evaluator's nodes the
+            // tape never replayed observed is in the recording anyway.
+            ("BAZEL_RS_EVAL_AUDIT", "1"),
         ];
         recording.extend_from_slice(env);
         fresh();
         let recorded = ws.build(mode, threads, &recording, &args);
         assert!(recorded.status.success(), "{}", stable(&recorded));
+        for line in String::from_utf8_lossy(&recorded.stderr).lines() {
+            if line.contains("eval audit:") {
+                assert!(
+                    line.contains("not recorded 0"),
+                    "{threads} threads, {env:?}: {line}"
+                );
+            }
+        }
         let record = fs::read_to_string(&record).expect("the record mode's dump");
         // (A test hook such as the jitter keeps the snapshot, and so the
         // tracker, off: the recording only.)
