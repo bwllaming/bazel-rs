@@ -3010,9 +3010,21 @@ struct TestExpansions {
     events: Vec<String>,
 }
 
-/// A directory on a source file's path (`Engine::source_target`).
+/// A directory on a source file's path (`Engine::source_target`), probed
+/// once per invocation: while the analysis snapshot records, with what the
+/// probe observed, replayed by every hit (the memo rule of
+/// docs/ANALYSIS_SNAPSHOT_RECORDING.md: a hit records what the miss did).
 #[derive(Clone, Debug)]
-pub(crate) enum SourceDirProbe {
+pub(crate) struct SourceDirProbe {
+    pub(crate) found: DirProbe,
+    /// Probed while recording: its observations (an entry probed outside
+    /// the recording window is probed again inside it).
+    pub(crate) recorded: Option<Option<Arc<crate::observed_fs::Captured>>>,
+}
+
+/// What [`SourceDirProbe`] found.
+#[derive(Clone, Debug)]
+pub(crate) enum DirProbe {
     Missing,
     Error(String),
     Dir { symlink: bool, boundary: bool },
@@ -17822,22 +17834,30 @@ fn source_target_with(
     {
         return Err(format!("unsafe source label {label}"));
     }
-    // Directories on the way are probed once per invocation (outside a
-    // recording, which observes every probe in its own frame): many
-    // source files share them.
-    let memo = !crate::observed_fs::recording();
+    // Directories on the way are probed once per invocation: many source
+    // files share them. While recording, a hit replays what the probe
+    // observed (into the lookup's frame or the recorder).
+    let recording = crate::observed_fs::recording();
     for (i, component) in parts.iter().enumerate() {
         path.push(component.as_os_str());
         if !relative.is_empty() {
             relative.push('/');
         }
         relative.push_str(&component.as_os_str().to_string_lossy());
-        if memo && i + 1 < parts.len() {
-            let probe = match probes.get(&path) {
-                Some(probe) => probe.clone(),
+        if i + 1 < parts.len() {
+            let known = probes
+                .get(&path)
+                .filter(|probe| probe.recorded.is_some() == recording);
+            let found = match known {
+                Some(probe) => {
+                    if let Some(observed) = &probe.recorded {
+                        crate::observed_fs::replay_some(observed.as_ref());
+                    }
+                    probe.found
+                }
                 None => {
-                    let probe = match crate::observed_fs::symlink_metadata(&path) {
-                        Ok(metadata) => SourceDirProbe::Dir {
+                    let probe = || match crate::observed_fs::symlink_metadata(&path) {
+                        Ok(metadata) => DirProbe::Dir {
                             symlink: metadata.file_type().is_symlink(),
                             boundary: ignored.matching_entry(&relative).is_none()
                                 && !crate::ignored::is_deleted_directory(&path)
@@ -17846,30 +17866,42 @@ fn source_target_with(
                                     || crate::observed_fs::is_file(path.join("BUILD"))),
                         },
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                            SourceDirProbe::Missing
+                            DirProbe::Missing
                         }
-                        Err(error) => SourceDirProbe::Error(error.to_string()),
+                        Err(error) => DirProbe::Error(error.to_string()),
                     };
-                    probes.put(path.clone(), probe.clone());
-                    probe
+                    let (found, recorded) = if recording {
+                        let (found, observed) = crate::observed_fs::capture(probe);
+                        (found, Some(observed))
+                    } else {
+                        (probe(), None)
+                    };
+                    probes.put(
+                        path.clone(),
+                        SourceDirProbe {
+                            found: found.clone(),
+                            recorded,
+                        },
+                    );
+                    found
                 }
             };
-            match probe {
-                SourceDirProbe::Missing => {
+            match found {
+                DirProbe::Missing => {
                     let full = package_dir.join(&label.name);
                     side.missing.push((full.clone(), label.clone()));
                     return Ok((full, true));
                 }
-                SourceDirProbe::Error(error) => {
+                DirProbe::Error(error) => {
                     return Err(format!("no target or source {label}: {error}"));
                 }
-                SourceDirProbe::Dir { boundary: true, .. } => {
+                DirProbe::Dir { boundary: true, .. } => {
                     return Err(format!(
                         "{label} crosses a package boundary at {}",
                         path.display()
                     ));
                 }
-                SourceDirProbe::Dir { symlink, .. } => linked |= symlink,
+                DirProbe::Dir { symlink, .. } => linked |= symlink,
             }
             continue;
         }

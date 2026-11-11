@@ -801,6 +801,19 @@ impl Bodies for Phase1Bodies<'_, '_> {
                     _ => crate::observed_fs::replay(captured),
                 }
             }
+            if let (
+                Some(captured),
+                NodeKey::Tgt(label),
+                NodeValue::Tgt(Ok(crate::engine::Target::Source(_)), _),
+            ) = (&captured, &running.key, &value)
+            {
+                self.shared
+                    .loading
+                    .source_observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(label.clone(), Arc::clone(captured));
+            }
             let value = match value {
                 NodeValue::Tgt(result, _) if captured.is_some() => NodeValue::Tgt(result, captured),
                 value => value,

@@ -270,6 +270,10 @@ pub(crate) struct Linearizer {
     /// The target platform of each configuration (the deferral check;
     /// `None`: the no-config configuration).
     target_platforms: FxHashMap<ConfigId, Option<ConfiguredTargetKey>>,
+    /// Source files resolved while recording whose lookup's observations
+    /// were not recorded yet at their flush: memoized before a deferred
+    /// walk if they are by then ([`Coord::catch_up`]).
+    unrecorded_sources: Vec<(Label, std::path::PathBuf, Arc<crate::observed_fs::Captured>)>,
 }
 
 /// A flush of the tape that failed.
@@ -539,6 +543,14 @@ impl Coord<'_> {
         let Some(mut lin) = self.lin.take() else {
             return Ok(());
         };
+        if stats_enabled() && lin.tracker.is_some() {
+            let (keys, labels, packages) = lin.replay.interned();
+            crate::note!(
+                "bazel-rs: eval pass 2: tracker ops pending {} (capacity {}), interned keys {keys}, labels {labels}, packages {packages}",
+                lin.track.len(),
+                lin.track.capacity()
+            );
+        }
         // The end of phase 1 (pass 1 is through every segment, no flag is
         // speculated any more): the transcripts are not read again, freed
         // before the deferred flushes' walk (memory).
@@ -600,6 +612,18 @@ impl Coord<'_> {
             .as_ref()
             .map_or(0, |state| state.done);
         if walked < end {
+            // The sources whose lookups' observations are recorded by now
+            // (the tape's commits applied first).
+            if !lin.unrecorded_sources.is_empty() {
+                crate::observed_fs::wait_commits();
+            }
+            for (label, path, captured) in std::mem::take(&mut lin.unrecorded_sources) {
+                if captured.is_recorded() {
+                    self.engine.source_targets.entry(label).or_insert(path);
+                } else {
+                    lin.unrecorded_sources.push((label, path, captured));
+                }
+            }
             super::pass2::bump(super::pass2::STAT_WALKS, 1);
             super::pass2::bump(super::pass2::STAT_WALKED, (end - walked) as u64);
             let last_segment = lin
@@ -1074,11 +1098,35 @@ impl Coord<'_> {
             .aspects
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The source-directory probes too: phase 2's source lookups (a
+        // frozen walk's workers' among them) hit the evaluation's (moved,
+        // not locked: the pool's lookups go on; what they probe meanwhile
+        // joins them after).
+        let probes = std::mem::take(
+            &mut *shared
+                .loading
+                .probes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         std::mem::swap(&mut engine.configurations, &mut *configurations);
         std::mem::swap(&mut engine.aspects, &mut *aspects);
+        let own = std::mem::replace(&mut *engine.source_dir_probes, probes);
         engine.incremental = lin.tracker.take();
         let result = lin.direct(|lin| f(engine, lin));
         lin.tracker = engine.incremental.take();
+        let mut probes = std::mem::replace(&mut *engine.source_dir_probes, own);
+        {
+            let mut shared_probes = shared
+                .loading
+                .probes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (path, probe) in std::mem::take(&mut *shared_probes) {
+                probes.entry(path).or_insert(probe);
+            }
+            *shared_probes = probes;
+        }
         std::mem::swap(&mut engine.aspects, &mut *aspects);
         std::mem::swap(&mut engine.configurations, &mut *configurations);
         // What it reported is at its place already.
@@ -1128,8 +1176,10 @@ impl Coord<'_> {
         }
         // S3: the source files the evaluation resolved, as the walk's
         // lookups memoize them (phase 2's prepares off the coordinator read
-        // them; no recording when flushes are deferred: a hit observes as
-        // much as the lookup).
+        // them). A memo hit observes nothing: while recording, a source is
+        // memoized once what its lookup observed is recorded (a replayed
+        // attempt used it), else later (or never: phase 2 then looks it up
+        // and observes, as the walk's first lookup).
         if lin.defer {
             let sources = std::mem::take(
                 &mut *shared
@@ -1138,8 +1188,21 @@ impl Coord<'_> {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
+            let observed = shared
+                .loading
+                .source_observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             for (label, path) in sources {
-                engine.source_targets.entry(label).or_insert(path);
+                match observed.get(&label) {
+                    Some(captured) if !captured.is_recorded() => {
+                        lin.unrecorded_sources
+                            .push((label, path, Arc::clone(captured)));
+                    }
+                    _ => {
+                        engine.source_targets.entry(label).or_insert(path);
+                    }
+                }
             }
         }
         let fresh = self.store.published[lin.published_memos..].to_vec();
@@ -1567,6 +1630,7 @@ impl Engine {
             held_platforms: Vec::new(),
             flushes: 0,
             target_platforms: FxHashMap::default(),
+            unrecorded_sources: Vec::new(),
         };
         let (result, lin) = {
             let mut bodies = Phase1Bodies::new(&shared, self, tracking, true);
@@ -1895,6 +1959,9 @@ impl Engine {
             (result, lin)
         };
         crate::ui::set_count_deferred(false);
+        // What the tape committed reaches the recording before phase 2's
+        // tail (crate::observed_fs::commit_to_recorder).
+        crate::observed_fs::wait_commits();
         let mut lin = lin;
         let leftover = lin
             .console
@@ -1935,6 +2002,13 @@ impl Engine {
             crate::note!("bazel-rs: eval phase 1: sequential attempts by kind: {kinds:?}");
         }
         if stats_enabled() {
+            crate::note!(
+                "bazel-rs: eval phase 1: waited for the recorder's background commits {} ms; frame events applied {} (tree claims {})",
+                crate::observed_fs::COMMIT_WAIT_US.load(std::sync::atomic::Ordering::Relaxed)
+                    / 1000,
+                crate::observed_fs::APPLIED_EVENTS.load(std::sync::atomic::Ordering::Relaxed),
+                crate::observed_fs::APPLIED_CLAIMS.load(std::sync::atomic::Ordering::Relaxed)
+            );
             let ms = |index: usize| STATS[index].load(std::sync::atomic::Ordering::Relaxed) / 1000;
             crate::note!(
                 "bazel-rs: eval phase 1: pass 1 {} ms, tape application {} ms, publication {} ms, flush phase 2 {} ms",

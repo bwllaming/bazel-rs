@@ -80,6 +80,11 @@ pub(crate) struct Loading {
     /// (`Engine::source_targets`; S3: published for phase 2's prepares
     /// off the coordinator).
     pub(crate) stable_sources: Mutex<Vec<(Label, PathBuf)>>,
+    /// What a source lookup of `stable_sources` observed while recording
+    /// (the `Tgt` value's set): the engine memoizes the path only once it
+    /// is recorded (a memo hit observes nothing; the lookup's first user
+    /// may never be replayed).
+    pub(crate) source_observed: Mutex<FxHashMap<Label, Arc<crate::observed_fs::Captured>>>,
 }
 
 thread_local! {

@@ -65,7 +65,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The racy window (`digest_memo::RACY_MARGIN`, `repository_store::RACY_MARGIN`):
@@ -194,6 +194,7 @@ pub fn reprobes_executions() -> bool {
 /// thread are not seen: an optimisation only — it saves a re-probe that
 /// could not make the run saveable).
 pub fn tainted_otherwise(except: Taint) -> bool {
+    wait_commits();
     active().is_some_and(|recorder| {
         lock(&recorder.taints).keys().any(|taint| {
             *taint != except && !taint.plan_dependent() && *taint != Taint::ExtensionOutput
@@ -233,6 +234,7 @@ pub fn recording() -> bool {
 }
 
 pub(crate) fn current_recording() -> Option<Recording> {
+    wait_commits();
     active().map(Recorder::snapshot)
 }
 
@@ -694,6 +696,11 @@ pub struct Recorder {
     /// request decided them ([`settle_plan_taints`]).
     plan_registered: Mutex<Option<BTreeMap<Taint, TaintRecord>>>,
     window: Mutex<Option<Duration>>,
+    /// The trees claims inside frames walked, by root ([`Self::walked`]):
+    /// a store tree does not change once published, so the evaluator's
+    /// attempts that obtain one root concurrently (each claiming it in its
+    /// frame before any reached the recorder) walk it once.
+    walks: Mutex<HashMap<PathBuf, Arc<RepositoryRecord>>>,
 }
 
 /// Everything one window recorded, sorted (paths in byte order).
@@ -782,6 +789,7 @@ impl Recorder {
             provisional: Mutex::default(),
             plan_registered: Mutex::default(),
             window: Mutex::default(),
+            walks: Mutex::default(),
         }
     }
 
@@ -882,6 +890,7 @@ impl Recorder {
     /// committed aside): incremental analysis checks that what changed
     /// was observed again (crate::snapshot::incremental).
     pub fn observed(&self, path: &Path, op: &Op) -> Option<Outcome> {
+        wait_commits();
         lock(&self.shards[shard_of(path)])
             .get(path)?
             .iter()
@@ -1212,6 +1221,7 @@ impl Recorder {
 
     /// Everything recorded so far, sorted.
     pub fn snapshot(&self) -> Recording {
+        wait_commits();
         let mut observations = Vec::new();
         for shard in &self.shards {
             for (path, list) in lock(shard).iter() {
@@ -1249,6 +1259,7 @@ impl Recorder {
     /// The taints recorded so far, with the unconfirmed provisional ones
     /// ([`provisional_taint`]).
     pub fn taints(&self) -> BTreeMap<Taint, TaintRecord> {
+        wait_commits();
         self.taints_with_provisional()
     }
 
@@ -1257,6 +1268,7 @@ impl Recorder {
     /// closed, crate::snapshot::save; later calls see only what was recorded
     /// afterwards).
     pub fn take(&self) -> Recording {
+        wait_commits();
         let mut observations = Vec::new();
         for shard in &self.shards {
             let entries = std::mem::take(&mut *lock(shard));
@@ -1395,8 +1407,8 @@ impl Recorder {
     ) {
         if self.redirected() {
             let owned = lock(&self.repository_roots).get(root) == Some(&Claim::Owner);
-            let record = (claim != Claim::Local && !owned)
-                .then(|| self.walk_tree(kind, name, root, manifest));
+            let record =
+                (claim != Claim::Local && !owned).then(|| self.walked(kind, name, root, manifest));
             push_event(Event::Claim(ClaimEvent {
                 claim,
                 kind,
@@ -1408,6 +1420,35 @@ impl Recorder {
             return;
         }
         self.store_claim(claim, kind, name, root, manifest);
+    }
+
+    /// [`Self::walk_tree`] of a claim inside a frame, once per tree: an
+    /// earlier walk of the same root (and manifest, kind and name) that
+    /// found it a directory is reused (its manifest entry is stat'ed again
+    /// where the record is stored).
+    fn walked(
+        &self,
+        kind: &'static str,
+        name: &str,
+        root: &Path,
+        manifest: Option<&Path>,
+    ) -> Arc<RepositoryRecord> {
+        if let Some(record) = lock(&self.walks).get(root)
+            && record.kind == kind
+            && record.name == name
+            && record.manifest.as_deref() == manifest
+        {
+            return Arc::clone(record);
+        }
+        let record = Arc::new(self.walk_tree(kind, name, root, manifest));
+        let directory = record
+            .entries
+            .iter()
+            .any(|entry| entry.path == root && matches!(entry.state, Ok((FileKind::Dir, _))));
+        if directory {
+            lock(&self.walks).insert(root.to_path_buf(), Arc::clone(&record));
+        }
+        record
     }
 
     /// [`Self::claim_tree`] into the recorder itself.
@@ -1486,7 +1527,8 @@ impl Recorder {
         roots.insert(root.clone(), claim);
         let mut repositories = lock(&self.repositories);
         repositories.retain(|repository| repository.root != root);
-        if let Some(mut record) = record {
+        if let Some(record) = record {
+            let mut record = Arc::unwrap_or_clone(record);
             restat_manifest(&mut record, self.window_start_ns);
             repositories.push(record);
         }
@@ -1494,6 +1536,10 @@ impl Recorder {
 
     /// One event of a frame or a captured set reaching the recorder.
     fn apply_event(&self, event: Event) {
+        APPLIED_EVENTS.fetch_add(1, Ordering::Relaxed);
+        if matches!(event, Event::Claim(_)) {
+            APPLIED_CLAIMS.fetch_add(1, Ordering::Relaxed);
+        }
         match event {
             Event::Observe(path, op, outcome) => self.store_observation(&path, op, outcome),
             Event::Taint(kind, detail) => self.store_taint(kind, detail),
@@ -1669,7 +1715,7 @@ struct ClaimEvent {
     manifest: Option<PathBuf>,
     /// The REPO record walked by the observing thread; `None` for a local
     /// claim, or when the recorder already had the tree's owner.
-    record: Option<RepositoryRecord>,
+    record: Option<Arc<RepositoryRecord>>,
 }
 
 /// The events of a frame, and the captured sets it replayed or whose
@@ -1712,6 +1758,12 @@ pub struct Captured {
 }
 
 impl Captured {
+    /// Whether its events reached the recorder (a frame that holds it
+    /// committed, or a replay outside every frame).
+    pub fn is_recorded(&self) -> bool {
+        self.recorded.load(Ordering::Acquire)
+    }
+
     fn new(events: Events) -> Arc<Self> {
         Arc::new(Self {
             events,
@@ -1895,13 +1947,115 @@ pub fn commit(observations: Observations) {
 /// itself, whatever frames this thread has open (BAZEL_RS_ANALYSIS=eval on
 /// the pool: an attempt nested in another one's is done whatever becomes
 /// of the outer attempt; the recorder is a set, so the time of the commit
-/// does not matter).
+/// does not matter). Applied by background threads (the evaluator's
+/// coordinator applies its tape without waiting for them); every reader of
+/// the recorder waits for them first ([`wait_commits`]).
 pub fn commit_to_recorder(observations: Observations) {
     if observations.is_empty() {
         return;
     }
     if let Some(recorder) = active() {
-        recorder.apply_events(observations.0);
+        committer().send(recorder, observations.0);
+    }
+}
+
+/// The threads applying [`commit_to_recorder`]'s commits (the recorder's
+/// shards take them side by side).
+const COMMIT_THREADS: usize = 6;
+
+/// The frame events applied to recorders (diagnostics:
+/// `BAZEL_RS_EVAL_STATS`).
+pub static APPLIED_EVENTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Of them, tree claims.
+pub static APPLIED_CLAIMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How long readers waited for the background commits (µs; diagnostics:
+/// `BAZEL_RS_EVAL_STATS`).
+pub static COMMIT_WAIT_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The background commits of [`commit_to_recorder`].
+struct Committer {
+    sender: Mutex<mpsc::Sender<(&'static Recorder, Events)>>,
+    /// Commits sent and not applied yet.
+    pending: Mutex<usize>,
+    applied: std::sync::Condvar,
+}
+
+impl Committer {
+    fn send(&'static self, recorder: &'static Recorder, events: Events) {
+        *lock(&self.pending) += 1;
+        if let Err(mpsc::SendError((recorder, events))) =
+            lock(&self.sender).send((recorder, events))
+        {
+            recorder.apply_events(events);
+            self.done();
+        }
+    }
+
+    fn done(&self) {
+        let mut pending = lock(&self.pending);
+        *pending -= 1;
+        if *pending == 0 {
+            self.applied.notify_all();
+        }
+    }
+}
+
+fn committer() -> &'static Committer {
+    static COMMITTER: OnceLock<Committer> = OnceLock::new();
+    COMMITTER.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel::<(&'static Recorder, Events)>();
+        let receiver = Arc::new(Mutex::new(receiver));
+        for index in 0..COMMIT_THREADS {
+            let receiver = Arc::clone(&receiver);
+            let _ = std::thread::Builder::new()
+                .name(format!("recorder-commit-{index}"))
+                .spawn(move || {
+                    loop {
+                        let next = lock(&receiver).recv();
+                        let Ok((recorder, events)) = next else {
+                            return;
+                        };
+                        recorder.apply_events(events);
+                        if let Some(committer) = COMMITTER.get() {
+                            committer.done();
+                        }
+                    }
+                });
+        }
+        Committer {
+            sender: Mutex::new(sender),
+            pending: Mutex::new(0),
+            applied: std::sync::Condvar::new(),
+        }
+    })
+}
+
+/// Adds the time since `started` to [`COMMIT_WAIT_US`] when dropped.
+fn scopeguard_wait(started: Instant) -> impl Drop {
+    struct Waited(Instant);
+    impl Drop for Waited {
+        fn drop(&mut self) {
+            COMMIT_WAIT_US.fetch_add(self.0.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+    }
+    Waited(started)
+}
+
+/// Wait until every [`commit_to_recorder`] so far reached the recorder.
+pub fn wait_commits() {
+    let committer = committer();
+    let mut pending = lock(&committer.pending);
+    if *pending == 0 {
+        return;
+    }
+    let started = Instant::now();
+    let _waited = scopeguard_wait(started);
+    while *pending > 0 {
+        pending = committer
+            .applied
+            .wait(pending)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
 }
 
@@ -2081,6 +2235,7 @@ pub fn repository_inputs() -> Vec<(PathBuf, bool, Option<String>)> {
 
 /// Close the window (idempotent): planning ended. Later calls record nothing.
 pub fn close_window() {
+    wait_commits();
     if RECORDING.swap(false, Ordering::SeqCst) {
         if let Some(recorder) = RECORDER.get() {
             *lock(&recorder.window) = Some(recorder.started.elapsed());
@@ -2091,6 +2246,7 @@ pub fn close_window() {
 
 /// The recorder of this process's window, open or closed.
 pub fn recorder() -> Option<&'static Recorder> {
+    wait_commits();
     RECORDER.get()
 }
 

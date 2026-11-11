@@ -475,6 +475,15 @@ impl TapeReplay {
         }
     }
 
+    /// The interned names' counts: keys, labels, packages (diagnostics).
+    pub(super) fn interned(&self) -> (usize, usize, usize) {
+        (
+            self.tables.keys.len(),
+            self.tables.labels.len(),
+            self.tables.packages.len(),
+        )
+    }
+
     /// `count` plan entries were made off the tape (a flush's phase 2
     /// analyzed a deferred platform's tree as the walk does).
     pub(super) fn planned_elsewhere(&mut self, count: usize) {
