@@ -1888,6 +1888,17 @@ impl Observations {
         self.0.append(other.0);
     }
 
+    /// Without the plan-dependent taints (action registrations:
+    /// [`Taint::plan_dependent`]) of the work they observed: that work was
+    /// discarded and is done again, which registers its actions once more
+    /// (the count of a registration taint is that of the plan's actions).
+    pub fn without_registrations(mut self) -> Self {
+        self.0
+            .events
+            .retain(|event| !matches!(event, Event::Taint(kind, _) if kind.plan_dependent()));
+        self
+    }
+
     /// These events as a captured set (`None` when empty): a memo entry
     /// computed in a frame keeps it, and every hit replays it
     /// ([`replay`]; an evaluator lookup, `BAZEL_RS_ANALYSIS=eval`).
@@ -3272,6 +3283,23 @@ mod tests {
         let observations = unit.finish();
         assert!(captured.is_some_and(|captured| captured.order_dependent));
         assert!(observations.0.order_dependent());
+    }
+
+    /// Discarded work's frame keeps its taints but its action
+    /// registrations (done again, counted there).
+    #[test]
+    fn discarded_work_does_not_count_its_registrations() {
+        let window = record_this_thread();
+        let unit = unit_scope();
+        taint(Taint::MapEach, || "//:a (x)".to_owned());
+        taint(Taint::Network, || "fetch".to_owned());
+        commit(unit.finish().without_registrations());
+        let unit = unit_scope();
+        taint(Taint::MapEach, || "//:a (x)".to_owned());
+        commit(unit.finish());
+        let taints = lock(&window.recorder.taints).clone();
+        assert_eq!(taints[&Taint::MapEach].count, 1);
+        assert_eq!(taints[&Taint::Network].count, 1);
     }
 
     /// captures inside it, record nothing.

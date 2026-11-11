@@ -462,7 +462,14 @@ impl Effects {
         if console {
             crate::ui::replay(self.console);
         }
-        crate::observed_fs::commit(self.observations);
+        // Discarded work (its console dropped) is done again: its action
+        // registrations count there, once.
+        let observations = if console {
+            self.observations
+        } else {
+            self.observations.without_registrations()
+        };
+        crate::observed_fs::commit(observations);
         engine.repositories.note_committed_roots(&self.roots);
     }
 }
