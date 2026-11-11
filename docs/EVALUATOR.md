@@ -639,6 +639,18 @@ change announced to the other two workers; adding a helper is not.
   merge buffer, i.e. only in frozen walks; a walk the driver keeps ordered
   (recording or tracking, task E) sees none of it. No change to the
   recording/driver side.
+- 2026-11-11 (task B, aspect jobs): `Engine::plan_aspect_dependency`'s
+  recursion is generic (`engine/aspect_plan.rs`: `AspectCx`, the
+  coordinator's `CoordAspects`, `commit_application`);
+  `Engine::split_attribute` and `analyzed_edge_configurations_in` take a
+  `prepare::Lookup`; `SharedPrepare` gains `aspect_jobs` (attribute
+  aspects planned over the frozen view instead of aborting) and
+  `SharedRecord::aspects`; `Frozen::aspects` (`aspect_jobs::AspectTable`:
+  the walk's applications and aspect-configured `Target` values,
+  single-flight; phase 1's aspect tables the pass-2 ops publish, read at
+  the job's position like `Frozen::platform_at`); `FrozenOutcome::aspects`;
+  `SingleFlight::get` (waits for a fill in progress). Frozen walks only
+  (no tracker): the recording/driver side is unchanged.
 
 ## 4. Stages and gates
 
@@ -2451,13 +2463,77 @@ scan clean; `BAZEL_RS_VERIFY_DELTA=1 BAZEL_RS_VERIFY_ARTIFACTS=1` clean
   than the workers, the window held ready jobs back (Ct2 published p90
   6.2 → 3.3 s); ~/code's deferred walk 8.4 → 7.6–7.8 s, peak RSS unchanged
   (9.8 GB).
-- Left at their turn (~/code): the 48 Starlark rules with attribute
-  aspects (rust_clippy, rustfmt_test, cc_binary/cc_test/cc_proto_library,
-  upb, go_proto) — 47% of the cursor's CPU (the aspect planning, 40%,
-  and analyses inline, 12%) — and the natives committed at their turn
-  (genrules, filegroups, aliases: published, so nobody waits, ~0.85 s
-  cursor CPU). The cursor's CPU is now the walk's bound (5.4–5.7 s of
-  7.6 s; merge lag p90 4.3 s).
+- **Attribute-aspect rules are worker jobs** (`parallel/aspect_jobs.rs`,
+  `BAZEL_RS_T3_ASPECT_JOBS`, on; `=0` the prefetch at the rule's turn,
+  `parallel::aspects`). The aspect planning (`plan_aspect_dependency`'s
+  recursion, now generic over `aspect_plan::AspectCx`) runs in the rule's
+  prepare on the worker over the frozen view (`FrozenAspects`): dependency
+  views as any worker's, the aspect memo as the walk froze it, phase 1's
+  aspect tables (`aspect_attribute_configs`, `aspect_toolchains`,
+  predicates, `attr_aspects`) from the engine or from the pass-2 ops at the
+  job's position, a predicate or `attr_aspects` missing computed there.
+  Each application is analyzed once per walk, by whichever job needs it
+  first (`AspectTable`, single-flight; the analysis isolated like a
+  compute): its providers, analysis, prints, owners and the applications
+  its own dependencies met (its "subs", in the recursion's order). A
+  dependency whose results are not published yet sends the job back to
+  wait for them (`Board::wait_for`, ≤ 16 times). Nothing is committed on
+  the worker.
+- **Placement** at the rule's merge (`Engine::place_aspects`): the source
+  lookups its prepare made are applied, each aspect-configured `Target`
+  value it used is checked against the planning state's (the first in plan
+  order wins; another one prepares the rule at its turn), then the
+  applications its edges met are walked in the recursion's order, each
+  one's subs first, and those not in the aspect memo are committed with
+  the sequential code (prints, console and aquery owners, workspace status,
+  `register_action_outputs`, nodes, executions; `commit_application`), an
+  error located at the rule as its prepare reports it. The rule's own
+  commit follows (`commit_turn`, its delta built on the cursor). An
+  application that could not be used (failed, panicked, had effects) or an
+  input not registered yet stops the placement: the rule is prepared at its
+  turn from there (what was placed is a prefix of the sequential commits),
+  and the coordinator's walk takes the analyses from the table
+  (`Engine::walk_aspect_analysis`; `BAZEL_RS_VERIFY_DELTA=1` analyzes each
+  again from the coordinator's inputs and compares).
+  `BAZEL_RS_T3_ASPECT_JOBS=verify` runs the jobs and prepares every such
+  rule at its turn (with `BAZEL_RS_VERIFY_DELTA`: every worker analysis
+  checked against the coordinator's inputs). `BAZEL_RS_T3_ASPECT_DELTAS=1`
+  (off): the job builds the rule's delta too (published for its
+  dependents; one failing on its applications' files is computed again at
+  the merge) — no gain on ~/code now. `PERF-PARALLEL aspect_jobs`.
+- **Classification in plan order**: the classification chunks are queued at
+  their first entry's plan index among the jobs (they were all ahead of
+  every job: a job readied early waited up to ~1.9 s for the whole walk's
+  classification); `BAZEL_RS_T3_CLASSIFY_FIRST=1` the old order.
+- Measured (~/code `80d6724f3a`, LTO release, warm, snapshots off,
+  `build --nobuild //src/...`, alternating, host load 13–20; "before" =
+  the same binary with `BAZEL_RS_T3_ASPECT_JOBS=0
+  BAZEL_RS_T3_CLASSIFY_FIRST=1`):
+
+  | | before | task B aspect jobs |
+  |---|---|---|
+  | `INFO: Elapsed time` | 23.6 / 22.9 / 23.3 s | 22.1 / 21.6 / 20.9 s |
+  | big deferred walk (119k entries) | 7.61–7.70 s | 5.55–5.66 s |
+  | its cursor's CPU | 5.47–5.55 s | 3.62–3.66 s |
+  | max RSS | 9.67–9.73 GB | 9.79–9.83 GB |
+
+  At-turn entries: no attribute-aspect rule (22 aspect jobs in the frozen
+  walks, 1,777 applications placed, 0 fallbacks; 6 `unready` natives).
+  The walk now ends with its last job: the job DAG's critical path is
+  2.3 s (`BAZEL_RS_T3_CRITICAL`: `server_clippy`'s job alone ~2.0 s — its
+  closure's applications analyzed in one job), work 69 s / 16 workers.
+  Identical: the action dumps of `build` (85ae7ead3db2, also under
+  `BAZEL_RS_PARITY_REVERSE=1`) and `test --nobuild` (941d72967f5c);
+  `BAZEL_RS_T3_ASPECT_JOBS=verify BAZEL_RS_VERIFY_DELTA=1` (1,703 worker
+  analyses compared), `BAZEL_RS_VERIFY_DELTA=1 BAZEL_RS_VERIFY_ARTIFACTS=1`,
+  `BAZEL_RS_PARITY_VERIFY=1 BAZEL_RS_PARITY_REVERSE=1` and
+  `BAZEL_RS_EVAL_VERIFY=1` (`--memory-limit=40000`) clean.
+- Left at their turn: the natives committed there (genrules, filegroups,
+  aliases: published, so nobody waits, ~0.85 s cursor CPU). Not done: an
+  application's delta built on its worker (`DeltaBuilder` +
+  `sweep::adopt`: the placement commits on the cursor), the applications of
+  one large closure analyzed in parallel (the critical path's
+  `server_clippy`).
 
 ### Effort
 
