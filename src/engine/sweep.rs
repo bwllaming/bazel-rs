@@ -50,7 +50,13 @@ pub(super) fn enabled() -> bool {
         std::env::var_os("BAZEL_RS_EVAL_SWEEP").is_none_or(|value| value != "0")
             && parallel::buffered()
     });
-    *ENABLED
+    // Not while the analysis snapshot records (eval-record): a rewritten
+    // delta's input groups are groups of their own, so the planned request
+    // a snapshot saves shares fewer of them than the walk's (~/code: 107
+    // shared input groups instead of 105, not the same from run to run;
+    // the action dump is the same) and verify mode reports a plan
+    // mismatch. Such deltas are built again there.
+    *ENABLED && !crate::observed_fs::recording()
 }
 
 /// `BAZEL_RS_PARITY_VERIFY=1`: every rewritten delta is built again as the
