@@ -10272,7 +10272,13 @@ impl Engine {
         let mut adopted = false;
         let mut adopted_delta = None;
         let built = match built {
-            Some(delta::Built::Delta(built)) if sweep::enabled() && self.frozen_walk.is_some() => {
+            // At its turn only (every earlier entry merged, merges in plan
+            // order: sweep::CanonicalReads), not committed ahead of it.
+            Some(delta::Built::Delta(built))
+                if sweep::enabled()
+                    && self.frozen_walk.is_some()
+                    && (state.artifact_index.turn as usize) < state.done =>
+            {
                 let meets = Self::delta_meets_producers(state, &built);
                 let reader = state.artifact_index.turn;
                 match sweep::adopt(state, built, reader, meets) {
