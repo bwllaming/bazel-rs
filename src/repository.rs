@@ -3929,11 +3929,25 @@ impl RepositorySet {
             return None;
         }
         lock_ignoring_poison(&self.state.eval_local).insert(canonical.to_owned());
-        self.state.speculation.request_again(canonical);
-        let blocked = self.state.speculation.wait_settled(
-            canonical,
-            deadline.saturating_duration_since(std::time::Instant::now()),
-        );
+        let mut blocked = None;
+        for _ in 0..2 {
+            self.state.speculation.request_again(canonical);
+            blocked = self.state.speculation.wait_settled(
+                canonical,
+                deadline.saturating_duration_since(std::time::Instant::now()),
+            );
+            // One started before the pool asked for it (an ordinary
+            // speculation, without the pool's adoption) may be blocked on
+            // a group whose speculative preparation the adoption uses:
+            // queued once more, now adopting.
+            let adoptable = blocked.as_deref().is_some_and(|error| {
+                self.speculated_group_blocker(error)
+                    .is_some_and(|id| self.speculated_group(id).is_some())
+            });
+            if !adoptable {
+                break;
+            }
+        }
         if self
             .speculation_slot(canonical)
             .is_ok_and(|slot| slot.ready().is_some())
