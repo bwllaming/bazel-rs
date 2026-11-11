@@ -2700,10 +2700,62 @@ main's walk. Test: `eval_pass2::the_recording_and_the_incremental_index_are_the_
 attempt's source lookup, an aspect's implicit tool, an alias view shared
 between a worker and the turn).
 
-**Open**: peak RSS on a miss is the walk's + ~0.4 GB (10.3 GB; the
-evaluator's own overhead is +0.8 GB with the snapshot off since the sweep
-and task B: frozen views, the 262,144-entry window); `--profile` still
-plans with the walk.
+**After the review** (eval-record, round 2):
+
+- A source the evaluation resolved becomes publishable for phase 2 only
+  after its lookup's observations are kept with it (`stable_pending`,
+  moved by the lookup's finish after `source_observed`): the coordinator
+  could take the label first and memoize a path whose observations it
+  never saw. Test hook `BAZEL_RS_EVAL_TEST_SOURCE_SLEEP_MS` (a snapshot
+  test hook).
+- **Audit of dropped frames** (`observed_fs::audit_dropped`): what the
+  evaluator's nodes the tape never replayed observed is checked against
+  the recording when the window closes (`BAZEL_RS_EVAL_STATS`,
+  `BAZEL_RS_EVAL_AUDIT=1`; a binary built with
+  `BAZEL_RS_DEFAULT_EVAL_AUDIT_LOG=<file>` logs every window). The memos
+  (values the engine keeps for phase 2) must be recorded; configured
+  targets, packages and lookups the tape never used need not (the walk
+  never analyzed or loaded them; phase 2 observes them itself). The
+  eval-forced suite: 50 windows with dropped frames, memos not recorded 0
+  (Transition in 33 windows, all recorded); ~/code: CT1 150 dropped, 0 not
+  recorded.
+- The recorder's background commits: done in a drop guard (a panicking
+  commit fails every later reader: an internal error, no hang);
+  `confirm_provisional` and `settle_plan_taints` wait for them; a frame
+  holding an order-dependent event (taint, provisional taint) applies that
+  part at once in the tape's order, a supersession after the background
+  commits; tree claims and selections stay in the background (their rules
+  are order-free).
+- Discarded work's frame (a sentinel recompute, a delta meeting a
+  producer, an invalidated compute) keeps its taints but its action
+  registrations, which the redone work counts: a plan-dependent
+  registration could count twice (the 12 vs 11 `map-each-deferred` seen
+  once on ~/code; the walk's pipeline had the same paths).
+- Source-directory probes are keyed by repository, then path (a
+  directory's boundary depends on its repository's ignore list).
+- Debug assertions: no effect or tracker op kept past a walk that planned
+  entries itself; a frozen fork's tracker (the tracking mark) stays empty.
+
+**Memory** (the miss 10.3 → 9.9 GB, record 10.7 → 9.6 GB on ~/code, after
+heap profiles at every mark: `BAZEL_RS_TIMING_HEAP_DUMP`, docs/MEMORY.md):
+the tape's tracker ops in a chunked queue freed as applied; at the end of
+phase 1 the node keys (the graph's only copy) kept only for flush points'
+chains, the published memo values drained, the effects due moved, the
+recorder's tree walks forgotten; after phase 2 the prepares' memos
+(dependency views, Target values, their accesses) dropped and the freed
+memory purged (both engines: the walk's miss 9.86 → 9.7 GB); the tracker's
+key ids kept by hash; a purge before the snapshot's plan encoding; 4
+frozen workers while recording; while recording the planning tail after
+the deferred walk walks on the pipeline (−0.2 GB, ~+3 s;
+`BAZEL_RS_EVAL_RECORDING_TAIL=frozen` keeps it frozen).
+
+| ~/code `build --nobuild //src/...`, main `081325db` | walk | eval |
+|---|---|---|
+| snapshot on, a miss | 61.7 / 58.2 s, 9.71 / 9.81 GB | 46.9 / 45.8 s, 9.90 / 9.91 GB |
+| `BAZEL_RS_SNAPSHOT=record` | 59.3 / 58.3 s, 9.58 / 9.44 GB | 46.5 / 45.2 s, 9.61 / 9.62 GB |
+| snapshot off | 44.3 / 43.8 s, 8.93 / 8.85 GB | 21.3 / 20.9 s, 9.73 / 9.79 GB |
+
+`--profile` still plans with the walk.
 
 ### Effort
 
