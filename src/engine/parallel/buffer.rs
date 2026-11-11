@@ -1488,6 +1488,8 @@ impl Engine {
                 Claimed::Done(Finished::Native(registered)) => {
                     let _split = frozen::Split::enter(14);
                     match registered {
+                        // (With the tracker its planning frame records
+                        // the commit's accesses: committed here.)
                         Some(merge)
                             if fast_natives() && matches!(rule.kind, RuleKind::PackageGroup(_)) =>
                         {
@@ -1498,6 +1500,7 @@ impl Engine {
                         }
                         Some(merge)
                             if fast_natives()
+                                && !self.tracking()
                                 && native_results::plain(&rule)
                                 && !forwards(&rule) =>
                         {
@@ -1647,6 +1650,8 @@ impl Engine {
             platform_known,
             worker,
             aspects,
+            accesses,
+            elapsed,
             ..
         } = outcome;
         if let Some(why) = abort {
@@ -1727,6 +1732,38 @@ impl Engine {
             // The panic the sequential engine raises at this compute.
             Err(panic) => panic!("{panic}"),
         };
+        // The incremental tracker: its planning frame, the prepare's
+        // accesses in it (in this turn's scopes), then the commit's events,
+        // as the sequential walk records them (plan_one_target).
+        let depth = self.track_depth();
+        self.track_planning(key);
+        let started = self.tracking().then(std::time::Instant::now);
+        if self.tracking() {
+            self.track_replay(incremental::TrackLog::accesses(
+                accesses,
+                incremental::ScopeContext::current(),
+            ));
+        }
+        let result = self.buffered_commit(state, configured, key, rule, index, *parts, worker);
+        if let Some(started) = started {
+            self.track_cost(started.elapsed() + elapsed);
+        }
+        self.track_restore(depth);
+        result
+    }
+
+    /// [`Self::buffered_starlark`]'s commit of a worker's compute.
+    #[allow(clippy::too_many_arguments)]
+    fn buffered_commit(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        key: &ConfiguredTargetKey,
+        rule: &Arc<Rule>,
+        index: usize,
+        parts: PreparedParts,
+        worker: WorkerOutcome,
+    ) -> Result<(), String> {
         let profiled = crate::profile::active().then(std::time::Instant::now);
         let class = crate::plan_timings::class_id(rule.rule_class_name());
         let WorkerOutcome {
@@ -1758,7 +1795,7 @@ impl Engine {
             (snapshot, outcome)
         };
         self.commit_turn(
-            state, configured, key, rule, index, class, *parts, snapshot, outcome, profiled,
+            state, configured, key, rule, index, class, parts, snapshot, outcome, profiled,
         )
     }
 }

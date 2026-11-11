@@ -563,10 +563,16 @@ impl Engine {
             skipped_incompatible: self.skipped_incompatible.clone(),
             incompatible_errors: self.incompatible_errors.clone(),
             pattern_load_errors: self.pattern_load_errors.clone(),
-            incremental: self
-                .incremental
-                .as_ref()
-                .map(|tracker| Box::new(tracker.fork())),
+            // A frozen walk's workers record what the tracker would (their
+            // prepares' accesses, replayed at the turn): an empty tracker
+            // marks the engine as tracking; nothing writes it.
+            incremental: self.incremental.as_ref().map(|tracker| {
+                if phase2_tables {
+                    Box::new(tracker.fork())
+                } else {
+                    Box::default()
+                }
+            }),
             aspect_attribute_configs: self.aspect_attribute_configs.clone(),
             aspect_attr_aspects: self.aspect_attr_aspects.clone(),
             phase2_analyzed: std::collections::BTreeSet::new(),

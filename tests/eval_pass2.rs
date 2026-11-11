@@ -55,6 +55,23 @@ def _tagged_impl(ctx):
         files.extend(dep[DefaultInfo].files.to_list())
     return [DefaultInfo(files = depset(files))]
 
+def _tool_aspect_impl(target, ctx):
+    return []
+
+tool_aspect = aspect(
+    implementation = _tool_aspect_impl,
+    attr_aspects = ["deps"],
+    attrs = {"_tool": attr.label(default = "//tools/aspect:tool")},
+)
+
+def _aspected_impl(ctx):
+    return [DefaultInfo(files = depset(transitive = [dep[DefaultInfo].files for dep in ctx.attr.deps]))]
+
+aspected = rule(
+    implementation = _aspected_impl,
+    attrs = {"deps": attr.label_list(aspects = [tool_aspect])},
+)
+
 tagged = rule(
     implementation = _tagged_impl,
     attrs = {
@@ -111,7 +128,7 @@ printing(name = "top", text = "top {i}", deps = [":flip", ":mid"] + [{next}])
     files.push((
         "BUILD.bazel".to_owned(),
         format!(
-            r#"load(":rules.bzl", "flag", "printing")
+            r#"load(":rules.bzl", "aspected", "flag", "printing")
 package(default_visibility = ["//visibility:public"])
 flag(name = "mode", build_setting_default = "off")
 flag(name = "other", build_setting_default = "a")
@@ -593,13 +610,25 @@ fn the_recording_and_the_incremental_index_are_the_walks() {
 filegroup(name = "sources", srcs = ["a.txt", "sub/b.txt"] + select({":root_on": ["on.txt"], "//conditions:default": []}))
 genrule(name = "cpu", srcs = [":sources"], outs = ["cpu.txt"], cmd = "echo $(TARGET_CPU) > $@")
 printing(name = "after_cpu", text = select({":root_on": "on", "//conditions:default": "off"}), deps = [":cpu", "//p2:top"])
-filegroup(name = "all", srcs = [":everything", ":after_cpu", ":sources"])
+alias(name = "d", actual = "//p1:top")
+printing(name = "via_d", text = "via", deps = [":d", "//p3:mid"])
+aspected(name = "asp", deps = [":d", "//p3:mid"])
+filegroup(name = "all", srcs = [":everything", ":after_cpu", ":sources", ":via_d", ":asp"])
 "#,
     );
-    for path in ["a.txt", "sub/b.txt", "on.txt"] {
+    for (path, text) in [
+        ("a.txt", "x\n"),
+        ("sub/b.txt", "x\n"),
+        ("on.txt", "x\n"),
+        (
+            "tools/aspect/BUILD.bazel",
+            "package(default_visibility = ['//visibility:public'])\nfilegroup(name = 'tool', srcs = ['tool.sh'])\n",
+        ),
+        ("tools/aspect/tool.sh", "x\n"),
+    ] {
         let path = ws.path().join(path);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, "x\n").unwrap();
+        fs::write(path, text).unwrap();
     }
     let args = ["//:all", "--experimental-builtin-modules=true"];
     // Every run on a fresh cache (the repository store's trees are

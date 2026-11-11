@@ -436,6 +436,10 @@ pub(super) struct FrozenOutcome {
     pub(super) worker: Option<Result<WorkerOutcome, String>>,
     /// Task B: what its aspect planning met (applied at its merge).
     pub(super) aspects: Option<Box<super::aspect_jobs::AspectRecord>>,
+    /// The incremental tracker's accesses of its prepare, in order
+    /// (replayed in its planning frame at its turn; empty without the
+    /// tracker).
+    pub(super) accesses: Vec<Label>,
 }
 
 /// An entry being prepared and computed on a worker.
@@ -455,14 +459,12 @@ impl Engine {
     /// `BAZEL_RS_EVAL_FROZEN_PREPARES=1`, off by default: on ~/code the
     /// walk is bound by its turn chain, not by the coordinator's prepares,
     /// and the frozen view costs ~0.5 GB): an evaluated build whose flushes
-    /// are deferred, a walk that commits ahead, no tracker (its accesses
-    /// are the coordinator's scopes').
+    /// are deferred, a walk that commits ahead. With the incremental
+    /// tracker a worker's prepare records its accesses
+    /// ([`FrozenOutcome::accesses`]), replayed in the entry's planning
+    /// frame at its turn in the coordinator's scopes.
     pub(super) fn frozen_prepares(&self, state: &ActionPlanning) -> bool {
-        self.eval_async_phase2
-            && self.commits_ahead(state)
-            && !self.tracking()
-            && shared_prepares()
-            && enabled()
+        self.eval_async_phase2 && self.commits_ahead(state) && shared_prepares() && enabled()
     }
 
     /// The frozen view of a walk starting now; the planning state's memos
@@ -666,6 +668,7 @@ impl Engine {
             elapsed,
             worker,
             aspects,
+            accesses,
         } = outcome;
         // The pipeline places no aspect applications: such an entry is
         // prepared at its turn.
@@ -685,7 +688,11 @@ impl Engine {
             self.console_owners.insert(action_owner.clone(), console);
             self.aquery_owner(&action_owner, &owner_key, Vec::new);
         }
-        let track = incremental::TrackLog::default();
+        let track = if self.tracking() {
+            incremental::TrackLog::accesses(accesses, incremental::ScopeContext::current())
+        } else {
+            incremental::TrackLog::default()
+        };
         match (prepared, worker) {
             (Err(error), _) => {
                 FROZEN_STATS[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -774,6 +781,7 @@ pub(super) fn run_frozen(
             mut abort,
             aspects,
             sources,
+            accesses,
             ..
         } = cx.record;
         let aspects = match aspects {
@@ -802,6 +810,7 @@ pub(super) fn run_frozen(
             elapsed,
             worker: None,
             aspects,
+            accesses,
         };
         if aborted {
             return outcome;
@@ -1646,12 +1655,18 @@ impl Engine {
                     register_artifact(artifact_index, &artifact.file, artifact);
                 }
             }
+            // The lookups the miss path made count for this frame too.
+            self.replay_view_accesses(self.view_accesses.get(&key).cloned());
             return Ok(view);
         }
+        let tracking = self.tracking();
         let mut filled_here = false;
         let filled = frozen.memos.views.get_or_fill(&key, || {
             filled_here = true;
             crate::plan_timings::note_dependency_view(&(label, edge_config), true);
+            if tracking {
+                self.access_capture.push(Vec::new());
+            }
             let view = self.dependency_view(
                 configured,
                 dry,
@@ -1665,7 +1680,18 @@ impl Engine {
                 target_identities,
                 label,
                 edge_config,
-            )?;
+            );
+            // Its lookups, for the memo's later hits (the tracker).
+            let accesses = tracking.then(|| {
+                let mut accessed = self.access_capture.pop().unwrap_or_default();
+                if let Some(outer) = self.access_capture.last_mut() {
+                    outer.extend(accessed.iter().cloned());
+                }
+                let mut seen = HashSet::new();
+                accessed.retain(|label| seen.insert(label.clone()));
+                Arc::<[Label]>::from(accessed)
+            });
+            let view = view?;
             // Registered ahead of its turn: a hit at an earlier index
             // registers them again.
             let artifacts = if self.ahead {
@@ -1676,7 +1702,7 @@ impl Engine {
             Ok::<_, String>(Some(prepare::ViewFill {
                 view,
                 artifacts,
-                accesses: None,
+                accesses,
             }))
         })?;
         let filled =
@@ -1691,7 +1717,22 @@ impl Engine {
                 register_artifact(artifact_index, &artifact.file, artifact);
             }
         }
+        // A hit of a memo a worker or an earlier turn filled: its lookups
+        // count for this frame (the tracker).
+        self.replay_view_accesses(filled.accesses.clone());
         Ok(filled.view.clone())
+    }
+
+    /// The tracker's accesses of a dependency view's miss path, again at
+    /// a hit (`Engine::plan_dependency_view`).
+    fn replay_view_accesses(&mut self, accesses: Option<Arc<[Label]>>) {
+        if self.tracking()
+            && let Some(accessed) = accesses
+        {
+            for label in accessed.iter() {
+                self.track_access(label);
+            }
+        }
     }
 }
 
