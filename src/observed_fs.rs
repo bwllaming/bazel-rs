@@ -1744,16 +1744,17 @@ impl Events {
 
     /// Whether the events (or a set they hold not recorded yet) include
     /// one whose effect depends on the order of the recorder's commits:
-    /// tree claims (an owner's replaces a crossing's), selections and
-    /// supersessions, provisional taints (confirmed later), taints (their
-    /// details are capped, first come first kept).
+    /// supersessions (they forget what came before), provisional taints
+    /// (confirmed later), taints (their details are capped, first come
+    /// first kept). Tree claims and selections are decided by rules that
+    /// do not depend on their order (an owner's claim replaces a
+    /// crossing's whichever came first; a second, different selection is
+    /// Unstable either way).
     fn order_dependent(&self) -> bool {
         self.events.iter().any(|event| {
             matches!(
                 event,
-                Event::Claim(_)
-                    | Event::Selection(_)
-                    | Event::SupersedeSelection(..)
+                Event::SupersedeSelection(..)
                     | Event::Supersede(_)
                     | Event::Provisional(_)
                     | Event::Taint(..)
@@ -1779,14 +1780,17 @@ impl Events {
     }
 
     /// The order-dependent part (applied in the caller's order) and the
-    /// rest (observations and environment digests, any order): a set
+    /// rest (observations, environment digests, claims, selections: any
+    /// order): a set
     /// holding an order-dependent event goes whole with the first.
     fn split_order_dependent(self) -> (Events, Events) {
         let mut ordered = Events::default();
         let mut free = Events::default();
         for event in self.events {
             match event {
-                Event::Observe(..) | Event::Env(..) => free.events.push(event),
+                Event::Observe(..) | Event::Env(..) | Event::Claim(_) | Event::Selection(_) => {
+                    free.events.push(event)
+                }
                 event => ordered.events.push(event),
             }
         }
