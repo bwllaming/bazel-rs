@@ -594,6 +594,27 @@ impl Coord<'_> {
             // no transcript is left), and the source lookups' sets (the
             // sources resolved are memoized or kept with theirs).
             self.drop_leftover_observations();
+            // The node keys (the graph's only copy since it was dropped):
+            // only the flush points' chains are read again (a deferred
+            // segment's failure, `walk_failure`).
+            let chains: FxHashSet<NodeId> = lin
+                .segments
+                .iter()
+                .filter_map(|(_, _, point)| point.as_ref())
+                .chain(
+                    lin.failure
+                        .as_ref()
+                        .and_then(|failure| failure.point.as_ref()),
+                )
+                .flat_map(|point| point.chain.iter().copied())
+                .collect();
+            self.store.keys.retain(|node, _| chains.contains(node));
+            self.store.keys.shrink_to_fit();
+            // The memo values published already (the engine holds them;
+            // those after them are published at the end).
+            self.store.published.drain(..lin.published_memos);
+            self.store.published.shrink_to_fit();
+            lin.published_memos = 0;
             publish_sources(self.engine, shared, &mut lin);
             *shared
                 .loading
@@ -691,8 +712,16 @@ impl Coord<'_> {
                 .rev()
                 .find(|(start, _, _)| *start < end)
                 .map_or(walked, |(start, _, _)| *start);
-            // The ops due before the walk's end move into the engine.
+            // The ops due before the walk's end move into the engine (all
+            // of them, as a whole, at the end of phase 1).
             let mut due = std::collections::VecDeque::new();
+            if lin
+                .pending
+                .back()
+                .is_some_and(|(position, _)| *position < end)
+            {
+                due = std::mem::take(&mut lin.pending);
+            }
             while lin
                 .pending
                 .front()
@@ -2007,6 +2036,9 @@ impl Engine {
         // What the tape committed reaches the recording before phase 2's
         // tail (crate::observed_fs::commit_to_recorder).
         crate::observed_fs::wait_commits();
+        if let Some(recorder) = crate::observed_fs::recorder() {
+            recorder.forget_walks();
+        }
         let mut lin = lin;
         let leftover = lin
             .console
