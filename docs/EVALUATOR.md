@@ -655,6 +655,14 @@ change announced to the other two workers; adding a helper is not.
   the job's position like `Frozen::platform_at`); `FrozenOutcome::aspects`;
   `SingleFlight::get` (waits for a fill in progress). Frozen walks only
   (no tracker): the recording/driver side is unchanged.
+- 2026-11-11 (task B round 4; no frozen interface changed):
+  `frozen::run_frozen` takes `resolve_sources` (the merge buffer's jobs:
+  source lookups resolved on the worker, `FrozenOutcome::sources`, applied
+  at the merge as `NativeMerge::sources` are); `merge_published_native`
+  takes the rule (alias-like targets) and returns the commit's `Result`;
+  `aspect_plan::BaseView` hashes its files by path; `SingleFlight` shards
+  are FxHash maps. Frozen walks only: the recording/driver side is
+  unchanged.
 
 - 2026-11-11 (task E, eval-record; no frozen interface changed):
   `NodeValue::Tgt(result, observed)` (what the lookup observed, replayed
@@ -2607,7 +2615,8 @@ scan clean; `BAZEL_RS_VERIFY_DELTA=1 BAZEL_RS_VERIFY_ARTIFACTS=1` clean
   exact context (cheap ones, < 1 ms on average, inline), so redoing the
   fallbacks' analyses on the workers needed nothing more.
 - Left at their turn: the natives committed there (genrules, filegroups,
-  aliases: published, so nobody waits, ~0.85 s cursor CPU). Not done: an
+  aliases: published, so nobody waits, ~0.85 s cursor CPU; round 4 below
+  merges the aliases and filegroups from their published results). Not done: an
   application's delta built on its worker (`DeltaBuilder` +
   `sweep::adopt`: the placement commits on the cursor), the applications of
   one large closure analyzed in parallel (the critical path's
@@ -2756,6 +2765,65 @@ the deferred walk walks on the pipeline (−0.2 GB, ~+3 s;
 | snapshot off | 44.3 / 43.8 s, 8.93 / 8.85 GB | 21.3 / 20.9 s, 9.73 / 9.79 GB |
 
 `--profile` still plans with the walk.
+### Genuine parity, task B round 4: the cursor and the chains (eval-t3)
+
+A profile of the cursor (pprof, ~/code big walk, 16 workers) ranked its
+CPU: aspect placements 22% (half of it `ConcurrentArtifactIndex` lookups
+of the applications' inputs), Starlark merges 17%, natives committed at
+their turn 16%, the loop itself 9%, published natives' merges 9%,
+lowerings 5%, declarations 4%. But the walk was gated by chains too
+(`BAZEL_RS_T3_DEBUG`'s waits), each fixed here:
+
+- **Source lookups on the workers.** A symlinked source file's lookup is
+  never memoized (`Engine::target`: its path may change), so a Starlark
+  job meeting one aborted (`target_lookup`) and was prepared at its turn:
+  its dependents waited for the cursor (~/code: 10 jobs — rules_python's
+  `libpython` and `py3_runtime`, rules_multitool's toolchain infos —; the
+  chain `libpython` → `_sandbox_native.so` → `//src/python:web` waited
+  0.5 s). A buffered job now resolves the source files its prepare looks
+  up (`SharedPrepare::resolve_sources`, as native and aspect jobs did) and
+  its merge applies the lookups (missing sources, source directories,
+  stable paths memoized; a fallback at its turn looks them up again to the
+  same effect). Test `eval_buffer::symlinked_sources_resolve_on_the_workers`.
+- **Classifier threads.** The classification chunks ran as jobs in plan
+  order among the others: with the workers saturated, the last chunks
+  were classified at ~3.4 s, so their ready entries (and the dependents'
+  chains) started late. Two threads of their own classify the walk in plan
+  order beside the workers (`BAZEL_RS_T3_CLASSIFIERS`, default 2; `0` the
+  old jobs): classified at 0.75 s.
+- **Aliases and output-group filegroups merged from their published
+  results** (`merge_published_native`): an alias-like target (`alias`,
+  `label_flag`, `label_setting`) takes its actual's providers and runfiles
+  as committed (what its commit copies; its worker published the actual's
+  published ones), a filegroup with an `output_group` the files its worker
+  selected from its `srcs`' published views. Natives committed at their
+  turn: 11,020 aliases + 163 filegroups + 27 label flags → only the 936
+  genrules (their action node and output registration are the commit's).
+- **Placements**: an application's input check remembers the Files found
+  registered, by identity, for the rest of the placement (an entry visible
+  at a turn stays so); the aspect table's key hashes a base view's Files
+  by path (their whole data was most of the lookups), `SingleFlight`
+  shards are FxHash maps.
+- `BAZEL_RS_TIMING`: the cursor line gains `classified=` (when the last
+  chunk was classified) and `fill_wait=` (threads waiting for another's
+  `SingleFlight` fill: ~0.2 s, not a bound). `BAZEL_RS_T3_DEBUG` names the
+  aborted and unpublished jobs with their reason.
+  `BAZEL_RS_T3_ASPECT_WEIGHT=<links>` (default 1) weighs a rule with
+  attribute aspects in its dependencies' chains: 64 or 1,000 moved
+  `server_clippy`'s wait but not the walk (below).
+
+Measured: see the §7 table in the round's report (cursor split before and
+after, `INFO: Elapsed time`). What bounds the walk now: its last job
+(`last_job` within 0.3 s of the end) — `server_clippy`'s job (1.4–1.5 s,
+its closure's applications analyzed in one job) starts only once its
+last dependency is published (~3.2 s: the queue is saturated from ~1 s to
+~3 s, a chain readied by classification at ~1.1 s waits ~1.9 s for a
+worker); more workers (24, 32) or a heavier aspect weight do not move it.
+Next: the applications of one large closure analyzed in parallel (their
+own jobs, single-flight, readied by their bases), genrules as worker
+native deltas (`DeltaBuilder` + `sweep::adopt`, the at-turn commit as the
+conflict fallback), and the cursor's remaining merges (Starlark deltas'
+`sweep::adopt`/`merge_ops`, ~0.6 s).
 
 ### Effort
 
