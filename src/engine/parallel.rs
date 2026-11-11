@@ -2011,6 +2011,7 @@ impl Engine {
                 self.drain_lowerings(state, lowering::Drain::All)?;
                 self.eval_pass2_turn(state.done);
             }
+            self.eval_pass2_track(state.done);
             let index = state.done;
             state.done += 1;
             crate::debug_panic::at("coordinator");

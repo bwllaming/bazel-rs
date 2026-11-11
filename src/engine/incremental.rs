@@ -389,6 +389,11 @@ impl Tracker {
 /// target and source accesses in their shared scopes, prints, the
 /// requested roots. A flush's phase 2 is not on the tape (its planning
 /// frames are pass 2's).
+///
+/// S3 pass 2 (docs/EVALUATOR.md): with deferred flushes the tape's tracker
+/// ops wait for the phase 2 before them ([`TrackOp`], applied by plan
+/// position like the tape's other effects), so the tracker sees phase 2
+/// and the tape in the walk's order.
 pub(super) struct TapeReplay {
     plan_len: u32,
     /// (the entered key's id, the frame depth before its reach).
@@ -398,6 +403,64 @@ pub(super) struct TapeReplay {
     /// scopes are the live ones).
     scopes: Vec<&'static str>,
     roots: usize,
+    /// What the compact ops name ([`Self::compact`]).
+    tables: TrackTables,
+}
+
+/// A tape op as the tracker replays it ([`TapeReplay::compact`]): its
+/// labels and keys interned (millions are held while a deferred flush's
+/// phase 2 is pending).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TrackOp {
+    ScopeEnter(u32),
+    ScopeExit,
+    /// `TapeOp::Segment` of a requested label's analysis (its position).
+    Root(u32),
+    /// `TapeOp::Segment(SegmentKind::RootsDone)`.
+    RootsDone,
+    /// Any other segment.
+    Segment,
+    Reach {
+        key: u32,
+        enter: bool,
+    },
+    Leave,
+    Plan {
+        position: bool,
+    },
+    Access(u32),
+    Source(u32),
+    PkgCommit {
+        package: u32,
+        printed: bool,
+    },
+    Print,
+}
+
+/// The interned names of [`TrackOp`]s.
+#[derive(Default)]
+struct TrackTables {
+    keys: Vec<KeyIdentity>,
+    key_ids: HashMap<KeyIdentity, u32>,
+    labels: Vec<Label>,
+    label_ids: HashMap<Label, u32>,
+    packages: Vec<PackageId>,
+    package_ids: HashMap<PackageId, u32>,
+    scopes: Vec<&'static str>,
+}
+
+fn intern<T: Clone + Eq + std::hash::Hash>(
+    values: &mut Vec<T>,
+    ids: &mut HashMap<T, u32>,
+    value: &T,
+) -> u32 {
+    if let Some(id) = ids.get(value) {
+        return *id;
+    }
+    let id = values.len() as u32;
+    values.push(value.clone());
+    ids.insert(value.clone(), id);
+    id
 }
 
 impl TapeReplay {
@@ -408,6 +471,7 @@ impl TapeReplay {
             entered: Vec::new(),
             scopes: Vec::new(),
             roots: 0,
+            tables: TrackTables::default(),
         }
     }
 
@@ -441,35 +505,90 @@ impl TapeReplay {
         }
     }
 
-    pub(super) fn apply(&mut self, tracker: &mut Tracker, op: &super::eval::transcript::TapeOp) {
-        use super::eval::transcript::{Event, TapeOp};
+    /// The tracker's part of a tape op (`None`: the tracker ignores it).
+    pub(super) fn compact(&mut self, op: &super::eval::transcript::TapeOp) -> Option<TrackOp> {
+        use super::eval::transcript::{Event, SegmentKind, TapeOp};
+        let tables = &mut self.tables;
+        Some(match op {
+            TapeOp::Effect(Event::ScopeEnter(name)) => {
+                let id = match tables.scopes.iter().position(|known| known == name) {
+                    Some(id) => id,
+                    None => {
+                        tables.scopes.push(name);
+                        tables.scopes.len() - 1
+                    }
+                };
+                TrackOp::ScopeEnter(id as u32)
+            }
+            TapeOp::Effect(Event::ScopeExit) => TrackOp::ScopeExit,
+            TapeOp::Segment(SegmentKind::Root { position, .. }) => TrackOp::Root(*position as u32),
+            TapeOp::Segment(SegmentKind::RootsDone) => TrackOp::RootsDone,
+            TapeOp::Segment(SegmentKind::Setup | SegmentKind::TopLevelAspects { .. }) => {
+                TrackOp::Segment
+            }
+            TapeOp::Reach { key, enter, .. } => TrackOp::Reach {
+                key: intern(
+                    &mut tables.keys,
+                    &mut tables.key_ids,
+                    &(
+                        key.label.clone(),
+                        Some(key.config),
+                        key.apply_rule_transition,
+                    ),
+                ),
+                enter: *enter,
+            },
+            TapeOp::Leave => TrackOp::Leave,
+            TapeOp::Plan { position, .. } => TrackOp::Plan {
+                position: *position,
+            },
+            TapeOp::Effect(Event::Access(label)) => {
+                TrackOp::Access(intern(&mut tables.labels, &mut tables.label_ids, label))
+            }
+            TapeOp::Effect(Event::PkgCommit(package, printed)) => TrackOp::PkgCommit {
+                package: intern(&mut tables.packages, &mut tables.package_ids, package),
+                printed: *printed,
+            },
+            TapeOp::Effect(Event::Source(label)) => TrackOp::Source(intern(
+                &mut tables.keys,
+                &mut tables.key_ids,
+                &(label.clone(), None, true),
+            )),
+            TapeOp::Effect(Event::Print(_)) => TrackOp::Print,
+            TapeOp::Fail(_) | TapeOp::Flush | TapeOp::Effect(_) => return None,
+        })
+    }
+
+    /// Apply a compact op ([`Self::compact`]) where the walk's tracker
+    /// records it.
+    pub(super) fn replay(&mut self, tracker: &mut Tracker, op: TrackOp) {
         match op {
-            TapeOp::Effect(Event::ScopeEnter(name)) => self.scopes.push(name),
-            TapeOp::Effect(Event::ScopeExit) => {
+            TrackOp::ScopeEnter(name) => self.scopes.push(self.tables.scopes[name as usize]),
+            TrackOp::ScopeExit => {
                 self.scopes.pop();
             }
-            op => self.context().enter(|| self.apply_in_context(tracker, op)),
+            op => self.context().enter(|| self.replay_in_context(tracker, op)),
         }
     }
 
-    fn apply_in_context(&mut self, tracker: &mut Tracker, op: &super::eval::transcript::TapeOp) {
-        use super::eval::transcript::{Event, SegmentKind, TapeOp};
+    fn replay_in_context(&mut self, tracker: &mut Tracker, op: TrackOp) {
         match op {
-            TapeOp::Segment(kind) => {
+            TrackOp::Root(_) | TrackOp::RootsDone | TrackOp::Segment => {
                 tracker.root_analysis = None;
                 tracker.root_reached = false;
-                match kind {
-                    SegmentKind::Root { position, .. } => {
-                        if *position == 0 {
+                match op {
+                    TrackOp::Root(position) => {
+                        let position = position as usize;
+                        if position == 0 {
                             tracker.root_entries.clear();
                         }
-                        if tracker.root_entries.len() == *position {
+                        if tracker.root_entries.len() == position {
                             tracker.root_entries.push(self.plan_len);
                         }
-                        tracker.root_analysis = Some(*position as u32);
+                        tracker.root_analysis = Some(position as u32);
                         self.roots = position + 1;
                     }
-                    SegmentKind::RootsDone => {
+                    TrackOp::RootsDone => {
                         if self.roots == 0 {
                             tracker.root_entries.clear();
                         }
@@ -477,17 +596,13 @@ impl TapeReplay {
                             tracker.root_entries.push(self.plan_len);
                         }
                     }
-                    SegmentKind::Setup | SegmentKind::TopLevelAspects { .. } => {}
+                    _ => {}
                 }
             }
-            TapeOp::Reach { key, enter, .. } => {
+            TrackOp::Reach { key, enter } => {
                 let depth = tracker.frames.len();
-                let id = tracker.reach((
-                    key.label.clone(),
-                    Some(key.config),
-                    key.apply_rule_transition,
-                ));
-                if *enter {
+                let id = tracker.reach(self.tables.keys[key as usize].clone());
+                if enter {
                     tracker.frames.push((id, shared_depth()));
                     tracker
                         .planned
@@ -496,13 +611,13 @@ impl TapeReplay {
                     self.entered.push((id, depth));
                 }
             }
-            TapeOp::Leave => {
+            TrackOp::Leave => {
                 if let Some((_, depth)) = self.entered.pop() {
                     tracker.frames.truncate(depth);
                 }
             }
-            TapeOp::Plan { position, .. } => {
-                if *position
+            TrackOp::Plan { position } => {
+                if position
                     && let Some((id, _)) = self.entered.last()
                     && let Some(planned) = tracker.planned.get_mut(id)
                     && planned.1 == u32::MAX
@@ -511,24 +626,24 @@ impl TapeReplay {
                 }
                 self.plan_len += 1;
             }
-            TapeOp::Effect(Event::Access(label)) => tracker.access(label),
+            TrackOp::Access(label) => tracker.access(&self.tables.labels[label as usize]),
             // The commit's record (`track_package_printed`; its BUILD
             // prints are pass 2's to note).
-            TapeOp::Effect(Event::PkgCommit(package, printed)) => {
-                let id = tracker.package(package);
+            TrackOp::PkgCommit { package, printed } => {
+                let id = tracker.package(&self.tables.packages[package as usize]);
                 let record = &mut tracker.packages[id as usize];
-                record.printed |= *printed;
+                record.printed |= printed;
                 record.pattern |= pattern();
             }
-            TapeOp::Effect(Event::Source(label)) => {
-                tracker.reach((label.clone(), None, true));
+            TrackOp::Source(key) => {
+                tracker.reach(self.tables.keys[key as usize].clone());
             }
-            TapeOp::Effect(Event::Print(_)) => {
+            TrackOp::Print => {
                 if let Some((frame, _)) = tracker.frames.last().copied() {
                     tracker.printed_keys.insert(frame);
                 }
             }
-            TapeOp::Fail(_) | TapeOp::Flush | TapeOp::Effect(_) => {}
+            TrackOp::ScopeEnter(_) | TrackOp::ScopeExit => {}
         }
     }
 

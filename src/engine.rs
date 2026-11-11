@@ -10250,6 +10250,7 @@ impl Engine {
             let (key, rule) = (&key, &rule);
             // S3 pass 2: what the tape applied before this turn.
             self.eval_pass2_turn(state.done);
+            self.eval_pass2_track(state.done);
             let index = state.done as u64;
             state.done += 1;
             crate::progress::analysis_configured(state.done);

@@ -32,7 +32,7 @@ use crate::label::Label;
 use crate::platforms::PlatformInfo;
 use crate::toolchains::RegisteredToolchains;
 
-use super::super::super::incremental::{TapeReplay, Tracker};
+use super::super::super::incremental::{TapeReplay, TrackOp, Tracker};
 use super::super::super::{
     ConfiguredNodes, ConfiguredTargetKey, Engine, ExecutionPlatforms, Plan, PlatformError,
     ResolutionError, RuleKind, Target, TransitionDetails, forwards,
@@ -242,7 +242,7 @@ pub(crate) struct Linearizer {
     /// call fails with it; the driver reports it, [`Coord::flush_failure`]).
     failure: Option<FlushFailure>,
     /// S3 pass 2 ([`super::pass2`]): flushes may be deferred (a pooled
-    /// evaluation without the tracker or the observation recording).
+    /// evaluation without `--profile`).
     defer: bool,
     /// The plan position the tape's effects apply at: the plan's length at
     /// the last `Flush`.
@@ -250,6 +250,9 @@ pub(crate) struct Linearizer {
     /// The effects not applied yet (a deferred flush's walk is pending),
     /// by position.
     pending: std::collections::VecDeque<(usize, super::pass2::Op)>,
+    /// The tape's tracker ops not applied yet, by position (like
+    /// `pending`; kept apart: they need no lowering drain, and are many).
+    track: std::collections::VecDeque<(u32, TrackOp)>,
     /// The flushes' plan segments not walked yet: `[start, end)` and
     /// where the flush happened.
     segments: std::collections::VecDeque<(usize, usize, Option<super::pass1::FlushPoint>)>,
@@ -405,8 +408,19 @@ impl Coord<'_> {
             }
         }
         for op in ops {
-            if let Some(tracker) = lin.tracker.as_deref_mut() {
-                lin.replay.apply(tracker, &op);
+            // The tracker's part, applied where the walk's tracker records
+            // it: after the phase 2 of the flushes before it (S3: kept by
+            // position while a deferred flush's walk is pending).
+            if lin.tracker.is_some()
+                && let Some(track) = lin.replay.compact(&op)
+            {
+                if lin.track.is_empty() && lin.segments.is_empty() {
+                    if let Some(tracker) = lin.tracker.as_deref_mut() {
+                        lin.replay.replay(tracker, track);
+                    }
+                } else {
+                    lin.track.push_back((lin.position as u32, track));
+                }
             }
             // What a node observed reaches the recording where the walk
             // runs it (S2, a pooled evaluation's attempt frames): a
@@ -603,10 +617,21 @@ impl Coord<'_> {
             {
                 due.extend(lin.pending.pop_front());
             }
+            let mut track = std::collections::VecDeque::new();
+            while lin
+                .track
+                .front()
+                .is_some_and(|(position, _)| (*position as usize) < end)
+            {
+                track.extend(lin.track.pop_front());
+            }
+            let replay = std::mem::replace(&mut lin.replay, TapeReplay::new(0));
             self.engine.eval_pass2 = Some(Box::new(super::pass2::Pending {
                 ops: due,
                 last_segment,
                 turn: walked,
+                track,
+                replay: Some(Box::new(replay)),
             }));
             let rest = lin.plan.split_off(end);
             let started = std::time::Instant::now();
@@ -634,7 +659,10 @@ impl Coord<'_> {
                     started.elapsed().as_millis()
                 )
             });
-            let pending = self.engine.eval_pass2.take();
+            let mut pending = self.engine.eval_pass2.take();
+            if let Some(replay) = pending.as_mut().and_then(|pending| pending.replay.take()) {
+                lin.replay = *replay;
+            }
             let (result, done) = result;
             // What the walk analyzed itself (a deferred target platform's
             // tree, in the walk's last segment): complete for pass 1 from
@@ -669,6 +697,7 @@ impl Coord<'_> {
                     .or_else(|| lin.segments.back())
                     .and_then(|(_, _, point)| point.clone());
                 lin.pending.clear();
+                lin.track.clear();
                 lin.segments.clear();
                 lin.failure = Some(FlushFailure {
                     error: error.clone(),
@@ -681,6 +710,9 @@ impl Coord<'_> {
             if let Some(pending) = pending {
                 for op in pending.ops.into_iter().rev() {
                     lin.pending.push_front(op);
+                }
+                for op in pending.track.into_iter().rev() {
+                    lin.track.push_front(op);
                 }
             }
             while lin
@@ -711,6 +743,14 @@ impl Coord<'_> {
             if let Some((_, op)) = lin.pending.pop_front() {
                 let engine = &mut *self.engine;
                 lin.direct(|_| engine.apply_pass2_op(op));
+            }
+        }
+        while let Some((position, op)) = lin.track.front().copied()
+            && position as usize <= end
+        {
+            lin.track.pop_front();
+            if let Some(tracker) = lin.tracker.as_deref_mut() {
+                lin.replay.replay(tracker, op);
             }
         }
         self.store.warnings_seen = self.engine.warnings.len();
@@ -1520,6 +1560,7 @@ impl Engine {
             defer: false,
             position: 0,
             pending: Default::default(),
+            track: Default::default(),
             segments: Default::default(),
             platforms: FxHashSet::default(),
             used_platforms: FxHashSet::default(),
@@ -1534,12 +1575,12 @@ impl Engine {
                 let mut coord = bodies.coord();
                 coord.store.warnings_seen = coord.engine.warnings.len();
                 coord.store.delay_release = bodies.framed;
-                // S3 pass 2: a pooled evaluation defers flushes unless the
-                // tracker or the observation recording see phase 2 and the
-                // tape in their order (or --profile its spans).
+                // S3 pass 2: a pooled evaluation defers flushes unless
+                // --profile records phase 2 and the tape (its spans) in
+                // their order. The observation recording is a set (the
+                // order of its commits does not show); the tracker's tape
+                // ops are kept by position like the tape's other effects.
                 lin.defer = bodies.framed
-                    && !tracking
-                    && !crate::observed_fs::recording()
                     && !crate::profile::active()
                     // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
                     && std::env::var_os("BAZEL_RS_EVAL_NO_DEFER").is_none();

@@ -11,7 +11,8 @@
 //! `--toolchain_resolution_debug` events, load prints, package commits and
 //! the memo values the flush published (platforms, registrations, …) — is
 //! kept as [`Op`]s by the plan position before whose turn the walk applies
-//! them ([`Pending`], [`Engine::eval_pass2_turn`]). So the console, the
+//! them ([`Pending`], [`Engine::eval_pass2_turn`]), and so are the tape's
+//! incremental-tracker ops ([`TrackOp`], [`Engine::eval_pass2_track`]). So the console, the
 //! warnings and the engine state each turn sees are the ordered walk's:
 //! effects between flush k-1 and flush k come after the phase 2 of the
 //! plan up to flush k-1 and before the next entry's.
@@ -35,8 +36,7 @@
 //! - its segment holds a Starlark rule or a genrule whose configuration's
 //!   target platform is not resolved (its phase 2 may resolve the
 //!   deferred platform, whose tree the ordered walk plans at the flush);
-//! - the incremental tracker or the observation recording is on (they
-//!   record phase 2 and the tape in their order);
+//! - `--profile` (its spans in the walk's order);
 //! - a body needs the planning state (a flush in the sequential pass, a
 //!   flag's CT2 the pool did not speculate).
 //!
@@ -48,6 +48,7 @@ use std::sync::Arc;
 use crate::label::PackageId;
 
 use super::super::super::Engine;
+use super::super::super::incremental::{TapeReplay, TrackOp};
 use super::super::nodes::loading::PkgValue;
 use super::driver::Published;
 
@@ -99,6 +100,11 @@ pub(in crate::engine) struct Pending {
     pub(crate) last_segment: usize,
     /// The entry at its turn.
     pub(crate) turn: usize,
+    /// The tape's incremental-tracker ops due before the walk's end, by
+    /// position ([`Engine::eval_pass2_track`]), and the replay applying
+    /// them (moved here for the walk).
+    pub(crate) track: std::collections::VecDeque<(u32, TrackOp)>,
+    pub(crate) replay: Option<Box<TapeReplay>>,
 }
 
 impl Pending {
@@ -139,6 +145,26 @@ impl Engine {
         }
         self.eval_pass2 = Some(pending);
         due
+    }
+
+    /// The tape's tracker ops before the turn of plan entry `index` in a
+    /// walk with deferred flushes (no lowering drain: they change only the
+    /// tracker).
+    pub(in crate::engine) fn eval_pass2_track(&mut self, index: usize) {
+        let Some(pending) = self.eval_pass2.as_mut() else {
+            return;
+        };
+        while let Some((position, op)) = pending.track.front().copied()
+            && position as usize <= index
+        {
+            pending.track.pop_front();
+            if let (Some(replay), Some(tracker)) = (
+                pending.replay.as_deref_mut(),
+                self.incremental.as_deref_mut(),
+            ) {
+                replay.replay(tracker, op);
+            }
+        }
     }
 
     /// A deferred target platform resolved by the entry at its turn

@@ -544,5 +544,182 @@ on_platform(name = "on_a2", platform = "//plat:a", deps = ["//p1:top", ":late"])
     for (threads, env) in runs {
         let eval = ws.build("eval", threads, env, &args);
         assert_eq!(stable(&eval), stable(&walk), "{threads} threads, {env:?}");
+
+/// The record mode's dump without what depends on the time of the run or
+/// on the run's fresh cache: observations (without their stat keys and
+/// `racy` flags), environment digests, repositories (not their integrity
+/// entries' stat keys), pinned tables, taints (the test hook's aside),
+/// the plan's registrations and replay records without their execution
+/// times.
+fn comparable_recording(dump: &str) -> Vec<String> {
+    dump.lines()
+        .filter_map(|line| {
+            let kind = line.split(' ').next().unwrap_or_default();
+            match kind {
+                "OBS" | "ENV" | "REPO" => Some(
+                    line.split(' ')
+                        .filter(|part| !part.starts_with("key:") && *part != "racy")
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                ),
+                "ROOT" | "MAPPING" | "REGISTERED" => Some(line.to_owned()),
+                "TAINT" if !line.starts_with("TAINT test-hook ") => Some(line.to_owned()),
+                "REPLAY" => Some(
+                    line.split(' ')
+                        .filter(|part| {
+                            !part.starts_with("recorded:") && !part.starts_with("replay:")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                ),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// S3 with the analysis snapshot's recording and the incremental tracker
+/// on (a snapshot miss, the default mode; docs/EVALUATOR.md "Selecting the
+/// engine"): the flushes are deferred there too, and the recording (the
+/// record mode's dump: the same observations, also of source files a
+/// restarted attempt looked up first), the incremental index and the
+/// output are the walk's at every thread count, under jitter and
+/// restarts, with and without the workers' prepares.
+#[test]
+fn the_recording_and_the_incremental_index_are_the_walks() {
+    let ws = Workspace::new(
+        6,
+        r#"config_setting(name = "root_on", flag_values = {":mode": "on"})
+filegroup(name = "sources", srcs = ["a.txt", "sub/b.txt"] + select({":root_on": ["on.txt"], "//conditions:default": []}))
+genrule(name = "cpu", srcs = [":sources"], outs = ["cpu.txt"], cmd = "echo $(TARGET_CPU) > $@")
+printing(name = "after_cpu", text = select({":root_on": "on", "//conditions:default": "off"}), deps = [":cpu", "//p2:top"])
+filegroup(name = "all", srcs = [":everything", ":after_cpu", ":sources"])
+"#,
+    );
+    for path in ["a.txt", "sub/b.txt", "on.txt"] {
+        let path = ws.path().join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "x\n").unwrap();
+    }
+    let args = ["//:all", "--experimental-builtin-modules=true"];
+    // Every run on a fresh cache (the repository store's trees are
+    // read-only: `Workspace::build`'s removal stops at them).
+    let fresh = || {
+        fn writable(path: &Path) {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = fs::symlink_metadata(path)
+                && metadata.is_dir()
+            {
+                let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o755));
+                for entry in fs::read_dir(path).into_iter().flatten().flatten() {
+                    writable(&entry.path());
+                }
+            }
+        }
+        let cache = ws.path().join("cache");
+        writable(&cache);
+        let _ = fs::remove_dir_all(&cache);
+        assert!(!cache.exists());
+    };
+    let planned = |mode: &str, threads: usize, env: &[(&str, &str)]| {
+        let record = ws.path().join("tmp/record.txt");
+        let index = ws.path().join("tmp/index.txt");
+        let _ = fs::remove_file(&record);
+        let _ = fs::remove_file(&index);
+        let mut recording: Vec<(&str, &str)> = vec![
+            ("BAZEL_RS_SNAPSHOT", "record"),
+            ("BAZEL_RS_SNAPSHOT_DUMP", record.to_str().unwrap()),
+        ];
+        recording.extend_from_slice(env);
+        fresh();
+        let recorded = ws.build(mode, threads, &recording, &args);
+        assert!(recorded.status.success(), "{}", stable(&recorded));
+        let record = fs::read_to_string(&record).expect("the record mode's dump");
+        // (A test hook such as the jitter keeps the snapshot, and so the
+        // tracker, off: the recording only.)
+        if env.iter().any(|(name, _)| *name == "BAZEL_RS_EVAL_JITTER") {
+            // (The record mode's report: timings.)
+            let stderr = stable(&recorded)
+                .lines()
+                .filter(|line| !line.starts_with("bazel-rs-snapshot:"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return (comparable_recording(&record), None, stderr, recorded.stdout);
+        }
+        let mut tracking: Vec<(&str, &str)> = vec![
+            ("BAZEL_RS_SNAPSHOT", "on"),
+            ("BAZEL_RS_SNAPSHOT_INDEX_DUMP", index.to_str().unwrap()),
+        ];
+        tracking.extend_from_slice(env);
+        fresh();
+        let tracked = ws.build(mode, threads, &tracking, &args);
+        assert!(tracked.status.success(), "{}", stable(&tracked));
+        let index = fs::read_to_string(&index)
+            .unwrap_or_else(|error| panic!("the index dump: {error}: {}", stable(&tracked)));
+        (
+            comparable_recording(&record),
+            Some(index),
+            stable(&tracked),
+            tracked.stdout,
+        )
+    };
+    let walk = planned("walk", 1, &[]);
+    assert!(
+        walk.0.iter().any(|line| line.contains("sub/b.txt")),
+        "{:?}",
+        walk.0
+    );
+    assert!(
+        walk.1
+            .as_ref()
+            .is_some_and(|index| index.contains("accesses")),
+        "{:?}",
+        walk.1
+    );
+    let walk_recorded = planned("walk", 1, &[("BAZEL_RS_EVAL_JITTER", "300")]);
+    // Deferred.
+    let stats = ws.build(
+        "eval",
+        8,
+        &[("BAZEL_RS_EVAL_STATS", "1"), ("BAZEL_RS_SNAPSHOT", "on")],
+        &args,
+    );
+    let stats = String::from_utf8_lossy(&stats.stderr);
+    assert!(!stats.contains("flushes deferred 0,"), "{stats}");
+    let runs: [(usize, &[(&str, &str)]); 8] = [
+        (1, &[]),
+        (2, &[]),
+        (8, &[]),
+        (32, &[]),
+        (8, &[("BAZEL_RS_EVAL_JITTER", "300")]),
+        (8, &[("BAZEL_RS_EVAL_RESTARTS", "5")]),
+        (8, &[("BAZEL_RS_EVAL_FROZEN_PREPARES", "all")]),
+        (8, &[("BAZEL_RS_EVAL_FROZEN_PREPARES", "0")]),
+    ];
+    for (threads, env) in runs {
+        let eval = planned("eval", threads, env);
+        let what = format!("{threads} threads, {env:?}");
+        let missing: Vec<&String> = walk
+            .0
+            .iter()
+            .filter(|line| !eval.0.contains(line))
+            .collect();
+        let extra: Vec<&String> = eval
+            .0
+            .iter()
+            .filter(|line| !walk.0.contains(line))
+            .collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "{what}: the recording: missing {missing:?}, extra {extra:?}"
+        );
+        let walk = if eval.1.is_some() {
+            &walk
+        } else {
+            &walk_recorded
+        };
+        assert_eq!(eval.1, walk.1, "{what}: the incremental index");
+        assert_eq!(eval.2, walk.2, "{what}: stderr");
+        assert_eq!(eval.3, walk.3, "{what}: stdout");
     }
 }
