@@ -426,6 +426,20 @@ and 45/45 replays with and without it, −195 MB peak RSS).
 `BAZEL_RS_SNAPSHOT_PREFETCH=0` keeps prefetch off while recording (a
 diagnostics switch, not part of the snapshot key).
 
+**The parallel analysis evaluator** (docs/EVALUATOR.md, "eval-record")
+follows the same rules on its pool: an attempt's frame is committed where
+the tape replays its node (by background threads: the recorder is a set,
+and every reader waits for them, `observed_fs::wait_commits`); a target
+lookup (`Tgt` node) keeps what it observed and every use replays it (its
+first user's attempt may be abandoned while the lookup stays done); the
+source-directory probes are memoized while recording too, each with its
+captured observations, replayed at every hit (the walk's as well); a tree
+claim inside a frame walks a store tree once per window
+(`Recorder::walked`: a published tree does not change; the record stored
+gets its manifest stat'ed again as before); and a source file the
+evaluation resolved is memoized for phase 2 only once its lookup's
+observations reached the recorder.
+
 **Gates.** The record mode's dump prints `INPUTS-CANONICAL <blake3>`: the
 digest of the INPUTS a snapshot of the recording would hold (the policy's
 selection, the replay records and their pinned tables) with the window

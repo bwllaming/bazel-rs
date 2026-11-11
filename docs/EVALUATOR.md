@@ -37,8 +37,15 @@ forced walk byte for byte):
 | `cquery capture` | `cquery` | coverage | the bodies emit `CqueryEdge` events, but no pass builds the capture (rules, incompatible targets, aspect targets, toolchain contexts) from them |
 | `--keep_going` | `--keep_going`, `-k` (build/test/run/coverage) | coverage | the walk skips a failed requested target and continues (`keep_going_state` edges, failed targets, docs/KEEP_GOING.md); the evaluator stops at the first error (frontier-only) |
 | `top-level aspects` | `--aspects`, and the validation aspect (`--run_validations` with `--experimental_use_validation_aspect`) | coverage | the walk analyzes the aspect applications after the requested targets; the driver has no `TopLevelAspects` segment yet. (Before 0.4.16 the validation aspect alone did not fall back.) |
-| `snapshot recording or incremental tracking` | the analysis snapshot records the planning (`BAZEL_RS_SNAPSHOT` `on`/`verify` on a miss — the default mode —, `record`) or the incremental tracker is on | speed | the evaluator keeps every flush ordered there (the recording and the tracker see phase 2 and the tape in the walk's order): ~/code `build --nobuild //src/...` on a miss 81.5 s / 10.5 GB against the walk's 63 s / 9.9 GB (record: 80 s vs 65 s) |
-| `--profile` | `--profile` | speed | the same ordered flushes (its spans in the walk's order) |
+| `--profile` | `--profile` | speed | the evaluator keeps every flush ordered there (the profile's spans of phase 2 and of the tape in the walk's order) |
+
+A snapshot recording (`BAZEL_RS_SNAPSHOT` `on`/`verify` on a miss — the
+default mode —, `record`) and the incremental tracker plan with the
+evaluator since eval-record (0.4.16 had a `snapshot recording or
+incremental tracking` fallback: the evaluator kept every flush ordered
+there and was slower, 81.5 s / 10.5 GB against the walk's 63 s / 9.9 GB):
+their flushes are deferred too, the tape's tracker ops applied in plan
+order by the deferred walk ("eval-record" below).
 
 Everything else plans with the evaluator: `build`, `test`, `run`,
 `coverage` (with `--nobuild`, `--check_up_to_date`, `--run_under`, test
@@ -46,13 +53,10 @@ sharding, `--platforms`, Starlark flags and transitions, several
 configurations, the workspace status, BEP, remote/disk caches — execution
 reads the plan, not the engine), `affected` (its `test --nobuild`
 subprocesses; the in-place one records when the snapshot is on) and the
-self-build (`scripts/self_build.py`). Commands
-without analysis are unaffected (`query`, `fetch`, `info`, `mod`,
-`config`, `dump`, `clean`, `gc`). With `BAZEL_RS_SNAPSHOT` on (the
-default) a miss records, so it plans with the walk (and so do a hit's
-partial plannings, `verify`'s shadow analysis); the evaluator plans where
-nothing records: `BAZEL_RS_SNAPSHOT=off`, and commands outside the
-recording.
+self-build (`scripts/self_build.py`), with the snapshot on (a miss
+records and saves; a hit's partial plannings, `verify`'s shadow analysis)
+or off. Commands without analysis are unaffected (`query`, `fetch`,
+`info`, `mod`, `config`, `dump`, `clean`, `gc`).
 
 **Internal errors** of an evaluator planning name the workaround: an error
 returned from it that contains `internal error` and not yet
@@ -71,7 +75,7 @@ build of this branch, warm repositories, 48 threads, host load ~15):
 | | walk (`BAZEL_RS_ANALYSIS=walk`) | default |
 |---|---|---|
 | `build --nobuild //src/...`, snapshot off: elapsed / max RSS | 44.5 / 43.9 s, 8.96 / 8.89 GB | 25.1 / 25.0 s (eval), 9.32 / 9.26 GB |
-| the same, snapshot on, a miss (records and saves) | 63.1 s, 9.88 GB | 63.7 s, 9.91 GB (walk: fallback; eval forced: 81.5 s, 10.50 GB) |
+| the same, snapshot on, a miss (records and saves) | 63.1 s, 9.88 GB | 63.7 s, 9.91 GB (walk: fallback; eval forced: 81.5 s, 10.50 GB); since eval-record the evaluator: 43.5 s, 10.3 GB (below) |
 | `affected --scope=full --base=HEAD^` | 219.9 s, 9.13 GB | 84.7 s, 9.53 GB |
 | `cquery 'deps(//src/rust/...)'` | 28.5 s | 13.0 s (walk: fallback; the walk run was first) |
 
@@ -652,6 +656,25 @@ change announced to the other two workers; adding a helper is not.
   `SingleFlight::get` (waits for a fill in progress). Frozen walks only
   (no tracker): the recording/driver side is unchanged.
 
+- 2026-11-11 (task E, eval-record; no frozen interface changed):
+  `NodeValue::Tgt(result, observed)` (what the lookup observed, replayed
+  at every use by `NodeValue::tgt()`); `observed_fs::Observations::
+  {into_captured, of_captured}`, `Captured::is_recorded`,
+  `observed_fs::wait_commits` (`commit_to_recorder` is applied by
+  background threads; every reader of the recorder waits);
+  `SourceDirProbe` is a struct (`found: DirProbe`, `recorded`: the probe's
+  captured observations while recording); `incremental::TrackOp`,
+  `TapeReplay::{compact, replay}` (the tape's tracker part, kept by plan
+  position: `Linearizer::track`, `pass2::Pending::{track, replay}`,
+  `Engine::eval_pass2_track` beside `eval_pass2_turn` at the three walk
+  loops); `FrozenOutcome::accesses` (a worker's prepare's tracker
+  accesses; the frozen fork carries an empty tracker as the tracking
+  mark), `buffered_starlark` wraps its commit in the entry's planning
+  frame (`buffered_commit`), `frozen_dependency_view` captures and replays
+  its lookups for the tracker; fast native merges are off with the
+  tracker; `sweep::enabled()` is false while the snapshot records;
+  `Loading::source_observed`.
+
 ## 4. Stages and gates
 
 | Stage | Work | Gate |
@@ -1113,7 +1136,10 @@ one) when the order would show (counted, `BAZEL_RS_EVAL_STATS`):
 |---|---|---|
 | it publishes a new platform | work ahead of its turn would see the platform deferred where the ordered walk sees it resolved (ctx surface, execution table); the deferred segments are walked before it is published | 5 (the first 22,397 plan entries) |
 | its segment holds a Starlark rule or genrule whose configuration's target platform is unresolved | its phase 2 may resolve the deferred platform, whose tree the ordered walk plans at the flush (`Engine::eval_pass2_resolves_platform`: an internal error if it happens in a deferred segment anyway); the no-config configuration's rules (licenses, package metadata) have none to resolve | 0 (68 before the no-config exception) |
-| the tracker or the observation recording is on, `--profile`, `BAZEL_RS_EVAL_NO_DEFER=1` | they record phase 2 and the tape in their order | 0 (snapshots off) |
+| `--profile`, `BAZEL_RS_EVAL_NO_DEFER=1` | the profile records phase 2 and the tape in their order | 0 |
+
+(Until eval-record the tracker and the observation recording kept every
+flush ordered too: "eval-record" below.)
 
 Memory: the transcripts are freed at the end of phase 1, before the
 deferred walk (they were held until a flush planned them: the
@@ -2586,6 +2612,98 @@ scan clean; `BAZEL_RS_VERIFY_DELTA=1 BAZEL_RS_VERIFY_ARTIFACTS=1` clean
   `sweep::adopt`: the placement commits on the cursor), the applications of
   one large closure analyzed in parallel (the critical path's
   `server_clippy`).
+
+### eval-record: the recording and the tracker under deferred flushes (task E)
+
+Until 0.4.16 the evaluator kept every flush ordered while the analysis
+snapshot recorded or the incremental tracker ran, and `auto` planned those
+requests with the walk. Measured on ~/code (`80d6724f3a` private clone,
+`build --nobuild //src/...`, a snapshot miss, main `fc955997`): eval 81 s
+against the walk's 63–65 s. Why:
+
+- **Ordered flushes**: ~2,357 small walks inside phase 1 instead of one
+  deferred frozen walk (T3) — snapshot off with `BAZEL_RS_EVAL_NO_DEFER=1`
+  44 s against 26 s deferred;
+- **classification not quiet**: the evaluator's source lookups were not
+  memoized for phase 2 when not deferring, so 9k Starlark entries' lookups
+  observed and stayed at their turn (`fallback requirements=8983`, turn
+  Starlark 35 s against 16 s);
+- **the recorder's commits on the coordinator** (the tape's frames: 6.4 s
+  of "tape application");
+- **48 threads re-probing** what a recording did not memoize: source
+  directories (3.6M more stats than off, mostly BUILD probes of pip trees
+  under `site-packages`) and store trees (each frame's claim walked the
+  tree: the Go SDK's 17k entries ~94 times) — kernel time on the pool's
+  threads went from 35 s to 210 s.
+
+What changed:
+
+1. **Deferral under the recording**: the recorder is a set (first outcome
+   wins, a second one is Unstable), so the order of its commits does not
+   show; only which observations reach it. Two holes the ordered flushes
+   had masked (phase 2 looked everything up again): a `Tgt` lookup's
+   observations went to its first user's frame, lost when that attempt was
+   abandoned while the lookup stayed done (~/code: 43,656 STAT/LSTAT of
+   source files) — the value now keeps them and every use replays them
+   (the memo rule of docs/ANALYSIS_SNAPSHOT_RECORDING.md); and the sources
+   the evaluation resolved are memoized for phase 2 only once their
+   lookup's observations are recorded (else before a later deferred walk,
+   or never: phase 2 then looks them up and observes, as the walk's first
+   lookup).
+2. **Deferral with the tracker**: the tape's tracker ops become compact
+   `TrackOp`s (keys, labels, packages interned) kept by plan position like
+   the tape's other effects and applied before the turns of the deferred
+   walk (`Engine::eval_pass2_track`; no lowering drain), so the tracker
+   sees phase 2 and the tape in the walk's order (key ids, package ids and
+   first reasons depend on it). ~/code: 6.8M ops pending at the end of
+   phase 1 (~110 MB).
+3. **T3 frozen walks with the tracker**: a worker's prepare records its
+   accesses, replayed in the entry's planning frame at its turn; the
+   coordinator's frozen dependency views capture and replay their lookups
+   as `plan_dependency_view` does (~/code: 265 accesses of the
+   attribute-aspect rules otherwise missing); fast native merges are off
+   (committed at the turn, in their planning frame).
+4. **Speed of the recording**: source-directory probes are memoized while
+   recording with their captured observations (a hit replays them; the
+   walk too); a tree claim inside a frame walks a store tree once
+   (`Recorder::walked`); the tape's commits go to background threads
+   (`wait_commits` before every read of the recorder and at the end of
+   phase 1); the probes move into the engine for the deferred walk.
+5. **The sweep is off while recording**: a rewritten delta's input groups
+   are groups of their own, so the planned request a snapshot saves shared
+   107 input groups instead of the walk's 105 — not the same from run to
+   run, the action dump the same — and verify mode reported a plan
+   mismatch for every walk/eval pairing. Built again at the merge there
+   (the T3 cursor's rebuilds). *Open (sweep):* keep the sharing in the
+   rewrite.
+6. `select.rs`: the `Recording` fallback is gone; `--profile` keeps the
+   walk (its spans' order).
+
+**Measured** (2026-11-11, ~/code `80d6724f3a` private clone, release build
+of the branch rebased on main `e3a704cc`, warm repositories, host load
+10–25; a miss: the snapshot store emptied first):
+
+| `build --nobuild //src/...` | walk | eval (default) |
+|---|---|---|
+| snapshot on, a miss (records, tracks, saves) | 63.1 / 61.9 s, 9.94 / 9.93 GB | 43.5 / 43.5 s, 10.33 / 10.30 GB |
+| `BAZEL_RS_SNAPSHOT=record` | 60–66 s, 10.4 GB | 38–41 s, 10.7 GB |
+| snapshot off (for comparison) | 48.9 s, 8.89 GB | 24.1 s, 9.68 GB |
+
+Identical walk vs eval: the record mode's dump (520,098 observations,
+425,099 integrity entries, 8,848 trees; timings aside), the incremental
+index (`BAZEL_RS_SNAPSHOT_INDEX_DUMP`, 15.8M lines), stderr with the action
+dump (6,486,301 lines); a miss → `verify` (strict) → hit cycle clean and
+stderr identical for every pairing (walk saves / eval verifies, eval saves
+/ walk verifies, eval/eval, walk/walk). The walk's index and dumps equal
+main's walk. Test: `eval_pass2::the_recording_and_the_incremental_index_are_the_walks`
+(1–32 threads, jitter, restarts, frozen prepares on and off; a restarted
+attempt's source lookup, an aspect's implicit tool, an alias view shared
+between a worker and the turn).
+
+**Open**: peak RSS on a miss is the walk's + ~0.4 GB (10.3 GB; the
+evaluator's own overhead is +0.8 GB with the snapshot off since the sweep
+and task B: frozen views, the 262,144-entry window); `--profile` still
+plans with the walk.
 
 ### Effort
 
