@@ -39,7 +39,7 @@ pub(super) struct Context {
 
 /// The fields of a dependency view an application's `target` reads, its
 /// provider values and runfiles by identity.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct BaseView {
     label: String,
     files: Vec<crate::starlark_types::File>,
@@ -48,6 +48,23 @@ pub(super) struct BaseView {
     provider_keys: Vec<String>,
     runfiles: usize,
     rule_class: Option<String>,
+}
+
+/// By its files' paths (equal Files have equal paths; hashing their whole
+/// data was most of a placement's table lookups).
+impl std::hash::Hash for BaseView {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.label.hash(state);
+        state.write_usize(self.files.len());
+        for file in &self.files {
+            file.path.hash(state);
+        }
+        self.kind.hash(state);
+        self.providers.hash(state);
+        self.provider_keys.hash(state);
+        self.runfiles.hash(state);
+        self.rule_class.hash(state);
+    }
 }
 
 impl BaseView {

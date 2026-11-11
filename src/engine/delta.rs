@@ -36,7 +36,7 @@ pub(super) struct SingleFlight<K, V> {
 }
 
 /// One shard of a [`SingleFlight`] memo.
-type MemoShard<K, V> = HashMap<K, Slot<V>>;
+type MemoShard<K, V> = HashMap<K, Slot<V>, crate::fast_hash::FxBuildHasher>;
 
 impl<K, V> Default for SingleFlight<K, V> {
     fn default() -> Self {
