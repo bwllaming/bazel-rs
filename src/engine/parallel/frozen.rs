@@ -1276,13 +1276,13 @@ fn compare_published(
     Ok(())
 }
 
-/// Task B: a package group whose node phase 1 resolved (its commit reads
-/// only that memo: no package load, no budget charged), so a worker builds
-/// its results ([`package_group_results`]).
+/// Task B: a package group a worker can resolve over the frozen view
+/// (loaded packages, no error: [`Engine::resolve_group_readonly`]) is a
+/// worker native ([`package_group_results`]); its merge resolves it again
+/// as its commit does (the memo, the budget, an error at its position).
 fn package_group_resolved(engine: &Engine, rule: &Rule) -> bool {
     matches!(rule.kind, RuleKind::PackageGroup(_))
-        && engine.group_nodes.contains_key(&rule.label)
-        && super::super::check_macro_namespace(rule, &rule.label).is_ok()
+        && engine.packages.contains_key(&rule.label.package_id())
 }
 
 /// A package group's results (its commit's: the PackageSpecificationInfo
@@ -1292,7 +1292,7 @@ fn package_group_results(
     rule: &Rule,
     transitive: BTreeSet<String>,
 ) -> Option<Box<NativePublished>> {
-    let node = Arc::clone(engine.group_nodes.get(&rule.label)?);
+    let node = engine.resolve_group_readonly(&rule.label, &mut Vec::new())?;
     let info = starlark::environment::Module::with_temp_heap(|module| {
         let value = crate::package_specification::alloc_info(&module.heap(), node);
         module.set("__info", value);

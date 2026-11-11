@@ -1400,9 +1400,16 @@ impl Engine {
                     let _split = frozen::Split::enter(14);
                     match registered {
                         Some(merge)
+                            if fast_natives() && matches!(rule.kind, RuleKind::PackageGroup(_)) =>
+                        {
+                            stat(S_FAST_NATIVE, 1);
+                            fast = true;
+                            let _split = frozen::Split::enter(16);
+                            self.merge_published_group(state, &board.frozen, &key, &rule, merge)
+                        }
+                        Some(merge)
                             if fast_natives()
-                                && (native_results::plain(&rule)
-                                    || matches!(rule.kind, RuleKind::PackageGroup(_)))
+                                && native_results::plain(&rule)
                                 && !forwards(&rule) =>
                         {
                             stat(S_FAST_NATIVE, 1);
@@ -1663,20 +1670,7 @@ impl Engine {
             .results
             .get(key)
             .expect("a published native rule's results");
-        let config = key.config;
-        let action_owner = key.action_owner(self.configurations.top());
-        self.console_owners.insert(
-            action_owner.clone(),
-            crate::action_console::owner(&crate::action_console::OwnerParts {
-                label: &key.label.to_string(),
-                location: rule.location.as_deref(),
-                target_kind: &format!("{} rule", rule.rule_class_name()),
-                aspects: &[],
-                tool: self.configurations.get(config).native.is_exec,
-                configuration: &config.to_string(),
-            }),
-        );
-        self.aquery_owner(&action_owner, key, Vec::new);
+        self.native_owner(key, rule);
         let (dry, providers, runfiles, validation, repositories) = results.parts();
         if let Some(repositories) = repositories {
             state.repositories.insert(key.clone(), repositories);
@@ -1723,6 +1717,55 @@ impl Engine {
             }
         };
         state.dry.insert(key.clone(), dry);
+    }
+
+    /// Task B: the commit of a package group whose results a worker
+    /// published (`Engine::prepare_target` and its `PackageGroup` commit):
+    /// its owner, its transitive repositories, its node resolved again here
+    /// (the memo and the budget as the commit leaves them; an error is the
+    /// commit's), the published provider and empty files to build.
+    fn merge_published_group(
+        &mut self,
+        state: &mut ActionPlanning,
+        frozen: &Frozen,
+        key: &ConfiguredTargetKey,
+        rule: &Rule,
+        merge: frozen::NativeMerge,
+    ) -> Result<(), String> {
+        debug_assert!(merge.registered.is_empty() && merge.sources.is_empty());
+        let results = frozen
+            .results
+            .get(key)
+            .expect("a published package group's results");
+        self.native_owner(key, rule);
+        let (dry, providers, _, _, repositories) = results.parts();
+        if let Some(repositories) = repositories {
+            state.repositories.insert(key.clone(), repositories);
+        }
+        self.resolve_group(&rule.label, &mut Vec::new())?;
+        if let Some(providers) = providers {
+            state.custom_providers.insert(key.clone(), providers);
+        }
+        state.dry.insert(key.clone(), dry.unwrap_or_default());
+        Ok(())
+    }
+
+    /// A native rule's console and aquery owners (`Engine::prepare_target`).
+    fn native_owner(&mut self, key: &ConfiguredTargetKey, rule: &Rule) {
+        let config = key.config;
+        let action_owner = key.action_owner(self.configurations.top());
+        self.console_owners.insert(
+            action_owner.clone(),
+            crate::action_console::owner(&crate::action_console::OwnerParts {
+                label: &key.label.to_string(),
+                location: rule.location.as_deref(),
+                target_kind: &format!("{} rule", rule.rule_class_name()),
+                aspects: &[],
+                tool: self.configurations.get(config).native.is_exec,
+                configuration: &config.to_string(),
+            }),
+        );
+        self.aquery_owner(&action_owner, key, Vec::new);
     }
 }
 

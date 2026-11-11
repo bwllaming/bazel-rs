@@ -4941,6 +4941,39 @@ impl Engine {
         result
     }
 
+    /// [`Self::resolve_group`] without loading, charging the budget or
+    /// memoizing (a frozen walk's worker): `None` when only the coordinator
+    /// can answer (a package not loaded, an error, the depth limit).
+    pub(super) fn resolve_group_readonly(
+        &self,
+        label: &Label,
+        active: &mut Vec<Label>,
+    ) -> Option<Arc<GroupNode>> {
+        let rule = self.packages.get(&label.package_id())?.get(label)?;
+        let RuleKind::PackageGroup(definition) = &rule.kind else {
+            return None;
+        };
+        check_macro_namespace(rule, label).ok()?;
+        if let Some(node) = self.group_nodes.get(label) {
+            return Some(Arc::clone(node));
+        }
+        if active.contains(label) || active.len() >= 255 {
+            return None;
+        }
+        active.push(label.clone());
+        let node = (|| {
+            let mut includes = Vec::with_capacity(definition.includes.len());
+            for edge in &definition.includes {
+                includes.push(self.resolve_group_readonly(edge, active)?);
+            }
+            GroupNode::new(Arc::new(definition.own_specs.clone()), includes)
+                .ok()
+                .map(Arc::new)
+        })();
+        active.pop();
+        node
+    }
+
     fn source_visibility(&self, label: &Label) -> Visibility {
         let package = &self.packages[&label.package_id()];
         package
