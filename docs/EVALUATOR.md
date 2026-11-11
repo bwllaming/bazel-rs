@@ -2812,6 +2812,19 @@ lowerings 5%, declarations 4%. But the walk was gated by chains too
   attribute aspects in its dependencies' chains: 64 or 1,000 moved
   `server_clippy`'s wait but not the walk (below).
 
+- **After the review**: an alias merged from its published results whose
+  actual committed other values (by identity: computed again at its
+  merge) is published again and checked as a commit
+  (`forwarded_republished=`; hidden hook
+  `BAZEL_RS_TEST_RECOMPUTE_AT_MERGE`, test `eval_buffer::
+  an_alias_whose_actual_commits_new_values_is_published_again`); the
+  classifier threads are analysis workers (`enter_worker_thread`: their
+  panics raised located at the entry's turn, the coordinator's arena); a
+  worker's symlinked source lookup asserts (debug builds) that no
+  repository root materialized since the walk froze. Not done: an
+  output-group filegroup reading a source republished over its worker's
+  results still merges from what its worker selected (the same Files).
+
 Measured: see the §7 table in the round's report (cursor split before and
 after, `INFO: Elapsed time`). What bounds the walk now: its last job
 (`last_job` within 0.3 s of the end) — `server_clippy`'s job (1.4–1.5 s,
