@@ -204,6 +204,10 @@ pub(in crate::engine) struct AspectTable {
     attribute_configs: HashMap<(ConfiguredTargetKey, String), (usize, AttributeConfigs)>,
     /// The plan index of each entry of the walk.
     positions: HashMap<ConfiguredTargetKey, usize>,
+    /// The applications committed so far in this walk (by the merges, in
+    /// plan order): what a later entry's job sees in the aspect memo, as at
+    /// its turn.
+    committed: std::sync::RwLock<HashMap<AspectApplicationKey, (AspectProviders, Context)>>,
 }
 
 type AttributeConfigs = Arc<BTreeMap<String, TransitionConfigurations>>;
@@ -278,6 +282,8 @@ struct Frames {
     frames: Vec<Frame>,
     walking: Vec<Walking>,
     missed: Option<ConfiguredTargetKey>,
+    /// The last memo answer was a committed application's.
+    committed_hit: bool,
 }
 
 impl Frames {
@@ -735,9 +741,21 @@ impl AspectCx for FrozenAspects<'_, '_> {
     }
 
     fn memo(&self, key: &AspectApplicationKey, context: &Context) -> Option<AspectProviders> {
+        self.state.borrow_mut().committed_hit = false;
         let table = &self.frozen.aspects;
         if let Some(providers) = table.memo.get(key) {
             return Some(providers.clone());
+        }
+        // Committed by an earlier entry's merge (jobs run for later
+        // entries than the cursor's).
+        if let Some(providers) = table
+            .committed
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+        {
+            self.state.borrow_mut().committed_hit = true;
+            return Some(providers.0.clone());
         }
         let applied = table.applications.get(&(key.clone(), context.clone()))?;
         match applied.kind {
@@ -747,8 +765,10 @@ impl AspectCx for FrozenAspects<'_, '_> {
     }
 
     fn collected(&mut self, key: &AspectApplicationKey, context: &Context) {
-        if self.frozen.aspects.memo.contains_key(key) {
-            // Committed before the walk (a memo hit wherever it is met).
+        let committed = std::mem::take(&mut self.state.borrow_mut().committed_hit);
+        if committed || self.frozen.aspects.memo.contains_key(key) {
+            // Committed before the walk or by an earlier merge (a memo
+            // hit wherever it is met later).
             return;
         }
         if let Some(walking) = self.state.borrow_mut().walking.last_mut() {
@@ -764,6 +784,7 @@ impl AspectCx for FrozenAspects<'_, '_> {
         context: &Context,
         providers: AspectProviders,
     ) -> AspectProviders {
+        self.state.borrow_mut().committed_hit = false;
         // A validation or non-applicable aspect's providers (no analysis):
         // one value for the walk too.
         let filled =
@@ -1002,31 +1023,19 @@ impl Engine {
             return None;
         }
         let frozen = self.frozen_walk.as_ref()?;
-        let mut here = false;
+        // (One no job analyzed is analyzed by the turn: its prefetch, or
+        // here.)
         let filled = frozen
             .aspects
             .applications
-            .get_or_fill(&(key.clone(), context.clone()), || {
-                here = true;
-                let outcome = super::aspects::analyze_one(key, application, outputs);
-                Ok::<_, std::convert::Infallible>(Some(applied_of(
-                    outcome,
-                    Vec::new(),
-                    Vec::new(),
-                    Range::ALL,
-                    None,
-                    None,
-                )))
-            })
-            .ok()??;
+            .get(&(key.clone(), context.clone()))?;
         let AppliedKind::Analyzed {
             analysis, printed, ..
         } = &filled.kind
         else {
             return None;
         };
-        if !here
-            && (!filled.range.contains(index)
+        if !filled.range.contains(index)
                 || filled.identities.iter().any(|(key, identity)| {
                     identities
                         .get(key)
@@ -1043,14 +1052,14 @@ impl Engine {
                         }
                         _ => true,
                     }
-                }))
+                })
         {
             stat(16, 1);
             return None;
         }
-        stat(if here { 8 } else { 7 }, 1);
+        stat(7, 1);
         let analyzed = analysis.lock().unwrap_or_else(|e| e.into_inner()).take()?;
-        if !here && delta::verify_delta() {
+        if delta::verify_delta() {
             super::aspects::verify(key, application, outputs, &analyzed, printed);
         }
         Some((analyzed, printed.clone()))
@@ -1112,6 +1121,17 @@ impl Engine {
         });
         if differ {
             stat(6, 1);
+            if super::debug_t3() {
+                for (key, identity) in identities {
+                    if state
+                        .aspect_target_identities
+                        .get(key)
+                        .is_some_and(|known| !Arc::ptr_eq(known, identity))
+                    {
+                        eprintln!("T3-DEBUG aspect identity differs: {key:?}");
+                    }
+                }
+            }
         }
         differ
     }
@@ -1143,16 +1163,43 @@ impl Engine {
         if let Some(known) = state.aspect_providers.get(key) {
             // Committed already: the very providers the job's views hold
             // (another context's, or the coordinator's, are not).
-            let same = match &applied {
-                Some(applied) => same_providers(known, &applied.providers),
-                None => frozen
+            let committed = |known: &AspectProviders| {
+                frozen
                     .aspects
                     .memo
                     .get(key)
-                    .is_some_and(|frozen| same_providers(known, frozen)),
+                    .is_some_and(|frozen| same_providers(known, frozen))
+                    || frozen
+                        .aspects
+                        .committed
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(key)
+                        .is_some_and(|committed| same_providers(known, &committed.0))
+            };
+            let same = match &applied {
+                Some(applied) => same_providers(known, &applied.providers),
+                None => committed(known),
             };
             if !same {
                 stat(15, 1);
+                if super::debug_t3() {
+                    eprintln!(
+                        "T3-DEBUG aspect placement: {} {} on {} committed in another context than {:?} (entry {}): {:?}",
+                        index,
+                        key.aspect,
+                        key.base.label,
+                        applying.1,
+                        applied.is_some(),
+                        frozen
+                            .aspects
+                            .committed
+                            .read()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .get(key)
+                            .map(|committed| committed.1.clone())
+                    );
+                }
             }
             return Ok(same);
         }
@@ -1229,6 +1276,12 @@ impl Engine {
         state
             .aspect_providers
             .insert(key.clone(), applied.providers.clone());
+        frozen
+            .aspects
+            .committed
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.clone(), (applied.providers.clone(), applying.1.clone()));
         Ok(true)
     }
 }

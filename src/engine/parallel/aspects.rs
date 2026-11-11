@@ -442,9 +442,10 @@ impl Engine {
         rule: &Rule,
         submit: &dyn Fn(Box<dyn FnOnce() + Send>),
     ) {
-        // Task B's aspect jobs analyze the walk's applications once
-        // (parallel::aspect_jobs): the coordinator takes them from there.
-        if !enabled() || self.semantic_only() || super::aspect_jobs::enabled() {
+        // (Task B: a rule whose aspect job could not be placed is prepared
+        // at its turn with the prefetch too, taking the jobs' analyses
+        // where they hold at the replay.)
+        if !enabled() || self.semantic_only() {
             return;
         }
         if let Some(definitions) = rule.custom.as_ref().map(|custom| {

@@ -29,12 +29,50 @@ pub(super) struct Context {
     /// The collection's aspects, in order (the propagating `incoming`, the
     /// computed `attr_aspects`).
     pub(super) descriptors: Vec<String>,
-    /// The requested label and its edge's configuration (the base view, an
-    /// alias's included).
-    pub(super) requested: Label,
-    pub(super) edge_config: ConfigId,
+    /// What the `target` parameter is built from (merged_dependency of the
+    /// requested edge's view: an alias's view and its actual's are the
+    /// same here).
+    pub(super) base: BaseView,
     /// Whether the base configuration's target platform is resolved.
     pub(super) platform: bool,
+}
+
+/// The fields of a dependency view an application's `target` reads, its
+/// provider values and runfiles by identity.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub(super) struct BaseView {
+    label: String,
+    files: Vec<crate::starlark_types::File>,
+    kind: [bool; 4],
+    providers: Vec<(String, u64)>,
+    provider_keys: Vec<String>,
+    runfiles: usize,
+    rule_class: Option<String>,
+}
+
+impl BaseView {
+    fn of(view: &DependencyTarget) -> Self {
+        use std::hash::BuildHasher;
+        let hasher = crate::fast_hash::FxBuildHasher::default();
+        Self {
+            label: view.label.clone(),
+            files: view.files.clone(),
+            kind: [
+                view.is_source,
+                view.is_rule,
+                view.is_package_group,
+                view.is_filegroup,
+            ],
+            providers: view
+                .providers
+                .iter()
+                .map(|(name, value)| (name.clone(), hasher.hash_one(value.value().identity())))
+                .collect(),
+            provider_keys: view.provider_keys.clone(),
+            runfiles: Arc::as_ptr(&view.runfiles) as usize,
+            rule_class: view.rule_class.clone(),
+        }
+    }
 }
 
 /// What the commit of an application needs besides its analysis: its
@@ -346,16 +384,20 @@ impl AspectCx for CoordAspects<'_, '_> {
         // T3: analyzed on a worker before the turn's prepare, or (its dry
         // walk) queued there (parallel::aspects).
         let outputs = commit.outputs();
-        // Task B: a frozen walk's one analysis of it (parallel::aspect_jobs).
-        if let Some((analyzed, printed)) = self.engine.walk_aspect_analysis(
-            key,
-            context,
-            &application,
-            &outputs,
-            self.state.artifact_index.turn as usize,
-            &*self.state.aspect_target_identities,
-            &*self.state.aspect_providers,
-        ) {
+        // Task B: a frozen walk's one analysis of it (parallel::aspect_jobs),
+        // where it holds; not while the turn's dry walk prefetches (its
+        // dependencies' applications are committed only by the replay).
+        if !parallel::aspects::dry()
+            && let Some((analyzed, printed)) = self.engine.walk_aspect_analysis(
+                key,
+                context,
+                &application,
+                &outputs,
+                self.state.artifact_index.turn as usize,
+                &*self.state.aspect_target_identities,
+                &*self.state.aspect_providers,
+            )
+        {
             return commit_application(self.engine, self.state, &commit, Ok(*analyzed), printed);
         }
         let (analyzed, printed) = match parallel::aspects::analysis(key, application, &outputs) {
@@ -670,8 +712,7 @@ fn plan_collection<C: AspectCx>(
     );
     let context = Context {
         descriptors: collection.descriptors(),
-        requested: label.clone(),
-        edge_config,
+        base: BaseView::of(&base),
         platform: matches!(cx.platform(&platform_key), Some(Ok(_))),
     };
     // AspectCollection.createAspectKeys: each aspect over the base
