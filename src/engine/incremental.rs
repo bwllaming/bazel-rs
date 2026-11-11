@@ -475,6 +475,14 @@ impl TapeReplay {
         }
     }
 
+    /// Drop the lookup side of the interned names (memory: the tape is
+    /// through; a name interned later is added again, unshared).
+    pub(super) fn forget_interned_ids(&mut self) {
+        self.tables.key_ids = HashMap::new();
+        self.tables.label_ids = HashMap::new();
+        self.tables.package_ids = HashMap::new();
+    }
+
     /// The interned names' counts: keys, labels, packages (diagnostics).
     pub(super) fn interned(&self) -> (usize, usize, usize) {
         (

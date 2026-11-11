@@ -49,8 +49,7 @@ pub(crate) enum AnalysisMode {
     /// [`select`] falls back to the walk only for what it does not cover.
     Eval,
     /// The default (`BAZEL_RS_ANALYSIS` unset or empty): the evaluator,
-    /// and the walk also where it is faster ([`select::Fallback::Recording`],
-    /// [`select::Fallback::Profile`]).
+    /// and the walk also where it is faster ([`select::Fallback::Profile`]).
     Auto,
 }
 

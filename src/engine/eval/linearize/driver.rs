@@ -73,6 +73,39 @@ fn stat<R>(index: usize, f: impl FnOnce() -> R) -> R {
     result
 }
 
+/// The source files the evaluation resolved, memoized as the walk's
+/// lookups memoize them (S3: phase 2's prepares off the coordinator read
+/// them). A memo hit observes nothing: while recording, a source is
+/// memoized once what its lookup observed is recorded (a replayed attempt
+/// used it), else before a later deferred walk (`Coord::catch_up`) or
+/// never (phase 2 then looks it up and observes, as the walk's first
+/// lookup).
+fn publish_sources(engine: &mut Engine, shared: &EvalShared, lin: &mut Linearizer) {
+    let sources = std::mem::take(
+        &mut *shared
+            .loading
+            .stable_sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    let observed = shared
+        .loading
+        .source_observed
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (label, path) in sources {
+        match observed.get(&label) {
+            Some(captured) if !captured.is_recorded() => {
+                lin.unrecorded_sources
+                    .push((label, path, Arc::clone(captured)));
+            }
+            _ => {
+                engine.source_targets.entry(label).or_insert(path);
+            }
+        }
+    }
+}
+
 /// A memo value the engine keeps (phase 2 reads it).
 #[derive(Clone)]
 pub(in crate::engine) enum Published {
@@ -558,6 +591,20 @@ impl Coord<'_> {
             self.store.transcripts = FxHashMap::default();
             self.store.release_pending = Vec::new();
             self.store.carry = FxHashMap::default();
+            // What the nodes the tape never replayed observed (it will not:
+            // no transcript is left), and the source lookups' sets (the
+            // sources resolved are memoized or kept with theirs).
+            self.store.observations = FxHashMap::default();
+            self.store.package_observations = FxHashMap::default();
+            publish_sources(self.engine, shared, &mut lin);
+            *shared
+                .loading
+                .source_observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = FxHashMap::default();
+            // The tracker's interned names are not looked up again (a
+            // later tape op interns anew).
+            lin.replay.forget_interned_ids();
         }
         let result = match &lin.failure {
             Some(failure) => Err(failure.error.clone()),
@@ -1181,29 +1228,7 @@ impl Coord<'_> {
         // attempt used it), else later (or never: phase 2 then looks it up
         // and observes, as the walk's first lookup).
         if lin.defer {
-            let sources = std::mem::take(
-                &mut *shared
-                    .loading
-                    .stable_sources
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-            );
-            let observed = shared
-                .loading
-                .source_observed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for (label, path) in sources {
-                match observed.get(&label) {
-                    Some(captured) if !captured.is_recorded() => {
-                        lin.unrecorded_sources
-                            .push((label, path, Arc::clone(captured)));
-                    }
-                    _ => {
-                        engine.source_targets.entry(label).or_insert(path);
-                    }
-                }
-            }
+            publish_sources(engine, shared, lin);
         }
         let fresh = self.store.published[lin.published_memos..].to_vec();
         lin.published_memos = self.store.published.len();

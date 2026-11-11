@@ -43,14 +43,11 @@ pub(crate) enum Fallback {
     /// walk's `analyze_aspect_applications` after the requested targets;
     /// the evaluator's driver has no top-level aspect segment yet.
     TopLevelAspects,
-    /// The analysis snapshot records this planning (`BAZEL_RS_SNAPSHOT`
-    /// on/verify on a miss, record) or the incremental tracker is on: the
-    /// evaluator then keeps every flush ordered (the recording and the
-    /// tracker see phase 2 and the tape in the walk's order) and is slower
-    /// than the walk (~/code `build --nobuild //src/...`, a snapshot miss:
-    /// 81 s and 10.5 GB against 63 s and 9.9 GB).
-    Recording,
-    /// `--profile`: the same ordered flushes (its spans in the walk's order).
+    /// `--profile`: the evaluator keeps every flush ordered (the profile's
+    /// spans of phase 2 and of the tape in the walk's order) and is slower
+    /// than the walk there. (A snapshot recording and the incremental
+    /// tracker plan with the evaluator since eval-record: their effects are
+    /// applied in plan order by the deferred walk.)
     Profile,
 }
 
@@ -58,7 +55,7 @@ impl Fallback {
     /// A fallback for speed (the evaluator covers the request):
     /// `BAZEL_RS_ANALYSIS=eval` plans with the evaluator anyway.
     pub(crate) fn performance(self) -> bool {
-        matches!(self, Self::Recording | Self::Profile)
+        matches!(self, Self::Profile)
     }
 
     /// The reason as `BAZEL_RS_ANALYSIS_REPORT` prints it.
@@ -69,7 +66,6 @@ impl Fallback {
             Self::Aquery => "aquery capture",
             Self::KeepGoing => "--keep_going",
             Self::TopLevelAspects => "top-level aspects",
-            Self::Recording => "snapshot recording or incremental tracking",
             Self::Profile => "--profile",
         }
     }
@@ -109,8 +105,6 @@ impl Engine {
             Some(Fallback::KeepGoing)
         } else if !self.effective_aspects().is_empty() {
             Some(Fallback::TopLevelAspects)
-        } else if self.incremental.is_some() || crate::observed_fs::recording() {
-            Some(Fallback::Recording)
         } else if crate::profile::active() {
             Some(Fallback::Profile)
         } else {
@@ -193,7 +187,6 @@ mod tests {
             Fallback::Aquery,
             Fallback::KeepGoing,
             Fallback::TopLevelAspects,
-            Fallback::Recording,
             Fallback::Profile,
         ];
         let reasons: std::collections::BTreeSet<_> = all.iter().map(|f| f.reason()).collect();

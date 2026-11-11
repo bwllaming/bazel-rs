@@ -116,7 +116,7 @@ fn same_as_walk(
 ) -> Output {
     let walk = run(root, Some("walk"), snapshot, command, args);
     assert_eq!(engines(&walk), ["walk (forced)"], "{}", stable(&walk));
-    let for_speed = expected.contains("snapshot recording") || expected.contains("--profile");
+    let for_speed = expected.contains("--profile");
     let wanted = |mode: &str| match mode {
         "walk" => "walk (forced)",
         "eval" if for_speed => "eval",
@@ -237,19 +237,26 @@ fn an_unknown_engine_is_an_error() {
     );
 }
 
+/// A snapshot miss records (and saves) the planning, with the incremental
+/// tracker: the evaluator plans it (its deferred walk applies the tape's
+/// effects in plan order), with the walk's output.
 #[test]
-fn the_walk_plans_where_it_is_faster() {
+fn recording_plans_with_the_evaluator() {
     let ws = workspace();
-    // A snapshot miss records (and saves) the planning: ordered flushes.
     for snapshot in ["on", "record"] {
         same_as_walk(
             ws.path(),
             snapshot,
             "build",
             &["--nobuild", "//:top", "//:g"],
-            "walk (fallback: snapshot recording or incremental tracking)",
+            "eval",
         );
     }
+}
+
+#[test]
+fn the_walk_plans_where_it_is_faster() {
+    let ws = workspace();
     let profile = ws.path().join("tmp/profile.json");
     same_as_walk(
         ws.path(),

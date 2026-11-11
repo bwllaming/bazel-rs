@@ -1528,6 +1528,9 @@ impl Recorder {
         let mut repositories = lock(&self.repositories);
         repositories.retain(|repository| repository.root != root);
         if let Some(record) = record {
+            // Stored: a later claim inside a frame sees the owner and walks
+            // nothing (the walk's copy is not kept twice).
+            lock(&self.walks).remove(&root);
             let mut record = Arc::unwrap_or_clone(record);
             restat_manifest(&mut record, self.window_start_ns);
             repositories.push(record);
