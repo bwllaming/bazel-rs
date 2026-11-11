@@ -1573,17 +1573,18 @@ impl Engine {
                             let _split = frozen::Split::enter(16);
                             self.merge_published_group(state, &board.frozen, &key, &rule, merge)
                         }
+                        // (A filegroup's output group: its worker selected
+                        // the files from its `srcs`' published views.)
                         Some(merge)
                             if fast_natives()
                                 && !self.tracking()
-                                && native_results::plain(&rule)
-                                && !forwards(&rule) =>
+                                && (native_results::plain(&rule)
+                                    || native_results::selected_output_group(&rule).is_some()) =>
                         {
                             stat(S_FAST_NATIVE, 1);
                             fast = true;
                             let _split = frozen::Split::enter(16);
-                            self.merge_published_native(state, &board.frozen, &key, merge);
-                            Ok(())
+                            self.merge_published_native(state, &board.frozen, &key, &rule, merge)
                         }
                         registered => {
                             let started = std::time::Instant::now();
@@ -1900,8 +1901,9 @@ impl Engine {
         state: &mut ActionPlanning,
         frozen: &Frozen,
         key: &ConfiguredTargetKey,
+        rule: &Rule,
         merge: frozen::NativeMerge,
-    ) {
+    ) -> Result<(), String> {
         let frozen::NativeMerge {
             registered,
             sources,
@@ -1920,7 +1922,17 @@ impl Engine {
             .get(key)
             .expect("a published native rule's results");
         self.native_owner(key, owner);
-        let (dry, providers, runfiles, validation, repositories) = results.parts();
+        let (dry, mut providers, mut runfiles, validation, repositories) = results.parts();
+        if forwards(rule)
+            && let Some(actual) = rule.srcs.first()
+        {
+            // An alias-like target forwards its actual's providers and
+            // runfiles as committed (the commit's; its worker published
+            // the actual's published ones).
+            let actual = ConfiguredTargetKey::new(self.resolve_rule_src(rule, actual)?, key.config);
+            providers = state.custom_providers.get(&actual).cloned();
+            runfiles = state.runfiles_info.get(&actual).cloned();
+        }
         if let Some(repositories) = repositories {
             state.repositories.insert(key.clone(), repositories);
         }
@@ -1966,6 +1978,7 @@ impl Engine {
             }
         };
         state.dry.insert(key.clone(), dry);
+        Ok(())
     }
 
     /// Task B: the commit of a package group whose results a worker
