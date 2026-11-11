@@ -11084,6 +11084,22 @@ impl Engine {
             ));
         }
         self.stop_analysis_pool();
+        // The prepares' memos (dependency views, Starlark Target values)
+        // are not read again: no target is prepared after phase 2 (~/code:
+        // ~250 MB, before the reachable plan's peak).
+        state.views = Default::default();
+        state.target_identities = Default::default();
+        self.view_accesses = Default::default();
+        self.view_artifacts = Default::default();
+        // The tracker's lookup tables of keys and edges (nothing is reached
+        // after phase 2; the index reads the lists).
+        if let Some(tracker) = self.incremental.as_mut() {
+            tracker.compact();
+        }
+        // What phase 2's workers and walks freed goes back to the system
+        // before the reachable plan is built (it would wait for its decay
+        // under the plan's peak).
+        crate::alloc_arena::purge();
         if order_audit::enabled() {
             order_audit::report(&state, plan.len(), top);
         }

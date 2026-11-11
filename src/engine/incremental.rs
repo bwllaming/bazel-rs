@@ -121,11 +121,51 @@ fn pattern() -> bool {
 
 type KeyIdentity = (Label, Option<ConfigId>, bool);
 
+/// The ids of the tracker's keys by their hash, the identities themselves
+/// kept once (in `Tracker::keys`); the rare identity whose hash an earlier
+/// one has is kept apart.
+#[derive(Clone, Default)]
+struct KeyIndex {
+    by_hash: HashMap<u64, u32>,
+    collided: HashMap<KeyIdentity, u32>,
+}
+
+impl KeyIndex {
+    fn hash(identity: &KeyIdentity) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        identity.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn get(&self, keys: &[KeyIdentity], identity: &KeyIdentity) -> Option<u32> {
+        if let Some(id) = self.by_hash.get(&Self::hash(identity))
+            && keys.get(*id as usize) == Some(identity)
+        {
+            return Some(*id);
+        }
+        self.collided.get(identity).copied()
+    }
+
+    fn insert(&mut self, identity: &KeyIdentity, id: u32) {
+        match self.by_hash.entry(Self::hash(identity)) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(id);
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {
+                self.collided.insert(identity.clone(), id);
+            }
+        }
+    }
+}
+
 /// What one analysis records (see the module docs).
 #[derive(Default)]
 pub(super) struct Tracker {
     keys: Vec<KeyIdentity>,
-    key_ids: HashMap<KeyIdentity, u32>,
+    /// The id of each key (by its hash: the identities are kept once, in
+    /// `keys`).
+    key_ids: KeyIndex,
     /// The configured targets being analyzed or planned, innermost last,
     /// with the shared-computation depth their frame began at: a lookup
     /// in a frame is the frame's own unless a shared computation began
@@ -180,9 +220,19 @@ pub(super) struct Tracker {
     /// target's turn ([`Engine::track_replay`]), so the recording is the
     /// sequential engine's.
     deferred: Option<Vec<Deferred>>,
+    /// The lookup tables were dropped ([`Self::compact`]).
+    compacted: bool,
 }
 
 impl Tracker {
+    /// Drop the lookup tables of keys and edges once nothing is reached any
+    /// more (the end of phase 2; memory): a key reached later gets a new
+    /// id, an edge may repeat.
+    pub(super) fn compact(&mut self) {
+        self.edge_set = HashSet::new();
+        self.compacted = true;
+    }
+
     /// Whether nothing was recorded (a frozen walk's fork carries an empty
     /// tracker as the tracking mark: nothing may write it).
     pub(super) fn is_empty(&self) -> bool {
@@ -224,6 +274,7 @@ impl Tracker {
             suite_packages: self.suite_packages.clone(),
             costs: self.costs.clone(),
             deferred: None,
+            compacted: self.compacted,
         }
     }
 }
@@ -300,12 +351,12 @@ struct PackageRecord {
 
 impl Tracker {
     fn key(&mut self, identity: KeyIdentity) -> u32 {
-        if let Some(id) = self.key_ids.get(&identity) {
-            return *id;
+        if let Some(id) = self.key_ids.get(&self.keys, &identity) {
+            return id;
         }
         let id = self.keys.len() as u32;
-        self.keys.push(identity.clone());
-        self.key_ids.insert(identity, id);
+        self.key_ids.insert(&identity, id);
+        self.keys.push(identity);
         id
     }
 
@@ -331,6 +382,9 @@ impl Tracker {
     }
 
     fn edge(&mut self, parent: u32, child: u32) {
+        if self.compacted && self.edges.contains(&(parent, child)) {
+            return;
+        }
         if self.edge_set.insert((parent, child)) {
             self.edges.push((parent, child));
         }
