@@ -418,6 +418,74 @@ owners(name = "o2", srcs = ["link.txt", ":o1"])
     assert!(line.contains(" aborted=0 "), "{line}");
 }
 
+/// An alias merged from its published results whose actual committed new
+/// provider values at its merge (computed again there: the test hook) is
+/// published again: its later readers see the actual's committed values,
+/// checked against what its earlier readers read.
+#[test]
+fn an_alias_whose_actual_commits_new_values_is_published_again() {
+    let ws = Workspace::new(&[
+        (
+            "t/defs.bzl",
+            r#"P = provider(fields = ["v"])
+
+def _act(ctx):
+    return [P(v = ctx.label.name), DefaultInfo()]
+
+act = rule(implementation = _act)
+
+def _reader(ctx):
+    print("reader %s %s" % (ctx.label.name, ctx.attr.dep[P].v))
+    return []
+
+reader = rule(implementation = _reader, attrs = {"dep": attr.label()})
+"#
+            .to_owned(),
+        ),
+        (
+            "t/BUILD.bazel",
+            r#"load("//rules:defs.bzl", "w")
+load(":defs.bzl", "act", "reader")
+w(name = "slow", work = 300000)
+act(name = "actual")
+alias(name = "al", actual = ":actual")
+reader(name = "r1", dep = ":al")
+reader(name = "r2", dep = ":al")
+"#
+            .to_owned(),
+        ),
+    ]);
+    let args = ["//t:slow", "//t:r1", "//t:r2"];
+    let walk = ws.build("walk", 1, &[], &args);
+    let text = stable(&walk);
+    assert!(walk.status.success(), "{text}");
+    assert!(text.contains("reader r2 actual"), "{text}");
+    const HOOK: (&str, &str) = ("BAZEL_RS_TEST_RECOMPUTE_AT_MERGE", "actual");
+    let runs: [&[(&str, &str)]; 3] = [
+        &[FROZEN, HOOK],
+        &[FROZEN, HOOK, REVERSE, PARITY_VERIFY],
+        &[FROZEN, HOOK, ("BAZEL_RS_TIMING", "1")],
+    ];
+    let mut republished = 0;
+    for env in runs {
+        let eval = ws.build("eval", 8, env, &args);
+        assert_eq!(stable(&eval), text, "{env:?}");
+        assert_eq!(eval.stdout, walk.stdout, "{env:?}");
+        let stderr = String::from_utf8_lossy(&eval.stderr);
+        if let Some(line) = stderr
+            .lines()
+            .find(|line| line.starts_with("PERF-PARALLEL buffer starlark="))
+        {
+            republished += line
+                .split_whitespace()
+                .find_map(|field| field.strip_prefix("forwarded_republished="))
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or_else(|| panic!("{line}"));
+        }
+    }
+    assert!(republished > 0, "the alias was merged from stale values");
+}
+
 /// An output-file target's File names its generating rule even when
 /// another target of the package declared the same path (a shared action)
 /// earlier in plan order and merged before the generating rule published:

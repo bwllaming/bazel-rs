@@ -70,6 +70,18 @@ fn classify_first() -> bool {
     *FIRST
 }
 
+/// `BAZEL_RS_TEST_RECOMPUTE_AT_MERGE=<target name>` (hidden test hook): a
+/// Starlark job of that name is prepared and computed again at its merge,
+/// as when a commit since resolved its deferred target platform (its
+/// results committed are new values, not the published ones).
+fn test_recompute_at_merge(key: &ConfiguredTargetKey) -> bool {
+    static NAME: std::sync::LazyLock<Option<String>> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a hidden test hook; never set outside the tests.
+        std::env::var("BAZEL_RS_TEST_RECOMPUTE_AT_MERGE").ok()
+    });
+    NAME.as_deref().is_some_and(|name| key.label.name == name)
+}
+
 /// `BAZEL_RS_T3_CLASSIFIERS=<n>`: the threads that classify a walk's
 /// entries beside its workers (`0`: the classification chunks are the
 /// workers' jobs, queued in plan order among the others).
@@ -276,7 +288,7 @@ const KIND_UNCLASSIFIED: u8 = 3;
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL buffer`).
 static STATS: [AtomicU64; STAT_NAMES.len()] = [const { AtomicU64::new(0) }; STAT_NAMES.len()];
-const STAT_NAMES: [&str; 15] = [
+const STAT_NAMES: [&str; 16] = [
     "starlark",
     "native",
     "turn",
@@ -292,6 +304,7 @@ const STAT_NAMES: [&str; 15] = [
     "fast_native",
     "later_requirement",
     "held_view",
+    "forwarded_republished",
 ];
 const S_STARLARK: usize = 0;
 const S_NATIVE: usize = 1;
@@ -308,6 +321,7 @@ const S_NATIVE_UNPUBLISHED: usize = 11;
 const S_FAST_NATIVE: usize = 12;
 const S_LATER_REQUIREMENT: usize = 13;
 const S_HELD_VIEW: usize = 14;
+const S_FORWARDED_REPUBLISHED: usize = 15;
 
 /// Whether a plain native rule whose results a worker published merges
 /// them ([`Engine::merge_published_native`]) instead of committing again
@@ -1517,6 +1531,10 @@ impl Engine {
             // ready, is then the cursor's own).
             board.classify_entry(index);
             let mut fast = false;
+            // A fast merge whose committed results differ from the
+            // published ones (an alias's actual committed new values):
+            // published again, checked as a commit's.
+            let mut stale = false;
             let body_started = critical().then(std::time::Instant::now);
             let claimed = {
                 let _split = frozen::Split::enter(12);
@@ -1583,9 +1601,15 @@ impl Engine {
                                     || native_results::selected_output_group(&rule).is_some()) =>
                         {
                             stat(S_FAST_NATIVE, 1);
-                            fast = true;
                             let _split = frozen::Split::enter(16);
                             self.merge_published_native(state, &board.frozen, &key, &rule, merge)
+                                .map(|forwarded_same| {
+                                    fast = forwarded_same;
+                                    stale = !forwarded_same;
+                                    if stale {
+                                        stat(S_FORWARDED_REPUBLISHED, 1);
+                                    }
+                                })
                         }
                         registered => {
                             let started = std::time::Instant::now();
@@ -1619,6 +1643,7 @@ impl Engine {
                 // a native rule merged from its published results): a
                 // delta rebuilt here names the canonical producers.
                 let same = published
+                    && !stale
                     && board
                         .frozen
                         .results
@@ -1796,7 +1821,7 @@ impl Engine {
                 return self.buffered_at_turn(state, configured, key, rule, index);
             }
         };
-        if !platform_known && self.platform_resolved(key) {
+        if (!platform_known && self.platform_resolved(key)) || test_recompute_at_merge(key) {
             // A commit since resolved the target platform its ctx surface
             // saw deferred: prepared again here.
             stat(S_INVALIDATED, 1);
@@ -1896,7 +1921,10 @@ impl Engine {
     /// owner) from the results a worker published (the same function of
     /// the same dependencies' results, `native_results`): its artifacts
     /// resolved through the index now (every earlier entry merged: the
-    /// canonical producers), the rest as published.
+    /// canonical producers), the rest as published. `false`: an alias-like
+    /// target's committed values are not the very ones published (its
+    /// actual committed new ones): published again and checked at its
+    /// merge.
     fn merge_published_native(
         &mut self,
         state: &mut ActionPlanning,
@@ -1904,7 +1932,7 @@ impl Engine {
         key: &ConfiguredTargetKey,
         rule: &Rule,
         merge: frozen::NativeMerge,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let frozen::NativeMerge {
             registered,
             sources,
@@ -1924,6 +1952,7 @@ impl Engine {
             .expect("a published native rule's results");
         self.native_owner(key, owner);
         let (dry, mut providers, mut runfiles, validation, repositories) = results.parts();
+        let mut forwarded_same = true;
         if forwards(rule)
             && let Some(actual) = rule.srcs.first()
         {
@@ -1931,8 +1960,18 @@ impl Engine {
             // runfiles as committed (the commit's; its worker published
             // the actual's published ones).
             let actual = ConfiguredTargetKey::new(self.resolve_rule_src(rule, actual)?, key.config);
-            providers = state.custom_providers.get(&actual).cloned();
-            runfiles = state.runfiles_info.get(&actual).cloned();
+            let committed = state.custom_providers.get(&actual).cloned();
+            let committed_runfiles = state.runfiles_info.get(&actual).cloned();
+            // The very values its worker published (else its dependents
+            // read the actual's values from before its commit).
+            forwarded_same = same_provider_values(providers.as_ref(), committed.as_ref())
+                && match (&runfiles, &committed_runfiles) {
+                    (None, None) => true,
+                    (Some(published), Some(committed)) => Arc::ptr_eq(published, committed),
+                    _ => false,
+                };
+            providers = committed;
+            runfiles = committed_runfiles;
         }
         if let Some(repositories) = repositories {
             state.repositories.insert(key.clone(), repositories);
@@ -1979,7 +2018,7 @@ impl Engine {
             }
         };
         state.dry.insert(key.clone(), dry);
-        Ok(())
+        Ok(forwarded_same)
     }
 
     /// Task B: the commit of a package group whose results a worker
@@ -2022,6 +2061,24 @@ impl Engine {
     ) {
         self.console_owners.insert(action_owner.clone(), console);
         self.aquery_owner(&action_owner, key, Vec::new);
+    }
+}
+
+/// Whether two provider maps hold the very same values (by identity).
+fn same_provider_values(
+    published: Option<&BTreeMap<String, starlark::values::OwnedFrozenValue>>,
+    committed: Option<&BTreeMap<String, starlark::values::OwnedFrozenValue>>,
+) -> bool {
+    match (published, committed) {
+        (None, None) => true,
+        (Some(published), Some(committed)) => {
+            published.len() == committed.len()
+                && published
+                    .iter()
+                    .zip(committed)
+                    .all(|((a, x), (b, y))| a == b && x.value().ptr_eq(y.value()))
+        }
+        _ => false,
     }
 }
 
