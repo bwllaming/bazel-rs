@@ -153,11 +153,10 @@ pub(in crate::engine) struct AspectTable {
     predicates: HashMap<(Label, String), (usize, bool)>,
     attr_aspects: HashMap<(ConfiguredTargetKey, String), (usize, AspectAttrAspects)>,
     toolchains: HashMap<(ConfigId, String), (usize, Arc<AspectToolchains>)>,
-    attribute_configs: HashMap<
-        (ConfiguredTargetKey, String),
-        (usize, Arc<BTreeMap<String, TransitionConfigurations>>),
-    >,
+    attribute_configs: HashMap<(ConfiguredTargetKey, String), (usize, AttributeConfigs)>,
 }
+
+type AttributeConfigs = Arc<BTreeMap<String, TransitionConfigurations>>;
 
 type AspectAttrAspects = (Option<Arc<[String]>>, Option<Arc<[String]>>);
 
