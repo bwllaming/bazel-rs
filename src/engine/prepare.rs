@@ -441,7 +441,7 @@ pub(super) struct SharedPrepare<'a> {
     /// inputs, prerequisites and runfiles), and the directories it probed
     /// on their way beyond the engine's probes.
     resolved: HashMap<Label, PathBuf>,
-    probes: HashMap<PathBuf, SourceDirProbe>,
+    probes: super::SourceProbeMap,
     /// The link policies of the repositories of the symlinked sources it
     /// resolved (one view of the materialized roots for the job).
     link_policies: HashMap<String, crate::source_links::LinkPolicy>,
@@ -449,16 +449,17 @@ pub(super) struct SharedPrepare<'a> {
 
 /// The engine's source-directory probes, then a job's own.
 struct ReadThrough<'a> {
-    base: &'a HashMap<PathBuf, SourceDirProbe>,
-    own: &'a mut HashMap<PathBuf, SourceDirProbe>,
+    base: &'a super::SourceProbeMap,
+    own: &'a mut super::SourceProbeMap,
 }
 
 impl SourceProbes for ReadThrough<'_> {
-    fn get(&self, path: &Path) -> Option<SourceDirProbe> {
-        self.base.get(path).or_else(|| self.own.get(path)).cloned()
+    fn get(&self, repository: &str, path: &Path) -> Option<SourceDirProbe> {
+        SourceProbes::get(self.base, repository, path)
+            .or_else(|| SourceProbes::get(&*self.own, repository, path))
     }
-    fn put(&mut self, path: PathBuf, probe: SourceDirProbe) {
-        self.own.insert(path, probe);
+    fn put(&mut self, repository: &str, path: PathBuf, probe: SourceDirProbe) {
+        SourceProbes::put(self.own, repository, path, probe);
     }
 }
 

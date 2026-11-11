@@ -3344,7 +3344,7 @@ pub struct Engine {
     /// Several labels (a directory and links to it, N28d) may name one.
     source_directories: Shared<BTreeMap<PathBuf, BTreeSet<Label>>>,
     /// `source_target`'s probes of the directories on a source path.
-    source_dir_probes: Shared<HashMap<PathBuf, SourceDirProbe>>,
+    source_dir_probes: Shared<SourceProbeMap>,
     /// Request-only policy; tree/manifest/mode flags live in configurations.
     compact_repo_mapping: bool,
     /// A label `--run_under` (LabelRunUnder): the late-bound
@@ -16453,6 +16453,32 @@ m = macro(implementation=emit)
         }
     }
 
+    /// A directory's probe is its repository's (the boundary depends on
+    /// the repository's ignore list): the same path probed for another
+    /// repository is not an answer.
+    #[test]
+    fn source_directory_probes_are_per_repository() {
+        let mut probes = SourceProbeMap::default();
+        let path = PathBuf::from("/ws/nested/sub");
+        SourceProbes::put(
+            &mut probes,
+            "nested+",
+            path.clone(),
+            SourceDirProbe {
+                found: DirProbe::Dir {
+                    symlink: false,
+                    boundary: true,
+                },
+                recorded: None,
+            },
+        );
+        assert!(SourceProbes::get(&probes, "", &path).is_none());
+        assert!(matches!(
+            SourceProbes::get(&probes, "nested+", &path).map(|probe| probe.found),
+            Some(DirProbe::Dir { boundary: true, .. })
+        ));
+    }
+
     #[test]
     fn source_targets_use_the_package_input_index_and_are_memoized_unless_linked() {
         let f = Fixture::new();
@@ -17846,7 +17872,7 @@ fn source_target_with(
         relative.push_str(&component.as_os_str().to_string_lossy());
         if i + 1 < parts.len() {
             let known = probes
-                .get(&path)
+                .get(&label.repository, &path)
                 .filter(|probe| probe.recorded.is_some() == recording);
             let found = match known {
                 Some(probe) => {
@@ -17877,6 +17903,7 @@ fn source_target_with(
                         (probe(), None)
                     };
                     probes.put(
+                        &label.repository,
                         path.clone(),
                         SourceDirProbe {
                             found: found.clone(),
@@ -18007,17 +18034,25 @@ impl SourceSide {
 
 /// The source-directory probe cache (`Engine::source_dir_probes`; the
 /// evaluator's shared one).
+/// Keyed by the label's repository, then the directory: a directory's
+/// boundary depends on its repository's ignore list (a local repository
+/// nested in the workspace is reached under both).
 pub(crate) trait SourceProbes {
-    fn get(&self, path: &Path) -> Option<SourceDirProbe>;
-    fn put(&mut self, path: PathBuf, probe: SourceDirProbe);
+    fn get(&self, repository: &str, path: &Path) -> Option<SourceDirProbe>;
+    fn put(&mut self, repository: &str, path: PathBuf, probe: SourceDirProbe);
 }
 
-impl SourceProbes for HashMap<PathBuf, SourceDirProbe> {
-    fn get(&self, path: &Path) -> Option<SourceDirProbe> {
-        HashMap::get(self, path).cloned()
+/// The probes by repository and directory.
+pub(crate) type SourceProbeMap = HashMap<String, HashMap<PathBuf, SourceDirProbe>>;
+
+impl SourceProbes for SourceProbeMap {
+    fn get(&self, repository: &str, path: &Path) -> Option<SourceDirProbe> {
+        HashMap::get(self, repository)?.get(path).cloned()
     }
-    fn put(&mut self, path: PathBuf, probe: SourceDirProbe) {
-        self.insert(path, probe);
+    fn put(&mut self, repository: &str, path: PathBuf, probe: SourceDirProbe) {
+        self.entry(repository.to_owned())
+            .or_default()
+            .insert(path, probe);
     }
 }
 

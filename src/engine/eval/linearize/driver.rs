@@ -1169,8 +1169,11 @@ impl Coord<'_> {
                 .probes
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for (path, probe) in std::mem::take(&mut *shared_probes) {
-                probes.entry(path).or_insert(probe);
+            for (repository, paths) in std::mem::take(&mut *shared_probes) {
+                let known = probes.entry(repository).or_default();
+                for (path, probe) in paths {
+                    known.entry(path).or_insert(probe);
+                }
             }
             *shared_probes = probes;
         }

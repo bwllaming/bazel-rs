@@ -54,7 +54,7 @@ pub(crate) struct Loading {
     /// record nothing).
     pub(crate) preloaded: FxHashMap<PackageId, Arc<Package>>,
     /// `Engine::source_dir_probes`, moved in for the evaluation.
-    pub(crate) probes: Mutex<std::collections::HashMap<PathBuf, SourceDirProbe>>,
+    pub(crate) probes: Mutex<crate::engine::SourceProbeMap>,
     /// `Engine::group_budget`, moved in for the evaluation.
     pub(crate) group_budget: Mutex<HostBudget>,
     /// Package loads run on pool threads (no repository demand: a unit
@@ -493,21 +493,24 @@ pub(crate) fn pkg_of(value: &NodeValue) -> Result<Arc<PkgValue>, String> {
 }
 
 /// The shared probe cache, locked per access (no lock across a probe).
-struct SharedProbes<'a>(&'a Mutex<std::collections::HashMap<PathBuf, SourceDirProbe>>);
+struct SharedProbes<'a>(&'a Mutex<crate::engine::SourceProbeMap>);
 
 impl SourceProbes for SharedProbes<'_> {
-    fn get(&self, path: &Path) -> Option<SourceDirProbe> {
+    fn get(&self, repository: &str, path: &Path) -> Option<SourceDirProbe> {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(repository)?
             .get(path)
             .cloned()
     }
 
-    fn put(&mut self, path: PathBuf, probe: SourceDirProbe) {
+    fn put(&mut self, repository: &str, path: PathBuf, probe: SourceDirProbe) {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(repository.to_owned())
+            .or_default()
             .entry(path)
             .or_insert(probe);
     }
