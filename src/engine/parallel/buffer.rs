@@ -79,7 +79,7 @@ fn classifiers() -> usize {
         std::env::var("BAZEL_RS_T3_CLASSIFIERS")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(1)
+            .unwrap_or(2)
     });
     if classify_first() { 0 } else { *THREADS }
 }
