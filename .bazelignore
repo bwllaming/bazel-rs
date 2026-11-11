@@ -17,6 +17,7 @@ tests/fixtures/artifact_identity/workspace
 tests/fixtures/aspect_base_attributes/workspace
 tests/fixtures/aspect_configuration/workspace
 tests/fixtures/aspect_ctx_attributes/workspace
+tests/fixtures/aspect_merged_alias/workspace
 tests/fixtures/aspect_merged_files_to_run/workspace
 tests/fixtures/aspect_order/workspace
 tests/fixtures/aspect_parameters/workspace
