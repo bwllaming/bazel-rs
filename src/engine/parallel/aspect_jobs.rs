@@ -778,6 +778,7 @@ impl Engine {
     pub(super) fn place_aspects(
         &mut self,
         state: &mut ActionPlanning,
+        rule: &Rule,
         record: &AspectRecord,
     ) -> Result<bool, String> {
         let Some(frozen) = self.frozen_walk.clone() else {
@@ -809,7 +810,12 @@ impl Engine {
                 .or_insert_with(|| identity.clone());
         }
         for key in &record.placements {
-            if !self.place_application(state, &frozen, key)? {
+            // An error is the rule's prepare's, at its location
+            // (CoordPrepare::edge_view).
+            if !self
+                .place_application(state, &frozen, key)
+                .map_err(|error| located(rule.location.as_deref(), error))?
+            {
                 return Ok(false);
             }
         }

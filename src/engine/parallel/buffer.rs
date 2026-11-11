@@ -1694,7 +1694,7 @@ impl Engine {
         }
         // Its applications not committed yet, where its prepare meets them.
         if let Some(record) = &aspects
-            && !self.place_aspects(state, record)?
+            && !self.place_aspects(state, rule, record)?
         {
             super::aspect_jobs::stat(super::aspect_jobs::S_FALLBACK, 1);
             effects.apply(self, false);
