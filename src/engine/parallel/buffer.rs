@@ -1434,11 +1434,12 @@ impl Engine {
             PROGRESS.lock().unwrap_or_else(|e| e.into_inner()).push({
                 let now = thread_schedstat();
                 format!(
-                    "entries={len} at(10%..100%)={} total={:.3}s last_job={:.3}s classified={:.3}s cpu={:.3}s runqueue={:.3}s",
+                    "entries={len} at(10%..100%)={} total={:.3}s last_job={:.3}s classified={:.3}s fill_wait={:.3}s cpu={:.3}s runqueue={:.3}s",
                     progress.join("/"),
                     started.elapsed().as_secs_f64(),
                     board.last_job.load(Ordering::Relaxed) as f64 / 1e6,
                     board.classified_at.load(Ordering::Relaxed) as f64 / 1e6,
+                    delta::FILL_WAIT.swap(0, Ordering::Relaxed) as f64 / 1e6,
                     (now.0 - sched.0) as f64 / 1e9,
                     (now.1 - sched.1) as f64 / 1e9,
                 )

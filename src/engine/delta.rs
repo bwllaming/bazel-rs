@@ -31,6 +31,10 @@ type Slot<V> = Arc<std::sync::Mutex<Option<Arc<V>>>>;
 /// fall back to the coordinator), so it has no effect a merge must replay:
 /// each delta lists the memo keys it used, in order ([`MemoUse`]), for
 /// BAZEL_RS_VERIFY_DELTA's comparison.
+/// BAZEL_RS_TIMING: the µs threads waited for another's fill of a
+/// [`SingleFlight`] entry.
+pub(super) static FILL_WAIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub(super) struct SingleFlight<K, V> {
     shards: Box<[std::sync::Mutex<MemoShard<K, V>>]>,
 }
@@ -106,7 +110,18 @@ impl<K: std::hash::Hash + Eq + Clone, V> SingleFlight<K, V> {
         fill: impl FnOnce() -> Result<Option<V>, E>,
     ) -> Result<Option<Arc<V>>, E> {
         let slot = self.slot(key);
-        let mut value = slot.lock().unwrap_or_else(|e| e.into_inner());
+        let mut value = match slot.try_lock() {
+            Ok(value) => value,
+            Err(_) => {
+                let started = std::time::Instant::now();
+                let value = slot.lock().unwrap_or_else(|e| e.into_inner());
+                FILL_WAIT.fetch_add(
+                    started.elapsed().as_micros() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                value
+            }
+        };
         if let Some(filled) = value.as_ref() {
             return Ok(Some(Arc::clone(filled)));
         }
