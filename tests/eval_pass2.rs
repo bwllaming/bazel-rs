@@ -561,6 +561,8 @@ on_platform(name = "on_a2", platform = "//plat:a", deps = ["//p1:top", ":late"])
     for (threads, env) in runs {
         let eval = ws.build("eval", threads, env, &args);
         assert_eq!(stable(&eval), stable(&walk), "{threads} threads, {env:?}");
+    }
+}
 
 /// The record mode's dump without what depends on the time of the run or
 /// on the run's fresh cache: observations (without their stat keys and
