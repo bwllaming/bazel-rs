@@ -1904,7 +1904,15 @@ impl Engine {
             .planning_plan
             .as_ref()
             .map_or(0, |plan| plan.len().saturating_sub(state.done));
-        if frozen::walk_min().is_some_and(|min| remaining >= min) && self.frozen_prepares(state) {
+        // While the snapshot records, the planning tail after the deferred
+        // walk (~/code: 14k entries) walks on the pipeline: the frozen
+        // walk's view and its computes at once peak higher (10.0 -> 9.8 GB
+        // on a miss, +1-2 s).
+        let tail_while_recording = self.eval_pass2.is_none() && crate::observed_fs::recording();
+        if frozen::walk_min().is_some_and(|min| remaining >= min)
+            && !tail_while_recording
+            && self.frozen_prepares(state)
+        {
             crate::perf_mark("pass2.freeze");
             let frozen = self.freeze(state, configured);
             crate::perf_mark("pass2.frozen");
