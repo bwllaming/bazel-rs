@@ -1915,7 +1915,10 @@ impl Engine {
         // walk (~/code: 14k entries) walks on the pipeline: the frozen
         // walk's view and its computes at once peak higher (10.0 -> 9.8 GB
         // on a miss, +1-2 s).
-        let tail_while_recording = self.eval_pass2.is_none() && crate::observed_fs::recording();
+        let tail_while_recording = self.eval_pass2.is_none()
+            && crate::observed_fs::recording()
+            // snapshot-unrecorded: a scheduling switch (`frozen`: the tail frozen too); the output is the same either way.
+            && std::env::var_os("BAZEL_RS_EVAL_RECORDING_TAIL").is_none_or(|value| value != "frozen");
         if frozen::walk_min().is_some_and(|min| remaining >= min)
             && !tail_while_recording
             && self.frozen_prepares(state)
