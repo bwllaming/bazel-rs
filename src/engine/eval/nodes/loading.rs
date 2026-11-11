@@ -85,6 +85,10 @@ pub(crate) struct Loading {
     /// is recorded (a memo hit observes nothing; the lookup's first user
     /// may never be replayed).
     pub(crate) source_observed: Mutex<FxHashMap<Label, Arc<crate::observed_fs::Captured>>>,
+    /// While recording: the stable sources whose lookup has not finished
+    /// yet (moved to `stable_sources` by `Bodies::finish`, after
+    /// `source_observed`).
+    pub(crate) stable_pending: Mutex<Vec<(Label, PathBuf)>>,
 }
 
 thread_local! {
@@ -578,9 +582,15 @@ fn source_lookup(
         cx.defer(Box::new(move |coord| coord.store.sources_side.push(side)));
     }
     if let Ok((path, true)) = &found {
-        shared
-            .loading
-            .stable_sources
+        // While recording, the source becomes publishable only once its
+        // lookup's observations are kept with it (`Bodies::finish`): the
+        // coordinator memoizes a source whose set it does not find.
+        let stable = if crate::observed_fs::recording() {
+            &shared.loading.stable_pending
+        } else {
+            &shared.loading.stable_sources
+        };
+        stable
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((label.clone(), path.clone()));

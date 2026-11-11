@@ -666,7 +666,12 @@ filegroup(name = "all", srcs = [":everything", ":after_cpu", ":sources", ":via_d
         let record = fs::read_to_string(&record).expect("the record mode's dump");
         // (A test hook such as the jitter keeps the snapshot, and so the
         // tracker, off: the recording only.)
-        if env.iter().any(|(name, _)| *name == "BAZEL_RS_EVAL_JITTER") {
+        if env.iter().any(|(name, _)| {
+            matches!(
+                *name,
+                "BAZEL_RS_EVAL_JITTER" | "BAZEL_RS_EVAL_TEST_SOURCE_SLEEP_MS"
+            )
+        }) {
             // (The record mode's report: timings.)
             let stderr = stable(&recorded)
                 .lines()
@@ -715,12 +720,22 @@ filegroup(name = "all", srcs = [":everything", ":after_cpu", ":sources", ":via_d
     );
     let stats = String::from_utf8_lossy(&stats.stderr);
     assert!(!stats.contains("flushes deferred 0,"), "{stats}");
-    let runs: [(usize, &[(&str, &str)]); 8] = [
+    let runs: [(usize, &[(&str, &str)]); 10] = [
         (1, &[]),
         (2, &[]),
         (8, &[]),
         (32, &[]),
         (8, &[("BAZEL_RS_EVAL_JITTER", "300")]),
+        // A source lookup's observations kept with it late: its source is
+        // not memoized for phase 2 before (review of eval-record).
+        (8, &[("BAZEL_RS_EVAL_TEST_SOURCE_SLEEP_MS", "30")]),
+        (
+            32,
+            &[
+                ("BAZEL_RS_EVAL_TEST_SOURCE_SLEEP_MS", "10"),
+                ("BAZEL_RS_EVAL_RESTARTS", "3"),
+            ],
+        ),
         (8, &[("BAZEL_RS_EVAL_RESTARTS", "5")]),
         (8, &[("BAZEL_RS_EVAL_FROZEN_PREPARES", "all")]),
         (8, &[("BAZEL_RS_EVAL_FROZEN_PREPARES", "0")]),

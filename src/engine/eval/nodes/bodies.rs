@@ -58,6 +58,23 @@ pub(crate) struct Coord<'e> {
     )>,
 }
 
+/// `BAZEL_RS_EVAL_TEST_SOURCE_SLEEP_MS=<ms>` (a hidden test hook): a
+/// source lookup's finish first sleeps, widening the window between its
+/// body and the publication of its observations.
+fn source_test_sleep() {
+    static MILLIS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let millis = *MILLIS.get_or_init(|| {
+        // snapshot-unrecorded: a hidden test hook delaying a lookup's finish; no result depends on it.
+        std::env::var("BAZEL_RS_EVAL_TEST_SOURCE_SLEEP_MS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0)
+    });
+    if millis > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(millis));
+    }
+}
+
 /// BAZEL_RS_EVAL_RESTARTS=<seed>: the restart test hook's seed.
 fn restarts_seed() -> Option<u64> {
     static SEED: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
@@ -813,6 +830,26 @@ impl Bodies for Phase1Bodies<'_, '_> {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .insert(label.clone(), Arc::clone(captured));
+            }
+            // Its source, publishable from now on (its set is found).
+            if let NodeKey::Tgt(label) = &running.key {
+                source_test_sleep();
+                let mut pending = self
+                    .shared
+                    .loading
+                    .stable_pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(at) = pending.iter().position(|(source, _)| source == label) {
+                    let source = pending.swap_remove(at);
+                    drop(pending);
+                    self.shared
+                        .loading
+                        .stable_sources
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(source);
+                }
             }
             let value = match value {
                 NodeValue::Tgt(result, _) if captured.is_some() => NodeValue::Tgt(result, captured),

@@ -45,6 +45,8 @@ pub const TEST_HOOKS: &[&str] = &[
     "BAZEL_RS_LOADING_NO_DEMAND",
     // The analysis evaluator's completion-order jitter (docs/EVALUATOR.md).
     "BAZEL_RS_EVAL_JITTER",
+    // A source lookup's finish delayed (docs/EVALUATOR.md "eval-record").
+    "BAZEL_RS_EVAL_TEST_SOURCE_SLEEP_MS",
     "BAZEL_RS_VERIFY_VIEWS",
     "BAZEL_RS_VERIFY_ARTIFACTS",
     "BAZEL_RS_DIGEST_MEMO",
