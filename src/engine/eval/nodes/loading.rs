@@ -514,16 +514,16 @@ pub(crate) fn target_body(
     let needed = cx.need_one(NodeKey::Pkg(package_id.clone()))?;
     let pkg = match pkg_of(needed.as_ref()) {
         Ok(pkg) => pkg,
-        Err(error) => return Ok(NodeValue::Tgt(Err(error))),
+        Err(error) => return Ok(NodeValue::Tgt(Err(error), None)),
     };
     if let Some(rule) = pkg.package.get(label) {
-        return Ok(NodeValue::Tgt(Ok(Target::Rule(Arc::clone(rule)))));
+        return Ok(NodeValue::Tgt(Ok(Target::Rule(Arc::clone(rule))), None));
     }
     if let Some((rule, output)) = pkg.outputs.get(label) {
-        return Ok(NodeValue::Tgt(Ok(Target::Output(
-            Arc::clone(rule),
-            output.clone(),
-        ))));
+        return Ok(NodeValue::Tgt(
+            Ok(Target::Output(Arc::clone(rule), output.clone())),
+            None,
+        ));
     }
     // A lookup on the pool in a package whose load used extension groups
     // speculatively may use those (where the walk's lookup finds them
@@ -560,7 +560,7 @@ fn source_lookup(
         let error = match no_such_target_in(repositories, Some(&pkg.package), label) {
             Ok(message) | Err(message) => message,
         };
-        return Ok(NodeValue::Tgt(Err(error)));
+        return Ok(NodeValue::Tgt(Err(error), None));
     }
     let mut side = SourceSide::default();
     let found = source_target_in(
@@ -580,7 +580,10 @@ fn source_lookup(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((label.clone(), path.clone()));
     }
-    Ok(NodeValue::Tgt(found.map(|(path, _)| Target::Source(path))))
+    Ok(NodeValue::Tgt(
+        found.map(|(path, _)| Target::Source(path)),
+        None,
+    ))
 }
 
 /// A source file's visibility (`Engine::source_visibility`) in its loaded
@@ -745,7 +748,7 @@ pub(crate) fn target_lookup(
     }
     let value = cx.need_one(NodeKey::Tgt(label.clone()))?;
     Ok(match value.as_ref() {
-        NodeValue::Tgt(result) => result.clone(),
+        value @ NodeValue::Tgt(..) => value.tgt(),
         _ => Err("internal error: a Tgt key with another value".to_owned()),
     })
 }

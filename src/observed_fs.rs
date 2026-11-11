@@ -1757,6 +1757,21 @@ impl Observations {
     pub fn append(&mut self, other: Observations) {
         self.0.append(other.0);
     }
+
+    /// These events as a captured set (`None` when empty): a memo entry
+    /// computed in a frame keeps it, and every hit replays it
+    /// ([`replay`]; an evaluator lookup, `BAZEL_RS_ANALYSIS=eval`).
+    pub fn into_captured(self) -> Option<Arc<Captured>> {
+        (!self.is_empty()).then(|| Captured::new(self.0))
+    }
+
+    /// A captured set as a frame's observations (committed at most once
+    /// wherever else it is replayed too).
+    pub fn of_captured(captured: &Arc<Captured>) -> Self {
+        let mut events = Events::default();
+        events.add_child(Arc::clone(captured));
+        Self(events)
+    }
 }
 
 thread_local! {

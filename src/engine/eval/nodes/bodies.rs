@@ -774,8 +774,12 @@ impl Bodies for Phase1Bodies<'_, '_> {
             // A lookup's observations are its user's (the enclosing
             // attempt's frame on this thread); a hinted lookup's own job's
             // are its package's (where the tape first uses the package; a
-            // package loaded before phase 1: now).
-            if let Some(observations) = observations {
+            // package loaded before phase 1: now). The value keeps them
+            // too, and every use replays them ([`NodeValue::tgt`]): the
+            // first user's attempt may be abandoned (its frame dropped)
+            // while the lookup stays done.
+            let captured = observations.and_then(crate::observed_fs::Observations::into_captured);
+            if let Some(captured) = &captured {
                 let nested = with_running(|running| !running.is_empty());
                 match &running.key {
                     NodeKey::Tgt(label)
@@ -787,15 +791,20 @@ impl Bodies for Phase1Bodies<'_, '_> {
                                 .contains_key(&label.package_id()) =>
                     {
                         let package = label.package_id();
+                        let observations = crate::observed_fs::Observations::of_captured(captured);
                         self.defer(Box::new(move |coord: &mut Coord<'_>| {
                             coord
                                 .store
                                 .defer_package_observations(&package, observations);
                         }));
                     }
-                    _ => crate::observed_fs::commit(observations),
+                    _ => crate::observed_fs::replay(captured),
                 }
             }
+            let value = match value {
+                NodeValue::Tgt(result, _) if captured.is_some() => NodeValue::Tgt(result, captured),
+                value => value,
+            };
             // A lookup's events belong to its user (the walk looks
             // targets up inline).
             for event in running.events {

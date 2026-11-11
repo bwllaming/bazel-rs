@@ -297,7 +297,7 @@ impl<'c, 'e> EvalHost<'c, 'e> {
         crate::engine::eval::linearize::capture::pause(paused);
         let looked_up = match needed {
             Ok(value) => match value.as_ref() {
-                NodeValue::Tgt(result) => result.clone(),
+                value @ NodeValue::Tgt(..) => value.tgt(),
                 _ => Err("internal error: a Tgt key with another value".to_owned()),
             },
             Err(missing) => Err(self.stop(missing)),
@@ -490,7 +490,7 @@ impl Host for EvalHost<'_, '_> {
         let key = NodeKey::Tgt(label.clone());
         match self.need(key.clone()) {
             Ok(value) => match value.as_ref() {
-                NodeValue::Tgt(result) => result.clone(),
+                value @ NodeValue::Tgt(..) => value.tgt(),
                 _ => Err("internal error: a Tgt key with another value".to_owned()),
             },
             Err(missing) => Err(self.stop(missing)),
@@ -850,7 +850,7 @@ impl Host for EvalHost<'_, '_> {
         for (label, config) in deps {
             let rule = match self.cx.peek(&NodeKey::Tgt(label.clone())) {
                 Some(value) => match value.as_ref() {
-                    NodeValue::Tgt(Ok(Target::Rule(rule) | Target::Output(rule, _))) => {
+                    NodeValue::Tgt(Ok(Target::Rule(rule) | Target::Output(rule, _)), _) => {
                         Some(Arc::clone(rule))
                     }
                     _ => None,

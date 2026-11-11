@@ -2202,8 +2202,8 @@ fn warm_up(
         .filter_map(|label| {
             let value = evaluator.value(&NodeKey::Tgt(label.clone()))?;
             match value.as_ref() {
-                NodeValue::Tgt(Ok(Target::Source(_))) => Some(NodeKey::Src(label.clone())),
-                NodeValue::Tgt(Ok(Target::Rule(rule) | Target::Output(rule, _))) => {
+                NodeValue::Tgt(Ok(Target::Source(_)), _) => Some(NodeKey::Src(label.clone())),
+                NodeValue::Tgt(Ok(Target::Rule(rule) | Target::Output(rule, _)), _) => {
                     super::super::super::check_macro_namespace(rule, label).ok()?;
                     let key = ConfiguredTargetKey::new(rule.label.clone(), top);
                     Some(NodeKey::Ct1(edge_ct_key(no_config, rule, key, false, None)))
@@ -2390,7 +2390,7 @@ fn drive(
         let value = evaluate(&NodeKey::Tgt(label.clone()));
         bodies.coord().drain();
         match value.as_ref() {
-            NodeValue::Tgt(result) => result.clone(),
+            value @ NodeValue::Tgt(..) => value.tgt(),
             _ => Err(format!(
                 "internal error: BAZEL_RS_ANALYSIS=eval: the lookup of {label} did not finish"
             )),

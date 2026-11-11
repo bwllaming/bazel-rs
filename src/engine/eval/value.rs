@@ -28,8 +28,15 @@ pub(crate) enum NodeValue {
     /// A loaded package (its load prints are a `PkgCommit` effect of the
     /// first transcript that reaches it).
     Pkg(Result<Arc<super::nodes::loading::PkgValue>, String>),
-    /// A target lookup.
-    Tgt(Result<Target, String>),
+    /// A target lookup, with what it observed (a source file's stats; the
+    /// analysis snapshot's recording): its first user's frame held it, and
+    /// every use replays it ([`NodeValue::tgt`]), so a use whose attempt
+    /// the tape replays records it even if that first attempt was
+    /// abandoned (the memo rule of docs/ANALYSIS_SNAPSHOT_RECORDING.md).
+    Tgt(
+        Result<Target, String>,
+        Option<Arc<crate::observed_fs::Captured>>,
+    ),
     /// A source file's analysis (visibility checked).
     Src(Result<(), String>),
     /// A resolved package group.
@@ -146,6 +153,19 @@ pub(crate) struct AspectValue {
 }
 
 impl NodeValue {
+    /// A `Tgt` value's lookup result at a use: what the lookup observed is
+    /// replayed into the using attempt's frame (or the recorder; a set
+    /// reaches the recorder once).
+    pub(crate) fn tgt(&self) -> Result<Target, String> {
+        match self {
+            NodeValue::Tgt(result, observed) => {
+                crate::observed_fs::replay_some(observed.as_ref());
+                result.clone()
+            }
+            _ => Err("internal error: a Tgt key with another value".to_owned()),
+        }
+    }
+
     /// The value's error text, if it is a failure (keep-going bookkeeping
     /// and the first-error frontier).
     pub(crate) fn error(&self) -> Option<String> {
@@ -154,7 +174,7 @@ impl NodeValue {
         }
         match self {
             NodeValue::Pkg(r) => r.as_ref().err().cloned(),
-            NodeValue::Tgt(r) => r.as_ref().err().cloned(),
+            NodeValue::Tgt(r, _) => r.as_ref().err().cloned(),
             NodeValue::Src(r) => r.as_ref().err().cloned(),
             NodeValue::Group(r) => r.as_ref().err().cloned(),
             NodeValue::Ct1(value) => value.outcome.as_ref().err().cloned(),
