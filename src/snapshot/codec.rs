@@ -891,6 +891,9 @@ pub fn hand_over(request: PlannedRequest) -> Result<PlannedRequest, String> {
     if !roundtrip && plan_out.is_none() && !record {
         return Ok(request);
     }
+    // What planning freed goes back to the system before the encoding's
+    // peak (it would wait for its decay).
+    crate::alloc_arena::purge();
     let (bytes, mut stats) = match encode_with_stats(&request) {
         Ok(encoded) => encoded,
         Err(error) => {
