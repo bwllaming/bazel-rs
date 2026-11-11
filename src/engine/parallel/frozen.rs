@@ -77,6 +77,9 @@ pub(in crate::engine) struct Frozen {
     platform_schedule: HashMap<ConfiguredTargetKey, (usize, PlatformResult)>,
     /// Task B: the walk's aspect applications (parallel::aspect_jobs).
     pub(in crate::engine) aspects: super::aspect_jobs::AspectTable,
+    /// Debug builds: the materialized repository roots when the walk
+    /// froze (a symlinked source's answer on a worker depends on them).
+    pub(in crate::engine) link_roots: usize,
 }
 
 impl Frozen {
@@ -522,6 +525,11 @@ impl Engine {
             compact_repo_mapping: self.compact_repo_mapping,
             platform_schedule,
             aspects: super::aspect_jobs::AspectTable::new(self, state),
+            link_roots: if cfg!(debug_assertions) {
+                self.repositories.roots_materialized_count(false)
+            } else {
+                0
+            },
         })
     }
 

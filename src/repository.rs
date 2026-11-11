@@ -3100,7 +3100,7 @@ impl RepositorySet {
     /// engine keeps counting) and never change their path, so two lists
     /// of one set of the same length are the same list
     /// ([`Self::link_policy`]'s cache).
-    fn roots_materialized_count(&self, sequential: bool) -> usize {
+    pub(crate) fn roots_materialized_count(&self, sequential: bool) -> usize {
         let mut count = 0;
         self.visit_roots_materialized(sequential, |_, _| count += 1);
         count

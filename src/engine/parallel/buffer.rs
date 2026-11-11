@@ -634,6 +634,9 @@ impl Board {
     /// started, the chunks are the workers' jobs).
     fn spawn_classifiers(self: &Arc<Self>, threads: usize) -> bool {
         let next = Arc::new(std::sync::atomic::AtomicUsize::new(self.start));
+        // Workers as the pool's are (the coordinator's arena, panics
+        // recorded and raised at the entry's turn).
+        let arena = crate::alloc_arena::current();
         let mut spawned = 0;
         for thread in 0..threads {
             let (board, next) = (Arc::clone(self), Arc::clone(&next));
@@ -641,6 +644,7 @@ impl Board {
                 .name(format!("t3-classify-{thread}"))
                 .stack_size(64 << 20)
                 .spawn(move || {
+                    super::enter_worker_thread(arena);
                     let end = board.start + board.plan.len();
                     loop {
                         let from = next.fetch_add(CHUNK, Ordering::Relaxed);

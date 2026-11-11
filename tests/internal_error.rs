@@ -144,6 +144,14 @@ fn crashes(mode: &str, site: &str) {
         stderr.contains(&format!("BAZEL_RS_DEBUG_PANIC_AT: {name}")),
         "{mode} {site}\n{stderr}"
     );
+    // A classification thread's panic is a worker's: recorded, located,
+    // raised at the entry's turn (not the default hook's line).
+    if name == "t3-classify" {
+        assert!(
+            stderr.contains("on an analysis worker") && !stderr.contains("thread 't3-classify"),
+            "{mode} {site}\n{stderr}"
+        );
+    }
     // A panic while the evaluator plans names the workaround
     // (crate::internal_error::EvaluatorScope); the walk's does not.
     let hint = "rerun with BAZEL_RS_ANALYSIS=walk";

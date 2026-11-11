@@ -273,6 +273,18 @@ thread_local! {
     static IS_WORKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Make this thread an analysis worker: its panics are recorded for the
+/// coordinator ([`WORKER_PANIC`], the hook installed), it allocates in the
+/// coordinator's jemalloc arena (`arena`: the coordinator's, taken on its
+/// thread) — the pool's workers and the merge buffer's classifiers.
+pub(super) fn enter_worker_thread(arena: Option<u32>) {
+    install_worker_panic_hook();
+    IS_WORKER.with(|worker| worker.set(true));
+    if let Some(arena) = arena {
+        crate::alloc_arena::bind(arena);
+    }
+}
+
 /// Install (once) the panic hook that keeps analysis workers' panics
 /// quiet ([`WORKER_PANIC`]); other threads keep the previous hook.
 fn install_worker_panic_hook() {
@@ -401,10 +413,7 @@ impl AnalysisPool {
                 .name(format!("analysis-{index}"))
                 .stack_size(LOADING_WORKER_STACK)
                 .spawn(move || {
-                    IS_WORKER.with(|worker| worker.set(true));
-                    if let Some(arena) = coordinator_arena {
-                        crate::alloc_arena::bind(arena);
-                    }
+                    enter_worker_thread(coordinator_arena);
                     while let Some(job) = queue.pop() {
                         job();
                     }

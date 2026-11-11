@@ -671,6 +671,18 @@ impl SharedPrepare<'_> {
                 .clone()
         });
         let (path, stable) = found.ok()?;
+        // A symlinked source's answer depends on the materialized
+        // repository roots: the walk's own (none materialized since it
+        // froze; its merge applies the lookup as found here).
+        if let Some((frozen, _)) = self.frozen
+            && !stable
+        {
+            debug_assert_eq!(
+                self.engine.repositories.roots_materialized_count(false),
+                frozen.link_roots,
+                "a symlinked source {label} looked up on a worker after a repository root materialized"
+            );
+        }
         // Once per job, a symlinked source too (the same policy: the same
         // answer; the merge memoizes only a stable one).
         self.resolved.insert(label.clone(), path.clone());
