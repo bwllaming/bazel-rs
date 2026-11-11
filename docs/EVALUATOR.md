@@ -2565,6 +2565,21 @@ scan clean; `BAZEL_RS_VERIFY_DELTA=1 BAZEL_RS_VERIFY_ARTIFACTS=1` clean
   `BAZEL_RS_PARITY_REVERSE=1`, `test --nobuild`); `=verify` +
   `BAZEL_RS_VERIFY_DELTA`, `VERIFY_DELTA` + `VERIFY_ARTIFACTS`,
   `PARITY_VERIFY` + `REVERSE`, `EVAL_VERIFY` clean.
+- **Parity fix (merged targets)**: genuine 9.3.1 prints an aspect-applied
+  dependency as `<merged target ACTUAL>` (MergedConfiguredTarget.repr)
+  whether it was requested through an alias or directly and whatever the
+  request order (tests/fixtures/aspect_merged_alias, genuine-captured);
+  bazel-rs shared one value per (actual, configuration, aspects) whose kind
+  was the first requester's in plan order (`<alias target …>` or
+  `<target …>` for every consumer). Now `TargetKind::Merged` over the
+  requested view's kind (an alias's label kept for `expand_location`), the
+  shared value keyed by the requested label: no order dependence. ~/code:
+  the 8 aspect rules that fell back (6 `Target` values, 2 contexts, 689
+  analyses redone) are all placed now (22 placed, 0 fallbacks, 0 redone);
+  the big walk 5.6–5.9 s. A rule whose job is not placed is prepared at its
+  turn with the prefetch: its non-cheap analyses run on the workers in its
+  exact context (cheap ones, < 1 ms on average, inline), so redoing the
+  fallbacks' analyses on the workers needed nothing more.
 - Left at their turn: the natives committed there (genrules, filegroups,
   aliases: published, so nobody waits, ~0.85 s cursor CPU). Not done: an
   application's delta built on its worker (`DeltaBuilder` +
