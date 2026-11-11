@@ -50,6 +50,7 @@ pub(super) fn walk_min() -> Option<usize> {
     match value.as_deref() {
         Some("0" | "off") => None,
         Some("all") => Some(0),
+        Some(min) if min.parse::<usize>().is_ok() => min.parse().ok(),
         _ => Some(2048),
     }
 }

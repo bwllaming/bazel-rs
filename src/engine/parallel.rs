@@ -73,14 +73,23 @@ pub(super) fn buffered() -> bool {
 }
 
 /// `BAZEL_RS_T3_WORKERS=<n>`: the frozen walk's analysis workers (16; 8
-/// with `BAZEL_RS_EVAL_SWEEP=0`).
+/// with `BAZEL_RS_EVAL_SWEEP=0`; 4 while the analysis snapshot records).
 fn frozen_worker_cap() -> usize {
     static CAP: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
         // snapshot-unrecorded: a scheduling bound; the output is the same either way.
         std::env::var("BAZEL_RS_T3_WORKERS")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(if super::sweep::enabled() { 16 } else { 8 })
+            .unwrap_or(if super::sweep::enabled() {
+                16
+            } else if crate::observed_fs::recording() {
+                // While the analysis snapshot records (eval-record): the
+                // computes' peak memory (~/code: the planning tail's
+                // frozen walk 10.3 -> 10.05 GB) at the same walk time.
+                4
+            } else {
+                8
+            })
     });
     *CAP
 }
@@ -1901,6 +1910,11 @@ impl Engine {
             crate::perf_mark("pass2.frozen");
             self.frozen_walk = Some(frozen);
             pipe.capacity = (frozen_workers(self.loading_phase_threads) * 2).max(2);
+        } else if self.eval_async_phase2 {
+            // A walk on the pipeline after the deferred walk (the planning
+            // tail): the frozen walk's results are not read again (memory;
+            // a later frozen walk would seed them anew).
+            state.walk_results = None;
             frozen::profile(frozen::Ct2Profile::walk_start);
         }
         let result = {
@@ -1921,9 +1935,11 @@ impl Engine {
         let mut result = result;
         if let Some(frozen) = self.frozen_walk.take() {
             frozen::profile(frozen::Ct2Profile::walk_end);
+            crate::perf_mark("pass2.walked");
             // The jobs still running hold it (a failing walk).
             pipe.ahead.clear();
             self.thaw(state, frozen);
+            crate::perf_mark("pass2.thawed");
             if result.is_err() {
                 // A failed walk merged only part of what it published: no
                 // later walk reads those results.
