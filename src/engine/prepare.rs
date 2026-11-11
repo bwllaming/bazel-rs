@@ -398,6 +398,8 @@ pub(super) struct SharedRecord {
     pub(super) owner: Option<(String, crate::shared_path::SharedPath, ConfiguredTargetKey)>,
     /// Why it needs the coordinator.
     pub(super) abort: Option<&'static str>,
+    /// Task B: what its aspect planning met (parallel::aspect_jobs).
+    pub(super) aspects: Option<parallel::aspect_jobs::AspectRecord>,
     /// T3: the source files it resolved itself (not memoized yet), with
     /// whether the path may be memoized and what the lookup records:
     /// applied where the coordinator would have looked them up.
@@ -429,6 +431,9 @@ pub(super) struct SharedPrepare<'a> {
     pub(super) resolve_sources: bool,
     /// Its packages' input labels, computed once per package.
     inputs: HashMap<PackageId, HashSet<Label>>,
+    /// Task B: plan attribute aspects over the frozen view
+    /// (parallel::aspect_jobs) instead of aborting.
+    pub(super) aspect_jobs: bool,
     /// A frozen walk's worker: the walk's view (the platforms its
     /// deferred flushes publish) and its entry's plan index.
     frozen: Option<(&'a parallel::Frozen, usize)>,
@@ -485,6 +490,7 @@ impl<'a> SharedPrepare<'a> {
             view_artifacts: None,
             resolve_sources: false,
             inputs: HashMap::new(),
+            aspect_jobs: false,
             frozen: None,
             resolved: HashMap::new(),
             probes: HashMap::new(),
@@ -520,6 +526,7 @@ impl<'a> SharedPrepare<'a> {
             view_artifacts: None,
             resolve_sources: false,
             inputs: HashMap::new(),
+            aspect_jobs: false,
             frozen: Some((frozen, index)),
             resolved: HashMap::new(),
             probes: HashMap::new(),
@@ -527,7 +534,12 @@ impl<'a> SharedPrepare<'a> {
         }
     }
 
-    fn abort(&mut self, why: &'static str) -> String {
+    /// A frozen walk worker's view.
+    pub(super) fn frozen_view(&self) -> Option<&'a parallel::Frozen> {
+        self.frozen.map(|(frozen, _)| frozen)
+    }
+
+    pub(super) fn abort(&mut self, why: &'static str) -> String {
         self.record.abort.get_or_insert(why);
         SHARED_ABORT.to_owned()
     }
@@ -703,9 +715,15 @@ impl Lookup for SharedPrepare<'_> {
 
     fn attribute_aspects(
         &mut self,
-        _rule: &Rule,
-        _identities: &[String],
+        rule: &Rule,
+        identities: &[String],
     ) -> Result<Vec<Arc<crate::aspects::AspectDefinition>>, String> {
+        if self.aspect_jobs
+            && let Some(aspects) =
+                parallel::aspect_jobs::loaded_attribute_aspects(self.engine, rule, identities)
+        {
+            return Ok(aspects);
+        }
         Err(self.abort("attribute_aspects"))
     }
 }
@@ -785,12 +803,15 @@ impl PrepareCx for SharedPrepare<'_> {
 
     fn edge_view(
         &mut self,
-        _rule: &Rule,
+        rule: &Rule,
         label: &Label,
         edge_config: ConfigId,
         aspects: Vec<Arc<crate::aspects::AspectDefinition>>,
     ) -> Result<DependencyTarget, String> {
         if !aspects.is_empty() {
+            if self.aspect_jobs {
+                return parallel::aspect_jobs::edge_view(self, rule, label, edge_config, aspects);
+            }
             return Err(self.abort("attribute_aspects"));
         }
         self.plan_view(label, edge_config)

@@ -74,6 +74,8 @@ pub(in crate::engine) struct Frozen {
     /// (`eval::linearize::pass2`): an entry at or after it sees it
     /// resolved, as at its turn.
     platform_schedule: HashMap<ConfiguredTargetKey, (usize, PlatformResult)>,
+    /// Task B: the walk's aspect applications (parallel::aspect_jobs).
+    pub(in crate::engine) aspects: super::aspect_jobs::AspectTable,
 }
 
 impl Frozen {
@@ -413,6 +415,8 @@ pub(super) struct FrozenOutcome {
     pub(super) elapsed: std::time::Duration,
     /// Its compute (absent when the prepare did not give one).
     pub(super) worker: Option<Result<WorkerOutcome, String>>,
+    /// Task B: what its aspect planning met (applied at its merge).
+    pub(super) aspects: Option<Box<super::aspect_jobs::AspectRecord>>,
 }
 
 /// An entry being prepared and computed on a worker.
@@ -491,6 +495,7 @@ impl Engine {
             view,
             compact_repo_mapping: self.compact_repo_mapping,
             platform_schedule,
+            aspects: super::aspect_jobs::AspectTable::new(state),
         })
     }
 
@@ -641,7 +646,11 @@ impl Engine {
             platform_known,
             elapsed,
             worker,
+            aspects,
         } = outcome;
+        // The pipeline places no aspect applications: such an entry is
+        // prepared at its turn.
+        let abort = abort.or(aspects.is_some().then_some("attribute_aspects"));
         if let Some(why) = abort {
             FROZEN_STATS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             prepare_fallback(why);
@@ -733,11 +742,18 @@ pub(super) fn run_frozen(
             class,
         );
         let mut cx = prepare::SharedPrepare::frozen(frozen, index);
+        cx.aspect_jobs = super::aspect_jobs::enabled();
         let prepared = Engine::prepare_custom(&mut cx, key, rule);
         timer.finish();
         let elapsed = started.elapsed();
         let (effects, sentinel) = isolation.finish();
-        let prepare::SharedRecord { owner, abort, .. } = cx.record;
+        let prepare::SharedRecord {
+            owner,
+            abort,
+            aspects,
+            ..
+        } = cx.record;
+        let aspects = aspects.map(Box::new);
         let aborted = sentinel
             || abort.is_some()
             || prepared
@@ -751,6 +767,7 @@ pub(super) fn run_frozen(
             platform_known,
             elapsed,
             worker: None,
+            aspects,
         };
         if aborted {
             return outcome;
@@ -766,24 +783,30 @@ pub(super) fn run_frozen(
             outcome.abort = Some("not_starlark");
             return outcome;
         };
-        let delta = frozen.view.as_ref().map(|view| {
-            Box::new(delta::DeltaInputs {
-                view: view.clone(),
-                key: parts.key.clone(),
-                output_root: parts.output_root.clone(),
-                action_owner: parts.action_owner.clone(),
-                main_ignored: Arc::clone(&parts.main_ignored),
-                transitive: parts.transitive.clone(),
-                action_execution: parts.action_execution.clone(),
-                platforms: frozen.engine.remote_platforms(
-                    rule,
-                    parts.config,
-                    &parts.action_execution,
-                ),
-                class,
-                keep_on_meet,
-            })
-        });
+        // An aspect job's delta is the coordinator's (its applications'
+        // outputs are registered at its merge).
+        let delta = frozen
+            .view
+            .as_ref()
+            .filter(|_| outcome.aspects.is_none())
+            .map(|view| {
+                Box::new(delta::DeltaInputs {
+                    view: view.clone(),
+                    key: parts.key.clone(),
+                    output_root: parts.output_root.clone(),
+                    action_owner: parts.action_owner.clone(),
+                    main_ignored: Arc::clone(&parts.main_ignored),
+                    transitive: parts.transitive.clone(),
+                    action_execution: parts.action_execution.clone(),
+                    platforms: frozen.engine.remote_platforms(
+                        rule,
+                        parts.config,
+                        &parts.action_execution,
+                    ),
+                    class,
+                    keep_on_meet,
+                })
+            });
         let (worker, registers) = run_compute(
             snapshot,
             &parts.transitive,

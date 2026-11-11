@@ -51,7 +51,7 @@ struct Job {
     run_under: Option<Arc<crate::analysis::RunUnderPrerequisite>>,
 }
 
-enum Outcome {
+pub(in crate::engine) enum Outcome {
     Analyzed {
         analyzed: Box<crate::analysis::AnalysisResult>,
         printed: Vec<String>,
@@ -365,7 +365,7 @@ pub(in crate::engine) fn analysis(
 }
 
 /// BAZEL_RS_VERIFY_DELTA: the analysis again, here, compared.
-fn verify(
+pub(in crate::engine) fn verify(
     key: &AspectApplicationKey,
     application: &crate::analysis::AspectApplication,
     outputs: &crate::analysis::ConfiguredOutputs<'_>,
@@ -442,7 +442,9 @@ impl Engine {
         rule: &Rule,
         submit: &dyn Fn(Box<dyn FnOnce() + Send>),
     ) {
-        if !enabled() || self.semantic_only() {
+        // Task B's aspect jobs analyze the walk's applications once
+        // (parallel::aspect_jobs): the coordinator takes them from there.
+        if !enabled() || self.semantic_only() || super::aspect_jobs::enabled() {
             return;
         }
         if let Some(definitions) = rule.custom.as_ref().map(|custom| {
@@ -702,19 +704,28 @@ fn analyze(job: Job) -> Outcome {
         loaded_functions,
         run_under,
     } = job;
+    let outputs = crate::analysis::ConfiguredOutputs {
+        output_root: &output_root,
+        action_owner: &action_owner,
+        action_env,
+        runfiles,
+        loaded_functions: loaded_functions.as_ref(),
+        run_under,
+    };
+    analyze_one(&key, &application, &outputs)
+}
+
+/// [`analyze`] of one application's inputs (task B's aspect jobs too).
+pub(in crate::engine) fn analyze_one(
+    key: &AspectApplicationKey,
+    application: &crate::analysis::AspectApplication,
+    outputs: &crate::analysis::ConfiguredOutputs<'_>,
+) -> Outcome {
     let analyzed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         crate::debug_panic::at("t3-aspect");
         let isolation = Isolation::enter();
-        let outputs = crate::analysis::ConfiguredOutputs {
-            output_root: &output_root,
-            action_owner: &action_owner,
-            action_env,
-            runfiles,
-            loaded_functions: loaded_functions.as_ref(),
-            run_under,
-        };
         let started = std::time::Instant::now();
-        let (analyzed, printed) = crate::analysis::analyze_aspect_buffered(&application, &outputs);
+        let (analyzed, printed) = crate::analysis::analyze_aspect_buffered(application, outputs);
         note_cost(&key.aspect, started.elapsed().as_micros() as u64);
         let (effects, sentinel) = isolation.finish();
         let quiet = effects.console.is_empty()

@@ -34,6 +34,7 @@
 
 use super::*;
 
+pub(super) mod aspect_jobs;
 pub(super) mod aspects;
 mod buffer;
 mod frozen;
@@ -1318,6 +1319,7 @@ pub(super) fn report(workers: usize) {
     buffer::report();
     super::sweep::report();
     aspects::report();
+    aspect_jobs::report();
     if let Some(profile) = frozen::CT2_PROFILE
         .lock()
         .unwrap_or_else(|e| e.into_inner())

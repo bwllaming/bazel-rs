@@ -294,6 +294,13 @@ impl AspectCx for CoordAspects<'_, '_> {
         // T3: analyzed on a worker before the turn's prepare, or (its dry
         // walk) queued there (parallel::aspects).
         let outputs = commit.outputs();
+        // Task B: a frozen walk's one analysis of it (parallel::aspect_jobs).
+        if let Some((analyzed, printed)) =
+            self.engine
+                .walk_aspect_analysis(key, &application, &outputs)
+        {
+            return commit_application(self.engine, self.state, &commit, Ok(*analyzed), printed);
+        }
         let (analyzed, printed) = match parallel::aspects::analysis(key, application, &outputs) {
             parallel::aspects::Analysis::Here(application) => {
                 analysis::analyze_aspect_buffered(&application, &outputs)

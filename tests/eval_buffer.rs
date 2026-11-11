@@ -144,6 +144,7 @@ fn stable(output: &Output) -> String {
 }
 
 const FROZEN: (&str, &str) = ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all");
+const ASPECT_JOBS: (&str, &str) = ("BAZEL_RS_T3_ASPECT_JOBS", "1");
 const PARITY_VERIFY: (&str, &str) = ("BAZEL_RS_PARITY_VERIFY", "1");
 const REVERSE: (&str, &str) = ("BAZEL_RS_PARITY_REVERSE", "1");
 
@@ -154,7 +155,7 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
     let walk = ws.build("walk", 1, &[], args);
     let text = stable(&walk);
     check(walk.status.success(), &text);
-    let runs: [(usize, &[(&str, &str)]); 18] = [
+    let runs: [(usize, &[(&str, &str)]); 22] = [
         (2, &[FROZEN]),
         (8, &[FROZEN]),
         (32, &[FROZEN]),
@@ -179,6 +180,28 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
         (
             8,
             &[FROZEN, ("BAZEL_RS_EVAL_NO_BUFFER", "1"), PARITY_VERIFY],
+        ),
+        // Task B: attribute-aspect rules as worker jobs; checked against
+        // the coordinator's inputs; the latest ready job first.
+        (8, &[FROZEN, ASPECT_JOBS]),
+        (2, &[FROZEN, ASPECT_JOBS, ("BAZEL_RS_VERIFY_DELTA", "1")]),
+        (
+            8,
+            &[
+                FROZEN,
+                ("BAZEL_RS_T3_ASPECT_JOBS", "verify"),
+                ("BAZEL_RS_VERIFY_DELTA", "1"),
+            ],
+        ),
+        (
+            32,
+            &[
+                FROZEN,
+                ASPECT_JOBS,
+                REVERSE,
+                PARITY_VERIFY,
+                ("BAZEL_RS_ANALYSIS_JITTER", "5"),
+            ],
         ),
     ];
     for (threads, env) in runs {
@@ -506,6 +529,30 @@ fn attribute_aspect_applications_analyzed_ahead_replay_in_order() {
             ),
             ("a/BUILD.bazel", build),
         ]);
+        if boom == "BOOM" {
+            // Task B: the lint rules are worker jobs, their applications
+            // committed at their merges.
+            let timed = ws.build(
+                "eval",
+                8,
+                &[FROZEN, ASPECT_JOBS, ("BAZEL_RS_TIMING", "1")],
+                &["//a:lint_a", "//a:lint_b", "//a:lint_c"],
+            );
+            let timed = String::from_utf8_lossy(&timed.stderr);
+            let line = timed
+                .lines()
+                .find(|line| line.starts_with("PERF-PARALLEL aspect_jobs "))
+                .unwrap_or_else(|| panic!("the aspect jobs ran: {timed}"));
+            let count = |name: &str| {
+                line.split_whitespace()
+                    .find_map(|field| field.strip_prefix(name))
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or_default()
+            };
+            eprintln!("{line}");
+            assert!(count("placed_rules=") > 0, "{line}");
+            assert!(count("placed=") > 0, "{line}");
+        }
         compare(
             &ws,
             &["//a:lint_a", "//a:lint_b", "//a:lint_c"],

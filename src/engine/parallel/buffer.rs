@@ -386,7 +386,25 @@ enum Claimed {
     Done(Finished),
 }
 
+/// How often an aspect job is queued again before it is left to its turn.
+const MAX_REQUEUES: u8 = 16;
+
 impl Finished {
+    /// An aspect job's dependency whose results were not published.
+    fn unready(&self) -> Option<ConfiguredTargetKey> {
+        match self {
+            Finished::Starlark { outcome, .. } => outcome
+                .as_ref()
+                .as_ref()
+                .ok()?
+                .aspects
+                .as_ref()?
+                .unready
+                .clone(),
+            _ => None,
+        }
+    }
+
     fn published(&self) -> bool {
         match self {
             Finished::Starlark { published, .. } => *published,
@@ -463,6 +481,9 @@ struct Board {
     /// after it): how long the merges ran on after the last job.
     started: std::time::Instant,
     last_job: AtomicU64,
+    /// Task B: how often each aspect job was queued again (a dependency
+    /// its applications read was not published).
+    requeues: Box<[AtomicU8]>,
 }
 
 impl Board {
@@ -718,9 +739,23 @@ impl Board {
                 // A panic (the job's, its publication's) is raised at the
                 // entry's turn: the cursor always finds the entry done.
                 board.note_job(index, 1);
-                let finished =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| board.run(index)))
-                        .unwrap_or_else(|_| Finished::Panicked(worker_panic()));
+                let finished = loop {
+                    let finished =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| board.run(index)))
+                            .unwrap_or_else(|_| Finished::Panicked(worker_panic()));
+                    // Task B: an aspect job that read a dependency not
+                    // published yet runs again once it is.
+                    if let Some(unready) = finished.unready()
+                        && board.requeues[slot].fetch_add(1, Ordering::Relaxed) < MAX_REQUEUES
+                    {
+                        super::aspect_jobs::stat(super::aspect_jobs::S_REQUEUED, 1);
+                        if board.wait_for(index, slot, unready) {
+                            return;
+                        }
+                        continue;
+                    }
+                    break finished;
+                };
                 board.note_job(index, 2);
                 let mut done = board.finished.lock().unwrap_or_else(|e| e.into_inner());
                 done.insert(index, finished);
@@ -729,6 +764,26 @@ impl Board {
                 board.finished_cv.notify_all();
             }),
         );
+    }
+
+    /// Task B: entry `index` (running) waits for `key`'s results and runs
+    /// again once they are published (`false`: they are now, it runs
+    /// again at once).
+    fn wait_for(self: &Arc<Self>, index: usize, slot: usize, key: ConfiguredTargetKey) -> bool {
+        {
+            let mut sched = self.sched.lock().unwrap_or_else(|e| e.into_inner());
+            if self.frozen.results.get(&key).is_some() {
+                return false;
+            }
+            sched.waiting.entry(key).or_default().push(index);
+            sched.missing.insert(index, 1);
+            // Released under the lock: a publication after it readies it.
+            self.stage[slot].store(IDLE, Ordering::Release);
+        }
+        // A cursor waiting for it finds it idle (at its turn).
+        let _done = self.finished.lock().unwrap_or_else(|e| e.into_inner());
+        self.finished_cv.notify_all();
+        true
     }
 
     /// Run entry `index`'s job and publish its results.
@@ -963,7 +1018,11 @@ impl Board {
                     let mut done = self.finished.lock().unwrap_or_else(|e| e.into_inner());
                     let finished = loop {
                         if let Some(finished) = done.remove(&index) {
-                            break finished;
+                            break Some(finished);
+                        }
+                        // An aspect job queued again (Board::wait_for).
+                        if self.stage[slot].load(Ordering::Acquire) == IDLE {
+                            break None;
                         }
                         waited = true;
                         done = self
@@ -974,6 +1033,9 @@ impl Board {
                         watch("running on a worker");
                     };
                     drop(done);
+                    let Some(finished) = finished else {
+                        continue;
+                    };
                     if waited {
                         stat(S_WAITED, 1);
                         stat(S_WAIT_US, started.elapsed().as_micros() as u64);
@@ -1041,10 +1103,11 @@ fn classify_why(
         let Some(custom) = rule.custom.as_ref() else {
             return turn("no_custom");
         };
-        if custom
-            .schema
-            .values()
-            .any(|spec| !spec.declaration.aspects.is_empty())
+        if !super::aspect_jobs::enabled()
+            && custom
+                .schema
+                .values()
+                .any(|spec| !spec.declaration.aspects.is_empty())
         {
             return turn("attribute_aspects");
         }
@@ -1053,6 +1116,7 @@ fn classify_why(
     }
     let isolation = Isolation::enter();
     let mut cx = prepare::SharedPrepare::frozen(frozen, index);
+    cx.aspect_jobs = super::aspect_jobs::enabled();
     let keys = requirements(engine, &mut cx, key, rule, starlark);
     let aborted = cx.record.abort.is_some();
     let (effects, sentinel) = isolation.finish();
@@ -1097,7 +1161,9 @@ fn requirements(
     if starlark {
         let dependencies =
             Engine::custom_dependencies_in(cx, rule, key, &edges, exec_config).ok()?;
-        if !dependencies.edge_aspects.is_empty() {
+        // Task B: an aspect job's requirements are its edges'; what its
+        // applications read beyond them requeues it (Board::wait_for).
+        if !dependencies.edge_aspects.is_empty() && !cx.aspect_jobs {
             return None;
         }
         labels.extend(
@@ -1225,6 +1291,7 @@ impl Engine {
             parked: Default::default(),
             started: std::time::Instant::now(),
             last_job: AtomicU64::new(0),
+            requeues: (0..len).map(|_| AtomicU8::new(0)).collect(),
         });
         // Every entry is classified at once, ahead of every job (cheap:
         // lookups; what is ready beyond the window waits, parked): the
@@ -1559,6 +1626,7 @@ impl Engine {
             effects,
             platform_known,
             worker,
+            aspects,
             ..
         } = outcome;
         if let Some(why) = abort {
@@ -1568,6 +1636,21 @@ impl Engine {
             if !effects.console.is_empty() {
                 note_lost(effects.console.len());
             }
+            effects.apply(self, false);
+            return self.buffered_at_turn(state, configured, key, rule, index);
+        }
+        // Task B: an aspect job whose prepare failed or observed something
+        // is prepared at its turn (its applications' commits and prints,
+        // in order, are the coordinator's).
+        if aspects.is_some()
+            && (prepared.is_err()
+                || worker.is_none()
+                || !effects.console.is_empty()
+                || !effects.observations.is_empty()
+                || !effects.roots.is_empty()
+                || super::aspect_jobs::verify_mode())
+        {
+            super::aspect_jobs::stat(super::aspect_jobs::S_FALLBACK_PREPARE, 1);
             effects.apply(self, false);
             return self.buffered_at_turn(state, configured, key, rule, index);
         }
@@ -1595,6 +1678,15 @@ impl Engine {
             if !effects.console.is_empty() {
                 note_lost(effects.console.len());
             }
+            effects.apply(self, false);
+            drop(worker);
+            return self.buffered_at_turn(state, configured, key, rule, index);
+        }
+        // Its applications not committed yet, where its prepare meets them.
+        if let Some(record) = &aspects
+            && !self.place_aspects(state, record)?
+        {
+            super::aspect_jobs::stat(super::aspect_jobs::S_FALLBACK, 1);
             effects.apply(self, false);
             drop(worker);
             return self.buffered_at_turn(state, configured, key, rule, index);
