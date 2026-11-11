@@ -296,6 +296,40 @@ w(name = "z", deps = [":r", ":a"])
     }
 }
 
+/// Task B: package groups are worker natives (their resolved node read
+/// from phase 1), a reader of one ready on its published results.
+#[test]
+fn package_groups_publish_from_the_workers() {
+    let ws = Workspace::new(&[
+        (
+            "pg/defs.bzl",
+            r#"def _impl(ctx):
+    info = ctx.attr.group[PackageSpecificationInfo]
+    print("contains %s %s" % (info.contains(Label("//pg/sub:x")), info.contains(Label("//elsewhere:x"))))
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, "x")
+    return [DefaultInfo(files = depset([out]))]
+
+reader = rule(implementation = _impl, attrs = {"group": attr.label(providers = [PackageSpecificationInfo])})
+"#
+            .to_owned(),
+        ),
+        (
+            "pg/BUILD.bazel",
+            r#"load(":defs.bzl", "reader")
+package_group(name = "g", packages = ["//pg/..."], includes = [":h"])
+package_group(name = "h", packages = ["//other"])
+reader(name = "r", group = ":g")
+"#
+            .to_owned(),
+        ),
+    ]);
+    compare(&ws, &["//pg:r", "//pg:h"], |success, text| {
+        assert!(success, "{text}");
+        assert!(text.contains("contains True False"), "{text}");
+    });
+}
+
 /// An output-file target's File names its generating rule even when
 /// another target of the package declared the same path (a shared action)
 /// earlier in plan order and merged before the generating rule published:

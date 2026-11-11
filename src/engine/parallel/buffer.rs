@@ -1401,7 +1401,8 @@ impl Engine {
                     match registered {
                         Some(merge)
                             if fast_natives()
-                                && native_results::plain(&rule)
+                                && (native_results::plain(&rule)
+                                    || matches!(rule.kind, RuleKind::PackageGroup(_)))
                                 && !forwards(&rule) =>
                         {
                             stat(S_FAST_NATIVE, 1);

@@ -830,6 +830,16 @@ pub(super) fn run_native(
         let mut transitive = BTreeSet::from([rule.label.repository.clone()]);
         let edges = engine.rule_edges(rule, key.config);
         engine.native_transitive_in(reads, rule, key, &edges, &mut transitive);
+        if matches!(rule.kind, RuleKind::PackageGroup(_)) {
+            let (effects, sentinel) = isolation.finish();
+            let quiet = effects.console.is_empty()
+                && effects.observations.is_empty()
+                && effects.roots.is_empty();
+            if sentinel || !quiet || !package_group_resolved(engine, rule) {
+                return None;
+            }
+            return package_group_results(engine, rule, transitive);
+        }
         let validation = Engine::native_validation_in(&mut cx, reads, rule, key.config);
         let output_group = super::native_results::selected_output_group(rule);
         let mut declared = Vec::new();
@@ -1266,6 +1276,50 @@ fn compare_published(
     Ok(())
 }
 
+/// Task B: a package group whose node phase 1 resolved (its commit reads
+/// only that memo: no package load, no budget charged), so a worker builds
+/// its results ([`package_group_results`]).
+fn package_group_resolved(engine: &Engine, rule: &Rule) -> bool {
+    matches!(rule.kind, RuleKind::PackageGroup(_))
+        && engine.group_nodes.contains_key(&rule.label)
+        && super::super::check_macro_namespace(rule, &rule.label).is_ok()
+}
+
+/// A package group's results (its commit's: the PackageSpecificationInfo
+/// of its resolved node, no files to build, its transitive repositories).
+fn package_group_results(
+    engine: &Engine,
+    rule: &Rule,
+    transitive: BTreeSet<String>,
+) -> Option<Box<NativePublished>> {
+    let node = Arc::clone(engine.group_nodes.get(&rule.label)?);
+    let info = starlark::environment::Module::with_temp_heap(|module| {
+        let value = crate::package_specification::alloc_info(&module.heap(), node);
+        module.set("__info", value);
+        let frozen = module
+            .freeze()
+            .map_err(|error| format!("cannot freeze package group provider: {error:?}"))?;
+        frozen.get("__info").map_err(|error| error.to_string())
+    })
+    .ok()?;
+    Some(Box::new(NativePublished {
+        results: KeyResults {
+            dry: Some(Arc::default()),
+            providers: Some(BTreeMap::from([(
+                crate::package_specification::PROVIDER_ID.to_owned(),
+                info,
+            )])),
+            provider_keys: None,
+            runfiles_info: None,
+            validation: None,
+            repositories: Some(Arc::new(transitive)),
+        },
+        registered: Vec::new(),
+        declared: Vec::new(),
+        sources: Vec::new(),
+    }))
+}
+
 /// T2: whether a frozen walk publishes `rule`'s results from a worker
 /// (`native_results::plain`, no coverage instrumentation, an execution
 /// plan).
@@ -1273,7 +1327,8 @@ pub(super) fn publishes_native(engine: &Engine, rule: &Rule, config: ConfigId) -
     publishes()
         && (super::native_results::plain(rule)
             || super::native_results::selected_output_group(rule).is_some()
-            || matches!(rule.kind, RuleKind::Genrule))
+            || matches!(rule.kind, RuleKind::Genrule)
+            || package_group_resolved(engine, rule))
         && !engine.semantic_only()
         && !engine
             .configurations
