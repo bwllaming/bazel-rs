@@ -803,7 +803,7 @@ pub(super) fn run_frozen(
         let delta = frozen
             .view
             .as_ref()
-            .filter(|_| outcome.aspects.is_none())
+            .filter(|_| outcome.aspects.is_none() || super::aspect_jobs::worker_deltas())
             .map(|view| {
                 Box::new(delta::DeltaInputs {
                     view: view.clone(),
@@ -822,7 +822,7 @@ pub(super) fn run_frozen(
                     keep_on_meet,
                 })
             });
-        let (worker, registers) = run_compute(
+        let (mut worker, registers) = run_compute(
             snapshot,
             &parts.transitive,
             index,
@@ -831,6 +831,19 @@ pub(super) fn run_frozen(
             frozen.compact_repo_mapping,
             verify_summary,
         );
+        // An aspect job's delta that failed (a file of its applications,
+        // registered at its merge only): its merge computes it again.
+        if outcome.aspects.is_some()
+            && let Some(delta) = worker.outcome.delta.as_mut()
+            && matches!(&delta.built, delta::Built::Delta(built)
+                if built.error.is_some() || built.failed_output.is_some())
+        {
+            let built =
+                std::mem::replace(&mut delta.built, delta::Built::Consumed("aspect_outputs"));
+            super::super::drop_elsewhere(built);
+            delta.kept = None;
+            delta.keep = false;
+        }
         summary = registers;
         platform_read = worker.sentinel || worker.outcome.platform_read;
         outcome.prepared = Ok(Some(Box::new(parts)));

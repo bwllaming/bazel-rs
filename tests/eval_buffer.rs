@@ -186,7 +186,15 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
         // Task B: attribute-aspect rules as worker jobs; checked against
         // the coordinator's inputs; the latest ready job first.
         (8, &[FROZEN, NO_ASPECT_JOBS]),
-        (2, &[FROZEN, ASPECT_JOBS, ("BAZEL_RS_VERIFY_DELTA", "1")]),
+        (
+            2,
+            &[
+                FROZEN,
+                ASPECT_JOBS,
+                ("BAZEL_RS_T3_ASPECT_DELTAS", "1"),
+                ("BAZEL_RS_VERIFY_DELTA", "1"),
+            ],
+        ),
         (
             8,
             &[

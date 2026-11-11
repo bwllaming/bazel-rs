@@ -59,6 +59,16 @@ pub(in crate::engine) fn enabled() -> bool {
     mode() != 0 && !order_audit::enabled()
 }
 
+/// `BAZEL_RS_T3_ASPECT_DELTAS=1`: an aspect job builds its rule's delta
+/// too (merged after its applications' placement).
+pub(super) fn worker_deltas() -> bool {
+    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling switch; the output is the same either way.
+        std::env::var("BAZEL_RS_T3_ASPECT_DELTAS").is_ok_and(|value| value == "1")
+    });
+    *ON
+}
+
 /// `BAZEL_RS_T3_ASPECT_JOBS=verify`.
 pub(super) fn verify_mode() -> bool {
     mode() == 2

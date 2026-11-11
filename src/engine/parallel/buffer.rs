@@ -60,6 +60,16 @@ fn window() -> usize {
     *WINDOW
 }
 
+/// `BAZEL_RS_T3_CLASSIFY_FIRST=1`: the classification chunks ahead of
+/// every job (as before task B).
+fn classify_first() -> bool {
+    static FIRST: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling switch; the output is the same either way.
+        std::env::var("BAZEL_RS_T3_CLASSIFY_FIRST").is_ok_and(|value| value == "1")
+    });
+    *FIRST
+}
+
 /// `BAZEL_RS_T3_CLASSIFY_JITTER=<µs>` (a test hook): each classification
 /// first sleeps a reproducible time up to that bound.
 fn classify_jitter() -> u64 {
@@ -1298,7 +1308,11 @@ impl Engine {
         // chains of dependents decide the jobs' order.
         for from in (start..start + len).step_by(CHUNK) {
             let (to, chunk) = ((from + CHUNK).min(start + len), Arc::clone(&board));
-            board.submit(0, Box::new(move || chunk.classify_chunk(from, to)));
+            // In plan order among the jobs (a job readied early in the
+            // plan does not wait for the classification of the whole
+            // walk; BAZEL_RS_T3_CLASSIFY_FIRST=1: every chunk first).
+            let priority = if classify_first() { 0 } else { from };
+            board.submit(priority, Box::new(move || chunk.classify_chunk(from, to)));
         }
         stat(S_WALKS, 1);
         let sched = thread_schedstat();
