@@ -233,6 +233,15 @@ pub fn perf_mark(name: &str) {
     let (start, _) = process_clock();
     // The profile's phase markers (a no-op without --profile).
     profile::mark(name);
+    // snapshot-unrecorded: a diagnostics switch (a heap profile at every mark; a profiling build only).
+    if let Some(prefix) = std::env::var_os("BAZEL_RS_TIMING_HEAP_DUMP") {
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut path = std::path::PathBuf::from(prefix);
+        path.as_mut_os_string()
+            .push(format!(".{seq:03}.{name}.heap"));
+        alloc_arena::heap_dump(&path);
+    }
     if diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING")) {
         let status = proc_self_status();
         let (rss, hwm) = (
@@ -247,6 +256,18 @@ pub fn perf_mark(name: &str) {
             rss,
             hwm
         ));
+        // snapshot-unrecorded: a diagnostics switch (the allocator's counters at every mark).
+        if std::env::var_os("BAZEL_RS_TIMING_JEMALLOC").is_some()
+            && let Some([allocated, active, resident, retained]) = alloc_arena::stats()
+        {
+            snapshot::diag::line_fmt(format_args!(
+                "PERF-JEMALLOC {name} allocated={}MB active={}MB resident={}MB retained={}MB",
+                allocated >> 20,
+                active >> 20,
+                resident >> 20,
+                retained >> 20
+            ));
+        }
     }
 }
 

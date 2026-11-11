@@ -75,6 +75,80 @@ pub fn bind(arena: u32) -> bool {
     }
 }
 
+/// Write a jemalloc heap profile to `path` (`prof.dump`; a no-op unless
+/// the binary is built with `tikv-jemallocator/profiling` and runs with
+/// `_RJEM_MALLOC_CONF=prof:true`): docs/MEMORY.md, `BAZEL_RS_TIMING_HEAP_DUMP`.
+pub fn heap_dump(path: &std::path::Path) {
+    #[cfg(feature = "jemalloc")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+            return;
+        };
+        let mut pointer = path.as_ptr();
+        // SAFETY: `prof.dump` takes a `const char *` file name; we pass a
+        // pointer to a valid pointer to a NUL-terminated string that
+        // outlives the call, and read nothing back.
+        unsafe {
+            tikv_jemalloc_sys::mallctl(
+                c"prof.dump".as_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                (&raw mut pointer).cast(),
+                std::mem::size_of::<*const std::ffi::c_char>(),
+            );
+        }
+    }
+    #[cfg(not(feature = "jemalloc"))]
+    let _ = path;
+}
+
+/// jemalloc's `stats.{allocated, active, resident, retained}` in bytes
+/// (refreshed; `None` without jemalloc): diagnostics,
+/// `BAZEL_RS_TIMING_JEMALLOC`.
+pub fn stats() -> Option<[usize; 4]> {
+    #[cfg(feature = "jemalloc")]
+    {
+        let mut epoch: u64 = 1;
+        let mut length = std::mem::size_of::<u64>();
+        // SAFETY: `epoch` is a read/write `uint64_t`; we pass valid pointers
+        // and sizes.
+        unsafe {
+            tikv_jemalloc_sys::mallctl(
+                c"epoch".as_ptr(),
+                (&raw mut epoch).cast(),
+                &raw mut length,
+                (&raw mut epoch).cast(),
+                std::mem::size_of::<u64>(),
+            );
+        }
+        let read = |name: &std::ffi::CStr| {
+            let mut value: usize = 0;
+            let mut length = std::mem::size_of::<usize>();
+            // SAFETY: the `stats.*` controls are read-only `size_t`s; we
+            // pass a valid pointer to a `usize` and its size.
+            let status = unsafe {
+                tikv_jemalloc_sys::mallctl(
+                    name.as_ptr(),
+                    (&raw mut value).cast(),
+                    &raw mut length,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            (status == 0).then_some(value)
+        };
+        Some([
+            read(c"stats.allocated")?,
+            read(c"stats.active")?,
+            read(c"stats.resident")?,
+            read(c"stats.retained")?,
+        ])
+    }
+    #[cfg(not(feature = "jemalloc"))]
+    None
+}
+
 /// Return every arena's dirty pages to the system now (`arena.<all>.purge`):
 /// called right after a phase frees large structures, so the next phase's
 /// peak does not stack on memory that would otherwise wait for its decay
