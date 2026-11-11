@@ -52,7 +52,9 @@ fn window() -> usize {
         std::env::var("BAZEL_RS_T3_WINDOW")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(16_384usize)
+            // ~/code: 16,384 held the jobs back behind the cursor (the
+            // deferred walk 8.4 -> 7.8 s without it, the same peak RSS).
+            .unwrap_or(262_144usize)
             .max(1)
     });
     *WINDOW
@@ -1415,7 +1417,7 @@ impl Engine {
                             stat(S_FAST_NATIVE, 1);
                             fast = true;
                             let _split = frozen::Split::enter(16);
-                            self.merge_published_native(state, &board.frozen, &key, &rule, merge);
+                            self.merge_published_native(state, &board.frozen, &key, merge);
                             Ok(())
                         }
                         registered => {
@@ -1651,12 +1653,12 @@ impl Engine {
         state: &mut ActionPlanning,
         frozen: &Frozen,
         key: &ConfiguredTargetKey,
-        rule: &Rule,
         merge: frozen::NativeMerge,
     ) {
         let frozen::NativeMerge {
             registered,
             sources,
+            owner,
         } = merge;
         // The source lookups its commit would have made (Engine::target):
         // what they record, their memoized paths.
@@ -1670,7 +1672,7 @@ impl Engine {
             .results
             .get(key)
             .expect("a published native rule's results");
-        self.native_owner(key, rule);
+        self.native_owner(key, owner);
         let (dry, providers, runfiles, validation, repositories) = results.parts();
         if let Some(repositories) = repositories {
             state.repositories.insert(key.clone(), repositories);
@@ -1737,7 +1739,7 @@ impl Engine {
             .results
             .get(key)
             .expect("a published package group's results");
-        self.native_owner(key, rule);
+        self.native_owner(key, merge.owner);
         let (dry, providers, _, _, repositories) = results.parts();
         if let Some(repositories) = repositories {
             state.repositories.insert(key.clone(), repositories);
@@ -1751,20 +1753,13 @@ impl Engine {
     }
 
     /// A native rule's console and aquery owners (`Engine::prepare_target`).
-    fn native_owner(&mut self, key: &ConfiguredTargetKey, rule: &Rule) {
-        let config = key.config;
-        let action_owner = key.action_owner(self.configurations.top());
-        self.console_owners.insert(
-            action_owner.clone(),
-            crate::action_console::owner(&crate::action_console::OwnerParts {
-                label: &key.label.to_string(),
-                location: rule.location.as_deref(),
-                target_kind: &format!("{} rule", rule.rule_class_name()),
-                aspects: &[],
-                tool: self.configurations.get(config).native.is_exec,
-                configuration: &config.to_string(),
-            }),
-        );
+    /// (Computed by its worker: `owner`.)
+    fn native_owner(
+        &mut self,
+        key: &ConfiguredTargetKey,
+        (action_owner, console): (String, crate::shared_path::SharedPath),
+    ) {
+        self.console_owners.insert(action_owner.clone(), console);
         self.aquery_owner(&action_owner, key, Vec::new);
     }
 }

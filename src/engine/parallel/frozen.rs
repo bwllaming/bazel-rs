@@ -838,7 +838,7 @@ pub(super) fn run_native(
             if sentinel || !quiet || !package_group_resolved(engine, rule) {
                 return None;
             }
-            return package_group_results(engine, rule, transitive);
+            return package_group_results(engine, key, rule, transitive);
         }
         let validation = Engine::native_validation_in(&mut cx, reads, rule, key.config);
         let output_group = super::native_results::selected_output_group(rule);
@@ -943,6 +943,7 @@ pub(super) fn run_native(
                 .map(|artifact| (key.config, artifact))
                 .collect(),
             sources: std::mem::take(&mut cx.record.sources),
+            owner: native_owner(engine, key, rule),
         }))
     }))
     .ok()
@@ -964,6 +965,7 @@ pub(super) fn publish_native_results(
         registered,
         declared,
         sources,
+        owner,
     } = published;
     for artifact in &registered {
         frozen.artifacts.publish_provisional(
@@ -993,6 +995,7 @@ pub(super) fn publish_native_results(
     NativeMerge {
         registered,
         sources,
+        owner,
     }
 }
 
@@ -1001,6 +1004,28 @@ pub(super) fn publish_native_results(
 pub(super) struct NativeMerge {
     pub(super) registered: Vec<Artifact>,
     pub(super) sources: Vec<(Label, PathBuf, bool, SourceSide)>,
+    /// Its action owner and console owner (`Engine::prepare_target`'s).
+    pub(super) owner: (String, crate::shared_path::SharedPath),
+}
+
+/// A native rule's action owner and console owner, as
+/// `Engine::prepare_target` makes them.
+fn native_owner(
+    engine: &Engine,
+    key: &ConfiguredTargetKey,
+    rule: &Rule,
+) -> (String, crate::shared_path::SharedPath) {
+    let config = key.config;
+    let action_owner = key.action_owner(engine.configurations.top());
+    let console = crate::action_console::owner(&crate::action_console::OwnerParts {
+        label: &key.label.to_string(),
+        location: rule.location.as_deref(),
+        target_kind: &format!("{} rule", rule.rule_class_name()),
+        aspects: &[],
+        tool: engine.configurations.get(config).native.is_exec,
+        configuration: &config.to_string(),
+    });
+    (action_owner, console)
 }
 
 /// Publish entry `index`'s phase-2 results from its worker's delta
@@ -1203,6 +1228,7 @@ pub(super) struct NativePublished {
     declared: Vec<(ConfigId, Artifact)>,
     /// The source files it resolved itself ([`prepare::SharedRecord`]).
     pub(super) sources: Vec<(Label, PathBuf, bool, SourceSide)>,
+    owner: (String, crate::shared_path::SharedPath),
 }
 
 /// A native rule's results being computed on a worker (`None`: not
@@ -1289,6 +1315,7 @@ fn package_group_resolved(engine: &Engine, rule: &Rule) -> bool {
 /// of its resolved node, no files to build, its transitive repositories).
 fn package_group_results(
     engine: &Engine,
+    key: &ConfiguredTargetKey,
     rule: &Rule,
     transitive: BTreeSet<String>,
 ) -> Option<Box<NativePublished>> {
@@ -1317,6 +1344,7 @@ fn package_group_results(
         registered: Vec::new(),
         declared: Vec::new(),
         sources: Vec::new(),
+        owner: native_owner(engine, key, rule),
     }))
 }
 
