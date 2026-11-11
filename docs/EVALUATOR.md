@@ -1928,7 +1928,7 @@ pass-2 walk of ≥ 2,048 entries; `BAZEL_RS_EVAL_FROZEN_PREPARES=0` off,
 `=all` every walk; `BAZEL_RS_EVAL_NO_BUFFER=1` the T2 pipeline):
 
 - **Classification on the workers**, 64 entries per job, for the window
-  ahead of the cursor (16,384, `BAZEL_RS_T3_WINDOW`): a Starlark rule's
+  ahead of the cursor (16,384, `BAZEL_RS_T3_WINDOW`; 262,144 since task B): a Starlark rule's
   requirements (`ahead_requirements` over the frozen view: dependency edges
   after the alias chain, output files' generating rules — looked up in the
   frozen packages —, resolved toolchains), a native rule's whose results a
@@ -2433,6 +2433,31 @@ under `BAZEL_RS_PARITY_REVERSE=1`; `test --nobuild` (941d72967f5c).
 scan clean; `BAZEL_RS_VERIFY_DELTA=1 BAZEL_RS_VERIFY_ARTIFACTS=1` clean
 (37,916 worker deltas, 771 rewritten ones); `BAZEL_RS_EVAL_VERIFY=1`
 (`--memory-limit=40000`) clean.
+
+### Genuine parity, task B: no at-turn entries (eval-t3, in progress)
+
+- **Package groups** are worker natives: a worker resolves the group
+  read-only over the frozen view (`Engine::resolve_group_readonly`: loaded
+  packages, no memo, no budget; anything else leaves it at its turn) and
+  publishes its PackageSpecificationInfo, empty files to build and
+  transitive repositories; its merge (`merge_published_group`) resolves it
+  again as the commit does (the memo, the budget, an error at its
+  position). ~/code: 29 at-turn package groups → 0 (no walk-time change:
+  their readers were not the critical chain). Test
+  `eval_buffer::package_groups_publish_from_the_workers`.
+- A published native rule's console owner is built on its worker
+  (`NativeMerge::owner`; 5% of the cursor's time).
+- The T3 window is 262,144 entries (was 16,384): with the cursor slower
+  than the workers, the window held ready jobs back (Ct2 published p90
+  6.2 → 3.3 s); ~/code's deferred walk 8.4 → 7.6–7.8 s, peak RSS unchanged
+  (9.8 GB).
+- Left at their turn (~/code): the 48 Starlark rules with attribute
+  aspects (rust_clippy, rustfmt_test, cc_binary/cc_test/cc_proto_library,
+  upb, go_proto) — 47% of the cursor's CPU (the aspect planning, 40%,
+  and analyses inline, 12%) — and the natives committed at their turn
+  (genrules, filegroups, aliases: published, so nobody waits, ~0.85 s
+  cursor CPU). The cursor's CPU is now the walk's bound (5.4–5.7 s of
+  7.6 s; merge lag p90 4.3 s).
 
 ### Effort
 
