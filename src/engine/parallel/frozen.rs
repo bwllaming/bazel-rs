@@ -594,6 +594,7 @@ impl Engine {
         state.native_output_groups = output_groups;
         // (Shared still: an early board's job holds them; dropped as when a
         // job holds the view.)
+        crate::perf_mark("pass2.thaw.memos");
         if let Ok(memos) = Arc::try_unwrap(memos) {
             self.apply_memos(state, memos, false);
         }

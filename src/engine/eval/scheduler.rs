@@ -371,6 +371,13 @@ thread_local! {
 }
 
 impl<'b, B: Bodies> Evaluator<'b, B> {
+    /// The graph, the evaluator dropped (its keys, entries and memo
+    /// values: the caller drops them where it likes).
+    pub(crate) fn into_graph(self) -> Graph {
+        let Evaluator { graph, .. } = self;
+        graph
+    }
+
     pub(crate) fn new(bodies: &'b B, config: EvalConfig) -> Self {
         let pool = (config.threads > 1).then(|| build_pool(config.threads, config.stack));
         Self {

@@ -2185,7 +2185,7 @@ fn positions_where<T: Sync>(
 /// Drop `value` on the planning dropper thread (large planning structures
 /// the coordinator no longer needs, plan B4); here when it cannot start.
 /// Dropping frees memory and has no other effect on these values.
-fn drop_elsewhere<T: Send + 'static>(value: T) {
+pub(crate) fn drop_elsewhere<T: Send + 'static>(value: T) {
     type Dropped = Box<dyn Send>;
     static DROPPER: std::sync::OnceLock<Option<std::sync::mpsc::Sender<Dropped>>> =
         std::sync::OnceLock::new();
@@ -2206,6 +2206,20 @@ fn drop_elsewhere<T: Send + 'static>(value: T) {
         // Sent back (and so dropped here) when the thread is gone.
         drop(sender.send(Box::new(value)));
     }
+}
+
+/// Return the freed memory to the system ([`crate::alloc_arena::purge`])
+/// on the planning dropper thread, after what was handed to it before
+/// ([`drop_elsewhere`]); here when it cannot start. The purge only lowers
+/// the resident set: the critical path does not wait for it.
+pub(crate) fn purge_elsewhere() {
+    struct PurgeOnDrop;
+    impl Drop for PurgeOnDrop {
+        fn drop(&mut self) {
+            crate::alloc_arena::purge();
+        }
+    }
+    drop_elsewhere(PurgeOnDrop);
 }
 
 /// One requested target's runfiles artifacts in the hidden top-level group
@@ -10921,6 +10935,7 @@ impl Engine {
             })
             .collect();
         self.ignored("")?;
+        crate::perf_mark("plan.tail.forwarded");
         // Validate every command before executing any action (action
         // planning, crate::engine::ActionPlanning). The dry artifacts carry
         // the same exec paths as the actual generated files. Targets planned
@@ -10928,6 +10943,7 @@ impl Engine {
         let mut state = self.action_planning.take().unwrap_or_default();
         state.presize(&plan);
         self.plan_targets(&mut state, &mut plan, &mut configured, true)?;
+        crate::perf_mark("plan.tail.walked");
         // --keep_going: the requested targets whose analysis failed in
         // either phase (docs/KEEP_GOING.md), skipped from here on.
         let mut failed_labels = std::mem::take(&mut self.keep_going_state.failed_targets);
@@ -10981,6 +10997,7 @@ impl Engine {
         // applications are planned here, before the action graph is taken
         // apart, and their merged views answer the output-group request.
         let aspect_defs = self.top_level_aspects_list()?;
+        crate::perf_mark("plan.tail.aspects_listed");
         // AspectsList.validateTopLevelAspectsParameters (AspectsList.java:
         // 124-158), over the expanded list (required aspects included): a
         // mandatory parameter attribute needs a value, and every
@@ -11092,13 +11109,18 @@ impl Engine {
             ));
         }
         self.stop_analysis_pool();
+        crate::perf_mark("plan.tail.pool_stop_only");
+        crate::perf_mark("plan.tail.pool_stopped");
         // The prepares' memos (dependency views, Starlark Target values)
         // are not read again: no target is prepared after phase 2 (~/code:
         // ~250 MB, before the reachable plan's peak).
-        state.views = Default::default();
-        state.target_identities = Default::default();
-        self.view_accesses = Default::default();
-        self.view_artifacts = Default::default();
+        // (On the planning dropper thread.)
+        drop_elsewhere((
+            std::mem::take(&mut state.views),
+            std::mem::take(&mut state.target_identities),
+            std::mem::take(&mut self.view_accesses),
+            std::mem::take(&mut self.view_artifacts),
+        ));
         // The tracker's lookup tables of keys and edges (nothing is reached
         // after phase 2; the index reads the lists).
         if let Some(tracker) = self.incremental.as_mut() {
@@ -11106,8 +11128,9 @@ impl Engine {
         }
         // What phase 2's workers and walks freed goes back to the system
         // before the reachable plan is built (it would wait for its decay
-        // under the plan's peak).
-        crate::alloc_arena::purge();
+        // under the plan's peak), on the dropper thread after the drops.
+        purge_elsewhere();
+        crate::perf_mark("plan.tail.purged");
         if order_audit::enabled() {
             order_audit::report(&state, plan.len(), top);
         }
@@ -11166,6 +11189,7 @@ impl Engine {
                 )?
                 .to_vec();
         }
+        crate::perf_mark("plan.tail.status");
         let ActionPlanning {
             dry,
             runfiles_info,
@@ -11830,6 +11854,7 @@ impl Engine {
                 .collect();
             self.track_demand(demand);
         }
+        crate::perf_mark("plan.tail.toplevel");
         // Analyze everything first, but execute only the actions reachable from
         // requested outputs. Empty DefaultInfo must not execute unused actions.
         // Lookups only (hashed): the reachable set, not its order, matters.
@@ -11873,6 +11898,7 @@ impl Engine {
                 .partition(|node| required.contains(&node.action.id));
         *nodes = kept;
         drop_elsewhere(unreachable);
+        crate::perf_mark("plan.tail.pruned");
         // The console identity of each action's owner (ActionOwner,
         // crate::action_console): the configured target's or aspect
         // application's, shared by all its actions.
@@ -11927,6 +11953,7 @@ impl Engine {
         // SourceManifestAction.newDeterministicWriter (:233-273): prefix
         // conflicts of an executed manifest action are events at the
         // owner's location, errors under ConflictPolicy.ERROR.
+        crate::perf_mark("plan.tail.owners");
         for support in runfiles_nodes.values() {
             let executed = support
                 .manifest
@@ -12033,6 +12060,7 @@ impl Engine {
                 .collect();
             node.action.extra.source_directories.extend(marked);
         }
+        crate::perf_mark("plan.tail.sources");
         let main_ignored = self.ignored("")?;
         // Each needed directory is traversed once; its separate error
         // events (a symlink chain) are reported once, before the errors.
@@ -12282,6 +12310,7 @@ impl Engine {
                 format!("{progress} failed: {}", summary(&failures)),
             ));
         }
+        crate::perf_mark("plan.tail.inputs_checked");
         if !errors.is_empty() {
             errors.splice(0..0, events);
         }
@@ -12370,6 +12399,7 @@ impl Engine {
                     .collect(),
             });
         }
+        crate::perf_mark("plan.tail.end");
         self.bep_groups = bep_groups;
         let built = (nodes.into_vec(), requested, aspect_reports, results);
         if self.skip_teardown && !self.execute_build {

@@ -587,9 +587,9 @@ impl Coord<'_> {
         // speculated any more): the transcripts are not read again, freed
         // before the deferred flushes' walk (memory).
         if self.store.segments_done && lin.pass.blocked_on().is_none() && lin.defer {
-            self.store.transcripts = FxHashMap::default();
+            super::super::super::drop_elsewhere(std::mem::take(&mut self.store.transcripts));
             self.store.release_pending = Vec::new();
-            self.store.carry = FxHashMap::default();
+            super::super::super::drop_elsewhere(std::mem::take(&mut self.store.carry));
             // What the nodes the tape never replayed observed (it will not:
             // no transcript is left), and the source lookups' sets (the
             // sources resolved are memoized or kept with theirs).
@@ -2009,15 +2009,17 @@ impl Engine {
             // entries, the memo values only it holds) and the speculations'
             // scratch engine are dropped before the deferred walks run
             // (memory: the walks' peak).
-            drop(evaluator);
+            // (On the planning dropper thread, then the purge: the walks
+            // do not wait for them.)
+            super::super::super::drop_elsewhere(evaluator.into_graph());
             for slot in &bodies.scratch {
-                drop(
+                super::super::super::drop_elsewhere(
                     slot.lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .take(),
                 );
             }
-            crate::alloc_arena::purge();
+            super::super::super::purge_elsewhere();
             crate::perf_mark("plan.eval_graph_dropped");
             super::super::timeline::mark(|| "the evaluator's graph dropped".to_owned());
             let mut coord = bodies.coord();
@@ -2035,6 +2037,7 @@ impl Engine {
             super::super::timeline::mark(|| {
                 format!("the deferred walks done ({})", linearizer_times())
             });
+            crate::perf_mark("plan.eval_walks_done");
             let mut lin = coord.lin.take().expect("the linearizer");
             coord.publish(&mut lin, &shared, true);
             coord.drop_leftover_observations();
@@ -2067,6 +2070,7 @@ impl Engine {
             };
             (result, lin)
         };
+        crate::perf_mark("plan.eval_bodies_dropped");
         crate::ui::set_count_deferred(false);
         // What the tape committed reaches the recording before phase 2's
         // tail (crate::observed_fs::commit_to_recorder).
@@ -2082,6 +2086,7 @@ impl Engine {
             .unwrap_or_default();
         super::capture::stop();
         shared.restore(self);
+        crate::perf_mark("plan.eval_restored");
         let Linearizer {
             pass,
             tracker,
@@ -2098,9 +2103,10 @@ impl Engine {
         *plan = planned;
         crate::ui::replay(leftover);
         let linearized = pass.finish();
+        crate::perf_mark("plan.eval_pass1_finished");
         // Phase 1's structures are gone (the bodies, the shared view, the
         // linearizer): their pages before the planning tail's peak.
-        crate::alloc_arena::purge();
+        super::super::super::purge_elsewhere();
         crate::perf_mark("plan.eval_phase1_done");
         super::super::timeline::mark(|| "phase 1 done".to_owned());
         super::super::timeline::report();
