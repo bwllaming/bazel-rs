@@ -992,7 +992,20 @@ impl Board {
                 // kept whole, the analysis too (a delta it cannot rewrite
                 // is built again from it).
                 let mut result = result;
-                if !super::super::sweep::enabled()
+                // While the analysis snapshot records (4 workers, the
+                // recording's own memory): the delta only — what the sweep
+                // cannot rewrite is computed again at its merge (~/code: no
+                // fallback; the walk's end peak 10.02 -> 9.9 GB).
+                if super::super::sweep::enabled()
+                    && crate::observed_fs::recording()
+                    && let Ok(outcome) = &mut result
+                    && let Some(Ok(worker)) = &mut outcome.worker
+                    && let Some(delta) = worker.outcome.delta.as_mut()
+                {
+                    if let Some(kept) = delta.kept.take() {
+                        super::super::drop_elsewhere(kept);
+                    }
+                } else if !super::super::sweep::enabled()
                     && let Ok(outcome) = &mut result
                     && let Some(Ok(worker)) = &mut outcome.worker
                     && let Some(delta) = worker.outcome.delta.as_mut()
