@@ -1617,8 +1617,13 @@ impl Engine {
                         }
                         registered => {
                             let started = std::time::Instant::now();
+                            let published = registered.is_some();
                             let result =
                                 self.plan_one_target(state, &key, &rule, configured, index as u64);
+                            if published && result.is_ok() && matches!(rule.kind, RuleKind::Genrule)
+                            {
+                                adopt_published_genrule(state, &board.frozen, &key);
+                            }
                             note_at_turn(
                                 if registered.is_some() {
                                     "native_commit"
@@ -2065,6 +2070,38 @@ impl Engine {
     ) {
         self.console_owners.insert(action_owner.clone(), console);
         self.aquery_owner(&action_owner, key, Vec::new);
+    }
+}
+
+/// A genrule committed at its turn whose worker published its results: the
+/// committed files to build and runfiles that equal the published ones
+/// (the same Artifacts; runfiles built by `TargetRunfiles::genrule` from
+/// the same Files and executable bit) keep the published values, so that
+/// its readers (an alias forwarding them) hold the committed ones: the
+/// published entry stays (no republish, the alias merges fast).
+fn adopt_published_genrule(state: &mut ActionPlanning, frozen: &Frozen, key: &ConfiguredTargetKey) {
+    let Some(published) = frozen.results.get(key) else {
+        return;
+    };
+    let (dry, _, runfiles, _, _) = published.parts();
+    if let (Some(published), Some(committed)) = (dry, state.dry.get(key))
+        && !Arc::ptr_eq(&published, committed)
+        && published.len() == committed.len()
+        && published
+            .iter()
+            .zip(committed.iter())
+            .all(|(a, b)| same_artifact(a, b))
+    {
+        state.dry.insert(key.clone(), published);
+    }
+    if let (Some(published), Some(committed)) = (runfiles, state.runfiles_info.get(key))
+        && !Arc::ptr_eq(&published, committed)
+        && published.run == committed.run
+        && published.test_coverage.is_none()
+        && committed.test_coverage.is_none()
+        && crate::runfiles::TargetRunfiles::same_published(&published, committed)
+    {
+        state.runfiles_info.insert(key.clone(), published);
     }
 }
 

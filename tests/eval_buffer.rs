@@ -486,6 +486,39 @@ reader(name = "r2", dep = ":al")
     assert!(republished > 0, "the alias was merged from stale values");
 }
 
+/// A genrule is committed at its turn; its files to build and runfiles,
+/// the same as its worker published, keep the published values, so an
+/// alias of it (and an alias of that alias) merges from its published
+/// results without being published again.
+#[test]
+fn aliases_of_a_genrule_merge_fast() {
+    let ws = Workspace::new(&[(
+        "g/BUILD.bazel",
+        r#"load("//rules:defs.bzl", "owners", "w")
+w(name = "slow", work = 300000)
+genrule(name = "gen", outs = ["gen.txt"], cmd = "echo x > $@")
+alias(name = "al", actual = ":gen")
+alias(name = "al2", actual = ":al")
+owners(name = "o", srcs = [":al2", ":al"])
+"#
+        .to_owned(),
+    )]);
+    let args = ["//g:slow", "//g:o"];
+    compare(&ws, &args, |success, text| {
+        assert!(success, "{text}");
+        assert!(text.contains("g/gen.txt"), "{text}");
+    });
+    let timed = ws.build("eval", 8, &[FROZEN, ("BAZEL_RS_TIMING", "1")], &args);
+    let timed = String::from_utf8_lossy(&timed.stderr);
+    let line = timed
+        .lines()
+        .find(|line| line.starts_with("PERF-PARALLEL buffer starlark="))
+        .unwrap_or_else(|| panic!("the merge buffer walked: {timed}"));
+    // (Both aliases merged from their published results.)
+    assert!(line.contains(" forwarded_republished=0"), "{line}");
+    assert!(!line.contains(" fast_native=0 "), "{line}");
+}
+
 /// An output-file target's File names its generating rule even when
 /// another target of the package declared the same path (a shared action)
 /// earlier in plan order and merged before the generating rule published:
