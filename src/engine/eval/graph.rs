@@ -121,6 +121,10 @@ pub(crate) struct Entry {
     pub(crate) attempts: AtomicU32,
     /// Wanted by the linearizer's frontier (frontier-only mode).
     pub(crate) wanted: AtomicBool,
+    /// The scheduling rank (0: none; higher first): `u32::MAX - i` for a
+    /// node the `i`th started root needs (the earliest one), inherited by
+    /// what it needs ([`Evaluator::start`](super::scheduler::Evaluator)).
+    pub(crate) rank: AtomicU32,
     value: OnceLock<Arc<NodeValue>>,
     transcript: OnceLock<Transcript>,
     pub(crate) inner: Tracked<Inner>,

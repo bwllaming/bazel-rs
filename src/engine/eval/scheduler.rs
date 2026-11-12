@@ -424,10 +424,15 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         }
     }
 
-    /// Serving: start `keys` on the pool (those nobody started yet).
+    /// Serving: start `keys` on the pool (those nobody started yet); with
+    /// [`ranked`], the pool runs what an earlier key needs first.
     pub(crate) fn start(&self, keys: &[NodeKey]) {
-        for key in keys {
+        for (index, key) in keys.iter().enumerate() {
             let id = self.graph.intern(key);
+            if ranked() {
+                let rank = u32::MAX - u32::try_from(index).unwrap_or(u32::MAX - 1);
+                self.graph.entry(id).rank.fetch_max(rank, Ordering::Relaxed);
+            }
             if self.graph.entry(id).transition(State::Fresh, State::Queued) {
                 self.schedule(None, id);
             }
@@ -1362,6 +1367,9 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             return;
         }
         let coordinator = self.graph.key(id).coordinator_only();
+        if !coordinator {
+            self.push_ranked(&[id]);
+        }
         match scope {
             Some(scope) if !coordinator => {
                 self.outstanding.fetch_add(1, Ordering::AcqRel);
@@ -1377,6 +1385,39 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
                 }
                 self.coord_wake.notify_one();
             }
+        }
+    }
+
+    /// Ranked nodes just queued for the pool go to the boost heap after
+    /// the explicit boosts, by rank (then the newest first: depth first):
+    /// every job runs the best one before its own.
+    fn push_ranked(&self, ids: &[NodeId]) {
+        if self.pool.is_none() || !ranked() {
+            return;
+        }
+        let mut pushed = 0;
+        let mut heap = None;
+        for &id in ids {
+            let rank = self.graph.entry(id).rank.load(Ordering::Relaxed);
+            if rank == 0 {
+                continue;
+            }
+            let priority = (u64::from(u32::MAX - rank) + 1) << 32 | u64::from(u32::MAX - id.0);
+            heap.get_or_insert_with(|| self.boost.lock())
+                .push(Reverse((priority, id)));
+            pushed += 1;
+        }
+        drop(heap);
+        if pushed > 0 {
+            self.boosted.fetch_add(pushed, Ordering::AcqRel);
+        }
+    }
+
+    /// `to` is needed by `from`: it inherits `from`'s rank if higher.
+    fn inherit(&self, from: NodeId, to: NodeId) {
+        let rank = self.graph.entry(from).rank.load(Ordering::Relaxed);
+        if rank != 0 {
+            self.graph.entry(to).rank.fetch_max(rank, Ordering::Relaxed);
         }
     }
 
@@ -1414,6 +1455,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
         for id in coordinator {
             self.schedule(Some(scope), id);
         }
+        self.push_ranked(&pool);
         let chunk = (pool.len() / (self.config.threads * 8)).clamp(1, 64);
         for ids in pool.chunks(chunk) {
             if let [id] = ids {
@@ -1583,6 +1625,7 @@ impl<'b, B: Bodies> Evaluator<'b, B> {
             if wanted {
                 self.want(Some(scope), dep);
             }
+            self.inherit(id, dep);
             let dependency = self.graph.entry(dep);
             if dependency.transition(State::Fresh, State::Queued) {
                 fresh.push(dep);
@@ -1843,6 +1886,7 @@ impl<B: Bodies> Cx for InlineCx<'_, '_, '_, B> {
                 break;
             }
             if entry.value().is_none() {
+                evaluator.inherit(self.id, id);
                 evaluator.run_inline(id, self.lane);
             }
             match entry.value() {
@@ -1877,6 +1921,9 @@ impl<B: Bodies> Cx for InlineCx<'_, '_, '_, B> {
         }
         for key in keys {
             let id = evaluator.graph.intern(key);
+            if id != self.id {
+                evaluator.inherit(self.id, id);
+            }
             if id != self.id
                 && evaluator
                     .graph
@@ -1892,6 +1939,16 @@ impl<B: Bodies> Cx for InlineCx<'_, '_, '_, B> {
         let graph = &self.evaluator.graph;
         graph.get(key).and_then(|id| graph.value(id)).cloned()
     }
+}
+
+/// Whether the pool runs what an earlier started root needs first
+/// (`BAZEL_RS_EVAL_RANKED=0`: in the spawn order).
+fn ranked() -> bool {
+    static RANKED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
+        std::env::var_os("BAZEL_RS_EVAL_RANKED").is_none_or(|value| value != "0")
+    });
+    *RANKED
 }
 
 /// The pool driver's context: `need` answers from published values (with
@@ -1939,6 +1996,9 @@ impl<B: Bodies> Cx for PoolCx<'_, '_, '_, B> {
                 }
                 break;
             }
+            if graph.value(id).is_none() {
+                evaluator.inherit(self.id, id);
+            }
             if evaluator.config.help_first && missing.is_empty() && graph.value(id).is_none() {
                 self.help(id);
             }
@@ -1972,6 +2032,9 @@ impl<B: Bodies> Cx for PoolCx<'_, '_, '_, B> {
             .iter()
             .map(|key| evaluator.graph.intern(key))
             .filter(|&id| {
+                if id != self.id {
+                    evaluator.inherit(self.id, id);
+                }
                 id != self.id
                     && evaluator
                         .graph

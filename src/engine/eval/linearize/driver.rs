@@ -2860,6 +2860,8 @@ fn drive(
                 bodies.coord().linearize_step(shared, LINEARIZE_STEP)
             } {}
         }
+        super::super::timeline::add("after a requested target: the steps", linearizing);
+        let compat = std::time::Instant::now();
         // The requested target's compatibility, on the published nodes.
         let analyzed = analyzed.and_then(|()| {
             let mut coord = bodies.coord();
@@ -2881,10 +2883,13 @@ fn drive(
                 Ok(()) => error,
             })
         });
+        super::super::timeline::add("after a requested target: compatibility", compat);
+        let early = std::time::Instant::now();
         // Task D: the frozen walk's jobs of the flushed entries start now.
         if analyzed.is_ok() {
             bodies.coord().early_ct2(shared);
         }
+        super::super::timeline::add("after a requested target: early CT2", early);
         DRIVE[3].fetch_add(
             linearizing.elapsed().as_micros() as u64,
             std::sync::atomic::Ordering::Relaxed,
