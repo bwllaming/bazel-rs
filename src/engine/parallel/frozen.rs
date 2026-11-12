@@ -101,6 +101,23 @@ impl Frozen {
             .map(|(_, platform)| platform.clone())
     }
 
+    /// Task D: whether the target platform of `key`'s configuration is
+    /// resolved for entry `index` (none: the no-config configuration).
+    pub(in crate::engine) fn platform_resolved(
+        &self,
+        key: &ConfiguredTargetKey,
+        index: usize,
+    ) -> bool {
+        let native = &self.engine.configurations.get(key.config).native;
+        native.no_config
+            || self
+                .platform_at(
+                    &ConfiguredTargetKey::new(native.target_platform().clone(), key.config),
+                    index,
+                )
+                .is_some()
+    }
+
     /// [`Self::platform_at`] with the plan positions where the answer is
     /// the same: `[from, to)`.
     pub(in crate::engine) fn platform_range(

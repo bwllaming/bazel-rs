@@ -1978,7 +1978,10 @@ impl Engine {
             // is provisional any more (one left would name a producer no
             // merge chose).
             if result.is_ok()
-                && let Some((path, stamp)) = state.artifact_index.shared.first_provisional()
+                && let Some((path, stamp)) = state
+                    .artifact_index
+                    .shared
+                    .first_provisional(u32::try_from(state.done).unwrap_or(u32::MAX))
             {
                 result = Err(format!(
                     "internal error: BAZEL_RS_ANALYSIS=eval: the artifact of {path} published by plan entry {stamp} was never merged (BAZEL_RS_EVAL_NO_PUBLISH=1 waits for the merges)"

@@ -548,6 +548,10 @@ struct Board {
     /// the next early board, which a publication here readies too; the
     /// jobs running (the handover waits for them).
     early: bool,
+    /// Task D: an early board's entries from here on are after phase 1's
+    /// last flush (a later flush's ops apply before them): run only when
+    /// their target platform is resolved already (it cannot change then).
+    flushed: usize,
     next: std::sync::OnceLock<Arc<Board>>,
     running: std::sync::atomic::AtomicUsize,
 }
@@ -712,7 +716,10 @@ impl Board {
             // Task D: an early board runs plain jobs only; the rest is
             // classified again by the walk.
             let leave = || self.stage[slot].store(IDLE, Ordering::Release);
-            if self.early && has_attribute_aspects(rule) {
+            if self.early
+                && (has_attribute_aspects(rule)
+                    || (index >= self.flushed && !self.frozen.platform_resolved(key, index)))
+            {
                 leave();
                 return;
             }
@@ -1415,6 +1422,7 @@ impl Board {
             classified_at: AtomicU64::new(0),
             requeues: (0..len).map(|_| AtomicU8::new(0)).collect(),
             early,
+            flushed: usize::MAX,
             next: std::sync::OnceLock::new(),
             running: std::sync::atomic::AtomicUsize::new(0),
         })
@@ -1495,12 +1503,14 @@ impl EarlyCt2 {
     }
 
     /// The early boards stop; the jobs they finished become the walk's
-    /// (`board`, whose entries are the same plan positions).
-    fn hand_over(self, board: &Arc<Board>) -> Result<(), String> {
+    /// (`board`, whose entries are the same plan positions). Those after
+    /// the walk (entries after phase 1's last flush: the planning tail's
+    /// walk) stay for the next walk (`Some`).
+    fn hand_over(self, board: &Arc<Board>) -> Result<Option<Self>, String> {
         for early in &self.boards {
             early.stop.store(true, Ordering::Release);
         }
-        let mut taken = 0u64;
+        let (mut taken, mut left) = (0u64, 0u64);
         for early in &self.boards {
             while early.running.load(Ordering::Acquire) > 0 {
                 std::thread::sleep(std::time::Duration::from_micros(100));
@@ -1509,6 +1519,15 @@ impl EarlyCt2 {
                 std::mem::take(&mut *early.finished.lock().unwrap_or_else(|e| e.into_inner()));
             let mut done = board.finished.lock().unwrap_or_else(|e| e.into_inner());
             for (index, finished) in finished {
+                if index >= board.start + board.plan.len() {
+                    left += 1;
+                    early
+                        .finished
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(index, finished);
+                    continue;
+                }
                 let (Some(slot), Some(early_slot)) = (board.slot(index), early.slot(index)) else {
                     return Err(format!(
                         "internal error: BAZEL_RS_ANALYSIS=eval: an early job of plan entry {index} outside the walk; rerun with BAZEL_RS_EVAL_EARLY_CT2=0"
@@ -1530,7 +1549,7 @@ impl EarlyCt2 {
             }
         }
         stat(S_EARLY_TAKEN, taken);
-        Ok(())
+        Ok((left > 0).then_some(self))
     }
 }
 
@@ -1542,6 +1561,7 @@ impl Engine {
     pub(in crate::engine) fn early_ct2_extend<'a>(
         &mut self,
         plan: &[(ConfiguredTargetKey, Arc<Rule>)],
+        flushed: usize,
         configured: &ConfiguredNodes,
         pending: impl Iterator<Item = &'a (usize, eval::linearize::pass2::Op)>,
     ) {
@@ -1586,9 +1606,6 @@ impl Engine {
         };
         let mut platform_schedule = HashMap::new();
         for (position, op) in pending {
-            if *position >= end {
-                break;
-            }
             if let eval::linearize::pass2::Op::Publish(
                 eval::linearize::driver::Published::Platform(key, platform),
             ) = op
@@ -1610,7 +1627,7 @@ impl Engine {
             Some(pool) => (Arc::clone(&pool.jobs), Arc::clone(&pool.cancelled)),
             None => return,
         };
-        let board = Board::new(
+        let mut board = Board::new(
             frozen,
             plan[covered..].to_vec(),
             covered,
@@ -1618,6 +1635,9 @@ impl Engine {
             cancelled,
             true,
         );
+        if let Some(board) = Arc::get_mut(&mut board) {
+            board.flushed = flushed;
+        }
         stat(S_EARLY_BOARDS, 1);
         stat(S_EARLY_ENTRIES, (end - covered) as u64);
         let early = self.early_ct2.get_or_insert_with(|| {
@@ -1678,7 +1698,7 @@ impl Engine {
         let board = Board::new(frozen, plan, start, jobs, cancelled, false);
         // Task D: the jobs the early boards finished are this walk's.
         if let Some(early) = self.early_ct2.take() {
-            (*early).hand_over(&board)?;
+            self.early_ct2 = (*early).hand_over(&board)?.map(Box::new);
         }
         // Every entry is classified at once, ahead of every job (cheap:
         // lookups; what is ready beyond the window waits, parked): the

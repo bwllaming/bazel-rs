@@ -702,6 +702,17 @@ impl<'a> DeltaBuilder<'a> {
         // A File it looked up before registering it itself is its own.
         let mut reads = self.reads.into_inner();
         reads.retain(|read| read.artifact.is_some() || !self.index.contains_key(&read.file));
+        // The same entry read again (each use of a memo value adds its
+        // fill's reads): its check at the merge is the same, once is enough.
+        let mut seen = crate::fast_hash::FxHashSet::default();
+        reads.retain(|read| match &read.artifact {
+            Some(artifact) => seen.insert((
+                Arc::as_ptr(&artifact.0) as usize,
+                read.stamp,
+                read.file.clone(),
+            )),
+            None => true,
+        });
         Ok(TargetDelta {
             unchecked: matches!(self.hooks, Hooks::Worker),
             ops: self.ops,

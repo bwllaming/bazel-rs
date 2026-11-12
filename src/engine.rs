@@ -1121,13 +1121,16 @@ impl ConcurrentArtifactIndex {
 
     /// T2: an entry still provisional (its publisher never merged it), by
     /// path and stamp: none once a walk merged every entry it published.
-    fn first_provisional(&self) -> Option<(String, u32)> {
+    /// The first provisional entry published by a plan entry before
+    /// `limit` (task D: early jobs of later entries publish theirs ahead of
+    /// their walk).
+    fn first_provisional(&self, limit: u32) -> Option<(String, u32)> {
         self.shards.iter().find_map(|shard| {
             shard
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .iter()
-                .find(|entry| entry.provisional)
+                .find(|entry| entry.provisional && entry.stamp < limit)
                 .map(|entry| (entry.file.path.to_string(), entry.stamp))
         })
     }
@@ -15040,14 +15043,14 @@ mod tests {
         let (winner, loser) = (generated_out_txt(), loser_out_txt());
         let file = winner.file.clone();
         let index = ConcurrentArtifactIndex::default();
-        assert!(index.first_provisional().is_none());
+        assert!(index.first_provisional(u32::MAX).is_none());
         index.publish_provisional(file_hash(&file), &file, &loser, 7);
         assert_eq!(
-            index.first_provisional(),
+            index.first_provisional(u32::MAX),
             Some(("bazel-out/k8-fastbuild/bin/pkg/out.txt".to_owned(), 7))
         );
         index.register(file_hash(&file), &file, &winner, 7, 7, false);
-        assert!(index.first_provisional().is_none());
+        assert!(index.first_provisional(u32::MAX).is_none());
     }
 
     /// W1b registration invariant: a File keeps its first registration; an

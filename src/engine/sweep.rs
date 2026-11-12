@@ -842,6 +842,11 @@ pub(super) fn check_ids(state: &ActionPlanning, action_executions: &ActionExecut
     // declarations (top-level output-file targets), the per-action tables.
     state.artifact_index.shared.for_each_shard(|shard| {
         for entry in shard.iter() {
+            // (Task D: published by an early job of an entry after the
+            // walk, merged by a later walk.)
+            if entry.provisional && entry.stamp as usize >= state.done {
+                continue;
+            }
             artifact(
                 &format!("the index entry of {}", entry.file.path),
                 &entry.artifact,

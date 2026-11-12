@@ -928,9 +928,21 @@ impl Coord<'_> {
             );
         }
         if lin.defer && lin.tracker.is_none() && lin.failure.is_none() {
-            let end = lin.position;
+            // The entries after the last flush too (a walk at a later flush
+            // covers them all), unless a new platform's flush walks the
+            // segments before it first.
+            let linearized = if platform_walks() {
+                lin.position
+            } else {
+                lin.plan.len()
+            };
             self.with_engine(&mut lin, shared, |engine, lin| {
-                engine.early_ct2_extend(&lin.plan[..end], &lin.configured, lin.pending.iter());
+                engine.early_ct2_extend(
+                    &lin.plan[..linearized],
+                    lin.position,
+                    &lin.configured,
+                    lin.pending.iter(),
+                );
             });
         }
         self.lin = Some(lin);
