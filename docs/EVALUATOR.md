@@ -702,6 +702,12 @@ change announced to the other two workers; adding a helper is not.
   `BAZEL_RS_EVAL_SWEEP_RECORDING=1` (the frozen walk's 4 workers while
   recording stay); the T3 buffer keeps no analysis beside a sweep-merged
   delta while recording.
+- 2026-11-12 (eval-speed; no frozen interface changed): `Coord::ct1_by_node`
+  (the done CT1 values by node, beside `ct1_values`; pass 1's `View` reads
+  it); `Evaluator::into_graph`; `engine::drop_elsewhere` is `pub(crate)`,
+  `engine::purge_elsewhere` (the arena purge on the planning dropper thread,
+  after what was handed to it); `SourceInputs::{own_where, listed_where}`
+  replace `own`/`listed`.
 
 ## 4. Stages and gates
 
@@ -3009,6 +3015,78 @@ already take early jobs), the phase-1 tables forked without copies
 (layered maps: a frozen layer per fork, the coordinator writing a small
 top layer), a memory bound on early results (RSS), then speculation before
 placement.
+
+### Phase 1's end and the planning tail, measured and cut (eval-speed)
+
+`BAZEL_RS_EVAL_TIMELINE=1` on ~/code (`build --nobuild //src/...`, snapshot
+off, main `8c685f13`, plan.start-relative): requested #0
+(`//src/ansible:ansible`) is evaluated at ~4.7 s, and nothing is planned
+before it; from 3.0 to 5.5 s 15–38 pool threads wait on the CsMatch
+speculations (2 scratch engines; four Python `include_*` flags plan 54–61
+entries each for 250–700 ms on a scratch engine; more scratch engines do not
+help: the coordinator's lock at `speculate.rs:228` serializes them); the
+pool is done at ~6.3 s, the linearizer works on one core until ~7.7 s
+(pass 1 1.4 s, tape 0.45 s, publication 0.8 s, all serial); the graph is
+dropped at ~8.0 s. After the deferred walk (5.5 s, cursor-bound): thaw
+0.4 s (`apply_memos` 0.32 s), phase 1 done +0.3 s, the planning tail's walk
+of the 14k entries after the last flush 1.4–1.5 s, then ~2.2 s serial
+(`plan.tail.*` marks under `BAZEL_RS_TIMING`; that switch itself adds the
+`plan_timings` report's ~0.4 s): top-level artifacts 0.34 s, the
+reachability prune 0.40 s, owners 0.09 s, source directories 0.21 s, the
+failing-input check 0.56 s, the rest to `plan.built` 0.17 s.
+
+What changed:
+
+- **Drops and purges off the critical path**: the evaluator's graph
+  (`Evaluator::into_graph`), the scratch engines, the released transcripts
+  and carries, and the prepares' memos of the planning tail go to the
+  planning dropper thread (`drop_elsewhere`), and the arena purges at
+  phase 1's end and before the reachable plan run there after them
+  (`purge_elsewhere`). Graph dropped → the deferred walk's freeze
+  0.26 → 0.12 s; the tail's purge (0.25 s) off the path. (The thaw's
+  `Frozen` is not dropped there: its engine fork alive would make the next
+  writes copy the `Shared` tables.)
+- **The planning tail**: the reachability prune by reference (ids as `&str`,
+  a keep mask, `Vec::extract_if`; no id cloned, no partition regrowth)
+  0.40 → 0.21 s; the failing-input check lists only the paths that may fail
+  (`SourceInputs::listed_where`: filtered before the deduplication, the
+  same paths in order) and maps the plan's rules by owner only at the first
+  failing action, 0.56 → 0.28 s.
+- **The linearizer**: pass 1 reads the done CT1 values by node
+  (`Coord::ct1_by_node`), a variant's observable check compares Debug text
+  as written (`debug_eq`), the configured targets' map is reserved for the
+  values done before a publication (its rehashes moved the large nodes),
+  the tape's buffer is kept between resumes: pass 1 1.54 → 1.19 s,
+  publication 0.81 → 0.59 s.
+
+Measured (2026-11-12, ~/code `80d6724f3a` private clone, non-LTO release
+of main `191e4ee8` and of the branch rebased on it, warm, snapshot off,
+`build --nobuild //src/...` without diagnostics, alternating, host load
+20–25): `INFO: Elapsed time` main 20.0 / 20.7 / 20.3 / 20.3 s, branch
+18.0 / 18.5 / 18.6 / 19.2 s (LTO 18.4–18.9 s); max RSS 9.5–9.7 GB both. The
+snapshot miss: main 50.2 / 50.2 s, branch 48.9 / 46.6 s (RSS 9.98–10.03 GB
+both). Identical: the action dumps of `build` and `test --nobuild`, the
+record mode's dump (timings aside); `BAZEL_RS_PARITY_VERIFY=1
+BAZEL_RS_PARITY_REVERSE=1`, `BAZEL_RS_VERIFY_DELTA=1
+BAZEL_RS_VERIFY_ARTIFACTS=1`, `BAZEL_RS_EVAL_VERIFY=1`
+(`--memory-limit=40000`) clean.
+
+Tried and not kept: **the tail's entries in the deferred walk** (the end of
+phase 1's publications as ops at the last flush's position, one walk to the
+plan's end): the walk is cursor-bound, so it saved ~0.3 s, but the tail's
+jobs ran while phase 1's structures were alive: RSS 9.7 → 11.0 GB.
+
+What bounds phase 1 now: the pool until ~6 s (requested #0 at ~4.4–4.7 s:
+the speculations' scratch engines and the coordinator's lock from 3 to
+5.5 s), then the linearizer alone (~2.3 s of CPU, most of it after the
+pool is done: pass 1 waits for nodes in plan order while the pool finishes
+others). Next, in order: (1) the speculations — their subtree and
+publication outside the coordinator's lock, and the slow Python flag phase
+2s (first-time costs on a scratch engine); (2) the pool's order follows
+pass 1's frontier more closely (the linearizer's backlog at the pool's end);
+(3) the in-phase walk of task D only once the sequential thread has idle
+time (it has none after ~5.5 s); (4) the thaw's `apply_memos` (0.32 s) and
+the top-level artifacts (0.34 s).
 
 ### Effort
 
