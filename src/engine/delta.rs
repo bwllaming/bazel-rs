@@ -132,6 +132,17 @@ impl<K: std::hash::Hash + Eq + Clone, V> SingleFlight<K, V> {
         }))
     }
 
+    /// The sweep (super::sweep): the value `key` keeps from now on, as
+    /// `choose` picks it from its value now (waiting for a fill in
+    /// progress; `None`: none).
+    pub(super) fn settle(&self, key: &K, choose: impl FnOnce(Option<&Arc<V>>) -> Arc<V>) -> Arc<V> {
+        let slot = self.slot(key);
+        let mut value = slot.lock().unwrap_or_else(|e| e.into_inner());
+        let chosen = choose(value.as_ref());
+        *value = Some(Arc::clone(&chosen));
+        chosen
+    }
+
     /// Every filled entry, consumed (S2: a prepare batch's memo fills move
     /// into the planning state; no order is observed).
     pub(super) fn into_filled(self) -> Vec<(K, Arc<V>)> {
@@ -244,8 +255,59 @@ impl PathHashes {
 }
 
 /// The memoized tool runfiles groups of a build, by tree identity (PA-1,
-/// ActionPlanning::input_groups).
-pub(super) type InputGroups = SingleFlight<u64, ExpandedTree>;
+/// ActionPlanning::input_groups), with what the sweep needs to keep them
+/// shared as the walk shares them (super::sweep::Rewrite::group).
+#[derive(Default)]
+pub(super) struct InputGroups {
+    memo: SingleFlight<u64, ExpandedTree>,
+    /// The groups workers filled from provisional reads (the only ones a
+    /// rewrite meets), by the group's address, with their tree's identity
+    /// (each kept alive while it is a key: the address is never reused).
+    provisional: std::sync::Mutex<crate::fast_hash::FxHashMap<usize, (u64, Arc<ExpandedTree>)>>,
+    /// Each such group rewritten once for the build, by the original's
+    /// address (the original kept alive), to the memo's canonical group.
+    pub(super) rewritten: std::sync::Mutex<RewrittenGroups>,
+}
+
+/// An original group's address -> (the original, its rewrite).
+pub(super) type RewrittenGroups =
+    crate::fast_hash::FxHashMap<usize, (Arc<scheduler::InputGroup>, Arc<scheduler::InputGroup>)>;
+
+impl std::ops::Deref for InputGroups {
+    type Target = SingleFlight<u64, ExpandedTree>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.memo
+    }
+}
+
+impl InputGroups {
+    /// A worker's fill of `identity` read provisional entries: noted for
+    /// the sweep.
+    fn note_provisional(&self, identity: u64, expanded: &Arc<ExpandedTree>) {
+        self.provisional
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                Arc::as_ptr(&expanded.group) as usize,
+                (identity, Arc::clone(expanded)),
+            );
+    }
+
+    /// The tree identity and fill of `group` if a worker filled it from
+    /// provisional reads.
+    pub(super) fn provisional_fill(
+        &self,
+        group: &Arc<scheduler::InputGroup>,
+    ) -> Option<(u64, Arc<ExpandedTree>)> {
+        self.provisional
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(Arc::as_ptr(group) as usize))
+            .filter(|(_, expanded)| Arc::ptr_eq(&expanded.group, group))
+            .cloned()
+    }
+}
 
 /// The shared input runs of a build's memoized depset walks, by the walk's
 /// address ([`SharedInputs`], ActionPlanning::input_memos).
@@ -1067,6 +1129,11 @@ impl<'a> DeltaBuilder<'a> {
                 .expect("a runfiles group fill returns one");
             if unshared {
                 memo.remove(&tree.identity());
+            } else if filled_here
+                && !expanded.reads.is_empty()
+                && matches!(self.hooks, Hooks::Worker)
+            {
+                memo.note_provisional(tree.identity(), &expanded);
             }
             self.note_memo_reads(filled_here, &expanded.reads);
             // One identity is one content

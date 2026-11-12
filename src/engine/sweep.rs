@@ -50,13 +50,7 @@ pub(super) fn enabled() -> bool {
         std::env::var_os("BAZEL_RS_EVAL_SWEEP").is_none_or(|value| value != "0")
             && parallel::buffered()
     });
-    // Not while the analysis snapshot records (eval-record): a rewritten
-    // delta's input groups are groups of their own, so the planned request
-    // a snapshot saves shares fewer of them than the walk's (~/code: 107
-    // shared input groups instead of 105, not the same from run to run;
-    // the action dump is the same) and verify mode reports a plan
-    // mismatch. Such deltas are built again there.
-    *ENABLED && !crate::observed_fs::recording()
+    *ENABLED
 }
 
 /// `BAZEL_RS_PARITY_VERIFY=1`: every rewritten delta is built again as the
@@ -72,8 +66,8 @@ pub(super) fn verify() -> bool {
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL sweep`): deltas rewritten as readers,
 /// localized as losers, built again (fallbacks), verified; ids rewritten.
-pub(super) static STATS: [std::sync::atomic::AtomicU64; 9] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 9];
+pub(super) static STATS: [std::sync::atomic::AtomicU64; 10] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 10];
 pub(super) const S_READER: usize = 0;
 pub(super) const S_LOSER: usize = 1;
 pub(super) const S_FALLBACK: usize = 2;
@@ -85,6 +79,8 @@ const S_READS_US: usize = 5;
 const S_LOCALIZE_US: usize = 6;
 const S_REWRITE_US: usize = 7;
 const S_LOWERING_US: usize = 8;
+/// Workers' tool runfiles groups rewritten for the build (to the memo's).
+const S_GROUPS: usize = 9;
 
 fn stat_since(index: usize, started: std::time::Instant) {
     stat(index, started.elapsed().as_micros() as u64);
@@ -101,12 +97,13 @@ pub(super) fn report() {
         return;
     }
     crate::snapshot::diag::line_fmt(format_args!(
-        "PERF-PARALLEL sweep readers={} losers={} fallbacks={} verified={} artifacts_rewritten={} reads={:.3}s localize={:.3}s rewrite={:.3}s lowering_wait={:.3}s",
+        "PERF-PARALLEL sweep readers={} losers={} fallbacks={} verified={} artifacts_rewritten={} groups_rewritten={} reads={:.3}s localize={:.3}s rewrite={:.3}s lowering_wait={:.3}s",
         get(S_READER),
         get(S_LOSER),
         get(S_FALLBACK),
         get(S_VERIFIED),
         get(S_ARTIFACTS),
+        get(S_GROUPS),
         get(S_READS_US) as f64 / 1e6,
         get(S_LOCALIZE_US) as f64 / 1e6,
         get(S_REWRITE_US) as f64 / 1e6,
@@ -295,10 +292,15 @@ pub(super) struct Rewrite {
     /// The delta's shared actions: their lowered nodes are not placed.
     dropped: crate::fast_hash::FxHashSet<String>,
     caches: std::sync::Mutex<Caches>,
+    /// The build's tool runfiles groups: a group naming a mapped id is
+    /// rewritten once for the build, to the memo's group of its tree
+    /// ([`Self::rewritten_group`]).
+    groups: Arc<delta::InputGroups>,
 }
 
-/// Each artifact and shared input group rewritten once, by identity (the
-/// original kept: the identity is never reused while it is a key).
+/// Each artifact and shared input group rewritten once per delta, by
+/// identity (the original kept: the identity is never reused while it is a
+/// key).
 #[derive(Default)]
 struct Caches {
     artifacts: crate::fast_hash::FxHashMap<usize, (Artifact, Artifact)>,
@@ -359,24 +361,86 @@ impl Rewrite {
         }
     }
 
+    fn names_alias(&self, group: &scheduler::InputGroup) -> bool {
+        group
+            .dependencies
+            .iter()
+            .any(|dependency| self.aliases.contains_key(&dependency.action_id))
+    }
+
     fn group(&self, group: &mut Arc<scheduler::InputGroup>) {
         let key = Arc::as_ptr(group) as usize;
-        let mut caches = self.caches();
-        let (_, rewritten) = caches.groups.entry(key).or_insert_with(|| {
-            let rewritten = if group
-                .dependencies
-                .iter()
-                .any(|dependency| self.aliases.contains_key(&dependency.action_id))
-            {
-                let mut copy = (**group).clone();
-                self.dependencies(&mut copy.dependencies);
-                Arc::new(copy)
-            } else {
-                Arc::clone(group)
-            };
-            (Arc::clone(group), rewritten)
-        });
-        *group = Arc::clone(rewritten);
+        if let Some((_, rewritten)) = self.caches().groups.get(&key) {
+            *group = Arc::clone(rewritten);
+            return;
+        }
+        let rewritten = if self.names_alias(group) {
+            self.rewritten_group(group)
+        } else {
+            Arc::clone(group)
+        };
+        self.caches()
+            .groups
+            .insert(key, (Arc::clone(group), Arc::clone(&rewritten)));
+        *group = rewritten;
+    }
+
+    /// `group` (naming a mapped id) as the walk shares it: the walk fills
+    /// its tree's group once, over the canonical producers, and every
+    /// action using the tree holds that one group. A worker's fill from
+    /// provisional reads is rewritten once for the build (every delta
+    /// holding it gets the same group: the ids it names map alike in every
+    /// delta, canonical entries never change), and the memo keeps the
+    /// rewritten group from then on — or the rewrite is the memo's group
+    /// when it is the same (filled again over the canonical producers since)
+    /// —, so later fills and earlier refills hold one group as in the walk.
+    fn rewritten_group(&self, group: &Arc<scheduler::InputGroup>) -> Arc<scheduler::InputGroup> {
+        let key = Arc::as_ptr(group) as usize;
+        if let Some((_, known)) = self
+            .groups
+            .rewritten
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            && !self.names_alias(known)
+        {
+            return Arc::clone(known);
+        }
+        let mut copy = (**group).clone();
+        self.dependencies(&mut copy.dependencies);
+        let rewritten = match self.groups.provisional_fill(group) {
+            Some((identity, expanded)) => {
+                let settled = self.groups.settle(&identity, |now| match now {
+                    Some(now) if crate::snapshot::codec::same_group(&now.group, &copy) => {
+                        Arc::clone(now)
+                    }
+                    _ => Arc::new(ExpandedTree {
+                        tree: Arc::clone(&expanded.tree),
+                        group: Arc::new(copy),
+                        reads: expanded
+                            .reads
+                            .iter()
+                            .map(|read| {
+                                let mut read = read.clone();
+                                if let Some(artifact) = read.artifact.as_mut() {
+                                    self.artifact(artifact);
+                                }
+                                read
+                            })
+                            .collect(),
+                    }),
+                });
+                stat(S_GROUPS, 1);
+                Arc::clone(&settled.group)
+            }
+            None => Arc::new(copy),
+        };
+        self.groups
+            .rewritten
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, (Arc::clone(group), Arc::clone(&rewritten)));
+        rewritten
     }
 
     fn node(&self, planned: &mut PlannedAction, sources: &mut Option<(String, SourceInputs)>) {
@@ -452,6 +516,7 @@ pub(super) fn rewrite(
     delta: delta::TargetDelta,
     localized: Option<&Localized>,
     aliases: Aliases,
+    groups: &Arc<delta::InputGroups>,
 ) -> delta::TargetDelta {
     let delta::TargetDelta {
         ops,
@@ -467,6 +532,7 @@ pub(super) fn rewrite(
             .map(|localized| localized.shared.clone())
             .unwrap_or_default(),
         caches: Default::default(),
+        groups: Arc::clone(groups),
     });
     let dropped = |id: &str| rewrite.dropped.contains(id);
     let own_shared = |artifact: &Artifact| {
@@ -687,7 +753,7 @@ pub(super) fn adopt(
     }
     stat(if meets { S_LOSER } else { S_READER }, 1);
     let started = std::time::Instant::now();
-    let rewritten = rewrite(delta, localized.as_ref(), aliases);
+    let rewritten = rewrite(delta, localized.as_ref(), aliases, &state.input_groups);
     stat_since(S_REWRITE_US, started);
     Ok((rewritten, true))
 }
@@ -1005,7 +1071,7 @@ mod tests {
         let mut aliases = Aliases::default();
         let localized = localize(&producers, &delta, &mut aliases).expect("a replay");
         assert_eq!(aliases.get("//p:b#0").map(String::as_str), Some("//p:a#0"));
-        let rewritten = rewrite(delta, Some(&localized), aliases);
+        let rewritten = rewrite(delta, Some(&localized), aliases, &Arc::default());
         let kinds: Vec<&str> = rewritten.ops.iter().map(delta::DeltaOp::kind).collect();
         assert_eq!(kinds, ["shared", "artifact", "declared", "dry"]);
         for op in &rewritten.ops {

@@ -590,6 +590,86 @@ owners(name = "o", srcs = [":al2", ":al"])
     assert!(!line.contains(" fast_native=0 "), "{line}");
 }
 
+/// A tool's runfiles hold a shared output whose loser (later in plan order)
+/// published first: its users, built ahead on the workers, hold a tool
+/// runfiles group naming the loser's action, which the sweep rewrites. The
+/// planned actions share one group per tree, as the walk's (PERF-GROUPS
+/// `distinct`; a snapshot saves and verifies the plan's shared groups).
+#[test]
+fn a_rewritten_tool_runfiles_group_stays_shared() {
+    let users = (0..6)
+        .map(|index| format!("user(name = \"u{index}\", tool = \":t\")\n"))
+        .collect::<String>();
+    let ws = Workspace::new(&[
+        (
+            "g/defs.bzl",
+            r##"def _tool(ctx):
+    exe = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(exe, "#!/bin/sh\n", is_executable = True)
+    return [DefaultInfo(executable = exe, runfiles = ctx.runfiles(files = ctx.files.data))]
+
+tool = rule(implementation = _tool, executable = True, attrs = {"data": attr.label_list(allow_files = True)})
+
+def _user(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".out")
+    ctx.actions.run(executable = ctx.executable.tool, outputs = [out], arguments = [out.path])
+    return [DefaultInfo(files = depset([out]))]
+
+user = rule(implementation = _user, attrs = {"tool": attr.label(executable = True, cfg = "target")})
+"##
+            .to_owned(),
+        ),
+        (
+            "g/BUILD.bazel",
+            format!(
+                r#"load("//rules:defs.bzl", "w")
+load(":defs.bzl", "tool", "user")
+w(name = "a", out = "shared.txt", content = "same", work = 400000)
+w(name = "b", out = "shared.txt", content = "same")
+tool(name = "t", data = [":b"])
+{users}"#
+            ),
+        ),
+    ]);
+    let args = ["//g:a", "//g:all"];
+    compare(&ws, &args, |success, text| assert!(success, "{text}"));
+    const TIMED: (&str, &str) = ("BAZEL_RS_TIMING", "1");
+    let field = |stderr: &str, prefix: &str, name: &str| -> u64 {
+        let line = stderr
+            .lines()
+            .find(|line| line.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no {prefix}: {stderr}"));
+        line.split_whitespace()
+            .find_map(|field| field.strip_prefix(name))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("no {name} in {line}"))
+    };
+    let walk = ws.build("walk", 1, &[TIMED], &args);
+    let walk = String::from_utf8_lossy(&walk.stderr);
+    let distinct = field(&walk, "PERF-GROUPS ", "distinct=");
+    assert_eq!(distinct, 1, "{walk}");
+    let runs: [(usize, &[(&str, &str)]); 4] = [
+        (8, &[FROZEN, TIMED]),
+        (8, &[FROZEN, TIMED, PARITY_VERIFY]),
+        (32, &[FROZEN, TIMED, ("BAZEL_RS_ANALYSIS_JITTER", "5")]),
+        (2, &[FROZEN, TIMED, REVERSE]),
+    ];
+    let mut rewritten = 0;
+    for (threads, env) in runs {
+        let eval = ws.build("eval", threads, env, &args);
+        let eval = String::from_utf8_lossy(&eval.stderr);
+        assert_eq!(
+            field(&eval, "PERF-GROUPS ", "distinct="),
+            distinct,
+            "{threads} threads, {env:?}: {eval}"
+        );
+        if eval.contains("PERF-PARALLEL sweep ") {
+            rewritten += field(&eval, "PERF-PARALLEL sweep ", "groups_rewritten=");
+        }
+    }
+    assert!(rewritten > 0, "a worker's group was rewritten");
+}
+
 /// An output-file target's File names its generating rule even when
 /// another target of the package declared the same path (a shared action)
 /// earlier in plan order and merged before the generating rule published:

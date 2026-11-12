@@ -861,6 +861,12 @@ impl<K: std::hash::Hash + Eq + Clone, V: Footprint> Footprint for super::delta::
     }
 }
 
+impl Footprint for super::delta::InputGroups {
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        (**self).heap(walker)
+    }
+}
+
 impl<T: Footprint> Footprint for hashbrown::HashTable<T> {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
         walker.alloc(hash_table_bytes::<T>(self.capacity()))
