@@ -10,6 +10,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 include!("support/temp_root.rs");
 include!("support/module_archives.rs");
+include!("support/analysis_order.rs");
 use std::{
     fs,
     path::Path,
@@ -258,6 +259,17 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
             stable(&eval)
         );
         let got = stable(&eval);
+        if genuine_default() {
+            // The genuine suite run: canonicalized (the exact runs above
+            // are genuine there).
+            if eval.status.success() {
+                assert_eq!(eval.stdout, walk.stdout, "{what}");
+            }
+            assert_genuine_same(&what, eval.status.success(), &got, &text, || {
+                keep_going_text(ws, args)
+            });
+            continue;
+        }
         if got != text {
             // The first lines that differ (the whole texts are long).
             let first = got
@@ -351,48 +363,27 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
 
 const GENUINE: (&str, &str) = ("BAZEL_RS_ANALYSIS_ORDER", "genuine");
 
-/// A console event: a `DEBUG:` or `WARNING:` line with the lines that
-/// continue it (a multi-line print).
-fn console_event(line: &str) -> bool {
-    line.starts_with("DEBUG: ") || line.starts_with("WARNING: ")
+/// The walk's `--keep_going` stderr.
+fn keep_going_text(ws: &Workspace, args: &[&str]) -> String {
+    let mut with = args.to_vec();
+    with.push("--keep_going");
+    stable(&ws.build("walk", 1, &[], &with))
 }
 
-fn continues(line: &str) -> bool {
-    ![
-        "DEBUG: ",
-        "WARNING: ",
-        "INFO: ",
-        "ERROR: ",
-        "bazel-rs: ",
-        "ACTION ",
-    ]
-    .iter()
-    .any(|prefix| line.starts_with(prefix))
-        && !line.starts_with("  ")
-}
-
-/// `text` canonicalized for BAZEL_RS_ANALYSIS_ORDER=genuine (docs/EVALUATOR.md
-/// "Genuine parity, task C"): the other lines in order, the console events
-/// sorted (a multiset: each target's analysis-time lines are written as
-/// they finish).
-fn canonical(text: &str) -> (Vec<String>, Vec<String>) {
-    let (mut rest, mut events) = (Vec::new(), Vec::<String>::new());
-    let mut in_event = false;
-    for line in text.lines() {
-        if console_event(line) {
-            events.push(line.to_owned());
-            in_event = true;
-        } else if in_event && continues(line) {
-            let last = events.last_mut().expect("an event");
-            last.push('\n');
-            last.push_str(line);
-        } else {
-            in_event = false;
-            rest.push(line.to_owned());
-        }
+/// An evaluated build's output against the walk's: the same exit code and
+/// stdout (of a success), stderr byte for byte — canonicalized where this
+/// suite's default order is genuine ([`assert_genuine_same`]).
+fn assert_same(what: &str, eval: &Output, walk: &Output, keep_going: impl FnOnce() -> String) {
+    let (got, text) = (stable(eval), stable(walk));
+    assert_eq!(eval.status.code(), walk.status.code(), "{what}: {got}");
+    if eval.status.success() {
+        assert_eq!(eval.stdout, walk.stdout, "{what}");
     }
-    events.sort();
-    (rest, events)
+    if genuine_default() {
+        assert_genuine_same(what, eval.status.success(), &got, &text, keep_going);
+    } else {
+        assert_eq!(got, text, "{what}");
+    }
 }
 
 /// The genuine order's runs against the walk's output (`walk`): the same
@@ -403,11 +394,7 @@ fn canonical(text: &str) -> (Vec<String>, Vec<String>) {
 /// report) or the walk's own.
 fn compare_genuine(ws: &Workspace, args: &[&str], walk: &Output) {
     let text = stable(walk);
-    let keep_going = (!walk.status.success()).then(|| {
-        let mut with = args.to_vec();
-        with.push("--keep_going");
-        stable(&ws.build("walk", 1, &[], &with))
-    });
+    let keep_going = (!walk.status.success()).then(|| keep_going_text(ws, args));
     let runs: [(usize, &[(&str, &str)]); 7] = [
         (2, &[FROZEN, GENUINE]),
         (8, &[FROZEN, GENUINE]),
@@ -422,26 +409,12 @@ fn compare_genuine(ws: &Workspace, args: &[&str], walk: &Output) {
         let what = format!("genuine: {args:?} at {threads} threads, {env:?}");
         let got = stable(&eval);
         assert_eq!(eval.status.code(), walk.status.code(), "{what}: {got}");
-        let (rest, events) = canonical(&got);
         if eval.status.success() {
-            let (walk_rest, walk_events) = canonical(&text);
-            assert_eq!(rest, walk_rest, "{what}");
-            assert_eq!(events, walk_events, "{what}");
             assert_eq!(eval.stdout, walk.stdout, "{what}");
-            continue;
         }
-        if rest == canonical(&text).0 {
-            continue;
-        }
-        let error = rest.join("\n");
-        let reported = error
-            .strip_prefix("bazel-rs: ")
-            .map_or(error.clone(), |error| format!("ERROR: {error}"));
-        let keep_going = keep_going.as_deref().unwrap_or_default();
-        assert!(
-            keep_going.contains(reported.trim_end()),
-            "{what}: the error is not one of the walk's keep-going errors:\n{error}\nkeep going:\n{keep_going}"
-        );
+        assert_genuine_same(&what, eval.status.success(), &got, &text, || {
+            keep_going.clone().unwrap_or_default()
+        });
     }
 }
 
@@ -508,8 +481,9 @@ w(name = "z", deps = [":r", ":a"])
         (8, &[FROZEN, fail, REVERSE][..]),
     ] {
         let eval = ws.build("eval", threads, env, &args);
-        assert_eq!(stable(&eval), stable(&walk), "{env:?}");
-        assert_eq!(eval.status.code(), walk.status.code(), "{env:?}");
+        assert_same(&format!("{env:?}"), &eval, &walk, || {
+            keep_going_text(&ws, &args)
+        });
     }
 }
 
@@ -637,8 +611,9 @@ reader(name = "r2", dep = ":al")
     let mut republished = 0;
     for env in runs {
         let eval = ws.build("eval", 8, env, &args);
-        assert_eq!(stable(&eval), text, "{env:?}");
-        assert_eq!(eval.stdout, walk.stdout, "{env:?}");
+        assert_same(&format!("{env:?}"), &eval, &walk, || {
+            keep_going_text(&ws, &args)
+        });
         let stderr = String::from_utf8_lossy(&eval.stderr);
         if let Some(line) = stderr
             .lines()

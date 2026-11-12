@@ -436,9 +436,10 @@ pub fn family(inputs: &Inputs<'_>, binary: [u8; 32]) -> Option<[u8; 32]> {
 /// snapshots (PLAN-L2 §1a: crate::snapshot::record::TEST_HOOKS and every
 /// `BAZEL_RS_DEBUG_*`), if one is set.
 pub fn test_hook() -> Option<String> {
-    // The genuine analysis order (its console order is the run's, not the
-    // sequential one a snapshot keeps).
-    if !crate::engine::analysis_order_exact() {
+    // An analysis order other than the binary's default (`genuine` asked
+    // of an exact binary): its console order is not the one this binary's
+    // snapshots keep and replay.
+    if !crate::engine::analysis_order_is_default() {
         return Some("BAZEL_RS_ANALYSIS_ORDER".to_owned());
     }
     std::env::vars_os().find_map(|(name, _)| {

@@ -126,7 +126,7 @@ pub fn start(
             observed_fs::taint(Taint::TestHook, || name.into_owned());
         }
     }
-    if !crate::engine::analysis_order_exact() {
+    if !crate::engine::analysis_order_is_default() {
         observed_fs::taint(Taint::TestHook, || "BAZEL_RS_ANALYSIS_ORDER".to_owned());
     }
     Some(Session {

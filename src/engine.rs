@@ -54,13 +54,12 @@ mod split;
 mod starlark_doc_extract;
 mod sweep;
 
-/// `BAZEL_RS_ANALYSIS_ORDER` is `exact` (docs/EVALUATOR.md "Genuine parity,
-/// task C"): `false` for `genuine` (console blocks as targets finish, fail
-/// fast on the first confirmed error), never read from or saved as a
-/// snapshot.
-/// `false` also for an invalid value (planning reports it).
-pub(crate) fn analysis_order_exact() -> bool {
-    eval::order() == Ok(eval::AnalysisOrder::Exact)
+/// `BAZEL_RS_ANALYSIS_ORDER` is this binary's default (docs/EVALUATOR.md
+/// "Genuine parity, task C"; `false` for an invalid value): otherwise
+/// (`genuine` asked of an exact binary) analysis snapshots are neither read
+/// nor saved — a snapshot keeps its binary's default console order.
+pub(crate) fn analysis_order_is_default() -> bool {
+    eval::order_is_default()
 }
 
 /// A planned artifact. Its data is shared by its copies (MEM4): the

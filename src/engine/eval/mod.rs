@@ -136,6 +136,18 @@ pub(crate) fn order() -> Result<AnalysisOrder, String> {
     ORDER.clone()
 }
 
+/// Whether the process's analysis order is this binary's default (exact,
+/// or genuine for a binary built with
+/// `BAZEL_RS_DEFAULT_ANALYSIS_ORDER=genuine`; `false` for an invalid
+/// value): only then are analysis snapshots read and saved — every
+/// snapshot a binary keeps (its key names the binary) has its default
+/// order's console, which a hit replays.
+pub(crate) fn order_is_default() -> bool {
+    order().is_ok_and(|order| {
+        AnalysisOrder::parse(option_env!("BAZEL_RS_DEFAULT_ANALYSIS_ORDER")) == Ok(order)
+    })
+}
+
 /// `BAZEL_RS_ANALYSIS_ORDER=genuine` (an invalid value: exact here; the
 /// planning gate [`check_mode`] reports it).
 pub(crate) fn genuine() -> bool {

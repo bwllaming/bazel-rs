@@ -3105,11 +3105,17 @@ only"), opt-in:
 | anything else | an error at the start of planning naming the two values |
 
 A test-suite binary built with `BAZEL_RS_DEFAULT_ANALYSIS_ORDER=genuine`
-has it as its default (the genuine suite run). A genuine run is never
-read from or saved as an analysis snapshot (`snapshot::key::test_hook`
-names it; `BAZEL_RS_SNAPSHOT=record` taints the recording `test-hook`):
-the console order a snapshot keeps and a hit replays is the sequential
-one. (An invalid value also keeps the snapshot off until planning reports
+has it as its default (the genuine suite run). An order other than the
+binary's default — `genuine` asked of an exact binary, the only case
+outside the suite — is never read from or saved as an analysis snapshot
+or cquery history (`snapshot::key::test_hook` names it,
+`BAZEL_RS_SNAPSHOT=record` taints the recording `test-hook`;
+`eval::order_is_default`): a snapshot's key names its binary, and the
+console a snapshot keeps and a hit replays is the binary's default order
+(the sequential one for every released binary). A genuine-default binary
+saves and hits genuine-ordered snapshots (a hit replays the recorded
+blocks byte for byte), so the genuine suite run covers the snapshot paths
+too. (An invalid value also keeps the snapshot off until planning reports
 it.)
 
 **Console blocks** (phase 2, the T3 buffer's jobs: `buffer::stream`,
@@ -3161,6 +3167,19 @@ A dependency failing at its merge after its job published (those merge
 checks) could let a dependent's confirmed error be reported that the
 keep-going walk would never reach (none in the suites; the merge checks
 do not depend on the dependents).
+
+**The genuine suite run**: the whole suite with a binary (and test
+binaries) built with `BAZEL_RS_DEFAULT_ANALYSIS_ORDER=genuine`
+(`BAZEL_RS_DEFAULT_ANALYSIS_ORDER=genuine python3 ptest.py`). The
+comparisons of an evaluated build's output with the walk's
+(`tests/support/analysis_order.rs`, included by `eval_buffer` and
+`eval_pass2`: `genuine_default()`, `canonical`, `assert_genuine_same`)
+canonicalize there; everything else is unchanged. First run (before the
+snapshot rule above was the binary's default order): 223 failures, every
+one a snapshot, cquery-history or incremental-index test (snapshots off)
+or an ordering comparison of `eval_buffer`/`eval_pass2`; with the rule
+and the canonicalizing comparisons: 3,771 passed, 0 failed (one
+`eval_pass2` recording comparison fixed after the run and rerun alone).
 
 Measured (`eval_buffer::the_genuine_order_fails_fast_on_the_first_confirmed_error`'s
 shape, debug build, 8 threads, frozen walk: 24 `w` targets, the first

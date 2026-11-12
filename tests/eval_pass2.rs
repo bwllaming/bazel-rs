@@ -14,6 +14,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 include!("support/temp_root.rs");
 include!("support/module_archives.rs");
+include!("support/analysis_order.rs");
 use std::{
     fs,
     path::Path,
@@ -252,8 +253,30 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
             "{what}: {}",
             stable(&eval)
         );
-        assert_eq!(stable(&eval), text, "{what}");
+        assert_same(&what, &eval, &walk, || keep_going_text(ws, args));
+    }
+}
+
+/// The walk's `--keep_going` stderr.
+fn keep_going_text(ws: &Workspace, args: &[&str]) -> String {
+    let mut with = args.to_vec();
+    with.push("--keep_going");
+    stable(&ws.build("walk", 1, &[], &with))
+}
+
+/// An evaluated build's output against the walk's (the same exit code
+/// checked): stdout of a success, stderr byte for byte — canonicalized
+/// where this suite's default order is genuine (BAZEL_RS_DEFAULT_ANALYSIS_ORDER:
+/// [`assert_genuine_same`]).
+fn assert_same(what: &str, eval: &Output, walk: &Output, keep_going: impl FnOnce() -> String) {
+    let (got, text) = (stable(eval), stable(walk));
+    if eval.status.success() {
         assert_eq!(eval.stdout, walk.stdout, "{what}");
+    }
+    if genuine_default() {
+        assert_genuine_same(what, eval.status.success(), &got, &text, keep_going);
+    } else {
+        assert_eq!(got, text, "{what}");
     }
 }
 
@@ -560,7 +583,14 @@ on_platform(name = "on_a2", platform = "//plat:a", deps = ["//p1:top", ":late"])
     ];
     for (threads, env) in runs {
         let eval = ws.build("eval", threads, env, &args);
-        assert_eq!(stable(&eval), stable(&walk), "{threads} threads, {env:?}");
+        assert_eq!(
+            eval.status.code(),
+            walk.status.code(),
+            "{threads} threads, {env:?}"
+        );
+        assert_same(&format!("{threads} threads, {env:?}"), &eval, &walk, || {
+            keep_going_text(&ws, &args)
+        });
     }
 }
 
@@ -784,7 +814,12 @@ filegroup(name = "all", srcs = [":everything", ":after_cpu", ":sources", ":via_d
             &walk_recorded
         };
         assert_eq!(eval.1, walk.1, "{what}: the incremental index");
-        assert_eq!(eval.2, walk.2, "{what}: stderr");
+        if genuine_default() {
+            // The genuine suite run (a success: canonicalized).
+            assert_eq!(canonical(&eval.2), canonical(&walk.2), "{what}: stderr");
+        } else {
+            assert_eq!(eval.2, walk.2, "{what}: stderr");
+        }
         assert_eq!(eval.3, walk.3, "{what}: stdout");
     }
 }
