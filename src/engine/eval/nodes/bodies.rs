@@ -272,12 +272,60 @@ pub(crate) struct Running {
     pub(crate) missing_at: Option<usize>,
 }
 
+/// The coordinator's lock held: with `BAZEL_RS_EVAL_TIMELINE`, a hold of
+/// 5 ms or more is summed by the call site that took it.
+pub(crate) struct CoordGuard<'a, 'e> {
+    guard: MutexGuard<'a, Coord<'e>>,
+    held: Option<(std::time::Instant, &'static std::panic::Location<'static>)>,
+}
+
+impl<'a, 'e> CoordGuard<'a, 'e> {
+    #[track_caller]
+    fn new(guard: MutexGuard<'a, Coord<'e>>) -> Self {
+        let caller = std::panic::Location::caller();
+        let held = crate::eval_timeline::on().then(|| (std::time::Instant::now(), caller));
+        CoordGuard { guard, held }
+    }
+}
+
+impl<'e> std::ops::Deref for CoordGuard<'_, 'e> {
+    type Target = Coord<'e>;
+    fn deref(&self) -> &Coord<'e> {
+        &self.guard
+    }
+}
+
+impl<'e> std::ops::DerefMut for CoordGuard<'_, 'e> {
+    fn deref_mut(&mut self) -> &mut Coord<'e> {
+        &mut self.guard
+    }
+}
+
+impl Drop for CoordGuard<'_, '_> {
+    fn drop(&mut self) {
+        if let Some((since, caller)) = self.held
+            && since.elapsed() >= std::time::Duration::from_millis(5)
+        {
+            super::super::timeline::add_dyn(
+                || {
+                    format!(
+                        "coordinator lock held >= 5 ms at {}:{}",
+                        caller.file(),
+                        caller.line()
+                    )
+                },
+                since,
+            );
+        }
+    }
+}
+
 /// What a phase-1 body needs of its context besides [`Cx`].
 pub(crate) trait Phase1Cx<'e>: Cx {
     #[track_caller]
-    fn coord(&self) -> MutexGuard<'_, Coord<'e>>;
+    fn coord(&self) -> CoordGuard<'_, 'e>;
     /// The coordinator if no other thread holds it now.
-    fn try_coord(&self) -> Option<MutexGuard<'_, Coord<'e>>>;
+    fn try_coord(&self) -> Option<CoordGuard<'_, 'e>>;
     /// The CT1 value of `key`'s first variant done (without the
     /// coordinator's lock).
     fn ct1_done(&self, key: &ConfiguredTargetKey) -> Option<Arc<Ct1Value>>;
@@ -380,18 +428,18 @@ impl Cx for BodyCx<'_, '_, '_> {
 
 impl<'e> Phase1Cx<'e> for BodyCx<'_, '_, 'e> {
     #[track_caller]
-    fn coord(&self) -> MutexGuard<'_, Coord<'e>> {
+    fn coord(&self) -> CoordGuard<'_, 'e> {
         self.bodies.coord()
     }
 
-    fn try_coord(&self) -> Option<MutexGuard<'_, Coord<'e>>> {
+    fn try_coord(&self) -> Option<CoordGuard<'_, 'e>> {
         let mut coord = match self.bodies.coord.try_lock() {
             Ok(guard) => guard,
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => return None,
         };
         self.bodies.inbox.absorb(&mut coord);
-        Some(coord)
+        Some(CoordGuard::new(coord))
     }
 
     fn scratch(&self) -> &[Mutex<Option<super::speculate::Scratch>>] {
@@ -519,7 +567,7 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
 
     /// The coordinator, the pool attempts' records applied to its store.
     #[track_caller]
-    pub(crate) fn coord(&self) -> MutexGuard<'_, Coord<'e>> {
+    pub(crate) fn coord(&self) -> CoordGuard<'_, 'e> {
         let mut coord = self.lock_coord();
         self.inbox.absorb(&mut coord);
         coord
@@ -556,13 +604,15 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
     }
 
     #[track_caller]
-    fn lock_coord(&self) -> MutexGuard<'_, Coord<'e>> {
+    fn lock_coord(&self) -> CoordGuard<'_, 'e> {
         match self.coord.try_lock() {
             Ok(guard) => {
                 COORD_LOCKS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                guard
+                CoordGuard::new(guard)
             }
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                CoordGuard::new(poisoned.into_inner())
+            }
             Err(std::sync::TryLockError::WouldBlock) => {
                 let started = std::time::Instant::now();
                 let _blocked =
@@ -587,7 +637,7 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
                     started.elapsed().as_micros() as u64,
                     std::sync::atomic::Ordering::Relaxed,
                 );
-                guard
+                CoordGuard::new(guard)
             }
         }
     }
