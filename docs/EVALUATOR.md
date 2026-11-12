@@ -3137,6 +3137,36 @@ coordinator's), outcomes that are not final; phase 1 (BUILD files' and
 the buffer (the T2 pipeline, `BAZEL_RS_EVAL_NO_BUFFER=1`; the walk
 engine) are exact either way.
 
+**Fail fast** (`Board::fail_fast`: genuine, not `--keep_going`, the
+walk's board). A finished job's *confirmed* error
+(`Finished::confirmed_error`: a streamed job's prepare error, or its
+implementation's analysis error — `commit_custom_target` returns it before
+anything else of the commit, and a streamed outcome has no redo that could
+change it) sets `Board::failed` (the lowest such plan index) and `stop`
+(queued jobs skip) and wakes the cursor (`Board::note_failure`, also for
+the jobs an early board hands over). The cursor checks it at the top of
+each turn and while it waits for its entry's job (`Claimed::Failed`); in
+the genuine order it never steals its entry's queued job (it would
+compute it unwoken: it waits on the condvar for a worker to run it). It
+then returns that entry's error (`Engine::fail_fast`) — the text its merge
+would return, so the exit code and the error are the walk's or one of its
+keep-going errors — and the analysis pool stops without joining the jobs
+still computing (`AnalysisPool::abandon`, `Engine::abandon_analysis_workers`:
+their threads are detached; nothing they finish is written — a job that
+finishes after the walk stopped streams nothing). Not confirmed, merged at
+their turn as before: errors at the merge (output conflicts, the
+restricted-to and transition-allowlist checks, delta errors), errors of
+outcomes that are not final, entries at their turn, native rules, panics.
+A dependency failing at its merge after its job published (those merge
+checks) could let a dependent's confirmed error be reported that the
+keep-going walk would never reach (none in the suites; the merge checks
+do not depend on the dependents).
+
+Measured (`eval_buffer::the_genuine_order_fails_fast_on_the_first_confirmed_error`'s
+shape, debug build, 8 threads, frozen walk: 24 `w` targets, the first
+computing ~9 s, the 21st failing): the error after 8.7 s exact, 0.07 s
+genuine (whole process 8.73 s vs 0.08 s).
+
 Tests: `tests/eval_buffer.rs` `compare` runs the genuine order in 7
 configurations (2/8/32 threads, jitter, reverse + parity verify, early
 boards, the default prepares) beside its exact runs: a success's stdout
@@ -3144,7 +3174,10 @@ the same, its stderr the same once canonicalized (`canonical`: the
 `DEBUG:`/`WARNING:` events, with their continuation lines, as a sorted
 multiset; every other line in order); a failure's error the walk's or one
 of the walk's `--keep_going` errors (`bazel-rs: <error>` is
-`ERROR: <error>` there). `the_genuine_order_writes_each_targets_lines_as_one_block`:
+`ERROR: <error>` there). `the_genuine_order_fails_fast_on_the_first_confirmed_error`:
+a heavy first entry, a failing 21st: the error is the walk's, the heavy
+target never prints, `failed_fast=1`; with a second failure the error is
+in the keep-going set. `the_genuine_order_writes_each_targets_lines_as_one_block`:
 three prints per target, heavy targets first in plan order printing last,
 each target's lines adjacent, a redo at the merge printing once, an
 invalid value's error.

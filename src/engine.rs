@@ -3205,6 +3205,9 @@ pub struct Engine {
     /// turn whose prints its job wrote already (parallel::buffer's
     /// `redo_at_turn`): its commit tracks them, writes none.
     streamed_redo: Option<ConfiguredTargetKey>,
+    /// BAZEL_RS_ANALYSIS_ORDER=genuine: a walk failed fast with jobs still
+    /// running; the analysis pool stops without joining them.
+    abandon_analysis_workers: bool,
     /// `.bzl` labels whose buffered top-level print lines the coordinator
     /// already emitted (one emission per evaluated module, review §1.4);
     /// lookups only, never iterated.
@@ -3548,6 +3551,7 @@ impl Engine {
             aquery_capture: None,
             console_owners: HashMap::new(),
             streamed_redo: None,
+            abandon_analysis_workers: false,
             declared_inputs: Default::default(),
             source_targets: Default::default(),
             rule_targets: Default::default(),

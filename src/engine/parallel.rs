@@ -446,6 +446,16 @@ impl AnalysisPool {
     }
 }
 
+impl AnalysisPool {
+    /// Stop without waiting for the computes still running
+    /// (BAZEL_RS_ANALYSIS_ORDER=genuine's fail fast: the walk ended with a
+    /// later job's error while earlier jobs compute on; their results are
+    /// dropped, the threads detached and ended with the process).
+    fn abandon(mut self) {
+        self.workers.clear();
+    }
+}
+
 impl Drop for AnalysisPool {
     fn drop(&mut self) {
         self.cancelled
@@ -1879,7 +1889,11 @@ impl Engine {
         // workers' handle (S1).
         if let Some(pool) = self.analysis_pool.take() {
             report(pool.size);
-            drop(pool);
+            if std::mem::take(&mut self.abandon_analysis_workers) {
+                pool.abandon();
+            } else {
+                drop(pool);
+            }
         }
         self.stop_lowering_pool();
     }

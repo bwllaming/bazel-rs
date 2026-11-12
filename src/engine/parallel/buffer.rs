@@ -288,7 +288,7 @@ const KIND_UNCLASSIFIED: u8 = 3;
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL buffer`).
 static STATS: [AtomicU64; STAT_NAMES.len()] = [const { AtomicU64::new(0) }; STAT_NAMES.len()];
-const STAT_NAMES: [&str; 20] = [
+const STAT_NAMES: [&str; 21] = [
     "starlark",
     "native",
     "turn",
@@ -309,6 +309,7 @@ const STAT_NAMES: [&str; 20] = [
     "early_entries",
     "early_taken",
     "streamed",
+    "failed_fast",
 ];
 const S_STARLARK: usize = 0;
 const S_NATIVE: usize = 1;
@@ -330,8 +331,9 @@ const S_EARLY_BOARDS: usize = 16;
 const S_EARLY_ENTRIES: usize = 17;
 const S_EARLY_TAKEN: usize = 18;
 /// BAZEL_RS_ANALYSIS_ORDER=genuine: jobs whose console was written when
-/// they finished.
+/// they finished; walks ended by a job's confirmed error before its turn.
 const S_STREAMED: usize = 19;
+const S_FAILED_FAST: usize = 20;
 
 /// Whether a plain native rule whose results a worker published merges
 /// them ([`Engine::merge_published_native`]) instead of committing again
@@ -445,6 +447,9 @@ enum Claimed {
     /// No job: prepared (and computed) at its turn.
     Turn,
     Done(Finished),
+    /// BAZEL_RS_ANALYSIS_ORDER=genuine: a later entry's job failed with a
+    /// confirmed error ([`Board::failed`]) while the cursor waited.
+    Failed,
 }
 
 /// How often an aspect job is queued again before it is left to its turn.
@@ -462,6 +467,31 @@ impl Finished {
                 .as_ref()?
                 .unready
                 .clone(),
+            _ => None,
+        }
+    }
+
+    /// BAZEL_RS_ANALYSIS_ORDER=genuine: the error of a streamed job that
+    /// its merge returns as it is — its prepare's, or its implementation's
+    /// (`Engine::commit_custom_target` returns the analysis error before
+    /// anything else of the commit) — and no redo at its merge could change
+    /// ([`final_outcome`]): the walk fails with it at once (genuine Bazel's
+    /// fail fast on the first error to finish).
+    fn confirmed_error(&self) -> Option<&str> {
+        let Finished::Starlark { outcome, .. } = self else {
+            return None;
+        };
+        let outcome = outcome.as_ref().as_ref().ok()?;
+        // (A streamed prepare error has no redo; a streamed analysis
+        // error's redo, if any, reads no target platform: the same error.)
+        if !outcome.streamed {
+            return None;
+        }
+        match (&outcome.prepared, &outcome.worker) {
+            (Err(error), _) => Some(error),
+            (Ok(Some(_)), Some(Ok(worker))) => {
+                worker.outcome.analyzed.as_ref().err().map(String::as_str)
+            }
             _ => None,
         }
     }
@@ -615,6 +645,12 @@ struct Board {
     flushed: usize,
     next: std::sync::OnceLock<Arc<Board>>,
     running: std::sync::atomic::AtomicUsize,
+    /// BAZEL_RS_ANALYSIS_ORDER=genuine (not `--keep_going`, not an early
+    /// board): the lowest plan index whose finished job holds a confirmed
+    /// error ([`Finished::confirmed_error`]; `usize::MAX`: none), which the
+    /// cursor returns as the walk's error instead of merging on.
+    fail_fast: bool,
+    failed: std::sync::atomic::AtomicUsize,
 }
 
 impl Board {
@@ -695,6 +731,22 @@ impl Board {
         index
             .checked_sub(self.start)
             .filter(|slot| *slot < self.plan.len())
+    }
+
+    /// A job of entry `index` finished (stored in `finished`): with
+    /// [`Board::fail_fast`], a confirmed error stops the walk's other jobs
+    /// and wakes the cursor, which fails with it.
+    fn note_failure(&self, index: usize, finished: &Finished) {
+        if self.fail_fast && finished.confirmed_error().is_some() {
+            self.failed.fetch_min(index, Ordering::AcqRel);
+            self.stop.store(true, Ordering::Release);
+        }
+    }
+
+    /// The entry whose confirmed error ends the walk, if any job found one.
+    fn failed(&self) -> Option<usize> {
+        let failed = self.failed.load(Ordering::Acquire);
+        (failed != usize::MAX).then_some(failed)
     }
 
     fn stopped(&self) -> bool {
@@ -957,6 +1009,7 @@ impl Board {
                 };
                 board.note_job(index, 2);
                 let mut done = board.finished.lock().unwrap_or_else(|e| e.into_inner());
+                board.note_failure(index, &finished);
                 done.insert(index, finished);
                 board.stage[slot].store(DONE, Ordering::Release);
                 drop(done);
@@ -1234,6 +1287,22 @@ impl Board {
                     watch("being classified");
                     std::thread::yield_now();
                 }
+                // BAZEL_RS_ANALYSIS_ORDER=genuine: a worker runs it, the
+                // cursor waits where a confirmed error of a later job wakes
+                // it (stolen, it would compute here unwoken).
+                QUEUED if self.fail_fast => {
+                    let done = self.finished.lock().unwrap_or_else(|e| e.into_inner());
+                    if self.failed().is_some() {
+                        return Claimed::Failed;
+                    }
+                    if self.stage[slot].load(Ordering::Acquire) == QUEUED {
+                        let _wait = self
+                            .finished_cv
+                            .wait_timeout(done, std::time::Duration::from_millis(50))
+                            .unwrap_or_else(|e| e.into_inner());
+                    }
+                    watch("queued");
+                }
                 QUEUED => {
                     if self.stage[slot]
                         .compare_exchange(QUEUED, CLAIMED, Ordering::AcqRel, Ordering::Acquire)
@@ -1252,6 +1321,10 @@ impl Board {
                     let finished = loop {
                         if let Some(finished) = done.remove(&index) {
                             break Some(finished);
+                        }
+                        if self.failed().is_some() {
+                            // (Its job, running on, is dropped with the walk.)
+                            return Claimed::Failed;
                         }
                         // An aspect job queued again (Board::wait_for).
                         if self.stage[slot].load(Ordering::Acquire) == IDLE {
@@ -1507,6 +1580,8 @@ impl Board {
             flushed: usize::MAX,
             next: std::sync::OnceLock::new(),
             running: std::sync::atomic::AtomicUsize::new(0),
+            fail_fast: false,
+            failed: std::sync::atomic::AtomicUsize::new(usize::MAX),
         })
     }
 }
@@ -1626,6 +1701,7 @@ impl EarlyCt2 {
                     Ordering::Release,
                 );
                 board.stage[slot].store(DONE, Ordering::Release);
+                board.note_failure(index, &finished);
                 done.insert(index, finished);
                 taken += 1;
             }
@@ -1777,7 +1853,10 @@ impl Engine {
         state.provider_keys.reserve(len);
         state.runfiles_info.reserve(len);
         self.console_owners.reserve(len);
-        let board = Board::new(frozen, plan, start, jobs, cancelled, false);
+        let mut board = Board::new(frozen, plan, start, jobs, cancelled, false);
+        if let Some(fresh) = Arc::get_mut(&mut board) {
+            fresh.fail_fast = crate::engine::eval::genuine() && !self.keep_going;
+        }
         // Task D: the jobs the early boards finished are this walk's.
         if let Some(early) = self.early_ct2.take() {
             self.early_ct2 = (*early).hand_over(&board)?.map(Box::new);
@@ -1877,6 +1956,13 @@ impl Engine {
             .and_then(|plan| plan.get(state.done))
             .cloned()
         {
+            // BAZEL_RS_ANALYSIS_ORDER=genuine: a later entry's job failed
+            // with a confirmed error.
+            if let Some(failed) = board.failed()
+                && failed > state.done
+            {
+                return self.fail_fast(board, failed);
+            }
             {
                 let _split = frozen::Split::enter(1);
                 self.drain_lowerings(state, lowering::Drain::Bounded)?;
@@ -1949,6 +2035,10 @@ impl Engine {
             // (its own job published them, on a worker or stolen here).
             let published = matches!(&claimed, Claimed::Done(finished) if finished.published());
             let result = match claimed {
+                Claimed::Failed => {
+                    let failed = board.failed().unwrap_or(index);
+                    return self.fail_fast(board, failed);
+                }
                 Claimed::Turn => {
                     stat(S_AT_TURN, 1);
                     let _split = frozen::Split::enter(15);
@@ -2070,6 +2160,33 @@ impl Engine {
         }
         self.flush_delegations(state);
         Ok(())
+    }
+
+    /// BAZEL_RS_ANALYSIS_ORDER=genuine: the walk ends with the confirmed
+    /// error of entry `failed`'s job ([`Finished::confirmed_error`]) before
+    /// the entries up to it are merged — the error its merge would return,
+    /// its console written when the job finished.
+    fn fail_fast(&mut self, board: &Arc<Board>, failed: usize) -> Result<(), String> {
+        let finished = board
+            .finished
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&failed);
+        let error = finished
+            .as_ref()
+            .and_then(Finished::confirmed_error)
+            .map(str::to_owned);
+        let Some(error) = error else {
+            return Err(format!(
+                "internal error: BAZEL_RS_ANALYSIS_ORDER=genuine: plan entry {failed} failed without its error"
+            ));
+        };
+        stat(S_FAILED_FAST, 1);
+        self.abandon_analysis_workers = true;
+        if debug() {
+            eprintln!("T3-DEBUG failed fast at #{failed}");
+        }
+        Err(error)
     }
 
     /// An entry without a job at its turn: prepared and computed here, as

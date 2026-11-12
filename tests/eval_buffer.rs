@@ -814,6 +814,78 @@ fn a_failure_in_the_middle_of_the_plan_drops_the_later_buffered_results() {
     });
 }
 
+/// BAZEL_RS_ANALYSIS_ORDER=genuine fails fast on the first confirmed error
+/// to finish: a failing target late in plan order ends the build while a
+/// heavy one first in plan order still computes (never printing), with the
+/// walk's exit code and the error's text; with two failures the error is
+/// one of the walk's keep-going errors (`compare`'s genuine runs).
+#[test]
+fn the_genuine_order_fails_fast_on_the_first_confirmed_error() {
+    let build = |failing: &[usize]| {
+        let mut build = String::from("load(\"//rules:defs.bzl\", \"w\")\n");
+        for index in 0..24 {
+            let work = if index == 0 { 2000000 } else { 10 };
+            let fail = if failing.contains(&index) {
+                "True"
+            } else {
+                "False"
+            };
+            build.push_str(&format!(
+                "w(name = \"t{index:02}\", work = {work}, fail = {fail})\n"
+            ));
+        }
+        build
+    };
+    let ws = Workspace::new(&[("f/BUILD.bazel", build(&[20]))]);
+    let args = ["//f:all"];
+    let walk = ws.build("walk", 1, &[], &args);
+    let walk_text = stable(&walk);
+    assert!(!walk.status.success(), "{walk_text}");
+    let error = |text: &str| -> String {
+        text.lines()
+            .skip_while(|line| !line.starts_with("bazel-rs: analysis of"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(
+        error(&walk_text).contains("the implementation of t20 failed"),
+        "{walk_text}"
+    );
+    // (The frozen walk: this small workspace's default walk is the P3
+    // pipeline's, exact either way.)
+    for env in [
+        &[FROZEN, GENUINE, ("BAZEL_RS_TIMING", "1")][..],
+        &[
+            FROZEN,
+            GENUINE,
+            ("BAZEL_RS_TIMING", "1"),
+            ("BAZEL_RS_EVAL_JITTER", "300"),
+        ][..],
+    ] {
+        let started = std::time::Instant::now();
+        let eval = ws.build("eval", 8, env, &args);
+        let elapsed = started.elapsed();
+        let text = stable(&eval);
+        let stderr = String::from_utf8_lossy(&eval.stderr);
+        assert_eq!(eval.status.code(), walk.status.code(), "{env:?}: {text}");
+        assert_eq!(error(&text), error(&walk_text), "{env:?}");
+        assert!(
+            !text.contains("w @@//f:t00"),
+            "{env:?}: t00 finished first: {text}"
+        );
+        let line = stderr
+            .lines()
+            .find(|line| line.starts_with("PERF-PARALLEL buffer starlark="))
+            .unwrap_or_else(|| panic!("the merge buffer walked: {stderr}"));
+        assert!(line.contains(" failed_fast=1"), "{env:?}: {line}");
+        eprintln!("genuine fail fast {env:?}: {elapsed:?}");
+    }
+    let ws = Workspace::new(&[("f/BUILD.bazel", build(&[2, 20]))]);
+    let walk = ws.build("walk", 1, &[], &args);
+    assert!(!walk.status.success());
+    compare_genuine(&ws, &args, &walk);
+}
+
 /// Many printing targets over several packages, their implementations
 /// taking varying time: the prints keep the plan's order across the
 /// buffered merges.
