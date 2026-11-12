@@ -11858,16 +11858,12 @@ impl Engine {
         // Analyze everything first, but execute only the actions reachable from
         // requested outputs. Empty DefaultInfo must not execute unused actions.
         // Lookups only (hashed): the reachable set, not its order, matters.
-        let by_id: crate::fast_hash::FxHashMap<&str, &PlannedAction> = nodes
-            .iter()
-            .map(|node| (node.action.id.as_str(), node))
-            .collect();
         let mut todo = requested
             .iter()
             .map(|(_, artifact)| artifact)
             .chain(hidden.iter().map(|(_, artifact)| artifact))
-            .filter_map(|artifact| artifact.producer.as_ref().map(|(id, _)| id.clone()))
-            .collect::<Vec<_>>();
+            .filter_map(|artifact| artifact.producer.as_ref().map(|(id, _)| id.as_str()))
+            .collect::<Vec<&str>>();
         // Every reported aspect artifact is built too, also one of an output
         // group the base target shares (whose `requested` files are the base
         // target's only, above): CompletionFunction builds each top-level
@@ -11877,26 +11873,47 @@ impl Engine {
             aspect_reports
                 .iter()
                 .flat_map(|(_, _, artifacts)| artifacts)
-                .filter_map(|artifact| artifact.producer.as_ref().map(|(id, _)| id.clone())),
+                .filter_map(|artifact| artifact.producer.as_ref().map(|(id, _)| id.as_str())),
         );
-        let mut required: crate::fast_hash::FxHashSet<String> = Default::default();
+        // By reference (the ids live in `nodes` and the artifacts): the
+        // reachable set, then a mask over `nodes` in order.
+        let mut required: crate::fast_hash::FxHashSet<&str> = Default::default();
+        let mut keep = vec![false; nodes.len()];
+        let position_of: crate::fast_hash::FxHashMap<&str, usize> = nodes
+            .iter()
+            .enumerate()
+            .map(|(position, node)| (node.action.id.as_str(), position))
+            .collect();
         while let Some(id) = todo.pop() {
-            if required.insert(id.clone()) {
-                let node = by_id
-                    .get(id.as_str())
+            if required.insert(id) {
+                let position = *position_of
+                    .get(id)
                     .ok_or_else(|| format!("missing producing action: {id}"))?;
+                keep[position] = true;
                 todo.extend(
-                    node.all_dependencies()
-                        .map(|dependency| dependency.action_id.clone()),
+                    nodes[position]
+                        .all_dependencies()
+                        .map(|dependency| dependency.action_id.as_str()),
                 );
             }
         }
+        // An id planned twice keeps every node of it (as the id set did).
+        for (position, node) in nodes.iter().enumerate() {
+            if !keep[position] && required.contains(node.action.id.as_str()) {
+                keep[position] = true;
+            }
+        }
+        drop(position_of);
+        drop(required);
         // The unreachable nodes are dropped on a thread of their own.
-        let (kept, unreachable): (Vec<PlannedAction>, Vec<PlannedAction>) =
-            std::mem::take(&mut *nodes)
-                .into_iter()
-                .partition(|node| required.contains(&node.action.id));
-        *nodes = kept;
+        let mut position = 0;
+        let unreachable: Vec<PlannedAction> = nodes
+            .extract_if(.., |_| {
+                let drop_it = !keep[position];
+                position += 1;
+                drop_it
+            })
+            .collect();
         drop_elsewhere(unreachable);
         crate::perf_mark("plan.tail.pruned");
         // The console identity of each action's owner (ActionOwner,
@@ -11954,12 +11971,15 @@ impl Engine {
         // conflicts of an executed manifest action are events at the
         // owner's location, errors under ConflictPolicy.ERROR.
         crate::perf_mark("plan.tail.owners");
+        // The reachable ids: the kept nodes'.
+        let required: crate::fast_hash::FxHashSet<&str> =
+            nodes.iter().map(|node| node.action.id.as_str()).collect();
         for support in runfiles_nodes.values() {
             let executed = support
                 .manifest
                 .as_ref()
                 .and_then(|manifest| manifest.producer.as_ref())
-                .is_some_and(|(id, _)| required.contains(id));
+                .is_some_and(|(id, _)| required.contains(id.as_str()));
             if executed {
                 for message in &support.conflicts {
                     let text = located(support.location.as_deref(), message.clone());
@@ -11971,6 +11991,7 @@ impl Engine {
                 }
             }
         }
+        drop(required);
         // Missing declared source files fail only where needed: as requested
         // outputs or as inputs of an executed action (ArtifactFunction
         // "missing input file", skyframe/ArtifactFunction.java:79-90, 404-430;
@@ -12109,7 +12130,7 @@ impl Engine {
                 .clone()
         };
         // PA-1: a node's source inputs are its own followed by its shared
-        // groups' (SourceInputs::listed). A group none of whose sources is
+        // groups' (SourceInputs::listed_where). A group none of whose sources is
         // a source directory or a missing file adds nothing to either check
         // below, so only a node holding such a group lists them all.
         let mut flagged_groups: HashSet<*const scheduler::InputGroup> = HashSet::new();
@@ -12129,10 +12150,15 @@ impl Engine {
                 }
             }
         }
-        fn sources_of<'a>(
+        // A node's source inputs that may fail (a missing source or a
+        // source directory), in order: its own followed by its shared
+        // groups' when one of them is flagged (`SourceInputs::listed_where`),
+        // filtered before the deduplication.
+        fn failing_sources_of<'a>(
             node: &'a PlannedAction,
             source_inputs: &'a BTreeMap<String, SourceInputs>,
             flagged_groups: &HashSet<*const scheduler::InputGroup>,
+            may_fail: &dyn Fn(&Path) -> bool,
         ) -> Vec<&'a Path> {
             match source_inputs.get(&node.action.id) {
                 None => Vec::new(),
@@ -12142,12 +12168,11 @@ impl Engine {
                         .iter()
                         .any(|group| flagged_groups.contains(&Arc::as_ptr(group))) =>
                 {
-                    sources.listed(node)
+                    sources.listed_where(node, may_fail)
                 }
-                Some(sources) => sources.own(node),
+                Some(sources) => sources.own_where(node, may_fail),
             }
         }
-        let source_paths_of = |node| sources_of(node, &source_inputs, &flagged_groups);
         // An input's failure: `missing input file 'L'` (SOURCE_INPUT_MISSING)
         // or the traversal error (SOURCE_INPUT_IO_EXCEPTION).
         enum InputFailure {
@@ -12240,10 +12265,8 @@ impl Engine {
         // file(s) ...`. The genrule progress message is `Executing genrule
         // L` (rules/genrule/GenRuleBase.java); custom actions use their
         // action id.
-        let rules_by_label = plan
-            .iter()
-            .map(|(key, rule)| (key.action_owner(top), rule))
-            .collect::<BTreeMap<_, _>>();
+        // (Built at the first failing action: rare.)
+        let mut rules_by_label: Option<BTreeMap<String, &Arc<Rule>>> = None;
         // The actions whose inputs fail (--keep_going: they fail, and
         // what depends on them is not built).
         let mut missing_nodes: Vec<String> = Vec::new();
@@ -12255,6 +12278,8 @@ impl Engine {
                 || directory_lookup.contains(&crate::path_key::PathKey(real))
         };
         let none_may_fail = missing_lookup.is_empty() && directory_lookup.is_empty();
+        let failing_paths_of =
+            |node| failing_sources_of(node, &source_inputs, &flagged_groups, &may_fail);
         // The nodes that may fail, found on workers (plan B4).
         let candidates = if none_may_fail {
             Vec::new()
@@ -12277,7 +12302,9 @@ impl Engine {
                 node.action.extra.transform,
                 Some(crate::action::Transform::RunfilesManifest { .. })
             );
-            let failures = source_paths_of(node)
+            // Only a path that may fail can (`may_fail`): the listing is
+            // filtered before its deduplication (the same paths, in order).
+            let failures = failing_paths_of(node)
                 .into_iter()
                 .filter_map(|real| match missing(real) {
                     Some(label) => Some(InputFailure::Missing(label)),
@@ -12290,7 +12317,14 @@ impl Engine {
             }
             missing_nodes.push(node.action.id.clone());
             let owner = node.action.id.split('#').next().unwrap_or_default();
-            let rule = rules_by_label.get(owner);
+            let rule = rules_by_label
+                .get_or_insert_with(|| {
+                    plan.iter()
+                        .map(|(key, rule)| (key.action_owner(top), rule))
+                        .collect()
+                })
+                .get(owner)
+                .copied();
             let progress = match rule {
                 Some(rule) if matches!(rule.kind, RuleKind::Genrule) => format!(
                     "Executing genrule {}",
@@ -13460,8 +13494,9 @@ struct ExpandedTree {
 impl SourceInputs {
     /// The source inputs of `planned`, planned from `inputs` whose
     /// [`source_paths`] are `own`, with its shared `groups`. `own` is
-    /// dropped when it equals what [`SourceInputs::own`] derives from the
-    /// planned action (compared here, so the derivation is exact by
+    /// dropped when it equals what [`SourceInputs::own_where`] (keeping
+    /// every path) derives from the planned action (compared here, so the
+    /// derivation is exact by
     /// construction: an unplanted source or an execution-path duplicate
     /// with another real path keeps the list).
     fn planned(
@@ -13474,24 +13509,7 @@ impl SourceInputs {
         SourceInputs { own, groups }
     }
 
-    /// [`source_paths`] of the action's own inputs.
-    fn own<'a>(&'a self, planned: &'a PlannedAction) -> Vec<&'a Path> {
-        match &self.own {
-            Some(own) => own.iter().map(PathBuf::as_path).collect(),
-            None => {
-                let mut seen = crate::path_key::PathSet::default();
-                planned
-                    .action
-                    .inputs
-                    .iter()
-                    .map(|(real, _)| real.as_path())
-                    .filter(|real| seen.insert(crate::path_key::PathKey(real)))
-                    .collect()
-            }
-        }
-    }
-
-    /// Whether `test` holds for a path [`sources_of`] lists for `planned`
+    /// Whether `test` holds for a path `failing_sources_of` lists for `planned`
     /// (its own source paths, and its groups' when one of them is
     /// `flagged`), duplicates included.
     fn any_listed(
@@ -13511,10 +13529,42 @@ impl SourceInputs {
                 .any(|group| group.sources.iter().any(|path| test(path))))
     }
 
-    /// Every source path of the action's listed inputs, deduplicated in
-    /// order: [`source_paths`] over the own inputs followed by the groups'.
-    fn listed<'a>(&'a self, planned: &'a PlannedAction) -> Vec<&'a Path> {
-        let mut paths = self.own(planned);
+    /// [`source_paths`] of the action's own inputs for which `keep` holds
+    /// (filtered before the deduplication: the same paths in the same
+    /// order as filtering after it, since `keep` answers equal paths alike).
+    fn own_where<'a>(
+        &'a self,
+        planned: &'a PlannedAction,
+        keep: &dyn Fn(&Path) -> bool,
+    ) -> Vec<&'a Path> {
+        match &self.own {
+            Some(own) => own
+                .iter()
+                .map(PathBuf::as_path)
+                .filter(|path| keep(path))
+                .collect(),
+            None => {
+                let mut seen = crate::path_key::PathSet::default();
+                planned
+                    .action
+                    .inputs
+                    .iter()
+                    .map(|(real, _)| real.as_path())
+                    .filter(|real| keep(real) && seen.insert(crate::path_key::PathKey(real)))
+                    .collect()
+            }
+        }
+    }
+
+    /// Every source path of the action's listed inputs for which `keep`
+    /// holds, deduplicated in order: [`Self::own_where`] followed by the
+    /// groups'.
+    fn listed_where<'a>(
+        &'a self,
+        planned: &'a PlannedAction,
+        keep: &dyn Fn(&Path) -> bool,
+    ) -> Vec<&'a Path> {
+        let mut paths = self.own_where(planned, keep);
         if self.groups.is_empty() {
             return paths;
         }
@@ -13524,7 +13574,7 @@ impl SourceInputs {
             .collect();
         for group in &self.groups {
             for path in &group.sources {
-                if seen.insert(crate::path_key::PathKey(path)) {
+                if keep(path) && seen.insert(crate::path_key::PathKey(path)) {
                     paths.push(path);
                 }
             }
@@ -16681,10 +16731,22 @@ m = macro(implementation=emit)
             &IgnoredSubdirectories::default(),
         );
         assert!(derived.own.is_none());
-        assert_eq!(derived.own(&planned), sources.iter().collect::<Vec<_>>());
+        assert_eq!(
+            derived.own_where(&planned, &|_| true),
+            sources.iter().collect::<Vec<_>>()
+        );
         assert_eq!(
             sources,
             ["/ws/app/b", "/ws/app/a"].map(PathBuf::from).to_vec()
+        );
+        // Filtered before the deduplication: the same paths, in order.
+        assert_eq!(
+            derived.own_where(&planned, &|path| path != Path::new("/ws/app/b")),
+            [Path::new("/ws/app/a")]
+        );
+        assert_eq!(
+            derived.listed_where(&planned, &|path| path != Path::new("/ws/app/a")),
+            [Path::new("/ws/app/b")]
         );
         // A main-repository source below an ignored directory is not
         // planted (not in the action's inputs) but still checked: kept.
@@ -16698,7 +16760,10 @@ m = macro(implementation=emit)
         );
         assert_eq!(planned.action.inputs.len(), 1);
         assert_eq!(kept.own.as_ref(), Some(&sources));
-        assert_eq!(kept.own(&planned), sources.iter().collect::<Vec<_>>());
+        assert_eq!(
+            kept.own_where(&planned, &|_| true),
+            sources.iter().collect::<Vec<_>>()
+        );
     }
 
     /// The occurrences of inputs beginning with shared ones (SharedInputs)
