@@ -691,6 +691,16 @@ change announced to the other two workers; adding a helper is not.
   `ConcurrentArtifactIndex::first_provisional(limit)`;
   `PlannedResults::{seed, catch_up}` are `pub(super)`; a worker delta's
   `reads` hold each provisional read once.
+- 2026-11-12 (eval-t3, the sweep while recording; no frozen interface
+  changed): `delta::InputGroups` is a struct (derefs to its
+  `SingleFlight<u64, ExpandedTree>`; `note_provisional`/`provisional_fill`:
+  a worker's fill from provisional reads by the group's address, and
+  `rewritten`: each such group's rewrite for the build);
+  `SingleFlight::settle` (the coordinator replaces or keeps a memo value,
+  waiting for a fill in progress); `sweep::rewrite` takes the build's
+  `InputGroups`; `sweep::enabled()` no longer depends on the recording
+  (the frozen walk's 4 workers while recording stay); the T3 buffer keeps
+  no analysis beside a sweep-merged delta while recording.
 
 ## 4. Stages and gates
 
@@ -2687,13 +2697,14 @@ What changed:
    (`Recorder::walked`); the tape's commits go to background threads
    (`wait_commits` before every read of the recorder and at the end of
    phase 1); the probes move into the engine for the deferred walk.
-5. **The sweep is off while recording**: a rewritten delta's input groups
-   are groups of their own, so the planned request a snapshot saves shared
-   107 input groups instead of the walk's 105 — not the same from run to
-   run, the action dump the same — and verify mode reported a plan
+5. **The sweep was off while recording**: a rewritten delta's input
+   groups were groups of their own, so the planned request a snapshot saves
+   shared 107 input groups instead of the walk's 105 — not the same from
+   run to run, the action dump the same — and verify mode reported a plan
    mismatch for every walk/eval pairing. Built again at the merge there
-   (the T3 cursor's rebuilds). *Open (sweep):* keep the sharing in the
-   rewrite.
+   (the T3 cursor's rebuilds). Since 2026-11-12 the rewrite keeps the
+   walk's sharing and the sweep runs while recording ("The sweep while
+   recording" below).
 6. `select.rs`: the `Recording` fallback is gone; `--profile` keeps the
    walk (its spans' order).
 
@@ -2774,6 +2785,62 @@ the deferred walk walks on the pipeline (−0.2 GB, ~+3 s;
 | snapshot off | 44.3 / 43.8 s, 8.93 / 8.85 GB | 21.3 / 20.9 s, 9.73 / 9.79 GB |
 
 `--profile` still plans with the walk.
+### The sweep while recording: one rewritten group per tree (eval-t3)
+
+The walk expands a tool's runfiles tree once per build (the memo
+`input_groups`, by the tree's identity) over the canonical producers, and
+every action using the tool holds that one `Arc<InputGroup>`; a snapshot
+encodes the shared groups by pointer (`codec::group_table`), so the
+sharing is part of the saved plan. A worker that fills the group over a
+loser's provisional result names the loser's action; the sweep rewrote
+that group once *per delta* (its cache lived in each `Rewrite`), so every
+rewritten user held its own copy, and later users whose memo lookup found
+the fill stale filled it again — one more copy. Which users were rewritten
+depends on timing: 107/108 shared groups against the walk's 105/106.
+
+Now (`sweep::Rewrite::rewritten_group`): a worker's fill from provisional
+reads is noted with its tree identity (`InputGroups::note_provisional`); a
+group naming a mapped id is rewritten once for the build (by the
+original's address, `InputGroups::rewritten`: the ids a group names map
+alike in every delta that holds it — canonical entries never change, and
+every read is stamped before the reader), and the memo settles on one
+value (`SingleFlight::settle`, waiting for a fill in progress): the memo's
+group when it is the same as the rewrite (filled again over the canonical
+producers since), else the rewrite, kept with its reads rewritten (later
+users hold it, and their staleness check passes). So every holder — the
+rewritten deltas, the earlier refills, the later fills — holds one group
+per tree as in the walk. Test:
+`eval_buffer::a_rewritten_tool_runfiles_group_stays_shared` (a tool whose
+runfiles hold a shared output whose loser published first, six users:
+PERF-GROUPS `distinct=1`, 6 before the fix). `sweep::enabled()` no longer
+excludes the recording; the frozen walk keeps its 4 workers there, and the
+T3 buffer keeps no analysis beside a sweep-merged delta while recording
+(a fallback computes it again; ~/code none) for the peak.
+
+**Verified** (~/code `80d6724f3a` private clone, LTO release `t3-bin-g1`/
+`-g2`, `build --nobuild //src/...`): the encoded plan
+(`BAZEL_RS_SNAPSHOT_PLAN_OUT`) of a snapshot miss is byte-identical walk
+vs eval (467,616,675 bytes, 105 shared groups); PERF-GROUPS `distinct=106`
+in all seven eval runs (walk 106; 1 group rewritten, 6 under
+`PARITY_REVERSE`); a miss → `BAZEL_RS_SNAPSHOT=verify` strict → hit cycle
+clean for walk/eval, eval/walk, eval/eval, walk/walk (verify.log empty);
+the record mode's dump identical walk vs eval (SUMMARY timings aside); the
+action dump 85ae7ead3db2 for every run (miss, verify, hit, off, REVERSE,
+PARITY_VERIFY+REVERSE also under a miss: 490 rewrites compared), `test
+--nobuild` 941d72967f5c; `VERIFY_DELTA`+`VERIFY_ARTIFACTS`, `EVAL_VERIFY`
+(off and a miss) clean.
+
+| ~/code eval, snapshot on, a miss (no dump) | sweep off (`BAZEL_RS_EVAL_SWEEP=0`, = before) | sweep on |
+|---|---|---|
+| `INFO: Elapsed time` | 46.7 / 46.4 / 46.3 / 45.6 s | 45.8 / 46.1 / 47.0 / 46.2 s |
+| max RSS | 9.91 / 9.91 / 9.89 / 9.91 GB | 9.94 / 10.00 / 9.99 GB (analysis kept too: 10.01–10.03) |
+
+No measurable gain while recording (4 workers; the rebuilds were ~0.3 s of
+the cursor), +0.05–0.1 GB at the deferred walk's end (the losers'
+published results and the readers' deltas wait for their merge). Snapshot
+off: 19.8 / 21.8 s, 9.65 / 9.62 GB; the record mode 48.2 s, 9.70 GB (walk
+60.9 s, 9.46 GB).
+
 ### Genuine parity, task B round 4: the cursor and the chains (eval-t3)
 
 A profile of the cursor (pprof, ~/code big walk, 16 workers) ranked its
