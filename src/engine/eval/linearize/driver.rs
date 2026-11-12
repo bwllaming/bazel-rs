@@ -888,20 +888,6 @@ impl Coord<'_> {
     /// ran yet in this phase 1 and its flushes are deferred (not with the
     /// tracker or a recording: their frames are the walk's).
     pub(crate) fn early_ct2(&mut self, shared: &EvalShared) {
-        {
-            use std::io::Write;
-            let _ = writeln!(
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open("/tmp/opencode/w/td-debug.log")
-                    .unwrap(),
-                "TD enter enabled={} kg={} rec={}",
-                crate::engine::parallel::early_enabled(),
-                self.engine.keep_going,
-                crate::observed_fs::recording()
-            );
-        }
         if !crate::engine::parallel::early_enabled()
             || self.engine.keep_going
             || crate::observed_fs::recording()
@@ -911,22 +897,6 @@ impl Coord<'_> {
         let Some(mut lin) = self.lin.take() else {
             return;
         };
-        {
-            use std::io::Write;
-            let _ = writeln!(
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open("/tmp/opencode/w/td-debug.log")
-                    .unwrap(),
-                "TD early_ct2 defer={} tracker={} failure={} position={} plan={}",
-                lin.defer,
-                lin.tracker.is_some(),
-                lin.failure.is_some(),
-                lin.position,
-                lin.plan.len()
-            );
-        }
         if lin.defer && lin.tracker.is_none() && lin.failure.is_none() {
             // The entries after the last flush too (a walk at a later flush
             // covers them all), unless a new platform's flush walks the
