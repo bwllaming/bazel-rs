@@ -45,6 +45,8 @@ pub(crate) struct Coord<'e> {
     /// Every done CT1 value, by variant (pass 1 decides which one is the
     /// configured target).
     pub(crate) ct1_values: FxHashMap<CtKey, Arc<Ct1Value>>,
+    /// The same values by node (pass 1's reads: no key hashed or compared).
+    pub(crate) ct1_by_node: FxHashMap<NodeId, Arc<Ct1Value>>,
     /// The source files whose analysis succeeded (`analyzed_sources`).
     pub(crate) sources: FxHashSet<Label>,
     /// BAZEL_RS_EVAL_RESTARTS: the needs answered `Missing` once.
@@ -507,6 +509,7 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
                 lin: None,
                 ct1_done: Arc::clone(&ct1_done),
                 ct1_values: FxHashMap::default(),
+                ct1_by_node: FxHashMap::default(),
                 sources: FxHashSet::default(),
                 restarted: FxHashSet::default(),
                 speculated: Vec::new(),
@@ -1040,6 +1043,7 @@ impl Coord<'_> {
         self.store.published.extend(published);
         if let Some((ct, ct1)) = ct1 {
             self.ct1_done.first(&ct.key, &ct1);
+            self.ct1_by_node.insert(running.id, Arc::clone(&ct1));
             self.ct1_values.insert(ct, ct1);
         }
         if let Some(label) = source {

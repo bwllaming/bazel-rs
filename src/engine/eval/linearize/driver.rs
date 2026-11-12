@@ -409,7 +409,7 @@ impl Coord<'_> {
             let view = View {
                 store: &self.store,
                 stack,
-                ct1_values: &self.ct1_values,
+                ct1_values: &self.ct1_by_node,
             };
             stat(STAT_PASS1, || lin.pass.resume(&view, &mut lin.ops))
         })?;
@@ -424,7 +424,7 @@ impl Coord<'_> {
         // The walk fails at pass 1's stop: what precedes it is applied.
         let stopped = lin.pass.stopped().map(str::to_owned);
         let started = std::time::Instant::now();
-        let ops = std::mem::take(&mut lin.ops);
+        let mut ops = std::mem::take(&mut lin.ops);
         // snapshot-unrecorded: a diagnostics dump of the tape; it changes nothing the analysis computes.
         if let Some(path) = std::env::var_os("BAZEL_RS_EVAL_TAPE_DUMP") {
             use std::io::Write as _;
@@ -444,7 +444,7 @@ impl Coord<'_> {
                 }
             }
         }
-        for op in ops {
+        for op in ops.drain(..) {
             // The tracker's part, applied where the walk's tracker records
             // it: after the phase 2 of the flushes before it (S3: kept by
             // position while a deferred flush's walk is pending).
@@ -545,6 +545,10 @@ impl Coord<'_> {
                 }
                 _ => {}
             }
+        }
+        // The tape's buffer kept for the next resume (its capacity).
+        if lin.ops.is_empty() {
+            lin.ops = ops;
         }
         STATS[STAT_APPLY].fetch_add(
             started.elapsed().as_micros() as u64,
@@ -1275,11 +1279,19 @@ impl Coord<'_> {
         // in DFS order), in its order.
         let mut canonical = std::mem::take(&mut lin.unpublished);
         canonical.extend(lin.pass.take_canonical());
+        // Room for every configured target done so far (most are published
+        // eventually): growing by doubling moved ~/code's large nodes
+        // through several rehashes on the linearizer's thread.
+        let done = self.ct1_values.len();
+        if !canonical.is_empty() && lin.configured.capacity() < done {
+            let additional = done - lin.configured.len();
+            lin.configured.reserve(additional);
+        }
         for node in canonical {
             let Some(NodeKey::Ct1(ct)) = self.store.keys.get(&node) else {
                 continue;
             };
-            let Some(value) = self.ct1_values.get(ct) else {
+            let Some(value) = self.ct1_by_node.get(&node) else {
                 // Its body is still running (past its `Done`).
                 lin.unpublished.push(node);
                 continue;
@@ -1364,7 +1376,7 @@ impl Coord<'_> {
             let view = View {
                 store: &self.store,
                 stack,
-                ct1_values: &self.ct1_values,
+                ct1_values: &self.ct1_by_node,
             };
             let planned = |key: &ConfiguredTargetKey| {
                 known(key)
@@ -1559,20 +1571,41 @@ impl Transcripts for SubtreeSource<'_, '_> {
     }
 }
 
+/// `format!("{a:?}") == format!("{b:?}")`, `b` compared as it is written
+/// (no second string; it stops at the first difference).
+fn debug_eq<T: std::fmt::Debug>(a: &T, b: &T) -> bool {
+    struct Against<'s> {
+        rest: &'s str,
+    }
+    impl std::fmt::Write for Against<'_> {
+        fn write_str(&mut self, part: &str) -> std::fmt::Result {
+            match self.rest.strip_prefix(part) {
+                Some(rest) => {
+                    self.rest = rest;
+                    Ok(())
+                }
+                None => Err(std::fmt::Error),
+            }
+        }
+    }
+    let left = format!("{a:?}");
+    let mut against = Against { rest: &left };
+    std::fmt::Write::write_fmt(&mut against, format_args!("{b:?}")).is_ok()
+        && against.rest.is_empty()
+}
+
 /// The store as pass 1's source.
 struct View<'a> {
     store: &'a Store,
     stack: &'a [Running],
-    ct1_values: &'a FxHashMap<CtKey, Arc<Ct1Value>>,
+    /// The done CT1 values by node (`Coord::ct1_by_node`).
+    ct1_values: &'a FxHashMap<NodeId, Arc<Ct1Value>>,
 }
 
 impl View<'_> {
     /// A CT1 node's value.
     fn value(&self, node: NodeId) -> Option<&Arc<Ct1Value>> {
-        match self.store.keys.get(&node)? {
-            NodeKey::Ct1(ct) => self.ct1_values.get(ct),
-            _ => None,
-        }
+        self.ct1_values.get(&node)
     }
 
     /// A node's events so far, and whether it finished.
@@ -1652,7 +1685,7 @@ impl Transcripts for View<'_> {
         match (self.value(canonical), self.value(reached)) {
             (Some(canonical), Some(reached)) => match (&canonical.outcome, &reached.outcome) {
                 (Ok(canonical), Ok(reached)) => {
-                    format!("{:?}", canonical.node) == format!("{:?}", reached.node)
+                    std::ptr::eq(canonical, reached) || debug_eq(&canonical.node, &reached.node)
                 }
                 (Err(canonical), Err(reached)) => canonical == reached,
                 _ => false,
@@ -2046,7 +2079,7 @@ impl Engine {
                     let view = View {
                         store: &coord.store,
                         stack,
-                        ct1_values: &coord.ct1_values,
+                        ct1_values: &coord.ct1_by_node,
                     };
                     lin.pass.resume(&view, &mut lin.ops)
                 });
