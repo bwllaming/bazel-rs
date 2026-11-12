@@ -279,13 +279,29 @@ pub(crate) struct CoordGuard<'a, 'e> {
     held: Option<(std::time::Instant, &'static std::panic::Location<'static>)>,
 }
 
+/// BAZEL_RS_EVAL_TIMELINE: the call site holding the coordinator's lock.
+static HOLDER: std::sync::Mutex<Option<&'static std::panic::Location<'static>>> =
+    std::sync::Mutex::new(None);
+
 impl<'a, 'e> CoordGuard<'a, 'e> {
     #[track_caller]
     fn new(guard: MutexGuard<'a, Coord<'e>>) -> Self {
         let caller = std::panic::Location::caller();
         let held = crate::eval_timeline::on().then(|| (std::time::Instant::now(), caller));
+        if held.is_some() {
+            *HOLDER
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(caller);
+        }
         CoordGuard { guard, held }
     }
+}
+
+/// The call site holding the coordinator's lock (with the timeline).
+fn holder() -> Option<&'static std::panic::Location<'static>> {
+    *HOLDER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl<'e> std::ops::Deref for CoordGuard<'_, 'e> {
@@ -616,6 +632,7 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
             }
             Err(std::sync::TryLockError::WouldBlock) => {
                 let started = std::time::Instant::now();
+                let behind = super::super::timeline::on().then(holder).flatten();
                 let _blocked =
                     super::super::timeline::blocked_on(|| "the coordinator's lock".to_owned());
                 let guard = self
@@ -635,6 +652,20 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
                     started,
                 );
                 super::super::timeline::interval("coordinator lock waited", started);
+                if let Some(behind) = behind {
+                    super::super::timeline::add_dyn(
+                        || {
+                            format!(
+                                "coordinator lock waited at {}:{} behind {}:{}",
+                                caller.file(),
+                                caller.line(),
+                                behind.file(),
+                                behind.line()
+                            )
+                        },
+                        started,
+                    );
+                }
                 COORD_LOCKS[2].fetch_add(
                     started.elapsed().as_micros() as u64,
                     std::sync::atomic::Ordering::Relaxed,

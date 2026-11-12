@@ -587,8 +587,13 @@ impl TapeReplay {
         }
     }
 
-    /// The tracker's part of a tape op (`None`: the tracker ignores it).
-    pub(super) fn compact(&mut self, op: &super::eval::transcript::TapeOp) -> Option<TrackOp> {
+    /// The tracker's part of a tape op (`None`: the tracker ignores it);
+    /// `reached`: a `Reach`'s configured key.
+    pub(super) fn compact(
+        &mut self,
+        op: &super::eval::transcript::TapeOp,
+        reached: Option<&ConfiguredTargetKey>,
+    ) -> Option<TrackOp> {
         use super::eval::transcript::{Event, SegmentKind, TapeOp};
         let tables = &mut self.tables;
         Some(match op {
@@ -608,16 +613,19 @@ impl TapeReplay {
             TapeOp::Segment(SegmentKind::Setup | SegmentKind::TopLevelAspects { .. }) => {
                 TrackOp::Segment
             }
-            TapeOp::Reach { key, enter, .. } => TrackOp::Reach {
-                key: intern(
-                    &mut tables.keys,
-                    &mut tables.key_ids,
-                    &(
-                        key.label.clone(),
-                        Some(key.config),
-                        key.apply_rule_transition,
-                    ),
-                ),
+            TapeOp::Reach { enter, .. } => TrackOp::Reach {
+                key: {
+                    let key = reached?;
+                    intern(
+                        &mut tables.keys,
+                        &mut tables.key_ids,
+                        &(
+                            key.label.clone(),
+                            Some(key.config),
+                            key.apply_rule_transition,
+                        ),
+                    )
+                },
                 enter: *enter,
             },
             TapeOp::Leave => TrackOp::Leave,

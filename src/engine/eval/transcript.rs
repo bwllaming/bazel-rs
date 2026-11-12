@@ -183,11 +183,7 @@ pub(crate) enum TapeOp {
     /// active parent is [`Linearized::edges`](super::linearize::pass1));
     /// `enter`: not a memo hit, its frame begins (`track_enter`,
     /// `track_entry(plan length)`) and a `Leave` ends it.
-    Reach {
-        node: NodeId,
-        key: ConfiguredTargetKey,
-        enter: bool,
-    },
+    Reach { node: NodeId, enter: bool },
     /// The entered reach failed before its body (pass 1's cycle or depth
     /// check): the error the reacher receives.
     Fail(String),

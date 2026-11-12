@@ -393,7 +393,34 @@ impl Coord<'_> {
                     .map(|stat| stat.load(std::sync::atomic::Ordering::Relaxed)),
             )
         });
+        phase(1);
         let result = self.linearize(shared);
+        phase(0);
+        if super::super::timeline::on()
+            && let Some((arrived, at)) = ARRIVAL
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        {
+            super::super::timeline::add_dyn(
+                || {
+                    let name = [
+                        "between steps",
+                        "drain",
+                        "pass 1",
+                        "release",
+                        "tape",
+                        "flush",
+                        "after the tape",
+                    ];
+                    format!(
+                        "a step's end after a speculation waits (arrived in {})",
+                        name.get(usize::from(at)).copied().unwrap_or("?")
+                    )
+                },
+                arrived,
+            );
+        }
         // BAZEL_RS_EVAL_TIMELINE: a step of 5 ms or more by its parts.
         if let Some((started, before)) = timed
             && started.elapsed() >= std::time::Duration::from_millis(5)
@@ -445,8 +472,11 @@ impl Coord<'_> {
                 stack,
                 ct1_values: &self.ct1_by_node,
             };
+            phase(2);
+            lin.pass.reserve(self.ct1_values.len());
             stat(STAT_PASS1, || lin.pass.resume(&view, &mut lin.ops))
         })?;
+        phase(3);
         // The plan's length once this resume's entries are applied.
         let planned = lin.plan.len()
             + lin
@@ -470,9 +500,12 @@ impl Coord<'_> {
             {
                 for op in &ops {
                     let _ = match op {
-                        TapeOp::Reach {
-                            node, key, enter, ..
-                        } => writeln!(file, "Reach {node:?} {key} enter={enter}"),
+                        TapeOp::Reach { node, enter } => match self.store.keys.get(node) {
+                            Some(NodeKey::Ct1(ct)) => {
+                                writeln!(file, "Reach {node:?} {} enter={enter}", ct.key)
+                            }
+                            _ => writeln!(file, "Reach {node:?} ? enter={enter}"),
+                        },
                         op => writeln!(file, "{op:?}"),
                     };
                 }
@@ -481,6 +514,7 @@ impl Coord<'_> {
         // A step yields to the speculations between the tape's ops (the
         // rest applied first by the next linearization).
         let yielding = lin.pass.stepping() && yields() && stopped.is_none();
+        phase(4);
         let mut leftover = Vec::new();
         let mut drained = ops.drain(..);
         while let Some(op) = drained.next() {
@@ -488,7 +522,16 @@ impl Coord<'_> {
             // it: after the phase 2 of the flushes before it (S3: kept by
             // position while a deferred flush's walk is pending).
             if lin.tracker.is_some()
-                && let Some(track) = lin.replay.compact(&op)
+                && let Some(track) = lin.replay.compact(
+                    &op,
+                    match &op {
+                        TapeOp::Reach { node, .. } => match self.store.keys.get(node) {
+                            Some(NodeKey::Ct1(ct)) => Some(&ct.key),
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                )
             {
                 if lin.track.is_empty() && lin.segments.is_empty() {
                     if let Some(tracker) = lin.tracker.as_deref_mut() {
@@ -575,7 +618,9 @@ impl Coord<'_> {
                         std::sync::atomic::Ordering::Relaxed,
                     );
                     let point = lin.pass.take_flush_point();
+                    phase(5);
                     let flushed = self.flush(lin, shared, point);
+                    phase(4);
                     STATS[STAT_APPLY].fetch_sub(
                         started.elapsed().as_micros() as u64,
                         std::sync::atomic::Ordering::Relaxed,
@@ -590,6 +635,7 @@ impl Coord<'_> {
             }
         }
         drop(drained);
+        phase(6);
         // The tape's buffer kept for the next resume (its capacity), or
         // the ops not applied yet.
         if !leftover.is_empty() {
@@ -1495,7 +1541,7 @@ impl Coord<'_> {
         match lin.pass.blocked_on()? {
             Blocker::Node(node) => Some((
                 self.store.keys.get(&node)?.clone(),
-                lin.pass.plan().len() as u64,
+                lin.pass.planned() as u64,
             )),
             Blocker::Segment => None,
         }
@@ -1800,6 +1846,7 @@ impl Engine {
             no_edges: true,
         });
         pass.index_by_node();
+        pass.plan_on_tape();
         let mut lin = Linearizer {
             pass,
             ops: Vec::new(),
@@ -2456,8 +2503,30 @@ pub(crate) fn yields() -> bool {
 /// steps yield to, from its creation to its drop (once the lock is held).
 pub(crate) struct PriorityWait(());
 
+/// BAZEL_RS_EVAL_TIMELINE: where the linearizer's step is (a waiter's
+/// arrival is attributed to it) and the first waiter's arrival.
+static LIN_PHASE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static ARRIVAL: std::sync::Mutex<Option<(std::time::Instant, u8)>> = std::sync::Mutex::new(None);
+
+fn phase(phase: u8) {
+    if super::super::timeline::on() {
+        LIN_PHASE.store(phase, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 impl PriorityWait {
     pub(crate) fn new() -> Self {
+        if super::super::timeline::on() {
+            let mut arrival = ARRIVAL
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if arrival.is_none() {
+                *arrival = Some((
+                    std::time::Instant::now(),
+                    LIN_PHASE.load(std::sync::atomic::Ordering::Relaxed),
+                ));
+            }
+        }
         PRIORITY_WAITERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         PriorityWait(())
     }
@@ -2864,7 +2933,16 @@ fn drive(
         let compat = std::time::Instant::now();
         // The requested target's compatibility, on the published nodes.
         let analyzed = analyzed.and_then(|()| {
-            let mut coord = bodies.coord();
+            // What the transcripts gained since, in steps too (the lock
+            // kept from the last one: the check reads what it published).
+            let mut coord = loop {
+                let mut coord = bodies.coord();
+                if !evaluator.serving() || !coord.linearize_step(shared, LINEARIZE_STEP) {
+                    break coord;
+                }
+                drop(coord);
+                let_priority_pass();
+            };
             if let Err(error) = coord.linearize(shared) {
                 return Err(coord.flush_failure(shared, top).unwrap_or(error));
             }

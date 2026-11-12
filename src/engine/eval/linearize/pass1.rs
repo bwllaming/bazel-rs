@@ -295,6 +295,10 @@ pub(crate) struct Pass1 {
     canonical_by_node: Vec<Option<NodeId>>,
     /// Whether `canonical_by_node` is kept ([`Pass1::index_by_node`]).
     by_node: bool,
+    /// The plan's length.
+    planned: usize,
+    /// [`Pass1::plan_on_tape`].
+    tape_plan: bool,
     /// The active chains, innermost (a memo's fresh chain) last.
     chains: Vec<Vec<ConfiguredTargetKey>>,
     memos: FxHashSet<NodeId>,
@@ -417,6 +421,8 @@ impl Pass1 {
             visited: FxHashMap::default(),
             canonical_by_node: Vec::new(),
             by_node: false,
+            planned: 0,
+            tape_plan: false,
             chains: Vec::new(),
             memos: FxHashSet::default(),
             packages: FxHashSet::default(),
@@ -483,9 +489,27 @@ impl Pass1 {
         )
     }
 
-    /// The plan so far.
+    /// The plan so far (empty with [`Self::plan_on_tape`]).
     pub(crate) fn plan(&self) -> &[CtKey] {
         &self.out.plan
+    }
+
+    /// The plan's length so far.
+    pub(crate) fn planned(&self) -> usize {
+        self.planned
+    }
+
+    /// The plan goes to the tape only ([`Linearized::plan`] stays empty:
+    /// the driver keeps its own).
+    pub(crate) fn plan_on_tape(&mut self) {
+        self.tape_plan = true;
+    }
+
+    /// Room for `count` complete configured keys in all.
+    pub(crate) fn reserve(&mut self, count: usize) {
+        if self.visited.capacity() < count {
+            self.visited.reserve(count - self.visited.len());
+        }
     }
 
     /// A configured key the walk analyzed outside phase 1's transcripts
@@ -494,7 +518,10 @@ impl Pass1 {
     pub(crate) fn external(&mut self, key: ConfiguredTargetKey, node: NodeId, planned: bool) {
         self.visit(key.clone(), node);
         if planned {
-            self.out.plan.push(CtKey::plain(key));
+            self.planned += 1;
+            if !self.tape_plan {
+                self.out.plan.push(CtKey::plain(key));
+            }
         }
     }
 
@@ -805,7 +832,10 @@ impl Pass1 {
                     return Ok(Some(Blocker::Node(node)));
                 }
                 let incompatible = source.ct1(node).is_some_and(|record| record.incompatible);
-                self.out.plan.push(ct.clone());
+                self.planned += 1;
+                if !self.tape_plan {
+                    self.out.plan.push(ct.clone());
+                }
                 sink.op(TapeOp::Plan {
                     key: ct,
                     node,
@@ -933,7 +963,6 @@ impl Pass1 {
         }
         sink.op(TapeOp::Reach {
             node,
-            key: key.clone(),
             enter: canonical.is_none(),
         });
         if let Some(canonical) = canonical {
