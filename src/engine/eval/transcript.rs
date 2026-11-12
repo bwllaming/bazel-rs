@@ -179,13 +179,13 @@ pub(crate) enum SegmentKind {
 pub(crate) enum TapeOp {
     /// A top-level segment begins (its active chain is empty).
     Segment(SegmentKind),
-    /// A CT1 node is reached (`track_key`, `record_edge(parent, key)`);
+    /// A CT1 node is reached (`track_key`; the keep-going edge from the
+    /// active parent is [`Linearized::edges`](super::linearize::pass1));
     /// `enter`: not a memo hit, its frame begins (`track_enter`,
     /// `track_entry(plan length)`) and a `Leave` ends it.
     Reach {
         node: NodeId,
         key: ConfiguredTargetKey,
-        parent: Option<ConfiguredTargetKey>,
         enter: bool,
     },
     /// The entered reach failed before its body (pass 1's cycle or depth
@@ -198,7 +198,12 @@ pub(crate) enum TapeOp {
     /// The plan index of a configured target (pass 1's order); `position`:
     /// the tracker records its plan position (`track_position`; not for an
     /// incompatible target).
-    Plan { key: CtKey, position: bool },
+    Plan {
+        key: CtKey,
+        /// The planning node (its CT1 value holds the rule).
+        node: NodeId,
+        position: bool,
+    },
     /// Merge the CT2 deltas of plan[flushed..len] here.
     Flush,
 }
@@ -214,8 +219,12 @@ pub(crate) struct Tape {
 
 impl Tape {
     /// Append a plan entry; returns its plan index.
-    pub(crate) fn plan(&mut self, key: CtKey, position: bool) -> usize {
-        self.ops.push(TapeOp::Plan { key, position });
+    pub(crate) fn plan(&mut self, key: CtKey, node: NodeId, position: bool) -> usize {
+        self.ops.push(TapeOp::Plan {
+            key,
+            node,
+            position,
+        });
         self.planned += 1;
         self.planned - 1
     }
@@ -272,9 +281,9 @@ mod tests {
         ));
         let mut tape = Tape::default();
         tape.effect(Event::Warn("w".into()));
-        assert_eq!(tape.plan(key.clone(), true), 0);
+        assert_eq!(tape.plan(key.clone(), NodeId(0), true), 0);
         tape.flush();
-        assert_eq!(tape.plan(key, false), 1);
+        assert_eq!(tape.plan(key, NodeId(0), false), 1);
         assert_eq!(tape.planned(), 2);
         assert_eq!(tape.ops.len(), 4);
     }

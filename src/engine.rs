@@ -2060,7 +2060,7 @@ fn no_files_error_for(
 /// strings per tree level on ~663k lookups of `//src/beyondwork.ai/...`.
 /// Shared (T3): a frozen walk's view holds them without a copy.
 type ConfiguredNodes =
-    Shared<HashMap<ConfiguredTargetKey, ConfiguredNode, crate::fast_hash::FxBuildHasher>>;
+    Shared<HashMap<ConfiguredTargetKey, Arc<ConfiguredNode>, crate::fast_hash::FxBuildHasher>>;
 
 /// The transition of a dependency edge.
 #[derive(Clone, Debug, PartialEq, Eq)]

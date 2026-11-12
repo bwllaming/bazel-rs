@@ -219,7 +219,7 @@ impl Host for Walk<'_> {
     }
 
     fn configured_node(&mut self, key: &ConfiguredTargetKey) -> Option<ConfiguredNode> {
-        self.configured.get(key).cloned()
+        self.configured.get(key).map(|node| (**node).clone())
     }
 
     fn configured_rule(&mut self, key: &ConfiguredTargetKey) -> Option<Arc<Rule>> {
@@ -399,7 +399,7 @@ impl Host for Walk<'_> {
     }
 
     fn publish_node(&mut self, key: &ConfiguredTargetKey, node: ConfiguredNode) {
-        self.configured.insert(key.clone(), node);
+        self.configured.insert(key.clone(), Arc::new(node));
     }
 
     fn record_delegation(&mut self, key: ConfiguredTargetKey, owner: ConfiguredTargetKey) {

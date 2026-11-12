@@ -224,8 +224,12 @@ pub(crate) trait TapeSink {
 impl TapeSink for Tape {
     fn op(&mut self, op: TapeOp) {
         match op {
-            TapeOp::Plan { key, position } => {
-                self.plan(key, position);
+            TapeOp::Plan {
+                key,
+                node,
+                position,
+            } => {
+                self.plan(key, node, position);
             }
             op => self.push(op),
         }
@@ -286,6 +290,11 @@ pub(crate) struct Pass1 {
     out: Linearized,
     /// Complete configured keys and their canonical node (`configured`).
     visited: FxHashMap<ConfiguredTargetKey, NodeId>,
+    /// `visited` by the node reached (its variant): the canonical node of
+    /// the node's key once complete, read without hashing the key.
+    canonical_by_node: Vec<Option<NodeId>>,
+    /// Whether `canonical_by_node` is kept ([`Pass1::index_by_node`]).
+    by_node: bool,
     /// The active chains, innermost (a memo's fresh chain) last.
     chains: Vec<Vec<ConfiguredTargetKey>>,
     memos: FxHashSet<NodeId>,
@@ -406,6 +415,8 @@ impl Pass1 {
         Self {
             out: Linearized::default(),
             visited: FxHashMap::default(),
+            canonical_by_node: Vec::new(),
+            by_node: false,
             chains: Vec::new(),
             memos: FxHashSet::default(),
             packages: FxHashSet::default(),
@@ -481,7 +492,7 @@ impl Pass1 {
     /// (a deferred target platform's tree planned by a flush's phase 2):
     /// complete from now on, and in the plan where the flush put it.
     pub(crate) fn external(&mut self, key: ConfiguredTargetKey, node: NodeId, planned: bool) {
-        self.visited.insert(key.clone(), node);
+        self.visit(key.clone(), node);
         if planned {
             self.out.plan.push(CtKey::plain(key));
         }
@@ -494,6 +505,12 @@ impl Pass1 {
 
     fn chain(&mut self) -> &mut Vec<ConfiguredTargetKey> {
         self.chains.last_mut().expect("a segment's chain")
+    }
+
+    /// Keep the canonical nodes by the node reached (a table as large as
+    /// the node ids: for a pass over the whole evaluation, not a subtree's).
+    pub(crate) fn index_by_node(&mut self) {
+        self.by_node = true;
     }
 
     /// Bound the events of each [`Self::resume`] (`None`: no bound).
@@ -713,13 +730,20 @@ impl Pass1 {
         }
         match *event {
             Event::Reach(node) => {
-                if let Some(blocker) = self.reach_blocker(source, node) {
+                let NodeKey::Ct1(ct) = source.key(node) else {
+                    return Err(format!(
+                        "internal error: pass 1: a Reach of the non-CT1 node {:?}",
+                        source.key(node)
+                    ));
+                };
+                let canonical = self.canonical(node, &ct.key);
+                if let Some(blocker) = self.reach_blocker(source, node, ct, canonical) {
                     return Ok(Some(blocker));
                 }
                 if self.in_fresh_memo() {
                     self.chain().clear();
                 }
-                self.reach(source, sink, node)?;
+                self.reach(source, sink, node, ct, canonical)?;
             }
             Event::PkgCommit(ref package, _) => {
                 if self.packages.insert(package.clone()) {
@@ -784,6 +808,7 @@ impl Pass1 {
                 self.out.plan.push(ct.clone());
                 sink.op(TapeOp::Plan {
                     key: ct,
+                    node,
                     position: !incompatible,
                 });
             }
@@ -792,7 +817,7 @@ impl Pass1 {
                     // The walk pops the top of the chain (the key's own
                     // entry unless a caught failure left more).
                     self.chain().pop();
-                    self.visited.insert(ct.key, node);
+                    self.visit(ct.key, node);
                     self.canonical.push(node);
                     // Its delegation is recorded when the frame ends (the
                     // value is complete there).
@@ -837,18 +862,52 @@ impl Pass1 {
         Ok(None)
     }
 
+    /// `key` complete as `node` (its canonical node, or [`EXTERNAL`]).
+    fn visit(&mut self, key: ConfiguredTargetKey, node: NodeId) {
+        if self
+            .visited
+            .insert(key, node)
+            .is_some_and(|old| old != node)
+        {
+            // (A key's canonical node does not change; if it did, the
+            // variants' cached reads would be stale.)
+            self.canonical_by_node.clear();
+        }
+    }
+
+    /// The canonical node of `node`'s key `key` once complete
+    /// (`visited`), cached by `node`.
+    fn canonical(&mut self, node: NodeId, key: &ConfiguredTargetKey) -> Option<NodeId> {
+        let slot = node.0 as usize;
+        if let Some(Some(canonical)) = self.canonical_by_node.get(slot) {
+            return Some(*canonical);
+        }
+        let canonical = self.visited.get(key).copied()?;
+        if !self.by_node {
+            return Some(canonical);
+        }
+        if self.canonical_by_node.len() <= slot {
+            self.canonical_by_node.resize(slot + 1, None);
+        }
+        self.canonical_by_node[slot] = Some(canonical);
+        Some(canonical)
+    }
+
     /// What a reach of `node` must wait for before it is replayed: the
     /// node's transcript when it is entered, its value when it is a memo
     /// hit of another variant (the values are compared).
-    fn reach_blocker<T: Transcripts + ?Sized>(&self, source: &T, node: NodeId) -> Option<Blocker> {
+    fn reach_blocker<T: Transcripts + ?Sized>(
+        &self,
+        source: &T,
+        node: NodeId,
+        ct: &CtKey,
+        canonical: Option<NodeId>,
+    ) -> Option<Blocker> {
         if source.evaluation_done() {
             return None;
         }
-        let NodeKey::Ct1(ct) = source.key(node) else {
-            return None;
-        };
-        match self.visited.get(&ct.key) {
-            Some(&canonical) => (canonical != node && canonical != EXTERNAL && !source.ready(node))
+        match canonical {
+            Some(canonical) => (canonical != node && canonical != EXTERNAL && !source.ready(node))
                 .then_some(Blocker::Node(node)),
             None => {
                 let chain = self.chains.last()?;
@@ -864,23 +923,17 @@ impl Pass1 {
         source: &T,
         sink: &mut dyn TapeSink,
         node: NodeId,
+        ct: &CtKey,
+        canonical: Option<NodeId>,
     ) -> Result<(), String> {
-        let NodeKey::Ct1(ct) = source.key(node) else {
-            return Err(format!(
-                "internal error: pass 1: a Reach of the non-CT1 node {:?}",
-                source.key(node)
-            ));
-        };
-        let key = ct.key.clone();
-        let parent = self.chain().last().cloned();
-        let canonical = self.visited.get(&key).copied();
+        let key = &ct.key;
         if !self.no_edges {
-            self.out.edges.push((parent.clone(), key.clone()));
+            let parent = self.chain().last().cloned();
+            self.out.edges.push((parent, key.clone()));
         }
         sink.op(TapeOp::Reach {
             node,
             key: key.clone(),
-            parent,
             enter: canonical.is_none(),
         });
         if let Some(canonical) = canonical {
@@ -901,17 +954,17 @@ impl Pass1 {
             ));
         }
         if let Some(forced) = &ct.forced_exec
-            && self.out.toolchain_implementations.get(&key) != Some(forced)
+            && self.out.toolchain_implementations.get(key) != Some(forced)
         {
             self.out.divergences.push(format!(
                 "{key}: analyzed with the forced execution platform {forced}, the first-visit one is {:?}",
-                self.out.toolchain_implementations.get(&key)
+                self.out.toolchain_implementations.get(key)
             ));
         }
         let chain = self.chains.last().expect("a segment's chain");
-        if let Some(start) = chain.iter().position(|active| *active == key) {
+        if let Some(start) = chain.iter().position(|active| active == key) {
             let error = source.cycle_error(
-                &key,
+                key,
                 &chain[..start],
                 &chain[start..],
                 self.trimmed_root.as_ref(),
@@ -944,7 +997,7 @@ impl Pass1 {
                 "internal error: pass 1 re-enters {key} while replaying it (a reach across a fresh chain)"
             ));
         }
-        self.chain().push(key);
+        self.chain().push(key.clone());
         self.frames.push(Frame::Body {
             node,
             ct: ct.clone(),
@@ -1898,7 +1951,7 @@ pub(crate) mod tests {
             let reference = run(&f, &segments, Options::default()).unwrap();
             let expected = outputs(&reference, &reference.tape.ops);
             let mut rng = Rng(seed ^ 0xdead_beef);
-            for _ in 0..4 {
+            for round in 0..4 {
                 let mut order = all.clone();
                 rng.shuffle(&mut order);
                 f.segments = segments.clone();
@@ -1906,6 +1959,10 @@ pub(crate) mod tests {
                 f.visible = Some(HashMap::new());
                 f.released.clear();
                 let mut pass = Pass1::new(Options::default());
+                // Half of the rounds read the canonical nodes by node.
+                if round % 2 == 1 {
+                    pass.index_by_node();
+                }
                 let mut ops: Vec<TapeOp> = Vec::new();
                 let mut released = 0;
                 for &node in &order {

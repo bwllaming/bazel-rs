@@ -89,7 +89,7 @@ pub(crate) struct Ct1Value {
 /// A configured target's phase-1 results.
 pub(crate) struct Ct1Ok {
     /// `configured[key]` (ConfiguredNode).
-    pub(crate) node: ConfiguredNode,
+    pub(crate) node: Arc<ConfiguredNode>,
     /// The select()-configured rule (`plan.push((key, rule))`;
     /// `configured_rules` and the cquery capture for custom rules).
     pub(crate) rule: Arc<Rule>,

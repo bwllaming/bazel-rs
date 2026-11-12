@@ -338,7 +338,7 @@ impl<'c, 'e> EvalHost<'c, 'e> {
                 let acc = std::mem::take(&mut self.acc);
                 match (acc.node, acc.rule) {
                     (Some(node), Some(rule)) => Ok(Ct1Ok {
-                        node,
+                        node: Arc::new(node),
                         rule,
                         delegate: acc.delegate,
                         toolchain_context: acc.toolchain_context,
@@ -687,7 +687,7 @@ impl Host for EvalHost<'_, '_> {
         if self.own_key() == Some(key) {
             return self.acc.node.clone();
         }
-        self.ct1_ok(key, |ok| ok.node.clone())
+        self.ct1_ok(key, |ok| (*ok.node).clone())
     }
 
     fn configured_rule(&mut self, key: &ConfiguredTargetKey) -> Option<Arc<Rule>> {

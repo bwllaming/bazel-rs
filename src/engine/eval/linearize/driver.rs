@@ -555,10 +555,10 @@ impl Coord<'_> {
                 // The engine's packages at once (work ahead of its turn
                 // reads them; the walk loaded none of them itself).
                 TapeOp::Effect(Event::PkgCommit(package, _)) => self.commit_package(&package),
-                TapeOp::Plan { key, .. } => {
+                TapeOp::Plan { key, node, .. } => {
                     let rule = self
-                        .ct1_values
-                        .get(&key)
+                        .ct1_by_node
+                        .get(&node)
                         .and_then(|value| value.outcome.as_ref().ok())
                         .map(|ok| Arc::clone(&ok.rule))
                         .ok_or_else(|| {
@@ -1795,11 +1795,13 @@ impl Engine {
         crate::ui::set_count_deferred(true);
         let shared = EvalShared::from_engine(self);
         super::super::timeline::mark(|| "the shared view built".to_owned());
+        let mut pass = Pass1::new(Options {
+            warnings,
+            no_edges: true,
+        });
+        pass.index_by_node();
         let mut lin = Linearizer {
-            pass: Pass1::new(Options {
-                warnings,
-                no_edges: true,
-            }),
+            pass,
             ops: Vec::new(),
             tracker,
             replay: TapeReplay::new(0),
@@ -2238,7 +2240,7 @@ pub(crate) fn publish_ct1(
     if configured.contains_key(&key) {
         return false;
     }
-    configured.insert(key.clone(), ok.node.clone());
+    configured.insert(key.clone(), Arc::clone(&ok.node));
     if let Some(context) = &ok.toolchain_context {
         engine
             .toolchain_contexts
