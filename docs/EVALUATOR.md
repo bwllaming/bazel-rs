@@ -2799,6 +2799,8 @@ lowerings 5%, declarations 4%. But the walk was gated by chains too
   selected from its `srcs`' published views. Natives committed at their
   turn: 11,020 aliases + 163 filegroups + 27 label flags → only the 936
   genrules (their action node and output registration are the commit's).
+  With the tracker these merges are off like every fast native merge
+  (task E: committed at the turn, in their planning frame).
 - **Placements**: an application's input check remembers the Files found
   registered, by identity, for the rest of the placement (an entry visible
   at a turn stays so); the aspect table's key hashes a base view's Files
