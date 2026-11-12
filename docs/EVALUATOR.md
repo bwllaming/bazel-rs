@@ -698,9 +698,10 @@ change announced to the other two workers; adding a helper is not.
   `rewritten`: each such group's rewrite for the build);
   `SingleFlight::settle` (the coordinator replaces or keeps a memo value,
   waiting for a fill in progress); `sweep::rewrite` takes the build's
-  `InputGroups`; `sweep::enabled()` no longer depends on the recording
-  (the frozen walk's 4 workers while recording stay); the T3 buffer keeps
-  no analysis beside a sweep-merged delta while recording.
+  `InputGroups`; `sweep::enabled()` while the snapshot records only with
+  `BAZEL_RS_EVAL_SWEEP_RECORDING=1` (the frozen walk's 4 workers while
+  recording stay); the T3 buffer keeps no analysis beside a sweep-merged
+  delta while recording.
 
 ## 4. Stages and gates
 
@@ -2703,8 +2704,8 @@ What changed:
    run to run, the action dump the same — and verify mode reported a plan
    mismatch for every walk/eval pairing. Built again at the merge there
    (the T3 cursor's rebuilds). Since 2026-11-12 the rewrite keeps the
-   walk's sharing and the sweep runs while recording ("The sweep while
-   recording" below).
+   walk's sharing; the sweep runs while recording with
+   `BAZEL_RS_EVAL_SWEEP_RECORDING=1` ("The sweep while recording" below).
 6. `select.rs`: the `Recording` fallback is gone; `--profile` keeps the
    walk (its spans' order).
 
@@ -2815,7 +2816,8 @@ runfiles hold a shared output whose loser published first, six users:
 PERF-GROUPS `distinct=1`, 6 before the fix). `sweep::enabled()` no longer
 excludes the recording; the frozen walk keeps its 4 workers there, and the
 T3 buffer keeps no analysis beside a sweep-merged delta while recording
-(a fallback computes it again; ~/code none) for the peak.
+(a fallback computes it again; ~/code none) for the peak. (Since made
+opt-in while recording, below.)
 
 **Verified** (~/code `80d6724f3a` private clone, LTO release `t3-bin-g1`/
 `-g2`, `build --nobuild //src/...`): the encoded plan
@@ -2837,7 +2839,10 @@ PARITY_VERIFY+REVERSE also under a miss: 490 rewrites compared), `test
 
 No measurable gain while recording (4 workers; the rebuilds were ~0.3 s of
 the cursor), +0.05–0.1 GB at the deferred walk's end (the losers'
-published results and the readers' deltas wait for their merge). Snapshot
+published results and the readers' deltas wait for their merge). So the
+sweep while recording is **opt-in** (`BAZEL_RS_EVAL_SWEEP_RECORDING=1`;
+by default such deltas are built again at the merge there, as before);
+the sharing fix applies wherever the sweep runs. Snapshot
 off: 19.8 / 21.8 s, 9.65 / 9.62 GB; the record mode 48.2 s, 9.70 GB (walk
 60.9 s, 9.46 GB).
 

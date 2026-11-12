@@ -50,7 +50,16 @@ pub(super) fn enabled() -> bool {
         std::env::var_os("BAZEL_RS_EVAL_SWEEP").is_none_or(|value| value != "0")
             && parallel::buffered()
     });
-    *ENABLED
+    // While the analysis snapshot records only with
+    // `BAZEL_RS_EVAL_SWEEP_RECORDING=1`: it keeps the walk's plan there too
+    // (one rewritten group per tree, Rewrite::rewritten_group) but gains no
+    // time with the recording's 4 workers and costs memory (~/code miss
+    // peak 9.92 -> 10.0 GB); such deltas are built again at the merge.
+    static RECORDING: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a merge strategy switch; the output is the same either way.
+        std::env::var_os("BAZEL_RS_EVAL_SWEEP_RECORDING").is_some_and(|value| value == "1")
+    });
+    *ENABLED && (*RECORDING || !crate::observed_fs::recording())
 }
 
 /// `BAZEL_RS_PARITY_VERIFY=1`: every rewritten delta is built again as the

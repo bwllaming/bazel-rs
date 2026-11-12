@@ -733,7 +733,7 @@ filegroup(name = "all", srcs = [":everything", ":after_cpu", ":sources", ":via_d
     );
     let stats = String::from_utf8_lossy(&stats.stderr);
     assert!(!stats.contains("flushes deferred 0,"), "{stats}");
-    let runs: [(usize, &[(&str, &str)]); 10] = [
+    let runs: [(usize, &[(&str, &str)]); 11] = [
         (1, &[]),
         (2, &[]),
         (8, &[]),
@@ -752,6 +752,14 @@ filegroup(name = "all", srcs = [":everything", ":after_cpu", ":sources", ":via_d
         (8, &[("BAZEL_RS_EVAL_RESTARTS", "5")]),
         (8, &[("BAZEL_RS_EVAL_FROZEN_PREPARES", "all")]),
         (8, &[("BAZEL_RS_EVAL_FROZEN_PREPARES", "0")]),
+        // The sweep while recording (opt-in, super::sweep::enabled).
+        (
+            8,
+            &[
+                ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all"),
+                ("BAZEL_RS_EVAL_SWEEP_RECORDING", "1"),
+            ],
+        ),
     ];
     for (threads, env) in runs {
         let eval = planned("eval", threads, env);
