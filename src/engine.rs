@@ -3482,6 +3482,10 @@ pub struct Engine {
     /// planning state's `views`, `target_identities` and
     /// `native_output_groups` are in it meanwhile.
     frozen_walk: Option<Arc<parallel::Frozen>>,
+    /// Task D: the frozen walk's jobs started during phase 1 over the
+    /// flushed plan segments (parallel::buffer::EarlyCt2), handed to the
+    /// first buffered walk.
+    early_ct2: Option<Box<parallel::EarlyCt2>>,
 }
 
 impl Engine {
@@ -3597,6 +3601,7 @@ impl Engine {
             eval_pass2: None,
             eval_async_phase2: false,
             frozen_walk: None,
+            early_ct2: None,
         }
     }
 

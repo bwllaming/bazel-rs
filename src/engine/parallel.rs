@@ -38,6 +38,7 @@ pub(super) mod aspect_jobs;
 pub(super) mod aspects;
 mod buffer;
 mod frozen;
+pub(super) use buffer::{EarlyCt2, early_enabled};
 pub(super) use frozen::{Frozen, PlannedResults};
 use std::collections::BTreeSet as OrderedSet;
 use std::sync::mpsc;
@@ -1928,7 +1929,8 @@ impl Engine {
             && crate::observed_fs::recording()
             // snapshot-unrecorded: a scheduling switch (`frozen`: the tail frozen too); the output is the same either way.
             && std::env::var_os("BAZEL_RS_EVAL_RECORDING_TAIL").is_none_or(|value| value != "frozen");
-        if frozen::walk_min().is_some_and(|min| remaining >= min)
+        // (Task D: a walk taking early boards' jobs is a buffered one.)
+        if (frozen::walk_min().is_some_and(|min| remaining >= min) || self.early_ct2.is_some())
             && !tail_while_recording
             && self.frozen_prepares(state)
         {
@@ -3661,6 +3663,15 @@ impl Engine {
     /// walk that defers its lowerings, so their nodes join the plan at
     /// their turn; an execution plan without --keep_going, whose failures
     /// skip dependents at the failing turn, and without an aquery capture).
+    /// Task D: [`Self::commits_ahead`] of the walk to come (which defers
+    /// its lowerings unless --keep_going).
+    pub(super) fn commits_ahead_when_walking(&self) -> bool {
+        !self.keep_going
+            && !self.semantic_only()
+            && self.aquery_capture.is_none()
+            && commit_ahead_enabled()
+    }
+
     fn commits_ahead(&self, state: &ActionPlanning) -> bool {
         state.nodes.deferring
             && !self.keep_going

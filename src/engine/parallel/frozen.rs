@@ -64,7 +64,8 @@ pub(in crate::engine) struct Frozen {
     pub(in crate::engine) output_groups:
         BTreeMap<ConfiguredTargetKey, starlark::values::OwnedFrozenValue>,
     pub(in crate::engine) results: Arc<PlannedResults>,
-    pub(in crate::engine) memos: prepare::BatchMemos,
+    /// Shared with the early boards of task D (`buffer::EarlyCt2`).
+    pub(in crate::engine) memos: Arc<prepare::BatchMemos>,
     pub(in crate::engine) artifacts: Arc<ConcurrentArtifactIndex>,
     /// What a delta built on a worker reads (`None`: deltas are built on
     /// the coordinator).
@@ -335,7 +336,7 @@ impl PlannedResults {
 
     /// The results committed since the last walk (`state.dry` only grows;
     /// the declarations by their journal).
-    fn catch_up(&self, state: &ActionPlanning, engine: &Engine) {
+    pub(super) fn catch_up(&self, state: &ActionPlanning, engine: &Engine) {
         for key in state.dry.keys() {
             if self.get(key).is_none() {
                 self.publish(key, state);
@@ -345,7 +346,7 @@ impl PlannedResults {
     }
 
     /// Every result of `state` (the targets committed before the walk).
-    fn seed(state: &ActionPlanning) -> Self {
+    pub(super) fn seed(state: &ActionPlanning) -> Self {
         let results = Self::new();
         for key in state.dry.keys() {
             results.publish(key, state);
@@ -490,7 +491,14 @@ impl Engine {
         crate::perf_mark("pass2.freeze.engine");
         let configured = configured.clone();
         crate::perf_mark("pass2.freeze.configured");
-        let results = match state.walk_results.take() {
+        // Task D: the early boards' results and memos (their jobs' outcomes
+        // are this walk's, `buffer::EarlyCt2`).
+        let early = self.early_ct2.as_deref().map(|early| early.shared());
+        let results = match early
+            .as_ref()
+            .map(|(results, _)| Arc::clone(results))
+            .or_else(|| state.walk_results.take())
+        {
             // What was committed since the last frozen walk.
             Some(results) => {
                 results.catch_up(state, self);
@@ -519,7 +527,7 @@ impl Engine {
             identities: std::mem::take(&mut state.target_identities),
             output_groups: std::mem::take(&mut state.native_output_groups),
             results,
-            memos: prepare::BatchMemos::default(),
+            memos: early.map(|(_, memos)| memos).unwrap_or_default(),
             artifacts: Arc::clone(&state.artifact_index.shared),
             view,
             compact_repo_mapping: self.compact_repo_mapping,
@@ -567,7 +575,58 @@ impl Engine {
         state.views = views;
         state.target_identities = identities;
         state.native_output_groups = output_groups;
-        self.apply_memos(state, memos, false);
+        // (Shared still: an early board's job holds them; dropped as when a
+        // job holds the view.)
+        if let Ok(memos) = Arc::try_unwrap(memos) {
+            self.apply_memos(state, memos, false);
+        }
+    }
+
+    /// Task D: the frozen view of an early board (`buffer::EarlyCt2`): this
+    /// engine as phase 1 has published it so far (a fork; the caller swapped
+    /// the evaluation's configurations in), the results and memos shared
+    /// with the other early boards and the walk, the target platforms the
+    /// pending ops publish (`schedule`: before which plan position).
+    pub(super) fn freeze_early(
+        &mut self,
+        configured: &ConfiguredNodes,
+        results: Arc<PlannedResults>,
+        memos: Arc<prepare::BatchMemos>,
+        platform_schedule: HashMap<ConfiguredTargetKey, (usize, PlatformResult)>,
+    ) -> Option<Arc<Frozen>> {
+        self.ensure_analysis_pool();
+        // The deltas' view as the walk's will be: lowerings deferred.
+        let keep_going = self.keep_going;
+        let state = self.action_planning.as_mut()?;
+        let deferring = std::mem::replace(&mut state.nodes.deferring, !keep_going);
+        let state = self.action_planning.as_ref()?;
+        let view = (!self.semantic_only() && self.aquery_capture.is_none() && worker_deltas())
+            .then(|| delta::SharedView::new(self, state));
+        if let Some(state) = self.action_planning.as_mut() {
+            state.nodes.deferring = deferring;
+        }
+        let state = self.action_planning.as_ref()?;
+        Some(Arc::new(Frozen {
+            engine: self.fork_frozen(),
+            configured: configured.clone(),
+            // The planning state's memos as the walk's freeze moves them
+            // (the same values: one `Target` per key).
+            views: state.views.clone(),
+            identities: state.target_identities.clone(),
+            output_groups: state.native_output_groups.clone(),
+            results,
+            memos,
+            artifacts: Arc::clone(&state.artifact_index.shared),
+            view,
+            compact_repo_mapping: self.compact_repo_mapping,
+            platform_schedule,
+            aspects: Default::default(),
+            link_roots: if cfg!(debug_assertions) {
+                self.repositories.roots_materialized_count(false)
+            } else {
+                0
+            },
+        }))
     }
 
     /// Prepare, compute and build the delta of entry `index` on a worker

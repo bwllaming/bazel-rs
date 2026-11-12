@@ -149,6 +149,11 @@ const ASPECT_JOBS: (&str, &str) = ("BAZEL_RS_T3_ASPECT_JOBS", "1");
 const NO_ASPECT_JOBS: (&str, &str) = ("BAZEL_RS_T3_ASPECT_JOBS", "0");
 const PARITY_VERIFY: (&str, &str) = ("BAZEL_RS_PARITY_VERIFY", "1");
 const REVERSE: (&str, &str) = ("BAZEL_RS_PARITY_REVERSE", "1");
+/// Task D: the frozen walk's jobs start during phase 1, from the first
+/// flushed entry on.
+const EARLY: (&str, &str) = ("BAZEL_RS_EVAL_EARLY_CT2", "1");
+const EARLY_MIN: (&str, &str) = ("BAZEL_RS_EVAL_EARLY_CT2_MIN", "1");
+const EARLY_GROWTH: (&str, &str) = ("BAZEL_RS_EVAL_EARLY_CT2_GROWTH", "0");
 
 /// The walk's output, then the buffered evaluation's at several thread
 /// counts, with jitter, restarts and a tiny window, compared byte for byte;
@@ -157,7 +162,7 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
     let walk = ws.build("walk", 1, &[], args);
     let text = stable(&walk);
     check(walk.status.success(), &text);
-    let runs: [(usize, &[(&str, &str)]); 22] = [
+    let runs: [(usize, &[(&str, &str)]); 26] = [
         (2, &[FROZEN]),
         (8, &[FROZEN]),
         (32, &[FROZEN]),
@@ -178,6 +183,35 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
         (8, &[FROZEN, REVERSE, ("BAZEL_RS_EVAL_JITTER", "300")]),
         (8, &[FROZEN, REVERSE, ("BAZEL_RS_EVAL_RESTARTS", "5")]),
         (8, &[FROZEN, ("BAZEL_RS_EVAL_SWEEP", "0")]),
+        // Task D: early boards (one per flushed segment), the walk taking
+        // their jobs; checked against the T3 cursor's rebuilds and the
+        // coordinator's deltas.
+        (8, &[FROZEN, EARLY, EARLY_MIN, EARLY_GROWTH]),
+        (
+            32,
+            &[
+                FROZEN,
+                EARLY,
+                EARLY_MIN,
+                EARLY_GROWTH,
+                REVERSE,
+                PARITY_VERIFY,
+            ],
+        ),
+        (
+            8,
+            &[
+                FROZEN,
+                EARLY,
+                EARLY_MIN,
+                ("BAZEL_RS_EVAL_JITTER", "300"),
+                ("BAZEL_RS_EVAL_RESTARTS", "5"),
+            ],
+        ),
+        (
+            2,
+            &[FROZEN, EARLY, EARLY_MIN, ("BAZEL_RS_VERIFY_DELTA", "1")],
+        ),
         // The T2 pipeline (no buffer: no sweep, losers publish nothing).
         (
             8,
@@ -278,6 +312,39 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
         assert_eq!(handled, entries, "{line}");
     } else {
         assert!(handled <= entries, "{line}");
+    }
+    // Task D: early boards ran during phase 1 (a workspace with a flushed
+    // entry before its last requested target) and the walk took their jobs.
+    let early = ws.build(
+        "eval",
+        8,
+        &[
+            FROZEN,
+            EARLY,
+            EARLY_MIN,
+            EARLY_GROWTH,
+            ("BAZEL_RS_TIMING", "1"),
+        ],
+        args,
+    );
+    let early = String::from_utf8_lossy(&early.stderr);
+    if let Some(line) = early
+        .lines()
+        .find(|line| line.starts_with("PERF-PARALLEL buffer starlark="))
+    {
+        let field = |name: &str| -> u64 {
+            line.split_whitespace()
+                .find_map(|field| field.strip_prefix(name))
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_else(|| panic!("no {name} in {line}"))
+        };
+        assert!(field("early_taken=") <= field("early_entries="), "{line}");
+        eprintln!(
+            "early boards {} entries {} taken {}",
+            field("early_boards="),
+            field("early_entries="),
+            field("early_taken=")
+        );
     }
 }
 
@@ -856,5 +923,88 @@ fn an_alias_first_in_plan_order_keeps_its_aspect_configured_target() {
             assert!(success, "{text}");
             assert!(text.contains("a1 on @@//a:p"), "{text}");
         },
+    );
+}
+
+/// Task D: a flush (a config_setting on a Starlark flag not planned yet)
+/// in each requested target's segment, so the entries flushed before the
+/// later requested targets run on early boards during phase 1 and the walk
+/// takes their jobs: the output is the walk's.
+#[test]
+fn early_boards_run_the_flushed_entries_during_phase_one() {
+    let flags = r#"load(":defs.bzl", "flag", "uses")
+package(default_visibility = ["//visibility:public"])
+[flag(name = "f%d" % i, build_setting_default = True) for i in range(1, 4)]
+[config_setting(name = "on%d" % i, flag_values = {":f%d" % i: "True"}) for i in range(1, 4)]
+toolchain_type(name = "tt")
+platform(name = "p")
+uses(name = "u")
+"#;
+    let defs = r#"def _flag_impl(ctx):
+    return []
+
+flag = rule(implementation = _flag_impl, build_setting = config.bool(flag = True))
+
+# Resolves the target platform first: the later flushes are deferred.
+uses = rule(
+    implementation = _flag_impl,
+    toolchains = [config_common.toolchain_type("//flags:tt", mandatory = False)],
+)
+"#;
+    let package = |index: usize, previous: Option<usize>| {
+        format!(
+            r#"load("//rules:defs.bzl", "w")
+package(default_visibility = ["//visibility:public"])
+[w(name = "l%d" % i, deps = [":l%d" % (i - 1)] if i else {deps}) for i in range(12)]
+w(
+    name = "top",
+    content = select({{"//flags:on{index}": "on", "//conditions:default": "off"}}),
+    deps = [":l11"],
+)
+"#,
+            deps = previous.map_or("[]".to_owned(), |previous| format!(
+                "[\"//p{previous}:top\"]"
+            )),
+        )
+    };
+    let ws = Workspace::new(&[
+        ("flags/BUILD.bazel", flags.to_owned()),
+        ("flags/defs.bzl", defs.to_owned()),
+        ("p1/BUILD.bazel", package(1, None)),
+        ("p2/BUILD.bazel", package(2, Some(1))),
+        ("p3/BUILD.bazel", package(3, Some(2))),
+    ]);
+    let args = &[
+        "--platforms=//flags:p",
+        "--host_platform=//flags:p",
+        "//flags:u",
+        "//p1:top",
+        "//p2:top",
+        "//p3:top",
+    ];
+    compare(&ws, args, |success, text| {
+        assert!(success, "{text}");
+    });
+    // The early boards are deterministic (one per flushed segment after
+    // the platform's resolution); how many jobs they finish is timing.
+    let timed = ws.build(
+        "eval",
+        8,
+        &[
+            FROZEN,
+            EARLY,
+            EARLY_MIN,
+            EARLY_GROWTH,
+            ("BAZEL_RS_TIMING", "1"),
+        ],
+        args,
+    );
+    let timed = String::from_utf8_lossy(&timed.stderr);
+    assert!(
+        timed
+            .lines()
+            .any(|line| line.starts_with("PERF-PARALLEL buffer starlark=")
+                && !line.contains(" early_boards=0 ")),
+        "{timed}"
     );
 }

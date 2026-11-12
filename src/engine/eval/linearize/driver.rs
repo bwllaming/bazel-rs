@@ -883,6 +883,59 @@ impl Coord<'_> {
         }
     }
 
+    /// Task D (`parallel::EarlyCt2`): the frozen walk's jobs of the plan
+    /// entries flushed so far start on the analysis workers, when no walk
+    /// ran yet in this phase 1 and its flushes are deferred (not with the
+    /// tracker or a recording: their frames are the walk's).
+    pub(crate) fn early_ct2(&mut self, shared: &EvalShared) {
+        {
+            use std::io::Write;
+            let _ = writeln!(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("/tmp/opencode/w/td-debug.log")
+                    .unwrap(),
+                "TD enter enabled={} kg={} rec={}",
+                crate::engine::parallel::early_enabled(),
+                self.engine.keep_going,
+                crate::observed_fs::recording()
+            );
+        }
+        if !crate::engine::parallel::early_enabled()
+            || self.engine.keep_going
+            || crate::observed_fs::recording()
+        {
+            return;
+        }
+        let Some(mut lin) = self.lin.take() else {
+            return;
+        };
+        {
+            use std::io::Write;
+            let _ = writeln!(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("/tmp/opencode/w/td-debug.log")
+                    .unwrap(),
+                "TD early_ct2 defer={} tracker={} failure={} position={} plan={}",
+                lin.defer,
+                lin.tracker.is_some(),
+                lin.failure.is_some(),
+                lin.position,
+                lin.plan.len()
+            );
+        }
+        if lin.defer && lin.tracker.is_none() && lin.failure.is_none() {
+            let end = lin.position;
+            self.with_engine(&mut lin, shared, |engine, lin| {
+                engine.early_ct2_extend(&lin.plan[..end], &lin.configured, lin.pending.iter());
+            });
+        }
+        self.lin = Some(lin);
+    }
+
     /// The internal error a speculated flag, a rerun or an extension
     /// adoption recorded, if any (kept: it fails the build).
     pub(crate) fn sticky_mismatch(&mut self) -> Option<String> {
@@ -2702,6 +2755,10 @@ fn drive(
                 Ok(()) => error,
             })
         });
+        // Task D: the frozen walk's jobs of the flushed entries start now.
+        if analyzed.is_ok() {
+            bodies.coord().early_ct2(shared);
+        }
         DRIVE[3].fetch_add(
             linearizing.elapsed().as_micros() as u64,
             std::sync::atomic::Ordering::Relaxed,

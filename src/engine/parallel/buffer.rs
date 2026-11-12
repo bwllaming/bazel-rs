@@ -288,7 +288,7 @@ const KIND_UNCLASSIFIED: u8 = 3;
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL buffer`).
 static STATS: [AtomicU64; STAT_NAMES.len()] = [const { AtomicU64::new(0) }; STAT_NAMES.len()];
-const STAT_NAMES: [&str; 16] = [
+const STAT_NAMES: [&str; 19] = [
     "starlark",
     "native",
     "turn",
@@ -305,6 +305,9 @@ const STAT_NAMES: [&str; 16] = [
     "later_requirement",
     "held_view",
     "forwarded_republished",
+    "early_boards",
+    "early_entries",
+    "early_taken",
 ];
 const S_STARLARK: usize = 0;
 const S_NATIVE: usize = 1;
@@ -322,6 +325,9 @@ const S_FAST_NATIVE: usize = 12;
 const S_LATER_REQUIREMENT: usize = 13;
 const S_HELD_VIEW: usize = 14;
 const S_FORWARDED_REPUBLISHED: usize = 15;
+const S_EARLY_BOARDS: usize = 16;
+const S_EARLY_ENTRIES: usize = 17;
+const S_EARLY_TAKEN: usize = 18;
 
 /// Whether a plain native rule whose results a worker published merges
 /// them ([`Engine::merge_published_native`]) instead of committing again
@@ -538,6 +544,12 @@ struct Board {
     /// Task B: how often each aspect job was queued again (a dependency
     /// its applications read was not published).
     requeues: Box<[AtomicU8]>,
+    /// Task D: an early board (jobs only, during phase 1: `EarlyCt2`);
+    /// the next early board, which a publication here readies too; the
+    /// jobs running (the handover waits for them).
+    early: bool,
+    next: std::sync::OnceLock<Arc<Board>>,
+    running: std::sync::atomic::AtomicUsize,
 }
 
 impl Board {
@@ -697,6 +709,13 @@ impl Board {
                 return;
             }
             let (key, rule) = &self.plan[slot];
+            // Task D: an early board runs plain jobs only; the rest is
+            // classified again by the walk.
+            let leave = || self.stage[slot].store(IDLE, Ordering::Release);
+            if self.early && has_attribute_aspects(rule) {
+                leave();
+                return;
+            }
             // A panic is raised at the entry's turn, by the cursor (the
             // entry left to it: never a classification left half done).
             let classified = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -726,6 +745,15 @@ impl Board {
                 (kind, keys, stash)
             }));
             let (kind, keys, stash) = match classified {
+                Ok((kind, _, _)) if self.early && kind == KIND_TURN => {
+                    leave();
+                    return;
+                }
+                Err(_) if self.early => {
+                    let _ = worker_panic();
+                    leave();
+                    return;
+                }
                 Ok(classified) => classified,
                 Err(_) => {
                     self.panics
@@ -824,6 +852,16 @@ impl Board {
                 {
                     return;
                 }
+                // Task D: counted until its outcome is stored (or it is
+                // queued again).
+                struct Running<'a>(&'a std::sync::atomic::AtomicUsize);
+                impl Drop for Running<'_> {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::AcqRel);
+                    }
+                }
+                board.running.fetch_add(1, Ordering::AcqRel);
+                let _running = Running(&board.running);
                 // A panic (the job's, its publication's) is raised at the
                 // entry's turn: the cursor always finds the entry done.
                 board.note_job(index, 1);
@@ -1045,6 +1083,10 @@ impl Board {
     /// `key`'s results exist (published or committed): dispatch the
     /// entries that waited only for them.
     fn mark(self: &Arc<Self>, key: &ConfiguredTargetKey) {
+        // Task D: a later early board's entries may wait for it too.
+        if let Some(next) = self.next.get() {
+            next.mark(key);
+        }
         let ready: Vec<usize> = {
             let mut sched = self.sched.lock().unwrap_or_else(|e| e.into_inner());
             let Some(waiters) = sched.waiting.remove(key) else {
@@ -1325,6 +1367,281 @@ fn requirements(
     Some(keys)
 }
 
+impl Board {
+    fn new(
+        frozen: Arc<Frozen>,
+        plan: Vec<(ConfiguredTargetKey, Arc<Rule>)>,
+        start: usize,
+        jobs: Arc<JobQueue>,
+        cancelled: Arc<AtomicBool>,
+        early: bool,
+    ) -> Arc<Board> {
+        let len = plan.len();
+        let index_of: HashMap<ConfiguredTargetKey, usize> = plan
+            .iter()
+            .enumerate()
+            .map(|(slot, (key, _))| (key.clone(), start + slot))
+            .collect();
+        Arc::new(Board {
+            frozen,
+            plan,
+            start,
+            stage: (0..len).map(|_| AtomicU8::new(IDLE)).collect(),
+            kind: (0..len).map(|_| AtomicU8::new(KIND_UNCLASSIFIED)).collect(),
+            sched: Default::default(),
+            finished: Default::default(),
+            finished_cv: Default::default(),
+            stash: Default::default(),
+            jobs,
+            stop: AtomicBool::new(false),
+            cancelled,
+            jitter: jitter_millis(),
+            verify_summary: verify_ahead(),
+            readied: Default::default(),
+            job_times: Default::default(),
+            slow: Default::default(),
+            index_of,
+            panics: Default::default(),
+            edges: Default::default(),
+            chunks_left: std::sync::atomic::AtomicUsize::new(len.div_ceil(CHUNK)),
+            chain: std::sync::OnceLock::new(),
+            cursor: std::sync::atomic::AtomicUsize::new(start),
+            window: window(),
+            work: (0..len).map(|_| AtomicU64::new(0)).collect(),
+            edges_kept: Default::default(),
+            parked: Default::default(),
+            started: std::time::Instant::now(),
+            last_job: AtomicU64::new(0),
+            classified_at: AtomicU64::new(0),
+            requeues: (0..len).map(|_| AtomicU8::new(0)).collect(),
+            early,
+            next: std::sync::OnceLock::new(),
+            running: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+}
+
+/// `BAZEL_RS_EVAL_EARLY_CT2=1` (task D, off by default): the frozen walk's
+/// jobs start during phase 1 ([`EarlyCt2`]).
+pub(in crate::engine) fn early_enabled() -> bool {
+    static EARLY: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling switch; the output is the same either way.
+        std::env::var_os("BAZEL_RS_EVAL_EARLY_CT2").is_some_and(|value| value == "1")
+    });
+    *EARLY
+}
+
+/// How much the flushed plan must have grown (percent of what the early
+/// boards cover) before another early board starts
+/// (`BAZEL_RS_EVAL_EARLY_CT2_GROWTH`, default 50): each board forks the
+/// engine, and phase 1's next publication copies the tables it shares.
+fn early_growth() -> usize {
+    static GROWTH: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling knob; the output is the same either way.
+        std::env::var("BAZEL_RS_EVAL_EARLY_CT2_GROWTH")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(50)
+    });
+    *GROWTH
+}
+
+/// The fewest new entries an early board starts with
+/// (`BAZEL_RS_EVAL_EARLY_CT2_MIN`, default 4,096; the tests' 1).
+fn early_min() -> usize {
+    static MIN: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling knob; the output is the same either way.
+        std::env::var("BAZEL_RS_EVAL_EARLY_CT2_MIN")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(4096)
+    });
+    *MIN
+}
+
+/// Task D (docs/EVALUATOR.md, "Genuine parity, task D"): the frozen walk's
+/// jobs started during phase 1. After a flush, the plan segment before it
+/// is final (pass 1 placed it, its configured targets are published, and
+/// every pass-2 op at a position before its end is known): an early board
+/// classifies those entries and runs their jobs (prepare, compute, delta;
+/// a native rule's results) over a fork of the engine as published so
+/// far — no cursor. Each board covers the entries flushed since the last
+/// one; a publication readies the later boards' entries too. The results
+/// and memos are shared with the walk, which takes every finished job as
+/// its own ([`EarlyCt2::hand_over`]): its merges are the walk's, in plan
+/// order. Left to the walk: entries at their turn, rules with attribute
+/// aspects (their applications' table is the walk's), whatever waits for
+/// those.
+pub(in crate::engine) struct EarlyCt2 {
+    boards: Vec<Arc<Board>>,
+    results: Arc<PlannedResults>,
+    memos: Arc<prepare::BatchMemos>,
+    /// The plan positions the boards cover: `[0, end)`.
+    end: usize,
+}
+
+impl Drop for EarlyCt2 {
+    fn drop(&mut self) {
+        for board in &self.boards {
+            board.stop.store(true, Ordering::Release);
+        }
+    }
+}
+
+impl EarlyCt2 {
+    /// What the walk's frozen view shares with the early boards.
+    pub(super) fn shared(&self) -> (Arc<PlannedResults>, Arc<prepare::BatchMemos>) {
+        (Arc::clone(&self.results), Arc::clone(&self.memos))
+    }
+
+    /// The early boards stop; the jobs they finished become the walk's
+    /// (`board`, whose entries are the same plan positions).
+    fn hand_over(self, board: &Arc<Board>) -> Result<(), String> {
+        for early in &self.boards {
+            early.stop.store(true, Ordering::Release);
+        }
+        let mut taken = 0u64;
+        for early in &self.boards {
+            while early.running.load(Ordering::Acquire) > 0 {
+                std::thread::sleep(std::time::Duration::from_micros(100));
+            }
+            let finished =
+                std::mem::take(&mut *early.finished.lock().unwrap_or_else(|e| e.into_inner()));
+            let mut done = board.finished.lock().unwrap_or_else(|e| e.into_inner());
+            for (index, finished) in finished {
+                let (Some(slot), Some(early_slot)) = (board.slot(index), early.slot(index)) else {
+                    return Err(format!(
+                        "internal error: BAZEL_RS_ANALYSIS=eval: an early job of plan entry {index} outside the walk; rerun with BAZEL_RS_EVAL_EARLY_CT2=0"
+                    ));
+                };
+                if board.plan[slot].0 != early.plan[early_slot].0 {
+                    return Err(format!(
+                        "internal error: BAZEL_RS_ANALYSIS=eval: the early job of plan entry {index} ({}) is another entry's in the walk ({}); rerun with BAZEL_RS_EVAL_EARLY_CT2=0",
+                        early.plan[early_slot].0.label, board.plan[slot].0.label
+                    ));
+                }
+                board.kind[slot].store(
+                    early.kind[early_slot].load(Ordering::Acquire),
+                    Ordering::Release,
+                );
+                board.stage[slot].store(DONE, Ordering::Release);
+                done.insert(index, finished);
+                taken += 1;
+            }
+        }
+        stat(S_EARLY_TAKEN, taken);
+        Ok(())
+    }
+}
+
+impl Engine {
+    /// Task D: phase 1 flushed the plan up to `plan.len()` (the caller has
+    /// swapped the evaluation's configurations into this engine): an early
+    /// board starts for the entries flushed since the last one, when they
+    /// are enough. `pending`: the pass-2 ops not applied yet, by position.
+    pub(in crate::engine) fn early_ct2_extend<'a>(
+        &mut self,
+        plan: &[(ConfiguredTargetKey, Arc<Rule>)],
+        configured: &ConfiguredNodes,
+        pending: impl Iterator<Item = &'a (usize, eval::linearize::pass2::Op)>,
+    ) {
+        let end = plan.len();
+        let Some(state) = self.action_planning.as_ref() else {
+            return;
+        };
+        // From the next walk's first entry (the boards are its: a walk takes
+        // them all).
+        let covered = self
+            .early_ct2
+            .as_ref()
+            .map_or(state.done, |early| early.end.max(state.done));
+        if end < covered + early_min().max(covered * early_growth() / 100) {
+            return;
+        }
+        // (The walk defers its lowerings unless --keep_going: as the walk
+        // will, `Engine::plan_targets_walk`.)
+        if self.keep_going
+            || !self.eval_async_phase2
+            || !self.commits_ahead_when_walking()
+            || !shared_prepares()
+            || !frozen::enabled()
+            || !enabled()
+        {
+            return;
+        }
+        let (results, memos) = match &self.early_ct2 {
+            Some(early) => early.shared(),
+            // The walk's results (kept from the last frozen walk, caught up
+            // with what was committed since), as its freeze takes them.
+            None => {
+                let results = match &state.walk_results {
+                    Some(results) => {
+                        results.catch_up(state, self);
+                        Arc::clone(results)
+                    }
+                    None => Arc::new(PlannedResults::seed(state)),
+                };
+                (results, Arc::new(prepare::BatchMemos::default()))
+            }
+        };
+        let mut platform_schedule = HashMap::new();
+        for (position, op) in pending {
+            if *position >= end {
+                break;
+            }
+            if let eval::linearize::pass2::Op::Publish(
+                eval::linearize::driver::Published::Platform(key, platform),
+            ) = op
+            {
+                platform_schedule
+                    .entry(key.clone())
+                    .or_insert_with(|| (*position, platform.clone()));
+            }
+        }
+        let Some(frozen) = self.freeze_early(
+            configured,
+            Arc::clone(&results),
+            Arc::clone(&memos),
+            platform_schedule,
+        ) else {
+            return;
+        };
+        let (jobs, cancelled) = match self.analysis_pool.as_ref() {
+            Some(pool) => (Arc::clone(&pool.jobs), Arc::clone(&pool.cancelled)),
+            None => return,
+        };
+        let board = Board::new(
+            frozen,
+            plan[covered..].to_vec(),
+            covered,
+            jobs,
+            cancelled,
+            true,
+        );
+        stat(S_EARLY_BOARDS, 1);
+        stat(S_EARLY_ENTRIES, (end - covered) as u64);
+        let early = self.early_ct2.get_or_insert_with(|| {
+            Box::new(EarlyCt2 {
+                boards: Vec::new(),
+                results,
+                memos,
+                end: 0,
+            })
+        });
+        if let Some(last) = early.boards.last() {
+            let _ = last.next.set(Arc::clone(&board));
+        }
+        early.boards.push(Arc::clone(&board));
+        early.end = end;
+        if !board.spawn_classifiers(classifiers().max(1)) {
+            for from in (covered..end).step_by(CHUNK) {
+                let (to, chunk) = ((from + CHUNK).min(end), Arc::clone(&board));
+                board.submit(from, Box::new(move || chunk.classify_chunk(from, to)));
+            }
+        }
+    }
+}
+
 impl Engine {
     /// A frozen walk through the merge buffer (the module's doc).
     pub(super) fn plan_targets_buffered(
@@ -1358,44 +1675,11 @@ impl Engine {
         state.provider_keys.reserve(len);
         state.runfiles_info.reserve(len);
         self.console_owners.reserve(len);
-        let index_of: HashMap<ConfiguredTargetKey, usize> = plan
-            .iter()
-            .enumerate()
-            .map(|(slot, (key, _))| (key.clone(), start + slot))
-            .collect();
-        let board = Arc::new(Board {
-            frozen,
-            plan,
-            start,
-            stage: (0..len).map(|_| AtomicU8::new(IDLE)).collect(),
-            kind: (0..len).map(|_| AtomicU8::new(KIND_UNCLASSIFIED)).collect(),
-            sched: Default::default(),
-            finished: Default::default(),
-            finished_cv: Default::default(),
-            stash: Default::default(),
-            jobs,
-            stop: AtomicBool::new(false),
-            cancelled,
-            jitter: jitter_millis(),
-            verify_summary: verify_ahead(),
-            readied: Default::default(),
-            job_times: Default::default(),
-            slow: Default::default(),
-            index_of,
-            panics: Default::default(),
-            edges: Default::default(),
-            chunks_left: std::sync::atomic::AtomicUsize::new(len.div_ceil(CHUNK)),
-            chain: std::sync::OnceLock::new(),
-            cursor: std::sync::atomic::AtomicUsize::new(start),
-            window: window(),
-            work: (0..len).map(|_| AtomicU64::new(0)).collect(),
-            edges_kept: Default::default(),
-            parked: Default::default(),
-            started: std::time::Instant::now(),
-            last_job: AtomicU64::new(0),
-            classified_at: AtomicU64::new(0),
-            requeues: (0..len).map(|_| AtomicU8::new(0)).collect(),
-        });
+        let board = Board::new(frozen, plan, start, jobs, cancelled, false);
+        // Task D: the jobs the early boards finished are this walk's.
+        if let Some(early) = self.early_ct2.take() {
+            (*early).hand_over(&board)?;
+        }
         // Every entry is classified at once, ahead of every job (cheap:
         // lookups; what is ready beyond the window waits, parked): the
         // chains of dependents decide the jobs' order.
