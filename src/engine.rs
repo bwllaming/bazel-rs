@@ -54,6 +54,15 @@ mod split;
 mod starlark_doc_extract;
 mod sweep;
 
+/// `BAZEL_RS_ANALYSIS_ORDER` is `exact` (docs/EVALUATOR.md "Genuine parity,
+/// task C"): `false` for `genuine` (console blocks as targets finish, fail
+/// fast on the first confirmed error), never read from or saved as a
+/// snapshot.
+/// `false` also for an invalid value (planning reports it).
+pub(crate) fn analysis_order_exact() -> bool {
+    eval::order() == Ok(eval::AnalysisOrder::Exact)
+}
+
 /// A planned artifact. Its data is shared by its copies (MEM4): the
 /// planner holds one artifact in many places — a target's files to build
 /// (`dry`), the declared map, the artifact index, the dependency views, the

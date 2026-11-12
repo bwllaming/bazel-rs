@@ -86,7 +86,60 @@ impl AnalysisMode {
 /// (before [`select`]'s fallback for the requests the evaluator does not
 /// cover).
 pub(crate) fn check_mode() -> Result<AnalysisMode, String> {
+    order()?;
     AnalysisMode::from_env()
+}
+
+/// What the analysis keeps of the sequential order where genuine Bazel
+/// does not (`BAZEL_RS_ANALYSIS_ORDER`, docs/EVALUATOR.md "Genuine
+/// parity, task C").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AnalysisOrder {
+    /// The default (unset, empty, `exact`): every console write in the
+    /// sequential walk's order, the first error in plan order —
+    /// byte-identical to the walk.
+    Exact,
+    /// `genuine`: as genuine Bazel's parallel analysis — a target's
+    /// analysis-time lines written as one block when its job finishes,
+    /// the build failing on the first confirmed error to finish. Never
+    /// read from or saved as an analysis snapshot.
+    Genuine,
+}
+
+impl AnalysisOrder {
+    /// The order a `BAZEL_RS_ANALYSIS_ORDER` value names.
+    pub(crate) fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value.unwrap_or("") {
+            "" | "exact" => Ok(Self::Exact),
+            "genuine" => Ok(Self::Genuine),
+            other => Err(format!(
+                "BAZEL_RS_ANALYSIS_ORDER={other}: expected `exact` (the default: the sequential order) or `genuine` (console blocks as targets finish, fail fast on the first error)"
+            )),
+        }
+    }
+}
+
+/// The process's analysis order (`BAZEL_RS_ANALYSIS_ORDER`; a test-suite
+/// binary built with `BAZEL_RS_DEFAULT_ANALYSIS_ORDER=genuine` defaults to
+/// it: the genuine suite run).
+pub(crate) fn order() -> Result<AnalysisOrder, String> {
+    static ORDER: std::sync::LazyLock<Result<AnalysisOrder, String>> =
+        std::sync::LazyLock::new(|| {
+            // snapshot-unrecorded: a genuine run is never read from or saved as a snapshot (snapshot::key::test_hook).
+            let value = std::env::var("BAZEL_RS_ANALYSIS_ORDER").ok();
+            AnalysisOrder::parse(
+                value
+                    .as_deref()
+                    .or(option_env!("BAZEL_RS_DEFAULT_ANALYSIS_ORDER")),
+            )
+        });
+    ORDER.clone()
+}
+
+/// `BAZEL_RS_ANALYSIS_ORDER=genuine` (an invalid value: exact here; the
+/// planning gate [`check_mode`] reports it).
+pub(crate) fn genuine() -> bool {
+    order() == Ok(AnalysisOrder::Genuine)
 }
 
 #[cfg(test)]
@@ -104,6 +157,25 @@ mod tests {
             AnalysisMode::parse(Some("parallel"))
                 .unwrap_err()
                 .contains("expected `auto`")
+        );
+    }
+
+    #[test]
+    fn order_parses_exact_by_default() {
+        assert_eq!(AnalysisOrder::parse(None), Ok(AnalysisOrder::Exact));
+        assert_eq!(AnalysisOrder::parse(Some("")), Ok(AnalysisOrder::Exact));
+        assert_eq!(
+            AnalysisOrder::parse(Some("exact")),
+            Ok(AnalysisOrder::Exact)
+        );
+        assert_eq!(
+            AnalysisOrder::parse(Some("genuine")),
+            Ok(AnalysisOrder::Genuine)
+        );
+        assert!(
+            AnalysisOrder::parse(Some("stream"))
+                .unwrap_err()
+                .contains("expected `exact`")
         );
     }
 }

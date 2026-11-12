@@ -26,6 +26,10 @@ runs; tests that set `BAZEL_RS_ANALYSIS` themselves are unaffected).
 `bazel-rs: analysis engine: eval`, `walk (forced)` or
 `walk (fallback: <reason>)`.
 
+`BAZEL_RS_ANALYSIS_ORDER=genuine` (opt-in; default `exact`) relaxes the
+console order and the first error to genuine Bazel's ("Genuine parity,
+task C" below).
+
 **Fallbacks** (silent: both engines plan identically, so nothing the user
 sees depends on the choice; `tests/eval_default.rs` checks each against the
 forced walk byte for byte):
@@ -3087,6 +3091,26 @@ pass 1's frontier more closely (the linearizer's backlog at the pool's end);
 (3) the in-phase walk of task D only once the sequential thread has idle
 time (it has none after ~5.5 s); (4) the thaw's `apply_memos` (0.32 s) and
 the top-level artifacts (0.34 s).
+
+### Genuine parity, task C: `BAZEL_RS_ANALYSIS_ORDER` (eval-t3)
+
+The two relaxations genuine Bazel's parallel analysis has and the walk's
+oracle order does not (design: plans/genuine-parity-design.md "Relaxed
+only"), opt-in:
+
+| `BAZEL_RS_ANALYSIS_ORDER` | Behaviour |
+|---|---|
+| unset, empty, `exact` (the default) | today's: every console write in the sequential walk's order, the first error in plan order (byte-identical to the walk) |
+| `genuine` | console blocks as targets finish, fail fast on the first confirmed error (below) |
+| anything else | an error at the start of planning naming the two values |
+
+A test-suite binary built with `BAZEL_RS_DEFAULT_ANALYSIS_ORDER=genuine`
+has it as its default (the genuine suite run). A genuine run is never
+read from or saved as an analysis snapshot (`snapshot::key::test_hook`
+names it; `BAZEL_RS_SNAPSHOT=record` taints the recording `test-hook`):
+the console order a snapshot keeps and a hit replays is the sequential
+one. (An invalid value also keeps the snapshot off until planning reports
+it.)
 
 ### Effort
 

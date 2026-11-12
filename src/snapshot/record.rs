@@ -126,6 +126,9 @@ pub fn start(
             observed_fs::taint(Taint::TestHook, || name.into_owned());
         }
     }
+    if !crate::engine::analysis_order_exact() {
+        observed_fs::taint(Taint::TestHook, || "BAZEL_RS_ANALYSIS_ORDER".to_owned());
+    }
     Some(Session {
         command: command.to_owned(),
         dump: std::env::var_os(DUMP_VAR).map(PathBuf::from),
