@@ -446,7 +446,7 @@ reader = rule(implementation = _reader, attrs = {"dep": attr.label()})
             "t/BUILD.bazel",
             r#"load("//rules:defs.bzl", "w")
 load(":defs.bzl", "act", "reader")
-w(name = "slow", work = 300000)
+w(name = "slow", work = 600000)
 act(name = "actual")
 alias(name = "al", actual = ":actual")
 reader(name = "r1", dep = ":al")
@@ -461,10 +461,14 @@ reader(name = "r2", dep = ":al")
     assert!(walk.status.success(), "{text}");
     assert!(text.contains("reader r2 actual"), "{text}");
     const HOOK: (&str, &str) = ("BAZEL_RS_TEST_RECOMPUTE_AT_MERGE", "actual");
-    let runs: [&[(&str, &str)]; 3] = [
-        &[FROZEN, HOOK],
-        &[FROZEN, HOOK, REVERSE, PARITY_VERIFY],
-        &[FROZEN, HOOK, ("BAZEL_RS_TIMING", "1")],
+    // (Timed, each: whether the alias's job ran before the actual's merge
+    // depends on the scheduling; one republish in the runs is the check.)
+    const TIMED: (&str, &str) = ("BAZEL_RS_TIMING", "1");
+    let runs: [&[(&str, &str)]; 4] = [
+        &[FROZEN, HOOK, TIMED],
+        &[FROZEN, HOOK, REVERSE, PARITY_VERIFY, TIMED],
+        &[FROZEN, HOOK, TIMED],
+        &[FROZEN, HOOK, TIMED, ("BAZEL_RS_ANALYSIS_JITTER", "5")],
     ];
     let mut republished = 0;
     for env in runs {
