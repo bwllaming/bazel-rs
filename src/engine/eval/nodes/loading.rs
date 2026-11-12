@@ -279,7 +279,11 @@ pub(crate) fn lane_fetch(shared: &EvalShared, blocker: &str) {
 fn lane_root(shared: &EvalShared, root: &str, blocker: &str) {
     let root = root.to_owned();
     lane_fetch(shared, &root);
-    if let Some((writes, observations)) = lock(&shared.loading.lane_writes).remove(&root) {
+    // (Taken first: an `if let` scrutinee's guard lives through its block,
+    // and the lock is not reentrant — a self-deadlock whenever the lane
+    // kept writes or observations, e.g. while the snapshot records.)
+    let fetched = lock(&shared.loading.lane_writes).remove(&root);
+    if let Some((writes, observations)) = fetched {
         let mut lane = lock(&shared.loading.lane_writes);
         let kept = lane.entry(blocker.to_owned()).or_default();
         kept.0.extend(writes);
