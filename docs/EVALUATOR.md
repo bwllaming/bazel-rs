@@ -682,6 +682,15 @@ change announced to the other two workers; adding a helper is not.
   its lookups for the tracker; fast native merges are off with the
   tracker; `sweep::enabled()` is false while the snapshot records;
   `Loading::source_observed`.
+- 2026-11-12 (task D, eval-task-d): `Frozen::memos` is an
+  `Arc<BatchMemos>` (shared with the early boards; `thaw` applies them only
+  when no early board holds them); `Board::new`; `Engine::early_ct2`
+  (`parallel::EarlyCt2`, taken by `plan_targets_buffered`),
+  `Engine::early_ct2_extend`, `Engine::freeze_early`,
+  `Frozen::platform_resolved`, `Coord::early_ct2`;
+  `ConcurrentArtifactIndex::first_provisional(limit)`;
+  `PlannedResults::{seed, catch_up}` are `pub(super)`; a worker delta's
+  `reads` hold each provisional read once.
 
 ## 4. Stages and gates
 
@@ -2839,6 +2848,95 @@ own jobs, single-flight, readied by their bases), genrules as worker
 native deltas (`DeltaBuilder` + `sweep::adopt`, the at-turn commit as the
 conflict fallback), and the cursor's remaining merges (Starlark deltas'
 `sweep::adopt`/`merge_ops`, ~0.6 s).
+
+### Genuine parity, task D: phase 2 inside phase 1 (eval-task-d, in progress)
+
+Goal: a configured target's phase 2 (its frozen-walk job: prepare, compute,
+delta; a native rule's results) runs during phase 1 instead of after it.
+What is built (`BAZEL_RS_EVAL_EARLY_CT2=1`, **off** by default:
+`parallel/buffer.rs` `EarlyCt2`, `frozen.rs` `freeze_early`, the driver's
+`Coord::early_ct2`):
+
+- **Admission = the entry's plan position** (design §3's conservative
+  half). After each requested target's linearization the plan entries
+  pass 1 placed are final: their configured targets are published, and an
+  entry before phase 1's last flush has every pass-2 op of its position
+  known. An entry after the last flush runs early only when its target
+  platform is resolved already (published or scheduled: first-wins, it
+  cannot change; `Frozen::platform_resolved`), since a later flush's ops
+  apply at that flush's start. Not early: rules with attribute aspects
+  (their applications' table is the walk's), entries at their turn, and
+  what waits for those (delegated keys are the cursor's).
+- **Early boards**: each covers the entries placed since the last one
+  (`BAZEL_RS_EVAL_EARLY_CT2_MIN`, 4,096; `_GROWTH`, 50% of what is
+  covered): the merge buffer's classification and jobs, no cursor, over a
+  fork of the engine as phase 1 published it (forked inside `with_engine`:
+  the evaluation's configurations swapped in), the platforms of the pending
+  ops as the schedule. Boards are chained: a publication readies the later
+  boards' waiting entries. The results (`PlannedResults`), the memos
+  (`BatchMemos`, an `Arc` now: one `Target` value per key), the artifact
+  index and the delta view are the walk's own.
+- **Handover** (`EarlyCt2::hand_over`, before the walk's classifiers): the
+  boards stop, their running jobs finish, every finished job becomes the
+  walk's entry at the same plan index (checked key by key: a different key
+  is an internal error naming `BAZEL_RS_EVAL_EARLY_CT2=0`); its merge is any
+  job's (`commit_turn`, the sweep, effects in plan order). Jobs of entries
+  after the walk's end (after phase 1's last flush: the planning tail's
+  walk) stay for the next walk; a walk's end checks only its own entries'
+  provisional index entries (`first_provisional(limit)`, `check_ids`). A
+  walk with early boards is a buffered frozen walk whatever its length.
+  Not with `--keep_going`, the tracker, a recording, `BAZEL_RS_EVAL_PLATFORM_WALKS=1`
+  (no early entries after the last flush there).
+- **Provisional reads once per delta** (default path too): a worker's delta
+  recorded a read for every lookup of a provisional artifact, and each use
+  of a memo value copied its fill's reads again; jobs running ahead of their
+  dependencies' merges (early boards; also a natives-first schedule) made
+  the sweep's read checks 2.2–2.6 s of the cursor (~100 M reads). Exact
+  duplicates (same entry, stamp and File) are dropped at the delta's
+  finish: the check of a duplicate is the same (0.2 s again).
+- Not built: speculation before pass 1 places an entry (toolchain claims
+  verified at the merge), the flag's own `Ct2` replacing the scratch-engine
+  FeatureFlagInfo speculation, aspect rules early, the tracker/recording
+  under early boards.
+
+**Measured** (2026-11-12, ~/code `80d6724f3a` private clone, non-LTO
+release, warm, snapshot off, `build --nobuild //src/...`, host load 8–18;
+`=0` the same binary without early boards):
+
+| | `=0` | `=1` (6 boards) | `=1`, `_GROWTH=300` (3 boards) |
+|---|---|---|---|
+| `INFO: Elapsed time` | 20.9–21.3 s | 23.2 s | 23.6 s |
+| graph dropped (plan.start-relative) | 8.3–8.4 s | 9.6 s | 9.2 s |
+| early entries / jobs taken by the walks | – | 129,744 / 117,340 | 120,696 / 66,151 |
+| deferred walk / its cursor's CPU / cursor waits | 5.1 / 3.3–3.4 / 2.0 s | 4.6 / 4.0 / 0.6 s | 5.8 / 3.7 s |
+| max RSS | 9.6 GB | 12.1 GB | 9.7 GB |
+
+Identical: the action dump of `build --nobuild //src/...` (85ae7ead3db2)
+with and without early boards; with early boards `BAZEL_RS_PARITY_VERIFY=1
+BAZEL_RS_PARITY_REVERSE=1` (1,018 rewritten deltas compared) and
+`BAZEL_RS_VERIFY_DELTA=1 BAZEL_RS_VERIFY_ARTIFACTS=1` clean. Tests:
+`eval_buffer::early_boards_run_the_flushed_entries_during_phase_one` (a
+toolchain-resolving target first and `--platforms`: otherwise every flush
+of a small workspace walks at once — its platform is unresolved — and no
+board starts; three flags, a flush per requested target) and four early
+runs in every `eval_buffer` matrix (REVERSE + PARITY_VERIFY, jitter and
+restarts, VERIFY_DELTA).
+
+**Why it does not pay yet**: (1) with the jobs done, the walk is bound by
+its cursor (merges in plan order on the engine: 3.3–4.0 s of CPU), which
+can only start when phase 1 ends; the gain is at most the cursor's waits
+(~2 s), not the walk. (2) Phase 1 slows by 0.9–1.3 s: every fork makes
+phase 1's next publication copy the engine's shared phase-1 tables
+(`Shared<…>` copy-on-write: ~100 ms per fork; publication 0.82 → 1.2 s
+with 3 boards) and the early jobs compete with the pool and the
+sequential thread. (3) Memory: the early deltas are held while phase 1's
+graph is alive (12.1 GB with 6 boards). Next, in order: the merges inside
+phase 1 (a walk of the flushed prefix whose jobs are done, on the
+sequential thread while it waits for the pool — today's in-phase walks
+already take early jobs), the phase-1 tables forked without copies
+(layered maps: a frozen layer per fork, the coordinator writing a small
+top layer), a memory bound on early results (RSS), then speculation before
+placement.
 
 ### Effort
 
