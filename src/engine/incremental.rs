@@ -925,12 +925,18 @@ impl Engine {
     /// Print a line an analysis printed (`print()`), noting the configured
     /// target whose frame is innermost.
     pub(super) fn note_analysis_print(&mut self, line: &str) {
+        self.track_analysis_print();
+        crate::ui::note(line);
+    }
+
+    /// [`Self::note_analysis_print`]'s tracking of a line written already
+    /// (streamed when its job finished: BAZEL_RS_ANALYSIS_ORDER=genuine).
+    pub(super) fn track_analysis_print(&mut self) {
         self.track_with(|tracker| {
             if let Some((frame, _)) = tracker.frames.last().copied() {
                 tracker.printed_keys.insert(frame);
             }
         });
-        crate::ui::note(line);
     }
 
     /// The innermost key's planning uses the aspect application `key`.

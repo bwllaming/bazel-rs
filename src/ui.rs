@@ -447,6 +447,25 @@ pub(crate) fn replay(writes: Vec<Deferred>) {
     }
 }
 
+/// Write `writes` now as one contiguous block (stderr locked around them:
+/// no other thread's write lands inside), past this thread's deferred
+/// console and held writes, if any: BAZEL_RS_ANALYSIS_ORDER=genuine's
+/// streamed console of one target's analysis, written when its job
+/// finishes.
+pub(crate) fn write_block(writes: Vec<Deferred>) {
+    if writes.is_empty() {
+        return;
+    }
+    let deferred = DEFERRED.with(std::cell::RefCell::take);
+    let held = HELD.with(std::cell::RefCell::take);
+    {
+        let _block = std::io::stderr().lock();
+        replay(writes);
+    }
+    DEFERRED.with(|slot| *slot.borrow_mut() = deferred);
+    HELD.with(|slot| *slot.borrow_mut() = held);
+}
+
 fn replay_one(write: Deferred) {
     match write {
         Deferred::Note(text) => note(&text),

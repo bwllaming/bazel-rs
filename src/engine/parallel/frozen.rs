@@ -466,6 +466,10 @@ pub(super) struct FrozenOutcome {
     /// frozen view; a job of the merge buffer only): applied at its merge,
     /// where the sequential prepare looks them up (`Engine::target`).
     pub(super) sources: Vec<(Label, PathBuf, bool, SourceSide)>,
+    /// `BAZEL_RS_ANALYSIS_ORDER=genuine`: its console (the prepare's, the
+    /// compute's and the implementation's prints) was written when the
+    /// job finished (`buffer::stream`; only a final outcome is, never redone).
+    pub(super) streamed: bool,
 }
 
 /// An entry being prepared and computed on a worker.
@@ -769,6 +773,7 @@ impl Engine {
             aspects,
             accesses,
             sources: _,
+            streamed: _,
         } = outcome;
         // The pipeline places no aspect applications: such an entry is
         // prepared at its turn.
@@ -919,6 +924,7 @@ pub(super) fn run_frozen(
             aspects,
             accesses,
             sources: resolved,
+            streamed: false,
         };
         if aborted {
             return outcome;

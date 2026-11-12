@@ -288,7 +288,7 @@ const KIND_UNCLASSIFIED: u8 = 3;
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL buffer`).
 static STATS: [AtomicU64; STAT_NAMES.len()] = [const { AtomicU64::new(0) }; STAT_NAMES.len()];
-const STAT_NAMES: [&str; 19] = [
+const STAT_NAMES: [&str; 20] = [
     "starlark",
     "native",
     "turn",
@@ -308,6 +308,7 @@ const STAT_NAMES: [&str; 19] = [
     "early_boards",
     "early_entries",
     "early_taken",
+    "streamed",
 ];
 const S_STARLARK: usize = 0;
 const S_NATIVE: usize = 1;
@@ -328,6 +329,9 @@ const S_FORWARDED_REPUBLISHED: usize = 15;
 const S_EARLY_BOARDS: usize = 16;
 const S_EARLY_ENTRIES: usize = 17;
 const S_EARLY_TAKEN: usize = 18;
+/// BAZEL_RS_ANALYSIS_ORDER=genuine: jobs whose console was written when
+/// they finished.
+const S_STREAMED: usize = 19;
 
 /// Whether a plain native rule whose results a worker published merges
 /// them ([`Engine::merge_published_native`]) instead of committing again
@@ -477,6 +481,63 @@ fn worker_panic() -> String {
     WORKER_PANIC
         .with(|slot| slot.borrow_mut().take())
         .unwrap_or_else(|| "an analysis worker panicked".to_owned())
+}
+
+/// Whether what a finished job printed is what the sequential walk prints
+/// for its entry: its merge applies the outcome as it is — never prepares
+/// or computes the entry again, never computes it again at the commit for
+/// its prints (a sentinel, the deferred target platform's or the no-demand
+/// guard's retry) — or the only redo possible (its deferred target
+/// platform resolved by its merge: `buffered_starlark`'s invalidation, or
+/// BAZEL_RS_TEST_RECOMPUTE_AT_MERGE) reads no target platform and wrote
+/// nothing but its prints, which the redo prints the same
+/// (`Engine::streamed_redo` drops them).
+fn final_outcome(key: &ConfiguredTargetKey, outcome: &frozen::FrozenOutcome) -> bool {
+    if outcome.abort.is_some() || outcome.aspects.is_some() {
+        return false;
+    }
+    let redo = !outcome.platform_known || test_recompute_at_merge(key);
+    match (&outcome.prepared, &outcome.worker) {
+        (Err(_), _) => !redo,
+        (Ok(Some(_)), Some(Ok(worker))) => {
+            !worker.sentinel
+                && !worker.outcome.analyzed.as_ref().is_err_and(|error| {
+                    error.contains(crate::platforms::NEEDS_TARGET_PLATFORM)
+                        || crate::repository_demand::is_needs_repository(error)
+                })
+                && (!redo
+                    || (!worker.outcome.platform_read
+                        && outcome.effects.console.is_empty()
+                        && worker.effects.console.is_empty()))
+        }
+        _ => false,
+    }
+}
+
+/// `BAZEL_RS_ANALYSIS_ORDER=genuine`: a final job's console — its
+/// prepare's writes, its compute's, its implementation's prints, in the
+/// order its merge writes them — written now as one block (genuine Bazel's
+/// per-target event replay when a configured target's evaluation
+/// finishes); its merge then writes none of it (`streamed`).
+fn stream(key: &ConfiguredTargetKey, outcome: &mut frozen::FrozenOutcome) {
+    if !final_outcome(key, outcome) {
+        return;
+    }
+    let mut block = std::mem::take(&mut outcome.effects.console);
+    if let Some(Ok(worker)) = &mut outcome.worker {
+        block.append(&mut worker.effects.console);
+        block.extend(
+            worker
+                .outcome
+                .printed
+                .iter()
+                .map(|line| crate::ui::Deferred::Note(line.clone())),
+        );
+        worker.outcome.streamed = true;
+    }
+    crate::ui::write_block(block);
+    outcome.streamed = true;
+    stat(S_STREAMED, 1);
 }
 
 /// Which entries wait for which keys' results.
@@ -1020,6 +1081,14 @@ impl Board {
                     worker.outcome.analyzed = Ok(analyzed);
                     worker.outcome.runfiles = runfiles;
                     worker.outcome.outputs_checked = outputs_checked;
+                }
+                // (Not once the walk ended: its error is the build's last
+                // analysis output.)
+                if crate::engine::eval::genuine()
+                    && !self.stopped()
+                    && let Ok(outcome) = &mut result
+                {
+                    stream(key, outcome);
                 }
                 Finished::Starlark {
                     outcome: Box::new(result),
@@ -2054,6 +2123,28 @@ impl Engine {
         result
     }
 
+    /// [`Self::buffered_at_turn`] for an entry whose job's outcome is not
+    /// merged. `streamed` (BAZEL_RS_ANALYSIS_ORDER=genuine: its prints
+    /// written when the job finished, [`final_outcome`]): the redo's
+    /// prints of the entry are tracked, not written again.
+    fn redo_at_turn(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        key: &ConfiguredTargetKey,
+        rule: &Arc<Rule>,
+        index: usize,
+        streamed: bool,
+    ) -> Result<(), String> {
+        if !streamed {
+            return self.buffered_at_turn(state, configured, key, rule, index);
+        }
+        let outer = self.streamed_redo.replace(key.clone());
+        let result = self.buffered_at_turn(state, configured, key, rule, index);
+        self.streamed_redo = outer;
+        result
+    }
+
     /// A Starlark entry whose prepare and compute ran on a worker, at its
     /// turn (`Engine::pipelined_turn_body` for a frozen job's outcome).
     fn buffered_starlark(
@@ -2081,6 +2172,7 @@ impl Engine {
             accesses,
             elapsed,
             sources,
+            streamed,
             ..
         } = outcome;
         if let Some(why) = abort {
@@ -2094,7 +2186,7 @@ impl Engine {
                 note_lost(effects.console.len());
             }
             effects.apply(self, false);
-            return self.buffered_at_turn(state, configured, key, rule, index);
+            return self.redo_at_turn(state, configured, key, rule, index, streamed);
         }
         // Task B: an aspect job whose prepare failed or observed something
         // is prepared at its turn (its applications' commits and prints,
@@ -2119,7 +2211,7 @@ impl Engine {
                 );
             }
             effects.apply(self, false);
-            return self.buffered_at_turn(state, configured, key, rule, index);
+            return self.redo_at_turn(state, configured, key, rule, index, streamed);
         }
         frozen::FROZEN_STATS[0].fetch_add(1, Ordering::Relaxed);
         // The source lookups its prepare made (Engine::target): what they
@@ -2144,7 +2236,7 @@ impl Engine {
             (Ok(Some(parts)), Some(worker)) => (parts, worker),
             _ => {
                 effects.apply(self, false);
-                return self.buffered_at_turn(state, configured, key, rule, index);
+                return self.redo_at_turn(state, configured, key, rule, index, streamed);
             }
         };
         if (!platform_known && self.platform_resolved(key)) || test_recompute_at_merge(key) {
@@ -2156,7 +2248,7 @@ impl Engine {
             }
             effects.apply(self, false);
             drop(worker);
-            return self.buffered_at_turn(state, configured, key, rule, index);
+            return self.redo_at_turn(state, configured, key, rule, index, streamed);
         }
         // Its applications not committed yet, where its prepare meets them.
         if let Some(record) = &aspects
@@ -2165,7 +2257,7 @@ impl Engine {
             super::aspect_jobs::stat(super::aspect_jobs::S_FALLBACK, 1);
             effects.apply(self, false);
             drop(worker);
-            return self.buffered_at_turn(state, configured, key, rule, index);
+            return self.redo_at_turn(state, configured, key, rule, index, streamed);
         }
         effects.apply(self, true);
         let worker = match worker {

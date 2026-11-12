@@ -2765,6 +2765,10 @@ struct ComputeOutcome {
     /// The implementation asked for a deferred target platform
     /// (crate::platforms::note_deferred_read): its commit resolves it.
     platform_read: bool,
+    /// `BAZEL_RS_ANALYSIS_ORDER=genuine`: `printed` was written when the
+    /// worker's job finished (with the job's other console writes, one
+    /// block); the commit only tracks it.
+    streamed: bool,
 }
 
 /// What plan_runfiles_support computes from the target's own runfiles and
@@ -3197,6 +3201,10 @@ pub struct Engine {
     /// recorded as its configured target or aspect application is analyzed
     /// and stamped on the planned actions it owns.
     console_owners: HashMap<String, crate::shared_path::SharedPath>,
+    /// BAZEL_RS_ANALYSIS_ORDER=genuine: the entry analyzed again at its
+    /// turn whose prints its job wrote already (parallel::buffer's
+    /// `redo_at_turn`): its commit tracks them, writes none.
+    streamed_redo: Option<ConfiguredTargetKey>,
     /// `.bzl` labels whose buffered top-level print lines the coordinator
     /// already emitted (one emission per evaluated module, review §1.4);
     /// lookups only, never iterated.
@@ -3539,6 +3547,7 @@ impl Engine {
             cquery_fragments: false,
             aquery_capture: None,
             console_owners: HashMap::new(),
+            streamed_redo: None,
             declared_inputs: Default::default(),
             source_targets: Default::default(),
             rule_targets: Default::default(),
@@ -8253,6 +8262,7 @@ impl Engine {
                 outputs_checked: None,
                 delta: None,
                 platform_read,
+                streamed: false,
             },
         )
     }
@@ -9063,11 +9073,18 @@ impl Engine {
             outputs_checked,
             delta: worker,
             platform_read: _,
+            streamed,
         } = outcome;
         // The prefix, on the coordinator before the delta is built (its
-        // first-need registrations follow it, as sequentially).
+        // first-need registrations follow it, as sequentially; written
+        // already when streamed: BAZEL_RS_ANALYSIS_ORDER=genuine).
+        let streamed = streamed || self.streamed_redo.as_ref() == Some(&key);
         for line in printed {
-            self.note_analysis_print(&line);
+            if streamed {
+                self.track_analysis_print();
+            } else {
+                self.note_analysis_print(&line);
+            }
         }
         let mut analyzed = analyzed?;
         restricted_to_error(rule)?;

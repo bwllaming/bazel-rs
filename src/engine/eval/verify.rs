@@ -464,6 +464,7 @@ impl Engine {
             } else {
                 Default::default()
             },
+            streamed_redo: None,
             emitted_bzl_prints: self.emitted_bzl_prints.clone(),
             declared_inputs: self.declared_inputs.clone(),
             source_targets: self.source_targets.clone(),

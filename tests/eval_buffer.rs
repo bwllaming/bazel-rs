@@ -280,6 +280,7 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
         }
         assert_eq!(eval.stdout, walk.stdout, "{what}");
     }
+    compare_genuine(ws, args, &walk);
     let timed = ws.build("eval", 8, &[FROZEN, ("BAZEL_RS_TIMING", "1")], args);
     let succeeded = timed.status.success();
     let timed = String::from_utf8_lossy(&timed.stderr);
@@ -344,6 +345,102 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
             field("early_boards="),
             field("early_entries="),
             field("early_taken=")
+        );
+    }
+}
+
+const GENUINE: (&str, &str) = ("BAZEL_RS_ANALYSIS_ORDER", "genuine");
+
+/// A console event: a `DEBUG:` or `WARNING:` line with the lines that
+/// continue it (a multi-line print).
+fn console_event(line: &str) -> bool {
+    line.starts_with("DEBUG: ") || line.starts_with("WARNING: ")
+}
+
+fn continues(line: &str) -> bool {
+    ![
+        "DEBUG: ",
+        "WARNING: ",
+        "INFO: ",
+        "ERROR: ",
+        "bazel-rs: ",
+        "ACTION ",
+    ]
+    .iter()
+    .any(|prefix| line.starts_with(prefix))
+        && !line.starts_with("  ")
+}
+
+/// `text` canonicalized for BAZEL_RS_ANALYSIS_ORDER=genuine (docs/EVALUATOR.md
+/// "Genuine parity, task C"): the other lines in order, the console events
+/// sorted (a multiset: each target's analysis-time lines are written as
+/// they finish).
+fn canonical(text: &str) -> (Vec<String>, Vec<String>) {
+    let (mut rest, mut events) = (Vec::new(), Vec::<String>::new());
+    let mut in_event = false;
+    for line in text.lines() {
+        if console_event(line) {
+            events.push(line.to_owned());
+            in_event = true;
+        } else if in_event && continues(line) {
+            let last = events.last_mut().expect("an event");
+            last.push('\n');
+            last.push_str(line);
+        } else {
+            in_event = false;
+            rest.push(line.to_owned());
+        }
+    }
+    events.sort();
+    (rest, events)
+}
+
+/// The genuine order's runs against the walk's output (`walk`): the same
+/// exit code; a success's stdout the same and its stderr the same once
+/// canonicalized ([`canonical`]); a failure's error one of the walk's
+/// `--keep_going` errors (fail fast on the first confirmed error to
+/// finish: `bazel-rs: <error>` there is `ERROR: <error>` in the keep-going
+/// report) or the walk's own.
+fn compare_genuine(ws: &Workspace, args: &[&str], walk: &Output) {
+    let text = stable(walk);
+    let keep_going = (!walk.status.success()).then(|| {
+        let mut with = args.to_vec();
+        with.push("--keep_going");
+        stable(&ws.build("walk", 1, &[], &with))
+    });
+    let runs: [(usize, &[(&str, &str)]); 7] = [
+        (2, &[FROZEN, GENUINE]),
+        (8, &[FROZEN, GENUINE]),
+        (32, &[FROZEN, GENUINE, ("BAZEL_RS_ANALYSIS_JITTER", "5")]),
+        (8, &[FROZEN, GENUINE, ("BAZEL_RS_EVAL_JITTER", "300")]),
+        (8, &[FROZEN, GENUINE, REVERSE, PARITY_VERIFY]),
+        (8, &[FROZEN, GENUINE, EARLY, EARLY_MIN, EARLY_GROWTH]),
+        (8, &[GENUINE]),
+    ];
+    for (threads, env) in runs {
+        let eval = ws.build("eval", threads, env, args);
+        let what = format!("genuine: {args:?} at {threads} threads, {env:?}");
+        let got = stable(&eval);
+        assert_eq!(eval.status.code(), walk.status.code(), "{what}: {got}");
+        let (rest, events) = canonical(&got);
+        if eval.status.success() {
+            let (walk_rest, walk_events) = canonical(&text);
+            assert_eq!(rest, walk_rest, "{what}");
+            assert_eq!(events, walk_events, "{what}");
+            assert_eq!(eval.stdout, walk.stdout, "{what}");
+            continue;
+        }
+        if rest == canonical(&text).0 {
+            continue;
+        }
+        let error = rest.join("\n");
+        let reported = error
+            .strip_prefix("bazel-rs: ")
+            .map_or(error.clone(), |error| format!("ERROR: {error}"));
+        let keep_going = keep_going.as_deref().unwrap_or_default();
+        assert!(
+            keep_going.contains(reported.trim_end()),
+            "{what}: the error is not one of the walk's keep-going errors:\n{error}\nkeep going:\n{keep_going}"
         );
     }
 }
@@ -762,6 +859,93 @@ fn prints_keep_the_plan_order_across_buffered_merges() {
             assert!(success, "{text}");
             assert!(text.contains("w @@//p3:t15"), "{text}");
         },
+    );
+}
+
+const BLOCKS_BZL: &str = r#"
+def _p_impl(ctx):
+    print("%s begins" % ctx.label.name)
+    total = 0
+    for i in range(ctx.attr.work):
+        total += i * i
+    print("%s computed %d" % (ctx.label.name, total % 7))
+    print("%s ends" % ctx.label.name)
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, str(total % 7))
+    return [DefaultInfo(files = depset([out]))]
+
+p = rule(implementation = _p_impl, attrs = {"work": attr.int()})
+"#;
+
+/// BAZEL_RS_ANALYSIS_ORDER=genuine: each target's analysis-time lines are
+/// written as one block when its job finishes — a heavy target first in
+/// plan order prints after the light ones behind it, every target's three
+/// lines adjacent; an entry analyzed again at its merge
+/// (BAZEL_RS_TEST_RECOMPUTE_AT_MERGE) prints its lines once; an invalid
+/// value is an error naming the two values.
+#[test]
+fn the_genuine_order_writes_each_targets_lines_as_one_block() {
+    let mut build = String::from("load(\":defs.bzl\", \"p\")\n");
+    for index in 0..24 {
+        let work = if index < 2 { 400000 } else { 10 + index * 97 };
+        build.push_str(&format!("p(name = \"t{index:02}\", work = {work})\n"));
+    }
+    let ws = Workspace::new(&[
+        ("b/BUILD.bazel", build),
+        ("b/defs.bzl", BLOCKS_BZL.to_owned()),
+    ]);
+    let args = ["//b:all"];
+    let walk = ws.build("walk", 1, &[], &args);
+    let text = stable(&walk);
+    assert!(walk.status.success(), "{text}");
+    let names = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|line| line.starts_with("DEBUG: "))
+            .map(|line| {
+                let print = line.rsplit(": ").next().unwrap_or_default();
+                print.split(' ').next().unwrap_or_default().to_owned()
+            })
+            .collect()
+    };
+    let mut reordered = false;
+    for (threads, env) in [
+        (8, &[FROZEN, GENUINE][..]),
+        (
+            32,
+            &[FROZEN, GENUINE, ("BAZEL_RS_ANALYSIS_JITTER", "5")][..],
+        ),
+        (
+            8,
+            &[FROZEN, GENUINE, ("BAZEL_RS_TEST_RECOMPUTE_AT_MERGE", "t05")][..],
+        ),
+        (8, &[GENUINE][..]),
+    ] {
+        let eval = ws.build("eval", threads, env, &args);
+        let got = stable(&eval);
+        assert!(eval.status.success(), "{env:?}: {got}");
+        assert_eq!(canonical(&got), canonical(&text), "{env:?}");
+        assert_eq!(eval.stdout, walk.stdout, "{env:?}");
+        let order = names(&got);
+        assert_eq!(order.len(), 72, "{got}");
+        for block in order.chunks(3) {
+            assert!(
+                block.iter().all(|name| *name == block[0]),
+                "{env:?}: a target's lines are not one block:\n{got}"
+            );
+        }
+        reordered |= order != names(&text);
+    }
+    assert!(
+        reordered,
+        "the heavy targets first in plan order never printed later"
+    );
+    let invalid = ws.build("eval", 8, &[("BAZEL_RS_ANALYSIS_ORDER", "stream")], &args);
+    assert!(!invalid.status.success());
+    assert!(
+        String::from_utf8_lossy(&invalid.stderr)
+            .contains("BAZEL_RS_ANALYSIS_ORDER=stream: expected `exact`"),
+        "{}",
+        stable(&invalid)
     );
 }
 

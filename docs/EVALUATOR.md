@@ -3112,6 +3112,43 @@ the console order a snapshot keeps and a hit replays is the sequential
 one. (An invalid value also keeps the snapshot off until planning reports
 it.)
 
+**Console blocks** (phase 2, the T3 buffer's jobs: `buffer::stream`,
+called by `Board::run_job` when a Starlark job finishes, unless the walk
+has stopped). A job whose outcome is *final* (`final_outcome`: no
+abort, no attribute-aspect record, not a sentinel, no analysis error its
+commit retries — the deferred target platform's, the no-demand guard's —
+and, where its merge may still prepare and compute it again (its target
+platform deferred and possibly resolved by then; the hidden
+`BAZEL_RS_TEST_RECOMPUTE_AT_MERGE`), an implementation that read no
+target platform and wrote nothing but its prints) writes its prepare's
+console, its compute's and the implementation's `print()` lines (in the
+order its merge writes them) as one block under the stderr lock
+(`ui::write_block`, past any deferred console of the thread), and marks
+itself streamed (`FrozenOutcome::streamed`, `ComputeOutcome::streamed`):
+its merge writes none of it (the commit only tracks the prints for the
+incremental tracker, `Engine::track_analysis_print`); a redo at its turn
+runs with `Engine::streamed_redo` naming the entry, whose commit tracks
+the redo's prints instead of writing them (the same lines: no platform
+read). Everything else keeps its place in the sequential order and is
+written at its merge — still one block per target: entries at their turn,
+native rules, aspect jobs (their applications' prints are the
+coordinator's), outcomes that are not final; phase 1 (BUILD files' and
+`.bzl` modules' top-level prints) keeps the tape's order. Walks without
+the buffer (the T2 pipeline, `BAZEL_RS_EVAL_NO_BUFFER=1`; the walk
+engine) are exact either way.
+
+Tests: `tests/eval_buffer.rs` `compare` runs the genuine order in 7
+configurations (2/8/32 threads, jitter, reverse + parity verify, early
+boards, the default prepares) beside its exact runs: a success's stdout
+the same, its stderr the same once canonicalized (`canonical`: the
+`DEBUG:`/`WARNING:` events, with their continuation lines, as a sorted
+multiset; every other line in order); a failure's error the walk's or one
+of the walk's `--keep_going` errors (`bazel-rs: <error>` is
+`ERROR: <error>` there). `the_genuine_order_writes_each_targets_lines_as_one_block`:
+three prints per target, heavy targets first in plan order printing last,
+each target's lines adjacent, a redo at the merge printing once, an
+invalid value's error.
+
 ### Effort
 
 | Step | Work | Estimate |
