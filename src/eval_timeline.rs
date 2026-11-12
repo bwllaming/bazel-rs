@@ -131,6 +131,17 @@ pub(crate) fn add(name: &'static str, since: Instant) {
     entry.1 += us;
 }
 
+/// Add `us` µs (one count) to the accumulator `name`.
+pub(crate) fn add_us(name: &'static str, us: u64) {
+    if !on() {
+        return;
+    }
+    let mut state = state();
+    let entry = state.sums.entry(name).or_default();
+    entry.0 += 1;
+    entry.1 += us;
+}
+
 /// [`add`] under a name made at run time.
 pub(crate) fn add_dyn(name: impl FnOnce() -> String, since: Instant) {
     if !on() {

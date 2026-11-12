@@ -306,6 +306,7 @@ impl Drop for CoordGuard<'_, '_> {
         if let Some((since, caller)) = self.held
             && since.elapsed() >= std::time::Duration::from_millis(5)
         {
+            super::super::timeline::interval("coordinator lock held >= 5 ms", since);
             super::super::timeline::add_dyn(
                 || {
                     format!(
@@ -633,6 +634,7 @@ impl<'s, 'e> Phase1Bodies<'s, 'e> {
                     },
                     started,
                 );
+                super::super::timeline::interval("coordinator lock waited", started);
                 COORD_LOCKS[2].fetch_add(
                     started.elapsed().as_micros() as u64,
                     std::sync::atomic::Ordering::Relaxed,
@@ -962,6 +964,11 @@ impl Bodies for Phase1Bodies<'_, '_> {
     /// coordinator.
     fn idle(&self) {
         if !self.framed || !*IDLE_LINEARIZE {
+            return;
+        }
+        if super::super::linearize::driver::yields()
+            && super::super::linearize::driver::priority_waiting()
+        {
             return;
         }
         let Ok(mut coord) = self.coord.try_lock() else {

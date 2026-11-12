@@ -299,6 +299,10 @@ pub(crate) struct Pass1 {
     /// At most this many events per [`Pass1::resume`] (then it returns
     /// `Blocked` with no blocker: the caller resumes later).
     budget: Option<usize>,
+    /// With a budget: checked every [`YIELD_EVERY`] events, a resume
+    /// pauses early when it answers true (another thread waits for the
+    /// caller's lock).
+    yield_to: Option<fn() -> bool>,
     /// The last resume stopped at its budget.
     paused: bool,
     /// Platform memos being replayed (`resolving_platforms`).
@@ -335,6 +339,9 @@ pub(crate) struct FlushPoint {
     pub(crate) kind: Option<SegmentKind>,
     pub(crate) chain: Vec<NodeId>,
 }
+
+/// How often a budgeted resume asks its `yield_to` (events).
+pub(crate) const YIELD_EVERY: usize = 512;
 
 /// Run pass 1 over finished `segments` (tests and complete sources).
 #[cfg(test)]
@@ -406,6 +413,7 @@ impl Pass1 {
             no_edges: options.no_edges,
             new_implementations: Vec::new(),
             budget: None,
+            yield_to: None,
             paused: false,
             warned: options.warnings.into_iter().collect(),
             platform_depth: 0,
@@ -493,6 +501,17 @@ impl Pass1 {
         self.budget = budget;
     }
 
+    /// With a budget, pause early when `yield_to` answers true (checked
+    /// every [`YIELD_EVERY`] events).
+    pub(crate) fn set_yield(&mut self, yield_to: Option<fn() -> bool>) {
+        self.yield_to = yield_to;
+    }
+
+    /// Whether resumes are budgeted.
+    pub(crate) fn stepping(&self) -> bool {
+        self.budget.is_some()
+    }
+
     /// Whether the last [`Self::resume`] stopped at its budget.
     pub(crate) fn paused(&self) -> bool {
         self.paused
@@ -507,8 +526,12 @@ impl Pass1 {
         self.blocked = None;
         self.paused = false;
         let mut budget = self.budget.unwrap_or(usize::MAX);
+        let yield_to = self.yield_to.filter(|_| self.budget.is_some());
         loop {
-            if budget == 0 {
+            if budget == 0
+                || (budget.is_multiple_of(YIELD_EVERY)
+                    && yield_to.is_some_and(|yield_to| yield_to()))
+            {
                 self.paused = true;
                 return Ok(Progress::Blocked);
             }

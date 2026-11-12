@@ -383,12 +383,46 @@ impl Coord<'_> {
             return false;
         };
         lin.pass.set_budget(Some(events));
+        lin.pass
+            .set_yield(yields().then_some(priority_waiting as fn() -> bool));
+        let timed = super::super::timeline::on().then(|| {
+            (
+                std::time::Instant::now(),
+                STATS
+                    .each_ref()
+                    .map(|stat| stat.load(std::sync::atomic::Ordering::Relaxed)),
+            )
+        });
         let result = self.linearize(shared);
+        // BAZEL_RS_EVAL_TIMELINE: a step of 5 ms or more by its parts.
+        if let Some((started, before)) = timed
+            && started.elapsed() >= std::time::Duration::from_millis(5)
+        {
+            let after = STATS
+                .each_ref()
+                .map(|stat| stat.load(std::sync::atomic::Ordering::Relaxed));
+            let part = |index: usize| after[index].saturating_sub(before[index]);
+            let total = started.elapsed().as_micros() as u64;
+            use super::super::timeline::add_us;
+            add_us("linearize step >= 5 ms", total);
+            add_us("linearize step >= 5 ms: pass 1", part(STAT_PASS1));
+            add_us("linearize step >= 5 ms: tape", part(STAT_APPLY));
+            add_us("linearize step >= 5 ms: publication", part(STAT_PUBLISH));
+            add_us("linearize step >= 5 ms: flush phase 2", part(STAT_PHASE2));
+            add_us(
+                "linearize step >= 5 ms: other",
+                total.saturating_sub(
+                    part(STAT_PASS1) + part(STAT_APPLY) + part(STAT_PUBLISH) + part(STAT_PHASE2),
+                ),
+            );
+        }
         let Some(lin) = self.lin.as_mut() else {
             return false;
         };
         lin.pass.set_budget(None);
-        result.is_ok() && lin.pass.paused()
+        lin.pass.set_yield(None);
+        // (Paused, or the tape applied in part: more to do.)
+        result.is_ok() && (lin.pass.paused() || !lin.ops.is_empty())
     }
 
     fn linearize_with(&mut self, lin: &mut Linearizer, shared: &EvalShared) -> Result<(), String> {
@@ -444,7 +478,12 @@ impl Coord<'_> {
                 }
             }
         }
-        for op in ops.drain(..) {
+        // A step yields to the speculations between the tape's ops (the
+        // rest applied first by the next linearization).
+        let yielding = lin.pass.stepping() && yields() && stopped.is_none();
+        let mut leftover = Vec::new();
+        let mut drained = ops.drain(..);
+        while let Some(op) = drained.next() {
             // The tracker's part, applied where the walk's tracker records
             // it: after the phase 2 of the flushes before it (S3: kept by
             // position while a deferred flush's walk is pending).
@@ -545,9 +584,18 @@ impl Coord<'_> {
                 }
                 _ => {}
             }
+            if yielding && priority_waiting() {
+                leftover.extend(drained.by_ref());
+                break;
+            }
         }
-        // The tape's buffer kept for the next resume (its capacity).
-        if lin.ops.is_empty() {
+        drop(drained);
+        // The tape's buffer kept for the next resume (its capacity), or
+        // the ops not applied yet.
+        if !leftover.is_empty() {
+            super::super::timeline::add_us("linearizer step yielded in the tape", 0);
+            lin.ops = leftover;
+        } else if lin.ops.is_empty() {
             lin.ops = ops;
         }
         STATS[STAT_APPLY].fetch_add(
@@ -2387,6 +2435,58 @@ fn stats_enabled() -> bool {
 /// Pass 1's events per step while the pool serves.
 pub(crate) const LINEARIZE_STEP: usize = 20_000;
 
+/// The threads waiting for the coordinator's lock that the linearizer's
+/// steps yield to (the speculative phase 2s: a scratch engine is held
+/// meanwhile; [`PriorityWait`]).
+static PRIORITY_WAITERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Whether the linearizer's steps yield to the speculations
+/// (`BAZEL_RS_EVAL_YIELD=0`: they do not).
+pub(crate) fn yields() -> bool {
+    static YIELDS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
+        std::env::var_os("BAZEL_RS_EVAL_YIELD").is_none_or(|value| value != "0")
+    });
+    *YIELDS
+}
+
+/// A thread waiting for the coordinator's lock that the linearizer's
+/// steps yield to, from its creation to its drop (once the lock is held).
+pub(crate) struct PriorityWait(());
+
+impl PriorityWait {
+    pub(crate) fn new() -> Self {
+        PRIORITY_WAITERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        PriorityWait(())
+    }
+}
+
+impl Drop for PriorityWait {
+    fn drop(&mut self) {
+        PRIORITY_WAITERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Whether a thread the linearizer's steps yield to waits.
+pub(crate) fn priority_waiting() -> bool {
+    PRIORITY_WAITERS.load(std::sync::atomic::Ordering::Relaxed) > 0
+}
+
+/// Before a linearizer's step takes the coordinator's lock: let the
+/// threads it yields to take it first (the lock is not fair: the
+/// releasing thread would take it again before a woken waiter runs).
+/// Bounded (a waiter may wait for something else first).
+pub(crate) fn let_priority_pass() {
+    if !yields() || !priority_waiting() {
+        return;
+    }
+    let started = std::time::Instant::now();
+    while priority_waiting() && started.elapsed() < std::time::Duration::from_millis(20) {
+        std::thread::yield_now();
+    }
+    super::super::timeline::add("linearizer yielded to speculations", started);
+}
+
 /// Whether the pool serves beside the sequential pass
 /// (`BAZEL_RS_EVAL_NO_SERVE=1`: rounds between requested targets).
 static SERVE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
@@ -2753,7 +2853,10 @@ fn drive(
         if evaluator.serving() && analyzed.is_ok() {
             // In steps, the coordinator released in between (the pool's
             // speculations need it).
-            while bodies.coord().linearize_step(shared, LINEARIZE_STEP) {}
+            while {
+                let_priority_pass();
+                bodies.coord().linearize_step(shared, LINEARIZE_STEP)
+            } {}
         }
         // The requested target's compatibility, on the published nodes.
         let analyzed = analyzed.and_then(|()| {

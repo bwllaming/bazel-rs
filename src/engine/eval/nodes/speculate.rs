@@ -225,7 +225,9 @@ fn run(
     // order: the scratch, then the coordinator), taken out under the
     // coordinator's lock and published into the scratch engine after it.
     let (packages, memos, ct1s, planned) = {
+        let waiting = super::super::linearize::driver::PriorityWait::new();
         let coord = cx.coord();
+        drop(waiting);
         let held = std::time::Instant::now();
         let _held = Held(held);
         let subtree = {
