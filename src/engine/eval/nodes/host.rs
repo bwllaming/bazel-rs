@@ -139,6 +139,14 @@ pub(crate) trait Host {
     fn record_source_analyzed(&mut self, label: &Label);
     fn configured_contains(&mut self, key: &ConfiguredTargetKey) -> bool;
     fn record_keep_going_edge(&mut self, key: &ConfiguredTargetKey);
+    /// `--keep_going`: the attribute aspects' dependencies of `owner` are
+    /// analyzed now (after it left the active chain): their edges are
+    /// `owner`'s (`None`: done). Genuine Bazel: a ConfiguredTarget depends
+    /// on its aspects' values and so on their dependencies (pass 1: the
+    /// reaches of a body past its `Done`).
+    fn keep_going_aspect_owner(&mut self, owner: Option<&ConfiguredTargetKey>) {
+        let _ = owner;
+    }
     fn active_push(&mut self, key: &ConfiguredTargetKey);
     fn active_pop(&mut self);
     fn active_position(&mut self, key: &ConfiguredTargetKey) -> Option<usize>;

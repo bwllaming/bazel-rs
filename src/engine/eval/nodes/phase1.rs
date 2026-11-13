@@ -891,7 +891,10 @@ pub(crate) trait Phase1: Host {
         if rule.custom.is_some() {
             self.record_configured_rule(&key, &rule);
         }
-        if let Err(error) = self.analyze_aspect_edges(&rule, &key) {
+        self.keep_going_aspect_owner(Some(&key));
+        let aspects = self.analyze_aspect_edges(&rule, &key);
+        self.keep_going_aspect_owner(None);
+        if let Err(error) = aspects {
             // The target failed (--keep_going reaches it again: it is
             // analyzed again, never a memo hit of a node never planned).
             self.unpublish_node(&key);

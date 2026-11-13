@@ -41,6 +41,13 @@ pub(crate) struct State {
     /// Phase-1 dependency edges: each configured key with the keys its
     /// analysis requested (memo hits included).
     edges: FxHashMap<ConfiguredTargetKey, Vec<ConfiguredTargetKey>>,
+    /// The edges that are a key's attribute aspects' dependencies
+    /// (`(owner, key)`): a requested target failing only through them has
+    /// no `Analysis failed` line (genuine 9.3.1: its aspect's
+    /// AspectCreationException, `Loading failed`, is the cause).
+    /// (With how many of the owner's reaches of the key they are: the key
+    /// may be a dependency of the owner's own too.)
+    aspect_edges: FxHashMap<(ConfiguredTargetKey, ConfiguredTargetKey), usize>,
     /// Keys whose phase-2 planning failed, by their own error or a
     /// dependency's.
     failed: FxHashSet<ConfiguredTargetKey>,
@@ -56,6 +63,10 @@ pub(crate) struct State {
     /// The requested label being analyzed (phase 1), whose first computed
     /// key becomes its root.
     pub(crate) current: Option<Label>,
+    /// The keys whose attribute aspects' dependencies phase 1 analyzes now,
+    /// with the depth and identity of the active chain they left (the walk's
+    /// `keep_going_aspect_owner`).
+    pub(crate) aspect_owners: Vec<(ConfiguredTargetKey, usize, usize)>,
     /// Requested labels whose analysis failed, with whether a dependency
     /// (not the target itself) failed.
     pub(crate) failed_targets: BTreeMap<Label, bool>,
@@ -80,6 +91,16 @@ impl State {
                 }
             }
         }
+    }
+
+    /// Phase 1's edge `(owner, key)` is one of `owner`'s attribute aspects'
+    /// dependencies.
+    pub(crate) fn mark_aspect_edge(
+        &mut self,
+        owner: ConfiguredTargetKey,
+        key: ConfiguredTargetKey,
+    ) {
+        *self.aspect_edges.entry((owner, key)).or_default() += 1;
     }
 
     /// A root-cause error (printed once, in this order).
@@ -163,7 +184,25 @@ impl State {
         }
         let own = self.own.contains_key(root)
             || delegation(root).is_some_and(|owner| self.own.contains_key(&owner));
-        Some(!own)
+        // Only through its attribute aspects' dependencies: the aspect's
+        // failure is the cause (no `Analysis failed`).
+        let through_dependency = |key: &ConfiguredTargetKey| {
+            self.edges.get(key).is_some_and(|children| {
+                children.iter().any(|child| {
+                    let aspect = self
+                        .aspect_edges
+                        .get(&(key.clone(), child.clone()))
+                        .copied()
+                        .unwrap_or(0);
+                    let regular = aspect == 0
+                        || children.iter().filter(|other| *other == child).count() > aspect;
+                    regular && self.reaches_failure(child, &mut FxHashSet::default())
+                })
+            })
+        };
+        let dependency = through_dependency(root)
+            || delegation(root).is_some_and(|owner| through_dependency(&owner));
+        Some(!own && dependency)
     }
 
     /// Whether phase 2 failed `key` (its own failure or a dependency's,

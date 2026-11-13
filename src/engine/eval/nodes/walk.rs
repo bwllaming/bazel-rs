@@ -281,9 +281,41 @@ impl Host for Walk<'_> {
 
     fn record_keep_going_edge(&mut self, key: &ConfiguredTargetKey) {
         if self.engine.keep_going {
-            self.engine
-                .keep_going_state
-                .record_edge(self.active.last(), key);
+            let at = (
+                self.active.len(),
+                std::ptr::from_ref(&*self.active) as usize,
+            );
+            let state = &mut self.engine.keep_going_state;
+            // Analyzed for an attribute aspect of the owner (at the owner's
+            // depth of this active chain): the owner's edge.
+            let owner = state
+                .aspect_owners
+                .last()
+                .filter(|(_, depth, chain)| (*depth, *chain) == at)
+                .map(|(owner, _, _)| owner.clone());
+            match owner {
+                Some(owner) => {
+                    state.record_edge(Some(&owner), key);
+                    state.mark_aspect_edge(owner, key.clone());
+                }
+                None => state.record_edge(self.active.last(), key),
+            }
+        }
+    }
+
+    fn keep_going_aspect_owner(&mut self, owner: Option<&ConfiguredTargetKey>) {
+        if self.engine.keep_going {
+            let at = (
+                self.active.len(),
+                std::ptr::from_ref(&*self.active) as usize,
+            );
+            let owners = &mut self.engine.keep_going_state.aspect_owners;
+            match owner {
+                Some(owner) => owners.push((owner.clone(), at.0, at.1)),
+                None => {
+                    owners.pop();
+                }
+            }
         }
     }
 

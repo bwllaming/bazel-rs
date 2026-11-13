@@ -746,12 +746,15 @@ impl Coord<'_> {
         if lin.keep_going.is_none() {
             return;
         }
-        let (edges, roots) = lin.pass.take_keep_going();
+        let (edges, aspect_edges, roots) = lin.pass.take_keep_going();
         let state = &mut self.engine.keep_going_state;
         for (parent, key) in edges {
             if parent.is_some() {
                 state.record_edge(parent.as_ref(), &key);
             }
+        }
+        for (owner, key) in aspect_edges {
+            state.mark_aspect_edge(owner, key);
         }
         for (label, key) in roots {
             state.roots.insert(label, key);

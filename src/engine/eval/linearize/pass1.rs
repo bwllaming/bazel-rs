@@ -151,6 +151,14 @@ pub(crate) trait Transcripts {
 /// A keep-going edge: the reach's active parent and its key.
 pub(crate) type Edge = (Option<ConfiguredTargetKey>, ConfiguredTargetKey);
 
+/// [`Pass1::take_keep_going`]: the edges, which of them are attribute
+/// aspects' dependencies (`(owner, key)`), the requested labels' roots.
+pub(crate) type KeepGoingEdges = (
+    Vec<Edge>,
+    Vec<(ConfiguredTargetKey, ConfiguredTargetKey)>,
+    Vec<(Label, ConfiguredTargetKey)>,
+);
+
 /// A finished top-level segment (tests, complete sources).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Segment {
@@ -182,6 +190,9 @@ pub(crate) struct Linearized {
     /// Every reach's `(active parent, key)`, in order (the keep-going
     /// edges; a `None` parent ends a segment's root search).
     pub(crate) edges: Vec<(Option<ConfiguredTargetKey>, ConfiguredTargetKey)>,
+    /// Those of [`Self::edges`] that are a body's attribute aspects'
+    /// dependencies (reached past its `Done`): `(owner, key)`.
+    pub(crate) aspect_edges: Vec<(ConfiguredTargetKey, ConfiguredTargetKey)>,
     /// `toolchain_implementations`: the first-visit forced platforms.
     pub(crate) toolchain_implementations: BTreeMap<ConfiguredTargetKey, Label>,
     /// The phase-1 warnings, deduplicated, in order.
@@ -513,9 +524,10 @@ impl Pass1 {
     /// `--keep_going` ([`Options::no_edges`] off): the reaches' edges
     /// (`(active parent, key)`, the walk's `record_keep_going_edge`) and the
     /// requested labels' roots since the last call, in order.
-    pub(crate) fn take_keep_going(&mut self) -> (Vec<Edge>, Vec<(Label, ConfiguredTargetKey)>) {
+    pub(crate) fn take_keep_going(&mut self) -> KeepGoingEdges {
         (
             std::mem::take(&mut self.out.edges),
+            std::mem::take(&mut self.out.aspect_edges),
             std::mem::take(&mut self.roots),
         )
     }
@@ -749,6 +761,20 @@ impl Pass1 {
             Frame::Body { node, ct, .. } => Some((*node, ct.clone())),
             _ => None,
         }
+    }
+
+    /// The key of the body whose reaches past its `Done` are being replayed
+    /// (below the non-fresh memos it uses): its attribute aspects'
+    /// dependencies.
+    fn aspect_owner(&self) -> Option<ConfiguredTargetKey> {
+        for frame in self.frames.iter().rev() {
+            match frame {
+                Frame::Memo { fresh: false, .. } => continue,
+                Frame::Body { ct, done: true, .. } => return Some(ct.key.clone()),
+                _ => return None,
+            }
+        }
+        None
     }
 
     /// The innermost frame is a fresh-chain memo's.
@@ -1040,7 +1066,15 @@ impl Pass1 {
     ) -> Result<(), String> {
         let key = &ct.key;
         if !self.no_edges {
-            let parent = self.chain().last().cloned();
+            // A reach of a body past its `Done` (its attribute aspects'
+            // dependencies, analyzed after it left the chain; through the
+            // memos it uses there) is the body's edge (the walk's
+            // `keep_going_aspect_owner`).
+            let owner = self.aspect_owner();
+            if let Some(owner) = &owner {
+                self.out.aspect_edges.push((owner.clone(), key.clone()));
+            }
+            let parent = owner.or_else(|| self.chain().last().cloned());
             if parent.is_none()
                 && let Some(label) = self.root_pending.take()
             {

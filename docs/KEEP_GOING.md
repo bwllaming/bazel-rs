@@ -57,6 +57,16 @@ SkyframeErrorProcessor.processAnalysisErrors under keepGoing
   tests/keep_going_flag_flush.rs). Another target's failure in the flush
   fails only what is above it;
 * top-level aspects: a failing application skips its requested label;
+* attribute aspects: a rule's aspects' own dependencies (their label
+  attributes, toolchains) are the rule's dependencies (genuine Bazel:
+  AspectFunction computes them for the rule's ConfiguredTargetValue), so
+  when one fails in phase 2 the rule is skipped like any target whose
+  dependency failed. A requested target failing only through them has no
+  `Analysis failed` line (genuine 9.3.1, `tests/keep_going_aspect_dependency.rs`);
+  a target above it has. **Divergence:** Bazel also prints one
+  `ERROR: Loading failed` per failed aspect application (its
+  AspectCreationException); natively the failing dependency's own error is
+  the one root cause printed;
 * on the parallel analysis evaluator, phase 2 runs in its frozen walks
   through the merge buffer (docs/EVALUATOR.md "eval-keepgoing-speed"):
   rule implementations on workers ahead of the cursor, every skip and
