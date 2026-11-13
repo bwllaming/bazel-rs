@@ -30,22 +30,14 @@ env:
 jobs:
   check:
     name: fmt, clippy, unit and hermetic integration tests
-    # Pull requests (which forks can open on a public repository) run on
-    # GitHub-hosted runners; pushes to main on the organisation's self-hosted
-    # runners (x86_64 Linux containers), which must never run untrusted code.
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'self-hosted' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - name: Rust toolchain from rust-toolchain.toml
+        # rustup is preinstalled on GitHub's Ubuntu images.
         run: |
-          if ! command -v rustup >/dev/null; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-            export PATH="$HOME/.cargo/bin:$PATH"
-          fi
           rustup toolchain install --no-self-update
           for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do rustup target add "$target"; done
           rustc --version
@@ -96,44 +88,59 @@ jobs:
     # Dogfood (docs/SELF_BUILD.md): the latest published bazel-rs builds this
     # commit's //:bazel-rs with rules_rust, smoke-tests it and runs
     # `test //...`. Cargo stays the primary build; the comparison with genuine
-    # Bazel stays local (scripts/self_build.py compare). Like `check`: pull
-    # requests on GitHub-hosted runners, pushes to main self-hosted.
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'self-hosted' }}
+    # Bazel stays local (scripts/self_build.py compare).
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
-      - name: GitHub CLI
-        # Self-hosted runners may not have gh: install the pinned release.
-        run: |
-          if ! command -v gh >/dev/null; then
-            version=2.103.3
-            sha256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
-            archive="$RUNNER_TEMP/gh.tar.gz"
-            curl -fsSL -o "$archive" "https://github.com/cli/cli/releases/download/v$version/gh_${version}_linux_amd64.tar.gz"
-            echo "$sha256  $archive" | sha256sum -c -
-            tar -xzf "$archive" -C "$RUNNER_TEMP"
-            echo "$RUNNER_TEMP/gh_${version}_linux_amd64/bin" >> "$GITHUB_PATH"
-          fi
-
       - name: Latest bazel-rs release
-        # The newest release of this repository (pre-releases included), the
-        # static x86_64 archive, checked against its .sha256.
+        # The newest release of this repository (pre-releases included; gh is
+        # preinstalled, the job token only lifts the API rate limit), the
+        # static x86_64 archive from its public download URL, checked against
+        # its .sha256.
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')
           stem="bazel-rs-${tag#v}-x86_64-unknown-linux-musl"
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$tag"
           dir="$RUNNER_TEMP/bazel-rs-release"
           rm -rf "$dir" && mkdir -p "$dir"
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$stem.tar.gz*" --dir "$dir"
+          for file in "$stem.tar.gz" "$stem.tar.gz.sha256"; do
+            curl -fsSL --retry 3 -o "$dir/$file" "$url/$file"
+          done
           (cd "$dir" && sha256sum -c "$stem.tar.gz.sha256" && tar xzf "$stem.tar.gz")
           echo "$dir/$stem" >> "$GITHUB_PATH"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           "$dir/$stem/bazel-rs" --version
 
+      - name: Restore bazel-rs's cache
+        # GitHub-hosted runners start empty: the cache of the same release
+        # comes from actions/cache, saved by pushes to main only (pull
+        # requests restore it but do not fill the repository's cache quota).
+        uses: actions/cache/restore@v4
+        with:
+          # smoke/: the scratch directory, recreated by every run.
+          path: |
+            ~/.cache/bazel-rs/self-build
+            !~/.cache/bazel-rs/self-build/smoke
+          key: self-build-${{ steps.release.outputs.tag }}-${{ github.sha }}
+          restore-keys: self-build-${{ steps.release.outputs.tag }}-
+
       - name: Build, smoke-test and test with bazel-rs
-        # bazel-rs's cache stays on the runner between runs.
         env:
           BAZEL_RS_MAX_MEMORY_MB: "8192"
           BAZEL_RS_PROGRESS: "0"
         run: python3 scripts/self_build.py check --bazel bazel-rs --state-dir "$HOME/.cache/bazel-rs/self-build"
+
+      - name: Save bazel-rs's cache
+        if: github.event_name == 'push'
+        uses: actions/cache/save@v4
+        with:
+          # smoke/: the scratch directory, recreated by every run.
+          path: |
+            ~/.cache/bazel-rs/self-build
+            !~/.cache/bazel-rs/self-build/smoke
+          key: self-build-${{ steps.release.outputs.tag }}-${{ github.sha }}

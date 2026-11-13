@@ -47,13 +47,12 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          # The organisation's self-hosted runners (x86_64 Linux containers).
-          # The glibc archive needs the build machine's glibc or newer; the
-          # build step prints it.
+          # GitHub-hosted runners. The glibc archive needs the build
+          # machine's glibc or newer (Ubuntu 24.04: glibc 2.39); the "Build
+          # machine" step prints it.
           - name: linux-x86_64
-            runner: self-hosted
+            runner: ubuntu-24.04
             targets: x86_64-unknown-linux-gnu x86_64-unknown-linux-musl
-          # GitHub-hosted: there is no self-hosted arm64 runner.
           - name: linux-arm64
             runner: ubuntu-24.04-arm
             targets: aarch64-unknown-linux-musl
@@ -71,33 +70,12 @@ jobs:
           uname -srm
           ldd --version | head -1
 
-      - name: GitHub CLI
-        # Self-hosted runners may not have gh: install the pinned release.
-        run: |
-          if ! command -v gh >/dev/null; then
-            [ "$(uname -m)" = x86_64 ] || { echo "no pinned gh for $(uname -m)" >&2; exit 1; }
-            arch=amd64
-            version=2.103.3
-            sha256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
-            archive="$RUNNER_TEMP/gh.tar.gz"
-            curl -fsSL -o "$archive" "https://github.com/cli/cli/releases/download/v$version/gh_${version}_linux_$arch.tar.gz"
-            echo "$sha256  $archive" | sha256sum -c -
-            tar -xzf "$archive" -C "$RUNNER_TEMP"
-            echo "$RUNNER_TEMP/gh_${version}_linux_$arch/bin" >> "$GITHUB_PATH"
-          fi
-
       - name: Rust toolchain from rust-toolchain.toml
         # Installs the pinned channel with its components and the musl
-        # targets it lists.
+        # targets it lists (rustup is preinstalled on GitHub's Ubuntu images).
         env:
           TARGETS: ${{ matrix.targets }}
         run: |
-          if ! command -v rustup >/dev/null; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-            export PATH="$HOME/.cargo/bin:$PATH"
-          fi
           rustup toolchain install --no-self-update
           for target in $TARGETS; do rustup target add "$target"; done
           rustc --version
@@ -115,10 +93,11 @@ jobs:
       - name: Cargo cache
         # Keyed on Cargo.lock, rust-toolchain.toml, the rustc version and the
         # runner's platform; caches ~/.cargo and ./target (release.py --ci
-        # builds in place).
+        # builds in place). v2: the v1 x86_64 caches came from the former
+        # self-hosted runners (another glibc for build scripts).
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: v1-release-${{ matrix.name }}
+          prefix-key: v2-release-${{ matrix.name }}
           cache-on-failure: true
 
       - name: Build, smoke-test and package
@@ -143,7 +122,7 @@ jobs:
   publish:
     name: publish ${{ inputs.tag || github.ref_name }}
     needs: build
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     # gh release create/upload with GITHUB_TOKEN; nothing else.
     permissions:
@@ -153,19 +132,6 @@ jobs:
         with:
           ref: refs/tags/${{ env.TAG }}
           fetch-depth: 0
-
-      - name: GitHub CLI
-        # Self-hosted runners may not have gh: install the pinned release.
-        run: |
-          if ! command -v gh >/dev/null; then
-            version=2.103.3
-            sha256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
-            archive="$RUNNER_TEMP/gh.tar.gz"
-            curl -fsSL -o "$archive" "https://github.com/cli/cli/releases/download/v$version/gh_${version}_linux_amd64.tar.gz"
-            echo "$sha256  $archive" | sha256sum -c -
-            tar -xzf "$archive" -C "$RUNNER_TEMP"
-            echo "$RUNNER_TEMP/gh_${version}_linux_amd64/bin" >> "$GITHUB_PATH"
-          fi
 
       - name: Collect the build jobs' archives
         uses: actions/download-artifact@v4

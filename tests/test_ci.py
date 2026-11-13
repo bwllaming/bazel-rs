@@ -33,13 +33,16 @@ class CiTest(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
         for needle in (
             "self-build:",
-            "gh release download",
+            'curl -fsSL --retry 3 -o "$dir/$file" "$url/$file"',
             "x86_64-unknown-linux-musl",
             'sha256sum -c "$stem.tar.gz.sha256"',
             "python3 scripts/self_build.py check --bazel bazel-rs",
             ".cache/bazel-rs/self-build",
+            "runs-on: ubuntu-24.04\n",
         ):
             self.assertIn(needle, workflow)
+        # GitHub-hosted runners only (the repository is public).
+        self.assertNotIn("self-hosted", workflow)
         self.assertNotIn("--genuine", workflow)
 
 
