@@ -1985,7 +1985,7 @@ override_repo(e, gen="ssl")
         assert_eq!(catalog.owner_mappings[""]["gen"], "ssl+");
         assert_eq!(catalog.owner_mappings["dep+"]["mine"], "ssl+");
         assert_eq!(
-            catalog.owner_mappings[""]["other"],
+            catalog.owner_mappings[""]["local"],
             format!("{}+other", group.prefix)
         );
         // The usages digest input lists them in the root's HashMap order
