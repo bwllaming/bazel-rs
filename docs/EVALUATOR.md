@@ -3590,6 +3590,14 @@ plan of `-k` under `BAZEL_RS_SNAPSHOT=record` (`BAZEL_RS_SNAPSHOT_PLAN_OUT`,
 480,544,875 bytes) and its stderr. (Max RSS with the action dump: 11.4 GB
 eval, 11.0–11.2 GB walk — the dump's own; without it ≤ 9.7 GB.)
 
+Again after the review fixes, on main 1b699a58 (same clone, host load
+~11–16): `-k` 17.8–18.3 s / 9.68–9.79 GB against 17.2–17.7 s / 9.46–9.52 GB
+without; injected phase-1 + phase-2 failures 18.9 s / 9.25 GB, the
+merge-time conflict 18.3 s / 9.73 GB; `record` eval 51.8 s, walk 76.2 s.
+The stderr with the action dump is identical walk vs eval on the clean
+tree, the injected failures and the merge-time conflict, as is the encoded
+`record` plan.
+
 Not done: the pipeline's commit ahead under `--keep_going` (walks shorter
 than `BAZEL_RS_EVAL_FROZEN_PREPARES`' 2,048 entries, and the walk engine,
 still plan at the turn there); lowerings deferred under `--keep_going`.
