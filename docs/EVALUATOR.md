@@ -743,6 +743,17 @@ change announced to the other two workers; adding a helper is not.
   canonical nodes by node id, the plan on the tape only); `graph::Entry::rank`
   and `Evaluator::start` ranking its keys in order (`BAZEL_RS_EVAL_RANKED=0`
   off); `linearize::driver::PriorityWait` (`BAZEL_RS_EVAL_YIELD=0` off).
+- 2026-11-13 (eval-speed round 4, task D's in-phase walks; no frozen
+  interface changed): `Coord::in_phase_walk` (a `catch_up` from the
+  sequential thread's `Bodies::idle`, after a step with nothing left;
+  `BAZEL_RS_EVAL_INPHASE_WALK=1`, off); the buffer's `Board::fence` (an
+  early board's entries before it are a walk's: their jobs no longer
+  start), `EarlyCt2::hand_over` keeps the boards reaching past the walk
+  (fenced, readied through the walk board's `next`), `EarlyCt2::finished_until`
+  / `Engine::early_finished_until`; the job's `QUEUED -> RUNNING` exchange is
+  `SeqCst` (paired with the fence). eval-coverage: `--keep_going` keeps
+  in-phase walks off (`Coord::in_phase_walk` reads `Engine::keep_going`), as
+  the tracker and a recording do.
 
 ## 4. Stages and gates
 
@@ -3438,6 +3449,82 @@ planning code. Measured (~/code): `build --nobuild
 eval 21.0 s / 9.66 GB, the action dump (6,486,168 stderr lines) identical;
 `build --nobuild --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 --output_groups=clippy_checks //src/rust/...`: 8.3 / 8.0 s, identical.
+
+### Task D, the in-phase walks (eval-speed, round 4): measured, off
+
+The merges of phase 2 inside phase 1: while the sequential thread waits
+for the pool (`Bodies::idle`, a linearizer step with nothing left), it
+walks the deferred segments (`Coord::in_phase_walk`, `catch_up` to the
+first segment end at least `BAZEL_RS_EVAL_INPHASE_MIN` entries on, 8,192 by
+default; the segments' ops are known, a walk ends at a segment end). With
+early boards (`BAZEL_RS_EVAL_EARLY_CT2=1`) a walk waits until the boards up
+to its end have finished their jobs but `BAZEL_RS_EVAL_INPHASE_PERCENT`
+(15) of their entries; it takes those jobs (`EarlyCt2::hand_over`) and the
+boards reaching past its end go on: their entries before it are fenced off
+(`Board::fence`: no job below it starts any more; the running ones are
+waited for; `SeqCst` on both sides), and the walk board's publications
+ready their waiting entries (`Board::next`). New early boards stop above
+`BAZEL_RS_EVAL_EARLY_CT2_RSS_MB` (7,000) of RSS while in-phase walks run.
+Off with `--keep_going`, the tracker, a recording (as early boards);
+`BAZEL_RS_EVAL_INPHASE_WALK=always` also walks after each requested target
+(the tests' hook: a small workspace's pool finishes in round 1, the
+sequential thread never waits).
+
+Measured (2026-11-13, ~/code `80d6724f3a` private clone, non-LTO release,
+`build --nobuild //src/...`, snapshot off, host load 15–37,
+plan.start-relative, alternating; `A` main `b34c5ac6`):
+
+| | A | in-phase, own jobs, gated (8,192) | gated, `_MIN=2048` | ungated (8,192) | early boards | early + in-phase |
+|---|---|---|---|---|---|---|
+| `INFO: Elapsed time` | 17.2–18.4 s | 17.6–18.0 s | 17.6–18.0 s | 17.4–18.4 s | 19.8–21.0 s | 17.8–21.3 s |
+| graph dropped | 5.9–6.9 s | 7.0–7.3 s | 7.2–7.7 s | 6.9–7.4 s | 6.9–7.2 s | 6.9–7.4 s |
+| deferred walk ([n, 119,091)) | 5.6–5.8 s | 4.9–5.1 s | 4.6–5.0 s | 4.8–5.1 s | 7.1–7.6 s | 5.5–8.1 s |
+| max RSS | 9.4–9.6 GB | 9.4–9.5 GB | 9.4–9.5 GB | 9.5 GB | 9.5 GB | 10.3–10.4 GB |
+
+(Gated: not inside a sequential attempt, the repository lane quiet for
+`BAZEL_RS_EVAL_INPHASE_QUIET_MS`, 200 ms by default.)
+
+Identical with in-phase walks (own jobs and early boards): the action
+dumps of `build` and `test --nobuild` (vs main's walk);
+`PARITY_VERIFY`+`REVERSE`, `VERIFY_DELTA`/`ARTIFACTS`, `EVAL_VERIFY`
+(`--memory-limit=40000`) clean. A recording never walks in phase (the
+snapshot miss and the record dump are main's path).
+
+**Why it does not pay** (the timeline, `BAZEL_RS_EVAL_TIMELINE=1`):
+
+1. **Little of the plan is final while the sequential thread waits.** The
+   plan is 22k entries at ~2.5 s, 28k at 4 s, 37k at 5 s, then 37k → 133k
+   between 5.0 and 5.9 s (the bulk of the requested targets linearized one
+   after the other once the pool is done). The idle window can walk ~30% of
+   the deferred walk's entries; their share of the walk's time is ~1.7 s at
+   most (the walk's progress marks: 30% at 1.7 s).
+2. **The sequential thread is not idle: it is the repository lane and the
+   coordinator.** A walk holds the coordinator's lock (it walks on
+   `Coord::engine`): the CsMatch speculations wait (lock waits 0.85 →
+   1.4–1.9 s); and the lane's repository fetches (`Evaluator::lane_work`,
+   only this thread, never under the coordinator's lock) wait for the walk:
+   "a probe claim waited for" 5.3 → 7.5 s, probes going on until 3.6 s
+   instead of 2.0 s. Gated (lane quiet, no attempt open) the probe waits are
+   main's again, but the lock waits stay (0.8 → 2.2 s: a walk whose jobs are
+   not done holds the lock 150–250 ms), requested #75 is evaluated 0.6–0.8 s
+   later; the gain in the deferred walk (−0.7 s) goes into phase 1
+   (+0.5–0.8 s).
+3. **Early jobs do not shorten the deferred walk.** With early boards the
+   walk took 79k of 119k jobs and still ran 5.2 s (`BAZEL_RS_TIMING`:
+   cursor CPU 3.55 s, claim waits 2.09 s vs 3.61 / 1.94 s without): what
+   early boards leave (attribute-aspect rules, entries at their turn such
+   as `cc_build_info`) and everything that depends on them are run by the
+   walk anyway, in a chain behind the cursor. Their cost is phase 1's:
+   configured-target publication 0.45 → 0.81 s (each board's fork makes the
+   next publication copy the `Shared` tables), the pool slower, RSS +0.9 GB.
+
+What it would take (in order): aspect jobs on early boards (a shared
+`AspectTable`) so that the early prefix is complete; a walk that does not
+hold the coordinator's lock and lets the lane run (the planning state and
+the phase-1 tables apart from `Coord`, or the lane served from the
+cursor's waits); forks without copies (layered phase-1 tables). Until then
+the deferred walk is bound by its cursor's CPU (~3.5 s) and the chains
+behind entries the early boards cannot run.
 
 ### Effort
 

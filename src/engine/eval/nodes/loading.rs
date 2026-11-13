@@ -224,7 +224,29 @@ fn lane_wait_secs() -> u64 {
 /// The coordinator's lane: materialize the module repository root a
 /// pool unit was blocked on (where demand may fetch), its console writes
 /// kept for the unit's re-run.
+/// When the repository lane last fetched (task D: an in-phase walk waits
+/// for the lane to be quiet, `lane_quiet`).
+static LAST_LANE_FETCH: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// Whether the repository lane fetched nothing for `quiet`.
+pub(crate) fn lane_quiet(quiet: std::time::Duration) -> bool {
+    LAST_LANE_FETCH
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_none_or(|at| at.elapsed() >= quiet)
+}
+
 pub(crate) fn lane_fetch(shared: &EvalShared, blocker: &str) {
+    struct Fetched;
+    impl Drop for Fetched {
+        fn drop(&mut self) {
+            LAST_LANE_FETCH
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .replace(std::time::Instant::now());
+        }
+    }
+    let _fetched = Fetched;
     // At most this long per blocker (the unit parks again past it).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(lane_wait_secs());
     if let Some(group) = blocker.strip_prefix(EXTENSION_BLOCKER) {

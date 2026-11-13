@@ -519,6 +519,19 @@ static IDLE_LINEARIZE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
     std::env::var_os("BAZEL_RS_EVAL_NO_IDLE_LINEARIZE").is_none()
 });
 
+/// `BAZEL_RS_EVAL_INPHASE_QUIET_MS`: how long the repository lane must have
+/// been quiet before an in-phase walk (task D; default 200 ms).
+fn in_phase_quiet() -> std::time::Duration {
+    static QUIET: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling knob; the output is the same either way.
+        std::env::var("BAZEL_RS_EVAL_INPHASE_QUIET_MS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(200)
+    });
+    std::time::Duration::from_millis(*QUIET)
+}
+
 /// The marker of [`Missing::Repo`] for an attempt only the sequential
 /// pass can run (S2: on the pool, a flush or a repository demand): it
 /// parks until the inline pass.
@@ -1012,7 +1025,15 @@ impl Bodies for Phase1Bodies<'_, '_> {
         super::super::timeline::add("idle linearization", started);
         // Task D: nothing to linearize, the sequential thread waits: the
         // merges of the finished early jobs.
-        if !more && !self.on_pool() {
+        // Not inside a sequential attempt (what it holds would wait for the
+        // walk), nor while the repository lane is busy (its fetches are
+        // this thread's: BAZEL_RS_EVAL_INPHASE_QUIET_MS, default 200).
+        if !more
+            && crate::engine::parallel::in_phase_walks()
+            && !self.on_pool()
+            && with_running(|running| running.is_empty())
+            && super::loading::lane_quiet(in_phase_quiet())
+        {
             let started = std::time::Instant::now();
             if coord.in_phase_walk(self.shared) {
                 super::super::timeline::add("idle in-phase walk", started);
