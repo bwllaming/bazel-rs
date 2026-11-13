@@ -754,6 +754,12 @@ change announced to the other two workers; adding a helper is not.
   `SeqCst` (paired with the fence). eval-coverage: `--keep_going` keeps
   in-phase walks off (`Coord::in_phase_walk` reads `Engine::keep_going`), as
   the tracker and a recording do.
+- 2026-11-13 (eval-speed round 6; no frozen interface changed):
+  `PrepareCx::spread_edges` and `AspectCx::{spreads, spread}` (default no-op;
+  `aspect_plan::Spread`), `parallel::buffer::spread_aspect_walk`,
+  `aspect_jobs::helper_walk`, `Board::spread`; `delta::SingleFlight`'s shards
+  are `hashbrown::HashTable<(u64, K, Slot<V>)>` (same methods);
+  `parallel::aspects::cheap` is `pub(super)`.
 
 ## 4. Stages and gates
 
@@ -3525,6 +3531,77 @@ the phase-1 tables apart from `Coord`, or the lane served from the
 cursor's waits); forks without copies (layered phase-1 tables). Until then
 the deferred walk is bound by its cursor's CPU (~3.5 s) and the chains
 behind entries the early boards cannot run.
+
+### Task B, round 5: aspect walks on the workers (eval-speed, round 6)
+
+After the sharded tables (round 5) the deferred walk was bound by its claim
+waits, the largest `//src/rust/graphlake/server:server_clippy` (0.6–0.8 s):
+one aspect job analysing the clippy aspect over its whole closure (its
+`deps` are the crate's library, tests, benches and binaries) on one worker,
+~2 s, readied 1.4 s before the cursor reached it.
+
+- **Walks handed out** (`BAZEL_RS_T3_ASPECT_HELPERS`, on; `0` off; `all`
+  also for aspects whose analyses are cheap, the tests' setting): an aspect
+  job's prepare hands the aspect-applied edges after its first to the
+  walk's workers (`PrepareCx::spread_edges`, before `prepare_custom`'s edge
+  loop), and so does each application it plans with the base rule's edges
+  (`AspectCx::spread`, before `plan_application`'s edge loop). Each such
+  dependency is walked ahead once per walk (`Board::spread`, at the job's
+  queue priority; one that stops short — an unpublished dependency, an
+  error — may be handed out again by the job's next run) by
+  `aspect_jobs::helper_walk`: the coordinator's recursion over a throwaway
+  `FrozenAspects` at the job's plan index (so the ranges its reads narrow
+  are the job's), whose analyses fill the walk's `AspectTable`
+  (single-flight; a walk ahead handing out its own edges in turn). Its
+  lookups, records, sources and effects are dropped (isolated). The job
+  walks on as before: an application in the table is a memo hit, one being
+  analyzed is waited for, one not started is analyzed by the job. Its
+  record (placements, subs, `Target` values, ranges) and its placement do
+  not change: an entry filled by a walk ahead is what another job filling
+  it first gives (the table's sharing between jobs, as before). Not while
+  the tracker runs or the snapshot records (a walk ahead's lookups would be
+  dropped while the view memos it fills hold them), nor for aspects whose
+  analyses average < 1 ms (`parallel::aspects::cheap`: rustfmt; their walk
+  costs more than their analyses — `all` on ~/code: no gain). ~/code: ~210
+  walks ahead per build, `server_clippy`'s wait gone.
+- **The cursor**: `SingleFlight` keys are hashed once (a
+  `hashbrown::HashTable` of entries with their hash, the shard picked by the
+  same hash: every memo of the walk); a placement places or checks each
+  table entry once (met again through another application's subs: nothing
+  to do; profile: the table lookups of `place_aspects` 68 → 44 samples); a
+  shared action's dropped lowering (its lowered nodes) is freed on the
+  planning dropper thread, not at the cursor's adoption.
+- Tried, not kept: the job queue's chain priority shifted (no tie at 0 for
+  long chains early in the plan) with `BAZEL_RS_T3_CHAIN_WEIGHT=4096`
+  (the `//src/python:web` chain's wait gone, the walk unchanged: −0.05 s,
+  noise); 24 frozen-walk workers (walk −0.15 s, Elapsed unchanged, +0.2 GB);
+  `BAZEL_RS_T3_ASPECT_HELPERS=all`.
+
+What bounds the walk now: work ≈ 16 workers' throughput (`last_job` 0.25 s
+before the end), the cursor's CPU 3.0–3.2 s, waits ~1 s in many short
+chains (python `:web` 0.15–0.2 s: its own compute ~0.4 s readied late by
+pip packages queued 1.2 s; `@ansible…//:srcs` 0.09 s).
+
+Measured (2026-11-13, ~/code `80d6724f3a` private clone, LTO release,
+`build --nobuild //src/...`, snapshot off, alternating, host load 32–63;
+before = main `891a1d43`):
+
+| | before | aspect walks + cursor |
+|---|---|---|
+| big deferred walk (119,091 entries) | 4.83–5.38 s | 4.11–4.21 s |
+| its cursor's CPU | 3.20–3.41 s | 2.82–3.02 s |
+| `INFO: Elapsed time` (no diagnostics) | 17.10–17.47 s | 16.57–16.71 s (one 20.5 s under load) |
+| max RSS | 9.41–9.54 GB | 9.47–9.66 GB |
+
+Snapshot miss (no dump, non-LTO): 9.75 GB before, 9.79 GB after. Identical:
+the action dumps of `build` (also under `BAZEL_RS_PARITY_REVERSE=1`, and
+on a snapshot miss) and `test --nobuild` (vs main); `BAZEL_RS_T3_ASPECT_JOBS=verify`
++ `BAZEL_RS_VERIFY_DELTA` (`coordinator_rejects=4`, as main), `PARITY_VERIFY`
++ `REVERSE`, `VERIFY_DELTA` + `VERIFY_ARTIFACTS`, `EVAL_VERIFY`
+(`--memory-limit=40000`) clean. `tests/eval_buffer.rs`: two matrix runs
+with `BAZEL_RS_T3_ASPECT_HELPERS=all` (jitter, restarts; reverse with
+`PARITY_VERIFY`) and the walks ahead counted in
+`attribute_aspect_applications_analyzed_ahead_replay_in_order`.
 
 ### Effort
 
