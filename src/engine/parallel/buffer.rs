@@ -770,6 +770,12 @@ struct Board {
     /// ([`spread_aspect_walk`]).
     #[allow(clippy::type_complexity)]
     spread: std::sync::Mutex<HashSet<(Label, ConfigId, Vec<String>)>>,
+    /// BAZEL_RS_ANALYSIS_ORDER=genuine (not `--keep_going`): a job's
+    /// console is written when it finishes ([`stream`]). Under
+    /// `--keep_going` the console keeps the plan order (an entry skipped at
+    /// its turn — a dependency failed at its merge after publishing — never
+    /// prints, though its job may have run).
+    streams: bool,
 }
 
 impl Board {
@@ -1263,7 +1269,7 @@ impl Board {
                 }
                 // (Not once the walk ended: its error is the build's last
                 // analysis output.)
-                if crate::engine::eval::genuine()
+                if self.streams
                     && !self.stopped()
                     && let Ok(outcome) = &mut result
                 {
@@ -1756,6 +1762,7 @@ impl Board {
             running: std::sync::atomic::AtomicUsize::new(0),
             fence: std::sync::atomic::AtomicUsize::new(0),
             fail_fast: false,
+            streams: crate::engine::eval::genuine(),
             failed: std::sync::atomic::AtomicUsize::new(usize::MAX),
             spread: Default::default(),
         })
@@ -2144,6 +2151,7 @@ impl Engine {
         let mut board = Board::new(frozen, plan, start, jobs, cancelled, false);
         if let Some(fresh) = Arc::get_mut(&mut board) {
             fresh.fail_fast = crate::engine::eval::genuine() && !self.keep_going;
+            fresh.streams = crate::engine::eval::genuine() && !self.keep_going;
         }
         // Task D: the jobs the early boards finished are this walk's.
         if let Some(early) = self.early_ct2.take() {

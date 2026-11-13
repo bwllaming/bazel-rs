@@ -1477,8 +1477,21 @@ fn compare_keep_going(ws: &Workspace, targets: &[&str], check: impl Fn(&str)) {
     check(&text);
     const KG: (&str, &str) = KEEP_GOING_FROZEN;
     const RECORD: (&str, &str) = ("BAZEL_RS_SNAPSHOT", "on");
-    let runs: [(usize, &[(&str, &str)]); 17] = [
+    let runs: [(usize, &[(&str, &str)]); 19] = [
         (1, &[FROZEN, KG]),
+        // The genuine order keeps the console's plan order under
+        // --keep_going (no fail fast, nothing streamed).
+        (8, &[FROZEN, KG, GENUINE]),
+        (
+            2,
+            &[
+                FROZEN,
+                KG,
+                GENUINE,
+                REVERSE,
+                ("BAZEL_RS_EVAL_JITTER", "300"),
+            ],
+        ),
         (2, &[FROZEN, KG]),
         (8, &[FROZEN, KG]),
         (32, &[FROZEN, KG]),
