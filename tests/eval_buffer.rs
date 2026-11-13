@@ -986,6 +986,40 @@ fn the_genuine_order_writes_each_targets_lines_as_one_block() {
         reordered,
         "the heavy targets first in plan order never printed later"
     );
+    // The build event stream per target: the configured, completed,
+    // configuration and pattern events the walk's (as a set; bazel-rs's
+    // progress events carry no console output).
+    let bep = |mode: &str, env: &[(&str, &str)]| {
+        let path = ws.path().join(format!("tmp/bep-{mode}.json"));
+        let flag = format!("--build_event_json_file={}", path.display());
+        let built = ws.build(mode, 8, env, &["//b:all", &flag]);
+        assert!(built.status.success(), "{}", stable(&built));
+        let mut targets = Vec::new();
+        for line in fs::read_to_string(&path).unwrap().lines() {
+            let event: serde_json::Value = serde_json::from_str(line).unwrap();
+            let id = event["id"].as_object().unwrap();
+            let kind = id.keys().next().unwrap().as_str();
+            assert!(
+                kind != "progress" || event["progress"].get("stderr").is_none(),
+                "{line}"
+            );
+            if matches!(
+                kind,
+                "targetConfigured" | "targetCompleted" | "configuration" | "pattern"
+            ) {
+                targets.push(line.to_owned());
+            }
+        }
+        targets.sort();
+        targets
+    };
+    let walk_events = bep("walk", &[]);
+    assert!(walk_events.len() > 48, "{walk_events:#?}");
+    assert_eq!(
+        bep("eval", &[FROZEN, GENUINE]),
+        walk_events,
+        "the build event stream"
+    );
     let invalid = ws.build("eval", 8, &[("BAZEL_RS_ANALYSIS_ORDER", "stream")], &args);
     assert!(!invalid.status.success());
     assert!(

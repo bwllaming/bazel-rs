@@ -712,6 +712,17 @@ change announced to the other two workers; adding a helper is not.
   `engine::purge_elsewhere` (the arena purge on the planning dropper thread,
   after what was handed to it); `SourceInputs::{own_where, listed_where}`
   replace `own`/`listed`.
+- 2026-11-13 (task C, eval-t3: `BAZEL_RS_ANALYSIS_ORDER`; no frozen
+  interface changed): `eval::{AnalysisOrder, order, genuine,
+  order_is_default}`, `engine::analysis_order_is_default` (the snapshot's
+  `test_hook` and the record mode's taint); `ui::write_block`;
+  `FrozenOutcome::streamed`, `ComputeOutcome::streamed`,
+  `Engine::{streamed_redo, abandon_analysis_workers,
+  track_analysis_print}`; `AnalysisPool::abandon`; the buffer's
+  `Board::{fail_fast, failed}`, `Claimed::Failed`,
+  `Finished::confirmed_error`. eval-coverage: once `--keep_going` plans on
+  the evaluator, the T3 walk keeps fail fast off there
+  (`Board::fail_fast` reads `Engine::keep_going`); eval-speed: none.
 
 ## 4. Stages and gates
 
@@ -3180,6 +3191,33 @@ one a snapshot, cquery-history or incremental-index test (snapshots off)
 or an ordering comparison of `eval_buffer`/`eval_pass2`; with the rule
 and the canonicalizing comparisons: 3,771 passed, 0 failed (one
 `eval_pass2` recording comparison fixed after the run and rerun alone).
+
+**~/code** (private clone `80d6724f`, release build, `build --nobuild
+//src/...`, snapshot off, eval): exact and genuine stderr with the action
+dump byte-identical (`85ae7ead3db2`, 6,486,165 lines; the console's 6
+events — three rules_python implementation prints, DEBUG + WARNING each —
+come out in the same order: 38,734 of 38,757 jobs streamed, the printing
+ones finish in plan order), so the console multiset is equal too; walls
+26.8 / 23.1 s (noise). Time to the first error with an injected `fail()`
+(a new last package `//src/zz_genuine_fail:boom`, in a `cp -a` copy):
+exact 19.9 s, genuine 19.1 / 19.2 s (`failed_fast=1`). The gain is small
+there: the failing entry is in the planning tail's walk, which starts
+only after phase 1 (15.3 s), and its job is queued by plan index (the
+lowest first), so it runs near the end of that walk's 1 s anyway; the
+merge cursor trails the jobs by ~0.3 s.
+
+**BEP**: unaffected — the stream is written from the plan (bazel-rs's
+progress events carry no console output);
+`the_genuine_order_writes_each_targets_lines_as_one_block` checks the
+per-target events (configured, completed, configuration, pattern) as a
+set against the walk's.
+
+**Not done**: phase 1's console (BUILD files' and `.bzl` modules'
+top-level prints, phase-1 warnings) keeps the tape's order in the genuine
+order too: streaming it needs each node's final attempt's writes at its
+commit (speculation and restarts discard attempts; nodes/speculate.rs,
+loading.rs, linearize/driver.rs). The genuine order's phase 2 covers the
+T3 buffer only (the P3/T2 pipelines and the walk engine are exact).
 
 Measured (`eval_buffer::the_genuine_order_fails_fast_on_the_first_confirmed_error`'s
 shape, debug build, 8 threads, frozen walk: 24 `w` targets, the first
