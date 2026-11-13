@@ -402,6 +402,10 @@ impl Host for Walk<'_> {
         self.configured.insert(key.clone(), Arc::new(node));
     }
 
+    fn unpublish_node(&mut self, key: &ConfiguredTargetKey) {
+        self.configured.remove(key);
+    }
+
     fn record_delegation(&mut self, key: ConfiguredTargetKey, owner: ConfiguredTargetKey) {
         self.engine.rule_delegations.insert(key, owner);
     }
@@ -489,15 +493,20 @@ impl Host for Walk<'_> {
     fn capture_cquery_aspect_toolchain_context(
         &mut self,
         config: ConfigId,
+        _owner: &str,
         context: &ToolchainContextKey,
     ) -> Vec<u32> {
         self.engine
             .capture_cquery_aspect_toolchain_context(config, context)
     }
 
-    fn flush_pending(&mut self, config_setting: &Rule) -> Result<(), String> {
+    fn flush_pending(
+        &mut self,
+        config_setting: &Rule,
+        flags: &[ConfiguredTargetKey],
+    ) -> Result<(), String> {
         self.engine
-            .plan_pending(config_setting, self.plan, self.configured)
+            .plan_pending(config_setting, flags, self.plan, self.configured)
     }
 
     fn planned_feature_flag(

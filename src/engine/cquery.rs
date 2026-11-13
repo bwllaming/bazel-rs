@@ -23,6 +23,9 @@ pub(super) struct Capture {
     /// output files). Not providers: their values never enter the graph.
     facts: BTreeMap<(Label, Option<ConfigId>), Result<Facts, String>>,
     provider_lists: HashSet<Arc<[String]>>,
+    /// The evaluator's capture symbols, mapped where their ops are
+    /// replayed (`eval::cquery_ops`).
+    replay: super::eval::cquery_ops::Replay,
 }
 
 fn capture_interned(capture: &mut Option<Capture>, names: Vec<String>) -> Option<Arc<[String]>> {
@@ -64,6 +67,11 @@ struct CapturedAspect {
 }
 
 impl Capture {
+    /// The evaluator's replay error (`Engine::replay_cquery_op`).
+    pub(super) fn replay_error(&self) -> Option<&str> {
+        self.replay.error()
+    }
+
     /// The captured graph as text (BAZEL_RS_EVAL_VERIFY compares two
     /// engines' captures).
     pub(super) fn verify_text(&self) -> String {
@@ -1257,6 +1265,95 @@ impl Engine {
             }
         }
         ids
+    }
+
+    /// Apply an evaluator body's capture write (`eval::cquery_ops`) where
+    /// the walk makes it: its symbols mapped to the capture's ids. A symbol
+    /// used before its op is an internal error, kept until the graph is
+    /// taken (`Self::cquery_replay_error`).
+    pub(super) fn replay_cquery_op(&mut self, op: &super::eval::cquery_ops::CqueryOp) {
+        use super::eval::cquery_ops::CqueryOp;
+        if let CqueryOp::Context {
+            config,
+            labels,
+            symbol,
+        } = op
+        {
+            let Some(capture) = &mut self.cquery_capture else {
+                return;
+            };
+            let mut ids = Vec::new();
+            for label in labels {
+                let key = ConfiguredTargetKey::new(label.clone(), *config);
+                if capture.rules.contains_key(&key) {
+                    let id = capture.target(key);
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+            }
+            capture.replay.define_list(*symbol, ids);
+            return;
+        }
+        let Some(capture) = &mut self.cquery_capture else {
+            return;
+        };
+        let replayed = (|| -> Result<(), String> {
+            match op {
+                CqueryOp::Rule {
+                    key,
+                    rule,
+                    incompatible,
+                    direct,
+                } => {
+                    if *direct {
+                        capture.direct_incompatible.insert(key.clone());
+                    }
+                    if let Some(conditions) = incompatible {
+                        capture.incompatible.insert(key.clone(), conditions.clone());
+                    }
+                    capture.rules.insert(key.clone(), Arc::clone(rule));
+                }
+                CqueryOp::Applications {
+                    base,
+                    collection,
+                    rule,
+                    symbols,
+                } => {
+                    let ids = capture.applications(base, collection, rule);
+                    capture.replay.define(symbols, &ids);
+                }
+                CqueryOp::Request { requester, ids } => {
+                    let ids = capture.replay.map(ids)?;
+                    capture.request(requester, ids);
+                }
+                CqueryOp::AspectTargets { id, dependencies } => {
+                    let id = capture.replay.one(*id)?;
+                    let dependencies = capture.replay.map(dependencies)?;
+                    capture.aspect_targets(id, &dependencies);
+                }
+                CqueryOp::AspectTarget { id, label, config } => {
+                    let id = capture.replay.one(*id)?;
+                    capture.aspect_target(id, label.clone(), *config);
+                }
+                CqueryOp::Propagated {
+                    ids,
+                    collection,
+                    children,
+                    attribute,
+                    attached,
+                } => {
+                    let ids = capture.replay.map(ids)?;
+                    let children = capture.replay.map(children)?;
+                    capture.propagated(&ids, collection, &children, attribute, attached);
+                }
+                CqueryOp::Context { .. } => {}
+            }
+            Ok(())
+        })();
+        if let Err(error) = replayed {
+            capture.replay.fail(error);
+        }
     }
 
     pub(super) fn capture_cquery_edge(

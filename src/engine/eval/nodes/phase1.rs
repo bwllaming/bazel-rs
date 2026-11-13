@@ -891,12 +891,14 @@ pub(crate) trait Phase1: Host {
         if rule.custom.is_some() {
             self.record_configured_rule(&key, &rule);
         }
-        self.analyze_aspect_edges(&rule, &key)?;
-        if let Some(capture) = self.cquery_capture() {
-            if incompatible_now {
-                capture.incompatible.insert(key.clone(), ordered);
-            }
-            capture.rules.insert(key.clone(), Arc::clone(&rule));
+        if let Err(error) = self.analyze_aspect_edges(&rule, &key) {
+            // The target failed (--keep_going reaches it again: it is
+            // analyzed again, never a memo hit of a node never planned).
+            self.unpublish_node(&key);
+            return Err(error);
+        }
+        if self.cquery() {
+            self.cquery_rule(&key, &rule, incompatible_now.then_some(ordered), false);
         }
         let plan_len = self.plan_len();
         self.track_position(tracked, plan_len);
@@ -946,8 +948,8 @@ pub(crate) trait Phase1: Host {
                     aspects.clone(),
                     &mut seen,
                 )?;
-                if let Some(capture) = self.cquery_capture() {
-                    capture.request(key, applications);
+                if self.cquery() {
+                    self.cquery_request(key, applications);
                 }
             }
         }
@@ -1034,10 +1036,11 @@ pub(crate) trait Phase1: Host {
         // Function `attr_aspects` evaluated over this configured target
         // (computeAttributeAspects, DependencyMapProducer.java:360-380).
         let collection = self.with_computed_attr_aspects(collection, &base_key, &base_rule)?;
-        let applications = self
-            .cquery_capture()
-            .map(|capture| capture.applications(&base_key, &collection, &base_rule))
-            .unwrap_or_default();
+        let applications = if self.cquery() {
+            self.cquery_applications(&base_key, &collection, &base_rule)
+        } else {
+            Vec::new()
+        };
         let memo = (base_key.clone(), collection.descriptors());
         if !seen.insert(memo) {
             return Ok(applications);
@@ -1064,10 +1067,10 @@ pub(crate) trait Phase1: Host {
             // the dependencies); a ToolchainException is the application's
             // error as is (AspectFunction.java:510-515).
             let toolchains = self.aspect_toolchain_contexts(&base_rule, config, aspect)?;
-            if let Some(capture) = self.cquery_capture() {
+            if let Some(&application) = applications.get(index) {
                 // Record per application, including memoized toolchain contexts.
                 // The resolution memo is not an edge owner.
-                capture.aspect_targets(applications[index], &toolchains.cquery_dependencies);
+                self.cquery_aspect_targets(application, &toolchains.cquery_dependencies);
                 for context in std::iter::once(toolchains.default.as_ref())
                     .chain(
                         toolchains
@@ -1079,7 +1082,7 @@ pub(crate) trait Phase1: Host {
                     .flatten()
                 {
                     for label in context.resolved_labels() {
-                        capture.aspect_target(applications[index], label, config);
+                        self.cquery_aspect_target(application, label, config);
                     }
                 }
             }
@@ -1170,8 +1173,8 @@ pub(crate) trait Phase1: Host {
                     propagating.clone(),
                     seen,
                 )?;
-                if let Some(capture) = self.cquery_capture() {
-                    capture.propagated(
+                if self.cquery() {
+                    self.cquery_propagated(
                         &applications,
                         &collection,
                         &children,
@@ -1284,8 +1287,8 @@ pub(crate) trait Phase1: Host {
                     let attribute_config = *attribute_config;
                     self.analyze(&dependency, attribute_config)
                         .map_err(failure)?;
-                    if let (Some(index), Some(cquery)) = (capture, self.cquery_capture()) {
-                        cquery.aspect_target(index, dependency.clone(), attribute_config);
+                    if let Some(index) = capture {
+                        self.cquery_aspect_target(index, dependency.clone(), attribute_config);
                     }
                     if !propagating.is_empty() {
                         self.analyze_aspect_applications(
@@ -1513,9 +1516,13 @@ pub(crate) trait Phase1: Host {
                 let cquery_key = self.cquery().then(|| default_key.clone());
                 toolchains.default = self.resolve_toolchains(base_rule, config, default_key)?;
                 if let Some(key) = cquery_key {
-                    toolchains
-                        .cquery_dependencies
-                        .extend(self.capture_cquery_aspect_toolchain_context(config, &key));
+                    toolchains.cquery_dependencies.extend(
+                        self.capture_cquery_aspect_toolchain_context(
+                            config,
+                            &aspect.descriptor,
+                            &key,
+                        ),
+                    );
                 }
                 for (name, key) in processed {
                     let group_types = key
@@ -1526,9 +1533,13 @@ pub(crate) trait Phase1: Host {
                     let cquery_key = self.cquery().then(|| key.clone());
                     let context = self.resolve_toolchains(base_rule, config, key)?;
                     if let Some(key) = cquery_key {
-                        toolchains
-                            .cquery_dependencies
-                            .extend(self.capture_cquery_aspect_toolchain_context(config, &key));
+                        toolchains.cquery_dependencies.extend(
+                            self.capture_cquery_aspect_toolchain_context(
+                                config,
+                                &aspect.descriptor,
+                                &key,
+                            ),
+                        );
                     }
                     toolchains
                         .groups
@@ -2509,7 +2520,7 @@ pub(crate) trait Phase1: Host {
         // UserDefinedFlagMatch reads the FeatureFlagInfo a key returns
         // (ConfigSetting.java:651-687): a Starlark key's implementation runs
         // first (Self::plan_pending).
-        let mut starlark_keys = false;
+        let mut starlark_keys = Vec::new();
         for (attribute, dependency, _) in &keys {
             if *attribute != "flag_values" {
                 continue;
@@ -2519,12 +2530,11 @@ pub(crate) trait Phase1: Host {
                 self.target(&actual),
                 Ok(Target::Rule(dep)) if matches!(dep.kind, RuleKind::Custom)
             ) {
-                starlark_keys = true;
-                break;
+                starlark_keys.push(ConfiguredTargetKey::new(dependency.clone(), config));
             }
         }
-        if starlark_keys {
-            self.flush_pending(rule)?;
+        if !starlark_keys.is_empty() {
+            self.flush_pending(rule, &starlark_keys)?;
         }
         let shown = crate::rule_declarations::canonical_form(&rule.label);
         let requesting_package = rule_authority(rule);
@@ -4794,12 +4804,8 @@ pub(crate) trait Phase1: Host {
             },
         );
         self.record_configured_rule(&key, &rule);
-        if let Some(capture) = self.cquery_capture() {
-            if direct {
-                capture.direct_incompatible.insert(key.clone());
-            }
-            capture.incompatible.insert(key.clone(), conditions);
-            capture.rules.insert(key.clone(), rule.clone());
+        if self.cquery() {
+            self.cquery_rule(&key, &rule, Some(conditions), direct);
         }
         self.plan_push(key, rule);
     }

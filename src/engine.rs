@@ -10459,6 +10459,7 @@ impl Engine {
     fn plan_pending(
         &mut self,
         config_setting: &Rule,
+        flags: &[ConfiguredTargetKey],
         plan: &mut Plan,
         configured: &mut ConfiguredNodes,
     ) -> Result<(), String> {
@@ -10476,25 +10477,24 @@ impl Engine {
             u64::MAX,
             0,
         );
-        let (errors_before, failed_before) = (
-            self.keep_going_state.error_count(),
-            self.keep_going_state.failed_count(),
-        );
         let result = self.plan_targets(&mut state, plan, configured, false);
         timer.finish();
         self.action_planning = Some(state);
-        // --keep_going: a failure of a target this flush planned fails the
-        // analysis of the requested target that needed it (with the new
-        // root cause, or the one a skipped target's dependency reported).
-        if self.keep_going_state.failed_count() > failed_before {
-            let error = self
-                .keep_going_state
-                .error_at(errors_before)
-                .or_else(|| self.keep_going_state.last_error())
-                .unwrap_or("a dependency failed to analyze");
-            return Err(error.to_owned());
+        result?;
+        // --keep_going: the config_setting fails when one of its own
+        // Starlark flag keys failed (now or in an earlier flush), with the
+        // flag's root cause (ConfigSetting depends on the flag's
+        // ConfiguredTargetValue; genuine Bazel 9.3.1, docs/KEEP_GOING.md):
+        // another target's failure in the flush fails only what is above
+        // it.
+        if self.keep_going {
+            for flag in flags {
+                if let Some(error) = self.keep_going_state.failure_of(flag) {
+                    return Err(error);
+                }
+            }
         }
-        result
+        Ok(())
     }
 
     /// The FeatureFlagInfo a planned Starlark target returned.
@@ -10557,10 +10557,12 @@ impl Engine {
                 // left reaches below the target's own key (a dependency's
                 // analysis failed: `Analysis failed`).
                 Err(error) if self.keep_going => {
+                    let dependency =
+                        active.len() > 1 && !keep_going::own_select_failure(&error, label);
                     self.keep_going_state.error(error);
                     self.keep_going_state
                         .failed_targets
-                        .insert(label.clone(), active.len() > 1);
+                        .insert(label.clone(), dependency);
                 }
                 analyzed => {
                     analyzed?;
@@ -10577,6 +10579,29 @@ impl Engine {
             }
         }
         self.track_root_entry(labels.len(), plan.len());
+        self.analyze_top_level_aspects(labels, top, configured, plan)?;
+        Ok(root_checkpoint::Outcome::Continue(()))
+    }
+
+    /// The end of phase 1 (`analyze_requested`, also after the evaluator's
+    /// requested targets: eval-coverage): the top-level aspects' own
+    /// attribute dependencies, analyzed by the walk in order.
+    fn analyze_top_level_aspects(
+        &mut self,
+        labels: &[Label],
+        top: ConfigId,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Plan,
+    ) -> Result<(), String> {
+        // After the evaluator, cquery's capture holds what the tape replayed
+        // (its symbols mapped); the walk writes the aspects' part with the
+        // capture's own ids, in the walk's order (cquery --aspects).
+        debug_assert!(
+            self.cquery_capture
+                .as_ref()
+                .is_none_or(|capture| capture.replay_error().is_none()),
+            "the evaluator's cquery capture replay failed before the top-level aspects"
+        );
         // N58: the top-level aspects' applications on each requested target
         // and along their `attr_aspects` closure are analyzed like any
         // dependency (ToplevelStarlarkAspectFunction over AspectFunction:
@@ -10586,7 +10611,7 @@ impl Engine {
         // package.
         let aspects = self.top_level_aspects_list()?;
         if aspects.is_empty() {
-            return Ok(root_checkpoint::Outcome::Continue(()));
+            return Ok(());
         }
         let mut seen = BTreeSet::new();
         for label in labels {
@@ -10617,7 +10642,7 @@ impl Engine {
                 }
             }
         }
-        Ok(root_checkpoint::Outcome::Continue(()))
+        Ok(())
     }
 
     /// Start phase-1 package prefetch (crate::prefetch) for a build's
@@ -10912,8 +10937,15 @@ impl Engine {
             // ahead (crate::repository_speculation), as phase-1 prefetch's.
             let speculating = self.eval_pooled() && self.start_pattern_speculation();
             let analyzed = self
-                .eval_phase1(labels, top, &mut configured, &mut plan)
-                .map(root_checkpoint::Outcome::Continue);
+                .eval_phase1(labels, top, &mut configured, &mut plan, checkpoint)
+                .and_then(|outcome| match outcome {
+                    // The top-level aspects' phase 1: the walk's, after the
+                    // requested targets (their state as the walk leaves it).
+                    root_checkpoint::Outcome::Continue(()) => self
+                        .analyze_top_level_aspects(labels, top, &mut configured, &mut plan)
+                        .map(root_checkpoint::Outcome::Continue),
+                    accepted => Ok(accepted),
+                });
             if speculating {
                 self.repositories.stop_speculation();
             }
@@ -11176,6 +11208,13 @@ impl Engine {
                 runfiles_info: state.runfiles_info.len(),
                 runfiles_nodes: state.runfiles_nodes.len(),
             });
+        }
+        if let Some(error) = self
+            .cquery_capture
+            .as_ref()
+            .and_then(|capture| capture.replay_error())
+        {
+            return Err(error.to_owned());
         }
         if self.cquery_capture.is_some() {
             // aquery keeps the planned actions of the whole universe.

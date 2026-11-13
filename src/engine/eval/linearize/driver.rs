@@ -21,8 +21,17 @@
 //!   on pass 1's plan.
 //!
 //! Not covered yet (the walk plans these requests, `eval::select`):
-//! cquery/aquery captures, `--keep_going`, top-level aspects, the cquery
-//! root checkpoint (S4).
+//! cquery/aquery captures, top-level aspects, the cquery root checkpoint
+//! (S4).
+//!
+//! `--keep_going` (docs/KEEP_GOING.md, docs/EVALUATOR.md "eval-coverage"):
+//! every requested target is evaluated (no frontier-only mode); the tape
+//! feeds the walk's keep-going bookkeeping in its order ([`KeepGoing`]: the
+//! reaches' edges, the requested labels' roots, a failed label's error
+//! where its segment ends); flushes are deferred as usual (a
+//! config_setting fails only on its own flags' failure, which its body
+//! reads: `EvalHost::flush_pending`); an error whose text depends on the
+//! walk's order (a cycle) is the walk's re-analysis's.
 
 use std::sync::Arc;
 
@@ -307,6 +316,25 @@ pub(crate) struct Linearizer {
     /// were not recorded yet at their flush: memoized before a deferred
     /// walk if they are by then ([`Coord::catch_up`]).
     unrecorded_sources: Vec<(Label, std::path::PathBuf, Arc<crate::observed_fs::Captured>)>,
+    /// `--keep_going` (docs/KEEP_GOING.md): the walk's keep-going
+    /// bookkeeping from the tape ([`KeepGoing`]); `None` without it.
+    keep_going: Option<KeepGoing>,
+}
+
+/// `--keep_going` on the tape: the walk's `keep_going_state` writes of
+/// phase 1, in its order — each reach's edge (`record_keep_going_edge`),
+/// each requested label's first computed key, and a failed requested
+/// label's root-cause error where its segment ends.
+#[derive(Default)]
+struct KeepGoing {
+    /// The top-level segments the tape began so far.
+    segments: usize,
+    /// The requested label whose segment the tape is in (its index,
+    /// position and label), until it ends.
+    open: Option<(usize, usize, Label)>,
+    /// The requested labels whose phase 1 failed (by position), with the
+    /// error the walk reports: written where their segment ends.
+    failures: FxHashMap<usize, String>,
 }
 
 /// A flush of the tape that failed.
@@ -476,6 +504,7 @@ impl Coord<'_> {
             lin.pass.reserve(self.ct1_values.len());
             stat(STAT_PASS1, || lin.pass.resume(&view, &mut lin.ops))
         })?;
+        self.keep_going_edges(lin);
         phase(3);
         // The plan's length once this resume's entries are applied.
         let planned = lin.plan.len()
@@ -592,12 +621,17 @@ impl Coord<'_> {
                 }
                 TapeOp::Effect(Event::Info(text)) => self.effect(lin, Op::Info(text)),
                 TapeOp::Effect(Event::Warn(warning)) => self.effect(lin, Op::Warn(warning)),
+                TapeOp::Effect(Event::CqueryEdge(edge)) => self.effect(lin, Op::CqueryEdge(edge)),
+                TapeOp::Effect(Event::Cquery(op)) => self.effect(lin, Op::Cquery(op)),
                 TapeOp::Effect(Event::LoadPrints(prints)) => {
                     self.effect(lin, Op::LoadPrints(prints));
                 }
                 // The engine's packages at once (work ahead of its turn
                 // reads them; the walk loaded none of them itself).
                 TapeOp::Effect(Event::PkgCommit(package, _)) => self.commit_package(&package),
+                TapeOp::Segment(kind) if lin.keep_going.is_some() => {
+                    self.keep_going_segment(lin, &kind);
+                }
                 TapeOp::Plan { key, node, .. } => {
                     let rule = self
                         .ct1_by_node
@@ -663,6 +697,70 @@ impl Coord<'_> {
                 Err(error)
             }
             None => Ok(()),
+        }
+    }
+
+    /// `--keep_going`: the tape begins a top-level segment. The requested
+    /// label whose segment ends here failed if the driver recorded its
+    /// error ([`Self::keep_going_failed`]): the walk's `analyze_requested`
+    /// reports it after the segment's flushes, a dependency's failure when
+    /// the active chain it left is longer than the target's own key.
+    fn keep_going_segment(&mut self, lin: &mut Linearizer, kind: &SegmentKind) {
+        let Some(state) = lin.keep_going.as_mut() else {
+            return;
+        };
+        let ended = state.open.take().and_then(|(index, position, label)| {
+            let error = state.failures.remove(&position)?;
+            Some((index, label, error))
+        });
+        let index = state.segments;
+        state.segments += 1;
+        state.open = match kind {
+            SegmentKind::Root {
+                position, label, ..
+            } => Some((index, *position, label.clone())),
+            _ => None,
+        };
+        if let Some((index, label, error)) = ended {
+            let dependency = lin.pass.segment_active(index).unwrap_or(0) > 1
+                && !crate::engine::keep_going::own_select_failure(&error, &label);
+            self.effect(
+                lin,
+                super::pass2::Op::KeepGoingFailure {
+                    label,
+                    error,
+                    dependency,
+                },
+            );
+        }
+    }
+
+    /// `--keep_going`: pass 1's reaches since the last call — each edge
+    /// with the parent on top of the active chain (the walk's
+    /// `record_keep_going_edge`), each requested label's root — recorded
+    /// before the tape they precede is applied (a flush's phase 2 reads
+    /// them; a later edge never leaves an earlier entry).
+    fn keep_going_edges(&mut self, lin: &mut Linearizer) {
+        if lin.keep_going.is_none() {
+            return;
+        }
+        let (edges, roots) = lin.pass.take_keep_going();
+        let state = &mut self.engine.keep_going_state;
+        for (parent, key) in edges {
+            if parent.is_some() {
+                state.record_edge(parent.as_ref(), &key);
+            }
+        }
+        for (label, key) in roots {
+            state.roots.insert(label, key);
+        }
+    }
+
+    /// `--keep_going`: the requested label at `position` failed with
+    /// `error` (reported where the tape ends its segment).
+    pub(crate) fn keep_going_failed(&mut self, position: usize, error: String) {
+        if let Some(state) = self.lin.as_mut().and_then(|lin| lin.keep_going.as_mut()) {
+            state.failures.insert(position, error);
         }
     }
 
@@ -1262,8 +1360,35 @@ impl Coord<'_> {
         else {
             return failure.error.clone();
         };
+        self.walk_reanalysis(
+            lin,
+            shared,
+            label,
+            trimmed_root.clone(),
+            &point.chain,
+            Some(&failure.error),
+            top,
+        )
+        .unwrap_or_else(|| failure.error.clone())
+    }
+
+    /// The walk's analysis of the requested `label` again, on the values
+    /// published so far, the `chain`'s nodes left out (they are being
+    /// analyzed); a flush in it fails with `flush_error`. Its error (`None`:
+    /// it succeeds); its effects are dropped (the tape wrote them).
+    #[allow(clippy::too_many_arguments)]
+    fn walk_reanalysis(
+        &mut self,
+        lin: &mut Linearizer,
+        shared: &EvalShared,
+        label: &Label,
+        trimmed_root: Option<ConfiguredTargetKey>,
+        chain: &[NodeId],
+        flush_error: Option<&str>,
+        top: ConfigId,
+    ) -> Option<String> {
         // The chain is being analyzed in the walk: none of it is a memo hit.
-        for node in &point.chain {
+        for node in chain {
             match self.store.keys.get(node) {
                 Some(NodeKey::Ct1(ct)) => {
                     lin.configured.remove(&ct.key);
@@ -1283,11 +1408,11 @@ impl Coord<'_> {
         let tracker = lin.tracker.take();
         let warnings = self.engine.warnings.len();
         let counts = crate::progress::analysis_counts();
-        self.engine.eval_flush_failure = Some(failure.error.clone());
+        self.engine.eval_flush_failure = flush_error.map(str::to_owned);
         let result = self.with_engine(lin, shared, |engine, lin| {
             let console = crate::ui::DeferredConsole::start();
             let scope = crate::observed_fs::unit_scope();
-            engine.requested_trimmed_root = trimmed_root.clone();
+            engine.requested_trimmed_root = trimmed_root;
             let mut active = Vec::new();
             let mut plan = Plan::new();
             let result = engine.analyze(label, top, &mut active, &mut lin.configured, &mut plan);
@@ -1301,7 +1426,45 @@ impl Coord<'_> {
         self.store.warnings_seen = self.engine.warnings.len();
         crate::progress::restore_analysis_counts(counts);
         lin.tracker = tracker;
-        result.err().unwrap_or_else(|| failure.error.clone())
+        result.err()
+    }
+
+    /// `--keep_going`: the walk's error of the requested `label` whose
+    /// evaluated error depends on the walk's order (a dependency cycle: its
+    /// text names the path from where the walk entered it; a failed node
+    /// is memoized, the walk analyzes it again from each requested target
+    /// that reaches it): the walk's analysis again on the values published
+    /// so far. `None`: not such an error.
+    pub(crate) fn keep_going_reanalysis(
+        &mut self,
+        shared: &EvalShared,
+        top: ConfigId,
+        label: &Label,
+        trimmed_root: Option<&ConfiguredTargetKey>,
+        error: &str,
+    ) -> Option<String> {
+        if !super::chains::is_open(error) {
+            return None;
+        }
+        let mut lin = self.lin.take()?;
+        if lin.keep_going.is_none() {
+            self.lin = Some(lin);
+            return None;
+        }
+        self.publish(&mut lin, shared, false);
+        let state = std::mem::take(&mut self.engine.keep_going_state);
+        let text = self.walk_reanalysis(
+            &mut lin,
+            shared,
+            label,
+            trimmed_root.cloned(),
+            &[],
+            None,
+            top,
+        );
+        self.engine.keep_going_state = state;
+        self.lin = Some(lin);
+        text
     }
 
     /// Run `f` with the engine as the walk has it: the configurations
@@ -1808,7 +1971,7 @@ impl Transcripts for View<'_> {
 impl Engine {
     /// Whether phase 1 runs on a pool (S2: more than one thread).
     pub(in crate::engine) fn eval_pooled(&self) -> bool {
-        phase1_config(self.loading_phase_threads).threads > 1
+        phase1_config(self.loading_phase_threads, false).threads > 1
     }
 
     /// Phase 1 of `labels` in `top` by the evaluator (see the module
@@ -1820,7 +1983,8 @@ impl Engine {
         top: ConfigId,
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
-    ) -> Result<(), String> {
+        mut checkpoint: Option<&mut super::super::super::root_checkpoint::Callback<'_>>,
+    ) -> Result<super::super::super::root_checkpoint::Outcome, String> {
         let tracker = self.incremental.take();
         let tracking = tracker.is_some();
         let warnings = self.warnings.clone();
@@ -1843,7 +2007,8 @@ impl Engine {
         super::super::timeline::mark(|| "the shared view built".to_owned());
         let mut pass = Pass1::new(Options {
             warnings,
-            no_edges: true,
+            // --keep_going reads the reaches' edges (the walk's).
+            no_edges: !self.keep_going,
         });
         pass.index_by_node();
         pass.plan_on_tape();
@@ -1869,10 +2034,11 @@ impl Engine {
             flushes: 0,
             target_platforms: FxHashMap::default(),
             unrecorded_sources: Vec::new(),
+            keep_going: self.keep_going.then(KeepGoing::default),
         };
         let (result, lin) = {
             let mut bodies = Phase1Bodies::new(&shared, self, tracking, true);
-            bodies.framed = phase1_config(shared.options.loading_phase_threads).threads > 1;
+            bodies.framed = phase1_config(shared.options.loading_phase_threads, false).threads > 1;
             {
                 let mut coord = bodies.coord();
                 coord.store.warnings_seen = coord.engine.warnings.len();
@@ -1901,8 +2067,13 @@ impl Engine {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(scratch);
             }
-            let evaluator =
-                Evaluator::new(&bodies, phase1_config(shared.options.loading_phase_threads));
+            let evaluator = Evaluator::new(
+                &bodies,
+                phase1_config(
+                    shared.options.loading_phase_threads,
+                    shared.options.keep_going,
+                ),
+            );
             // S2: with more than one thread, the pool evaluates what the
             // requests need first (attempts only the sequential pass can
             // run park); the walk's order then drives the inline pass over
@@ -1995,6 +2166,7 @@ impl Engine {
                         top,
                         target_platform,
                         pool_roots.as_deref(),
+                        checkpoint.as_deref_mut(),
                     );
                     evaluator.end_serving();
                     if let Err(panic) = server.join() {
@@ -2018,6 +2190,7 @@ impl Engine {
                     top,
                     target_platform,
                     pool_roots.as_deref(),
+                    checkpoint,
                 )
             };
             DRIVE[2].fetch_add(
@@ -2171,7 +2344,18 @@ impl Engine {
             let mut lin = coord.lin.take().expect("the linearizer");
             coord.publish(&mut lin, &shared, true);
             coord.drop_leftover_observations();
+            // The cquery root checkpoint accepted a saved graph: the partial
+            // analysis is dropped (never exported).
+            let (result, accepted) = match result {
+                Ok(Some(graph)) => (Ok(()), Some(graph)),
+                Ok(None) => (Ok(()), None),
+                Err(error) => (Err(error), None),
+            };
+            let finished = if accepted.is_some() { Ok(()) } else { finished };
             let result = result.and(finished).and_then(|()| {
+                if accepted.is_some() {
+                    return Ok(());
+                }
                 let resumed = with_running(|stack| {
                     let view = View {
                         store: &coord.store,
@@ -2198,7 +2382,7 @@ impl Engine {
                 (Ok(()), Some(mismatch)) => Err(mismatch),
                 (result, _) => result,
             };
-            (result, lin)
+            (result.map(|()| accepted), lin)
         };
         crate::perf_mark("plan.eval_bodies_dropped");
         crate::ui::set_count_deferred(false);
@@ -2266,13 +2450,15 @@ impl Engine {
                 ms(STAT_PHASE2)
             );
         }
-        result?;
+        if let Some(graph) = result? {
+            return Ok(super::super::super::root_checkpoint::Outcome::AcceptedQuery(graph));
+        }
         if let Some(divergence) = linearized.divergences.first() {
             return Err(format!(
                 "internal error: BAZEL_RS_ANALYSIS=eval: context divergence: {divergence}; rerun with BAZEL_RS_ANALYSIS=walk"
             ));
         }
-        Ok(())
+        Ok(super::super::super::root_checkpoint::Outcome::Continue(()))
     }
 }
 
@@ -2571,11 +2757,13 @@ const PHASE1_STACK: usize = 512 << 20;
 
 /// How phase 1 evaluates: `--loading_phase_threads` workers (bounded by
 /// the cores; 1: the inline driver), help first, big stacks.
-fn phase1_config(loading_phase_threads: usize) -> EvalConfig {
+fn phase1_config(loading_phase_threads: usize, keep_going: bool) -> EvalConfig {
     EvalConfig {
         help_first: true,
         stack: PHASE1_STACK,
-        ..EvalConfig::for_build(loading_phase_threads, false, None)
+        // `--keep_going`: every requested target is analyzed (no
+        // frontier-only mode after the first error).
+        ..EvalConfig::for_build(loading_phase_threads, keep_going, None)
     }
 }
 
@@ -2755,7 +2943,9 @@ fn sequential_attempts() -> u64 {
 }
 
 /// The walk's `plan_build` phase 1 over the evaluator: the explicit
-/// target platform, then each requested label (`analyze_requested`).
+/// target platform, then each requested label (`analyze_requested`);
+/// `Some`: the cquery root checkpoint accepted a saved graph.
+#[allow(clippy::too_many_arguments)]
 fn drive(
     bodies: &Phase1Bodies<'_, '_>,
     evaluator: &Evaluator<'_, Phase1Bodies<'_, '_>>,
@@ -2764,7 +2954,8 @@ fn drive(
     top: ConfigId,
     target_platform: Option<Label>,
     pool_roots: Option<&[NodeKey]>,
-) -> Result<(), String> {
+    mut checkpoint: Option<&mut super::super::super::root_checkpoint::Callback<'_>>,
+) -> Result<Option<Box<super::super::super::cquery::Graph>>, String> {
     // S2: the pool runs again after a requested target's sequential pass
     // did real work (it may have unblocked what the pool parked).
     let mut ran = sequential_attempts();
@@ -2907,6 +3098,18 @@ fn drive(
                 )
             });
         }
+        // --keep_going: an error whose text depends on the walk's order is
+        // the walk's own (the tape is through the segment first).
+        let analyzed = match analyzed {
+            Err(error) if shared.options.keep_going && super::chains::is_open(&error) => {
+                let mut coord = bodies.coord();
+                let _ = coord.linearize_all(shared);
+                Err(coord
+                    .keep_going_reanalysis(shared, top, label, trimmed.as_ref(), &error)
+                    .unwrap_or(error))
+            }
+            analyzed => analyzed,
+        };
         // The requested target's segment renders the chain errors.
         let analyzed = analyzed.map_err(|error| render_chains(shared, &error, trimmed.as_ref()));
         // A flush of this segment that failed where the walk would have
@@ -2983,7 +3186,7 @@ fn drive(
             });
         }
         // Engine::analyze_requested's report of an aborted analysis.
-        analyzed.map_err(|error| {
+        let analyzed = analyzed.map_err(|error| {
             match error.split_once(super::super::super::ANALYSIS_ABORTED) {
                 Some((_, message)) => format!(
                     "Analysis of target '{}' failed; build aborted: {message}",
@@ -2991,7 +3194,39 @@ fn drive(
                 ),
                 None => error,
             }
-        })?;
+        });
+        match analyzed {
+            // --keep_going: the target is skipped (docs/KEEP_GOING.md),
+            // reported where the tape ends its segment.
+            Err(error) if shared.options.keep_going => {
+                bodies.coord().keep_going_failed(position, error);
+            }
+            analyzed => {
+                analyzed?;
+                // Engine::analyze_requested: the cquery root checkpoint
+                // after a completed requested target (its first successful
+                // registration collection is pass 1's, in the walk's order).
+                if let Some(callback) = checkpoint.as_deref_mut() {
+                    let mut coord = bodies.coord();
+                    let (first, nodes) = coord.lin.as_ref().map_or((None, 0), |lin| {
+                        (
+                            lin.pass.first_toolchains(),
+                            lin.configured.len().saturating_add(lin.plan.len()),
+                        )
+                    });
+                    if let (Some(request), Some(first)) =
+                        (coord.engine.root_checkpoint.as_mut(), first)
+                    {
+                        request.first.get_or_insert(first);
+                    }
+                    if let super::super::super::root_checkpoint::Outcome::AcceptedQuery(graph) =
+                        coord.engine.root_cut(position, nodes, callback)?
+                    {
+                        return Ok(Some(graph));
+                    }
+                }
+            }
+        }
         if evaluator.serving() {
             // What it ran may have unblocked what the pool left; what the
             // serving pool demanded is fetched here.
@@ -3014,7 +3249,7 @@ fn drive(
         ran = sequential_attempts();
     }
     bodies.coord().begin_segment(SegmentKind::RootsDone);
-    Ok(())
+    Ok(None)
 }
 
 /// Engine::analyze_requested's report of an aborted analysis, for a

@@ -25,24 +25,6 @@ pub(crate) const WORKAROUND: &str = "BAZEL_RS_ANALYSIS=walk";
 /// mode in which the evaluator is slower than the walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Fallback {
-    /// cquery's root checkpoint (an accepted query ends planning after a
-    /// requested target): the walk's `root_cut` between roots.
-    RootCheckpoint,
-    /// cquery's configured-graph capture (`Engine::cquery_capture`): the
-    /// evaluator's bodies emit `CqueryEdge` events but no pass builds the
-    /// capture from them (nor its rules, incompatible targets, aspects).
-    Cquery,
-    /// aquery's (and `print_action`'s) action capture.
-    Aquery,
-    /// `--keep_going` / `-k`: the walk skips a failed requested target and
-    /// continues with the next (`keep_going_state`'s edges and failed
-    /// targets); the evaluator stops at the first error.
-    KeepGoing,
-    /// Top-level aspects (`--aspects`, or the validation aspect of
-    /// `--run_validations --experimental_use_validation_aspect`): the
-    /// walk's `analyze_aspect_applications` after the requested targets;
-    /// the evaluator's driver has no top-level aspect segment yet.
-    TopLevelAspects,
     /// `--profile`: the evaluator keeps every flush ordered (the profile's
     /// spans of phase 2 and of the tape in the walk's order) and is slower
     /// than the walk there. (A snapshot recording and the incremental
@@ -61,11 +43,6 @@ impl Fallback {
     /// The reason as `BAZEL_RS_ANALYSIS_REPORT` prints it.
     pub(crate) fn reason(self) -> &'static str {
         match self {
-            Self::RootCheckpoint => "cquery root checkpoint",
-            Self::Cquery => "cquery capture",
-            Self::Aquery => "aquery capture",
-            Self::KeepGoing => "--keep_going",
-            Self::TopLevelAspects => "top-level aspects",
             Self::Profile => "--profile",
         }
     }
@@ -94,18 +71,8 @@ impl Engine {
     /// Why this request cannot plan with the evaluator (`None`: it can).
     /// `checkpoint`: a cquery root checkpoint is installed.
     pub(in crate::engine) fn eval_fallback(&self, checkpoint: bool) -> Option<Fallback> {
-        if checkpoint {
-            Some(Fallback::RootCheckpoint)
-        } else if self.aquery_capture.is_some() {
-            // (aquery analyzes through cquery's capture too.)
-            Some(Fallback::Aquery)
-        } else if self.cquery_capture.is_some() {
-            Some(Fallback::Cquery)
-        } else if self.keep_going {
-            Some(Fallback::KeepGoing)
-        } else if !self.effective_aspects().is_empty() {
-            Some(Fallback::TopLevelAspects)
-        } else if crate::profile::active() {
+        let _ = checkpoint;
+        if crate::profile::active() {
             Some(Fallback::Profile)
         } else {
             None
@@ -136,7 +103,7 @@ impl Engine {
 
 /// `BAZEL_RS_ANALYSIS_REPORT=1` (hidden, diagnostics): one stderr line per
 /// planning naming the engine (`bazel-rs: analysis engine: eval`, `walk
-/// (forced)`, `walk (fallback: --keep_going)`).
+/// (forced)`, `walk (fallback: --profile)`).
 fn report(selected: Selected) {
     // snapshot-unrecorded: a diagnostic switch; both engines plan identically.
     if std::env::var_os("BAZEL_RS_ANALYSIS_REPORT").is_none_or(|value| value != "1") {
@@ -181,14 +148,7 @@ mod tests {
 
     #[test]
     fn fallback_reasons_are_distinct() {
-        let all = [
-            Fallback::RootCheckpoint,
-            Fallback::Cquery,
-            Fallback::Aquery,
-            Fallback::KeepGoing,
-            Fallback::TopLevelAspects,
-            Fallback::Profile,
-        ];
+        let all = [Fallback::Profile];
         let reasons: std::collections::BTreeSet<_> = all.iter().map(|f| f.reason()).collect();
         assert_eq!(reasons.len(), all.len());
     }

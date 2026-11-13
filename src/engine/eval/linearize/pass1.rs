@@ -148,6 +148,9 @@ pub(crate) trait Transcripts {
     ) -> String;
 }
 
+/// A keep-going edge: the reach's active parent and its key.
+pub(crate) type Edge = (Option<ConfiguredTargetKey>, ConfiguredTargetKey);
+
 /// A finished top-level segment (tests, complete sources).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Segment {
@@ -310,6 +313,11 @@ pub(crate) struct Pass1 {
     warned: FxHashSet<String>,
     /// [`Options::no_edges`].
     no_edges: bool,
+    /// The requested label whose first parentless reach is its root (the
+    /// walk's `keep_going_state.current`; recorded with the edges).
+    root_pending: Option<Label>,
+    /// The requested labels' roots so far (with the edges: `--keep_going`).
+    roots: Vec<(Label, ConfiguredTargetKey)>,
     /// The toolchain implementations added since the driver last took them.
     new_implementations: Vec<ConfiguredTargetKey>,
     /// At most this many events per [`Pass1::resume`] (then it returns
@@ -432,6 +440,8 @@ impl Pass1 {
             packages: FxHashSet::default(),
             consoles: FxHashSet::default(),
             no_edges: options.no_edges,
+            root_pending: None,
+            roots: Vec::new(),
             new_implementations: Vec::new(),
             budget: None,
             yield_to: None,
@@ -491,6 +501,29 @@ impl Pass1 {
             std::mem::take(&mut self.released),
             std::mem::take(&mut self.released_segments),
         )
+    }
+
+    /// The active chain's length when top-level segment `index` ended
+    /// (`None`: not ended yet). `--keep_going`: a failed root whose chain is
+    /// longer than one failed below itself.
+    pub(crate) fn segment_active(&self, index: usize) -> Option<usize> {
+        self.out.segment_active.get(index).copied()
+    }
+
+    /// `--keep_going` ([`Options::no_edges`] off): the reaches' edges
+    /// (`(active parent, key)`, the walk's `record_keep_going_edge`) and the
+    /// requested labels' roots since the last call, in order.
+    pub(crate) fn take_keep_going(&mut self) -> (Vec<Edge>, Vec<(Label, ConfiguredTargetKey)>) {
+        (
+            std::mem::take(&mut self.out.edges),
+            std::mem::take(&mut self.roots),
+        )
+    }
+
+    /// The first configuration whose registered toolchains were computed
+    /// successfully so far (the cquery root checkpoint's marker).
+    pub(crate) fn first_toolchains(&self) -> Option<ConfigId> {
+        self.out.first_toolchains
     }
 
     /// The plan so far (empty with [`Self::plan_on_tape`]).
@@ -597,6 +630,10 @@ impl Pass1 {
                     return Ok(Progress::Blocked);
                 };
                 sink.op(TapeOp::Segment(segment.kind.clone()));
+                self.root_pending = match segment.kind {
+                    SegmentKind::Root { label, .. } if !self.no_edges => Some(label.clone()),
+                    _ => None,
+                };
                 self.trimmed_root = match segment.kind {
                     SegmentKind::Root { trimmed_root, .. } => trimmed_root.clone(),
                     _ => None,
@@ -881,16 +918,33 @@ impl Pass1 {
                 self.flush_points.push_back(FlushPoint { kind, chain });
                 sink.op(TapeOp::Flush)
             }
+            Event::Error(_) => {
+                // A body failing past its `Done` (its attribute aspects'
+                // analysis after the configured node is published): the
+                // key is not complete, a later reach replays it again (the
+                // walk's `unpublish_node`; it failed: never planned).
+                if let Some(Frame::Body { node, ct, done, .. }) = self.frames.last_mut()
+                    && *done
+                {
+                    *done = false;
+                    let (node, key) = (*node, ct.key.clone());
+                    if self.visited.get(&key) == Some(&node) {
+                        self.visited.remove(&key);
+                    }
+                    self.canonical.retain(|canonical| *canonical != node);
+                }
+                sink.op(TapeOp::Effect(event.clone()));
+            }
             Event::Access(_)
             | Event::Source(_)
             | Event::Print(_)
             | Event::CqueryEdge(_)
+            | Event::Cquery(_)
             | Event::ScopeEnter(_)
             | Event::ScopeExit
             | Event::Continue(_)
             | Event::Info(_)
-            | Event::LoadPrints(_)
-            | Event::Error(_) => sink.op(TapeOp::Effect(event.clone())),
+            | Event::LoadPrints(_) => sink.op(TapeOp::Effect(event.clone())),
             Event::MemoBegin(_) | Event::MemoEnd(_) => unreachable!("handled above"),
         }
         Ok(None)
@@ -987,6 +1041,11 @@ impl Pass1 {
         let key = &ct.key;
         if !self.no_edges {
             let parent = self.chain().last().cloned();
+            if parent.is_none()
+                && let Some(label) = self.root_pending.take()
+            {
+                self.roots.push((label, key.clone()));
+            }
             self.out.edges.push((parent, key.clone()));
         }
         sink.op(TapeOp::Reach {
@@ -1498,6 +1557,45 @@ pub(crate) mod tests {
         });
         assert_eq!(out.failures, [DEPTH_LIMIT_ERROR]);
         assert_eq!(out.stop.as_deref(), Some(DEPTH_LIMIT_ERROR));
+    }
+
+    #[test]
+    fn a_body_failing_past_its_done_is_entered_again() {
+        // Its attribute aspects fail after its configured node is
+        // published (the walk's `unpublish_node`): not a memo hit later.
+        let mut f = Fixture::default();
+        let a = f.node("a");
+        f.bodies.entry(a).or_default().push((
+            Transcript {
+                events: vec![Event::Done, Event::Error("aspect failed".into())],
+            },
+            None,
+            false,
+            false,
+        ));
+        let segments = ["root0", "root1"]
+            .into_iter()
+            .enumerate()
+            .map(|(position, name)| Segment {
+                kind: SegmentKind::Root {
+                    position,
+                    label: ctk(name).label,
+                    trimmed_root: None,
+                },
+                transcript: Transcript {
+                    events: vec![Event::Reach(a)],
+                },
+            })
+            .collect::<Vec<_>>();
+        let out = run(&f, &segments, Options::default()).unwrap();
+        let entered = out
+            .tape
+            .ops
+            .iter()
+            .filter(|op| matches!(op, TapeOp::Reach { enter: true, .. }))
+            .count();
+        assert_eq!(entered, 2);
+        assert!(out.plan.is_empty());
     }
 
     #[test]

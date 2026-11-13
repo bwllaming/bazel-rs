@@ -25,6 +25,7 @@ use super::super::super::{
     TransitionConfigurations, TransitionDetails, check_macro_namespace, cquery,
     uses_toolchain_resolution,
 };
+use super::super::cquery_ops::CqueryOp;
 use super::super::cx::Missing;
 use super::super::key::{CtKey, NodeKey, Observes};
 use super::super::linearize::chains;
@@ -146,6 +147,14 @@ impl<'c, 'e> EvalHost<'c, 'e> {
     /// `need` with the attempt's missing reason stashed.
     fn need(&mut self, key: NodeKey) -> Result<Arc<NodeValue>, Missing> {
         self.cx.need_one(key)
+    }
+
+    /// The variant of `key` this attempt reached (its plain key else).
+    fn reached_variant(&self, key: &ConfiguredTargetKey) -> CtKey {
+        self.reached
+            .get(key)
+            .map(|(ct, _)| ct.clone())
+            .unwrap_or_else(|| CtKey::plain(key.clone()))
     }
 
     fn stop(&mut self, missing: Missing) -> String {
@@ -1010,13 +1019,139 @@ impl Host for EvalHost<'_, '_> {
 
     fn capture_cquery_aspect_toolchain_context(
         &mut self,
-        _config: ConfigId,
-        _context: &ToolchainContextKey,
+        config: ConfigId,
+        owner: &str,
+        context: &ToolchainContextKey,
     ) -> Vec<u32> {
-        Vec::new()
+        if !self.shared.options.cquery {
+            return Vec::new();
+        }
+        // The walk's candidates (Engine::capture_cquery_aspect_toolchain_context):
+        // the target and host platforms, the registered execution platforms
+        // (computed by the toolchain resolution just before), the context's
+        // constraints and types; the replay keeps the captured rules.
+        let mut labels = {
+            let configurations = self
+                .shared
+                .configurations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let native = &configurations.get(config).native;
+            vec![
+                native.target_platform().clone(),
+                native.host_platform.clone(),
+            ]
+        };
+        if let Some(value) = self.cx.peek(&NodeKey::RegExecPlatforms(config))
+            && let NodeValue::RegExecPlatforms(Ok(platforms)) = value.as_ref()
+        {
+            labels.extend(platforms.iter().map(|platform| platform.label.clone()));
+        }
+        labels.extend(context.exec_constraints.iter().cloned());
+        labels.extend(
+            context
+                .types
+                .iter()
+                .map(|requirement| requirement.label.clone()),
+        );
+        let symbol = self.shared.cquery_symbols.context(config, owner, &labels);
+        self.emit(Event::Cquery(Box::new(CqueryOp::Context {
+            config,
+            labels,
+            symbol,
+        })));
+        vec![symbol]
     }
 
-    fn flush_pending(&mut self, _config_setting: &Rule) -> Result<(), String> {
+    fn cquery_rule(
+        &mut self,
+        key: &ConfiguredTargetKey,
+        rule: &Arc<Rule>,
+        incompatible: Option<Vec<(String, crate::configured_attributes::ConfigMatching)>>,
+        direct: bool,
+    ) {
+        if self.shared.options.cquery {
+            self.emit(Event::Cquery(Box::new(CqueryOp::Rule {
+                key: key.clone(),
+                rule: Arc::clone(rule),
+                incompatible,
+                direct,
+            })));
+        }
+    }
+
+    fn cquery_applications(
+        &mut self,
+        base: &ConfiguredTargetKey,
+        collection: &crate::aspects::AspectCollection,
+        rule: &Arc<Rule>,
+    ) -> Vec<u32> {
+        if !self.shared.options.cquery {
+            return Vec::new();
+        }
+        let symbols = self.shared.cquery_symbols.applications(base, collection);
+        self.emit(Event::Cquery(Box::new(CqueryOp::Applications {
+            base: base.clone(),
+            collection: collection.clone(),
+            rule: Arc::clone(rule),
+            symbols: symbols.clone(),
+        })));
+        symbols
+    }
+
+    fn cquery_request(&mut self, requester: &ConfiguredTargetKey, ids: Vec<u32>) {
+        if self.shared.options.cquery {
+            self.emit(Event::Cquery(Box::new(CqueryOp::Request {
+                requester: requester.clone(),
+                ids,
+            })));
+        }
+    }
+
+    fn cquery_aspect_targets(&mut self, id: u32, dependencies: &[u32]) {
+        if self.shared.options.cquery {
+            self.emit(Event::Cquery(Box::new(CqueryOp::AspectTargets {
+                id,
+                dependencies: dependencies.to_vec(),
+            })));
+        }
+    }
+
+    fn cquery_aspect_target(&mut self, id: u32, label: Label, config: ConfigId) {
+        if self.shared.options.cquery {
+            self.emit(Event::Cquery(Box::new(CqueryOp::AspectTarget {
+                id,
+                label,
+                config,
+            })));
+        }
+    }
+
+    fn cquery_propagated(
+        &mut self,
+        ids: &[u32],
+        collection: &crate::aspects::AspectCollection,
+        children: &[u32],
+        attribute: &str,
+        attached: &[Arc<crate::aspects::AspectDefinition>],
+    ) {
+        if self.shared.options.cquery {
+            self.emit(Event::Cquery(Box::new(CqueryOp::Propagated {
+                ids: ids.to_vec(),
+                collection: collection.clone(),
+                children: children.to_vec(),
+                attribute: attribute.to_owned(),
+                attached: attached.to_vec(),
+            })));
+        }
+    }
+
+    fn flush_pending(
+        &mut self,
+        _config_setting: &Rule,
+        flags: &[ConfiguredTargetKey],
+    ) -> Result<(), String> {
+        let keep_going = self.shared.options.keep_going;
         if self.pooled() {
             if !self.cx.flags().linearized {
                 // BAZEL_RS_EVAL_VERIFY_PHASE1: the sequential pass's.
@@ -1028,12 +1163,33 @@ impl Host for EvalHost<'_, '_> {
             // `linearize::driver`); the flags' FeatureFlagInfo comes from
             // their Ct2 nodes (`planned_feature_flag`).
             self.emit(Event::Flush);
+            if keep_going {
+                // --keep_going: the config_setting fails when one of its
+                // flags failed (the walk's `plan_pending`). The pool's Ct2
+                // values are of flags whose phase 2 succeeded (planned, or
+                // speculated); a failing one is left to the sequential
+                // pass.
+                for flag in flags {
+                    let node = NodeKey::Ct2(self.reached_variant(flag));
+                    if let Err(missing) = self.need(node) {
+                        return Err(self.stop(missing));
+                    }
+                }
+            }
             return Ok(());
         }
         if self.cx.flags().linearized && self.cx.coord().defers() {
             // S3 pass 2: the sequential pass's flush is a marker too (its
             // flags' FeatureFlagInfo speculated, its failure the walk's).
             self.emit(Event::Flush);
+            if keep_going {
+                // The flags' phase 2 decides (every deferred flush's walk
+                // first, this marker's included).
+                let shared = self.shared;
+                let mut coord = self.cx.coord();
+                coord.linearize_all(shared)?;
+                return keep_going_flags(&coord, flags);
+            }
             return Ok(());
         }
         self.emit(Event::Flush);
@@ -1050,7 +1206,11 @@ impl Host for EvalHost<'_, '_> {
             // `?`); another config_setting's is the driver's.
             coord.flush_failure_delivered(own);
         }
-        result
+        result?;
+        if keep_going {
+            return keep_going_flags(&coord, flags);
+        }
+        Ok(())
     }
 
     fn planned_feature_flag(
@@ -1059,11 +1219,7 @@ impl Host for EvalHost<'_, '_> {
     ) -> Option<crate::feature_flags::FeatureFlagValue> {
         // The flag's CT2 node (S2: its providers as the walk's flush
         // planned them; the variant this attempt reached).
-        let ct = self
-            .reached
-            .get(key)
-            .map(|(ct, _)| ct.clone())
-            .unwrap_or_else(|| CtKey::plain(key.clone()));
+        let ct = self.reached_variant(key);
         let node = NodeKey::Ct2(ct);
         self.memo_use(&node);
         match self.need(node) {
@@ -1531,6 +1687,20 @@ pub(crate) fn body(
             other.kind()
         )))),
     }
+}
+
+/// `--keep_going`: a config_setting's flush fails when one of its Starlark
+/// flag keys failed in phase 2 (the walk's `plan_pending`).
+fn keep_going_flags(
+    coord: &super::bodies::Coord<'_>,
+    flags: &[ConfiguredTargetKey],
+) -> Result<(), String> {
+    for flag in flags {
+        if let Some(error) = coord.engine.keep_going_state.failure_of(flag) {
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 /// A Starlark flag's phase 2 on the pool (S2, the CsMatch split): the

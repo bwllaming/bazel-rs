@@ -1,8 +1,7 @@
 //! The analysis engine's selection (docs/EVALUATOR.md "Selecting the
 //! engine", src/engine/eval/select.rs): the evaluator plans by default,
-//! `BAZEL_RS_ANALYSIS=walk` forces the walk, and the requests the
-//! evaluator does not cover (`--keep_going`, top-level aspects — also the
-//! validation aspect —, cquery, aquery, print_action) plan with the walk,
+//! `BAZEL_RS_ANALYSIS=walk` forces the walk, and the requests where the
+//! walk is faster (`--profile`) plan with the walk,
 //! silently: the output is the forced walk's byte for byte.
 //! `BAZEL_RS_ANALYSIS_REPORT=1` names the engine each planning ran on.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
@@ -164,26 +163,90 @@ fn builds_plan_with_the_evaluator_by_default() {
         "eval",
     );
     assert!(!walk.status.success());
-}
-
-#[test]
-fn uncovered_requests_fall_back_to_the_walk_silently() {
-    let ws = workspace();
+    // --keep_going / -k: the requested targets that analyze are planned,
+    // the failed one reported (docs/KEEP_GOING.md).
     for flag in ["--keep_going", "-k"] {
-        same_as_walk(
+        let walk = same_as_walk(
             ws.path(),
             "off",
             "build",
-            &["--nobuild", flag, "//:top", "//:broken"],
-            "walk (fallback: --keep_going)",
+            &["--nobuild", flag, "//:top", "//:broken", "//:g"],
+            "eval",
+        );
+        assert!(!walk.status.success());
+    }
+}
+
+/// cquery and aquery plan with the evaluator (cquery's capture from the
+/// tape's ops), in every output format.
+#[test]
+fn cquery_plans_with_the_evaluator() {
+    let ws = workspace();
+    for output in [
+        "label",
+        "label_kind",
+        "build",
+        "jsonproto",
+        "proto",
+        "textproto",
+        "graph",
+        "transitions",
+        "files",
+        "starlark",
+    ] {
+        let walk = same_as_walk(
+            ws.path(),
+            "off",
+            "cquery",
+            &[
+                "--platforms=//:plat",
+                &format!("--output={output}"),
+                "deps(//:top) + //:g + //:leaf",
+            ],
+            "eval",
+        );
+        assert!(walk.status.success(), "{output}: {}", stable(&walk));
+    }
+    same_as_walk(
+        ws.path(),
+        "off",
+        "cquery",
+        &["--platforms=//:plat", "//:broken"],
+        "eval",
+    );
+    for output in ["text", "jsonproto", "textproto", "summary"] {
+        same_as_walk(
+            ws.path(),
+            "off",
+            "aquery",
+            &[
+                "--platforms=//:plat",
+                &format!("--output={output}"),
+                "deps(//:g)",
+            ],
+            "eval",
         );
     }
     same_as_walk(
         ws.path(),
         "off",
+        "print_action",
+        &["--platforms=//:plat", "//:g"],
+        "eval",
+    );
+}
+
+/// Top-level aspects (`--aspects`, the validation aspect): the evaluator
+/// plans the requested targets, the walk their aspects' phase 1 after them.
+#[test]
+fn top_level_aspects_plan_with_the_evaluator() {
+    let ws = workspace();
+    same_as_walk(
+        ws.path(),
+        "off",
         "build",
         &["--nobuild", "--aspects=//:defs.bzl%an_aspect", "//:top"],
-        "walk (fallback: top-level aspects)",
+        "eval",
     );
     same_as_walk(
         ws.path(),
@@ -194,28 +257,7 @@ fn uncovered_requests_fall_back_to_the_walk_silently() {
             "--experimental_use_validation_aspect",
             "//:top",
         ],
-        "walk (fallback: top-level aspects)",
-    );
-    same_as_walk(
-        ws.path(),
-        "off",
-        "cquery",
-        &["--platforms=//:plat", "deps(//:top)"],
-        "walk (fallback: cquery capture)",
-    );
-    same_as_walk(
-        ws.path(),
-        "off",
-        "aquery",
-        &["--platforms=//:plat", "//:g"],
-        "walk (fallback: aquery capture)",
-    );
-    same_as_walk(
-        ws.path(),
-        "off",
-        "print_action",
-        &["--platforms=//:plat", "//:g"],
-        "walk (fallback: aquery capture)",
+        "eval",
     );
 }
 

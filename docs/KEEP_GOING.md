@@ -48,9 +48,14 @@ SkyframeErrorProcessor.processAnalysisErrors under keepGoing
 * phase 2 (rule implementations in post-order): a target's own failure is a
   root cause and fails only that configured target; every target above it
   (through the dependency edges phase 1 recorded) is skipped before its
-  implementation could read the failed dependency's providers; a failure
-  inside a phase-1 flush (a `config_setting` reading a Starlark flag's
-  provider) fails the requested label being analyzed;
+  implementation could read the failed dependency's providers;
+* a `config_setting` with Starlark `flag_values` (its flags planned by a
+  phase-1 flush) fails only when one of its own flag keys failed (its
+  implementation or a dependency of the flag; the flag's root cause), and
+  a requested target whose own select() keys fail is the target's own
+  failure — no `Analysis failed` line (genuine 9.3.1 capture,
+  tests/keep_going_flag_flush.rs). Another target's failure in the flush
+  fails only what is above it;
 * top-level aspects: a failing application skips its requested label;
 * each distinct root-cause error is printed once, `ERROR: <message>`,
   before execution, in the engine's sequential order;

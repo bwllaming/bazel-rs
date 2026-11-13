@@ -23,6 +23,17 @@ use crate::config_registry::ConfiguredTargetKey;
 use crate::label::Label;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+/// Whether requested `label`'s analysis failed resolving its own select()
+/// keys (a config_setting failing — e.g. its Starlark flag key's analysis —
+/// is the target's own ConfiguredValueCreationException in Bazel: no
+/// `Analysis failed` line, genuine 9.3.1).
+pub(crate) fn own_select_failure(error: &str, label: &Label) -> bool {
+    error.contains(&format!(
+        "errors encountered resolving select() keys for {}",
+        crate::rule_declarations::canonical_form(label)
+    ))
+}
+
 /// The keep-going state of one build ([`crate::engine::Engine::plan_build`]).
 #[derive(Default)]
 pub(crate) struct State {
@@ -32,8 +43,8 @@ pub(crate) struct State {
     /// Keys whose phase-2 planning failed, by their own error or a
     /// dependency's.
     failed: HashSet<ConfiguredTargetKey>,
-    /// Keys whose own implementation (or planning) failed.
-    own: HashSet<ConfiguredTargetKey>,
+    /// Keys whose own implementation (or planning) failed, with the error.
+    own: HashMap<ConfiguredTargetKey, String>,
     /// Keys phase 2 planned successfully.
     planned: HashSet<ConfiguredTargetKey>,
     /// The root-cause errors, deduplicated, in report order.
@@ -77,26 +88,6 @@ impl State {
         }
     }
 
-    /// The number of root-cause errors so far.
-    pub(crate) fn error_count(&self) -> usize {
-        self.errors.len()
-    }
-
-    /// The number of keys phase 2 failed so far.
-    pub(crate) fn failed_count(&self) -> usize {
-        self.failed.len()
-    }
-
-    /// The last root-cause error.
-    pub(crate) fn last_error(&self) -> Option<&str> {
-        self.errors.last().map(String::as_str)
-    }
-
-    /// The root-cause error `index`.
-    pub(crate) fn error_at(&self, index: usize) -> Option<&str> {
-        self.errors.get(index).map(String::as_str)
-    }
-
     /// Whether `key` failed, directly or through a key phase 2 never
     /// planned itself (a rule transition's pre-transition key delegating to
     /// its owner); `visiting` guards against revisiting.
@@ -138,7 +129,7 @@ impl State {
     /// Phase 2: `key`'s own planning failed with `message`.
     pub(crate) fn fail_own(&mut self, key: &ConfiguredTargetKey, message: String) {
         self.failed.insert(key.clone());
-        self.own.insert(key.clone());
+        self.own.insert(key.clone(), message.clone());
         self.error(message);
     }
 
@@ -160,9 +151,42 @@ impl State {
         if !self.reaches_failure(root, &mut HashSet::new()) {
             return None;
         }
-        let own = self.own.contains(root)
-            || delegation(root).is_some_and(|owner| self.own.contains(&owner));
+        let own = self.own.contains_key(root)
+            || delegation(root).is_some_and(|owner| self.own.contains_key(&owner));
         Some(!own)
+    }
+
+    /// Whether phase 2 failed `key` (its own failure or a dependency's,
+    /// through a key never planned itself): its root cause, the first
+    /// failure in edge order (a config_setting's Starlark flag key under
+    /// `--keep_going`: the config_setting fails with it, ConfigSetting's
+    /// dependency on the flag's ConfiguredTargetValue).
+    pub(crate) fn failure_of(&self, key: &ConfiguredTargetKey) -> Option<String> {
+        if !self.reaches_failure(key, &mut HashSet::new()) {
+            return None;
+        }
+        let mut key = key.clone();
+        let mut visiting = HashSet::new();
+        loop {
+            if let Some(error) = self.own.get(&key) {
+                return Some(error.clone());
+            }
+            if !visiting.insert(key.clone()) {
+                return None;
+            }
+            let next = self.edges.get(&key).and_then(|children| {
+                children
+                    .iter()
+                    .find(|child| self.reaches_failure(child, &mut HashSet::new()))
+                    .cloned()
+            });
+            match next {
+                Some(child) => key = child,
+                // A dependency failed whose root cause is no error of its
+                // own (a requested target's phase 1).
+                None => return Some("a dependency failed to analyze".to_owned()),
+            }
+        }
     }
 
     /// The root-cause errors, taken.

@@ -36,12 +36,10 @@ forced walk byte for byte):
 
 | Reason (report text) | When | Kind | Why |
 |---|---|---|---|
-| `cquery root checkpoint` | cquery's accepted-query cut between requested targets (docs/CQUERY_ROOT_CHECKPOINT.md) | coverage | the walk's `root_cut` between roots; the evaluator's driver has no cut point |
-| `aquery capture` | `aquery`, `print_action` | coverage | the action capture (and the cquery capture aquery uses) is filled by the walk only |
-| `cquery capture` | `cquery` | coverage | the bodies emit `CqueryEdge` events, but no pass builds the capture (rules, incompatible targets, aspect targets, toolchain contexts) from them |
-| `--keep_going` | `--keep_going`, `-k` (build/test/run/coverage) | coverage | the walk skips a failed requested target and continues (`keep_going_state` edges, failed targets, docs/KEEP_GOING.md); the evaluator stops at the first error (frontier-only) |
-| `top-level aspects` | `--aspects`, and the validation aspect (`--run_validations` with `--experimental_use_validation_aspect`) | coverage | the walk analyzes the aspect applications after the requested targets; the driver has no `TopLevelAspects` segment yet. (Before 0.4.16 the validation aspect alone did not fall back.) |
-| `--profile` | `--profile` | speed | the evaluator keeps every flush ordered there (the profile's spans of phase 2 and of the tape in the walk's order) |
+| `--profile` | `--profile` | speed | the evaluator keeps every flush ordered there (the profile's spans of phase 2 and of the tape in the walk's order); ~/code `build --nobuild //src/...`: walk 46.6 s, eval 49.0 s, and its span set differs (eval-coverage, below) |
+
+The coverage fallbacks (`--keep_going`, cquery and its root checkpoint,
+aquery/print_action, top-level aspects) are gone since eval-coverage.
 
 A snapshot recording (`BAZEL_RS_SNAPSHOT` `on`/`verify` on a miss — the
 default mode —, `record`) and the incremental tracker plan with the
@@ -51,8 +49,9 @@ there and was slower, 81.5 s / 10.5 GB against the walk's 63 s / 9.9 GB):
 their flushes are deferred too, the tape's tracker ops applied in plan
 order by the deferred walk ("eval-record" below).
 
-Everything else plans with the evaluator: `build`, `test`, `run`,
-`coverage` (with `--nobuild`, `--check_up_to_date`, `--run_under`, test
+Everything else plans with the evaluator: `cquery`, `aquery`,
+`print_action`, `build`, `test`, `run`, `coverage` (with `--keep_going`/`-k`,
+`--aspects`, the validation aspect; with `--nobuild`, `--check_up_to_date`, `--run_under`, test
 sharding, `--platforms`, Starlark flags and transitions, several
 configurations, the workspace status, BEP, remote/disk caches — execution
 reads the plan, not the engine), `affected` (its `test --nobuild`
@@ -686,6 +685,18 @@ change announced to the other two workers; adding a helper is not.
   its lookups for the tracker; fast native merges are off with the
   tracker; `sweep::enabled()` is false while the snapshot records;
   `Loading::source_observed`.
+- 2026-11-12 (eval-coverage, cquery): `Event::Cquery(Box<CqueryOp>)`
+  (new; `eval/cquery_ops.rs`): a cquery capture write other than an edge,
+  with symbols for the capture's ids; `EvalShared::cquery_symbols` (new
+  field); `Host` gains `cquery_rule`, `cquery_applications`,
+  `cquery_request`, `cquery_aspect_targets`, `cquery_aspect_target`,
+  `cquery_propagated` (defaults: the walk's capture) and
+  `capture_cquery_aspect_toolchain_context` takes the aspect (`owner`);
+  `pass2::Op::{CqueryEdge, Cquery, KeepGoingFailure}`;
+  `Pass1::{segment_active, first_toolchains, take_keep_going}` (the
+  reaches' keep-going edges and the requested labels' roots, since
+  `TapeOp::Reach` carries neither key nor parent); `Host::flush_pending` takes
+  the config_setting's Starlark flag keys, `Host::unpublish_node` (new).
 - 2026-11-12 (task D, eval-task-d): `Frozen::memos` is an
   `Arc<BatchMemos>` (shared with the early boards; `thaw` applies them only
   when no early board holds them); `Board::new`; `Engine::early_ct2`
@@ -3302,6 +3313,131 @@ What bounds phase 1 now: the pool (~5 s on a loaded host), then ~1 s of
 linearizer alone (per requested target: pass 1, tape, compatibility); after
 it the deferred walk is the largest serial-start item (the in-phase walk of
 task D: the sequential thread is idle for much of 2–5 s now).
+
+### eval-coverage: the walk fallbacks onto the evaluator
+
+`eval::select`'s coverage fallbacks, removed one by one; each plans with
+the walk's output byte for byte (stdout, stderr, exit code, the action
+dump).
+
+**`--keep_going` / `-k`** (step 1). The evaluator runs without its
+frontier-only mode (every requested target is evaluated). The tape feeds
+the walk's keep-going bookkeeping (`keep_going::State`) in its order
+(`driver::KeepGoing`): each `Reach`'s edge (the walk's
+`record_keep_going_edge`), each requested label's first computed key, and
+a failed requested label's root-cause error where its segment ends
+(`pass2::Op::KeepGoingFailure`: after the phase 2 of the flushes before
+it; the dependency flag from pass 1's active chain at the segment's end).
+A config_setting with Starlark `flag_values` fails under `--keep_going`
+only when one of its own flag keys failed (genuine Bazel 9.3.1:
+ConfigSetting depends on the flag's ConfiguredTargetValue;
+`tests/keep_going_flag_flush.rs`, docs/KEEP_GOING.md) — not, as the walk
+did before (the eval-coverage parity series), whenever any target of its
+flush failed. The flag's failure is the config_setting body's own
+(`keep_going::State::failure_of`, the walk's `plan_pending`; the
+evaluator's `flush_pending`: a pooled attempt needs its flags' `Ct2`
+values, which exist only for flags whose phase 2 succeeded — planned or
+speculated —, else the sequential pass walks the deferred flushes and
+reads the flag's failure), so the evaluator memoizes it like any error
+and keeps deferring flushes under `--keep_going`. A requested target whose
+own select() keys fail is the target's own failure (no `Analysis
+failed`), also genuine's.
+
+Also reproduced:
+
+- a body failing past its `Done` (its attribute aspects fail after the
+  configured node is published): the walk unpublishes the node
+  (`Host::unpublish_node`; before, a later `-k` reach was a memo hit of a
+  node never planned and phase 2 failed with `internal analysis order
+  error`), pass 1 likewise at the body's `Error` past its `Done`.
+- an error whose text names the walk's path (a dependency cycle) of a
+  node memoized from an earlier requested target: the walk's re-analysis
+  words it (`Coord::keep_going_reanalysis`, errors with an open chain
+  payload only).
+
+Measured (~/code `80d6724f3a` private clone, fast release build, 48
+threads, warm, host load ~15–20; `build --nobuild -k //src/...`):
+
+| | walk | eval |
+|---|---|---|
+| clean tree | 69.2 s, 9.04 GB | 60.1 s, 9.65 GB |
+| a phase-2 failure in `//src/beyondwork.ai/utils/bwerrors` (287 direct dependents) and a phase-1 one in `utils/ptr` | 63.9 s, 8.53 GB | 57.5 s, 9.07 GB |
+
+Identical: the stderr with the action dump (4,857,248 lines) of the
+injected run. The evaluator's phase 1 is done at 10.6 s (all 2,357
+flushes deferred); the deferred walks' phase 2 then takes 38 s: under
+`--keep_going` phase 2 neither commits ahead (P4) nor runs frozen walks
+(a failure must skip its dependents at its turn), on either engine — the
+next step (commit ahead what no failure can reach any more, and the
+sweep's skipped entries).
+
+**cquery** (step 2). Every capture write of phase 1 is a body's op
+(`Event::CqueryEdge`, `Event::Cquery`: rules and incompatible targets,
+aspect applications, requests, aspect targets and propagation, an aspect's
+toolchain-context targets), applied to the engine's capture as a tape
+effect (in the walk's order, after the deferred flushes before it). The
+capture's ids are assigned in the walk's order, so a body gets symbols
+(`cquery_ops::Symbols`, interned by content: an application by its base,
+descriptor and required applications; a toolchain context by its
+configuration, aspect and candidates) that the replay maps to the ids
+where the op making them is applied (`cquery_ops::Replay`). A toolchain
+context's candidates are computed in the body (the registered execution
+platforms peeked: its resolution needed them just before); the replay
+keeps the captured rules among them, as the walk does then. The cquery
+root checkpoint (`BAZEL_RS_CQUERY_ROOT_CHECKPOINT`, experimental, serial
+only: `root_cut` declines with more than one loading thread) is the
+driver's: after each completed requested target, the walk's `root_cut`
+with pass 1's first successful registration collection
+(`Pass1::first_toolchains`); an accepted query drops the partial phase 1.
+
+Measured (~/code, as above): `cquery --output=X 'deps(//src/rust/...)'`
+for label, label_kind, jsonproto, proto, textproto, build, graph,
+transitions, files, starlark: stdout and stderr identical, 13–17 s on both
+engines (pre-analysis dominates); `cquery 'deps(//src/...)'` (263,240
+lines, identical): walk 114.5 s, eval 116.3 s — the evaluator's phase 1
+ends at 16 s, then cquery's semantic phase 2 (73 s) runs without commits
+ahead or frozen walks on either engine (`semantic_only`). A failing
+cquery (`deps(//src/beyondwork.ai/bworker/...)` with a missing package):
+walk 3.6 s, eval 13.5 s (the evaluator does not stop at the first error
+fast; pre-existing for every failing request).
+
+**aquery / print_action** (step 3). The action capture is phase 2's
+(`aquery_owner` at every commit, the planned nodes and top-level files
+after the walk): the engine's code on either engine. With cquery's
+capture on the evaluator, nothing was left: the fallback is removed.
+Measured (~/code): `aquery //src/rust/graphlake/...` (text, jsonproto),
+`--output=summary 'deps(//src/rust/graphlake/...)'`, `--output=textproto
+//src/beyondwork.ai/utils/...`, `print_action`: identical stdout/stderr,
+8–21 s on both engines (an aquery's phase 2 has no commits ahead or frozen
+walks either: its capture is the coordinator's).
+
+**`--profile`** (step 5, not done: still the speed fallback). Under
+`BAZEL_RS_ANALYSIS=eval` the evaluator plans it with ordered flushes and
+no speculative flag phase 2s. On a small workspace the profile's events
+are the walk's but for the package-loading lane (`eval-N` threads instead
+of `bazel-rs-prefetch`: which worker loads a package is scheduling either
+way). On ~/code (`build --nobuild --profile //src/...`) it is slower than
+the walk (49.0 s against 46.6 s) and the event multiset differs: the
+pool's package loads add `package creation` spans the walk's prefetch
+does not have (and lack some it has: its loads that phase 2 needed), a
+few `configured target` spans recur, 32 more lanes. Canonical spans would
+need the evaluator's loads and phase-2 spans emitted at their tape
+positions (the deferral's ordering problem) — left with the fallback.
+
+**Top-level aspects** (step 4: `--aspects`, the validation aspect of
+`--experimental_use_validation_aspect`). The evaluator plans the
+requested targets; the aspects' phase 1 (`analyze_aspect_applications`
+on each requested target that analyzed: the applications' own attribute
+dependencies and propagation) is then the walk's, on the state the
+evaluator's phase 1 left (`Engine::analyze_top_level_aspects`, the tail of
+`analyze_requested`): published configured targets, memos, plan, tracker
+and keep-going state are the walk's at that point, the deferred flushes
+all walked. Their phase 2 (`plan_aspect_dependency`) is the common
+planning code. Measured (~/code): `build --nobuild
+--experimental_use_validation_aspect //src/...`: walk 47.2 s / 8.96 GB,
+eval 21.0 s / 9.66 GB, the action dump (6,486,168 stderr lines) identical;
+`build --nobuild --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
+--output_groups=clippy_checks //src/rust/...`: 8.3 / 8.0 s, identical.
 
 ### Effort
 

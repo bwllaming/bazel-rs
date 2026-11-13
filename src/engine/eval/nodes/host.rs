@@ -175,6 +175,12 @@ pub(crate) trait Host {
     fn plan_len(&mut self) -> usize;
     fn plan_push(&mut self, key: ConfiguredTargetKey, rule: Arc<Rule>);
     fn publish_node(&mut self, key: &ConfiguredTargetKey, node: ConfiguredNode);
+    /// The published configured node of `key` failed after all (its
+    /// attribute aspects' analysis): not a memo hit any more (the
+    /// evaluator: pass 1 at the body's `Error` past its `Done`).
+    fn unpublish_node(&mut self, key: &ConfiguredTargetKey) {
+        let _ = key;
+    }
     fn record_delegation(&mut self, key: ConfiguredTargetKey, owner: ConfiguredTargetKey);
     fn record_configured_rule(&mut self, key: &ConfiguredTargetKey, rule: &Arc<Rule>);
     fn record_empty_configuration(&mut self, key: &ConfiguredTargetKey);
@@ -219,14 +225,87 @@ pub(crate) trait Host {
         tool: bool,
         aspect: bool,
     );
+    /// The capture ids of an aspect's toolchain context (`owner`: the
+    /// aspect's descriptor, the memo computing it).
     fn capture_cquery_aspect_toolchain_context(
         &mut self,
         config: ConfigId,
+        owner: &str,
         context: &ToolchainContextKey,
     ) -> Vec<u32>;
+    /// cquery: a configured rule (incompatible with `incompatible`'s
+    /// conditions; `direct`: directly so). The evaluator records the
+    /// capture writes as ops (`eval::cquery_ops`).
+    fn cquery_rule(
+        &mut self,
+        key: &ConfiguredTargetKey,
+        rule: &Arc<Rule>,
+        incompatible: Option<Vec<(String, crate::configured_attributes::ConfigMatching)>>,
+        direct: bool,
+    ) {
+        if let Some(capture) = self.cquery_capture() {
+            if direct {
+                capture.direct_incompatible.insert(key.clone());
+            }
+            if let Some(conditions) = incompatible {
+                capture.incompatible.insert(key.clone(), conditions);
+            }
+            capture.rules.insert(key.clone(), Arc::clone(rule));
+        }
+    }
+    /// cquery: the capture ids of `collection`'s applications on `base`.
+    fn cquery_applications(
+        &mut self,
+        base: &ConfiguredTargetKey,
+        collection: &crate::aspects::AspectCollection,
+        rule: &Arc<Rule>,
+    ) -> Vec<u32> {
+        self.cquery_capture()
+            .map(|capture| capture.applications(base, collection, rule))
+            .unwrap_or_default()
+    }
+    /// cquery: `requester` requests the applications `ids`.
+    fn cquery_request(&mut self, requester: &ConfiguredTargetKey, ids: Vec<u32>) {
+        if let Some(capture) = self.cquery_capture() {
+            capture.request(requester, ids);
+        }
+    }
+    /// cquery: the application `id` depends on the targets `dependencies`.
+    fn cquery_aspect_targets(&mut self, id: u32, dependencies: &[u32]) {
+        if let Some(capture) = self.cquery_capture() {
+            capture.aspect_targets(id, dependencies);
+        }
+    }
+    /// cquery: the application `id` depends on `label` in `config`.
+    fn cquery_aspect_target(&mut self, id: u32, label: Label, config: ConfigId) {
+        if let Some(capture) = self.cquery_capture() {
+            capture.aspect_target(id, label, config);
+        }
+    }
+    /// cquery: the applications `children` propagated from `ids` along
+    /// `attribute`.
+    fn cquery_propagated(
+        &mut self,
+        ids: &[u32],
+        collection: &crate::aspects::AspectCollection,
+        children: &[u32],
+        attribute: &str,
+        attached: &[Arc<crate::aspects::AspectDefinition>],
+    ) {
+        if let Some(capture) = self.cquery_capture() {
+            capture.propagated(ids, collection, children, attribute, attached);
+        }
+    }
     /// A config_setting with Starlark flag_values keys needs the CT2 of
     /// what is planned so far (`plan_pending`; the evaluator's `Flush`).
-    fn flush_pending(&mut self, config_setting: &Rule) -> Result<(), String>;
+    /// `flags`: its Starlark flag_values keys (under `--keep_going` the
+    /// flush fails when one of them failed: the config_setting's own
+    /// dependency).
+    fn flush_pending(
+        &mut self,
+        config_setting: &Rule,
+        flags: &[ConfiguredTargetKey],
+    ) -> Result<(), String>;
     /// The FeatureFlagInfo a planned Starlark target returned.
     fn planned_feature_flag(
         &mut self,

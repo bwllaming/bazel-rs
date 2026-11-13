@@ -53,6 +53,10 @@ pub(crate) enum Event {
     /// A cquery graph edge (`capture_cquery_edge`); boxed (S1: keeps
     /// `Event` small, transcripts hold millions).
     CqueryEdge(Box<CqueryEdge>),
+    /// Another cquery capture write (eval-coverage addition,
+    /// docs/EVALUATOR.md "Interface changes"): applied in tape order,
+    /// its symbols mapped to the capture's ids (`cquery_ops`).
+    Cquery(Box<super::cquery_ops::CqueryOp>),
     /// An incremental-tracker scope entered/left: a shared computation
     /// (`SharedScope::enter(name)`), or the target pattern phase / a test
     /// suite's expansion (`PatternScope`, `SuiteScope`: the names

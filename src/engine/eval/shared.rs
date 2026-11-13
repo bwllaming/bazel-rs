@@ -84,6 +84,8 @@ pub(crate) struct EvalShared {
     pub(crate) input_groups: Arc<InputGroups>,
     pub(crate) input_memos: Arc<InputMemos>,
     pub(crate) artifacts: Arc<ConcurrentArtifactIndex>,
+    /// cquery: the capture's symbols (eval-coverage, `cquery_ops`).
+    pub(crate) cquery_symbols: super::cquery_ops::Symbols,
     /// The one shared `Target` value per identity key (N55): a
     /// single-flight cache (today `ActionPlanning::target_identities`).
     pub(crate) target_identities:
@@ -151,6 +153,7 @@ impl EvalShared {
             input_groups: Arc::default(),
             input_memos: Arc::default(),
             artifacts: Arc::default(),
+            cquery_symbols: Default::default(),
             target_identities: Default::default(),
             transitions: Default::default(),
             loading: super::nodes::loading::Loading {

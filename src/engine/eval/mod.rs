@@ -25,6 +25,7 @@
 // wired yet.
 #![allow(dead_code)]
 
+pub(super) mod cquery_ops;
 pub(super) mod cx;
 pub(super) mod cycles;
 pub(super) mod graph;

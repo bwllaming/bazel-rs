@@ -86,6 +86,17 @@ pub(in crate::engine) enum Op {
     LoadPrints(Arc<[crate::loading::LoadPrintEvent]>),
     PkgCommit(PackageId, Option<Arc<PkgValue>>),
     Publish(Published),
+    /// cquery: a capture write (`cquery_ops`), in the walk's order.
+    CqueryEdge(Box<super::super::transcript::CqueryEdge>),
+    Cquery(Box<super::super::cquery_ops::CqueryOp>),
+    /// `--keep_going`: a requested target's phase 1 failed (the walk's
+    /// `analyze_requested`): its root-cause error, and whether a dependency
+    /// (not the target itself) failed.
+    KeepGoingFailure {
+        label: crate::label::Label,
+        error: String,
+        dependency: bool,
+    },
 }
 
 /// The tape's tracker ops not applied yet, by the plan position before
@@ -211,6 +222,25 @@ impl Engine {
             Op::LoadPrints(prints) => self.emit_load_prints(prints.to_vec()),
             Op::PkgCommit(package, loaded) => commit_package(self, &package, loaded.as_deref()),
             Op::Publish(published) => super::driver::publish_memo(self, &published),
+            Op::CqueryEdge(edge) => self.capture_cquery_edge(
+                &edge.from,
+                edge.to,
+                edge.config,
+                &edge.attribute,
+                edge.tool,
+                edge.aspect,
+            ),
+            Op::Cquery(op) => self.replay_cquery_op(&op),
+            Op::KeepGoingFailure {
+                label,
+                error,
+                dependency,
+            } => {
+                self.keep_going_state.error(error);
+                self.keep_going_state
+                    .failed_targets
+                    .insert(label, dependency);
+            }
         }
     }
 
