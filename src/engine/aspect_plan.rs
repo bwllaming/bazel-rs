@@ -121,6 +121,9 @@ impl AspectCommit {
     }
 }
 
+/// Aspect-applied dependencies to walk ahead ([`AspectCx::spread`]).
+pub(super) type Spread = Vec<(Label, ConfigId, Vec<Arc<crate::aspects::AspectDefinition>>)>;
+
 /// The lookups and writes of the aspect planning.
 pub(super) trait AspectCx: prepare::Lookup + Sized {
     fn configured(&self) -> &ConfiguredNodes;
@@ -159,6 +162,15 @@ pub(super) trait AspectCx: prepare::Lookup + Sized {
         aspects: Vec<Arc<crate::aspects::AspectDefinition>>,
         walk: impl FnOnce(&mut Self, Vec<Arc<crate::aspects::AspectDefinition>>) -> Planned,
     ) -> Planned;
+    /// Task B: whether an application of `aspects` hands the aspect-applied
+    /// dependencies it is about to walk to [`Self::spread`].
+    fn spreads(&self, _aspects: &[Arc<crate::aspects::AspectDefinition>]) -> bool {
+        false
+    }
+    /// Task B: the aspect-applied dependencies an application walks after
+    /// its first (a frozen walk's job walks them ahead on the walk's
+    /// workers: their analyses fill the walk's table, single-flight).
+    fn spread(&mut self, _dependencies: Spread) {}
     /// The providers of an application planned before.
     fn memo(
         &self,
@@ -1063,6 +1075,44 @@ fn plan_application<C: AspectCx>(
         .collect();
     let mut edges = cx.engine().rule_edges(&base_rule, base_key.config);
     edges.extend(cx.engine().native_aspect_edges(&base_rule));
+    // Task B: the edges after the first walked ahead on the walk's workers
+    // (what the loop below walks; one that cannot be listed here is left
+    // to the loop, which reports it).
+    if cx.spreads(&incoming) {
+        let mut spread = Vec::new();
+        for edge in &edges {
+            if edge.cfg == EdgeCfg::NoConfig {
+                continue;
+            }
+            let attribute_aspects = base_rule
+                .custom
+                .as_ref()
+                .and_then(|custom| custom.schema.get(&edge.attribute))
+                .map(|spec| spec.declaration.aspects.clone())
+                .unwrap_or_default();
+            let attribute_aspects = cx
+                .engine()
+                .loaded_attribute_aspects(&base_rule, &attribute_aspects);
+            let propagating =
+                crate::aspects::propagating_aspects(&attribute_aspects, &incoming, &edge.attribute);
+            if propagating.is_empty() {
+                continue;
+            }
+            let (Ok(dependency), Ok(edge_configs)) = (
+                cx.engine().resolve_rule_src(&base_rule, &edge.label),
+                Engine::analyzed_edge_configurations_in(cx, base_key, &edge.cfg),
+            ) else {
+                continue;
+            };
+            for edge_config in edge_configs.ids() {
+                spread.push((dependency.clone(), edge_config, propagating.clone()));
+            }
+        }
+        if spread.len() > 1 {
+            spread.remove(0);
+            cx.spread(spread);
+        }
+    }
     // A native base rule's dependency keys per attribute (native name),
     // in edge order: its `ctx.rule.attr` Targets.
     let mut native_attribute_keys: BTreeMap<String, Vec<String>> = BTreeMap::new();

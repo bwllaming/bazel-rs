@@ -8590,6 +8590,18 @@ impl Engine {
                 ));
             }
         }
+        if !edge_aspects.is_empty() {
+            cx.spread_edges(
+                dependency_labels
+                    .iter()
+                    .filter_map(|(label, edge_config, _, attribute)| {
+                        let aspects = edge_aspects.get(attribute)?;
+                        (!aspects.is_empty())
+                            .then(|| (label.clone(), *edge_config, aspects.clone()))
+                    })
+                    .collect(),
+            );
+        }
         for (label, edge_config, map_key, attribute) in dependency_labels {
             let aspects = edge_aspects.get(&attribute).cloned().unwrap_or_default();
             let view = cx.edge_view(rule, &label, edge_config, aspects)?;

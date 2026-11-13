@@ -136,6 +136,90 @@ thread_local! {
     /// The board of the buffered walk running on this (the coordinator's)
     /// thread.
     static CURRENT_BOARD: std::cell::RefCell<Option<Arc<Board>>> = const { std::cell::RefCell::new(None) };
+    /// Task B: the board and plan index of the Starlark job (or of the
+    /// aspect walk ahead it handed out) running on this thread.
+    static ASPECT_OWNER: std::cell::RefCell<Option<(Arc<Board>, usize)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// [`ASPECT_OWNER`] while it lives (the previous one put back).
+struct AspectOwner(Option<(Arc<Board>, usize)>);
+
+impl AspectOwner {
+    fn enter(board: &Arc<Board>, index: usize) -> Self {
+        Self(ASPECT_OWNER.with(|cell| cell.replace(Some((Arc::clone(board), index)))))
+    }
+}
+
+impl Drop for AspectOwner {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        ASPECT_OWNER.with(|cell| *cell.borrow_mut() = previous);
+    }
+}
+
+/// Task B (`aspect_jobs::helpers`): walk one aspect-applied dependency of
+/// the running job's application ahead on the walk's workers, once per
+/// walk (at the job's queue priority).
+pub(super) fn spread_aspect_walk(
+    label: Label,
+    edge_config: ConfigId,
+    aspects: Vec<Arc<crate::aspects::AspectDefinition>>,
+) {
+    let Some((board, index)) = ASPECT_OWNER.with(|cell| cell.borrow().clone()) else {
+        return;
+    };
+    if board.early || board.stopped() {
+        return;
+    }
+    let walked = (
+        label.clone(),
+        edge_config,
+        aspects
+            .iter()
+            .map(|aspect| aspect.descriptor.clone())
+            .collect::<Vec<_>>(),
+    );
+    if !board
+        .spread
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(walked.clone())
+    {
+        return;
+    }
+    super::aspect_jobs::stat(super::aspect_jobs::S_HELPER_SPREAD, 1);
+    let job_board = Arc::clone(&board);
+    board.submit(
+        board.priority(index),
+        Box::new(move || {
+            if job_board.stopped() {
+                return;
+            }
+            let _owner = AspectOwner::enter(&job_board, index);
+            let walked_ahead = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                super::aspect_jobs::helper_walk(
+                    &job_board.frozen,
+                    index,
+                    &label,
+                    edge_config,
+                    aspects,
+                )
+            }))
+            .unwrap_or_else(|_| {
+                // (Its analyses' panics are theirs: unusable entries.)
+                let _ = worker_panic();
+                false
+            });
+            if !walked_ahead {
+                // Walked ahead again by the job's next run.
+                job_board
+                    .spread
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&walked);
+            }
+        }),
+    );
 }
 
 /// A Starlark rule with attribute aspects (`attr.*(aspects = [...])`).
@@ -665,6 +749,10 @@ struct Board {
     /// cursor returns as the walk's error instead of merging on.
     fail_fast: bool,
     failed: std::sync::atomic::AtomicUsize,
+    /// Task B: the aspect-applied dependencies walked ahead
+    /// ([`spread_aspect_walk`]).
+    #[allow(clippy::type_complexity)]
+    spread: std::sync::Mutex<HashSet<(Label, ConfigId, Vec<String>)>>,
 }
 
 impl Board {
@@ -1090,6 +1178,7 @@ impl Board {
             },
             _ => {
                 let stopped = || self.stopped();
+                let _owner = AspectOwner::enter(self, index);
                 let (result, _, _) = frozen::run_frozen(
                     frozen,
                     index,
@@ -1603,6 +1692,7 @@ impl Board {
             fence: std::sync::atomic::AtomicUsize::new(0),
             fail_fast: false,
             failed: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            spread: Default::default(),
         })
     }
 }

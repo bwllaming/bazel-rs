@@ -98,6 +98,10 @@ pub(super) trait PrepareCx: Lookup {
         edge_config: ConfigId,
         aspects: Vec<Arc<crate::aspects::AspectDefinition>>,
     ) -> Result<DependencyTarget, String>;
+    /// Task B: the aspect-applied edges the prepare is about to walk, in
+    /// order (a frozen walk's job walks those after the first ahead:
+    /// `parallel::aspect_jobs::helpers`).
+    fn spread_edges(&mut self, _edges: super::aspect_plan::Spread) {}
 }
 
 impl Lookup for Engine {
@@ -833,6 +837,13 @@ impl PrepareCx for SharedPrepare<'_> {
             return Err(self.abort("attribute_aspects"));
         }
         self.plan_view(label, edge_config)
+    }
+
+    fn spread_edges(&mut self, mut edges: super::aspect_plan::Spread) {
+        if self.aspect_jobs && self.frozen.is_some() && edges.len() > 1 {
+            edges.remove(0);
+            parallel::aspect_jobs::spread_edges(self.engine, edges);
+        }
     }
 }
 

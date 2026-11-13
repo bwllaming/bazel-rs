@@ -77,8 +77,8 @@ pub(super) fn verify_mode() -> bool {
 }
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL aspect_jobs`).
-static STATS: [AtomicU64; 17] = [const { AtomicU64::new(0) }; 17];
-const STAT_NAMES: [&str; 17] = [
+static STATS: [AtomicU64; 20] = [const { AtomicU64::new(0) }; 20];
+const STAT_NAMES: [&str; 20] = [
     "analyzed",
     "unusable",
     "requeued",
@@ -96,7 +96,11 @@ const STAT_NAMES: [&str; 17] = [
     "place_range",
     "place_memo",
     "coordinator_rejects",
+    "helper_walks",
+    "helper_stopped",
+    "helper_spread",
 ];
+pub(super) const S_HELPER_SPREAD: usize = 19;
 pub(super) const S_FALLBACK_PREPARE: usize = 13;
 pub(super) const S_REQUEUED: usize = 2;
 pub(super) const S_FALLBACK: usize = 5;
@@ -772,6 +776,16 @@ impl AspectCx for FrozenAspects<'_, '_> {
         planned
     }
 
+    fn spreads(&self, aspects: &[Arc<crate::aspects::AspectDefinition>]) -> bool {
+        spreading(self.prepare.engine, aspects)
+    }
+
+    fn spread(&mut self, dependencies: aspect_plan::Spread) {
+        for (label, edge_config, aspects) in dependencies {
+            super::buffer::spread_aspect_walk(label, edge_config, aspects);
+        }
+    }
+
     fn memo(&self, key: &AspectApplicationKey, context: &Context) -> Option<AspectProviders> {
         self.state.borrow_mut().committed_hit = false;
         let table = &self.frozen.aspects;
@@ -970,6 +984,85 @@ fn applied_of(
             }
         }
     }
+}
+
+/// `BAZEL_RS_T3_ASPECT_HELPERS`: on by default; `0` off; `all` also for
+/// aspects whose analyses are cheap (the tests'). An aspect job's
+/// application hands the aspect-applied dependencies it walks after the
+/// first to the walk's workers ([`helper_walk`]): their applications are
+/// analyzed there into the walk's table, single-flight, while the job walks
+/// on (it takes their analyses from the table, or waits for one in
+/// progress). Nothing else of the job changes: its record, its placement.
+fn helpers() -> u8 {
+    static MODE: std::sync::LazyLock<u8> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling switch; the output is the same either way.
+        match std::env::var("BAZEL_RS_T3_ASPECT_HELPERS").as_deref() {
+            Ok("0") => 0,
+            Ok("all") => 2,
+            _ => 1,
+        }
+    });
+    *MODE
+}
+
+/// Whether walks of `aspects` are handed out ([`helpers`]): not while the
+/// tracker runs or the snapshot records (a walk ahead's lookups are
+/// dropped, the view memos it fills hold them), nor for aspects whose
+/// analyses are cheap (the walk would cost more).
+fn spreading(engine: &Engine, aspects: &[Arc<crate::aspects::AspectDefinition>]) -> bool {
+    let mode = helpers();
+    mode != 0
+        && !engine.tracking()
+        && !crate::observed_fs::recording()
+        && (mode == 2
+            || aspects
+                .iter()
+                .any(|aspect| !super::aspects::cheap(&aspect.descriptor)))
+}
+
+/// An aspect job's prepare hands out its aspect-applied edges after the
+/// first (SharedPrepare::spread_edges).
+pub(in crate::engine) fn spread_edges(engine: &Engine, edges: aspect_plan::Spread) {
+    for (label, edge_config, aspects) in edges {
+        if spreading(engine, &aspects) {
+            super::buffer::spread_aspect_walk(label, edge_config, aspects);
+        }
+    }
+}
+
+/// One dependency of an aspect job's application walked ahead on a worker
+/// (`BAZEL_RS_T3_ASPECT_HELPERS`) as the job at plan index `index` walks
+/// it: the applications it meets are analyzed into the walk's table (one
+/// analysis per application and context, whoever needs it first), the
+/// walk itself is dropped (its lookups, records and effects: the job walks
+/// it again, from the table). `false`: it stopped short (an unpublished
+/// dependency, an error), so it may be walked ahead again.
+pub(super) fn helper_walk(
+    frozen: &Frozen,
+    index: usize,
+    label: &Label,
+    edge_config: ConfigId,
+    aspects: Vec<Arc<crate::aspects::AspectDefinition>>,
+) -> bool {
+    let isolation = Isolation::enter();
+    let walked = {
+        let mut prepare = prepare::SharedPrepare::frozen(frozen, index);
+        prepare.aspect_jobs = true;
+        prepare.resolve_sources = true;
+        let mut cx = FrozenAspects {
+            prepare: &mut prepare,
+            frozen,
+            index,
+            state: Default::default(),
+            owner: None,
+        };
+        let planned = aspect_plan::plan_dependency(&mut cx, label, edge_config, aspects);
+        let missed = cx.state.borrow().missed.is_some();
+        planned.is_ok() && !missed && prepare.record.abort.is_none()
+    };
+    let _ = isolation.finish();
+    stat(if walked { 17 } else { 18 }, 1);
+    walked
 }
 
 /// A worker's prepare meets an aspect-applied edge (SharedPrepare::edge_view).

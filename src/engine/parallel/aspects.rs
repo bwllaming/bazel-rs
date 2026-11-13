@@ -151,7 +151,7 @@ fn note_cost(aspect: &str, micros: u64) {
 }
 
 /// Whether `aspect`'s analyses are known to be cheap.
-fn cheap(aspect: &str) -> bool {
+pub(super) fn cheap(aspect: &str) -> bool {
     COSTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())

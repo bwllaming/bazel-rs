@@ -148,6 +148,8 @@ const FROZEN: (&str, &str) = ("BAZEL_RS_EVAL_FROZEN_PREPARES", "all");
 const ASPECT_JOBS: (&str, &str) = ("BAZEL_RS_T3_ASPECT_JOBS", "1");
 /// The aspect prefetch at the rule's turn instead (parallel::aspects).
 const NO_ASPECT_JOBS: (&str, &str) = ("BAZEL_RS_T3_ASPECT_JOBS", "0");
+/// Task B: every aspect job's walks handed out to the workers.
+const HELPERS: (&str, &str) = ("BAZEL_RS_T3_ASPECT_HELPERS", "all");
 const PARITY_VERIFY: (&str, &str) = ("BAZEL_RS_PARITY_VERIFY", "1");
 const REVERSE: (&str, &str) = ("BAZEL_RS_PARITY_REVERSE", "1");
 /// Task D: the frozen walk's jobs start during phase 1, from the first
@@ -166,7 +168,7 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
     let walk = ws.build("walk", 1, &[], args);
     let text = stable(&walk);
     check(walk.status.success(), &text);
-    let runs: [(usize, &[(&str, &str)]); 29] = [
+    let runs: [(usize, &[(&str, &str)]); 31] = [
         (2, &[FROZEN]),
         (8, &[FROZEN]),
         (32, &[FROZEN]),
@@ -290,6 +292,19 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
                 ("BAZEL_RS_ANALYSIS_JITTER", "5"),
             ],
         ),
+        // Task B: the aspect jobs' walks handed out to the workers (their
+        // applications analyzed there, single-flight).
+        (
+            8,
+            &[
+                FROZEN,
+                ASPECT_JOBS,
+                HELPERS,
+                ("BAZEL_RS_ANALYSIS_JITTER", "5"),
+                ("BAZEL_RS_EVAL_RESTARTS", "5"),
+            ],
+        ),
+        (32, &[FROZEN, ASPECT_JOBS, HELPERS, REVERSE, PARITY_VERIFY]),
     ];
     for (threads, env) in runs {
         let eval = ws.build("eval", threads, env, args);
@@ -1126,6 +1141,14 @@ def _lint_impl(ctx):
 lint = rule(implementation = _lint_impl, attrs = {"deps": attr.label_list(aspects = [light])})
 "#;
 
+/// The value of a `name=` field of a `PERF-PARALLEL` line.
+fn count_in(line: &str, name: &str) -> u64 {
+    line.split_whitespace()
+        .find_map(|field| field.strip_prefix(name))
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or_default()
+}
+
 /// Lint targets apply attribute aspects (one requiring the other) over a
 /// shared dependency graph, like rules_rust's clippy and rustfmt: each lint
 /// target is a worker job whose applications are analyzed once and
@@ -1177,6 +1200,21 @@ fn attribute_aspect_applications_analyzed_ahead_replay_in_order() {
             };
             assert!(count("placed_rules=") > 0, "{line}");
             assert!(count("placed=") > 0, "{line}");
+            // The jobs' walks handed out to the workers: the same output
+            // (compare's runs), the walks ahead done.
+            let timed = ws.build(
+                "eval",
+                8,
+                &[FROZEN, ASPECT_JOBS, HELPERS, ("BAZEL_RS_TIMING", "1")],
+                &["//a:lint_a", "//a:lint_b", "//a:lint_c"],
+            );
+            let timed = String::from_utf8_lossy(&timed.stderr);
+            let line = timed
+                .lines()
+                .find(|line| line.starts_with("PERF-PARALLEL aspect_jobs "))
+                .unwrap_or_else(|| panic!("the aspect jobs ran: {timed}"));
+            assert!(count_in(line, "helper_spread=") > 0, "{line}");
+            assert!(count_in(line, "placed_rules=") > 0, "{line}");
         }
         compare(
             &ws,
