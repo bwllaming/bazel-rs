@@ -12493,10 +12493,17 @@ impl Engine {
         // artifacts' producers, the workspace status apart), so execution
         // knows which top-level targets a failed action fails.
         if self.keep_going {
-            let mut targets: BTreeMap<&Label, BTreeSet<&str>> = labels
+            // In label order, each one's ids sorted once (a map per label
+            // was ~0.5 s on ~/code's 6M top-level artifacts).
+            let mut order: Vec<&Label> = labels.iter().collect();
+            order.sort_unstable();
+            order.dedup();
+            let slots: crate::fast_hash::FxHashMap<&Label, usize> = order
                 .iter()
-                .map(|label| (label, BTreeSet::new()))
+                .enumerate()
+                .map(|(slot, label)| (*label, slot))
                 .collect();
+            let mut ids_of: Vec<Vec<&str>> = vec![Vec::new(); order.len()];
             let artifacts = requested
                 .iter()
                 .map(|(key, artifact)| (&key.label, artifact))
@@ -12511,9 +12518,9 @@ impl Engine {
             for (label, artifact) in artifacts {
                 if let Some((id, _)) = &artifact.producer
                     && !id.starts_with(crate::request::STATUS_ID_PREFIX)
-                    && let Some(ids) = targets.get_mut(label)
+                    && let Some(slot) = slots.get(label)
                 {
-                    ids.insert(id);
+                    ids_of[*slot].push(id);
                 }
             }
             let errors = self.keep_going_state.take_errors();
@@ -12532,9 +12539,12 @@ impl Engine {
                 input_errors,
                 unbuilt: input_unbuilt,
                 failed: std::mem::take(&mut failed_labels).into_iter().collect(),
-                targets: targets
+                targets: order
                     .into_iter()
-                    .map(|(label, ids)| {
+                    .zip(ids_of)
+                    .map(|(label, mut ids)| {
+                        ids.sort_unstable();
+                        ids.dedup();
                         (label.clone(), ids.into_iter().map(str::to_owned).collect())
                     })
                     .collect(),

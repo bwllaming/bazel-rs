@@ -20,6 +20,7 @@
 //! the loading threads or phase-1 prefetch.
 
 use crate::config_registry::ConfiguredTargetKey;
+use crate::fast_hash::{FxHashMap, FxHashSet};
 use crate::label::Label;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -39,14 +40,14 @@ pub(crate) fn own_select_failure(error: &str, label: &Label) -> bool {
 pub(crate) struct State {
     /// Phase-1 dependency edges: each configured key with the keys its
     /// analysis requested (memo hits included).
-    edges: HashMap<ConfiguredTargetKey, Vec<ConfiguredTargetKey>>,
+    edges: FxHashMap<ConfiguredTargetKey, Vec<ConfiguredTargetKey>>,
     /// Keys whose phase-2 planning failed, by their own error or a
     /// dependency's.
-    failed: HashSet<ConfiguredTargetKey>,
+    failed: FxHashSet<ConfiguredTargetKey>,
     /// Keys whose own implementation (or planning) failed, with the error.
-    own: HashMap<ConfiguredTargetKey, String>,
+    own: FxHashMap<ConfiguredTargetKey, String>,
     /// Keys phase 2 planned successfully.
-    planned: HashSet<ConfiguredTargetKey>,
+    planned: FxHashSet<ConfiguredTargetKey>,
     /// The root-cause errors, deduplicated, in report order.
     errors: Vec<String>,
     seen: HashSet<String>,
@@ -94,7 +95,7 @@ impl State {
     fn reaches_failure(
         &self,
         key: &ConfiguredTargetKey,
-        visiting: &mut HashSet<ConfiguredTargetKey>,
+        visiting: &mut FxHashSet<ConfiguredTargetKey>,
     ) -> bool {
         if self.failed.contains(key) {
             return true;
@@ -112,7 +113,11 @@ impl State {
     /// Phase 2: whether a dependency of plan key `key` failed (post-order:
     /// every planned dependency was decided before).
     pub(crate) fn dependency_failed(&self, key: &ConfiguredTargetKey) -> bool {
-        let mut visiting = HashSet::new();
+        // Nothing failed (yet): nothing to reach.
+        if self.failed.is_empty() {
+            return false;
+        }
+        let mut visiting = FxHashSet::default();
         visiting.insert(key.clone());
         self.edges.get(key).is_some_and(|children| {
             children
@@ -148,7 +153,7 @@ impl State {
         delegation: impl Fn(&ConfiguredTargetKey) -> Option<ConfiguredTargetKey>,
     ) -> Option<bool> {
         let root = self.roots.get(label)?;
-        if !self.reaches_failure(root, &mut HashSet::new()) {
+        if !self.reaches_failure(root, &mut FxHashSet::default()) {
             return None;
         }
         let own = self.own.contains_key(root)
@@ -162,11 +167,11 @@ impl State {
     /// `--keep_going`: the config_setting fails with it, ConfigSetting's
     /// dependency on the flag's ConfiguredTargetValue).
     pub(crate) fn failure_of(&self, key: &ConfiguredTargetKey) -> Option<String> {
-        if !self.reaches_failure(key, &mut HashSet::new()) {
+        if !self.reaches_failure(key, &mut FxHashSet::default()) {
             return None;
         }
         let mut key = key.clone();
-        let mut visiting = HashSet::new();
+        let mut visiting = FxHashSet::default();
         loop {
             if let Some(error) = self.own.get(&key) {
                 return Some(error.clone());
@@ -177,7 +182,7 @@ impl State {
             let next = self.edges.get(&key).and_then(|children| {
                 children
                     .iter()
-                    .find(|child| self.reaches_failure(child, &mut HashSet::new()))
+                    .find(|child| self.reaches_failure(child, &mut FxHashSet::default()))
                     .cloned()
             });
             match next {

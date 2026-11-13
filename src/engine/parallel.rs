@@ -58,14 +58,22 @@ const HORIZON: usize = 4096;
 
 /// S3: the analysis workers of an evaluated build (they prepare too):
 /// `--loading_phase_threads`, bounded by the cores.
-fn frozen_workers(loading_phase_threads: usize) -> usize {
+///
+/// `lowering`: the walk's jobs lower their actions too (`--keep_going`,
+/// whose lowerings are not deferred: [`Engine::keep_going_buffered`]): a
+/// quarter more workers, the lowering workers' share (~/code `-k`: 16
+/// workers 18.7-19.3 s, 20 workers 18.1-18.5 s, +0.1 GB).
+fn frozen_workers(loading_phase_threads: usize, lowering: bool) -> usize {
     // T3: the cursor's merges bound a frozen walk, not the workers; more
     // than 8 at once only raised the peak memory of their computes (~/code:
     // 48 workers 10.3 GB, 8 workers 9.95 GB, the same walk time). Under the
     // sweep (super::sweep, no rebuilds at the merges) 16 (~/code: elapsed
     // 24.1 -> 23.3 s, peak 9.4 -> 9.8 GB; 24 workers 22.9 s, 10.0 GB).
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
-    let cap = frozen_worker_cap();
+    let cap = match frozen_worker_cap() {
+        cap if lowering && !worker_cap_overridden() => cap + cap / 4,
+        cap => cap,
+    };
     loading_phase_threads.min(cores).clamp(2, cap.max(2))
 }
 
@@ -95,6 +103,12 @@ fn frozen_worker_cap() -> usize {
             })
     });
     *CAP
+}
+
+/// Whether `BAZEL_RS_T3_WORKERS` sets the frozen walks' workers.
+fn worker_cap_overridden() -> bool {
+    // snapshot-unrecorded: a scheduling bound; the output is the same either way.
+    std::env::var_os("BAZEL_RS_T3_WORKERS").is_some()
 }
 
 type Job = Box<dyn FnOnce() + Send>;
@@ -1866,7 +1880,7 @@ impl Engine {
         // snapshot-unrecorded: a diagnostics override of the scheduling only; the output is the same either way.
         let overridden = std::env::var_os("BAZEL_RS_ANALYSIS_WORKERS").is_some();
         if self.eval_async_phase2 && !overridden && frozen::enabled() {
-            return frozen_workers(self.loading_phase_threads);
+            return frozen_workers(self.loading_phase_threads, self.keep_going_buffered());
         }
         // snapshot-unrecorded: a diagnostics override of the scheduling only; the output is the same either way.
         std::env::var("BAZEL_RS_ANALYSIS_WORKERS")
@@ -1954,7 +1968,8 @@ impl Engine {
             let frozen = self.freeze(state, configured);
             crate::perf_mark("pass2.frozen");
             self.frozen_walk = Some(frozen);
-            pipe.capacity = (frozen_workers(self.loading_phase_threads) * 2).max(2);
+            pipe.capacity =
+                (frozen_workers(self.loading_phase_threads, self.keep_going_buffered()) * 2).max(2);
         } else if self.eval_async_phase2 {
             // A walk on the pipeline after the deferred walk (the planning
             // tail): the frozen walk's results are not read again (memory;
