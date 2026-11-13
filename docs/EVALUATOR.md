@@ -3535,18 +3535,29 @@ conflict on an entry's *second* output leaves its first registered (the
 failed commit's partial state), and a later entry sharing that first output
 then fails planning with `missing producing action` — on both engines alike.
 
-Measured (2026-11-13, ~/code `80d6724f3a` private clone, non-LTO release,
-48 threads, warm, snapshot off, host load ~28; `build --nobuild`):
+Measured (2026-11-13, ~/code `80d6724f3a` private clone, non-LTO release
+on main 891a1d43, 48 threads, warm, snapshot off, host load ~25–28,
+alternating; `build --nobuild`):
 
-| | before (main 82304c71) | after |
+| | `BAZEL_RS_EVAL_KEEP_GOING_FROZEN=0` (= before) | after |
 |---|---|---|
-| `-k //src/...`, clean tree | 56.1 s, 9.43 GB | 18.1–19.3 s, 9.6–9.7 GB |
-| without `-k` (same session) | 17.7–18.0 s, 9.5 GB | unchanged |
-| `-k`, injected phase-1 (`utils/ptr`) + phase-2 (`utils/bwerrors`) failures, with the action dump | 71.4 s (walk 64–71 s) | 24.8 s |
+| `-k //src/...`, clean tree | 56.0 s, 9.50 GB | 17.7–18.9 s, 9.63–9.66 GB |
+| without `-k` (same session) | 17.1–17.7 s, 9.40–9.51 GB | unchanged |
+| `-k`, injected phase-1 (`utils/ptr`) + phase-2 (`utils/bwerrors`) failures | walk 61–71 s | 18.2 s, 9.07 GB |
+| `-k`, snapshot `record` (a clean plan is recorded) | walk 74.8 s | 49.7 s, 9.68 GB |
 
 Identical walk vs eval: stderr with the action dump of `-k` on the clean
-tree (6,486,165 lines) and with the injected failures (4,857,255 lines: 2
-root causes, 926 skipped requested targets).
+tree (6,486,165 lines), with the injected phase-1 + phase-2 failures
+(4,857,255 lines: 2 root causes, 926 requested targets not analyzed) and
+with an injected merge-time conflict (`utils/collections`, 6,486,679
+lines: the loser and its dependent skipped after its job ran); the encoded
+plan of `-k` under `BAZEL_RS_SNAPSHOT=record` (`BAZEL_RS_SNAPSHOT_PLAN_OUT`,
+480,544,875 bytes) and its stderr. (Max RSS with the action dump: 11.4 GB
+eval, 11.0–11.2 GB walk — the dump's own; without it ≤ 9.7 GB.)
+
+Not done: the pipeline's commit ahead under `--keep_going` (walks shorter
+than `BAZEL_RS_EVAL_FROZEN_PREPARES`' 2,048 entries, and the walk engine,
+still plan at the turn there); lowerings deferred under `--keep_going`.
 
 ### Task D, the in-phase walks (eval-speed, round 4): measured, off
 
