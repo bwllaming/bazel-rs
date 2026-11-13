@@ -947,7 +947,7 @@ impl Default for ConcurrentArtifactIndex {
 
 impl ConcurrentArtifactIndex {
     fn shard(&self, hash: u64) -> &std::sync::RwLock<IndexShard> {
-        &self.shards[(hash >> 58) as usize & (ARTIFACT_SHARDS - 1)]
+        &self.shards[crate::fast_hash::shard_of(hash, ARTIFACT_SHARDS)]
     }
 
     /// The registered artifact of `file` visible to the reader at plan

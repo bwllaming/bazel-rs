@@ -54,7 +54,7 @@ impl<K: std::hash::Hash + Eq + Clone, V> SingleFlight<K, V> {
     fn shard(&self, key: &K) -> &std::sync::Mutex<MemoShard<K, V>> {
         use std::hash::BuildHasher;
         let hash = crate::fast_hash::FxBuildHasher::default().hash_one(key);
-        &self.shards[(hash >> 60) as usize & (MEMO_SHARDS - 1)]
+        &self.shards[crate::fast_hash::shard_of(hash, MEMO_SHARDS)]
     }
 
     fn slot(&self, key: &K) -> Slot<V> {

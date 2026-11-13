@@ -97,3 +97,29 @@ mod tests {
         assert!(set.contains(&b"a/b"[..]));
     }
 }
+
+/// The shard (of `shards`, a power of two) of a value hashed as `hash`
+/// whose shard holds a hashbrown table hashed the same way: bits 32 and up
+/// (hashbrown takes its control byte from the top 7 bits and the bucket
+/// from the low ones; sharding by the top bits left a shard's entries one
+/// control bit of entropy, so most probes compared keys).
+#[inline]
+pub fn shard_of(hash: u64, shards: usize) -> usize {
+    debug_assert!(shards.is_power_of_two());
+    (hash >> 32) as usize & (shards - 1)
+}
+
+#[cfg(test)]
+mod shard_tests {
+    #[test]
+    fn shards_leave_the_control_bits_alone() {
+        // Entries of one shard still differ in hashbrown's top 7 bits.
+        let tops: std::collections::HashSet<u64> = (0u64..4096)
+            .map(|value| value.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+            .filter(|hash| super::shard_of(*hash, 64) == 5)
+            .map(|hash| hash >> 57)
+            .collect();
+        // (Sharded by the top 6 bits, they took 2 values.)
+        assert!(tops.len() > 16, "{}", tops.len());
+    }
+}

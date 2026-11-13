@@ -119,7 +119,7 @@ impl Ct1Done {
     ) -> &std::sync::RwLock<FxHashMap<ConfiguredTargetKey, Arc<Ct1Value>>> {
         use std::hash::BuildHasher;
         let hash = crate::fast_hash::FxBuildHasher::default().hash_one(key);
-        &self.shards[(hash >> 58) as usize]
+        &self.shards[crate::fast_hash::shard_of(hash, 64)]
     }
 
     pub(crate) fn get(&self, key: &ConfiguredTargetKey) -> Option<Arc<Ct1Value>> {

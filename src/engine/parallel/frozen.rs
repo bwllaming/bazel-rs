@@ -216,11 +216,11 @@ impl PlannedResults {
     fn key_shard(&self, key: &ConfiguredTargetKey) -> &std::sync::RwLock<KeyMap<Arc<KeyResults>>> {
         use std::hash::BuildHasher;
         let hash = crate::fast_hash::FxBuildHasher::default().hash_one(key);
-        &self.keys[(hash >> 58) as usize & (RESULT_SHARDS - 1)]
+        &self.keys[crate::fast_hash::shard_of(hash, RESULT_SHARDS)]
     }
 
     fn declared_shard(&self, hash: u64) -> &std::sync::RwLock<Declared> {
-        &self.declared[(hash >> 58) as usize & (RESULT_SHARDS - 1)]
+        &self.declared[crate::fast_hash::shard_of(hash, RESULT_SHARDS)]
     }
 
     pub(super) fn get(&self, key: &ConfiguredTargetKey) -> Option<Arc<KeyResults>> {
