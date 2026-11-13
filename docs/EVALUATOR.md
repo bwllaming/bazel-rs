@@ -757,7 +757,8 @@ change announced to the other two workers; adding a helper is not.
 - 2026-11-13 (eval-speed round 6; no frozen interface changed):
   `PrepareCx::spread_edges` and `AspectCx::{spreads, spread}` (default no-op;
   `aspect_plan::Spread`), `parallel::buffer::spread_aspect_walk`,
-  `aspect_jobs::helper_walk`, `Board::spread`; `delta::SingleFlight`'s shards
+  `aspect_jobs::helper_walk` (takes the walk's `stopped`),
+  `AspectTable::helper_sources`, `Board::spread`; `delta::SingleFlight`'s shards
   are `hashbrown::HashTable<(u64, K, Slot<V>)>` (same methods);
   `parallel::aspects::cheap` is `pub(super)`.
 
@@ -3564,6 +3565,22 @@ one aspect job analysing the clippy aspect over its whole closure (its
   analyses average < 1 ms (`parallel::aspects::cheap`: rustfmt; their walk
   costs more than their analyses — `all` on ~/code: no gain). ~/code: ~210
   walks ahead per build, `server_clippy`'s wait gone.
+- **After the review**: a queued walk ahead holds the board weakly (one
+  still queued when the walk ends keeps neither the board nor the frozen
+  view: `Engine::thaw` takes the view back whole; debug builds assert that
+  a finished walk's view is held by the board and the engine only), and a
+  running one stops at its next dependency walk or analysis once the walk
+  ends. A walk ahead has no effect (`isolation.finish()`: no console, no
+  repository roots, no sentinel — debug builds assert it,
+  `helper_effects=` counts it). The source files a walk ahead resolved are
+  applied at its job's merge beside the job's own (`AspectTable::helper_sources`,
+  idempotent). **The invariant that makes this insurance only**: a job
+  never needs a source lookup inside a subtree it answers from the table
+  (a memo hit) — `dependency_walk` looks up only the labels of base rules,
+  their alias chains' ends and toolchain implementations, each the label of
+  a configured target analyzed (and its lookups applied) at that target's
+  own merge, earlier in plan order than the job (a post-order); the same
+  already held for an entry another job filled first.
 - **The cursor**: `SingleFlight` keys are hashed once (a
   `hashbrown::HashTable` of entries with their hash, the shard picked by the
   same hash: every memo of the walk); a placement places or checks each

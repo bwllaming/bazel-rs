@@ -188,14 +188,22 @@ pub(super) fn spread_aspect_walk(
         return;
     }
     super::aspect_jobs::stat(super::aspect_jobs::S_HELPER_SPREAD, 1);
-    let job_board = Arc::clone(&board);
+    // Weak: a walk ahead still queued when the walk ends holds neither the
+    // board nor its frozen view (Engine::thaw takes the view back whole);
+    // one running holds them until it notices the stop (promptly: each
+    // dependency walk and analysis checks it).
+    let weak_board = Arc::downgrade(&board);
     board.submit(
         board.priority(index),
         Box::new(move || {
+            let Some(job_board) = weak_board.upgrade() else {
+                return;
+            };
             if job_board.stopped() {
                 return;
             }
             let _owner = AspectOwner::enter(&job_board, index);
+            let stopped = || job_board.stopped();
             let walked_ahead = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 super::aspect_jobs::helper_walk(
                     &job_board.frozen,
@@ -203,6 +211,7 @@ pub(super) fn spread_aspect_walk(
                     &label,
                     edge_config,
                     aspects,
+                    &stopped,
                 )
             }))
             .unwrap_or_else(|_| {
@@ -2135,6 +2144,11 @@ impl Engine {
                 // back (Engine::thaw), its tables stay shared meanwhile.
                 stat(S_HELD_VIEW, 1);
             }
+            // (A walk ahead queued still holds a weak reference only.)
+            debug_assert!(
+                Arc::strong_count(&board) > 1 || Arc::strong_count(&board.frozen) == 2,
+                "internal error: a finished walk's frozen view is held beyond the board and the engine"
+            );
         }
         if crate::plan_timings::enabled() {
             PROGRESS.lock().unwrap_or_else(|e| e.into_inner()).push({

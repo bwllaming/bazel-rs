@@ -77,8 +77,8 @@ pub(super) fn verify_mode() -> bool {
 }
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL aspect_jobs`).
-static STATS: [AtomicU64; 20] = [const { AtomicU64::new(0) }; 20];
-const STAT_NAMES: [&str; 20] = [
+static STATS: [AtomicU64; 21] = [const { AtomicU64::new(0) }; 21];
+const STAT_NAMES: [&str; 21] = [
     "analyzed",
     "unusable",
     "requeued",
@@ -99,6 +99,7 @@ const STAT_NAMES: [&str; 20] = [
     "helper_walks",
     "helper_stopped",
     "helper_spread",
+    "helper_effects",
 ];
 pub(super) const S_HELPER_SPREAD: usize = 19;
 pub(super) const S_FALLBACK_PREPARE: usize = 13;
@@ -212,6 +213,11 @@ pub(in crate::engine) struct AspectTable {
     /// plan order): what a later entry's job sees in the aspect memo, as at
     /// its turn.
     committed: std::sync::RwLock<HashMap<AspectApplicationKey, (AspectProviders, Context)>>,
+    /// The source files the walks ahead of each job (by plan index)
+    /// resolved, applied at its merge beside its own
+    /// ([`Engine::place_aspects`]).
+    #[allow(clippy::type_complexity)]
+    helper_sources: std::sync::Mutex<HashMap<usize, Vec<(Label, PathBuf, bool, SourceSide)>>>,
 }
 
 type AttributeConfigs = Arc<BTreeMap<String, TransitionConfigurations>>;
@@ -322,9 +328,19 @@ struct FrozenAspects<'p, 'a> {
         crate::shared_path::SharedPath,
         Vec<crate::aquery::Aspect>,
     )>,
+    /// A walk ahead ([`helper_walk`]): whether its walk ended (it stops).
+    stopped: Option<&'p dyn Fn() -> bool>,
 }
 
 impl FrozenAspects<'_, '_> {
+    /// A walk ahead whose walk ended: it stops here.
+    fn helper_stopped(&mut self) -> Option<String> {
+        if self.stopped.is_some_and(|stopped| stopped()) {
+            return Some(self.prepare.abort("aspect_helper_stopped"));
+        }
+        None
+    }
+
     fn record(&mut self) -> &mut AspectRecord {
         self.prepare
             .record
@@ -728,6 +744,9 @@ impl AspectCx for FrozenAspects<'_, '_> {
         aspects: Vec<Arc<crate::aspects::AspectDefinition>>,
         walk: impl FnOnce(&mut Self, Vec<Arc<crate::aspects::AspectDefinition>>) -> Planned,
     ) -> Planned {
+        if let Some(stopped) = self.helper_stopped() {
+            return Err(stopped);
+        }
         if aspects.is_empty() {
             return walk(self, aspects);
         }
@@ -922,6 +941,9 @@ impl AspectCx for FrozenAspects<'_, '_> {
         application: crate::analysis::AspectApplication,
         commit: AspectCommit,
     ) -> Result<AspectProviders, String> {
+        if let Some(stopped) = self.helper_stopped() {
+            return Err(stopped);
+        }
         let missed = self.state.borrow_mut().missed.take();
         if let Some(missed) = missed {
             return Err(self.unready(missed));
@@ -1050,9 +1072,10 @@ pub(super) fn helper_walk(
     label: &Label,
     edge_config: ConfigId,
     aspects: Vec<Arc<crate::aspects::AspectDefinition>>,
+    stopped: &dyn Fn() -> bool,
 ) -> bool {
     let isolation = Isolation::enter();
-    let walked = {
+    let (walked, sources) = {
         let mut prepare = prepare::SharedPrepare::frozen(frozen, index);
         prepare.aspect_jobs = true;
         prepare.resolve_sources = true;
@@ -1062,12 +1085,38 @@ pub(super) fn helper_walk(
             index,
             state: Default::default(),
             owner: None,
+            stopped: Some(stopped),
         };
         let planned = aspect_plan::plan_dependency(&mut cx, label, edge_config, aspects);
         let missed = cx.state.borrow().missed.is_some();
-        planned.is_ok() && !missed && prepare.record.abort.is_none()
+        let walked = planned.is_ok() && !missed && prepare.record.abort.is_none();
+        (walked, std::mem::take(&mut prepare.record.sources))
     };
-    let _ = isolation.finish();
+    // A walk ahead has nothing observable: its analyses are isolated on
+    // their own (one with effects is an unusable entry), its views and
+    // lookups print nothing and fetch nothing.
+    let (effects, sentinel) = isolation.finish();
+    if sentinel || !effects.console.is_empty() || !effects.roots.is_empty() {
+        stat(20, 1);
+        debug_assert!(
+            false,
+            "internal error: an aspect walk ahead of {label} had effects (sentinel {sentinel}, {} console, {} roots)",
+            effects.console.len(),
+            effects.roots.len()
+        );
+    }
+    // The source files it resolved: applied at the job's merge too (as the
+    // job's own lookups; the same answers, idempotent).
+    if !sources.is_empty() {
+        frozen
+            .aspects
+            .helper_sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(index)
+            .or_default()
+            .extend(sources);
+    }
     stat(if walked { 17 } else { 18 }, 1);
     walked
 }
@@ -1089,6 +1138,7 @@ pub(in crate::engine) fn edge_view(
         index,
         state: Default::default(),
         owner: None,
+        stopped: None,
     };
     let planned = aspect_plan::plan_dependency(&mut cx, label, edge_config, aspects);
     let missed = cx.state.borrow_mut().missed.take();
@@ -1215,7 +1265,14 @@ impl Engine {
         // record, their memoized paths. (Applied before the placement: a
         // commit error below stops the walk, unless --keep_going, whose
         // later lookups see them memoized either way.)
-        for (label, path, stable, side) in &record.sources {
+        let ahead = frozen
+            .aspects
+            .helper_sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&index)
+            .unwrap_or_default();
+        for (label, path, stable, side) in record.sources.iter().chain(&ahead) {
             side.clone()
                 .apply(&mut self.missing_sources, &mut self.source_directories);
             if *stable {
