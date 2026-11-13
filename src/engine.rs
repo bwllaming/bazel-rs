@@ -349,6 +349,18 @@ impl Declared {
             .map(|(_, artifact)| artifact)
     }
 
+    /// `--keep_going` (a frozen walk's withdrawal): drop the declaration
+    /// of `path` in `config` (not journaled: the published copy only).
+    fn remove(&mut self, config: ConfigId, path: &Path) {
+        let hash = declared_hash(config, parallel::path_hash(path));
+        if let Ok(entry) = self
+            .entries
+            .find_entry(hash, |(key, _)| key.matches(config, path))
+        {
+            entry.remove();
+        }
+    }
+
     /// Declare `artifact` at `path` in `config`, replacing a declaration.
     fn insert(&mut self, config: ConfigId, path: PathBuf, artifact: Artifact) {
         self.put(DeclaredKey::new(config, path), artifact, true);
@@ -1154,7 +1166,14 @@ impl ConcurrentArtifactIndex {
             shard
                 .write()
                 .unwrap_or_else(|e| e.into_inner())
-                .retain(|entry| !(entry.provisional && entry.stamp == stamp));
+                // (A producer-less source File's entry whose stamp a
+                // publication lowered to `stamp` is a later entry's too:
+                // kept.)
+                .retain(|entry| {
+                    !(entry.provisional
+                        && entry.stamp == stamp
+                        && entry.artifact.producer.is_some())
+                });
         }
     }
 

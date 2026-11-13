@@ -70,6 +70,13 @@ fn classify_first() -> bool {
     *FIRST
 }
 
+std::thread_local! {
+    /// The cursor's entry was prepared again at its turn instead of merging
+    /// its job's outcome ([`Engine::redo_at_turn`]; `--keep_going`'s debug
+    /// check of what a merged job read).
+    static REDONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// `BAZEL_RS_TEST_RECOMPUTE_AT_MERGE=<target name>` (hidden test hook): a
 /// Starlark job of that name is prepared and computed again at its merge,
 /// as when a commit since resolved its deferred target platform (its
@@ -776,6 +783,12 @@ struct Board {
     /// its turn — a dependency failed at its merge after publishing — never
     /// prints, though its job may have run).
     streams: bool,
+    /// `--keep_going`, debug builds: each classified entry's requirements
+    /// (the keys its job reads), checked against the keep-going state at a
+    /// withdrawal and at each merge of a job.
+    requires: Option<std::sync::Mutex<HashMap<usize, Vec<ConfiguredTargetKey>>>>,
+    /// `--keep_going`: the keys whose published results were withdrawn.
+    withdrawn: std::sync::Mutex<HashSet<ConfiguredTargetKey>>,
 }
 
 impl Board {
@@ -1028,6 +1041,12 @@ impl Board {
             if kind == KIND_TURN {
                 self.stage[slot].store(IDLE, Ordering::Release);
                 return;
+            }
+            if let Some(requires) = &self.requires {
+                requires
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(index, keys.clone());
             }
             {
                 let mut edges = self.edges.lock().unwrap_or_else(|e| e.into_inner());
@@ -1763,6 +1782,8 @@ impl Board {
             fence: std::sync::atomic::AtomicUsize::new(0),
             fail_fast: false,
             streams: crate::engine::eval::genuine(),
+            requires: None,
+            withdrawn: Default::default(),
             failed: std::sync::atomic::AtomicUsize::new(usize::MAX),
             spread: Default::default(),
         })
@@ -2152,6 +2173,7 @@ impl Engine {
         if let Some(fresh) = Arc::get_mut(&mut board) {
             fresh.fail_fast = crate::engine::eval::genuine() && !self.keep_going;
             fresh.streams = crate::engine::eval::genuine() && !self.keep_going;
+            fresh.requires = (cfg!(debug_assertions) && self.keep_going).then(Default::default);
         }
         // Task D: the jobs the early boards finished are this walk's.
         if let Some(early) = self.early_ct2.take() {
@@ -2317,10 +2339,10 @@ impl Engine {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&index);
-                if ran {
-                    self.keep_going_withdraw(state, board, &key, index);
-                }
                 self.keep_going_state.fail_propagated(&key);
+                if ran {
+                    self.keep_going_withdraw(state, board, &key, &rule, index);
+                }
                 stat(S_KEEP_GOING_SKIPPED, 1);
                 continue;
             }
@@ -2355,6 +2377,9 @@ impl Engine {
             // Whether its dependents may have run on a worker's results
             // (its own job published them, on a worker or stolen here).
             let published = matches!(&claimed, Claimed::Done(finished) if finished.published());
+            let merged_job = matches!(&claimed, Claimed::Done(_));
+            REDONE.with(|redone| redone.set(false));
+            let mut aspect_reads: Option<Vec<ConfiguredTargetKey>> = None;
             let result = match claimed {
                 Claimed::Failed => {
                     let failed = board.failed().unwrap_or(index);
@@ -2436,6 +2461,14 @@ impl Engine {
                 }
                 Claimed::Done(Finished::Starlark { outcome, .. }) => {
                     let _split = frozen::Split::enter(13);
+                    if board.requires.is_some() {
+                        // (Debug builds, --keep_going: checked once merged.)
+                        aspect_reads = (*outcome)
+                            .as_ref()
+                            .ok()
+                            .and_then(|outcome| outcome.aspects.as_ref())
+                            .map(|record| record.reads.clone());
+                    }
                     self.buffered_starlark(state, configured, &key, &rule, index, outcome)
                 }
             };
@@ -2445,15 +2478,23 @@ impl Engine {
             // skipped at their turns); what its job published withdrawn.
             if self.keep_going {
                 if let Err(error) = result {
-                    if published {
-                        self.keep_going_withdraw(state, board, &key, index);
-                    }
                     self.keep_going_state.fail_own(&key, error);
+                    if published {
+                        self.keep_going_withdraw(state, board, &key, &rule, index);
+                    }
                     stat(S_KEEP_GOING_FAILED, 1);
                     board.frozen.results.publish_declared(state, self);
                     continue;
                 }
                 self.keep_going_state.planned(&key);
+                if merged_job {
+                    // (Prepared again at its turn: its applications' reads
+                    // are the walk's.)
+                    let aspect_reads = aspect_reads
+                        .as_deref()
+                        .filter(|_| !REDONE.with(std::cell::Cell::get));
+                    self.check_keep_going_reads(board, &key, index, aspect_reads);
+                }
             }
             result?;
             {
@@ -2501,19 +2542,116 @@ impl Engine {
     /// turn after its job published results: they are withdrawn (its
     /// published results and provisional registrations), as the walk never
     /// registers a failed target's outputs.
+    ///
+    /// Also what was filled from them during the walk: the dependency
+    /// views, `Target` identities and native output groups of the key (its
+    /// label and its output files' labels, in its configuration or one
+    /// delegating to it), which a later prepare — a job's or one at its
+    /// turn — would otherwise read instead of the walk's missing results;
+    /// and its published output-file declarations (the planning state's
+    /// again). `key` is recorded failed before.
     fn keep_going_withdraw(
         &mut self,
         state: &ActionPlanning,
         board: &Arc<Board>,
         key: &ConfiguredTargetKey,
+        rule: &Rule,
         index: usize,
     ) {
         stat(S_KEEP_GOING_WITHDRAWN, 1);
-        board.frozen.results.withdraw(key);
+        board
+            .withdrawn
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.clone());
+        let frozen = &board.frozen;
+        frozen.results.withdraw(key);
         state
             .artifact_index
             .shared
             .withdraw(u32::try_from(index).unwrap_or(u32::MAX - 1));
+        let mut labels: HashSet<Label> = HashSet::new();
+        labels.insert(key.label.clone());
+        let output_root = self.configurations.output_root(key.config);
+        for out in &rule.outs {
+            if let Ok(label) = rule.label.with_name(out) {
+                let exec = label.generated_exec_path(&output_root);
+                frozen.results.withdraw_declared(
+                    key.config,
+                    &exec,
+                    state.declared.get(key.config, &exec),
+                );
+                labels.insert(label);
+            }
+        }
+        let names_it = |label: &Label, config: ConfigId| {
+            labels.contains(label)
+                && (config == key.config
+                    || self
+                        .rule_delegations
+                        .get(&ConfiguredTargetKey::new(label.clone(), config))
+                        .is_some_and(|owner| owner == key))
+        };
+        frozen
+            .memos
+            .views
+            .remove_where(|view| names_it(&view.label, view.config));
+        frozen
+            .memos
+            .output_groups
+            .remove_where(|group| names_it(&group.label, group.config));
+        frozen
+            .memos
+            .identities
+            .remove_where(|(label, config)| config.is_some_and(|config| names_it(label, config)));
+        // Every entry whose job read `key`'s results depends on it through
+        // the phase-1 edges (it is skipped at its turn).
+        if let Some(requires) = &board.requires {
+            let requires = requires.lock().unwrap_or_else(|e| e.into_inner());
+            for (dependent, keys) in requires.iter() {
+                if *dependent > index && keys.contains(key) {
+                    let dependent = &board.plan[dependent - board.start].0;
+                    debug_assert!(
+                        self.keep_going_state.dependency_failed(dependent),
+                        "internal error: --keep_going: {} read the withdrawn results of {} without a phase-1 edge to it",
+                        dependent.label,
+                        key.label
+                    );
+                }
+            }
+        }
+    }
+
+    /// `--keep_going`, debug builds: a job merged at entry `index` read no
+    /// failed key's results — neither a requirement (each one a phase-1
+    /// edge: the entry would have been skipped) nor an aspect application's
+    /// read (placed at the turn then, [`Engine::place_aspects`]).
+    fn check_keep_going_reads(
+        &self,
+        board: &Arc<Board>,
+        key: &ConfiguredTargetKey,
+        index: usize,
+        aspect_reads: Option<&[ConfiguredTargetKey]>,
+    ) {
+        let Some(requires) = &board.requires else {
+            return;
+        };
+        let requires = requires.lock().unwrap_or_else(|e| e.into_inner());
+        let withdrawn = board.withdrawn.lock().unwrap_or_else(|e| e.into_inner());
+        for read in requires
+            .get(&index)
+            .into_iter()
+            .flatten()
+            .chain(aspect_reads.into_iter().flatten())
+        {
+            debug_assert!(
+                !self.keep_going_state.is_failed(read),
+                "internal error: --keep_going: {} merged a job that read the results of failed {} (withdrawn: {})",
+                key.label,
+                read.label,
+                withdrawn.contains(read)
+            );
+        }
     }
 
     /// BAZEL_RS_ANALYSIS_ORDER=genuine: the walk ends with the confirmed
@@ -2607,6 +2745,7 @@ impl Engine {
         index: usize,
         streamed: bool,
     ) -> Result<(), String> {
+        REDONE.with(|redone| redone.set(true));
         if !streamed {
             return self.buffered_at_turn(state, configured, key, rule, index);
         }

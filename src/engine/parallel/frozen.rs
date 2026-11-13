@@ -255,6 +255,30 @@ impl PlannedResults {
             .remove(key);
     }
 
+    /// `--keep_going`: the declaration of `path` in `config` a withdrawn
+    /// entry's job published is the planning state's again (`committed`),
+    /// or none.
+    pub(in crate::engine) fn withdraw_declared(
+        &self,
+        config: ConfigId,
+        path: &Path,
+        committed: Option<&Artifact>,
+    ) {
+        let hash = declared_hash(config, path_hash(path));
+        let mut shard = self
+            .declared_shard(hash)
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        match committed {
+            Some(artifact) => shard.put(
+                DeclaredKey::new(config, path.to_path_buf()),
+                artifact.clone(),
+                true,
+            ),
+            None => shard.remove(config, path),
+        }
+    }
+
     /// Copy `key`'s entries from the planning state (it committed).
     pub(in crate::engine) fn publish(&self, key: &ConfiguredTargetKey, state: &ActionPlanning) {
         let results = KeyResults {

@@ -769,9 +769,14 @@ change announced to the other two workers; adding a helper is not.
   jobs lower their actions); the buffer's `Board::claim_skipped`,
   `Board::streams` (genuine order without `--keep_going`: the job's console
   written when it finishes — `run_job` no longer reads `eval::genuine`
-  itself), `Engine::keep_going_withdraw`; `PlannedResults::withdraw`,
-  `ConcurrentArtifactIndex::withdraw(stamp)`; `PERF-PARALLEL buffer`
-  `keep_going_{skipped,failed,withdrawn}`. eval-speed: the cursor's loop
+  itself), `Board::{requires, withdrawn}`, `Engine::keep_going_withdraw`,
+  `Engine::check_keep_going_reads`; `PlannedResults::{withdraw,
+  withdraw_declared}`, `ConcurrentArtifactIndex::withdraw(stamp)`,
+  `Declared::remove`, `SingleFlight::remove_where`,
+  `keep_going::State::is_failed`, `AspectRecord::reads` (checked by
+  `place_aspects` under `--keep_going`); `PERF-PARALLEL buffer`
+  `keep_going_{skipped,failed,withdrawn}`, `PERF-PARALLEL aspect_jobs`
+  `keep_going_fallbacks`. eval-speed: the cursor's loop
   (`buffered_walk`) checks `keep_going_state.dependency_failed` before it
   classifies/claims an entry, and records a merge's error instead of
   returning it under `--keep_going`.
@@ -3502,9 +3507,27 @@ cursor's, at the entry's turn, exactly where the walk makes it:
   target's outputs, so a later entry sharing such an output registers it
   as its own: its delta's shared outputs are localized by the sweep against
   the producers (New, not Shared), a read of a withdrawn provisional entry
-  differs at its merge and is built again. Its readers through providers
-  are its dependents (skipped). The walk-end check that no provisional
-  entry is left holds.
+  differs at its merge and is built again. What the walk filled from its
+  results goes too: the dependency views, `Target` identities and native
+  output groups of its label and output labels (in its configuration or
+  one delegating to it) and its published output-file declarations (the
+  planning state's again), so no later prepare — a job's or one at its
+  turn — reads them. The walk-end check that no provisional entry is left
+  holds; a provisional source entry another publication's stamp lowered is
+  kept.
+- **Who read it.** A job's requirements (the keys its prepare reads) are
+  phase-1 edges of its entry, so a reader is skipped at its turn (debug
+  builds check it at each withdrawal and each merge of a job under
+  `--keep_going`). An attribute aspect's own dependencies (its label
+  attributes, toolchains) are **not** edges of the rule carrying it (phase 1
+  pops the rule before it analyzes them), so an aspect job records every
+  key whose published results its applications read
+  (`AspectRecord::reads`); if one failed at its merge, the placement is
+  left to the rule's turn (`place_aspects` → prepared there, reading what
+  the walk reads). Test:
+  `eval_buffer::keep_going_an_aspect_dependency_failing_at_its_merge`
+  (an aspect's `_cfg` target conflicting at its merge after publishing;
+  each of the two fixes alone fails it).
 - **Lowerings** stay undeferred under `--keep_going` (a failing lowering
   fails its entry at its turn): the workers' deltas lower their actions in
   their jobs (no lowering pool in `SharedView`), the cursor's own commits

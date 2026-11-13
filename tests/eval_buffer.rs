@@ -1477,7 +1477,7 @@ fn compare_keep_going(ws: &Workspace, targets: &[&str], check: impl Fn(&str)) {
     check(&text);
     const KG: (&str, &str) = KEEP_GOING_FROZEN;
     const RECORD: (&str, &str) = ("BAZEL_RS_SNAPSHOT", "on");
-    let runs: [(usize, &[(&str, &str)]); 19] = [
+    let runs: [(usize, &[(&str, &str)]); 20] = [
         (1, &[FROZEN, KG]),
         // The genuine order keeps the console's plan order under
         // --keep_going (no fail fast, nothing streamed).
@@ -1507,6 +1507,10 @@ fn compare_keep_going(ws: &Workspace, targets: &[&str], check: impl Fn(&str)) {
         (8, &[FROZEN, KG, REVERSE, ("BAZEL_RS_EVAL_RESTARTS", "5")]),
         (8, &[FROZEN, KG, ("BAZEL_RS_EVAL_SWEEP", "0")]),
         (8, &[FROZEN, KG, ASPECT_JOBS, REVERSE]),
+        (
+            8,
+            &[FROZEN, KG, NO_ASPECT_JOBS, ("BAZEL_RS_EVAL_JITTER", "300")],
+        ),
         // A snapshot miss records (a failed keep-going build never saves).
         (8, &[FROZEN, KG, RECORD, ("BAZEL_RS_EVAL_JITTER", "300")]),
     ];
@@ -1699,4 +1703,81 @@ fn keep_going_with_a_failing_aspect_through_the_merge_buffer() {
             assert!(text.contains("lint @@//a:lint_d"), "{text}");
         },
     );
+}
+
+const ASPECT_DEPENDENCY_BZL: &str = r#"
+CfgInfo = provider(fields = ["v"])
+
+def _cfg_impl(ctx):
+    total = 0
+    for i in range(ctx.attr.work):
+        total += i
+    out = ctx.actions.declare_file("conf.txt")
+    ctx.actions.write(out, ctx.attr.content)
+    return [DefaultInfo(files = depset([out])), CfgInfo(v = ctx.attr.content)]
+
+cfg = rule(
+    implementation = _cfg_impl,
+    attrs = {"content": attr.string(), "work": attr.int(default = 10)},
+)
+
+def _asp_impl(target, ctx):
+    v = ctx.attr._cfg[CfgInfo].v
+    print("aspect on %s sees %s" % (target.label, v))
+    out = ctx.actions.declare_file(target.label.name + ".asp")
+    ctx.actions.write(out, v)
+    return [OutputGroupInfo(asp = depset([out]))]
+
+asp = aspect(
+    implementation = _asp_impl,
+    attr_aspects = ["deps"],
+    attrs = {"_cfg": attr.label(default = "//c:t")},
+)
+
+def _lib_impl(ctx):
+    return [DefaultInfo()]
+
+lib = rule(implementation = _lib_impl, attrs = {"deps": attr.label_list()})
+
+def _user_impl(ctx):
+    print("user %s" % ctx.label)
+    files = depset(transitive = [dep[OutputGroupInfo].asp for dep in ctx.attr.deps])
+    return [DefaultInfo(files = files)]
+
+user = rule(implementation = _user_impl, attrs = {"deps": attr.label_list(aspects = [asp])})
+"#;
+
+/// `--keep_going` and an attribute aspect's own dependency: the aspect's
+/// `_cfg` target (not a phase-1 edge of the rule carrying the aspect)
+/// publishes its results, then fails at its merge (a conflict with an
+/// earlier, slower target's output). The carrier's aspect job may have
+/// read the published results first: its placement is left to its turn,
+/// where it reads what the walk reads, and nothing filled from the failed
+/// target's results (views, identities) is left for it.
+#[test]
+fn keep_going_an_aspect_dependency_failing_at_its_merge() {
+    let ws = Workspace::new(&[
+        ("rules/asp.bzl", ASPECT_DEPENDENCY_BZL.to_owned()),
+        (
+            "c/BUILD.bazel",
+            r#"load("//rules:asp.bzl", "cfg")
+cfg(name = "t0", content = "zero", work = 400000, visibility = ["//visibility:public"])
+cfg(name = "t", content = "one", visibility = ["//visibility:public"])
+"#
+            .to_owned(),
+        ),
+        (
+            "x/BUILD.bazel",
+            r#"load("//rules:asp.bzl", "lib", "user")
+lib(name = "l")
+lib(name = "m", deps = [":l"])
+user(name = "x", deps = [":l"])
+user(name = "y", deps = [":m"])
+"#
+            .to_owned(),
+        ),
+    ]);
+    compare_keep_going(&ws, &["//c:t0", "//x:x", "//x:y", "//x:l"], |text| {
+        assert!(text.contains("conflicting actions"), "{text}");
+    });
 }

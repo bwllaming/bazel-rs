@@ -106,6 +106,17 @@ impl<K: std::hash::Hash + Eq + Clone, V> SingleFlight<K, V> {
         }
     }
 
+    /// `--keep_going` (a withdrawal, rare): drop every entry whose key
+    /// `drop` names (the next use fills it again).
+    pub(super) fn remove_where(&self, drop: impl Fn(&K) -> bool) {
+        for shard in self.shards.iter() {
+            shard
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|(_, key, _)| !drop(key));
+        }
+    }
+
     /// Whether `key` is filled (no wait for a fill in progress: `false`).
     pub(super) fn is_filled(&self, key: &K) -> bool {
         let Some(slot) = self.existing(key) else {

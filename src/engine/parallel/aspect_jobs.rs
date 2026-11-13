@@ -77,8 +77,8 @@ pub(super) fn verify_mode() -> bool {
 }
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL aspect_jobs`).
-static STATS: [AtomicU64; 21] = [const { AtomicU64::new(0) }; 21];
-const STAT_NAMES: [&str; 21] = [
+static STATS: [AtomicU64; 22] = [const { AtomicU64::new(0) }; 22];
+const STAT_NAMES: [&str; 22] = [
     "analyzed",
     "unusable",
     "requeued",
@@ -100,11 +100,15 @@ const STAT_NAMES: [&str; 21] = [
     "helper_stopped",
     "helper_spread",
     "helper_effects",
+    "keep_going_fallbacks",
 ];
 pub(super) const S_HELPER_SPREAD: usize = 19;
 pub(super) const S_FALLBACK_PREPARE: usize = 13;
 pub(super) const S_REQUEUED: usize = 2;
 pub(super) const S_FALLBACK: usize = 5;
+/// `--keep_going`: placements left to the rule's turn (a dependency its
+/// applications read failed at its merge after publishing).
+const S_KEEP_GOING_FALLBACK: usize = 21;
 
 pub(super) fn stat(index: usize, by: u64) {
     STATS[index].fetch_add(by, std::sync::atomic::Ordering::Relaxed);
@@ -218,6 +222,11 @@ pub(in crate::engine) struct AspectTable {
     /// ([`Engine::place_aspects`]).
     #[allow(clippy::type_complexity)]
     helper_sources: std::sync::Mutex<HashMap<usize, Vec<(Label, PathBuf, bool, SourceSide)>>>,
+    /// The keys whose published results the walks ahead of each job read
+    /// (`AspectRecord::reads`: the job's walk meets their subtrees as memo
+    /// hits, without reading again), checked by its placement under
+    /// `--keep_going` beside its own.
+    helper_reads: std::sync::Mutex<HashMap<usize, Vec<ConfiguredTargetKey>>>,
 }
 
 type AttributeConfigs = Arc<BTreeMap<String, TransitionConfigurations>>;
@@ -260,6 +269,12 @@ pub(in crate::engine) struct AspectRecord {
     identities: Identities,
     /// A dependency whose results were not published.
     pub(super) unready: Option<ConfiguredTargetKey>,
+    /// The keys whose published results its applications read
+    /// ([`FrozenAspects::missing`]): an aspect's own attribute and
+    /// toolchain dependencies are not the rule's phase-1 edges, so under
+    /// `--keep_going` its placement checks them (one failed at its merge
+    /// after publishing: the rule is prepared at its turn).
+    pub(super) reads: Vec<ConfiguredTargetKey>,
     /// The source files its lookups resolved (Engine::target's records,
     /// applied at its merge).
     pub(super) sources: Vec<(Label, PathBuf, bool, SourceSide)>,
@@ -371,6 +386,7 @@ impl FrozenAspects<'_, '_> {
             return Ok(());
         };
         if self.frozen.results.get(&key).is_some() {
+            self.record().reads.push(key);
             return Ok(());
         }
         // A dependency is earlier in the plan (a post-order).
@@ -1075,7 +1091,7 @@ pub(super) fn helper_walk(
     stopped: &dyn Fn() -> bool,
 ) -> bool {
     let isolation = Isolation::enter();
-    let (walked, sources) = {
+    let (walked, sources, reads) = {
         let mut prepare = prepare::SharedPrepare::frozen(frozen, index);
         prepare.aspect_jobs = true;
         prepare.resolve_sources = true;
@@ -1090,7 +1106,13 @@ pub(super) fn helper_walk(
         let planned = aspect_plan::plan_dependency(&mut cx, label, edge_config, aspects);
         let missed = cx.state.borrow().missed.is_some();
         let walked = planned.is_ok() && !missed && prepare.record.abort.is_none();
-        (walked, std::mem::take(&mut prepare.record.sources))
+        let reads = prepare
+            .record
+            .aspects
+            .as_mut()
+            .map(|record| std::mem::take(&mut record.reads))
+            .unwrap_or_default();
+        (walked, std::mem::take(&mut prepare.record.sources), reads)
     };
     // A walk ahead has nothing observable: its analyses are isolated on
     // their own (one with effects is an unusable entry), its views and
@@ -1116,6 +1138,16 @@ pub(super) fn helper_walk(
             .entry(index)
             .or_default()
             .extend(sources);
+    }
+    if !reads.is_empty() {
+        frozen
+            .aspects
+            .helper_reads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(index)
+            .or_default()
+            .extend(reads);
     }
     stat(if walked { 17 } else { 18 }, 1);
     walked
@@ -1261,6 +1293,26 @@ impl Engine {
         let Some(frozen) = self.frozen_walk.clone() else {
             return Ok(false);
         };
+        // --keep_going: a dependency its applications read failed (or was
+        // skipped) at its merge after publishing: prepared at its turn,
+        // where it reads what the walk reads.
+        let ahead_reads = frozen
+            .aspects
+            .helper_reads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&index)
+            .unwrap_or_default();
+        if self.keep_going
+            && record
+                .reads
+                .iter()
+                .chain(&ahead_reads)
+                .any(|key| self.keep_going_state.is_failed(key))
+        {
+            stat(S_KEEP_GOING_FALLBACK, 1);
+            return Ok(false);
+        }
         // The source lookups its prepare made (Engine::target): what they
         // record, their memoized paths. (Applied before the placement: a
         // commit error below stops the walk, unless --keep_going, whose

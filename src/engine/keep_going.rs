@@ -126,6 +126,11 @@ impl State {
         })
     }
 
+    /// Whether phase 2 failed `key` itself (its own failure or skipped).
+    pub(crate) fn is_failed(&self, key: &ConfiguredTargetKey) -> bool {
+        self.failed.contains(key)
+    }
+
     /// Phase 2: `key` is skipped because a dependency failed.
     pub(crate) fn fail_propagated(&mut self, key: &ConfiguredTargetKey) {
         self.failed.insert(key.clone());
