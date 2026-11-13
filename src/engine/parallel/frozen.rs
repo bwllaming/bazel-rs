@@ -65,7 +65,7 @@ pub(super) fn keep_going_frozen() -> bool {
         std::env::var("BAZEL_RS_EVAL_KEEP_GOING_FROZEN")
             .ok()
             .or(option_env!("BAZEL_RS_DEFAULT_EVAL_KEEP_GOING_FROZEN").map(str::to_owned))
-            .is_some_and(|value| value == "1")
+            .is_none_or(|value| value != "0")
     });
     *ENABLED
 }

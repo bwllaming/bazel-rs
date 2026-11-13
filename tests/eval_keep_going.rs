@@ -215,6 +215,18 @@ fn workspace() -> tempfile::TempDir {
 /// `bazel-rs <args>` on engine `mode` with `--loading_phase_threads=<threads>`
 /// and `BAZEL_RS_SNAPSHOT=<snapshot>` (a fresh cache: a miss).
 fn run(root: &Path, mode: &str, snapshot: &str, threads: u32, args: &[&str]) -> Output {
+    run_with(root, mode, snapshot, threads, &[], args)
+}
+
+/// [`run`] with `env` set too.
+fn run_with(
+    root: &Path,
+    mode: &str,
+    snapshot: &str,
+    threads: u32,
+    env: &[(&str, &str)],
+    args: &[&str],
+) -> Output {
     let _ = fs::remove_dir_all(root.join("cache"));
     Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
         .current_dir(root)
@@ -234,6 +246,7 @@ fn run(root: &Path, mode: &str, snapshot: &str, threads: u32, args: &[&str]) -> 
             &format!("--loading_phase_threads={threads}"),
         ])
         .args(&args[1..])
+        .envs(env.iter().copied())
         .output()
         .unwrap()
 }
@@ -261,15 +274,19 @@ fn engines(output: &Output) -> Vec<String> {
         .collect()
 }
 
-/// The evaluator's run of `args` against the forced walk's.
+/// The evaluator's run of `args` against the forced walk's: as it plans
+/// this small workspace (walks on the pipeline) and with every pass-2 walk
+/// frozen (`--keep_going` through the merge buffer).
 fn same_as_walk(root: &Path, snapshot: &str, threads: u32, args: &[&str]) -> Output {
     let walk = run(root, "walk", snapshot, threads, args);
-    let eval = run(root, "eval", snapshot, threads, args);
-    let what = format!("{args:?}, {threads} threads, snapshot {snapshot}");
-    assert_eq!(engines(&eval), ["eval"], "{what}: {}", stable(&eval));
-    assert_eq!(eval.status.code(), walk.status.code(), "{what}");
-    assert_eq!(stable(&eval), stable(&walk), "{what}");
-    assert_eq!(eval.stdout, walk.stdout, "{what}");
+    for env in [&[][..], &[("BAZEL_RS_EVAL_FROZEN_PREPARES", "all")]] {
+        let eval = run_with(root, "eval", snapshot, threads, env, args);
+        let what = format!("{args:?}, {threads} threads, snapshot {snapshot}, {env:?}");
+        assert_eq!(engines(&eval), ["eval"], "{what}: {}", stable(&eval));
+        assert_eq!(eval.status.code(), walk.status.code(), "{what}");
+        assert_eq!(stable(&eval), stable(&walk), "{what}");
+        assert_eq!(eval.stdout, walk.stdout, "{what}");
+    }
     walk
 }
 

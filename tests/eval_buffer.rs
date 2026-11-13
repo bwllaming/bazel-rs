@@ -1459,8 +1459,7 @@ w(
 }
 
 /// `--keep_going` walks through the merge buffer (frozen, its jobs ahead of
-/// the cursor; `BAZEL_RS_EVAL_KEEP_GOING_FROZEN=1` until it is the
-/// default).
+/// the cursor; the default, `BAZEL_RS_EVAL_KEEP_GOING_FROZEN=0` off).
 const KEEP_GOING_FROZEN: (&str, &str) = ("BAZEL_RS_EVAL_KEEP_GOING_FROZEN", "1");
 
 /// The walk's `--keep_going` output, then the buffered evaluation's (its
