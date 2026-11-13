@@ -723,6 +723,15 @@ change announced to the other two workers; adding a helper is not.
   `Finished::confirmed_error`. eval-coverage: once `--keep_going` plans on
   the evaluator, the T3 walk keeps fail fast off there
   (`Board::fail_fast` reads `Engine::keep_going`); eval-speed: none.
+- 2026-11-13 (eval-speed round 3): `TapeOp::Reach` is `{ node, enter }`
+  (no key: the tracker's `TapeReplay::compact(op, reached)` and the tape
+  dump read it by node; no parent: never read), `TapeOp::Plan` names its
+  `node` (the driver reads the rule by node); `Ct1Ok::node` and the values
+  of `ConfiguredNodes` are `Arc<ConfiguredNode>`; `Pass1::{index_by_node,
+  plan_on_tape, planned, reserve, set_yield, stepping}` (the driver's pass:
+  canonical nodes by node id, the plan on the tape only); `graph::Entry::rank`
+  and `Evaluator::start` ranking its keys in order (`BAZEL_RS_EVAL_RANKED=0`
+  off); `linearize::driver::PriorityWait` (`BAZEL_RS_EVAL_YIELD=0` off).
 
 ## 4. Stages and gates
 

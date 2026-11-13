@@ -295,6 +295,9 @@ pub(crate) struct Pass1 {
     canonical_by_node: Vec<Option<NodeId>>,
     /// Whether `canonical_by_node` is kept ([`Pass1::index_by_node`]).
     by_node: bool,
+    /// By node (with `by_node`): a variant found to observe what its key's
+    /// canonical node observes (the comparison is not made again).
+    same_by_node: Vec<bool>,
     /// The plan's length.
     planned: usize,
     /// [`Pass1::plan_on_tape`].
@@ -421,6 +424,7 @@ impl Pass1 {
             visited: FxHashMap::default(),
             canonical_by_node: Vec::new(),
             by_node: false,
+            same_by_node: Vec::new(),
             planned: 0,
             tape_plan: false,
             chains: Vec::new(),
@@ -892,6 +896,29 @@ impl Pass1 {
         Ok(None)
     }
 
+    /// [`Transcripts::same_observable`], remembered by node for a variant
+    /// that observes the same (with `by_node`: the canonical node of a key
+    /// does not change).
+    fn same_observable<T: Transcripts + ?Sized>(
+        &mut self,
+        source: &T,
+        canonical: NodeId,
+        node: NodeId,
+    ) -> bool {
+        let slot = node.0 as usize;
+        if self.by_node && self.same_by_node.get(slot).copied().unwrap_or(false) {
+            return true;
+        }
+        let same = source.same_observable(canonical, node);
+        if same && self.by_node {
+            if self.same_by_node.len() <= slot {
+                self.same_by_node.resize(slot + 1, false);
+            }
+            self.same_by_node[slot] = true;
+        }
+        same
+    }
+
     /// `key` complete as `node` (its canonical node, or [`EXTERNAL`]).
     fn visit(&mut self, key: ConfiguredTargetKey, node: NodeId) {
         if self
@@ -902,6 +929,7 @@ impl Pass1 {
             // (A key's canonical node does not change; if it did, the
             // variants' cached reads would be stale.)
             self.canonical_by_node.clear();
+            self.same_by_node.clear();
         }
     }
 
@@ -968,7 +996,7 @@ impl Pass1 {
         if let Some(canonical) = canonical {
             if canonical != node
                 && canonical != EXTERNAL
-                && !source.same_observable(canonical, node)
+                && !self.same_observable(source, canonical, node)
             {
                 self.out.divergences.push(format!(
                     "{key}: a consumer read the variant {ct:?}, the sequential walk serves the first-visited {:?}",
