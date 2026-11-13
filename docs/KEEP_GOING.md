@@ -73,6 +73,14 @@ SkyframeErrorProcessor.processAnalysisErrors under keepGoing
   failure decided at the entry's turn in plan order, as above (a skipped
   entry's job never runs or is dropped; what a failed or skipped entry's
   job published is withdrawn: its outputs are never registered);
+* a target whose commit fails (an action conflict, a lowering) registers
+  nothing — none of its outputs, declarations or actions, not even those
+  before the failing one — so a later target sharing one of its outputs
+  produces it itself (genuine 9.3.1 builds the sharer,
+  `tests/keep_going_conflict.rs`). **Divergence** (the conflict model):
+  Bazel finds conflicts after analysis, so a target above the conflicting
+  one is analyzed and then not built without a warning of its own;
+  natively it is skipped at its turn (warned, `Analysis failed`);
 * each distinct root-cause error is printed once, `ERROR: <message>`,
   before execution, in the engine's sequential order;
 * each requested target that did not analyze gets

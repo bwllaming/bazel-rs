@@ -1998,6 +1998,20 @@ impl Engine {
             super::eval::replay_bench::record(key, &delta);
         }
         let started = bench.then(std::time::Instant::now);
+        if self.keep_going
+            && let Some(error) = delta.error
+        {
+            // --keep_going: a failed target registers nothing (its outputs,
+            // declarations, actions before the failing one): genuine Bazel
+            // analyzes it and then fails it whole (an action conflict is a
+            // whole target's), so a later target sharing one of its
+            // outputs produces it itself.
+            if let Some(path) = &delta.failed_output {
+                parallel::record_registered_output(path);
+            }
+            super::drop_elsewhere(delta.ops);
+            return Err(error);
+        }
         let sink = MergeSink {
             action_executions: &mut self.action_executions,
             build_info_actions: &mut self.build_info_actions,

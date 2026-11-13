@@ -1604,8 +1604,9 @@ pair = rule(
 /// dependents' siblings finish first), a phase-1 failure, a conflict whose
 /// loser has a reader, and an entry failing at its merge (a conflict on one
 /// output) after its job published another output that a later entry
-/// shares — the walk never registers the failed entry's outputs, so the
-/// later one's is its own — with a dependent of it whose job ran on what
+/// shares (its conflict on its second output or its first) — the walk
+/// never registers the failed entry's outputs, so the later one's is its
+/// own — with a dependent of it whose job ran on what
 /// it published (skipped at its turn, its results withdrawn). Errors, warnings, prints and the action dump as
 /// the walk's.
 #[test]
@@ -1627,7 +1628,9 @@ w(name = "c1", out = "conf.txt", content = "one", work = 200000)
 w(name = "c2", out = "conf.txt", content = "two")
 w(name = "cr", deps = [":c2", ":late"])
 pair(name = "e1", writes = {"q.txt": "E"}, work = 200000)
-pair(name = "fa", writes = {"q.txt": "A", "p.txt": "same"})
+pair(name = "fa", writes = {"p.txt": "same", "q.txt": "A"})
+pair(name = "fb2", writes = {"q.txt": "B2", "p2.txt": "same"})
+pair(name = "fc2", writes = {"p2.txt": "same"})
 pair(name = "fb", writes = {"q2.txt": "B", "p.txt": "same"}, deps = [":late"])
 pair(name = "fc", writes = {"p.txt": "same"})
 pair(name = "fd", writes = {"d.txt": "D"}, deps = [":fa"])
@@ -1652,6 +1655,8 @@ pair(name = "fd", writes = {"d.txt": "D"}, deps = [":fa"])
             "//k:fb",
             "//k:fc",
             "//k:fd",
+            "//k:fb2",
+            "//k:fc2",
         ],
         |text| {
             assert!(text.contains("the implementation of bad failed"), "{text}");

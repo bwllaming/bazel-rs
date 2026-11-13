@@ -3553,10 +3553,16 @@ each against the walk at 1/2/8/32 threads, with jitter, restarts, a window
 of 3, classification jitter, `VERIFY_DELTA`, `PARITY_VERIFY`/`REVERSE`, the
 sweep off, aspect jobs, the genuine order, a snapshot miss recording, and
 the switch off; `eval_keep_going` compares every case with all pass-2 walks
-frozen too. Found on the way (pre-existing, the walk's own, not changed): a
-conflict on an entry's *second* output leaves its first registered (the
-failed commit's partial state), and a later entry sharing that first output
-then fails planning with `missing producing action` — on both engines alike.
+frozen too. Found on the way and fixed on both engines (`Engine::merge_delta`
+under `--keep_going`): a conflict on an entry's *second* output left its
+first registered (the failed commit's partial state), and a later entry
+sharing that first output failed planning with `missing producing action`;
+a failed commit now registers nothing (genuine-captured
+`tests/keep_going_conflict.rs`). And an attribute aspect's own
+dependencies are its rule's keep-going edges on both engines (the rule is
+skipped when one fails, genuine-captured
+`tests/keep_going_aspect_dependency.rs`; before, its prepare failed with
+`internal analysis order error`).
 
 Measured (2026-11-13, ~/code `80d6724f3a` private clone, non-LTO release
 on main 891a1d43, 48 threads, warm, snapshot off, host load ~25–28,
