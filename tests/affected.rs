@@ -711,11 +711,44 @@ fn a_local_change_plans_both_revisions_at_once_when_memory_allows() {
         );
         stderr
     };
+    // Both plannings' outputs are captured and forwarded whole once each
+    // is waited for (the base, then the head): never interleaved with each
+    // other or with the orchestrator's lines.
+    let forwarded_in_order = |stderr: &str| {
+        let lines: Vec<&str> = stderr.lines().collect();
+        let position = |from: usize, what: &dyn Fn(&str) -> bool| {
+            lines[from..]
+                .iter()
+                .position(|line| what(line))
+                .map(|at| from + at)
+                .unwrap_or_else(|| panic!("no expected line after line {from}:\n{stderr}"))
+        };
+        let main = repo.main().display().to_string();
+        let head_started = position(0, &|line| {
+            line.starts_with("bazel-rs affected: planning //... (scoped) in ")
+                && line.ends_with(&main)
+        });
+        assert!(
+            !lines[..head_started]
+                .iter()
+                .any(|line| line.contains("selected target(s)")),
+            "the base's output is forwarded once it finished:\n{stderr}"
+        );
+        let base_scope = position(head_started, &|line| line.contains("selected target(s)"));
+        let base_planned = position(base_scope, &|line| {
+            line.starts_with("bazel-rs affected: planned ") && !line.contains(&main)
+        });
+        let head_scope = position(base_planned, &|line| line.contains("selected target(s)"));
+        position(head_scope, &|line| {
+            line.starts_with(&format!("bazel-rs affected: planned {main} in "))
+        });
+    };
     let stderr = run(&[], "0");
     assert!(
         stderr.contains("planning both revisions concurrently"),
         "{stderr}"
     );
+    forwarded_in_order(&stderr);
     let stderr = run(&[], "999999999");
     assert!(!stderr.contains("concurrently"), "{stderr}");
     assert!(stderr.contains("one after the other"), "{stderr}");
@@ -726,6 +759,7 @@ fn a_local_change_plans_both_revisions_at_once_when_memory_allows() {
         stderr.contains("planning both revisions concurrently"),
         "{stderr}"
     );
+    forwarded_in_order(&stderr);
     // A global change: sequential by default.
     let third = repo.commit(&[("MODULE.bazel", "module(name = 'main')\n# x\n")]);
     let args = [

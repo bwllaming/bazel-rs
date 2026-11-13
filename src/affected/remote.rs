@@ -329,7 +329,7 @@ pub fn remote_op(request: &Path) -> i32 {
         Ok(())
     })();
     if let Err(error) = &result {
-        eprintln!("ERROR: bazel-rs affected: {error}");
+        crate::eprint_line!("ERROR: bazel-rs affected: {error}");
         return 2;
     }
     let mut path = request.as_os_str().to_owned();
@@ -337,7 +337,7 @@ pub fn remote_op(request: &Path) -> i32 {
     match std::fs::write(&path, out) {
         Ok(()) => 0,
         Err(error) => {
-            eprintln!(
+            crate::eprint_line!(
                 "ERROR: bazel-rs affected: cannot write {}: {error}",
                 Path::new(&path).display()
             );

@@ -122,8 +122,27 @@ pub fn note(text: &str) {
         let bytes = marked(text);
         let _ = std::io::stderr().lock().write_all(&bytes);
     } else if !quiet() && !hidden(text.as_bytes()) {
-        eprintln!("{text}");
+        eprint_line(text);
     }
+}
+
+/// Write `text` and its newline to stderr in one write (`eprintln!`, on the
+/// unbuffered stderr, writes each piece of its format separately: a
+/// concurrent writer to the same stderr — another process — can land
+/// between them and tear the line).
+pub fn eprint_line(text: &str) {
+    let mut line = String::with_capacity(text.len() + 1);
+    line.push_str(text);
+    line.push('\n');
+    let _ = std::io::stderr().lock().write_all(line.as_bytes());
+}
+
+/// [`eprint_line`] of `format!` arguments (without the newline).
+#[macro_export]
+macro_rules! eprint_line {
+    ($($arg:tt)*) => {
+        $crate::ui::eprint_line(&::std::format!($($arg)*))
+    };
 }
 
 static COLOR: AtomicBool = AtomicBool::new(false);

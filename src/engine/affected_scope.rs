@@ -214,7 +214,7 @@ impl Engine {
                     )
                 })?;
         }
-        eprintln!(
+        crate::eprint_line!(
             "bazel-rs affected: scope {} of {total} selected target(s){} in {:.1} s",
             kept,
             match &outcome {

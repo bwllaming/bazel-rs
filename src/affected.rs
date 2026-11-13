@@ -657,7 +657,7 @@ pub fn target_digests(request: &PlannedRequest, root: &Path) -> BTreeMap<Label, 
         out.insert(label.clone(), hex(&digest));
     }
     if std::env::var_os("BAZEL_RS_TIMING").is_some() {
-        eprintln!(
+        crate::eprint_line!(
             "PERF-AFFECTED sources={} directory_entries={} value_fallbacks={} local_ms={sources_ms} merkle_ms={}",
             digests.sources.len(),
             DIRECTORY_ENTRIES.load(std::sync::atomic::Ordering::Relaxed),
@@ -732,7 +732,7 @@ pub fn write_if_requested(request: &PlannedRequest) -> Result<(), String> {
         )
     })?;
     if std::env::var_os("BAZEL_RS_TIMING").is_some() {
-        eprintln!(
+        crate::eprint_line!(
             "PERF-AFFECTED targets={} actions={} digest_ms={}",
             digests.len(),
             request.nodes.len(),
@@ -1052,7 +1052,7 @@ fn checkout(top: &Path, dir: &Path, commit: &str) -> Result<(), String> {
         // The checkout may lack files the commit's tree names: its digests
         // are fine to compare here, never to share.
         if !SUBMODULES_FAILED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            eprintln!(
+            crate::eprint_line!(
                 "bazel-rs affected: {error} in {}: nothing is written to the remote cache in this run",
                 dir.display()
             );
@@ -1091,6 +1091,24 @@ struct Running {
     workspace: PathBuf,
     out: PathBuf,
     scoped: bool,
+    /// The file the planning's stdout and stderr go to when it runs
+    /// beside another one ([`Output::Captured`]).
+    log: Option<PathBuf>,
+}
+
+/// Where a planning process's output (its stdout and stderr) goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Output {
+    /// To our stderr as it is written (a planning running alone).
+    Live,
+    /// Into `<digests>.log`, forwarded to our stderr in one write when the
+    /// planning is waited for ([`Running::finish`]): two plannings running
+    /// at once never interleave their lines (nor tear ours), and their
+    /// outputs follow in the order the orchestrator waits for them —
+    /// deterministic (the base, then the head; the head, then the base
+    /// when the base started early for the labels missing from the remote
+    /// cache). The output of a planning killed instead is dropped.
+    Captured,
 }
 
 /// Starts planning `options.patterns` in `workspace`.
@@ -1101,10 +1119,13 @@ fn start_plan(
     workspace: &Path,
     out: &Path,
     scope: Option<&ScopeRequest<'_>>,
+    output: Output,
 ) -> Result<Running, String> {
     let _ = std::fs::remove_file(out);
     let _ = std::fs::remove_file(format!("{}.scope", out.display()));
-    eprintln!(
+    let log = PathBuf::from(format!("{}.log", out.display()));
+    let _ = std::fs::remove_file(&log);
+    crate::eprint_line!(
         "bazel-rs affected: planning {}{} in {}",
         options.patterns.join(" "),
         if scope.is_some() { " (scoped)" } else { "" },
@@ -1123,14 +1144,26 @@ fn start_plan(
         .env(QUIET_EVENTS_VAR, "1")
         .env_remove(SCOPE_VAR)
         .env_remove(SAVE_VAR)
-        .env_remove(INCLUDE_MANUAL_VAR)
+        .env_remove(INCLUDE_MANUAL_VAR);
+    match output {
         // Our stdout is the affected labels: the planning's goes to stderr.
-        .stdout(std::process::Stdio::from(
-            std::io::stderr()
-                .as_fd()
-                .try_clone_to_owned()
-                .map_err(|error| error.to_string())?,
-        ));
+        Output::Live => {
+            command.stdout(std::process::Stdio::from(
+                std::io::stderr()
+                    .as_fd()
+                    .try_clone_to_owned()
+                    .map_err(|error| error.to_string())?,
+            ));
+        }
+        Output::Captured => {
+            let file = std::fs::File::create(&log)
+                .map_err(|error| format!("cannot create {}: {error}", log.display()))?;
+            let stderr = file
+                .try_clone()
+                .map_err(|error| format!("cannot clone {}: {error}", log.display()))?;
+            command.stdout(file).stderr(stderr);
+        }
+    }
     if let Some(scope) = scope {
         command.env(SCOPE_VAR, scope.spec);
     }
@@ -1148,6 +1181,7 @@ fn start_plan(
         workspace: workspace.to_path_buf(),
         out: out.to_path_buf(),
         scoped: scope.is_some(),
+        log: (output == Output::Captured).then_some(log),
     })
 }
 
@@ -1167,7 +1201,21 @@ impl Running {
             .child
             .wait()
             .map_err(|error| format!("cannot wait for the planning: {error}"))?;
-        eprintln!(
+        if let Some(log) = &self.log {
+            // The captured output, in one write ([`Output::Captured`]).
+            match std::fs::read(log) {
+                Ok(bytes) => {
+                    let _ = std::io::stderr().lock().write_all(&bytes);
+                    let _ = std::fs::remove_file(log);
+                }
+                Err(error) => crate::eprint_line!(
+                    "bazel-rs affected: cannot read the output of the planning in {} ({}): {error}",
+                    self.workspace.display(),
+                    log.display()
+                ),
+            }
+        }
+        crate::eprint_line!(
             "bazel-rs affected: planned {} in {:.1} s (exit {})",
             self.workspace.display(),
             self.started.elapsed().as_secs_f64(),
@@ -1249,7 +1297,16 @@ fn plan(
     out: &Path,
     scope: Option<&ScopeRequest<'_>>,
 ) -> Result<Planned, String> {
-    start_plan(binary, startup, options, workspace, out, scope)?.finish()
+    start_plan(
+        binary,
+        startup,
+        options,
+        workspace,
+        out,
+        scope,
+        Output::Live,
+    )?
+    .finish()
 }
 
 /// The identity of what a digests file holds besides its commit: this
@@ -1498,7 +1555,7 @@ fn auto_concurrent() -> bool {
     match available {
         Some(available) if available >= needed => true,
         Some(available) => {
-            eprintln!(
+            crate::eprint_line!(
                 "bazel-rs affected: planning the revisions one after the other ({available} MB available, {needed} MB for both at once)"
             );
             false
@@ -1622,7 +1679,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 )?;
                 if classified.global.is_empty() {
                     let (files, packages, bzl, roots) = classified.counts;
-                    eprintln!(
+                    crate::eprint_line!(
                         "bazel-rs affected: local change ({files} file(s), {packages} package(s) with rule changes, {bzl} .bzl file(s); {roots} configuration root(s)): scoped analysis"
                     );
                     std::fs::write(
@@ -1633,21 +1690,21 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                     true
                 } else {
                     for reason in classified.global.iter().take(10) {
-                        eprintln!("bazel-rs affected: global change: {reason}");
+                        crate::eprint_line!("bazel-rs affected: global change: {reason}");
                     }
                     if classified.global.len() > 10 {
-                        eprintln!(
+                        crate::eprint_line!(
                             "bazel-rs affected: ... and {} more global change(s)",
                             classified.global.len() - 10
                         );
                     }
-                    eprintln!("bazel-rs affected: full analysis of both revisions");
+                    crate::eprint_line!("bazel-rs affected: full analysis of both revisions");
                     false
                 }
             }
             Some(_) => false,
             None => {
-                eprintln!(
+                crate::eprint_line!(
                     "bazel-rs affected: the working copy has changes: full analysis, planned in place"
                 );
                 false
@@ -1675,11 +1732,13 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                                   name: &str,
                                   error: String|
          -> Result<(Planned, bool), String> {
-            eprintln!("bazel-rs affected: {name}: scoped planning failed ({error}): once more");
+            crate::eprint_line!(
+                "bazel-rs affected: {name}: scoped planning failed ({error}): once more"
+            );
             if let Ok(planned) = plan(binary, startup, &options, workspace, out, Some(&restrict)) {
                 return Ok((planned, false));
             }
-            eprintln!(
+            crate::eprint_line!(
                 "bazel-rs affected: {name}: scoped planning failed again: planning it entirely"
             );
             plan(binary, startup, &options, workspace, out, Some(&report))
@@ -1716,7 +1775,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                     if file.meta.get("commit") == Some(&base_commit)
                         && file.meta.get("key") == key.as_ref() =>
                 {
-                    eprintln!(
+                    crate::eprint_line!(
                         "bazel-rs affected: base digests from {} ({} targets)",
                         path.display(),
                         file.digests.len()
@@ -1727,7 +1786,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                     })
                 }
                 Ok(file) => {
-                    eprintln!(
+                    crate::eprint_line!(
                         "bazel-rs affected: {} does not hold this base (commit {}, key {}): planning the base",
                         path.display(),
                         file.meta.get("commit").map_or("none", String::as_str),
@@ -1738,7 +1797,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                     None
                 }
                 Err(error) => {
-                    eprintln!("bazel-rs affected: {error}: planning the base");
+                    crate::eprint_line!("bazel-rs affected: {error}: planning the base");
                     None
                 }
             },
@@ -1755,7 +1814,9 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                     "base {base_commit}: {error} (--base_failure=all: report every target of the head instead)"
                 ));
             }
-            eprintln!("bazel-rs affected: {error}: every target of the head revision is affected");
+            crate::eprint_line!(
+                "bazel-rs affected: {error}: every target of the head revision is affected"
+            );
             Ok(None)
         };
         // Both revisions at once: as asked, else (auto) for a local change
@@ -1816,7 +1877,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                     let debug = std::env::var_os(KEY_DEBUG_VAR).is_some_and(|value| value == "1");
                     if debug {
                         for part in &environment.parts {
-                            eprintln!("bazel-rs affected: key: environment: {part}");
+                            crate::eprint_line!("bazel-rs affected: key: environment: {part}");
                         }
                     }
                     let environment = environment.key;
@@ -1837,7 +1898,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                     );
                     if debug {
                         for part in parts {
-                            eprintln!("bazel-rs affected: key: base: {part}");
+                            crate::eprint_line!("bazel-rs affected: key: base: {part}");
                         }
                     }
                     Some(RemoteBase {
@@ -1849,7 +1910,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 }
                 Ok(_) => None,
                 Err(error) => {
-                    eprintln!(
+                    crate::eprint_line!(
                         "bazel-rs affected: remote digests unavailable ({error}): planning the base"
                     );
                     None
@@ -1872,20 +1933,22 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             ) {
                 Ok(response) => {
                     if response.malformed > 0 {
-                        eprintln!(
+                        crate::eprint_line!(
                             "bazel-rs affected: {} malformed remote base digest(s) ignored",
                             response.malformed
                         );
                     }
                     if let Some(error) = &response.error {
-                        eprintln!(
+                        crate::eprint_line!(
                             "bazel-rs affected: remote base digests: {error} (the rest is analysed)"
                         );
                     }
                     response.hits
                 }
                 Err(error) => {
-                    eprintln!("bazel-rs affected: remote base digests unavailable ({error})");
+                    crate::eprint_line!(
+                        "bazel-rs affected: remote base digests unavailable ({error})"
+                    );
                     BTreeMap::new()
                 }
             }
@@ -1919,15 +1982,17 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             match helper.run(&format!("upload-{what}"), "upload", key, puts) {
                 Ok(response) => {
                     if let Some(error) = &response.error {
-                        eprintln!("bazel-rs affected: remote {what} digests: {error}");
+                        crate::eprint_line!("bazel-rs affected: remote {what} digests: {error}");
                     }
-                    eprintln!(
+                    crate::eprint_line!(
                         "bazel-rs affected: {what} digests: wrote {} of {count} to the remote cache",
                         response.stored
                     );
                 }
                 Err(error) => {
-                    eprintln!("bazel-rs affected: remote {what} digests not written ({error})")
+                    crate::eprint_line!(
+                        "bazel-rs affected: remote {what} digests not written ({error})"
+                    )
                 }
             }
         };
@@ -1960,33 +2025,36 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             // scope too when the change is local: a root reaching it there
             // still makes everything the scope).
             let base_spec = keep.join("base-only.spec");
-            let start_base =
-                |asked: &std::collections::BTreeSet<String>| -> Result<Running, String> {
-                    let mut text = if scoped {
-                        std::fs::read_to_string(&spec_path).map_err(|error| error.to_string())?
-                    } else {
-                        format!("{SCOPE_HEADER}\nmode\tonly\n")
-                    };
-                    for label in asked {
-                        text.push_str(&format!("only\t{label}\n"));
-                    }
-                    std::fs::write(&base_spec, text).map_err(|error| {
-                        format!("cannot write {}: {error}", base_spec.display())
-                    })?;
-                    checkout(&top, &worktree, &base_commit)?;
-                    start_plan(
-                        binary,
-                        startup,
-                        &options,
-                        &base_workspace,
-                        &base_out,
-                        Some(&ScopeRequest { spec: &base_spec }),
-                    )
+            let start_base = |asked: &std::collections::BTreeSet<String>,
+                              output: Output|
+             -> Result<Running, String> {
+                let mut text = if scoped {
+                    std::fs::read_to_string(&spec_path).map_err(|error| error.to_string())?
+                } else {
+                    format!("{SCOPE_HEADER}\nmode\tonly\n")
                 };
+                for label in asked {
+                    text.push_str(&format!("only\t{label}\n"));
+                }
+                std::fs::write(&base_spec, text)
+                    .map_err(|error| format!("cannot write {}: {error}", base_spec.display()))?;
+                checkout(&top, &worktree, &base_commit)?;
+                start_plan(
+                    binary,
+                    startup,
+                    &options,
+                    &base_workspace,
+                    &base_out,
+                    Some(&ScopeRequest { spec: &base_spec }),
+                    output,
+                )
+            };
             // A base planning of `asked` that failed: once more, then
             // entirely (its scope reported).
             let base_after_failure = |error: String| -> Result<(Planned, bool), String> {
-                eprintln!("bazel-rs affected: base: planning failed ({error}): once more");
+                crate::eprint_line!(
+                    "bazel-rs affected: base: planning failed ({error}): once more"
+                );
                 if let Ok(planned) = plan(
                     binary,
                     startup,
@@ -1997,7 +2065,9 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 ) {
                     return Ok((planned, false));
                 }
-                eprintln!("bazel-rs affected: base: planning failed again: planning it entirely");
+                crate::eprint_line!(
+                    "bazel-rs affected: base: planning failed again: planning it entirely"
+                );
                 plan(
                     binary,
                     startup,
@@ -2008,6 +2078,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 )
                 .map(|planned| (planned, true))
             };
+            // Captured when the base may start beside it.
             let mut head_run = start_plan(
                 binary,
                 startup,
@@ -2015,6 +2086,11 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 &head_workspace,
                 &head_out,
                 head_scope,
+                if concurrent && head_scope.is_some() {
+                    Output::Captured
+                } else {
+                    Output::Live
+                },
             )?;
             // The head's scope, as soon as its target pattern phase is
             // over: looked up then, and the base started at once when both
@@ -2033,8 +2109,10 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                         .filter(|label| !hits.contains_key(label))
                         .collect();
                     if concurrent && !missing.is_empty() {
-                        eprintln!("bazel-rs affected: planning both revisions concurrently");
-                        match start_base(&missing) {
+                        crate::eprint_line!(
+                            "bazel-rs affected: planning both revisions concurrently"
+                        );
+                        match start_base(&missing, Output::Captured) {
                             Ok(running) => early = Some((running, missing)),
                             Err(error) => {
                                 let _ = head_run.child.kill();
@@ -2079,7 +2157,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 .filter(|label| !hits.contains_key(*label))
                 .cloned()
                 .collect();
-            eprintln!(
+            crate::eprint_line!(
                 "bazel-rs affected: base digests: {} of {} from the remote cache",
                 labels.len() - missing.len(),
                 labels.len()
@@ -2104,7 +2182,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                     asked,
                 ))
             } else if !missing.is_empty() {
-                let result = start_base(&missing)
+                let result = start_base(&missing, Output::Live)
                     .and_then(Running::finish)
                     .map(|planned| (planned, false))
                     .or_else(base_after_failure);
@@ -2126,7 +2204,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                     if let Scope::Full(reason) = &planned.scope {
                         // A root reaching the change at the base: the base
                         // planned everything, and so is the head.
-                        eprintln!("bazel-rs affected: base: full analysis: {reason}");
+                        crate::eprint_line!("bazel-rs affected: base: full analysis: {reason}");
                         if restricted(head_scope) && matches!(head.scope, Scope::Scoped(_)) {
                             head = plan_revision(&head_tree, head_at, "head", None)?.0;
                         }
@@ -2176,7 +2254,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 }
                 None => root.clone(),
             };
-            eprintln!("bazel-rs affected: planning both revisions concurrently");
+            crate::eprint_line!("bazel-rs affected: planning both revisions concurrently");
             let mut base_run = start_plan(
                 binary,
                 startup,
@@ -2184,6 +2262,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 &worktree.join(&below),
                 &keep.join("base.digests"),
                 base_scope,
+                Output::Captured,
             );
             // The head starts once the base selected its targets: the base
             // is then past module resolution and loading, and ahead in the
@@ -2201,6 +2280,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 &head_workspace,
                 &keep.join("head.digests"),
                 head_scope,
+                Output::Captured,
             );
             let base_result = base_run.and_then(Running::finish);
             let head_result = head_run.and_then(Running::finish);
@@ -2239,7 +2319,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                     }),
                     Scope::Scoped(_),
                 ) if restricted(head_scope) => {
-                    eprintln!("bazel-rs affected: base: full analysis: {reason}");
+                    crate::eprint_line!("bazel-rs affected: base: full analysis: {reason}");
                     plan_revision(&head_tree, head_at, "head", None)?.0
                 }
                 _ => head,
@@ -2271,7 +2351,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
                 ..
             }) = &base_planned
             {
-                eprintln!("bazel-rs affected: base: full analysis: {reason}");
+                crate::eprint_line!("bazel-rs affected: base: full analysis: {reason}");
             }
             let head_scope = if !scoped || base_full {
                 None
@@ -2296,7 +2376,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             (base_planned, head)
         };
         if let Scope::Full(reason) = &head.scope {
-            eprintln!("bazel-rs affected: head: full analysis: {reason}");
+            crate::eprint_line!("bazel-rs affected: head: full analysis: {reason}");
             // The base was restricted to a scope the head does not confirm:
             // plan it entirely.
             if !from_file
@@ -2345,9 +2425,9 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             );
             if std::env::var_os(KEY_DEBUG_VAR).is_some_and(|value| value == "1") {
                 if let Some(host) = environment.parts.first() {
-                    eprintln!("bazel-rs affected: key: head: {host}");
+                    crate::eprint_line!("bazel-rs affected: key: head: {host}");
                 }
-                eprintln!("bazel-rs affected: key: head: tree {tree} key {key}");
+                crate::eprint_line!("bazel-rs affected: key: head: tree {tree} key {key}");
             }
             let asked = match &head.scope {
                 Scope::Scoped(scope) => scope
@@ -2362,7 +2442,7 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
         if let (Some(path), Some(commit), Some(key)) = (&options.write_digests, &head_commit, &key)
         {
             write_digests_file(path, commit, key, &head.digests)?;
-            eprintln!(
+            crate::eprint_line!(
                 "bazel-rs affected: wrote {} digests to {}",
                 head.digests.len(),
                 path.display()
@@ -2399,12 +2479,12 @@ pub fn run(binary: &Path, startup: &[String], args: &[String]) -> Result<i32, St
             if let Some(why) = why {
                 count += 1;
                 if options.explain {
-                    eprintln!("bazel-rs affected: {label}: {why}");
+                    crate::eprint_line!("bazel-rs affected: {label}: {why}");
                 }
                 writeln!(stdout, "{}", display(label)).map_err(|error| error.to_string())?;
             }
         }
-        eprintln!(
+        crate::eprint_line!(
             "bazel-rs affected: {count} of {compared} compared target(s) affected in {:.1} s",
             started.elapsed().as_secs_f64()
         );
