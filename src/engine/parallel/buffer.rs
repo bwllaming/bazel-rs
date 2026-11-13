@@ -381,7 +381,7 @@ const KIND_UNCLASSIFIED: u8 = 3;
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL buffer`).
 static STATS: [AtomicU64; STAT_NAMES.len()] = [const { AtomicU64::new(0) }; STAT_NAMES.len()];
-const STAT_NAMES: [&str; 23] = [
+const STAT_NAMES: [&str; 26] = [
     "starlark",
     "native",
     "turn",
@@ -405,6 +405,9 @@ const STAT_NAMES: [&str; 23] = [
     "failed_fast",
     "early_rss_skipped",
     "in_phase_walks",
+    "keep_going_skipped",
+    "keep_going_failed",
+    "keep_going_withdrawn",
 ];
 const S_STARLARK: usize = 0;
 const S_NATIVE: usize = 1;
@@ -432,6 +435,11 @@ const S_FAILED_FAST: usize = 20;
 /// Task D: early boards not started for the RSS bound; in-phase walks.
 const S_EARLY_RSS: usize = 21;
 const S_IN_PHASE_WALKS: usize = 22;
+/// `--keep_going`: entries skipped at their turn (a dependency failed),
+/// failed at their merge, and those whose published results were withdrawn.
+const S_KEEP_GOING_SKIPPED: usize = 23;
+const S_KEEP_GOING_FAILED: usize = 24;
+const S_KEEP_GOING_WITHDRAWN: usize = 25;
 
 /// Task D: an in-phase walk ran (`PERF-PARALLEL buffer`).
 pub(in crate::engine) fn count_in_phase_walk() {
@@ -1370,6 +1378,54 @@ impl Board {
         }
     }
 
+    /// `--keep_going`: entry `index` is skipped at its turn (a dependency
+    /// failed): a queued or idle job never runs; a running one is waited
+    /// for (what it published is withdrawn after it). Whether its job
+    /// ran.
+    fn claim_skipped(self: &Arc<Self>, index: usize) -> bool {
+        let Some(slot) = self.slot(index) else {
+            return false;
+        };
+        loop {
+            match self.stage[slot].load(Ordering::Acquire) {
+                stage @ (IDLE | QUEUED) => {
+                    if self.stage[slot]
+                        .compare_exchange(stage, CLAIMED, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        return false;
+                    }
+                }
+                CLASSIFYING => std::thread::yield_now(),
+                RUNNING | DONE => {
+                    let mut done = self.finished.lock().unwrap_or_else(|e| e.into_inner());
+                    let finished = loop {
+                        if let Some(finished) = done.remove(&index) {
+                            break Some(finished);
+                        }
+                        // An aspect job queued again (Board::wait_for).
+                        if self.stage[slot].load(Ordering::Acquire) == IDLE {
+                            break None;
+                        }
+                        done = self
+                            .finished_cv
+                            .wait_timeout(done, std::time::Duration::from_secs(10))
+                            .unwrap_or_else(|e| e.into_inner())
+                            .0;
+                    };
+                    drop(done);
+                    let Some(finished) = finished else {
+                        continue;
+                    };
+                    self.stage[slot].store(CLAIMED, Ordering::Release);
+                    drop(finished);
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+    }
+
     /// The cursor's entry `index`: its finished job (waited for, or run
     /// here when still queued), or none (at its turn).
     fn claim(self: &Arc<Self>, index: usize) -> Claimed {
@@ -2240,6 +2296,26 @@ impl Engine {
             // The window follows the cursor.
             board.cursor.store(index, Ordering::Release);
             board.release();
+            if self.keep_going && self.keep_going_state.dependency_failed(&key) {
+                // --keep_going: skipped before its implementation, as the
+                // walk does (docs/KEEP_GOING.md); what a job of it held is
+                // dropped, what it published withdrawn.
+                let ran = board.claim_skipped(index);
+                for effects in board.take_stash(index) {
+                    effects.apply(self, false);
+                }
+                board
+                    .panics
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&index);
+                if ran {
+                    self.keep_going_withdraw(state, board, &key, index);
+                }
+                self.keep_going_state.fail_propagated(&key);
+                stat(S_KEEP_GOING_SKIPPED, 1);
+                continue;
+            }
             // An entry not classified yet: classified here (its job, if
             // ready, is then the cursor's own).
             board.classify_entry(index);
@@ -2357,6 +2433,20 @@ impl Engine {
             };
             // Fail fast: the first error in plan order is the walk's; the
             // later entries' jobs held their effects, never applied.
+            // --keep_going: the entry's own failure (its dependents are
+            // skipped at their turns); what its job published withdrawn.
+            if self.keep_going {
+                if let Err(error) = result {
+                    if published {
+                        self.keep_going_withdraw(state, board, &key, index);
+                    }
+                    self.keep_going_state.fail_own(&key, error);
+                    stat(S_KEEP_GOING_FAILED, 1);
+                    board.frozen.results.publish_declared(state, self);
+                    continue;
+                }
+                self.keep_going_state.planned(&key);
+            }
             result?;
             {
                 let _split = frozen::Split::enter(19);
@@ -2397,6 +2487,25 @@ impl Engine {
         }
         self.flush_delegations(state);
         Ok(())
+    }
+
+    /// `--keep_going`: entry `index` (`key`) failed or was skipped at its
+    /// turn after its job published results: they are withdrawn (its
+    /// published results and provisional registrations), as the walk never
+    /// registers a failed target's outputs.
+    fn keep_going_withdraw(
+        &mut self,
+        state: &ActionPlanning,
+        board: &Arc<Board>,
+        key: &ConfiguredTargetKey,
+        index: usize,
+    ) {
+        stat(S_KEEP_GOING_WITHDRAWN, 1);
+        board.frozen.results.withdraw(key);
+        state
+            .artifact_index
+            .shared
+            .withdraw(u32::try_from(index).unwrap_or(u32::MAX - 1));
     }
 
     /// BAZEL_RS_ANALYSIS_ORDER=genuine: the walk ends with the confirmed

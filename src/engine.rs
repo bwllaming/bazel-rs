@@ -1143,6 +1143,21 @@ impl ConcurrentArtifactIndex {
         })
     }
 
+    /// `--keep_going`: the provisional entries published by plan entry
+    /// `stamp`, which failed or was skipped at its turn, are withdrawn (the
+    /// walk never registers a failed target's outputs; a later entry
+    /// sharing such a path registers it as its own). Their readers are
+    /// dependents of the entry (skipped too) or check their reads at their
+    /// merge (a read of an entry gone differs).
+    fn withdraw(&self, stamp: u32) {
+        for shard in self.shards.iter() {
+            shard
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|entry| !(entry.provisional && entry.stamp == stamp));
+        }
+    }
+
     fn len(&self) -> usize {
         self.shards
             .iter()

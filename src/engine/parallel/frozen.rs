@@ -55,6 +55,21 @@ pub(super) fn walk_min() -> Option<usize> {
     }
 }
 
+/// `--keep_going`'s pass-2 walks are frozen walks through the merge buffer
+/// ([`Engine::keep_going_buffered`]) unless
+/// `BAZEL_RS_EVAL_KEEP_GOING_FROZEN=0` (the pipeline at the turn, as the
+/// walk engine).
+pub(super) fn keep_going_frozen() -> bool {
+    static ENABLED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling switch; the output is the same either way.
+        std::env::var("BAZEL_RS_EVAL_KEEP_GOING_FROZEN")
+            .ok()
+            .or(option_env!("BAZEL_RS_DEFAULT_EVAL_KEEP_GOING_FROZEN").map(str::to_owned))
+            .is_some_and(|value| value == "1")
+    });
+    *ENABLED
+}
+
 /// What the analysis workers' prepares read during one walk.
 pub(in crate::engine) struct Frozen {
     pub(in crate::engine) engine: Engine,
@@ -229,6 +244,15 @@ impl PlannedResults {
             .unwrap_or_else(|e| e.into_inner())
             .get(key)
             .cloned()
+    }
+
+    /// `--keep_going`: `key` failed or was skipped at its turn: what its
+    /// job published is no one's result (its dependents are skipped).
+    pub(in crate::engine) fn withdraw(&self, key: &ConfiguredTargetKey) {
+        self.key_shard(key)
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(key);
     }
 
     /// Copy `key`'s entries from the planning state (it committed).
@@ -494,7 +518,25 @@ impl Engine {
     /// ([`FrozenOutcome::accesses`]), replayed in the entry's planning
     /// frame at its turn in the coordinator's scopes.
     pub(super) fn frozen_prepares(&self, state: &ActionPlanning) -> bool {
-        self.eval_async_phase2 && self.commits_ahead(state) && shared_prepares() && enabled()
+        self.eval_async_phase2
+            && (self.commits_ahead(state) || self.keep_going_buffered())
+            && shared_prepares()
+            && enabled()
+    }
+
+    /// `--keep_going`: a frozen walk through the merge buffer
+    /// ([`keep_going_frozen`]). The buffer merges in plan order only (no
+    /// commit ahead of the turn), so the cursor decides every keep-going
+    /// skip and failure at the entry's turn, as the walk does; its
+    /// lowerings are not deferred (a failing lowering fails its entry
+    /// there: the workers' deltas lower in their jobs).
+    pub(super) fn keep_going_buffered(&self) -> bool {
+        self.keep_going
+            && keep_going_frozen()
+            && super::buffer::enabled()
+            && !self.semantic_only()
+            && self.aquery_capture.is_none()
+            && commit_ahead_enabled()
     }
 
     /// The frozen view of a walk starting now; the planning state's memos

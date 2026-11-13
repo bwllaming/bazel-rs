@@ -1457,3 +1457,234 @@ w(
         );
     }
 }
+
+/// `--keep_going` walks through the merge buffer (frozen, its jobs ahead of
+/// the cursor; `BAZEL_RS_EVAL_KEEP_GOING_FROZEN=1` until it is the
+/// default).
+const KEEP_GOING_FROZEN: (&str, &str) = ("BAZEL_RS_EVAL_KEEP_GOING_FROZEN", "1");
+
+/// The walk's `--keep_going` output, then the buffered evaluation's (its
+/// keep-going skips and failures decided at the cursor) at several thread
+/// counts, with jitter, restarts, a tiny window, the sweep's checks and
+/// the snapshot recording, compared byte for byte; one timed run checks
+/// the merge buffer walked and decided `expect` keep-going failures (own
+/// failures at a merge, skipped entries).
+fn compare_keep_going(ws: &Workspace, targets: &[&str], check: impl Fn(&str)) {
+    let mut args = vec!["--keep_going"];
+    args.extend(targets);
+    let walk = ws.build("walk", 1, &[], &args);
+    let text = stable(&walk);
+    assert!(!walk.status.success(), "{text}");
+    check(&text);
+    const KG: (&str, &str) = KEEP_GOING_FROZEN;
+    const RECORD: (&str, &str) = ("BAZEL_RS_SNAPSHOT", "on");
+    let runs: [(usize, &[(&str, &str)]); 17] = [
+        (1, &[FROZEN, KG]),
+        (2, &[FROZEN, KG]),
+        (8, &[FROZEN, KG]),
+        (32, &[FROZEN, KG]),
+        (32, &[FROZEN, KG, ("BAZEL_RS_ANALYSIS_JITTER", "5")]),
+        (8, &[FROZEN, KG, ("BAZEL_RS_EVAL_JITTER", "300")]),
+        (8, &[FROZEN, KG, ("BAZEL_RS_EVAL_RESTARTS", "5")]),
+        (8, &[FROZEN, KG, ("BAZEL_RS_T3_WINDOW", "3")]),
+        (32, &[FROZEN, KG, ("BAZEL_RS_T3_CLASSIFY_JITTER", "20000")]),
+        (8, &[FROZEN, KG, ("BAZEL_RS_VERIFY_DELTA", "1")]),
+        (8, &[FROZEN, KG, PARITY_VERIFY]),
+        (2, &[FROZEN, KG, REVERSE, PARITY_VERIFY]),
+        (32, &[FROZEN, KG, REVERSE, ("BAZEL_RS_EVAL_JITTER", "300")]),
+        (8, &[FROZEN, KG, REVERSE, ("BAZEL_RS_EVAL_RESTARTS", "5")]),
+        (8, &[FROZEN, KG, ("BAZEL_RS_EVAL_SWEEP", "0")]),
+        (8, &[FROZEN, KG, ASPECT_JOBS, REVERSE]),
+        // A snapshot miss records (a failed keep-going build never saves).
+        (8, &[FROZEN, KG, RECORD, ("BAZEL_RS_EVAL_JITTER", "300")]),
+    ];
+    for (threads, env) in runs {
+        let eval = ws.build("eval", threads, env, &args);
+        let what = format!("{args:?} at {threads} threads, {env:?}");
+        let got = stable(&eval);
+        assert_eq!(eval.status.code(), walk.status.code(), "{what}: {got}");
+        if got != text {
+            let first = got
+                .lines()
+                .zip(text.lines())
+                .position(|(a, b)| a != b)
+                .unwrap_or(0);
+            let window = |all: &str| {
+                all.lines()
+                    .skip(first.saturating_sub(2))
+                    .take(8)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            panic!(
+                "{what}: differs at line {first}\neval:\n{}\nwalk:\n{}",
+                window(&got),
+                window(&text)
+            );
+        }
+        assert_eq!(eval.stdout, walk.stdout, "{what}");
+    }
+    // The snapshot recording's walk too (its own scheduling).
+    let walk_recorded = ws.build("walk", 8, &[RECORD], &args);
+    assert_eq!(stable(&walk_recorded), text, "the walk while recording");
+    let timed = ws.build("eval", 8, &[FROZEN, KG, ("BAZEL_RS_TIMING", "1")], &args);
+    let timed = String::from_utf8_lossy(&timed.stderr);
+    let line = timed
+        .lines()
+        .find(|line| line.starts_with("PERF-PARALLEL buffer starlark="))
+        .unwrap_or_else(|| panic!("the merge buffer walked: {timed}"));
+    let count = |name: &str| -> u64 {
+        line.split_whitespace()
+            .find_map(|field| field.strip_prefix(name))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("no {name} in {line}"))
+    };
+    eprintln!("{line}");
+    assert!(count("walks=") > 0, "{line}");
+    assert!(
+        count("keep_going_failed=") + count("keep_going_skipped=") > 0,
+        "the cursor decided the keep-going failures: {line}"
+    );
+    // Without the switch: the pipeline at the turn (no buffered walk).
+    let off = ws.build(
+        "eval",
+        8,
+        &[
+            FROZEN,
+            ("BAZEL_RS_EVAL_KEEP_GOING_FROZEN", "0"),
+            ("BAZEL_RS_TIMING", "1"),
+        ],
+        &args,
+    );
+    assert_eq!(stable(&off), text, "the pipeline at the turn");
+}
+
+const KEEP_GOING_BZL: &str = r#"
+def _pair_impl(ctx):
+    print("pair %s" % ctx.label)
+    total = 0
+    for i in range(ctx.attr.work):
+        total += i * i
+    outs = []
+    for path, content in ctx.attr.writes.items():
+        out = ctx.actions.declare_file(path)
+        ctx.actions.write(out, content)
+        outs.append(out)
+    files = depset(outs, transitive = [dep[DefaultInfo].files for dep in ctx.attr.deps])
+    return [DefaultInfo(files = files)]
+
+pair = rule(
+    implementation = _pair_impl,
+    attrs = {
+        "writes": attr.string_dict(),
+        "deps": attr.label_list(),
+        "work": attr.int(default = 10),
+    },
+)
+"#;
+
+/// `--keep_going` through the merge buffer: a phase-2 failure of a
+/// dependency shared by several requested targets (heavy, so its
+/// dependents' siblings finish first), a phase-1 failure, a conflict whose
+/// loser has a reader, and an entry failing at its merge (a conflict on one
+/// output) after its job published another output that a later entry
+/// shares — the walk never registers the failed entry's outputs, so the
+/// later one's is its own — with a dependent of it whose job ran on what
+/// it published (skipped at its turn, its results withdrawn). Errors, warnings, prints and the action dump as
+/// the walk's.
+#[test]
+fn keep_going_skips_and_failures_are_decided_at_the_cursor() {
+    let ws = Workspace::new(&[
+        ("rules/kg.bzl", KEEP_GOING_BZL.to_owned()),
+        (
+            "k/BUILD.bazel",
+            r#"load("//rules:defs.bzl", "w")
+load("//rules:kg.bzl", "pair")
+w(name = "bad", fail = True, work = 300000)
+w(name = "ok1", work = 1000)
+w(name = "u1", deps = [":bad", ":ok1"])
+w(name = "u2", deps = [":bad"])
+w(name = "u3", deps = [":u2", ":ok1"])
+w(name = "late", deps = [":ok1"], work = 2000)
+w(name = "missing", deps = [":ok1", ":no_such_target"])
+w(name = "c1", out = "conf.txt", content = "one", work = 200000)
+w(name = "c2", out = "conf.txt", content = "two")
+w(name = "cr", deps = [":c2", ":late"])
+pair(name = "e1", writes = {"q.txt": "E"}, work = 200000)
+pair(name = "fa", writes = {"q.txt": "A", "p.txt": "same"})
+pair(name = "fb", writes = {"q2.txt": "B", "p.txt": "same"}, deps = [":late"])
+pair(name = "fc", writes = {"p.txt": "same"})
+pair(name = "fd", writes = {"d.txt": "D"}, deps = [":fa"])
+"#
+            .to_owned(),
+        ),
+    ]);
+    compare_keep_going(
+        &ws,
+        &[
+            "//k:u1",
+            "//k:ok1",
+            "//k:u2",
+            "//k:u3",
+            "//k:late",
+            "//k:missing",
+            "//k:c1",
+            "//k:c2",
+            "//k:cr",
+            "//k:e1",
+            "//k:fa",
+            "//k:fb",
+            "//k:fc",
+            "//k:fd",
+        ],
+        |text| {
+            assert!(text.contains("the implementation of bad failed"), "{text}");
+            assert!(text.contains("conflicting actions"), "{text}");
+            assert!(text.contains("no_such_target"), "{text}");
+            assert!(
+                text.contains("errors encountered while analyzing target '//k:u3'"),
+                "{text}"
+            );
+        },
+    );
+}
+
+/// `--keep_going` with an attribute aspect failing on one dependency: the
+/// lint targets above it are skipped at their turn, the others merge.
+#[test]
+fn keep_going_with_a_failing_aspect_through_the_merge_buffer() {
+    let mut build = String::from("load(\"//rules:aspects.bzl\", \"lib\", \"lint\")\n");
+    for index in 0..12 {
+        let deps = (0..index)
+            .filter(|dep| (index + dep) % 3 == 0 || dep + 1 == index)
+            .map(|dep| format!("\":l{dep}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        build.push_str(&format!("lib(name = \"l{index}\", deps = [{deps}])\n"));
+    }
+    build.push_str("lint(name = \"lint_a\", deps = [\":l5\", \":l11\"])\n");
+    build.push_str("lint(name = \"lint_b\", deps = [\":l9\"])\n");
+    build.push_str("lint(name = \"lint_c\", deps = [\":l11\", \":l2\"])\n");
+    build.push_str("lint(name = \"lint_d\", deps = [\":l3\"])\n");
+    let ws = Workspace::new(&[
+        (
+            "rules/aspects.bzl",
+            ASPECTS_BZL.replace("default = \"BOOM\"", "default = \"l7\""),
+        ),
+        ("a/BUILD.bazel", build),
+    ]);
+    compare_keep_going(
+        &ws,
+        &[
+            "//a:lint_a",
+            "//a:lint_b",
+            "//a:lint_c",
+            "//a:lint_d",
+            "//a:l11",
+        ],
+        |text| {
+            assert!(text.contains("the heavy aspect failed on l7"), "{text}");
+            assert!(text.contains("lint @@//a:lint_d"), "{text}");
+        },
+    );
+}
