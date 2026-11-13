@@ -8,11 +8,12 @@
 //! aspect's failure is its cause); a target above the carrier has it.
 //!
 //! Genuine receipt (Bazel 9.3.1, `bazel --batch --ignore_all_rc_files
-//! build --nobuild -k //x:x //x:y //x:z //x:l //x:w //x:r` on [`MODULE`],
+//! build --nobuild -k //x:x //x:y //x:z //x:l //x:w //x:r //x:y2` on [`MODULE`],
 //! [`ASP`], [`C_BUILD`], [`X_BUILD`], captured 2026-11-13, exit 1, stderr
-//! sha256 53994c3a74ad5f44…): the key lines in [`EXPECTED`] (sorted; Bazel
+//! sha256 200e22d52fccc41e…): the key lines in [`EXPECTED`] (sorted; Bazel
 //! prints the warnings in its error map's order). Genuine also prints one
-//! `ERROR: Loading failed` per failed aspect application (here two); the
+//! `ERROR: Loading failed` per carrier (here three: `//x:y2` shares
+//! `//x:x`'s application); the
 //! native engines report the failing dependency's own error once, as for
 //! any root cause (the divergence noted in docs/KEEP_GOING.md). Both
 //! engines are compared with it, the evaluator also with every pass-2 walk
@@ -75,19 +76,23 @@ user(name = "y", deps = [":m"])
 lib(name = "z")
 lib(name = "w", deps = ["//c:t"])
 lib(name = "r", deps = [":x", ":z"])
+user(name = "y2", deps = [":l"])
 "#;
 
-const TARGETS: &[&str] = &["//x:x", "//x:y", "//x:z", "//x:l", "//x:w", "//x:r"];
+const TARGETS: &[&str] = &[
+    "//x:x", "//x:y", "//x:z", "//x:l", "//x:w", "//x:r", "//x:y2",
+];
 
 /// The genuine run's key stderr lines, sorted.
 const EXPECTED: &[&str] = &[
     "ERROR: Build did NOT complete successfully",
     "ERROR: command succeeded, but not all targets were analyzed",
-    "INFO: Analysis succeeded for only 2 of 6 top-level targets",
+    "INFO: Analysis succeeded for only 2 of 7 top-level targets",
     "WARNING: errors encountered while analyzing target '//x:r', it will not be built. / Analysis failed",
     "WARNING: errors encountered while analyzing target '//x:w', it will not be built. / Analysis failed",
     "WARNING: errors encountered while analyzing target '//x:x', it will not be built.",
     "WARNING: errors encountered while analyzing target '//x:y', it will not be built.",
+    "WARNING: errors encountered while analyzing target '//x:y2', it will not be built.",
 ];
 
 fn key_lines(stderr: &str) -> Vec<String> {

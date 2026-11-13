@@ -773,8 +773,14 @@ change announced to the other two workers; adding a helper is not.
   `Engine::check_keep_going_reads`; `PlannedResults::{withdraw,
   withdraw_declared}`, `ConcurrentArtifactIndex::withdraw(stamp)`,
   `Declared::remove`, `SingleFlight::remove_where`,
-  `keep_going::State::is_failed`, `AspectRecord::reads` (checked by
-  `place_aspects` under `--keep_going`); `PERF-PARALLEL buffer`
+  `keep_going::State::is_failed`, `AspectRecord::reads` and
+  `AspectTable::helper_reads` (what a job's walks ahead read; both checked
+  by `place_aspects` under `--keep_going`); `Host::keep_going_aspect_owner`
+  (default no-op; the walk's), `keep_going::State::{aspect_owners,
+  mark_aspect_edge}`, `Linearized::aspect_edges` and
+  `Pass1::take_keep_going -> KeepGoingEdges` (an attribute aspect's own
+  dependencies are its rule's keep-going edges); `Engine::merge_delta`
+  drops a failing delta's ops under `--keep_going`; `PERF-PARALLEL buffer`
   `keep_going_{skipped,failed,withdrawn}`, `PERF-PARALLEL aspect_jobs`
   `keep_going_fallbacks`. eval-speed: the cursor's loop
   (`buffered_walk`) checks `keep_going_state.dependency_failed` before it

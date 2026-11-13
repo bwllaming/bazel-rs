@@ -64,7 +64,7 @@ SkyframeErrorProcessor.processAnalysisErrors under keepGoing
   dependency failed. A requested target failing only through them has no
   `Analysis failed` line (genuine 9.3.1, `tests/keep_going_aspect_dependency.rs`);
   a target above it has. **Divergence:** Bazel also prints one
-  `ERROR: Loading failed` per failed aspect application (its
+  `ERROR: Loading failed` per such carrier (the aspect's
   AspectCreationException); natively the failing dependency's own error is
   the one root cause printed;
 * on the parallel analysis evaluator, phase 2 runs in its frozen walks
