@@ -1,7 +1,8 @@
 # Releasing bazel-rs
 
 Binary releases are GitHub releases of
-[bwllaming/bazel-rs](https://github.com/bwllaming/bazel-rs) (private), tagged
+[bwllaming/bazel-rs](https://github.com/bwllaming/bazel-rs) (public: the
+assets download without authentication), tagged
 `v<version>` with the version of `Cargo.toml`. bazel-rs is licensed under
 Apache-2.0 (`LICENSE`, `NOTICE`).
 
@@ -66,13 +67,13 @@ One concurrency group per tag (never cancelled). Two stages:
 
   | Matrix entry | Runner | Targets |
   |---|---|---|
-  | `linux-x86_64` | `self-hosted` (the organisation's x86_64 Linux runners; the glibc archive needs their glibc or newer, printed by the job's "Build machine" step) | `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl` |
-  | `linux-arm64` | `ubuntu-24.04-arm` (GitHub-hosted arm64, also for private repositories; there is no self-hosted arm64 runner) | `aarch64-unknown-linux-musl` |
+  | `linux-x86_64` | `ubuntu-24.04` (GitHub-hosted x86_64; glibc 2.39, so the glibc archive needs glibc ≥ 2.39 — printed by the job's "Build machine" step) | `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl` |
+  | `linux-arm64` | `ubuntu-24.04-arm` (GitHub-hosted arm64) | `aarch64-unknown-linux-musl` |
 
   `fail-fast`, timeout 75 minutes, `permissions: contents: read`: check out
   the tag with full history (`fetch-depth: 0`); install the toolchain of
-  `rust-toolchain.toml` with the entry's targets (rustup itself if the image
-  lacks it); the pinned GitHub CLI if the runner lacks `gh`; zig via `scripts/setup-zig.sh` (cached on the script's hash and
+  `rust-toolchain.toml` with the entry's targets (rustup and `gh` are
+  preinstalled on the images); zig via `scripts/setup-zig.sh` (cached on the script's hash and
   the runner's architecture); `Swatinem/rust-cache` (keyed per matrix entry on
   `Cargo.lock`, `rust-toolchain.toml` and the rustc version); then
   `scripts/release.py --ci --stage build --smoke-network --target … --version
@@ -80,7 +81,7 @@ One concurrency group per tag (never cancelled). Two stages:
   preflight's "no such release yet" check). Its `dist/` — the archives, their
   `.sha256` files and one build record each — becomes the artifact
   `release-build-<entry>` (14 days).
-- **`publish`**, one job on a self-hosted runner after every build job succeeded,
+- **`publish`**, one job on `ubuntu-24.04` after every build job succeeded,
   the only one with `permissions: contents: write`, timeout 30 minutes: check
   out the tag (full history, for the changelog), download every
   `release-build-*` artifact and run `scripts/release.py --ci --stage publish
@@ -138,7 +139,7 @@ command): a CI rehearsal in a scratch clone (see Tests).
 
 | Target | Default | Linking | Built with |
 |---|---|---|---|
-| `x86_64-unknown-linux-gnu` | yes | dynamic, glibc of the build host (≥ 2.39 when built on Ubuntu 24.04) | `cargo build --locked --release`, host `cc` |
+| `x86_64-unknown-linux-gnu` | yes | dynamic, glibc of the build host: the release is built on `ubuntu-24.04`, so it needs glibc ≥ 2.39 (Ubuntu 24.04, Debian 13 or newer); no glibc version suffix is pinned | `cargo build --locked --release`, host `cc` |
 | `x86_64-unknown-linux-musl` | yes | static-pie: musl libc, jemalloc, no shared library | `--target x86_64-unknown-linux-musl`, C code by `zig cc -target x86_64-linux-musl`, linked by the host `cc` with Rust's self-contained musl runtime |
 | `aarch64-unknown-linux-musl` | yes | static | as above with `zig cc -target aarch64-linux-musl`, linked by `rust-lld`, `JEMALLOC_SYS_WITH_LG_PAGE=16` (runs on 4/16/64 KiB page kernels); in CI natively on `ubuntu-24.04-arm`, locally also cross-built on x86_64 |
 
@@ -252,7 +253,8 @@ build: ~2 minutes) but enough for paired captures (docs/HOST_OS.md).
    was smoke-tested, sha256); requirements per archive (static: any
    distribution of the platform with Rust's minimum kernel — 3.2 on x86_64,
    4.1 on arm64; glibc: the version, e.g. Ubuntu 24.04 or newer); install
-   instructions for the static archive of the reader's machine
+   instructions (unauthenticated `curl` from the public download URL, then
+   `sha256sum -c`) for the static archive of the reader's machine
    (`bazel-rs-<version>-$(uname -m)-unknown-linux-musl`, or the one static
    archive's name);
    then the changes: for the first release the "Status" section of `PLAN.md`;

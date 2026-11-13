@@ -74,12 +74,15 @@ cold builds, each with fresh local state:
 
 It prints the remote cache hits and the cache traffic of each build.
 
-CI (`.github/workflows/ci.yml`, job `self-build`, self-hosted) downloads the
-newest release of this repository with `gh release download` and the job's
-`GITHUB_TOKEN`. It uses the static x86_64 archive and checks its `.sha256`. Then
-it runs `check` with that binary. The cache stays in
-`~/.cache/bazel-rs/self-build` on the runner. The comparison with genuine Bazel
-is local only.
+CI (`.github/workflows/ci.yml`, job `self-build`, GitHub-hosted `ubuntu-24.04`)
+finds the newest release of this repository (`gh release list`; the job's
+`GITHUB_TOKEN` only for the API rate limit) and downloads its static x86_64
+archive with `curl` from the public download URL, without authentication. It
+checks the `.sha256`, then runs `check` with that binary. The cache
+`~/.cache/bazel-rs/self-build` (without the `smoke/` scratch) comes from
+`actions/cache`, keyed on the release tag and the commit: pushes to `main`
+save it, pull requests only restore it. The comparison with genuine Bazel is
+local only.
 
 ## Integration tests
 

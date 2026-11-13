@@ -69,11 +69,12 @@ affected.
 ## Releases and license
 
 Linux x86_64 and Linux arm64 (aarch64) binaries are published as GitHub
-releases of `bwllaming/bazel-rs`
-(`gh release download v<version> --repo bwllaming/bazel-rs`): static
+releases of the public repository `bwllaming/bazel-rs`
+(`https://github.com/bwllaming/bazel-rs/releases/download/v<version>/<archive>`,
+no authentication needed): static
 `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` builds that run on
 any distribution and a `x86_64-unknown-linux-gnu` build that needs the glibc it
-was built against (each release's notes give the checksums, requirements and
+was built against (glibc ≥ 2.39: built on Ubuntu 24.04) (each release's notes give the checksums, requirements and
 install steps; from 0.2.0 on, arm64 after 0.2.0).
 
 Platform support: Linux x86_64 and Linux aarch64 (4, 16 or 64 KiB pages). Each
