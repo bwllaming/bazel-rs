@@ -761,6 +761,20 @@ change announced to the other two workers; adding a helper is not.
   `AspectTable::helper_sources`, `Board::spread`; `delta::SingleFlight`'s shards
   are `hashbrown::HashTable<(u64, K, Slot<V>)>` (same methods);
   `parallel::aspects::cheap` is `pub(super)`.
+- 2026-11-13 (eval-keepgoing-speed; no frozen interface changed):
+  `Engine::keep_going_buffered` (`--keep_going`'s pass-2 walks are frozen
+  walks through the merge buffer; `Engine::frozen_prepares` accepts them
+  beside `commits_ahead`; `BAZEL_RS_EVAL_KEEP_GOING_FROZEN=0` off);
+  `frozen_workers(threads, lowering)` (a quarter more workers when the
+  jobs lower their actions); the buffer's `Board::claim_skipped`,
+  `Board::streams` (genuine order without `--keep_going`: the job's console
+  written when it finishes — `run_job` no longer reads `eval::genuine`
+  itself), `Engine::keep_going_withdraw`; `PlannedResults::withdraw`,
+  `ConcurrentArtifactIndex::withdraw(stamp)`; `PERF-PARALLEL buffer`
+  `keep_going_{skipped,failed,withdrawn}`. eval-speed: the cursor's loop
+  (`buffered_walk`) checks `keep_going_state.dependency_failed` before it
+  classifies/claims an entry, and records a merge's error instead of
+  returning it under `--keep_going`.
 
 ## 4. Stages and gates
 
@@ -3385,9 +3399,8 @@ Identical: the stderr with the action dump (4,857,248 lines) of the
 injected run. The evaluator's phase 1 is done at 10.6 s (all 2,357
 flushes deferred); the deferred walks' phase 2 then takes 38 s: under
 `--keep_going` phase 2 neither commits ahead (P4) nor runs frozen walks
-(a failure must skip its dependents at its turn), on either engine — the
-next step (commit ahead what no failure can reach any more, and the
-sweep's skipped entries).
+(a failure must skip its dependents at its turn), on either engine — done
+since on the evaluator ("eval-keepgoing-speed" below).
 
 **cquery** (step 2). Every capture write of phase 1 is a body's op
 (`Event::CqueryEdge`, `Event::Cquery`: rules and incompatible targets,
@@ -3456,6 +3469,84 @@ planning code. Measured (~/code): `build --nobuild
 eval 21.0 s / 9.66 GB, the action dump (6,486,168 stderr lines) identical;
 `build --nobuild --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 --output_groups=clippy_checks //src/rust/...`: 8.3 / 8.0 s, identical.
+
+### eval-keepgoing-speed: `--keep_going`'s phase 2 through the merge buffer
+
+Under `--keep_going` the evaluator's pass-2 walks are frozen walks through
+the T3 merge buffer like any other (`Engine::keep_going_buffered`;
+`BAZEL_RS_EVAL_KEEP_GOING_FROZEN=0` walks on the pipeline at the turn, as
+before and as the walk engine does). The buffer never commits ahead of the
+turn — it merges in plan order —, so every keep-going decision is the
+cursor's, at the entry's turn, exactly where the walk makes it:
+
+- **Skips.** Before it classifies or claims entry `i`, the cursor asks
+  `keep_going_state.dependency_failed(key)` (the phase-1 edges; every
+  dependency merged or failed before, the plan being a post-order). A
+  skipped entry's job never runs if it is still idle or queued
+  (`Board::claim_skipped`: `IDLE`/`QUEUED -> CLAIMED`); a running one is
+  waited for. Its held console and effects are dropped (the walk never runs
+  a skipped implementation), its classification's lookups applied as an
+  at-turn entry's are. Its dependents are never readied by it (it publishes
+  nothing), so they come to their turns without jobs and are skipped there.
+- **Failures.** A merge's error (a prepare or implementation error a job
+  returned; a conflict, partial share or lowering failure found by the
+  cursor's rebuild of the delta — the walk's own commit code, so the walk's
+  partial state) is recorded as the entry's own (`fail_own`) and the walk
+  goes on; a success is `planned`. Errors are listed in that order, as the
+  walk's.
+- **Withdrawal.** A job may have published results before its entry fails
+  at its merge (a conflict found only there) or is skipped (a running job
+  waited for): its `PlannedResults` entry and the provisional index entries
+  stamped with its plan index are withdrawn (`PlannedResults::withdraw`,
+  `ConcurrentArtifactIndex::withdraw`). The walk never registers a failed
+  target's outputs, so a later entry sharing such an output registers it
+  as its own: its delta's shared outputs are localized by the sweep against
+  the producers (New, not Shared), a read of a withdrawn provisional entry
+  differs at its merge and is built again. Its readers through providers
+  are its dependents (skipped). The walk-end check that no provisional
+  entry is left holds.
+- **Lowerings** stay undeferred under `--keep_going` (a failing lowering
+  fails its entry at its turn): the workers' deltas lower their actions in
+  their jobs (no lowering pool in `SharedView`), the cursor's own commits
+  inline; the walks get a quarter more workers for it (16 → 20,
+  `frozen_workers`).
+- **Genuine order**: fail fast stays off under `--keep_going`, and the
+  buffer streams no job's console there (`Board::streams`): an entry
+  skipped at its turn whose job ran never prints; the console keeps the
+  plan order.
+
+Also: `keep_going::State`'s sets are FxHash-ed and `dependency_failed`
+answers at once while nothing failed; the plan tail's per-target action
+ids (`KeepGoingPlan::targets`, 6M top-level artifacts on ~/code) are sorted
+once per label instead of a `BTreeSet` per label (0.55 → 0.09 s, both
+engines).
+
+Tests: `eval_buffer::keep_going_skips_and_failures_are_decided_at_the_cursor`
+(a heavy phase-2 failure shared by several requested targets, a phase-1
+failure, a conflict whose loser has a reader, an entry failing at its merge
+after its job published an output a later entry shares, and a dependent
+whose job ran on it) and `keep_going_with_a_failing_aspect_through_the_merge_buffer`,
+each against the walk at 1/2/8/32 threads, with jitter, restarts, a window
+of 3, classification jitter, `VERIFY_DELTA`, `PARITY_VERIFY`/`REVERSE`, the
+sweep off, aspect jobs, the genuine order, a snapshot miss recording, and
+the switch off; `eval_keep_going` compares every case with all pass-2 walks
+frozen too. Found on the way (pre-existing, the walk's own, not changed): a
+conflict on an entry's *second* output leaves its first registered (the
+failed commit's partial state), and a later entry sharing that first output
+then fails planning with `missing producing action` — on both engines alike.
+
+Measured (2026-11-13, ~/code `80d6724f3a` private clone, non-LTO release,
+48 threads, warm, snapshot off, host load ~28; `build --nobuild`):
+
+| | before (main 82304c71) | after |
+|---|---|---|
+| `-k //src/...`, clean tree | 56.1 s, 9.43 GB | 18.1–19.3 s, 9.6–9.7 GB |
+| without `-k` (same session) | 17.7–18.0 s, 9.5 GB | unchanged |
+| `-k`, injected phase-1 (`utils/ptr`) + phase-2 (`utils/bwerrors`) failures, with the action dump | 71.4 s (walk 64–71 s) | 24.8 s |
+
+Identical walk vs eval: stderr with the action dump of `-k` on the clean
+tree (6,486,165 lines) and with the injected failures (4,857,255 lines: 2
+root causes, 926 skipped requested targets).
 
 ### Task D, the in-phase walks (eval-speed, round 4): measured, off
 

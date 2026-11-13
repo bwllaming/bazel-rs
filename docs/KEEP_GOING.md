@@ -57,6 +57,12 @@ SkyframeErrorProcessor.processAnalysisErrors under keepGoing
   tests/keep_going_flag_flush.rs). Another target's failure in the flush
   fails only what is above it;
 * top-level aspects: a failing application skips its requested label;
+* on the parallel analysis evaluator, phase 2 runs in its frozen walks
+  through the merge buffer (docs/EVALUATOR.md "eval-keepgoing-speed"):
+  rule implementations on workers ahead of the cursor, every skip and
+  failure decided at the entry's turn in plan order, as above (a skipped
+  entry's job never runs or is dropped; what a failed or skipped entry's
+  job published is withdrawn: its outputs are never registered);
 * each distinct root-cause error is printed once, `ERROR: <message>`,
   before execution, in the engine's sequential order;
 * each requested target that did not analyze gets
