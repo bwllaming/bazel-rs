@@ -820,19 +820,18 @@ fn invoke<'v>(
             "include() is unsupported until the resolver supplies include filesystem semantics"
         ),
         "Label" => bail!("Label() is unsupported in MODULE evaluation; use label strings"),
-        "inject_repo" | "override_repo" => {
-            // ModuleFileGlobals.overrideRepo/injectRepo (:723-728, :783-788) mark a
-            // non-module call and return early where dev dependencies are ignored:
-            // every non-root module (hermetic_launcher's inject_repo under
-            // rules_rs) and --ignore_dev_dependency. The root module's calls
-            // are recorded below.
+        // ModuleFileGlobals.overrideRepo/injectRepo (:723-728, :783-788) mark a
+        // non-module call and return early where dev dependencies are ignored:
+        // every non-root module (hermetic_launcher's inject_repo under
+        // rules_rs) and --ignore_dev_dependency. The root module's calls are
+        // recorded below.
+        "inject_repo" | "override_repo"
             if collector
                 .evaluation_context
-                .effective_ignore_dev_dependencies()
-            {
-                collector.state.borrow_mut().non_module_called = true;
-                return Ok(Value::new_none());
-            }
+                .effective_ignore_dev_dependencies() =>
+        {
+            collector.state.borrow_mut().non_module_called = true;
+            return Ok(Value::new_none());
         }
         _ => {}
     }
