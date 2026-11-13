@@ -615,7 +615,7 @@ class NotesTest(unittest.TestCase):
             f"| Commit | `{HEAD}` (2026-10-26T18:40:41+00:00) |",
             "| Compatibility target | Bazel 9.3.1 |",
             "glibc ≥ 2.39",
-            "gh release download v0.2.0 --repo o/r --pattern 'bazel-rs-0.2.0-x86_64-unknown-linux-gnu.tar.gz*'",
+            "curl -fLO https://github.com/o/r/releases/download/v0.2.0/bazel-rs-0.2.0-x86_64-unknown-linux-gnu.tar.gz -O https://github.com/o/r/releases/download/v0.2.0/bazel-rs-0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256",
             "sha256sum -c bazel-rs-0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256",
             "install -m 0755 bazel-rs-0.2.0-x86_64-unknown-linux-gnu/bazel-rs",
             "https://github.com/o/r/blob/v0.2.0/PLAN.md",
@@ -636,7 +636,7 @@ class NotesTest(unittest.TestCase):
             "prefer the static one",
             # The install steps pick this machine's static archive.
             "stem=bazel-rs-0.2.0-$(uname -m)-unknown-linux-musl   # x86_64 or aarch64",
-            'gh release download v0.2.0 --repo o/r --pattern "$stem.tar.gz*"',
+            'curl -fLO "https://github.com/o/r/releases/download/v0.2.0/$stem.tar.gz" -O "https://github.com/o/r/releases/download/v0.2.0/$stem.tar.gz.sha256"',
             'sha256sum -c "$stem.tar.gz.sha256"',
             'install -m 0755 "$stem/bazel-rs" ~/.local/bin/bazel-rs',
         ):
@@ -645,7 +645,7 @@ class NotesTest(unittest.TestCase):
         self.assertEqual(release.recommended_asset(self.info(self.ARM, self.GNU).assets).triple, "x86_64-unknown-linux-gnu")
         # One static archive: its explicit name.
         text = release.render_notes(self.info(self.GNU, self.MUSL), "")
-        self.assertIn("gh release download v0.2.0 --repo o/r --pattern 'bazel-rs-0.2.0-x86_64-unknown-linux-musl.tar.gz*'", text)
+        self.assertIn("curl -fLO https://github.com/o/r/releases/download/v0.2.0/bazel-rs-0.2.0-x86_64-unknown-linux-musl.tar.gz -O https://github.com/o/r/releases/download/v0.2.0/bazel-rs-0.2.0-x86_64-unknown-linux-musl.tar.gz.sha256", text)
         self.assertNotIn("uname", text)
 
     def test_recovery_commands(self):
@@ -1010,8 +1010,8 @@ class WorkflowTest(unittest.TestCase):
             'tags: ["v*"]',
             "workflow_dispatch:",
             "runs-on: ${{ matrix.runner }}",
-            # The publish job runs on the organisation's self-hosted runners.
-            "runs-on: self-hosted\n",
+            # The publish job runs on a GitHub-hosted runner.
+            "runs-on: ubuntu-24.04\n",
             "contents: write",
             "contents: read",
             "fetch-depth: 0",

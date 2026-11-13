@@ -65,10 +65,9 @@ class Target:
     static: bool
     default: bool
     # The runner label of the workflow's build job for this target
-    # (.github/workflows/release.yml matrix: the organisation's self-hosted
-    # x86_64 runners, GitHub-hosted arm64; native, so the smoke test runs the
-    # binary directly).
-    runner: str = "self-hosted"
+    # (.github/workflows/release.yml matrix: GitHub-hosted x86_64 and arm64
+    # runners; native, so the smoke test runs the binary directly).
+    runner: str = "ubuntu-24.04"
     # The `@platforms//cpu` value of a host running it (the network smoke
     # test checks the detected host platform).
     cpu: str = "x86_64"
@@ -1151,9 +1150,10 @@ def install_commands(info: NotesInfo, best: AssetInfo, stem: str) -> list[str]:
     or `best` when there is a single one."""
     tag = tag_name(info.version)
     linux_static = [a for a in info.assets if a.static and a.triple.endswith("-unknown-linux-musl")]
+    url = f"https://github.com/{info.gh_repo}/releases/download/{tag}"
     if len(linux_static) < 2:
         return [
-            f"gh release download {tag} --repo {info.gh_repo} --pattern '{best.archive}*'",
+            f"curl -fLO {url}/{best.archive} -O {url}/{best.archive}.sha256",
             f"sha256sum -c {best.archive}.sha256",
             f"tar xzf {best.archive}",
             f"install -m 0755 {stem}/bazel-rs ~/.local/bin/bazel-rs   # any directory on PATH",
@@ -1161,7 +1161,7 @@ def install_commands(info: NotesInfo, best: AssetInfo, stem: str) -> list[str]:
     machines = " or ".join(a.triple.removesuffix("-unknown-linux-musl") for a in linux_static)
     return [
         f"stem=bazel-rs-{info.version}-$(uname -m)-unknown-linux-musl   # {machines}",
-        f"gh release download {tag} --repo {info.gh_repo} --pattern \"$stem.tar.gz*\"",
+        f'curl -fLO "{url}/$stem.tar.gz" -O "{url}/$stem.tar.gz.sha256"',
         'sha256sum -c "$stem.tar.gz.sha256"',
         'tar xzf "$stem.tar.gz"',
         'install -m 0755 "$stem/bazel-rs" ~/.local/bin/bazel-rs   # any directory on PATH',
