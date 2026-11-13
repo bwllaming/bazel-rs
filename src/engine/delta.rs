@@ -39,8 +39,9 @@ pub(super) struct SingleFlight<K, V> {
     shards: Box<[std::sync::Mutex<MemoShard<K, V>>]>,
 }
 
-/// One shard of a [`SingleFlight`] memo.
-type MemoShard<K, V> = HashMap<K, Slot<V>, crate::fast_hash::FxBuildHasher>;
+/// One shard of a [`SingleFlight`] memo: each entry with its key's hash
+/// (hashed once per use: the shard is picked by the same hash).
+type MemoShard<K, V> = hashbrown::HashTable<(u64, K, Slot<V>)>;
 
 impl<K, V> Default for SingleFlight<K, V> {
     fn default() -> Self {
@@ -51,53 +52,64 @@ impl<K, V> Default for SingleFlight<K, V> {
 }
 
 impl<K: std::hash::Hash + Eq + Clone, V> SingleFlight<K, V> {
-    fn shard(&self, key: &K) -> &std::sync::Mutex<MemoShard<K, V>> {
+    fn shard(&self, key: &K) -> (u64, &std::sync::Mutex<MemoShard<K, V>>) {
         use std::hash::BuildHasher;
         let hash = crate::fast_hash::FxBuildHasher::default().hash_one(key);
-        &self.shards[crate::fast_hash::shard_of(hash, MEMO_SHARDS)]
+        (
+            hash,
+            &self.shards[crate::fast_hash::shard_of(hash, MEMO_SHARDS)],
+        )
+    }
+
+    /// The slot of `key` if it has one.
+    fn existing(&self, key: &K) -> Option<Slot<V>> {
+        let (hash, shard) = self.shard(key);
+        let shard = shard.lock().unwrap_or_else(|e| e.into_inner());
+        shard
+            .find(hash, |entry| entry.0 == hash && entry.1 == *key)
+            .map(|entry| Arc::clone(&entry.2))
     }
 
     fn slot(&self, key: &K) -> Slot<V> {
-        let mut shard = self.shard(key).lock().unwrap_or_else(|e| e.into_inner());
-        Arc::clone(shard.entry(key.clone()).or_default())
+        let (hash, shard) = self.shard(key);
+        let mut shard = shard.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = shard
+            .entry(
+                hash,
+                |entry| entry.0 == hash && entry.1 == *key,
+                |entry| entry.0,
+            )
+            .or_insert_with(|| (hash, key.clone(), Slot::default()));
+        Arc::clone(&entry.get().2)
     }
 
     /// The value of `key` if it is filled (no wait for a fill in progress).
     pub(super) fn peek(&self, key: &K) -> Option<Arc<V>> {
-        let slot = {
-            let shard = self.shard(key).lock().unwrap_or_else(|e| e.into_inner());
-            Arc::clone(shard.get(key)?)
-        };
+        let slot = self.existing(key)?;
         slot.try_lock().ok().and_then(|value| value.clone())
     }
 
     /// The value of `key` if it is filled, waiting for a fill in progress
     /// (none started: `None`).
     pub(super) fn get(&self, key: &K) -> Option<Arc<V>> {
-        let slot = {
-            let shard = self.shard(key).lock().unwrap_or_else(|e| e.into_inner());
-            Arc::clone(shard.get(key)?)
-        };
+        let slot = self.existing(key)?;
         slot.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// T2: drop `key`'s entry (its value was filled from reads that are
     /// stale now): the next use fills it again.
     pub(super) fn remove(&self, key: &K) {
-        self.shard(key)
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(key);
+        let (hash, shard) = self.shard(key);
+        let mut shard = shard.lock().unwrap_or_else(|e| e.into_inner());
+        if let Ok(entry) = shard.find_entry(hash, |entry| entry.0 == hash && entry.1 == *key) {
+            entry.remove();
+        }
     }
 
     /// Whether `key` is filled (no wait for a fill in progress: `false`).
     pub(super) fn is_filled(&self, key: &K) -> bool {
-        let slot = {
-            let shard = self.shard(key).lock().unwrap_or_else(|e| e.into_inner());
-            match shard.get(key) {
-                Some(slot) => Arc::clone(slot),
-                None => return false,
-            }
+        let Some(slot) = self.existing(key) else {
+            return false;
         };
         slot.try_lock().is_ok_and(|value| value.is_some())
     }
@@ -149,7 +161,7 @@ impl<K: std::hash::Hash + Eq + Clone, V> SingleFlight<K, V> {
         let mut filled = Vec::new();
         for shard in self.shards.into_vec() {
             let shard = shard.into_inner().unwrap_or_else(|e| e.into_inner());
-            for (key, slot) in shard {
+            for (_, key, slot) in shard {
                 if let Some(value) = slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
                     filled.push((key, value));
                 }
@@ -163,7 +175,7 @@ impl<K: std::hash::Hash + Eq + Clone, V> SingleFlight<K, V> {
         let mut values = Vec::new();
         for shard in self.shards.iter() {
             let shard = shard.lock().unwrap_or_else(|e| e.into_inner());
-            for slot in shard.values() {
+            for (_, _, slot) in shard.iter() {
                 if let Some(value) = slot.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
                     values.push(Arc::clone(value));
                 }

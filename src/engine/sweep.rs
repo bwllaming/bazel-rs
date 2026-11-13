@@ -551,6 +551,7 @@ pub(super) fn rewrite(
             .is_some_and(|(id, _)| dropped(id))
     };
     let mut out = Vec::with_capacity(ops.len());
+    let mut unplaced = Vec::new();
     let mut outputs = 0usize;
     for op in ops {
         match op {
@@ -609,7 +610,10 @@ pub(super) fn rewrite(
             }
             // A shared action's lowering is never placed (nor waited
             // for: the walk never lowers it, so it cannot fail the build).
-            delta::DeltaOp::Lowering(_, Some(id)) if dropped(&id) => {}
+            delta::DeltaOp::Lowering(pending, Some(id)) if dropped(&id) => {
+                // (Its lowered nodes freed off the cursor.)
+                unplaced.push(pending);
+            }
             delta::DeltaOp::Lowering(pending, _) | delta::DeltaOp::Rewritten(pending, _) => {
                 out.push(delta::DeltaOp::Rewritten(pending, Arc::clone(&rewrite)));
             }
@@ -617,6 +621,9 @@ pub(super) fn rewrite(
                 if dropped(&id) => {}
             other => out.push(other),
         }
+    }
+    if !unplaced.is_empty() {
+        super::drop_elsewhere(unplaced);
     }
     let rewritten = delta::TargetDelta {
         ops: out,

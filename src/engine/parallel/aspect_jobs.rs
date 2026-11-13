@@ -493,8 +493,15 @@ impl AspectTable {
 /// applications' actions share most of their inputs (a closure's), and an
 /// entry visible at a turn stays visible through it (registrations only
 /// add entries).
+///
+/// Also the entries this placement placed or found committed with their
+/// very providers (by the table value's address, kept alive by the table):
+/// met again through another application's subs, nothing to do.
 #[derive(Default)]
-struct Registered(HashMap<usize, File, crate::fast_hash::FxBuildHasher>);
+struct Registered(
+    HashMap<usize, File, crate::fast_hash::FxBuildHasher>,
+    HashSet<usize, crate::fast_hash::FxBuildHasher>,
+);
 
 impl Registered {
     fn address(file: &File) -> usize {
@@ -1289,6 +1296,12 @@ impl Engine {
     ) -> Result<bool, String> {
         let key = &applying.0;
         let applied = frozen.aspects.applications.get(applying);
+        let address = applied
+            .as_ref()
+            .map(|applied| Arc::as_ptr(applied) as usize);
+        if address.is_some_and(|address| registered.1.contains(&address)) {
+            return Ok(true);
+        }
         if let Some(known) = state.aspect_providers.get(key) {
             // Committed already: the very providers the job's views hold
             // (another context's, or the coordinator's, are not).
@@ -1329,6 +1342,9 @@ impl Engine {
                             .map(|committed| committed.1.clone())
                     );
                 }
+            }
+            if same && let Some(address) = address {
+                registered.1.insert(address);
             }
             return Ok(same);
         }
@@ -1412,6 +1428,9 @@ impl Engine {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .insert(key.clone(), (applied.providers.clone(), applying.1.clone()));
+        if let Some(address) = address {
+            registered.1.insert(address);
+        }
         Ok(true)
     }
 }
