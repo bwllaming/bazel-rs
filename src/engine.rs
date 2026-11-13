@@ -11536,6 +11536,15 @@ impl Engine {
                 &status_client_environment,
             )
         };
+        let mut spent_taken = Vec::with_capacity(labels.len());
+        // Room for the listed runfiles artifacts (no regrowth moves).
+        hidden.reserve(
+            top_runfiles
+                .iter()
+                .flatten()
+                .map(|listed| listed.artifacts.len())
+                .sum(),
+        );
         for (position, label) in labels.iter().enumerate() {
             let key = self.configurations.top_key(label.clone());
             let actual = forwarded.get(&key).unwrap_or(label);
@@ -11787,7 +11796,10 @@ impl Engine {
                     derive_side.insert(label.clone(), (plan, extra));
                 }
             }
+            // (Dropped on the dropper thread: many files each.)
+            spent_taken.push(taken);
         }
+        drop_elsewhere(spent_taken);
         if derive_recording {
             let mut roots = DeriveRoots::default();
             let mut own: HashMap<&Label, BTreeSet<String>> = HashMap::new();

@@ -890,11 +890,13 @@ impl Engine {
         let views = views.into_filled();
         state.views.reserve(views.len());
         for (key, fill) in views {
+            // Moved out when the memo holds the last reference (the walk's
+            // jobs are done): no copy and no drop of the original.
             let ViewFill {
                 view,
                 artifacts,
                 accesses,
-            } = (*fill).clone();
+            } = Arc::try_unwrap(fill).unwrap_or_else(|fill| (*fill).clone());
             if ahead && let Some(artifacts) = artifacts {
                 self.view_artifacts.insert(key.clone(), artifacts);
             }
@@ -906,16 +908,15 @@ impl Engine {
         let identities = identities.into_filled();
         state.target_identities.reserve(identities.len());
         for (key, identity) in identities {
-            state
-                .target_identities
-                .entry(key)
-                .or_insert_with(|| (*identity).clone());
+            state.target_identities.entry(key).or_insert_with(|| {
+                Arc::try_unwrap(identity).unwrap_or_else(|identity| (*identity).clone())
+            });
         }
         for (key, value) in output_groups.into_filled() {
             state
                 .native_output_groups
                 .entry(key)
-                .or_insert_with(|| (*value).clone());
+                .or_insert_with(|| Arc::try_unwrap(value).unwrap_or_else(|value| (*value).clone()));
         }
     }
 }
