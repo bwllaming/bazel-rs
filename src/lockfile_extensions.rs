@@ -253,6 +253,22 @@ pub(crate) fn usages_value(group: &OrdinaryGroup) -> Result<Json, String> {
             ("key".into(), Json::String(participant.module_key.clone())),
         ]));
     }
+    // BazelDepGraphFunction.resolveRepoOverrides (:234-247) copies the root
+    // usage's repoOverrides, a HashMap filled by put in call order
+    // (ModuleThreadContext :208, :252-255), into this row: its key order.
+    let names = crate::runfiles::java_hash_set_order(
+        group
+            .repo_overrides
+            .iter()
+            .map(|repo_override| repo_override.name.clone())
+            .collect(),
+    );
+    let mut repo_overrides = Vec::new();
+    for name in names {
+        if let Some(repo_override) = group.repo_overrides.iter().find(|o| o.name == name) {
+            repo_overrides.push((name, Json::String(repo_override.canonical.clone())));
+        }
+    }
     Ok(Json::Object(vec![
         ("extensionUsages".into(), Json::Object(usages)),
         (
@@ -261,9 +277,9 @@ pub(crate) fn usages_value(group: &OrdinaryGroup) -> Result<Json, String> {
         ),
         ("abridgedModules".into(), Json::Array(modules)),
         ("repoMappings".into(), Json::Object(Vec::new())),
-        // Native MODULE evaluation rejects the root module's override_repo/inject_repo
-        // and ignores them elsewhere, as Bazel does.
-        ("repoOverrides".into(), Json::Object(Vec::new())),
+        // RepositoryName values as their canonical names
+        // (GsonTypeAdapterUtil.REPOSITORY_NAME_TYPE_ADAPTER).
+        ("repoOverrides".into(), Json::Object(repo_overrides)),
     ]))
 }
 
