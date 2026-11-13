@@ -3248,6 +3248,61 @@ three prints per target, heavy targets first in plan order printing last,
 each target's lines adjacent, a redo at the merge printing once, an
 invalid value's error.
 
+### Phase 1's linearizer and the pool's order (eval-speed, round 3)
+
+`BAZEL_RS_EVAL_TIMELINE` now splits a linearizer step of 5 ms or more into
+pass 1 / tape / publication, shows the coordinator's lock waits and holds as
+occupancy, and names the call site a speculation waited behind. On ~/code
+(`build --nobuild //src/...`, snapshot off) the speculations' 2.4–2.6 s of
+lock waits were behind the sequential thread's linearize steps (pass 1 ~60 %
+of a step), and the linearizer's backlog came from the pool finishing the
+requested targets' subtrees in spawn order.
+
+What changed:
+
+- **The steps yield to the speculations** (`PriorityWait`,
+  `BAZEL_RS_EVAL_YIELD=0` off): a speculation waiting for the lock pauses
+  pass 1 at its next 512-event check and the tape between ops (the rest
+  kept for the next step), the sequential loop lets it take the lock before
+  its next step (the lock is not fair), idle steps skip, and the requested
+  target's compatibility check linearizes in steps first. Speculation lock
+  waits 2.6 → 0.8–1.4 s, scratch engines held 7.2 → 4.7 s.
+- **Ranked pool scheduling** (`BAZEL_RS_EVAL_RANKED=0` off): `Evaluator::start`
+  ranks the requested targets in order (`graph::Entry::rank`), a node's
+  needs, parks and hints inherit the higher rank, and ranked nodes queued
+  for the pool go to the boost heap behind the explicit boosts (newest first
+  within a rank): every job runs the best one before its own. Requested #0
+  is evaluated at 2.0–2.2 s instead of 3.7–3.9 s.
+- **Pass 1 and the tape**: canonical nodes by node id
+  (`Pass1::index_by_node`), one key lookup per reach, a variant's observable
+  check remembered by node, the visited map reserved, the plan on the tape
+  only (`plan_on_tape`), `TapeOp::Reach` without key and parent,
+  `TapeOp::Plan` with its node (the rule read by node). Publication:
+  `Arc<ConfiguredNode>` in the configured map and `Ct1Ok` (848-byte nodes
+  were copied, ~1 KB table slots). Pass 1 1.25 → 0.75 s, tape 0.52 → 0.35 s,
+  publication 0.58 → 0.36 s.
+- **Planning tail**: the thaw's `apply_memos` moves memo values out when it
+  holds the last reference; the top-level loop's per-target runfiles sets
+  are dropped on the dropper thread.
+
+Measured (2026-11-13, ~/code `80d6724f3a` private clone, non-LTO release,
+host load 35–50, plan.start-relative): the graph dropped 7.6–7.7 → 6.3–6.6 s;
+the deferred walk then takes ~1 s longer (CPU-bound on a loaded host:
+~80 core-s), so `plan.built` moved 16.9/18.3 → 16.8/17.1 s and `INFO: Elapsed
+time` 18.3–19.7 → 17.5–18.3 s (one outlier 21.5 s), RSS 9.6 → 9.5 GB.
+Identical: action dumps of `build` and `test --nobuild` (vs main's walk),
+the record mode's dump (timings aside); `PARITY_VERIFY`+`REVERSE`,
+`VERIFY_DELTA`/`ARTIFACTS`, `EVAL_VERIFY` (`--memory-limit=40000`) clean.
+
+Tried, not kept: the configured targets published on a helper thread beside
+pass 1 (publication −0.2 s, pass 1 +0.12 s: memory contention); 4 scratch
+engines instead of 2 (no gain).
+
+What bounds phase 1 now: the pool (~5 s on a loaded host), then ~1 s of
+linearizer alone (per requested target: pass 1, tape, compatibility); after
+it the deferred walk is the largest serial-start item (the in-phase walk of
+task D: the sequential thread is idle for much of 2–5 s now).
+
 ### Effort
 
 | Step | Work | Estimate |
