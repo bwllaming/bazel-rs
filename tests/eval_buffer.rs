@@ -155,6 +155,9 @@ const REVERSE: (&str, &str) = ("BAZEL_RS_PARITY_REVERSE", "1");
 const EARLY: (&str, &str) = ("BAZEL_RS_EVAL_EARLY_CT2", "1");
 const EARLY_MIN: (&str, &str) = ("BAZEL_RS_EVAL_EARLY_CT2_MIN", "1");
 const EARLY_GROWTH: (&str, &str) = ("BAZEL_RS_EVAL_EARLY_CT2_GROWTH", "0");
+const IN_PHASE: (&str, &str) = ("BAZEL_RS_EVAL_INPHASE_WALK", "always");
+const IN_PHASE_MIN: (&str, &str) = ("BAZEL_RS_EVAL_INPHASE_MIN", "1");
+const IN_PHASE_ANY: (&str, &str) = ("BAZEL_RS_EVAL_INPHASE_PERCENT", "100");
 
 /// The walk's output, then the buffered evaluation's at several thread
 /// counts, with jitter, restarts and a tiny window, compared byte for byte;
@@ -163,7 +166,7 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
     let walk = ws.build("walk", 1, &[], args);
     let text = stable(&walk);
     check(walk.status.success(), &text);
-    let runs: [(usize, &[(&str, &str)]); 26] = [
+    let runs: [(usize, &[(&str, &str)]); 29] = [
         (2, &[FROZEN]),
         (8, &[FROZEN]),
         (32, &[FROZEN]),
@@ -212,6 +215,45 @@ fn compare(ws: &Workspace, args: &[&str], check: impl Fn(bool, &str)) {
         (
             2,
             &[FROZEN, EARLY, EARLY_MIN, ("BAZEL_RS_VERIFY_DELTA", "1")],
+        ),
+        // Task D: in-phase walks (the sequential thread walks the flushed
+        // segments while it waits for the pool), on their own jobs and on
+        // the early boards' (those reaching past a walk fenced off).
+        (
+            8,
+            &[
+                FROZEN,
+                IN_PHASE,
+                IN_PHASE_MIN,
+                ("BAZEL_RS_EVAL_JITTER", "300"),
+            ],
+        ),
+        (
+            8,
+            &[
+                FROZEN,
+                EARLY,
+                EARLY_MIN,
+                EARLY_GROWTH,
+                IN_PHASE,
+                IN_PHASE_MIN,
+                IN_PHASE_ANY,
+                REVERSE,
+                PARITY_VERIFY,
+            ],
+        ),
+        (
+            8,
+            &[
+                FROZEN,
+                EARLY,
+                EARLY_MIN,
+                IN_PHASE,
+                IN_PHASE_MIN,
+                IN_PHASE_ANY,
+                ("BAZEL_RS_EVAL_JITTER", "300"),
+                ("BAZEL_RS_EVAL_RESTARTS", "5"),
+            ],
         ),
         // The T2 pipeline (no buffer: no sweep, losers publish nothing).
         (
@@ -1352,4 +1394,28 @@ w(
                 && !line.contains(" early_boards=0 ")),
         "{timed}"
     );
+    // In-phase walks (at each requested target: the tests' hook), the
+    // output the walk's.
+    for early in [false, true] {
+        let mut env = vec![
+            FROZEN,
+            IN_PHASE,
+            IN_PHASE_MIN,
+            IN_PHASE_ANY,
+            ("BAZEL_RS_EVAL_JITTER", "300"),
+            ("BAZEL_RS_TIMING", "1"),
+        ];
+        if early {
+            env.extend([EARLY, EARLY_MIN, EARLY_GROWTH]);
+        }
+        let timed = ws.build("eval", 8, &env, args);
+        assert!(timed.status.success());
+        let text = String::from_utf8_lossy(&timed.stderr);
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with("PERF-PARALLEL buffer starlark=")
+                    && !line.contains(" in_phase_walks=0")),
+            "{text}"
+        );
+    }
 }

@@ -309,6 +309,8 @@ pub(crate) struct Linearizer {
     held_platforms: Vec<Published>,
     /// The flushes so far (BAZEL_RS_EVAL_PLATFORM_LOG).
     flushes: usize,
+    /// Task D: when the last in-phase walk was considered.
+    walk_checked: Option<std::time::Instant>,
     /// The target platform of each configuration (the deferral check;
     /// `None`: the no-config configuration).
     target_platforms: FxHashMap<ConfigId, Option<ConfiguredTargetKey>>,
@@ -1112,6 +1114,79 @@ impl Coord<'_> {
             });
         }
         self.lin = Some(lin);
+    }
+
+    /// Task D, the in-phase walks (`BAZEL_RS_EVAL_INPHASE_WALK=1`): the
+    /// sequential thread, idle while the pool works, walks the deferred
+    /// segments whose early jobs are finished (but
+    /// `BAZEL_RS_EVAL_INPHASE_PERCENT`, default 15, of their entries) —
+    /// their merges in plan order now instead of after phase 1. A walk
+    /// covers whole deferred segments (their ops are known) and at least
+    /// `BAZEL_RS_EVAL_INPHASE_MIN` entries (default 8,192). Whether it
+    /// walked.
+    pub(crate) fn in_phase_walk(&mut self, shared: &EvalShared) -> bool {
+        if !crate::engine::parallel::in_phase_walks()
+            || self.engine.keep_going
+            || crate::observed_fs::recording()
+        {
+            return false;
+        }
+        let Some(mut lin) = self.lin.take() else {
+            return false;
+        };
+        let now = std::time::Instant::now();
+        let mut walked = false;
+        if lin.defer
+            && lin.tracker.is_none()
+            && lin.failure.is_none()
+            && lin.ops.is_empty()
+            && !lin.pass.paused()
+            && (crate::engine::parallel::in_phase_mode() == 2
+                || lin
+                    .walk_checked
+                    .is_none_or(|at| now.duration_since(at) >= std::time::Duration::from_millis(5)))
+        {
+            lin.walk_checked = Some(now);
+            let done = self
+                .engine
+                .action_planning
+                .as_ref()
+                .map_or(0, |state| state.done);
+            // (Without early boards: the walk's own jobs.)
+            let until = if crate::engine::parallel::early_enabled() {
+                self.engine.early_finished_until(in_phase_percent())
+            } else {
+                Some(lin.position)
+            };
+            let end = until
+                .map(|until| until.min(lin.position))
+                .and_then(|limit| {
+                    // The first segment end a walk of the minimum reaches
+                    // (the sequential thread comes back to its wait between
+                    // walks: a value it waits for, a speculation's lock).
+                    lin.segments
+                        .iter()
+                        .map(|(_, end, _)| *end)
+                        .find(|end| *end >= done + in_phase_min())
+                        .filter(|end| *end <= limit)
+                });
+            if let Some(end) = end {
+                crate::engine::parallel::count_in_phase_walk();
+                let started = std::time::Instant::now();
+                // A failure is sticky (`Linearizer::failure`): the next
+                // linearization returns it.
+                let _ = self.catch_up(&mut lin, shared, end);
+                super::super::timeline::mark(|| {
+                    format!(
+                        "an in-phase walk of plan [{done}, {end}) in {} ms",
+                        started.elapsed().as_millis()
+                    )
+                });
+                walked = true;
+            }
+        }
+        self.lin = Some(lin);
+        walked
     }
 
     /// The internal error a speculated flag, a rerun or an extension
@@ -2032,6 +2107,7 @@ impl Engine {
             used_platforms: FxHashSet::default(),
             held_platforms: Vec::new(),
             flushes: 0,
+            walk_checked: None,
             target_platforms: FxHashMap::default(),
             unrecorded_sources: Vec::new(),
             keep_going: self.keep_going.then(KeepGoing::default),
@@ -2677,6 +2753,33 @@ static PRIORITY_WAITERS: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 
 /// Whether the linearizer's steps yield to the speculations
 /// (`BAZEL_RS_EVAL_YIELD=0`: they do not).
+/// `BAZEL_RS_EVAL_INPHASE_PERCENT`: the share of a walk's entries whose
+/// early jobs may still be missing (default 15).
+fn in_phase_percent() -> usize {
+    static PERCENT: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling knob; the output is the same either way.
+        std::env::var("BAZEL_RS_EVAL_INPHASE_PERCENT")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(15)
+    });
+    *PERCENT
+}
+
+/// `BAZEL_RS_EVAL_INPHASE_MIN`: the fewest entries an in-phase walk
+/// covers (default 8,192; the tests' 1).
+fn in_phase_min() -> usize {
+    static MIN: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling knob; the output is the same either way.
+        std::env::var("BAZEL_RS_EVAL_INPHASE_MIN")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(8192)
+            .max(1)
+    });
+    *MIN
+}
+
 pub(crate) fn yields() -> bool {
     static YIELDS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
         // snapshot-unrecorded: a diagnostics switch choosing the scheduling only; the output is the same either way.
@@ -3168,7 +3271,12 @@ fn drive(
         let early = std::time::Instant::now();
         // Task D: the frozen walk's jobs of the flushed entries start now.
         if analyzed.is_ok() {
-            bodies.coord().early_ct2(shared);
+            let mut coord = bodies.coord();
+            coord.early_ct2(shared);
+            // (The tests' hook: an in-phase walk at each requested target.)
+            if crate::engine::parallel::in_phase_mode() == 2 {
+                coord.in_phase_walk(shared);
+            }
         }
         super::super::timeline::add("after a requested target: early CT2", early);
         DRIVE[3].fetch_add(

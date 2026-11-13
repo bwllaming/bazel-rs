@@ -38,7 +38,9 @@ pub(super) mod aspect_jobs;
 pub(super) mod aspects;
 mod buffer;
 mod frozen;
-pub(super) use buffer::{EarlyCt2, early_enabled};
+pub(super) use buffer::{
+    EarlyCt2, count_in_phase_walk, early_enabled, in_phase_mode, in_phase_walks,
+};
 pub(super) use frozen::{Frozen, PlannedResults};
 use std::collections::BTreeSet as OrderedSet;
 use std::sync::mpsc;

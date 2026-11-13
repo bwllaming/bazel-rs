@@ -288,7 +288,7 @@ const KIND_UNCLASSIFIED: u8 = 3;
 
 /// BAZEL_RS_TIMING (`PERF-PARALLEL buffer`).
 static STATS: [AtomicU64; STAT_NAMES.len()] = [const { AtomicU64::new(0) }; STAT_NAMES.len()];
-const STAT_NAMES: [&str; 21] = [
+const STAT_NAMES: [&str; 23] = [
     "starlark",
     "native",
     "turn",
@@ -310,6 +310,8 @@ const STAT_NAMES: [&str; 21] = [
     "early_taken",
     "streamed",
     "failed_fast",
+    "early_rss_skipped",
+    "in_phase_walks",
 ];
 const S_STARLARK: usize = 0;
 const S_NATIVE: usize = 1;
@@ -334,6 +336,14 @@ const S_EARLY_TAKEN: usize = 18;
 /// they finished; walks ended by a job's confirmed error before its turn.
 const S_STREAMED: usize = 19;
 const S_FAILED_FAST: usize = 20;
+/// Task D: early boards not started for the RSS bound; in-phase walks.
+const S_EARLY_RSS: usize = 21;
+const S_IN_PHASE_WALKS: usize = 22;
+
+/// Task D: an in-phase walk ran (`PERF-PARALLEL buffer`).
+pub(in crate::engine) fn count_in_phase_walk() {
+    stat(S_IN_PHASE_WALKS, 1);
+}
 
 /// Whether a plain native rule whose results a worker published merges
 /// them ([`Engine::merge_published_native`]) instead of committing again
@@ -645,6 +655,10 @@ struct Board {
     flushed: usize,
     next: std::sync::OnceLock<Arc<Board>>,
     running: std::sync::atomic::AtomicUsize,
+    /// Task D, the in-phase walks: an early board's entries before this
+    /// plan index are an in-phase walk's (taken over: no job of them
+    /// starts any more).
+    fence: std::sync::atomic::AtomicUsize,
     /// BAZEL_RS_ANALYSIS_ORDER=genuine (not `--keep_going`, not an early
     /// board): the lowest plan index whose finished job holds a confirmed
     /// error ([`Finished::confirmed_error`]; `usize::MAX`: none), which the
@@ -967,9 +981,15 @@ impl Board {
             Box::new(move || {
                 if board.stopped()
                     || board.stage[slot]
-                        .compare_exchange(QUEUED, RUNNING, Ordering::AcqRel, Ordering::Acquire)
+                        .compare_exchange(QUEUED, RUNNING, Ordering::SeqCst, Ordering::Acquire)
                         .is_err()
                 {
+                    return;
+                }
+                // Task D: an in-phase walk took the entry over (its fence
+                // stored before it checks the entries running: SeqCst).
+                if index < board.fence.load(Ordering::SeqCst) {
+                    board.stage[slot].store(IDLE, Ordering::Release);
                     return;
                 }
                 // Task D: counted until its outcome is stored (or it is
@@ -1580,6 +1600,7 @@ impl Board {
             flushed: usize::MAX,
             next: std::sync::OnceLock::new(),
             running: std::sync::atomic::AtomicUsize::new(0),
+            fence: std::sync::atomic::AtomicUsize::new(0),
             fail_fast: false,
             failed: std::sync::atomic::AtomicUsize::new(usize::MAX),
         })
@@ -1594,6 +1615,41 @@ pub(in crate::engine) fn early_enabled() -> bool {
         std::env::var_os("BAZEL_RS_EVAL_EARLY_CT2").is_some_and(|value| value == "1")
     });
     *EARLY
+}
+
+/// `BAZEL_RS_EVAL_INPHASE_WALK=1` (task D, off by default; with
+/// `BAZEL_RS_EVAL_EARLY_CT2=1`): the sequential thread walks the flushed
+/// prefix whose early jobs are finished while it waits for the pool
+/// (`Coord::in_phase_walk`): the merges inside phase 1. `always` (the
+/// tests' hook): also after each requested target, waiting or not.
+pub(in crate::engine) fn in_phase_walks() -> bool {
+    in_phase_mode() > 0
+}
+
+/// `BAZEL_RS_EVAL_INPHASE_WALK`: 0 off, 1 while waiting, 2 `always`.
+pub(in crate::engine) fn in_phase_mode() -> u8 {
+    static IN_PHASE: std::sync::LazyLock<u8> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling switch; the output is the same either way.
+        match std::env::var("BAZEL_RS_EVAL_INPHASE_WALK").as_deref() {
+            Ok("1") => 1,
+            Ok("always") => 2,
+            _ => 0,
+        }
+    });
+    *IN_PHASE
+}
+
+/// The RSS (MB) above which no early board starts while in-phase walks
+/// merge (`BAZEL_RS_EVAL_EARLY_CT2_RSS_MB`, default 7,000).
+fn early_rss_mb() -> u64 {
+    static RSS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
+        // snapshot-unrecorded: a scheduling knob; the output is the same either way.
+        std::env::var("BAZEL_RS_EVAL_EARLY_CT2_RSS_MB")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(7000)
+    });
+    *RSS
 }
 
 /// How much the flushed plan must have grown (percent of what the early
@@ -1663,28 +1719,48 @@ impl EarlyCt2 {
     /// (`board`, whose entries are the same plan positions). Those after
     /// the walk (entries after phase 1's last flush: the planning tail's
     /// walk) stay for the next walk (`Some`).
-    fn hand_over(self, board: &Arc<Board>) -> Result<Option<Self>, String> {
+    fn hand_over(mut self, board: &Arc<Board>) -> Result<Option<Self>, String> {
+        let walk_end = board.start + board.plan.len();
+        // An in-phase walk (task D: `Coord::in_phase_walk`) ends before
+        // the boards do: those reaching past its end go on (their entries
+        // before it fenced off: no job of them starts any more, the ones
+        // running are waited for), the others stop.
+        let in_phase = in_phase_walks();
         for early in &self.boards {
-            early.stop.store(true, Ordering::Release);
+            let early_end = early.start + early.plan.len();
+            if in_phase && early_end > walk_end && !early.stop.load(Ordering::Acquire) {
+                early.fence.fetch_max(walk_end, Ordering::SeqCst);
+                for slot in 0..walk_end.saturating_sub(early.start).min(early.plan.len()) {
+                    while early.stage[slot].load(Ordering::SeqCst) == RUNNING {
+                        std::thread::sleep(std::time::Duration::from_micros(50));
+                    }
+                }
+            } else {
+                early.stop.store(true, Ordering::Release);
+            }
         }
         let (mut taken, mut left) = (0u64, 0u64);
         for early in &self.boards {
-            while early.running.load(Ordering::Acquire) > 0 {
-                std::thread::sleep(std::time::Duration::from_micros(100));
+            if early.stop.load(Ordering::Acquire) {
+                while early.running.load(Ordering::Acquire) > 0 {
+                    std::thread::sleep(std::time::Duration::from_micros(100));
+                }
             }
-            let finished =
-                std::mem::take(&mut *early.finished.lock().unwrap_or_else(|e| e.into_inner()));
+            let finished: Vec<(usize, Finished)> = {
+                let mut early_finished = early.finished.lock().unwrap_or_else(|e| e.into_inner());
+                let below: Vec<usize> = early_finished
+                    .keys()
+                    .copied()
+                    .filter(|index| *index < walk_end)
+                    .collect();
+                left += (early_finished.len() - below.len()) as u64;
+                below
+                    .into_iter()
+                    .filter_map(|index| early_finished.remove(&index).map(|f| (index, f)))
+                    .collect()
+            };
             let mut done = board.finished.lock().unwrap_or_else(|e| e.into_inner());
             for (index, finished) in finished {
-                if index >= board.start + board.plan.len() {
-                    left += 1;
-                    early
-                        .finished
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert(index, finished);
-                    continue;
-                }
                 let (Some(slot), Some(early_slot)) = (board.slot(index), early.slot(index)) else {
                     return Err(format!(
                         "internal error: BAZEL_RS_ANALYSIS=eval: an early job of plan entry {index} outside the walk; rerun with BAZEL_RS_EVAL_EARLY_CT2=0"
@@ -1707,11 +1783,60 @@ impl EarlyCt2 {
             }
         }
         stat(S_EARLY_TAKEN, taken);
-        Ok((left > 0).then_some(self))
+        // The boards with nothing left for a later walk are dropped.
+        self.boards.retain(|early| {
+            !early.stop.load(Ordering::Acquire)
+                || !early
+                    .finished
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_empty()
+        });
+        // The walk's publications ready the boards' waiting entries too.
+        if let Some(first) = self
+            .boards
+            .iter()
+            .find(|early| !early.stop.load(Ordering::Acquire))
+        {
+            let _ = board.next.set(Arc::clone(first));
+        }
+        Ok((left > 0 || !self.boards.is_empty()).then_some(self))
+    }
+
+    /// Task D, the in-phase walks: the end of the longest run of boards
+    /// from the walk's next entry (`done`) whose jobs are finished but
+    /// `percent` of their entries at most (`None`: no board).
+    pub(in crate::engine) fn finished_until(&self, done: usize, percent: usize) -> Option<usize> {
+        let mut end = None;
+        for early in &self.boards {
+            let early_end = early.start + early.plan.len();
+            if early_end <= done || early.stop.load(Ordering::Acquire) {
+                continue;
+            }
+            let fence = early.fence.load(Ordering::Acquire).max(early.start);
+            let open = early_end.saturating_sub(fence);
+            let finished = early
+                .finished
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len();
+            if open == 0 || finished * 100 < open * (100 - percent.min(100)) {
+                break;
+            }
+            end = Some(early_end);
+        }
+        end
     }
 }
 
 impl Engine {
+    /// Task D, the in-phase walks: the plan position up to which the
+    /// early boards' jobs are finished but `percent` (`None`: no board).
+    pub(in crate::engine) fn early_finished_until(&self, percent: usize) -> Option<usize> {
+        let done = self.action_planning.as_ref()?.done;
+        self.early_ct2.as_ref()?.finished_until(done, percent)
+    }
+
     /// Task D: phase 1 flushed the plan up to `plan.len()` (the caller has
     /// swapped the evaluation's configurations into this engine): an early
     /// board starts for the entries flushed since the last one, when they
@@ -1734,6 +1859,14 @@ impl Engine {
             .as_ref()
             .map_or(state.done, |early| early.end.max(state.done));
         if end < covered + early_min().max(covered * early_growth() / 100) {
+            return;
+        }
+        // The early results are held until their merge: no new board above
+        // `BAZEL_RS_EVAL_EARLY_CT2_RSS_MB` of RSS (in-phase walks only).
+        if in_phase_walks()
+            && crate::memory_limit::rss_bytes().is_some_and(|rss| rss >> 20 > early_rss_mb())
+        {
+            stat(S_EARLY_RSS, 1);
             return;
         }
         // (The walk defers its lowerings unless --keep_going: as the walk

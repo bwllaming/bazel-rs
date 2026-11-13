@@ -1007,8 +1007,17 @@ impl Bodies for Phase1Bodies<'_, '_> {
         };
         self.inbox.absorb(&mut coord);
         let started = std::time::Instant::now();
-        let _ = coord.linearize_step(self.shared, super::super::linearize::driver::LINEARIZE_STEP);
+        let more =
+            coord.linearize_step(self.shared, super::super::linearize::driver::LINEARIZE_STEP);
         super::super::timeline::add("idle linearization", started);
+        // Task D: nothing to linearize, the sequential thread waits: the
+        // merges of the finished early jobs.
+        if !more && !self.on_pool() {
+            let started = std::time::Instant::now();
+            if coord.in_phase_walk(self.shared) {
+                super::super::timeline::add("idle in-phase walk", started);
+            }
+        }
     }
 
     fn pool_mode(&self, on: bool) {
