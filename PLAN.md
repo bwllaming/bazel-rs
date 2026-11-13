@@ -405,9 +405,9 @@ Done since the last increment recorded under "History", one line each:
 
 - [x] GitHub releases built by GitHub Actions on a tag push (docs/RELEASING.md):
       x86_64 glibc (≥ 2.39), static x86_64 and aarch64 musl builds. The
-      x86_64 build and publish run on the organisation's self-hosted runners,
-      arm64 on GitHub's `ubuntu-24.04-arm`. No macOS (not planned for now).
-- [x] CI on GitHub (`.github/workflows/ci.yml`, self-hosted): fmt, clippy, the
+      x86_64 build and publish run on GitHub's `ubuntu-24.04`, arm64 on
+      `ubuntu-24.04-arm`. No macOS (not planned for now).
+- [x] CI on GitHub (`.github/workflows/ci.yml`, GitHub-hosted `ubuntu-24.04`): fmt, clippy, the
       library tests and the hermetic integration subset; the full gate stays
       local (scripts/check.sh).
 - [x] Self-build (docs/SELF_BUILD.md): MODULE.bazel/BUILD.bazel build
